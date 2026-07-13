@@ -22,7 +22,6 @@ import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 export default function LaundryPersonPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: laundryPersonId } = React.use(params);
   const searchParams = useSearchParams();
-  const uid = searchParams.get('uid');
   const pid = searchParams.get('pid');
   // Reactive — flips at midnight Central so the rooms subscription rolls
   // over to the new day's bucket. The staffer's iPad sometimes stays on
@@ -267,8 +266,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
 
   // Missing pid means the SMS link was mangled. Without this guard the
   // useEffects above return early, never set loading=false, and the spinner
-  // runs forever. Render a concrete error so the worker can flag it. uid
-  // is no longer required (Firebase legacy; SMS links don't include it).
+  // runs forever. Render a concrete error so the worker can flag it.
   if (!pid || !laundryPersonId) {
     return (
       <div style={{

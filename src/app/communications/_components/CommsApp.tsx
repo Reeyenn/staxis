@@ -12,6 +12,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO, CommsDept } from '@/lib/comms/types';
 import type { WorklistItem } from '@/lib/worklist/types';
+import { useCommsResource } from './comms-data';
 import type { BootstrapData, ViewMode, RightPanel, L as LType } from './comms-types-fe';
 import { T, SANS, SERIF, MONO, deptColor, deptColorDark, tint, Avatar, MonoLabel, Presence } from './comms-ui';
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
@@ -26,7 +27,6 @@ export function CommsApp() {
   const { locale } = useLang();
   const L = React.useCallback<LType>((en, es) => (locale === 'es' ? es : en), [locale]);
 
-  const [boot, setBoot] = React.useState<BootstrapData | null>(null);
   const [selId, setSelId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<MessageDTO[]>([]);
   const [mode, setMode] = React.useState<ViewMode>('chats');
@@ -35,7 +35,6 @@ export function CommsApp() {
   const [catchOpen, setCatchOpen] = React.useState(false);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [showNew, setShowNew] = React.useState(false);
-  const [worklist, setWorklist] = React.useState<WorklistItem[]>([]);
   const [memberCount, setMemberCount] = React.useState<number | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   // `pid` comes from a client-only context (reads localStorage), so it's null
@@ -55,16 +54,28 @@ export function CommsApp() {
     } catch { /* */ }
   }, []);
 
+  // ── Data ──────────────────────────────────────────────────────────────────
+  // Bootstrap (sidebar + me + staff): 8s poll, last-good held through failed
+  // polls and property switches (the new pid's data replaces it when it lands).
+  const { data: boot, reload: loadBoot } = useCommsResource<BootstrapData>(
+    `/api/comms/bootstrap?pid=${encodeURIComponent(pid ?? '')}`,
+    { pollMs: 8000, keepDataOnError: true, enabled: !!pid },
+  );
+  // Worklist: fetched up-front for the sidebar badge; 15s poll only while the
+  // To-do view is open (plus a refresh on entry, below).
+  const { data: worklistData, reload: loadWorklist } = useCommsResource<{ items: WorklistItem[] }>(
+    `/api/worklist?pid=${encodeURIComponent(pid ?? '')}`,
+    { pollMs: mode === 'todo' ? 15000 : undefined, keepDataOnError: true, enabled: !!pid },
+  );
+  const worklist = worklistData?.items ?? [];
+
   const selConvo = boot?.conversations.find((c) => c.id === selId) ?? null;
   const online = React.useMemo(() => new Set(boot?.onlineStaffIds ?? []), [boot?.onlineStaffIds]);
 
-  // ── Data ──────────────────────────────────────────────────────────────────
-  const loadBoot = React.useCallback(async () => {
-    if (!pid) return;
-    const r = await apiGet<BootstrapData>(`/api/comms/bootstrap?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setBoot(r.data);
-  }, [pid]);
-
+  // Messages stay hand-rolled: switching conversations must BLANK the pane
+  // (not hold the previous thread's messages), and every successful fetch —
+  // polls included — re-pins the scroll to the bottom. Neither survives
+  // useCommsResource's silent keep-last-good source switches.
   const loadThread = React.useCallback(async () => {
     if (!pid || !selId) return;
     const r = await apiGet<{ messages: MessageDTO[] }>(`/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}`);
@@ -74,19 +85,6 @@ export function CommsApp() {
     }
   }, [pid, selId]);
 
-  const loadWorklist = React.useCallback(async () => {
-    if (!pid) return;
-    const r = await apiGet<{ items: WorklistItem[] }>(`/api/worklist?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setWorklist(r.data.items);
-  }, [pid]);
-
-  React.useEffect(() => { void loadBoot(); void loadWorklist(); }, [loadBoot, loadWorklist]);
-  React.useEffect(() => {
-    if (!pid) return;
-    const iv = setInterval(() => { if (!document.hidden) void loadBoot(); }, 8000);
-    return () => clearInterval(iv);
-  }, [pid, loadBoot]);
-
   React.useEffect(() => { setMessages([]); if (selId) void loadThread(); }, [selId, loadThread]);
   React.useEffect(() => {
     if (!selId || mode !== 'chats') return;
@@ -94,11 +92,6 @@ export function CommsApp() {
     return () => clearInterval(iv);
   }, [selId, mode, loadThread]);
   React.useEffect(() => { if (mode === 'todo') void loadWorklist(); }, [mode, loadWorklist]);
-  React.useEffect(() => {
-    if (mode !== 'todo' || !pid) return;
-    const iv = setInterval(() => { if (!document.hidden) void loadWorklist(); }, 15000);
-    return () => clearInterval(iv);
-  }, [mode, pid, loadWorklist]);
 
   // Member count for the selected conversation header.
   React.useEffect(() => {
@@ -302,15 +295,8 @@ function EmptyHint({ text }: { text: string }) {
 // ── Threads mode (every conversation that has a live thread) ─────────────────
 interface ThreadSummaryDTO { conversationId: string; conversationTitle: string; dept: CommsDept; parent: MessageDTO }
 function ThreadsList({ pid, L, onOpen }: { pid: string; L: LType; onOpen: (convId: string, parent: MessageDTO) => void }) {
-  const [items, setItems] = React.useState<ThreadSummaryDTO[]>([]);
-  React.useEffect(() => {
-    let live = true;
-    void (async () => {
-      const r = await apiGet<{ threads: ThreadSummaryDTO[] }>(`/api/comms/threads?pid=${encodeURIComponent(pid)}`);
-      if (live && r.ok && r.data) setItems(r.data.threads);
-    })();
-    return () => { live = false; };
-  }, [pid]);
+  const { data } = useCommsResource<{ threads: ThreadSummaryDTO[] }>(`/api/comms/threads?pid=${encodeURIComponent(pid)}`, { keepDataOnError: true });
+  const items = data?.threads ?? [];
   return (
     <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '26px 28px 60px' }}>

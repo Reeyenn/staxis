@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import {
@@ -16,6 +16,7 @@ import { T, fonts, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
+import { numGuard, intGuard, inputLg as inputStyle } from './form-kit';
 import { apiListVendors } from '../ordering-api';
 import { catLabelFor, type Lang } from '../inv-i18n';
 
@@ -134,6 +135,13 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
   const [name, setName] = useState('');
   const [category, setCategory] = useState<InvCat>(defaultCategory);
   const [currentStock, setCurrentStock] = useState<string>('0');
+  // What the on-hand field was seeded with (item value at open, or the DB's
+  // post-write-off value). On edit-save we only send currentStock if the user
+  // actually CHANGED it — unconditionally sending the open-time snapshot used
+  // to fake a physical count (stamping last_counted_at, resetting the
+  // occupancy drain estimate) and overwrite counts saved concurrently by
+  // someone else while the sheet was open.
+  const stockBaselineRef = useRef<number>(0);
   const [parLevel, setParLevel] = useState<string>('0');
   const [unit, setUnit] = useState('each');
   const [unitCost, setUnitCost] = useState<string>('');
@@ -174,6 +182,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setName(item.name);
       setCategory(item.category as InvCat);
       setCurrentStock(String(item.currentStock ?? 0));
+      stockBaselineRef.current = item.currentStock ?? 0;
       setParLevel(String(item.parLevel ?? 0));
       setUnit(item.unit || 'each');
       setUnitCost(item.unitCost != null ? String(item.unitCost) : '');
@@ -185,6 +194,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setName('');
       setCategory(defaultCategory);
       setCurrentStock('0');
+      stockBaselineRef.current = 0;
       setParLevel('0');
       setUnit('each');
       setUnitCost('');
@@ -203,7 +213,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       const base = {
         name: name.trim(),
         category: category as InventoryCategory,
-        currentStock: Number(currentStock) || 0,
         parLevel: Number(parLevel) || 0,
         unit: unit.trim() || 'each',
         unitCost: unitCost ? Number(unitCost) : undefined,
@@ -213,10 +222,23 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         notes: notes.trim() || undefined,
       };
       if (isEdit && item) {
-        await updateInventoryItem(user.uid, activePropertyId, item.id, base);
+        // Metadata edit: only send currentStock if the user deliberately
+        // changed the on-hand field (an intentional stock correction — the db
+        // layer then rightly treats it as a count). An untouched or emptied
+        // field sends NO stock, so last_counted_at / the consumption-estimate
+        // window are left alone and a count saved on another device while
+        // this sheet was open can't be overwritten by a typo-fix Save.
+        const stockNum = currentStock.trim() === '' ? NaN : Number(currentStock);
+        const stockChanged =
+          Number.isFinite(stockNum) && stockNum !== stockBaselineRef.current;
+        await updateInventoryItem(user.uid, activePropertyId, item.id, {
+          ...base,
+          ...(stockChanged ? { currentStock: stockNum } : {}),
+        });
       } else {
         await addInventoryItem(user.uid, activePropertyId, {
           ...base,
+          currentStock: Number(currentStock) || 0,
           propertyId: activePropertyId,
         });
       }
@@ -274,6 +296,9 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       // Save. Fall back to the stored item value if the read-back failed.
       const nextStock = res.newStock ?? Math.max(0, (item.currentStock ?? 0) - woQtyNum);
       setCurrentStock(String(nextStock));
+      // The DB already holds nextStock after the write-off — rebase so a
+      // later Save doesn't re-send it as a "stock change" (fake count).
+      stockBaselineRef.current = nextStock;
       setWoQty('');
       setWoNotes('');
       setWoDone(true);
@@ -362,9 +387,9 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               min="0"
               inputMode="decimal"
               value={currentStock}
-              // Reject anything that isn't empty or a non-negative decimal in progress.
-              // Blocks "-5", "abc", "1e10" at type-time so the saved value can't be junk.
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setCurrentStock(v); }}
+              // numGuard blocks "-5", "abc", "1e10" at type-time so the saved
+              // value can't be junk.
+              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setCurrentStock(v); }}
               style={inputStyle}
             />
           </Field>
@@ -374,7 +399,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               min="0"
               inputMode="decimal"
               value={parLevel}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setParLevel(v); }}
+              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setParLevel(v); }}
               style={inputStyle}
             />
           </Field>
@@ -397,7 +422,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               step="0.01"
               inputMode="decimal"
               value={unitCost}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) setUnitCost(v); }}
+              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setUnitCost(v); }}
               placeholder="0.00"
               style={inputStyle}
             />
@@ -436,7 +461,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               min="0"
               inputMode="numeric"
               value={leadDays}
-              onChange={(e) => { const v = e.target.value; if (v === '' || /^\d+$/.test(v)) setLeadDays(v); }}
+              onChange={(e) => { const v = e.target.value; if (intGuard(v)) setLeadDays(v); }}
               style={inputStyle}
             />
           </Field>
@@ -485,7 +510,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
                   min="0"
                   inputMode="decimal"
                   value={woQty}
-                  onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) { setWoQty(v); setWoDone(false); } }}
+                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) { setWoQty(v); setWoDone(false); } }}
                   placeholder="0"
                   style={inputStyle}
                 />
@@ -544,17 +569,3 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
     </div>
   );
 }
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  height: 40,
-  padding: '0 14px',
-  borderRadius: 10,
-  boxSizing: 'border-box',
-  background: T.bg,
-  border: `1px solid ${T.rule}`,
-  fontFamily: fonts.sans,
-  fontSize: 14,
-  color: T.ink,
-  outline: 'none',
-};

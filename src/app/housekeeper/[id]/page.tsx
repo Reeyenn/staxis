@@ -8,7 +8,7 @@ import * as Sentry from '@sentry/nextjs';
 import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { format } from 'date-fns';
 import { es as esLocale } from 'date-fns/locale';
-import { AlertTriangle, CheckCircle, Bell } from 'lucide-react';
+import { AlertTriangle, Bell } from 'lucide-react';
 
 import {
   subscribeToRoomsForStaff,
@@ -25,7 +25,6 @@ import { floorFromRoomNumber, inferCleaningType } from '@/lib/housekeeper-workfl
 import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
 
 import InspectorView from './_components/InspectorView';
-import VoiceIssueButton from './_components/VoiceIssueButton';
 import { SickReportButton } from './SickReportButton';
 import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
@@ -93,7 +92,6 @@ export default function HousekeeperRoomPage({
 
   const [lang, setLang] = useState<HousekeeperLocale>('en');
   const [componentLinks, setComponentLinks] = useState<ComponentRoomLink[]>([]);
-  const [managerNotesByRoom, setManagerNotesByRoom] = useState<Record<string, string>>({});
   const offline = useOfflineSync();
   const [rooms, setRooms] = useState<RoomRow[]>([]);
   const [activeDate, setActiveDate] = useState<string>(today);

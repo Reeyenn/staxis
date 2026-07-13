@@ -2,8 +2,7 @@
 
 
 export const dynamic = 'force-dynamic';
-import React, { useState, useEffect, useRef } from 'react';
-import * as Sentry from '@sentry/nextjs';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -11,10 +10,11 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { t } from '@/lib/translations';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { parsePmsJobStatusResponse, parsePmsOnboardResult } from '@/lib/api-validate';
+import { parsePmsOnboardResult } from '@/lib/api-validate';
 import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
-import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, ChevronDown, Loader2 } from 'lucide-react';
+import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import Link from 'next/link';
+import { usePmsOnboardJob } from './use-pms-onboard-job';
 
 // PMS dropdown options come from the registry (src/lib/pms/registry.ts).
 // Adding a new PMS is a one-line change there — keeps the dropdown,
@@ -25,13 +25,6 @@ const PMS_SYSTEMS = PMS_DROPDOWN_OPTIONS.map((d) => ({
   defaultLoginUrl: d.defaultLoginUrl,
 }));
 
-const SYNC_STATUS = {
-  idle: null,
-  testing: 'testing',
-  success: 'success',
-  error: 'error',
-} as const;
-
 export default function PMSPage() {
   const { user } = useAuth();
   const { activePropertyId, activeProperty, refreshProperty } = useProperty();
@@ -40,40 +33,37 @@ export default function PMSPage() {
 
   const [pmsType, setPmsType] = useState(activeProperty?.pmsType ?? '');
   const [pmsUrl, setPmsUrl] = useState(activeProperty?.pmsUrl ?? '');
+
+  // On a hard page load (refresh/bookmark) the property context resolves
+  // AFTER first mount, so the useState initializers above ran with
+  // activeProperty === null and the form rendered blank under a green
+  // "Connected" banner. Re-seed once per property when it resolves — but
+  // never clobber text the user has already typed.
+  const seededPropertyRef = useRef<string | null>(activeProperty?.id ?? null);
+  useEffect(() => {
+    if (!activeProperty || seededPropertyRef.current === activeProperty.id) return;
+    seededPropertyRef.current = activeProperty.id;
+    setPmsType(prev => prev || (activeProperty.pmsType ?? ''));
+    setPmsUrl(prev => prev || (activeProperty.pmsUrl ?? ''));
+  }, [activeProperty]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Onboarding job state — populated when the user clicks "Save & Onboard"
-  // and we kick off a CUA mapping/extraction job on the Fly.io worker.
-  // The page polls /api/pms/job-status every 3s while a job is in flight
-  // and renders a progress widget.
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [jobStatus, setJobStatus] = useState<{
-    status: 'queued' | 'running' | 'mapping' | 'extracting' | 'complete' | 'failed';
-    step: string | null;
-    progressPct: number;
-    error: string | null;
-    result: Record<string, unknown> | null;
-  } | null>(null);
-  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Stalled-state tracking (audit Flow 2 #4 + #11). The pre-fix polling
-  // loop had no concept of "we've been at the same progress for ages" —
-  // a dead Fly worker meant the user stared at the spinner indefinitely
-  // with no signal. We now track the last time progress changed; after
-  // STALLED_WARN_MS render a banner; after STALLED_STOP_MS bail entirely
-  // and log to Sentry. Network failures during polling are tracked
-  // separately so we can surface an offline banner without conflating
-  // it with "worker is down".
-  const STALLED_WARN_MS = 5 * 60 * 1000;   // 5 min — banner
-  const STALLED_STOP_MS = 15 * 60 * 1000;  // 15 min — stop + Sentry
-  const lastProgressChangeRef = useRef<number>(0);
-  const lastProgressPctRef = useRef<number>(-1);
-  const [pollState, setPollState] = useState<'polling' | 'stalled-warn' | 'stopped-stalled' | 'stopped-offline'>('polling');
-  const [pollNetworkFailures, setPollNetworkFailures] = useState(0);
-  const [userStopped, setUserStopped] = useState(false);
+  // Onboarding job state machine — populated when the user clicks
+  // "Save & Onboard" and we kick off a CUA mapping/extraction job on the
+  // Fly.io worker. The hook polls /api/pms/job-status every 3s while a job
+  // is in flight (stalled-state tracking + offline counter + Sentry report
+  // — see use-pms-onboard-job.ts); this page renders the progress widget.
+  const { jobStatus, pollState, pollNetworkFailures, userStopped, start: startOnboardJob, stop: stopOnboardPolling } = usePmsOnboardJob({
+    propertyId: activePropertyId ?? null,
+    onFinished: useCallback(async () => {
+      setSaving(false);
+      await refreshProperty();
+    }, [refreshProperty]),
+  });
 
   // When the user picks a PMS, prefill the login URL with the registry's
   // default — saves typing for the 95% case where they use the standard
@@ -182,15 +172,13 @@ export default function PMSPage() {
         return;
       }
 
-      setJobId(json.data.jobId);
-      setJobStatus({
+      startOnboardJob(json.data.jobId, {
         status: 'queued',
         step: lang === 'es' ? 'Esperando un trabajador…' : 'Waiting for a worker…',
         progressPct: 0,
         error: null,
         result: null,
       });
-      // Polling kicks in via the useEffect below.
     } catch (err) {
       setSaving(false);
       setTestStatus('error');
@@ -199,103 +187,6 @@ export default function PMSPage() {
         : 'Unexpected error. Please try again.');
     }
   };
-
-  // ─── Job polling ──────────────────────────────────────────────────────────
-  useEffect(() => {
-    if (!jobId) return;
-    let cancelled = false;
-    // Reset stalled-state tracking on a new job.
-    lastProgressChangeRef.current = Date.now();
-    lastProgressPctRef.current = -1;
-    setPollState('polling');
-    setPollNetworkFailures(0);
-    setUserStopped(false);
-
-    const poll = async () => {
-      if (cancelled || userStopped) return;
-      let madeNetworkProgress = false;
-      try {
-        const res = await fetchWithAuth(`/api/pms/job-status?id=${jobId}`);
-        const raw = await res.json();
-        madeNetworkProgress = true;
-        if (cancelled) return;
-        if (res.ok) {
-          // Runtime parser (audit Flow 2 #5): previously this code used
-          // `json.data.<field>` with no validation, so a server-side
-          // rename (snake_case slip) would freeze the progress bar at 0
-          // permanently. parsePmsJobStatusResponse returns a typed value
-          // or an error; on parse failure we keep polling but log.
-          const parsed = parsePmsJobStatusResponse(raw);
-          if (parsed.value) {
-            // Stalled-state tracking — when progressPct advances, reset
-            // the clock; otherwise let it tick toward the warn / stop
-            // thresholds.
-            if (parsed.value.progressPct !== lastProgressPctRef.current) {
-              lastProgressPctRef.current = parsed.value.progressPct;
-              lastProgressChangeRef.current = Date.now();
-              setPollState('polling');
-            }
-            setJobStatus(parsed.value);
-            if (parsed.value.status === 'complete' || parsed.value.status === 'failed') {
-              setSaving(false);
-              await refreshProperty();
-              return; // stop polling
-            }
-          } else {
-            console.warn('pms job-status response shape unexpected:', parsed.error);
-          }
-        }
-      } catch {
-        // Transient error — keep polling, but track the failure count.
-        if (!cancelled) {
-          setPollNetworkFailures(n => n + 1);
-        }
-      }
-      if (cancelled) return;
-
-      // Reset failure counter on a successful network call.
-      if (madeNetworkProgress) {
-        setPollNetworkFailures(0);
-      }
-
-      // Stalled-state escalation. Only check while job is in flight (not
-      // terminal). The thresholds are wall-clock since the last
-      // progressPct change, not since the job started — a job that
-      // legitimately progresses slowly (long extraction phase) won't
-      // trip the warn as long as the percent ticks at least once every
-      // 5 min.
-      const stalledMs = Date.now() - lastProgressChangeRef.current;
-      if (stalledMs > STALLED_STOP_MS) {
-        // Stop polling and report. The job may still complete on the
-        // server side — manual refresh recovers — but we won't keep
-        // hammering the API forever.
-        setPollState('stopped-stalled');
-        Sentry.captureMessage('pms-onboard stalled — stopping client poll', {
-          level: 'error',
-          tags: { surface: 'settings/pms', reason: 'onboard-stalled' },
-          extra: {
-            jobId,
-            propertyId: activePropertyId,
-            lastProgressPct: lastProgressPctRef.current,
-            stalledSec: Math.round(stalledMs / 1000),
-          },
-        });
-        return;
-      }
-      if (stalledMs > STALLED_WARN_MS) {
-        setPollState('stalled-warn');
-      }
-      pollTimerRef.current = setTimeout(poll, 3000);
-    };
-
-    void poll();
-    return () => {
-      cancelled = true;
-      if (pollTimerRef.current) clearTimeout(pollTimerRef.current);
-    };
-    // STALLED_WARN_MS / STALLED_STOP_MS are module-level constants.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobId, refreshProperty, userStopped]);
 
   // ─── Access gate ──────────────────────────────────────────────────────────
   // The PMS connection holds the hotel's PMS login credentials and drives the
@@ -582,7 +473,7 @@ export default function PMSPage() {
                 advanced progress in 5 min. Distinct from "failed" because
                 the job COULD still complete; we just don't have a recent
                 signal. Audit Flow 2 #4. */}
-            {pollState === 'stalled-warn' && jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && (
+            {pollState === 'stalled-warn' && !userStopped && jobStatus.status !== 'complete' && jobStatus.status !== 'failed' && (
               <p style={{
                 fontSize: '13px',
                 color: 'var(--amber)',
@@ -595,7 +486,7 @@ export default function PMSPage() {
                 {' '}
                 <button
                   type="button"
-                  onClick={() => setUserStopped(true)}
+                  onClick={stopOnboardPolling}
                   style={{
                     background: 'none', border: 'none', padding: 0, marginLeft: '4px',
                     color: 'var(--amber)', textDecoration: 'underline', cursor: 'pointer',

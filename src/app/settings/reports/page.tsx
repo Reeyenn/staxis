@@ -10,18 +10,18 @@ export const dynamic = 'force-dynamic';
 // /api routes (everything reads/writes through /api/settings/reports/* with
 // service-role on the server — never the browser client).
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
   Calendar, ChevronLeft, Clock, Download, Mail, Play, Plus, Sparkles, Star, Trash2, X,
 } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { exportBlob, filenameFromDisposition } from '@/lib/export-blob';
 import { T, fonts, Btn, Caps } from '@/app/staff/_components/_tokens';
 import { formatCell } from '@/lib/reports/catalog/format';
 import type { Bilingual, ColumnKind, ReportCategory } from '@/lib/reports/catalog/types';
@@ -98,13 +98,12 @@ function rangeFor(key: RangeKey, customFrom?: string, customTo?: string): { from
 }
 
 export default function ReportsPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
-  if (!user) {
-    return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
+  if (!uid) {
+    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
   }
   if (!can('run_reports')) {
     return (
@@ -128,7 +127,7 @@ export default function ReportsPage() {
 
   return (
     <AppLayout>
-      <ReportsBody pid={activePropertyId ?? ''} lang={lang} />
+      <ReportsBody pid={pid ?? ''} lang={lang} />
     </AppLayout>
   );
 }
@@ -300,19 +299,28 @@ function ReportRunner({ pid, lang, entry, favorited, schedules, onToggleFavorite
 
   const bounds = useMemo(() => rangeFor(rangeKey, customFrom, customTo), [rangeKey, customFrom, customTo]);
 
+  // Race guard: the effect below refires run() on every range change
+  // (including each keystroke in the custom date inputs) without cancelling
+  // the in-flight request — an older response landing last used to display
+  // the previous range's numbers under the newly selected range. Stale
+  // responses are dropped by sequence number.
+  const runSeqRef = useRef(0);
   const run = useCallback(async () => {
     if (!pid) return;
+    const seq = ++runSeqRef.current;
     setLoading(true); setError(null);
     try {
       const p = new URLSearchParams({ reportKey: entry.key, propertyId: pid, from: bounds.from, to: bounds.to, lang, summary: '1' });
       const r = await fetchWithAuth(`/api/settings/reports/run?${p.toString()}`);
       const body = await r.json().catch(() => null);
+      if (seq !== runSeqRef.current) return; // superseded by a newer run
       if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); setResult(null); return; }
       setResult((body?.data ?? body) as RunResult);
     } catch (e) {
+      if (seq !== runSeqRef.current) return;
       setError((e as Error)?.message ?? 'Network error');
     } finally {
-      setLoading(false);
+      if (seq === runSeqRef.current) setLoading(false);
     }
   }, [pid, entry.key, bounds.from, bounds.to, lang]);
 
@@ -325,15 +333,11 @@ function ReportRunner({ pid, lang, entry, favorited, schedules, onToggleFavorite
       const p = new URLSearchParams({ reportKey: entry.key, propertyId: pid, from: bounds.from, to: bounds.to, lang, format });
       const r = await fetchWithAuth(`/api/settings/reports/export?${p.toString()}`);
       if (!r.ok) { const b = await r.json().catch(() => null); setError(b?.error ?? `Export failed (${r.status})`); return; }
-      const blob = await r.blob();
-      const disposition = r.headers.get('Content-Disposition') ?? '';
-      const m = /filename="([^"]+)"/.exec(disposition);
-      const filename = m?.[1] ?? `${entry.key}.${format === 'xlsx' ? 'xls' : 'csv'}`;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 250);
+      const fallback = `${entry.key}.${format === 'xlsx' ? 'xls' : 'csv'}`;
+      exportBlob(
+        filenameFromDisposition(r.headers.get('Content-Disposition')) ?? fallback,
+        await r.blob(),
+      );
     } catch (e) {
       setError((e as Error)?.message ?? 'Export failed');
     }
@@ -504,11 +508,22 @@ function ScheduleModal({ pid, lang, reportKey, reportTitle, existing, onClose, o
   }, [pid, reportKey, cadence, hourLocal, dayOfWeek, dayOfMonth, rangeKind, recipients, onChanged]);
 
   const remove = useCallback(async (id: string) => {
+    setError(null);
     try {
       const r = await fetchWithAuth(`/api/settings/reports/schedules?id=${encodeURIComponent(id)}&propertyId=${encodeURIComponent(pid)}`, { method: 'DELETE' });
-      if (r.ok) onChanged();
-    } catch { /* ignore */ }
-  }, [pid, onChanged]);
+      if (!r.ok) {
+        // A failed delete used to be silently ignored — the row stayed in
+        // the list with no error and the report kept emailing.
+        const body = await r.json().catch(() => null);
+        setError(body?.error ?? (lang === 'es' ? `No se pudo eliminar la programación (${r.status})` : `Couldn’t delete the schedule (${r.status})`));
+        return;
+      }
+      onChanged();
+    } catch (e) {
+      console.error('[reports:settings] schedule delete failed', e);
+      setError(lang === 'es' ? 'No se pudo eliminar la programación — revisa tu conexión' : 'Couldn’t delete the schedule — check your connection');
+    }
+  }, [pid, onChanged, lang]);
 
   const DOW = lang === 'es'
     ? ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']

@@ -7,14 +7,17 @@
 // fresh hotel (same posture as MemoryRecapCard). Reads go through
 // /api/comms/logbook (service-role behind a session + property access).
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
-import { fetchWithAuth } from '@/lib/api-fetch';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
+import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { fmtWhenDateTime } from '@/lib/format-date';
+import { GlassCard } from './GlassCard';
+import { CARD, CARD_MONO, CARD_LABEL } from './palette';
 
 interface LogEntry {
   id: string;
@@ -24,31 +27,6 @@ interface LogEntry {
   createdAt: string;
 }
 
-const C = {
-  ink: '#1F231C',
-  ink2: '#5C625C',
-  ink3: '#A6ABA6',
-  rule: 'rgba(31,35,28,0.06)',
-  green: '#356B4C',
-} as const;
-
-const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
-
-const LABEL: React.CSSProperties = {
-  fontFamily: FONT_MONO,
-  fontSize: 9.5,
-  letterSpacing: '0.14em',
-  textTransform: 'uppercase',
-  color: C.ink3,
-  fontWeight: 600,
-};
-
-function fmtWhen(iso: string, es: boolean): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleString(es ? 'es' : 'en', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-}
-
 export function LogBookCard() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
@@ -56,58 +34,37 @@ export function LogBookCard() {
   // The shift log book lives under Communications — hide this embed when that
   // section is off for the hotel (default-ON while loading).
   const commsEnabled = useSectionEnabled('communications');
-  const [entries, setEntries] = useState<LogEntry[]>([]);
-  const [loaded, setLoaded] = useState(false);
 
   const es = lang === 'es';
   // Management OR front desk — the people doing shift handoffs.
   const canSee = !!user && (canManageTeam(user.role) || user.role === 'front_desk');
 
-  useEffect(() => {
-    // Communications-owned embed: don't even fetch when the section is off.
-    if (!canSee || !activePropertyId || !commsEnabled) return;
-    let alive = true;
-    setLoaded(false);
-    fetchWithAuth(`/api/comms/logbook?pid=${encodeURIComponent(activePropertyId)}`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (!alive) return;
-        const list = (j?.ok ? (j.data?.entries as LogEntry[] | undefined) : undefined) ?? [];
-        setEntries(list.slice(0, 4));
-        setLoaded(true);
-      })
-      .catch(() => {
-        if (alive) setLoaded(true);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [canSee, activePropertyId, commsEnabled]);
+  // Communications-owned embed: `enabled` gates the FETCH, not just the
+  // render — nothing hits the wire when the section is off. Polled so new
+  // shift recaps appear on a long-lived (wall-TV) dashboard without a reload;
+  // keepDataOnError holds last-good through a failed poll.
+  const { data, loading } = useApiResource<{ entries: LogEntry[] }>(
+    `/api/comms/logbook?pid=${encodeURIComponent(activePropertyId ?? '')}`,
+    { enabled: canSee && !!activePropertyId && commsEnabled, pollMs: 60_000, keepDataOnError: true },
+  );
 
   if (!canSee || !activePropertyId || !commsEnabled) return null;
+  const entries = (data?.entries ?? []).slice(0, 4);
   // Additive-only: nothing to show until there's at least one recap.
-  if (!loaded || entries.length === 0) return null;
+  if (loading || entries.length === 0) return null;
 
   return (
-    <div
-      style={{
-        background: '#FFFFFF',
-        border: '1px solid rgba(31,35,28,0.08)',
-        borderRadius: 16,
-        boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
-        padding: '18px 20px',
-      }}
-    >
+    <GlassCard>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12 }}>
-        <div style={LABEL}>{es ? 'Bitácora' : 'Log book'}</div>
+        <div style={CARD_LABEL}>{es ? 'Bitácora' : 'Log book'}</div>
         <Link
           href="/communications?view=logbook"
           style={{
-            fontFamily: FONT_MONO,
+            fontFamily: CARD_MONO,
             fontSize: 11,
             letterSpacing: '0.1em',
             textTransform: 'uppercase',
-            color: C.green,
+            color: CARD.green,
             textDecoration: 'none',
             fontWeight: 600,
           }}
@@ -127,22 +84,22 @@ export function LogBookCard() {
               justifyContent: 'space-between',
               gap: 12,
               padding: '9px 0',
-              borderTop: i === 0 ? 'none' : `1px solid ${C.rule}`,
+              borderTop: i === 0 ? 'none' : `1px solid ${CARD.rule}`,
               textDecoration: 'none',
             }}
           >
             <span style={{ minWidth: 0 }}>
-              <span style={{ display: 'block', fontSize: 13.5, color: C.ink, lineHeight: 1.4, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <span style={{ display: 'block', fontSize: 13.5, color: CARD.ink, lineHeight: 1.4, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {e.title}
               </span>
-              <span style={{ display: 'block', fontSize: 11.5, color: C.ink3, marginTop: 2 }}>
-                {[e.authorName, fmtWhen(e.createdAt, es)].filter(Boolean).join(' · ')}
+              <span style={{ display: 'block', fontSize: 11.5, color: CARD.ink3, marginTop: 2 }}>
+                {[e.authorName, fmtWhenDateTime(e.createdAt, lang)].filter(Boolean).join(' · ')}
                 {e.replyCount > 0 && ` · ${e.replyCount} ${e.replyCount === 1 ? (es ? 'respuesta' : 'reply') : (es ? 'respuestas' : 'replies')}`}
               </span>
             </span>
           </Link>
         ))}
       </div>
-    </div>
+    </GlassCard>
   );
 }

@@ -7,6 +7,7 @@
 // get the strings object, or the small helpers below for status/category
 // labels and month names.
 
+import { makeT, makeLabelFor } from '@/lib/i18n-utils';
 import type { StockStatus, InvCat } from './tokens';
 
 export type Lang = 'en' | 'es';
@@ -22,18 +23,14 @@ const STATUS_LABELS: Record<Lang, Record<StockStatus, string>> = {
   en: { good: 'Good', low: 'Low', critical: 'Critical' },
   es: { good: 'Bien', low: 'Bajo', critical: 'Crítico' },
 };
-export function statusLabelFor(lang: Lang, s: StockStatus): string {
-  return STATUS_LABELS[lang]?.[s] ?? STATUS_LABELS.en[s] ?? s;
-}
+export const statusLabelFor = makeLabelFor(STATUS_LABELS);
 
 // ── Category labels (tokens.catLabel, now lang-aware) ─────────────────────
 const CAT_LABELS: Record<Lang, Record<InvCat, string>> = {
   en: { housekeeping: 'Housekeeping', maintenance: 'Maintenance', breakfast: 'Food & Beverage' },
   es: { housekeeping: 'Limpieza', maintenance: 'Mantenimiento', breakfast: 'Alimentos y Bebidas' },
 };
-export function catLabelFor(lang: Lang, c: InvCat): string {
-  return CAT_LABELS[lang]?.[c] ?? CAT_LABELS.en[c] ?? c;
-}
+export const catLabelFor = makeLabelFor(CAT_LABELS);
 
 // ── Month abbreviations (BudgetsPanel) ────────────────────────────────────
 const MONTHS: Record<Lang, string[]> = {
@@ -44,10 +41,9 @@ export function monthsFor(lang: Lang): string[] {
   return MONTHS[lang] ?? MONTHS.en;
 }
 
-// Date-locale string for toLocaleDateString.
-export function dateLocale(lang: Lang): string {
-  return lang === 'es' ? 'es-ES' : 'en-US';
-}
+// Date-locale string for toLocaleDateString ('es-ES' / 'en-US' — the shared
+// helper's default pair is this file's original pair exactly).
+export { dateLocale } from '@/lib/i18n-utils';
 
 const STRINGS = {
   en: {
@@ -104,19 +100,10 @@ const STRINGS = {
     reorder: 'Reorder',
     edit: 'Edit',
     flipBack: 'Flip back',
-    // ── Empty catalog (zero items — StockList panel; noItemsYet reused below) ──
+    // ── Empty catalog (zero items — StockList panel) ──
     noItemsBody: 'Add your first item to start tracking stock.',
-    // ── HeroStats ──
-    itemsHaveEnough: 'items have enough', // "{n} of {m} items have enough"
     noItemsYet: 'No items yet',
-    whatEverythingsWorth: "What everything's worth today",
-    lastCounted: 'Last counted',
-    by: 'by',
     team: 'team',
-    today: 'today',
-    yesterday: 'yesterday',
-    daysAgo: 'days ago', // "{n} days ago"
-    noCountYet: 'No count yet',
   },
   es: {
     // ── Shell ──
@@ -172,31 +159,16 @@ const STRINGS = {
     reorder: 'Pedir',
     edit: 'Editar',
     flipBack: 'Voltear',
-    // ── Empty catalog (zero items — StockList panel; noItemsYet reused below) ──
+    // ── Empty catalog (zero items — StockList panel) ──
     noItemsBody: 'Agrega tu primer artículo para empezar a controlar el stock.',
-    // ── HeroStats ──
-    itemsHaveEnough: 'artículos con suficiente',
     noItemsYet: 'Aún no hay artículos',
-    whatEverythingsWorth: 'Lo que todo vale hoy',
-    lastCounted: 'Último conteo',
-    by: 'por',
     team: 'equipo',
-    today: 'hoy',
-    yesterday: 'ayer',
-    daysAgo: 'días atrás',
-    noCountYet: 'Sin conteo aún',
   },
 };
 
 export type InvStrings = (typeof STRINGS)['en'];
 
-// Compile-time drift guard: every EN key MUST also exist in ES. Because t() is
-// typed as the EN shape, a key added to `en` but forgotten in `es` would return
-// `undefined` at runtime with NO build error (lint + build both stay green).
-// This assignment makes that mistake a type error instead.
-const _esKeyParity: Record<keyof InvStrings, string> = STRINGS.es;
-void _esKeyParity;
-
-export function t(lang: Lang): InvStrings {
-  return STRINGS[lang] ?? STRINGS.en;
-}
+// makeT bakes in the EN↔ES key-parity compile check (a key added to `en` but
+// forgotten in `es` is a type error, not a silent runtime `undefined`) and
+// the same `STRINGS[lang] ?? STRINGS.en` lookup this file used to hand-roll.
+export const t = makeT(STRINGS);

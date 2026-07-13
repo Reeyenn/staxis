@@ -4,7 +4,7 @@
 
 import React from 'react';
 import { T, fonts, deptMeta, asDeptKey, Caps } from './_tokens';
-import type { ConfirmationStatus, StaffMember } from '@/types';
+import type { StaffMember } from '@/types';
 
 // ── Avatar tones ───────────────────────────────────────────────────────────
 // Each staff member gets a stable accent color derived from their id. We
@@ -138,31 +138,6 @@ export function HoursBar({
   );
 }
 
-// ── ConfDot — status indicator for shift confirmations ────────────────────
-export const confColor: Record<ConfirmationStatus, string> = {
-  confirmed: '#5C7A60',
-  sent:      '#C99644',
-  pending:   '#C99644',
-  declined:  '#B85C3D',
-};
-
-export const confLabel: Record<ConfirmationStatus, string> = {
-  confirmed: 'Confirmed',
-  sent:      'Sent · waiting',
-  pending:   'Sent · waiting',
-  declined:  'Declined',
-};
-
-export function ConfDot({ status, size = 8 }: { status: ConfirmationStatus; size?: number }) {
-  return (
-    <span style={{
-      width: size, height: size, borderRadius: '50%',
-      background: confColor[status] ?? T.ink3,
-      display: 'inline-block', flexShrink: 0,
-    }}/>
-  );
-}
-
 // ── PageHeader — page title + meta row (manager pages) ────────────────────
 export function PageHeader({
   title, eyebrow, sub, right,
@@ -195,11 +170,6 @@ export function PageHeader({
       {right && <div style={{ textAlign: 'right' }}>{right}</div>}
     </div>
   );
-}
-
-// ── Convenience: split a StaffMember to a {staffId, name} pair for Avatar ─
-export function avatarFor(s: { id: string; name: string }) {
-  return { staffId: s.id, name: s.name };
 }
 
 // Re-export StaffMember-aware avatar to reduce repetition at call sites.

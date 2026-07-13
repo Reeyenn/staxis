@@ -8,8 +8,9 @@
 // /api/financials/budgets + /api/financials/forecast; budgets save through the
 // upsert endpoint. Money is integer cents.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Modal } from '@/app/maintenance/_components/_mt-snow';
+import { useApiResource, useApiAction } from '@/lib/hooks/use-api-resource';
 import {
   DEPARTMENTS,
   formatCents,
@@ -17,9 +18,9 @@ import {
   type BudgetVsActual,
   type Department,
 } from '@/lib/financials/shared';
-import { apiGet, apiSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS } from './fin-ui';
+import { finSend, Btn, Money, Card, Notice, DollarInput, T, FONT_SANS } from './fin-ui';
 import { BudgetStatCard, BigMoney, Eyebrow, deptColor } from './fin-board';
-import { ft, deptLabel } from './fin-i18n';
+import { ft, deptLabel, forecastTrendingMsg, anomalySpikeMsg } from './fin-i18n';
 
 type Lang = 'en' | 'es';
 
@@ -32,8 +33,14 @@ interface ForecastRow {
   confidence: 'low' | 'ok';
   message: string;
 }
+// SpendAnomaly rows from /api/financials/forecast (department spikes only on
+// this endpoint). `message` is server-built English; the structured fields
+// let the client rebuild it in the viewer's language.
 interface AnomalyRow {
   department: Department | null;
+  ratio: number;
+  currentCents: number;
+  baselineCents: number;
   message: string;
 }
 
@@ -49,67 +56,76 @@ export function BudgetTab({
   onChanged: () => void;
 }) {
   const S = ft(lang);
-  const [rows, setRows] = useState<BudgetVsActual[]>([]);
-  const [forecasts, setForecasts] = useState<ForecastRow[]>([]);
-  const [anomalies, setAnomalies] = useState<AnomalyRow[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [errored, setErrored] = useState(false);
+  // Mutation/retry counter — rides the URLs as a fragment (never sent over
+  // HTTP) so a refetch replays the full "Loading…" flash like the old load().
+  const [nonce, setNonce] = useState(0);
 
   const [editing, setEditing] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [saving, setSaving] = useState(false);
+  const [modalError, setModalError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErrored(false);
-    const [b, f] = await Promise.all([
-      apiGet<{ budgets: BudgetVsActual[] }>(`/api/financials/budgets?pid=${pid}&month=${month}`),
-      apiGet<{ forecasts: ForecastRow[]; anomalies: AnomalyRow[] }>(`/api/financials/forecast?pid=${pid}&month=${month}`),
-    ]);
-    if (!b.ok || !b.data) {
-      setErrored(true);
-      setLoading(false);
-      return;
-    }
-    setRows(b.data.budgets);
-    setForecasts(f.ok && f.data ? f.data.forecasts : []);
-    setAnomalies(f.ok && f.data ? f.data.anomalies : []);
-    setLoading(false);
-  }, [pid, month]);
+  const bud = useApiResource<{ budgets: BudgetVsActual[] }>(`/api/financials/budgets?pid=${pid}&month=${month}#${nonce}`);
+  // Forecast is best-effort: a failed read renders the grid without alerts /
+  // projections (same as the old load(), which only errored on budgets).
+  const fcRes = useApiResource<{ forecasts: ForecastRow[]; anomalies: AnomalyRow[] }>(`/api/financials/forecast?pid=${pid}&month=${month}#${nonce}`);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const loading = bud.loading || fcRes.loading;
+  const rows = bud.data?.budgets ?? [];
+  const forecasts = fcRes.data?.forecasts ?? [];
+  const anomalies = fcRes.data?.anomalies ?? [];
+
+  const reloadAll = () => setNonce((n) => n + 1);
 
   const startEdit = () => {
     const d: Record<string, string> = {};
     for (const r of rows) d[r.department] = r.budgetCents > 0 ? (r.budgetCents / 100).toFixed(2) : '';
     setDrafts(d);
+    setModalError(null);
     setEditing(true);
   };
 
+  // One action = the whole save (only the changed departments are upserted,
+  // sequentially). Stops at the first failure and reports it — a failed
+  // upsert must not close the modal as if it saved. Re-saving after a
+  // mid-loop failure re-upserts already-saved lines, which is harmless.
+  const saveAction = useApiAction(async (changed: Array<{ department: Department; cents: number }>) => {
+    for (const c of changed) {
+      const res = await finSend('/api/financials/budgets', 'POST', { pid, department: c.department, month, budgetCents: c.cents });
+      if (res.error) return res;
+    }
+    return { data: true as const };
+  });
+
   const saveBudgets = async () => {
-    setSaving(true);
     const byDept = new Map(rows.map((r) => [r.department, r.budgetCents]));
     const changed: Array<{ department: Department; cents: number }> = [];
     for (const dept of DEPARTMENTS) {
       const raw = drafts[dept] ?? '';
-      const cents = raw.trim() === '' ? 0 : parseDollarsToCents(raw) ?? 0;
+      // Empty = clear to $0 (documented). Anything else must parse to a
+      // non-negative amount — a typo ("1,50o") must NOT be coerced to $0,
+      // which would silently wipe that department's existing budget.
+      const cents = raw.trim() === '' ? 0 : parseDollarsToCents(raw);
+      if (cents == null || cents < 0) {
+        setModalError(`${S.invalidAmount} (${deptLabel(lang, dept)})`);
+        return;
+      }
       if (cents !== (byDept.get(dept) ?? 0)) changed.push({ department: dept, cents });
     }
-    for (const c of changed) {
-      await apiSend('/api/financials/budgets', 'POST', { pid, department: c.department, month, budgetCents: c.cents });
+    setModalError(null);
+    const res = await saveAction.run(changed);
+    if (res.error) {
+      setModalError(S.couldNotSave);
+      return;
     }
-    setSaving(false);
     setEditing(false);
-    await load();
+    reloadAll();
     onChanged();
   };
 
   const trending = forecasts.filter((f) => f.trendingOver);
 
   if (loading) return <Notice text={S.loading} />;
-  if (errored) return <Notice text={S.errorLoading} onRetry={() => void load()} />;
+  if (bud.error != null) return <Notice text={S.errorLoading} onRetry={reloadAll} />;
 
   const budgeted = rows.reduce((a, r) => a + r.budgetCents, 0);
   const spent = rows.reduce((a, r) => a + r.actualCents, 0);
@@ -123,14 +139,21 @@ export function BudgetTab({
         <Card style={{ borderColor: `${T.warm}44`, background: T.warmDim }}>
           <div style={{ fontFamily: FONT_SANS, fontSize: 12, fontWeight: 600, color: T.warm, marginBottom: 8 }}>⚠ {S.anomalies}</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {/* Server `message` strings are English-only; rebuild them in the
+                viewer's language from the structured fields (EN output is
+                identical to the server sentence). */}
             {trending.map((f) => (
               <div key={`t-${f.department}`} style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>
-                {f.message}
+                {f.pctOverBudget != null
+                  ? forecastTrendingMsg(lang, f.department, f.pctOverBudget, f.projectedCents, f.budgetCents)
+                  : f.message}
               </div>
             ))}
             {anomalies.map((a, i) => (
               <div key={`a-${i}`} style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>
-                {a.message}
+                {a.department != null
+                  ? anomalySpikeMsg(lang, a.department, a.ratio, a.currentCents, a.baselineCents)
+                  : a.message}
               </div>
             ))}
           </div>
@@ -183,6 +206,8 @@ export function BudgetTab({
               spentCents={r.actualCents}
               budgetCents={r.budgetCents}
               noBudget={noBudget}
+              spentWord={S.spentWord}
+              ofWord={S.ofWord}
               footnote={
                 fc && fc.trendingOver ? (
                   <div style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>
@@ -207,8 +232,8 @@ export function BudgetTab({
               <Btn variant="ghost" onClick={() => setEditing(false)}>
                 {S.cancel}
               </Btn>
-              <Btn onClick={() => void saveBudgets()} disabled={saving}>
-                {saving ? S.saving : S.saveBudgets}
+              <Btn onClick={() => void saveBudgets()} disabled={saveAction.saving}>
+                {saveAction.saving ? S.saving : S.saveBudgets}
               </Btn>
             </>
           }
@@ -227,6 +252,7 @@ export function BudgetTab({
               <Eyebrow>{S.totalMonthly}</Eyebrow>
               <span style={{ fontFamily: FONT_SANS, fontSize: 20, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{formatCents(draftTotal, { showCents: false })}</span>
             </div>
+            {modalError && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>{modalError}</span>}
           </div>
         </Modal>
       )}

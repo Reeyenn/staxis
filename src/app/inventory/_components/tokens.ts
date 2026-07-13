@@ -82,11 +82,6 @@ export const statusText: Record<StockStatus, string> = {
   low:      T.goldText,
   critical: T.terra,
 };
-export const statusLabel: Record<StockStatus, string> = {
-  good:     'Good',
-  low:      'Low',
-  critical: 'Critical',
-};
 
 // Our DB uses 'breakfast'; the design called it 'fnb'. Display layer maps fnb → breakfast.
 export type InvCat = 'housekeeping' | 'maintenance' | 'breakfast';
@@ -99,11 +94,6 @@ export const catColor: Record<InvCat, string> = {
   maintenance:  T.gold,
   breakfast:    T.terra,
 };
-export const catLabel: Record<InvCat, string> = {
-  housekeeping: 'Housekeeping',
-  maintenance:  'Maintenance',
-  breakfast:    'Food & Beverage',
-};
 export const catGlyph: Record<InvCat, string> = {
   housekeeping: 'HK',
   maintenance:  'MX',
@@ -115,10 +105,6 @@ export const catGlyph: Record<InvCat, string> = {
 //   general   = housekeeping + maintenance
 //   breakfast = breakfast only
 export type StockBucket = 'all' | 'general' | 'breakfast';
-
-export function bucketFor(cat: InvCat): Exclude<StockBucket, 'all'> {
-  return cat === 'breakfast' ? 'breakfast' : 'general';
-}
 
 // Does an item's category belong in the currently-selected bucket?
 export function inBucket(cat: InvCat, bucket: StockBucket): boolean {

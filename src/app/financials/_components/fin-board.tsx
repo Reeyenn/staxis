@@ -93,6 +93,18 @@ export function Eyebrow({ children, color, style = {} }: { children: React.React
   );
 }
 
+// ── Stat strip cell (CapEx totals strip + multi-property rollup) ────────────
+export function StatStrip({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <Eyebrow>{label}</Eyebrow>
+      <div style={{ marginTop: 3 }}>{children}</div>
+    </div>
+  );
+}
+
+export const statNum: React.CSSProperties = { fontFamily: FONT_MONO, fontSize: 24, fontWeight: 600, color: T.ink };
+
 // ── Summary tile (the 4-up header row) ──────────────────────────────────────
 export function SummaryTile({ label, sub, children }: { label: string; sub?: string; children: React.ReactNode }) {
   return (
@@ -340,6 +352,8 @@ export function BudgetStatCard({
   spentCents,
   budgetCents,
   noBudget = false,
+  spentWord = 'spent',
+  ofWord = 'of',
   footnote,
 }: {
   name: string;
@@ -352,6 +366,9 @@ export function BudgetStatCard({
   spentCents: number;
   budgetCents: number;
   noBudget?: boolean;
+  /** Localized footer words for "$1,200 spent / of $2,000" (EN/ES). */
+  spentWord?: string;
+  ofWord?: string;
   footnote?: React.ReactNode;
 }) {
   const statusColor = noBudget ? T.ink3 : over ? T.warm : color;
@@ -388,8 +405,8 @@ export function BudgetStatCard({
       </div>
       {!noBudget && (
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8 }}>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>{formatCents(spentCents, { showCents: false })} spent</span>
-          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>of {formatCents(budgetCents, { showCents: false })}</span>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2 }}>{formatCents(spentCents, { showCents: false })} {spentWord}</span>
+          <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3 }}>{ofWord} {formatCents(budgetCents, { showCents: false })}</span>
         </div>
       )}
       {footnote && <div style={{ marginTop: 8 }}>{footnote}</div>}

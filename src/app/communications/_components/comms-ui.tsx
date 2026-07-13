@@ -2,7 +2,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Communications · Slack-Classic redesign — shared design layer.
 // Brand tokens, department colours, atoms (Avatar / DeptDot / Presence / …) and
-// the Web-Animations-API motion helpers (flip / enter / pop / slide). Mirrors
+// the Web-Animations-API motion helpers (pop / slide). Mirrors
 // the Claude-Design handoff; fonts come in via CSS vars set on the comms root.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
@@ -45,19 +45,11 @@ const DEPT_LABEL: Record<CommsDept, string> = {
   maintenance: 'Maintenance',
   laundry: 'Laundry',
 };
-const DEPT_LABEL_ES: Record<CommsDept, string> = {
-  management: 'Gerencia',
-  front_desk: 'Recepción',
-  housekeeping: 'Limpieza',
-  maintenance: 'Mantenimiento',
-  laundry: 'Lavandería',
-};
 export function deptColor(d: CommsDept | null | undefined): string {
   return DEPT_COLOR[(d ?? 'management') as CommsDept] ?? T.ink;
 }
-export function deptLabel(d: CommsDept | null | undefined, lang: 'en' | 'es' = 'en'): string {
-  const map = lang === 'es' ? DEPT_LABEL_ES : DEPT_LABEL;
-  return map[(d ?? 'management') as CommsDept] ?? (lang === 'es' ? 'Personal' : 'Staff');
+export function deptLabel(d: CommsDept | null | undefined): string {
+  return DEPT_LABEL[(d ?? 'management') as CommsDept] ?? 'Staff';
 }
 /** Darken forest for legible text on light tints (matches the handoff). */
 export function deptColorDark(c: string): string {
@@ -136,65 +128,9 @@ export function Presence({ on, size = 8 }: { on: boolean; size?: number }) {
   return <span style={{ width: size, height: size, borderRadius: '50%', flexShrink: 0, background: on ? T.forest : 'transparent', border: on ? 'none' : `1.5px solid ${T.dim}`, display: 'inline-block' }} />;
 }
 
-export function Unread({ n, color = T.terracotta }: { n: number; color?: string }) {
-  if (!n) return null;
-  return (
-    <span style={{ minWidth: 18, height: 18, padding: '0 5px', borderRadius: 9, background: color, color: '#fff', fontFamily: SANS, fontWeight: 700, fontSize: 11, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }}>{n}</span>
-  );
-}
-
 // ── Motion (Web Animations API — plays under prefers-reduced-motion) ─────────
 function visible(): boolean {
   return typeof document === 'undefined' || document.visibilityState === 'visible';
-}
-
-/** Physical flip: rotate to edge, swap faces at mid via onMid(), rotate back. */
-export function flipNode(el: HTMLElement | null, onMid?: () => void, dir: 'x' | 'y' = 'y') {
-  if (!el) { onMid?.(); return; }
-  const D = dir === 'x' ? 'X' : 'Y';
-  const a = el.animate(
-    [{ transform: `perspective(900px) rotate${D}(0deg)` }, { transform: `perspective(900px) rotate${D}(90deg)` }],
-    { duration: 150, easing: 'cubic-bezier(.45,0,.9,.6)', fill: 'forwards' },
-  );
-  a.onfinish = () => {
-    onMid?.();
-    requestAnimationFrame(() => {
-      el.animate(
-        [{ transform: `perspective(900px) rotate${D}(-90deg)` }, { transform: `perspective(900px) rotate${D}(0deg)` }],
-        { duration: 230, easing: 'cubic-bezier(.18,.9,.32,1.1)', fill: 'forwards' },
-      );
-    });
-  };
-}
-
-export function useFlip(dir: 'x' | 'y' = 'y'): [React.RefObject<HTMLDivElement | null>, (cb?: () => void) => void] {
-  const ref = React.useRef<HTMLDivElement | null>(null);
-  const flip = React.useCallback((cb?: () => void) => flipNode(ref.current, cb, dir), [dir]);
-  return [ref, flip];
-}
-
-/** Staggered entrance (fade + rise). Guarded on tab visibility so a backwards
- * fill never pins content at opacity 0 while hidden. */
-export function enterNode(el: HTMLElement | null, i = 0, opts: { dy?: number; dur?: number; stagger?: number } = {}) {
-  if (!el || !visible()) return;
-  const dur = opts.dur ?? 360, stagger = opts.stagger ?? 34, dy = opts.dy ?? 10;
-  const a = el.animate(
-    [{ opacity: 0, transform: `translateY(${dy}px)` }, { opacity: 1, transform: 'translateY(0)' }],
-    { duration: dur, delay: i * stagger, easing: 'cubic-bezier(.2,.8,.2,1)', fill: 'backwards' },
-  );
-  const safety = setTimeout(() => { try { if (a.playState !== 'finished') a.cancel(); } catch { /* */ } }, dur + i * stagger + 800);
-  a.onfinish = () => { clearTimeout(safety); try { a.cancel(); } catch { /* */ } };
-}
-
-/** Run the entrance on a container's direct children. */
-export function useEnter(deps: React.DependencyList): React.RefObject<HTMLDivElement | null> {
-  const ref = React.useRef<HTMLDivElement | null>(null);
-  React.useLayoutEffect(() => {
-    const el = ref.current; if (!el) return;
-    Array.from(el.children).forEach((c, i) => enterNode(c as HTMLElement, i));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
-  return ref;
 }
 
 /** Press/pop feedback on a button. */
@@ -246,4 +182,33 @@ export function Tip({ text, children, width = 240 }: { text: string; children: R
 
 // ── Shared button styles ────────────────────────────────────────────────────
 export const paneIcon: React.CSSProperties = { width: 32, height: 32, borderRadius: 7, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
-export const iconBtn: React.CSSProperties = { width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
+
+// ── Overlay scaffold ─────────────────────────────────────────────────────────
+// The five comms popups share this exact skeleton: fixed inset scrim that
+// closes on click, centered (or top-aligned) card that stops propagation, no
+// entrance/exit animation, no body-scroll lock, Escape only where a modal had
+// it. Deliberately NOT the shared Modal (F6): its center variant hard-codes
+// scrim alignment/padding ('32px 24px', alignItems center), closes on
+// mousedown instead of click, and its card has no knobs for the comms cards'
+// flex-column / overflow-hidden / %-of-scrim heights — none of which survive
+// byte-identical there.
+export function CommsOverlay({ onClose, scrim, zIndex = 70, align = 'center', paddingTop, padding, escToClose = false, cardStyle, children }: {
+  onClose: () => void; scrim: string; zIndex?: number; align?: 'center' | 'top'; paddingTop?: number; padding?: number;
+  escToClose?: boolean; cardStyle: React.CSSProperties; children: React.ReactNode;
+}) {
+  React.useEffect(() => {
+    if (!escToClose) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [escToClose, onClose]);
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: scrim, zIndex, display: 'flex',
+      alignItems: align === 'top' ? 'flex-start' : 'center', justifyContent: 'center',
+      ...(paddingTop !== undefined ? { paddingTop } : {}), ...(padding !== undefined ? { padding } : {}),
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={cardStyle}>{children}</div>
+    </div>
+  );
+}

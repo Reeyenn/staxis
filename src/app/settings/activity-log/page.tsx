@@ -14,11 +14,11 @@ import Link from 'next/link';
 import { ChevronLeft, Download, Filter, Search, X } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { exportBlob, filenameFromDisposition } from '@/lib/export-blob';
 import { T, fonts, Btn, Caps, Pill } from '@/app/staff/_components/_tokens';
 import {
   ACTIVITY_CATEGORIES,
@@ -28,49 +28,19 @@ import {
   type ActivitySource,
 } from '@/lib/activity-log/types';
 import { categoryLabel, renderDescription, sourceLabel } from '@/lib/activity-log/renderer';
-
-type DateRangeKey = 'today' | 'yesterday' | 'last7' | 'last30' | 'custom';
-
-interface RangeBounds { from: string; to: string; }
-
-function rangeFor(key: DateRangeKey, customFrom?: string, customTo?: string): RangeBounds {
-  const now = new Date();
-  const startOf = (d: Date) => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
-  const today = startOf(now);
-  const tomorrow = new Date(today); tomorrow.setDate(today.getDate()+1);
-  switch (key) {
-    case 'today':     return { from: today.toISOString(), to: tomorrow.toISOString() };
-    case 'yesterday': {
-      const y = new Date(today); y.setDate(today.getDate()-1);
-      return { from: y.toISOString(), to: today.toISOString() };
-    }
-    case 'last7': {
-      const f = new Date(today); f.setDate(today.getDate()-7);
-      return { from: f.toISOString(), to: tomorrow.toISOString() };
-    }
-    case 'last30': {
-      const f = new Date(today); f.setDate(today.getDate()-30);
-      return { from: f.toISOString(), to: tomorrow.toISOString() };
-    }
-    case 'custom':
-    default:
-      return {
-        from: customFrom ? new Date(customFrom).toISOString() : new Date(today.getTime() - 7*86400000).toISOString(),
-        to:   customTo   ? new Date(customTo).toISOString()   : tomorrow.toISOString(),
-      };
-  }
-}
+// Range math lives in ./date-range (pure, unit-tested): the custom range is
+// local-midnight based and end-EXCLUSIVE-safe (includes the whole end day).
+import { rangeFor, type DateRangeKey } from './date-range';
 
 const PAGE_SIZE = 50;
 
 export default function ActivityLogPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
-  if (!user) {
-    return <AppLayout><div style={{ padding: 24 }}>Sign in to continue.</div></AppLayout>;
+  if (!uid) {
+    return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
   }
   if (!can('view_activity_log')) {
     return (
@@ -94,7 +64,7 @@ export default function ActivityLogPage() {
 
   return (
     <AppLayout>
-      <ActivityLogBody pid={activePropertyId ?? ''} lang={lang}/>
+      <ActivityLogBody pid={pid ?? ''} lang={lang}/>
     </AppLayout>
   );
 }
@@ -187,15 +157,11 @@ function ActivityLogBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         setError(body?.error ?? `Export failed (${r.status})`);
         return;
       }
-      const blob = await r.blob();
-      const disposition = r.headers.get('Content-Disposition') ?? '';
-      const m = /filename="([^"]+)"/.exec(disposition);
-      const filename = m?.[1] ?? `activity-log.${format === 'xlsx' ? 'xls' : format}`;
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = filename;
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 250);
+      const fallback = `activity-log.${format === 'xlsx' ? 'xls' : format}`;
+      exportBlob(
+        filenameFromDisposition(r.headers.get('Content-Disposition')) ?? fallback,
+        await r.blob(),
+      );
     } catch (e) {
       setError((e as Error)?.message ?? 'Export failed');
     }

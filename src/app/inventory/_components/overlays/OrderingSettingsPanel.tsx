@@ -8,6 +8,7 @@ import type { OrderingMode, Vendor } from '@/lib/ordering/types';
 import { T, fonts, statusColor } from '../tokens';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
+import { banner, inputMd as inputStyle } from './form-kit';
 import {
   apiCreateVendor,
   apiImportCatalog,
@@ -28,19 +29,76 @@ interface OrderingSettingsPanelProps {
   onChanged?: () => void;
 }
 
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  height: 38,
-  padding: '0 12px',
-  borderRadius: 9,
-  boxSizing: 'border-box',
-  background: T.bg,
-  border: `1px solid ${T.rule}`,
-  fontFamily: fonts.sans,
-  fontSize: 13,
-  color: T.ink,
-  outline: 'none',
-};
+// Co-located strings for the ordering-settings panel — same factory
+// convention as the other overlays (ssStrings / csStrings / rpStrings…).
+function osStrings(lang: 'en' | 'es') {
+  return {
+    en: {
+      eyebrow: 'Ordering settings',
+      modeTitle: 'Ordering mode',
+      simpleName: 'Simple',
+      simpleDesc: 'Place an order from the reorder list and it emails the vendor right away. Track Sent → Received. No approval step.',
+      proName: 'Pro',
+      proDesc: 'Orders get a PO number and start as "Needs approval". A manager approves before the order can be emailed. Best for management companies.',
+      current: 'Current',
+      use: 'Use this',
+      saving: 'Saving…',
+      done: 'Done',
+      managerOnly: 'Only managers can change ordering settings.',
+      vendorsTitle: 'Vendors',
+      addVendor: 'Add vendor',
+      name: 'Name',
+      email: 'Email',
+      phone: 'Phone',
+      account: 'Account #',
+      save: 'Save',
+      cancel: 'Cancel',
+      edit: 'Edit',
+      deactivate: 'Deactivate',
+      reactivate: 'Reactivate',
+      noVendors: 'No vendors yet. Add one so orders can be emailed automatically.',
+      noEmailHint: '(no email — orders save as draft)',
+      catalogTitle: 'Starter catalog',
+      catalogDesc: 'Seed this property with common limited-service-hotel supplies in one click. Skips anything you already have.',
+      importBtn: 'Import starter catalog',
+      importing: 'Importing…',
+      importDone: (i: number, s: number) => `Imported ${i} item(s), skipped ${s} already present.`,
+      items: 'items available',
+    },
+    es: {
+      eyebrow: 'Ajustes de pedidos',
+      modeTitle: 'Modo de pedidos',
+      simpleName: 'Simple',
+      simpleDesc: 'Crea una orden desde la lista de reorden y se envía al proveedor de inmediato. Sigue Enviado → Recibido. Sin aprobación.',
+      proName: 'Pro',
+      proDesc: 'Las órdenes reciben un número de OC y empiezan como "Requiere aprobación". Un gerente aprueba antes de enviarse. Ideal para empresas gestoras.',
+      current: 'Actual',
+      use: 'Usar este',
+      saving: 'Guardando…',
+      done: 'Listo',
+      managerOnly: 'Solo gerentes pueden cambiar estos ajustes.',
+      vendorsTitle: 'Proveedores',
+      addVendor: 'Agregar proveedor',
+      name: 'Nombre',
+      email: 'Correo',
+      phone: 'Teléfono',
+      account: 'N.º de cuenta',
+      save: 'Guardar',
+      cancel: 'Cancelar',
+      edit: 'Editar',
+      deactivate: 'Desactivar',
+      reactivate: 'Reactivar',
+      noVendors: 'Aún no hay proveedores. Agrega uno para enviar órdenes automáticamente.',
+      noEmailHint: '(sin correo — las órdenes quedan en borrador)',
+      catalogTitle: 'Catálogo inicial',
+      catalogDesc: 'Carga suministros comunes de hotel en un clic. Omite lo que ya tengas.',
+      importBtn: 'Importar catálogo inicial',
+      importing: 'Importando…',
+      importDone: (i: number, s: number) => `Importados ${i} artículo(s), omitidos ${s} ya presentes.`,
+      items: 'artículos disponibles',
+    },
+  }[lang];
+}
 
 export function OrderingSettingsPanel({
   open,
@@ -68,38 +126,7 @@ export function OrderingSettingsPanel({
   const [catalogCount, setCatalogCount] = useState<number | null>(null);
   const [importResult, setImportResult] = useState<{ imported: number; skipped: number } | null>(null);
 
-  const tt = {
-    eyebrow: { en: 'Ordering settings', es: 'Ajustes de pedidos' }[L],
-    modeTitle: { en: 'Ordering mode', es: 'Modo de pedidos' }[L],
-    simpleName: { en: 'Simple', es: 'Simple' }[L],
-    simpleDesc: { en: 'Place an order from the reorder list and it emails the vendor right away. Track Sent → Received. No approval step.', es: 'Crea una orden desde la lista de reorden y se envía al proveedor de inmediato. Sigue Enviado → Recibido. Sin aprobación.' }[L],
-    proName: { en: 'Pro', es: 'Pro' }[L],
-    proDesc: { en: 'Orders get a PO number and start as "Needs approval". A manager approves before the order can be emailed. Best for management companies.', es: 'Las órdenes reciben un número de OC y empiezan como "Requiere aprobación". Un gerente aprueba antes de enviarse. Ideal para empresas gestoras.' }[L],
-    current: { en: 'Current', es: 'Actual' }[L],
-    use: { en: 'Use this', es: 'Usar este' }[L],
-    saving: { en: 'Saving…', es: 'Guardando…' }[L],
-    done: { en: 'Done', es: 'Listo' }[L],
-    managerOnly: { en: 'Only managers can change ordering settings.', es: 'Solo gerentes pueden cambiar estos ajustes.' }[L],
-    vendorsTitle: { en: 'Vendors', es: 'Proveedores' }[L],
-    addVendor: { en: 'Add vendor', es: 'Agregar proveedor' }[L],
-    name: { en: 'Name', es: 'Nombre' }[L],
-    email: { en: 'Email', es: 'Correo' }[L],
-    phone: { en: 'Phone', es: 'Teléfono' }[L],
-    account: { en: 'Account #', es: 'N.º de cuenta' }[L],
-    save: { en: 'Save', es: 'Guardar' }[L],
-    cancel: { en: 'Cancel', es: 'Cancelar' }[L],
-    edit: { en: 'Edit', es: 'Editar' }[L],
-    deactivate: { en: 'Deactivate', es: 'Desactivar' }[L],
-    reactivate: { en: 'Reactivate', es: 'Reactivar' }[L],
-    noVendors: { en: 'No vendors yet. Add one so orders can be emailed automatically.', es: 'Aún no hay proveedores. Agrega uno para enviar órdenes automáticamente.' }[L],
-    noEmailHint: { en: '(no email — orders save as draft)', es: '(sin correo — las órdenes quedan en borrador)' }[L],
-    catalogTitle: { en: 'Starter catalog', es: 'Catálogo inicial' }[L],
-    catalogDesc: { en: 'Seed this property with common limited-service-hotel supplies in one click. Skips anything you already have.', es: 'Carga suministros comunes de hotel en un clic. Omite lo que ya tengas.' }[L],
-    importBtn: { en: 'Import starter catalog', es: 'Importar catálogo inicial' }[L],
-    importing: { en: 'Importing…', es: 'Importando…' }[L],
-    importDone: (i: number, s: number) => ({ en: `Imported ${i} item(s), skipped ${s} already present.`, es: `Importados ${i} artículo(s), omitidos ${s} ya presentes.` }[L]),
-    items: { en: 'items available', es: 'artículos disponibles' }[L],
-  };
+  const tt = osStrings(L);
 
   const loadVendors = useCallback(async () => {
     if (!activePropertyId) return;
@@ -287,17 +314,4 @@ export function OrderingSettingsPanel({
       </div>
     </Overlay>
   );
-}
-
-function banner(color: string): React.CSSProperties {
-  return {
-    background: T.paper,
-    border: `1px solid ${color}`,
-    borderLeft: `3px solid ${color}`,
-    borderRadius: 10,
-    padding: '10px 14px',
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    color: T.ink,
-  };
 }

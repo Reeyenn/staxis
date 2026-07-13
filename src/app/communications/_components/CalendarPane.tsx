@@ -10,51 +10,32 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
 import { CalendarDays, Plus, X, Trash2, Loader2 } from 'lucide-react';
-import { apiGet, apiPost, apiDelete } from '@/lib/comms/client';
+import { apiPost, apiDelete } from '@/lib/comms/client';
 import type { KnowledgeEventDTO } from '@/lib/knowledge/types';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 import type { L } from './comms-types-fe';
+import { useCommsResource } from './comms-data';
 import { T, SANS as COMMS_SANS, SERIF, deptColorDark, tint, MonoLabel } from './comms-ui';
-
 // The calendar body keeps the Snow design-system styling it had inside the
 // Knowledge hub (var(--snow-*)), so it reads identically; only the surrounding
-// shell + header now match the Communications tab system.
-const SANS = 'var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif';
-
-// ── shared styles (carried over verbatim from KnowledgePane) ─────────────────
-const card: React.CSSProperties = { border: '1px solid var(--snow-rule)', borderRadius: 12, background: 'var(--snow-bg)' };
-const primaryBtn: React.CSSProperties = { background: 'var(--snow-sage-deep)', color: '#fff', border: 'none', borderRadius: 9, padding: '8px 14px', cursor: 'pointer', fontSize: 13, fontWeight: 600, fontFamily: SANS, display: 'inline-flex', alignItems: 'center', gap: 6 };
-const ghostBtn: React.CSSProperties = { background: 'transparent', color: 'var(--snow-ink2)', border: '1px solid var(--snow-rule)', borderRadius: 9, padding: '7px 12px', cursor: 'pointer', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, display: 'inline-flex', alignItems: 'center', gap: 5 };
-const iconBtn: React.CSSProperties = { background: 'transparent', border: 'none', cursor: 'pointer', padding: 6, borderRadius: 7, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: 'var(--snow-ink2)' };
-const inputStyle: React.CSSProperties = { width: '100%', border: '1px solid var(--snow-rule)', borderRadius: 9, padding: '9px 11px', fontFamily: SANS, fontSize: 14, outline: 'none', background: 'var(--snow-bg)', color: 'var(--snow-ink)', boxSizing: 'border-box' };
-const labelStyle: React.CSSProperties = { fontSize: 11.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 4, display: 'block' };
-
-function Loading({ L }: { L: L }) {
-  return <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--snow-ink3)', fontSize: 13, padding: 20 }}><Loader2 size={15} className="spin" /> {L('Loading…', 'Cargando…')}</div>;
-}
-function Empty({ text }: { text: string }) {
-  return <div style={{ color: 'var(--snow-ink3)', fontSize: 13.5, padding: '28px 8px', textAlign: 'center' }}>{text}</div>;
-}
+// shell + header match the Communications tab system.
+import { card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, Loading, Empty } from './comms-snow';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CALENDAR mode (self-fetching) — owns the flex:1 / overflow scroll container,
 // mirroring LogbookMode's shell with a serif page header.
 // ─────────────────────────────────────────────────────────────────────────────
 export function CalendarMode({ pid, isManager, L }: { pid: string; isManager: boolean; L: L }) {
-  const [items, setItems] = React.useState<KnowledgeEventDTO[] | null>(null);
   const [adding, setAdding] = React.useState(false);
 
-  const load = React.useCallback(async () => {
-    const r = await apiGet<{ events: KnowledgeEventDTO[] }>(`/api/knowledge/events?pid=${encodeURIComponent(pid)}`);
-    if (r.ok && r.data) setItems(r.data.events);
-    else setItems([]);
-  }, [pid]);
-  React.useEffect(() => { void load(); }, [load]);
+  const { data, loading, reload } = useCommsResource<{ events: KnowledgeEventDTO[] }>(`/api/knowledge/events?pid=${encodeURIComponent(pid)}`);
+  // null = still loading (spinner); a failed fetch shows the empty state.
+  const items = data?.events ?? (loading ? null : []);
 
   const remove = async (ev: KnowledgeEventDTO) => {
     if (!window.confirm(L(`Delete "${ev.title}"?`, `¿Eliminar "${ev.title}"?`))) return;
     await apiDelete(`/api/knowledge/events?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(ev.id)}`);
-    await load();
+    await reload();
   };
 
   // Split upcoming vs past (today inclusive in upcoming).
@@ -79,7 +60,7 @@ export function CalendarMode({ pid, isManager, L }: { pid: string; isManager: bo
           )}
         </div>
 
-        {adding && isManager && <EventEditor pid={pid} L={L} onDone={async () => { setAdding(false); await load(); }} onCancel={() => setAdding(false)} />}
+        {adding && isManager && <EventEditor pid={pid} L={L} onDone={async () => { setAdding(false); await reload(); }} onCancel={() => setAdding(false)} />}
 
         <div style={{ marginTop: 18 }}>
           {items === null ? <Loading L={L} /> : count === 0 ? (

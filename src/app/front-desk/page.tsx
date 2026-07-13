@@ -20,6 +20,7 @@ import { useTodayStr } from '@/lib/use-today-str';
 import type { Room } from '@/types';
 import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 
 const FD_TAB_KEY = 'fd-tab';
 
@@ -133,7 +134,8 @@ export default function FrontDeskPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [selectedRoom, setSelectedRoom] = useState<Room | null>(null);
   const [processing, setProcessing] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
+  // Shared toast primitive (F7) — 2.5s teal success pill, top-center.
+  const { toasts, show: showToast } = useToast({ durationMs: 2500, max: 1 });
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [tab, setTabState] = useState<FrontDeskTabKey>('rooms');
 
@@ -182,6 +184,18 @@ export default function FrontDeskPage() {
     });
   }, [user, activePropertyId, today]);
 
+  // Keep the open room sheet in sync with the live board. It used to render
+  // a tap-time snapshot, so a rush set from the sheet (or a housekeeper
+  // finishing the room on their phone) never updated the open sheet until
+  // it was closed and reopened.
+  useEffect(() => {
+    setSelectedRoom(prev => {
+      if (!prev) return prev;
+      const fresh = rooms.find(r => r.id === prev.id);
+      return fresh ?? prev;
+    });
+  }, [rooms]);
+
   // Honesty derivations — all false until feed status arrives (manual
   // hotels / older servers) so the page renders exactly as today.
   // Review pass: banners pick ONE message, but neutralization is a union —
@@ -223,6 +237,11 @@ export default function FrontDeskPage() {
     // Neutral (no-signal) rooms are excluded from the status counts, so
     // exclude them from status filters too — otherwise "Dirty (2)" opens a
     // grid of 80 "No data" cards (review pass, senior #4).
+    // The "Clean" pill counts clean + inspected (stats.clean above), so the
+    // filter must match both too — otherwise "Clean (12)" opens a grid of 8.
+    if (statusFilter === 'clean') {
+      return rooms.filter(r => (r.status === 'clean' || r.status === 'inspected') && !isNeutralRoom(r));
+    }
     return rooms.filter(r => r.status === statusFilter && !isNeutralRoom(r));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rooms, statusFilter, roomStatusLearning, connPending]);
@@ -266,14 +285,12 @@ export default function FrontDeskPage() {
     try {
       await updateRoom(user.uid, activePropertyId, selectedRoom.id, { type: 'checkout' });
       setSelectedRoom(null);
-      setToast(lang === 'es'
+      showToast(lang === 'es'
         ? `Habitación ${selectedRoom.number} marcada como Salida Anticipada`
         : `Room ${selectedRoom.number} marked as Early Checkout`);
-      setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking early checkout:', error);
-      setToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
-      setTimeout(() => setToast(null), 2500);
+      showToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
     } finally { setProcessing(false); }
   };
 
@@ -283,14 +300,12 @@ export default function FrontDeskPage() {
     try {
       await updateRoom(user.uid, activePropertyId, selectedRoom.id, { type: 'stayover' });
       setSelectedRoom(null);
-      setToast(lang === 'es'
+      showToast(lang === 'es'
         ? `Habitación ${selectedRoom.number} marcada como Extensión`
         : `Room ${selectedRoom.number} marked as Extension`);
-      setTimeout(() => setToast(null), 2500);
     } catch (error) {
       console.error('Error marking extension:', error);
-      setToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
-      setTimeout(() => setToast(null), 2500);
+      showToast(lang === 'es' ? 'Error al procesar' : 'Error processing request');
     } finally { setProcessing(false); }
   };
 
@@ -653,20 +668,23 @@ export default function FrontDeskPage() {
         </div>
 
         {/* ── Stitch Toast ── */}
-        {toast && (
-          <div style={{
-            position: 'fixed', top: '24px', left: '50%', transform: 'translateX(-50%)',
-            zIndex: 1100, padding: '14px 24px', borderRadius: '9999px',
+        <ToastHost
+          toasts={toasts}
+          position="top"
+          offset="24px"
+          zIndex={1100}
+          toastStyle={{
+            padding: '14px 24px', borderRadius: '9999px',
             background: '#006565', color: '#FFFFFF',
             fontWeight: 600, fontSize: '14px', fontFamily: 'Inter, sans-serif',
             boxShadow: '0 12px 32px rgba(0,101,101,0.25)',
             animation: 'fadeIn 0.2s ease-out',
-            display: 'flex', alignItems: 'center', gap: '8px',
-          }}>
+            alignItems: 'center', gap: '8px',
+          }}
+          renderIcon={() => (
             <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>check_circle</span>
-            {toast}
-          </div>
-        )}
+          )}
+        />
 
         {/* ── Stitch Room Detail Modal ── */}
         {selectedRoom && (
@@ -842,7 +860,15 @@ export default function FrontDeskPage() {
                   </button>
                 )}
 
-                <RushButton roomNumber={selectedRoom.number} isAlreadyRush={!!(selectedRoom as { isRush?: boolean }).isRush} />
+                <RushButton
+                  roomNumber={selectedRoom.number}
+                  isAlreadyRush={!!selectedRoom.isRush}
+                  onChange={({ cleared }) => {
+                    // Reflect the confirmed set/clear immediately — the label
+                    // flips to "Clear rush" without waiting for the next poll.
+                    setSelectedRoom(prev => (prev ? { ...prev, isRush: !cleared } : prev));
+                  }}
+                />
 
                 <button
                   onClick={() => setSelectedRoom(null)}

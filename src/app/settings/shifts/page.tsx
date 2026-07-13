@@ -11,8 +11,7 @@ export const dynamic = 'force-dynamic';
 // scheduled_shifts.preset_id but doesn't remove the shift).
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
@@ -45,22 +44,32 @@ const DEFAULT_TEMPLATES: Omit<DraftPreset, 'localId' | 'sortOrder'>[] = [
 ];
 
 export default function ShiftPresetsPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
   // Gated by per-hotel manage_shifts (default: every role; admin can restrict).
-  if (!user || !can('manage_shifts')) {
-    return <AppLayout><div style={{ padding: 24 }}>Manager access only.</div></AppLayout>;
+  if (!uid || !can('manage_shifts')) {
+    return (
+      <AppLayout>
+        <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
+          {lang === 'es' ? 'Solo para gerentes.' : 'Manager access only.'}
+        </div>
+      </AppLayout>
+    );
   }
 
-  return <AppLayout><ShiftPresetsBody pid={activePropertyId ?? ''} lang={lang}/></AppLayout>;
+  return <AppLayout><ShiftPresetsBody pid={pid ?? ''} lang={lang}/></AppLayout>;
 }
 
 function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
   const [drafts, setDrafts] = useState<DraftPreset[]>([]);
   const [loading, setLoading] = useState(true);
+  // A failed load must NOT render as "no shifts configured" — the save below
+  // is bulk-replace, so saving from a fake-empty state would delete every
+  // real preset. `loadFailed` blocks the editor (and therefore Save) until a
+  // load has actually succeeded.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -74,8 +83,14 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     if (!pid) return;
     let active = true;
     setLoading(true);
+    setLoadFailed(false);
     fetchWithAuth(`/api/staff-schedule/presets?hotelId=${pid}`)
-      .then(r => r.ok ? r.json() : null)
+      .then(r => {
+        // A non-OK response must NOT be treated as "no presets" — that renders
+        // the empty state, and saving from it bulk-deletes every real preset.
+        if (!r.ok) throw new Error(`presets load failed (${r.status})`);
+        return r.json();
+      })
       .then((body: { data?: { presets?: ShiftPreset[] } } | null) => {
         if (!active) return;
         const list = body?.data?.presets ?? [];
@@ -92,7 +107,13 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       })
       .catch(err => {
         console.error('[shifts:settings] load failed', err);
-        if (active) { setError(langRef.current === 'es' ? 'No se pudieron cargar los ajustes' : 'Failed to load presets'); setLoading(false); }
+        if (active) {
+          setLoadFailed(true);
+          setError(langRef.current === 'es'
+            ? 'No se pudieron cargar tus turnos. Recarga la página para intentar de nuevo.'
+            : 'Couldn’t load your shifts. Refresh the page to try again.');
+          setLoading(false);
+        }
       });
     return () => { active = false; };
   }, [pid]);
@@ -130,9 +151,12 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
   const save = async () => {
     if (!pid) return;
+    // Never bulk-save on top of a failed load — the PUT is a full replace,
+    // so it would delete every preset the failed GET couldn't show us.
+    if (loadFailed) return;
     // Validate.
     for (const d of drafts) {
-      if (!d.name.trim()) { setError(lang === 'es' ? `El ajuste "${d.department}" necesita un nombre` : `"${d.department}" preset needs a name`); return; }
+      if (!d.name.trim()) { setError(lang === 'es' ? `El ajuste "${deptLabel(d.department, lang)}" necesita un nombre` : `"${deptLabel(d.department, lang)}" preset needs a name`); return; }
       if (!TIME_RE.test(d.startTime) || !TIME_RE.test(d.endTime)) {
         setError(lang === 'es' ? `"${d.name}" tiene una hora inválida (usa HH:MM, p. ej. 08:00)` : `"${d.name}" has an invalid time (use HH:MM, e.g. 08:00)`); return;
       }
@@ -160,13 +184,27 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         throw new Error(body?.error || 'Save failed');
       }
       setSavedAt(Date.now());
-      // Reload to pick up new server ids.
-      const reload = await fetchWithAuth(`/api/staff-schedule/presets?hotelId=${pid}`).then(r => r.json());
-      const list = reload?.data?.presets ?? [];
-      setDrafts(list.map((p: ShiftPreset, i: number) => ({
-        localId: p.id, serverId: p.id, name: p.name, department: p.department,
-        startTime: p.startTime, endTime: p.endTime, sortOrder: p.sortOrder ?? i,
-      })));
+      // Reload to pick up new server ids. The save already succeeded, so a
+      // failed refetch must neither collapse the editor to the (destructive)
+      // empty state nor show a scary error for a save that went through —
+      // keep the on-screen drafts and just log it.
+      try {
+        const reloadRes = await fetchWithAuth(`/api/staff-schedule/presets?hotelId=${pid}`);
+        if (reloadRes.ok) {
+          const reload = await reloadRes.json();
+          const list = reload?.data?.presets;
+          if (Array.isArray(list)) {
+            setDrafts(list.map((p: ShiftPreset, i: number) => ({
+              localId: p.id, serverId: p.id, name: p.name, department: p.department,
+              startTime: p.startTime, endTime: p.endTime, sortOrder: p.sortOrder ?? i,
+            })));
+          }
+        } else {
+          console.error('[shifts:settings] post-save reload failed', reloadRes.status);
+        }
+      } catch (reloadErr) {
+        console.error('[shifts:settings] post-save reload failed', reloadErr);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
@@ -210,6 +248,14 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
         {loading ? (
           <Caps>{lang === 'es' ? 'CARGANDO…' : 'LOADING…'}</Caps>
+        ) : loadFailed ? (
+          // Load-error state. Deliberately NOT the empty state: it hides the
+          // "Load defaults" invitation whose Save would wipe the real presets.
+          <div role="alert" style={{
+            padding: '14px 16px', background: 'rgba(160,74,44,0.08)',
+            border: '1px solid rgba(160,74,44,0.25)', borderRadius: 12,
+            color: '#A04A2C', fontSize: 13, lineHeight: 1.5,
+          }}>{error}</div>
         ) : drafts.length === 0 ? (
           <div style={{
             background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16, padding: '28px 24px',
@@ -248,10 +294,12 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                   }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                       <span style={{ width: 10, height: 10, borderRadius: '50%', background: m.tone }}/>
-                      <span style={{ fontWeight: 600, fontSize: 15, color: T.ink }}>{m.label}</span>
+                      <span style={{ fontWeight: 600, fontSize: 15, color: T.ink }}>{deptLabel(dept, lang)}</span>
                     </div>
                     <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3 }}>
-                      {list.length} {list.length === 1 ? 'preset' : 'presets'}
+                      {list.length} {lang === 'es'
+                        ? (list.length === 1 ? 'turno' : 'turnos')
+                        : (list.length === 1 ? 'preset' : 'presets')}
                     </span>
                   </div>
 
@@ -308,7 +356,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
                       display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                     }}
                   >
-                    <Plus size={14}/> {lang === 'es' ? `Agregar turno a ${m.label}` : `Add shift to ${m.label}`}
+                    <Plus size={14}/> {lang === 'es' ? `Agregar turno a ${deptLabel(dept, lang)}` : `Add shift to ${m.label}`}
                   </button>
                 </section>
               );
@@ -328,7 +376,7 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
             }}>
               {savedAt && (
                 <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.06em' }}>
-                  SAVED · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {lang === 'es' ? 'GUARDADO' : 'SAVED'} · {new Date(savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               )}
               <Btn variant="primary" size="md" onClick={save} disabled={saving}>
@@ -342,6 +390,13 @@ function ShiftPresetsBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       </div>
     </div>
   );
+}
+
+// Bilingual department labels — deptMeta.label is English-only (same fix as
+// settings/wages' deptLabel helper).
+function deptLabel(dept: StaffDepartment, lang: 'en' | 'es'): string {
+  if (lang !== 'es') return deptMeta[dept].label;
+  return { housekeeping: 'Limpieza', front_desk: 'Recepción', maintenance: 'Mantenimiento', other: 'Otro' }[dept];
 }
 
 const inputStyle: React.CSSProperties = {

@@ -8,13 +8,16 @@
 // equipment table is deny-all RLS). Create / edit / delete are management-gated
 // both server-side (isManager) and here (canManageTeam hides the controls).
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
+import { tr } from '@/lib/i18n-utils';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import {
-  fetchEquipmentList, fetchEquipmentDetail,
+  fetchEquipmentDetail,
   createEquipmentAsset, updateEquipmentAsset, deleteEquipmentAsset,
 } from '@/lib/db';
 import {
@@ -24,11 +27,9 @@ import {
 } from '@/lib/equipment/types';
 import {
   T, FONT_SANS, FONT_MONO, Btn, Caps,
-  Modal, Field, TextInput, TextArea, daysBetween,
+  Modal, Field, TextInput, TextArea, MtEmptyCard, daysBetween,
   CX_CARD_SHADOW,
 } from './_mt-snow';
-
-const tr = (lang: string, en: string, es: string) => (lang === 'es' ? es : en);
 
 const CATEGORY_LABEL: Record<EquipmentCategory, { en: string; es: string }> = {
   hvac:       { en: 'HVAC',        es: 'HVAC' },
@@ -58,6 +59,18 @@ const STATUS_TONE: Record<EquipmentStatus, string> = {
 };
 
 const catLabel = (c: EquipmentCategory, lang: string) => tr(lang, CATEGORY_LABEL[c].en, CATEGORY_LABEL[c].es);
+
+// List loader that actually THROWS on failure. The shared fetchEquipmentList
+// helper flattens API errors into an empty list, which made a failed load
+// indistinguishable from an empty registry — the page showed "No equipment
+// yet" during a network blip (silent-empty-state bug class).
+async function loadEquipmentList(pid: string): Promise<Equipment[]> {
+  const res = await fetchWithAuth(`/api/maintenance/equipment?pid=${encodeURIComponent(pid)}`);
+  const json = (await res.json().catch(() => null)) as
+    { ok?: boolean; data?: { equipment: Equipment[] }; error?: string } | null;
+  if (!res.ok || !json?.ok || !json.data) throw new Error(json?.error || `http ${res.status}`);
+  return json.data.equipment;
+}
 const statusLabel = (s: EquipmentStatus, lang: string) => tr(lang, STATUS_LABEL[s].en, STATUS_LABEL[s].es);
 
 function fmtMoney(n: number | null, lang: string): string {
@@ -338,7 +351,7 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
 }
 
 function EquipmentDetailModal({
-  open, onClose, detail, loading, lang, isMgr, onEdit, onDelete,
+  open, onClose, detail, loading, lang, isMgr, onEdit, onDelete, onRetry,
 }: {
   open: boolean;
   onClose: () => void;
@@ -348,6 +361,7 @@ function EquipmentDetailModal({
   isMgr: boolean;
   onEdit: (e: Equipment) => void;
   onDelete: (e: Equipment) => void;
+  onRetry: () => void;
 }) {
   const eq = detail?.equipment ?? null;
   const w = useMemo(() => (eq ? warrantyInfo(eq.warrantyExpiresAt, lang) : null), [eq, lang]);
@@ -373,9 +387,18 @@ function EquipmentDetailModal({
         </>
       }
     >
-      {loading || !detail || !eq ? (
+      {loading ? (
         <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
           {tr(lang, 'Loading…', 'Cargando…')}
+        </div>
+      ) : !detail || !eq ? (
+        // Fetch settled with nothing — an error (or a deleted asset). The old
+        // code fell back to "Loading…" here and hung forever.
+        <div style={{ padding: '36px 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+          <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
+            {tr(lang, "Couldn't load this asset — check your connection.", 'No se pudo cargar este activo — revisa la conexión.')}
+          </span>
+          <Btn variant="primary" size="md" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
@@ -502,6 +525,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
 
   const [list, setList] = useState<Equipment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [q, setQ] = useState('');
 
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -511,27 +535,35 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
   const [formOpen, setFormOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Equipment | null>(null);
 
-  const [toast, setToast] = useState<string | null>(null);
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const flash = useCallback((m: string) => {
-    setToast(m);
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3200);
-  }, []);
+  // Single replace-on-reshow toast (max: 1 drops the previous one, and each
+  // show gets a fresh 3200ms timer — same semantics as the old hand-roll).
+  const { toasts, show: flash } = useToast({ durationMs: 3200, max: 1 });
 
   const refresh = useCallback(async () => {
     if (!pid) return;
-    const l = await fetchEquipmentList(pid);
-    setList(l);
-    setLoading(false);
+    try {
+      const l = await loadEquipmentList(pid);
+      setList(l);
+      setLoadError(false);
+    } catch {
+      // Failed load: flag it. The render only swaps to the error card when
+      // there is nothing to show — a failed post-save refetch keeps the list
+      // we already have. `finally` guarantees the "Loading…" line can never
+      // hang forever (the old code skipped setLoading(false) on a throw).
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
   }, [pid]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // fetchEquipmentDetail returns null on ANY failure — treat that as an error
+  // state instead of leaving the modal on "Loading…" forever.
   const loadDetail = useCallback(async (id: string) => {
     if (!pid) return;
     setDetailLoading(true);
-    const d = await fetchEquipmentDetail(pid, id);
+    const d = await fetchEquipmentDetail(pid, id).catch(() => null);
     setDetail(d);
     setDetailLoading(false);
   }, [pid]);
@@ -612,14 +644,23 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         {loading && (
           <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>{tr(lang, 'Loading…', 'Cargando…')}</div>
         )}
-        {!loading && list.length === 0 && (
-          <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-            <span style={{ fontFamily: FONT_SANS, fontSize: 20, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}</span>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: '8px 0 18px' }}>
-              {tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps — anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina — todo lo que da servicio.')}
-            </p>
-            {isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add your first asset', 'Agregar su primer activo')}</Btn>}
-          </div>
+        {!loading && loadError && list.length === 0 && (
+          <MtEmptyCard
+            titleSize={20}
+            bodySize={13}
+            title={tr(lang, "Couldn't load the registry.", 'No se pudo cargar el registro.')}
+            body={tr(lang, 'Your equipment is safe — check your connection and try again.', 'Tus equipos están a salvo — revisa la conexión e inténtalo de nuevo.')}
+            action={<Btn variant="primary" size="md" onClick={() => { setLoading(true); void refresh(); }}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>}
+          />
+        )}
+        {!loading && !loadError && list.length === 0 && (
+          <MtEmptyCard
+            titleSize={20}
+            bodySize={13}
+            title={tr(lang, 'No equipment yet.', 'Aún no hay equipos.')}
+            body={tr(lang, 'Add your HVAC units, water heaters, elevators, pool pumps — anything you service.', 'Agregue unidades de aire, calentadores, ascensores, bombas de piscina — todo lo que da servicio.')}
+            action={isMgr && <Btn variant="primary" size="md" onClick={openAdd}>＋ {tr(lang, 'Add your first asset', 'Agregar su primer activo')}</Btn>}
+          />
         )}
         {!loading && list.length > 0 && filtered.length === 0 && (
           <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 14, color: T.ink2 }}>{tr(lang, 'Nothing matches that search.', 'Nada coincide con esa búsqueda.')}</div>
@@ -637,13 +678,16 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         isMgr={isMgr}
         onEdit={(e) => { closeDetail(); openEdit(e); }}
         onDelete={handleDelete}
+        onRetry={() => { if (detailId) void loadDetail(detailId); }}
       />
 
-      {toast && (
-        <div style={{ position: 'fixed', bottom: 28, left: '50%', transform: 'translateX(-50%)', zIndex: 1100, background: T.ink, color: T.bg, padding: '12px 22px', borderRadius: 12, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500, boxShadow: '0 12px 32px rgba(31,35,28,0.24)' }}>
-          {toast}
-        </div>
-      )}
+      <ToastHost
+        toasts={toasts}
+        position="bottom"
+        offset="28px"
+        zIndex={1100}
+        toastStyle={{ background: T.ink, color: T.bg, padding: '12px 22px', borderRadius: 12, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500, boxShadow: '0 12px 32px rgba(31,35,28,0.24)' }}
+      />
     </div>
   );
 }

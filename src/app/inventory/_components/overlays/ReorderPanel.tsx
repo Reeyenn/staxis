@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -17,6 +17,8 @@ import { Btn } from '../Btn';
 import { StockBar } from '../StockBar';
 import { StatusDot } from '../StatusPill';
 import { Overlay } from './Overlay';
+import { seedCartState, type LineState } from './reorder-cart';
+import { isBudgetForLocalMonth } from '../month';
 import { fmtMoney } from '../format';
 import { recommendReorder, suggestQuantity } from '../adapter';
 import type { DisplayItem, ReorderRec } from '../types';
@@ -43,7 +45,70 @@ interface ReorderPanelProps {
   onViewOrders: () => void;
 }
 
-type LineState = { checked: boolean; qty: number };
+// Co-located strings for the reorder panel — same factory convention as the
+// other overlays (ssStrings / csStrings / rpStrings…).
+function reorderStrings(lang: Lang) {
+  return {
+    en: {
+      placeSimple: 'Place & email orders →',
+      placePro: 'Submit for approval →',
+      placing: 'Placing…',
+      close: 'Close',
+      viewOrders: 'View orders →',
+      managerOnly: 'Only managers can place orders.',
+      proNote: 'Orders will need approval before they can be sent.',
+      reorder: 'Reorder',
+      item: 'item',
+      items: 'items',
+      inCart: 'in cart',
+      vendor: 'vendor',
+      vendors: 'vendors',
+      noUsageDataYet: 'No usage data yet.',
+      onboardingBanner: ' These suggestions are based on par levels, not real usage. Add a few counts so the AI can learn how fast each item moves — once it’s seen ~3 counts per item it’ll start predicting daily rates and pre-checking what’s actually low.',
+      nothingToReorder: 'Nothing to reorder — every item is above par.',
+      thisMonth: 'this month',
+      overBudget: 'over budget',
+      headroom: 'headroom',
+      noCap: 'no cap',
+      spent: 'spent',
+      cap: 'cap',
+      daysLeftSuffix: 'd left',
+      lead: 'lead',
+      createdPending: (n: number) => `${n} order(s) created — pending approval.`,
+      placedEmailed: (placed: number, sent: number, draft: number) =>
+        `${placed} order(s) placed · ${sent} emailed${draft ? `, ${draft} saved as draft (add a vendor email to send)` : ''}.`,
+    },
+    es: {
+      placeSimple: 'Crear y enviar órdenes →',
+      placePro: 'Enviar a aprobación →',
+      placing: 'Creando…',
+      close: 'Cerrar',
+      viewOrders: 'Ver órdenes →',
+      managerOnly: 'Solo gerentes pueden crear órdenes.',
+      proNote: 'Las órdenes necesitarán aprobación antes de enviarse.',
+      reorder: 'Pedido',
+      item: 'artículo',
+      items: 'artículos',
+      inCart: 'en carrito',
+      vendor: 'proveedor',
+      vendors: 'proveedores',
+      noUsageDataYet: 'Aún no hay datos de uso.',
+      onboardingBanner: ' Estas sugerencias se basan en niveles par, no en uso real. Agrega algunos conteos para que la IA aprenda qué tan rápido se mueve cada artículo — tras ~3 conteos por artículo empezará a predecir tasas diarias y a preseleccionar lo que está bajo.',
+      nothingToReorder: 'Nada que pedir — todos los artículos están sobre el par.',
+      thisMonth: 'este mes',
+      overBudget: 'sobre presupuesto',
+      headroom: 'disponible',
+      noCap: 'sin límite',
+      spent: 'gastado',
+      cap: 'límite',
+      daysLeftSuffix: 'd restantes',
+      lead: 'entrega',
+      createdPending: (n: number) => `${n} orden(es) creada(s) — pendientes de aprobación.`,
+      placedEmailed: (placed: number, sent: number, draft: number) =>
+        `${placed} orden(es) creada(s) · ${sent} enviada(s)${draft ? `, ${draft} en borrador (agrega un correo del proveedor para enviar)` : ''}.`,
+    },
+  }[lang];
+}
 
 const URG_LABEL: Record<Lang, Record<'now' | 'soon' | 'ok', string>> = {
   en: { now: 'Order now', soon: 'Order soon', ok: 'OK for now' },
@@ -124,20 +189,23 @@ export function ReorderPanel({
     { placed: number; sent: number; draft: number; errors: string[] } | null
   >(null);
 
-  // Reset state whenever recs change (e.g. panel reopens with new data).
-  // Honesty-audit Phase 4: only pre-check items that have REAL signal
-  // (ML prediction or operator-configured rule). Items that ended up in
-  // the panel via the par/60 fallback don't have enough evidence to
-  // auto-include in the cart — the GM should explicitly opt them in.
+  // Seed cart state. On OPEN: rebuild from defaults and clear any stale
+  // "orders placed" banner. While the panel STAYS open: any realtime
+  // inventory change (a housekeeper saving a count on another device)
+  // refetches the list and produces a fresh-identity `recs` array — that must
+  // NOT wipe the GM's ticked lines, typed quantities, or the success banner
+  // mid-order. seedCartState preserves existing lines and only adds defaults
+  // for recs that don't have a line yet. (Race fix — see reorder-cart.ts.)
+  const wasOpenRef = useRef(false);
   useEffect(() => {
-    if (!open) return;
-    setPlaceResult(null);
-    const next: Record<string, LineState> = {};
-    for (const r of recs) {
-      const hasRealSignal = r.burnSource === 'ml' || r.burnSource === 'rule-occupancy';
-      next[r.itemId] = { checked: r.urgency === 'now' && hasRealSignal, qty: r.suggestQty };
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
     }
-    setState(next);
+    const firstOpen = !wasOpenRef.current;
+    wasOpenRef.current = true;
+    if (firstOpen) setPlaceResult(null);
+    setState((prev) => seedCartState(recs, prev, firstOpen));
   }, [open, recs]);
 
   const cartItems = recs.filter((r) => state[r.itemId]?.checked);
@@ -219,43 +287,15 @@ export function ReorderPanel({
     }
   };
 
-  const TT = {
-    place: orderingMode === 'pro'
-      ? { en: 'Submit for approval →', es: 'Enviar a aprobación →' }[L]
-      : { en: 'Place & email orders →', es: 'Crear y enviar órdenes →' }[L],
-    placing: { en: 'Placing…', es: 'Creando…' }[L],
-    close: { en: 'Close', es: 'Cerrar' }[L],
-    viewOrders: { en: 'View orders →', es: 'Ver órdenes →' }[L],
-    managerOnly: { en: 'Only managers can place orders.', es: 'Solo gerentes pueden crear órdenes.' }[L],
-    proNote: { en: 'Orders will need approval before they can be sent.', es: 'Las órdenes necesitarán aprobación antes de enviarse.' }[L],
-    reorder: { en: 'Reorder', es: 'Pedido' }[L],
-    item: { en: 'item', es: 'artículo' }[L],
-    items: { en: 'items', es: 'artículos' }[L],
-    inCart: { en: 'in cart', es: 'en carrito' }[L],
-    vendor: { en: 'vendor', es: 'proveedor' }[L],
-    vendors: { en: 'vendors', es: 'proveedores' }[L],
-    noUsageDataYet: { en: 'No usage data yet.', es: 'Aún no hay datos de uso.' }[L],
-    onboardingBanner: {
-      en: ' These suggestions are based on par levels, not real usage. Add a few counts so the AI can learn how fast each item moves — once it’s seen ~3 counts per item it’ll start predicting daily rates and pre-checking what’s actually low.',
-      es: ' Estas sugerencias se basan en niveles par, no en uso real. Agrega algunos conteos para que la IA aprenda qué tan rápido se mueve cada artículo — tras ~3 conteos por artículo empezará a predecir tasas diarias y a preseleccionar lo que está bajo.',
-    }[L],
-    nothingToReorder: { en: 'Nothing to reorder — every item is above par.', es: 'Nada que pedir — todos los artículos están sobre el par.' }[L],
-    thisMonth: { en: 'this month', es: 'este mes' }[L],
-    overBudget: { en: 'over budget', es: 'sobre presupuesto' }[L],
-    headroom: { en: 'headroom', es: 'disponible' }[L],
-    noCap: { en: 'no cap', es: 'sin límite' }[L],
-    spent: { en: 'spent', es: 'gastado' }[L],
-    cap: { en: 'cap', es: 'límite' }[L],
-    daysLeftSuffix: { en: 'd left', es: 'd restantes' }[L],
-    lead: { en: 'lead', es: 'entrega' }[L],
-  };
+  const TT = reorderStrings(L);
+  const placeLabel = orderingMode === 'pro' ? TT.placePro : TT.placeSimple;
 
   const resultMsg = placeResult
     ? (placeResult.placed === 0
         ? (placeResult.errors[0] ?? '—')
         : orderingMode === 'pro'
-          ? { en: `${placeResult.placed} order(s) created — pending approval.`, es: `${placeResult.placed} orden(es) creada(s) — pendientes de aprobación.` }[L]
-          : { en: `${placeResult.placed} order(s) placed · ${placeResult.sent} emailed${placeResult.draft ? `, ${placeResult.draft} saved as draft (add a vendor email to send)` : ''}.`, es: `${placeResult.placed} orden(es) creada(s) · ${placeResult.sent} enviada(s)${placeResult.draft ? `, ${placeResult.draft} en borrador (agrega un correo del proveedor para enviar)` : ''}.` }[L])
+          ? TT.createdPending(placeResult.placed)
+          : TT.placedEmailed(placeResult.placed, placeResult.sent, placeResult.draft))
     : null;
 
   return (
@@ -284,7 +324,7 @@ export function ReorderPanel({
             onClick={handlePlaceOrders}
             style={{ opacity: canManage && cartItems.length ? 1 : 0.4 }}
           >
-            {saving ? TT.placing : TT.place}
+            {saving ? TT.placing : placeLabel}
           </Btn>
         </>
       }
@@ -437,13 +477,11 @@ export function ReorderPanel({
 }
 
 function budgetFor(budgets: InventoryBudget[], cat: InventoryCategory): number {
+  // LOCAL month match — see month.ts for the end-of-month UTC-drift fix.
   const now = new Date();
   for (const b of budgets) {
     if (b.category !== cat || !b.monthStart) continue;
-    if (
-      b.monthStart.getUTCFullYear() === now.getUTCFullYear() &&
-      b.monthStart.getUTCMonth() === now.getUTCMonth()
-    ) {
+    if (isBudgetForLocalMonth(b.monthStart, now)) {
       return b.budgetCents / 100;
     }
   }

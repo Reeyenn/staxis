@@ -10,7 +10,7 @@ import { Droplet, AlertCircle, Globe } from 'lucide-react';
 // Security audit 2026-06-26 #1: the FCM-era "pick who you are" roster flow is
 // retired (it required /api/staff-list to hand out every staff UUID). Each
 // staff member now opens their OWN per-staff link straight to /laundry/[id].
-type Step = 'loading' | 'error' | 'bad-link';
+type Step = 'loading' | 'error';
 
 export default function LaundryPage() {
   return (
@@ -88,16 +88,6 @@ function LaundryInner() {
           }} />
           <p style={{ color: 'var(--text-muted)', fontSize: '14px' }}>{t('loading', lang)}</p>
           <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-        </div>
-      )}
-
-      {/* Bad link */}
-      {step === 'bad-link' && (
-        <div style={{ textAlign: 'center', maxWidth: '320px' }}>
-          <AlertCircle size={40} color="var(--red)" style={{ marginBottom: '12px' }} />
-          <p style={{ color: 'var(--text-secondary)', fontSize: '14px', lineHeight: 1.6 }}>
-            {t('badLink', lang)}
-          </p>
         </div>
       )}
 

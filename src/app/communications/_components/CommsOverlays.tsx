@@ -12,7 +12,7 @@ import type { ConversationDTO, StaffLite, SearchHitDTO, CommsDept } from '@/lib/
 import type { WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
 import type { L } from './comms-types-fe';
 import {
-  T, SANS, SERIF, MONO, deptColor, deptColorDark, deptLabel, tint, Avatar, DeptDot, MonoLabel,
+  T, SANS, SERIF, MONO, deptColor, deptColorDark, deptLabel, tint, Avatar, DeptDot, MonoLabel, CommsOverlay,
 } from './comms-ui';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -26,6 +26,8 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
   const inp = React.useRef<HTMLInputElement | null>(null);
 
   React.useEffect(() => { inp.current?.focus(); }, []);
+  // Debounced live search (220ms per keystroke) — stays hand-rolled;
+  // useCommsResource has no debounce.
   React.useEffect(() => {
     const id = setTimeout(async () => {
       const r = await apiGet<{ hits: SearchHitDTO[] }>(`/api/comms/search?pid=${encodeURIComponent(pid)}&q=${encodeURIComponent(q.trim())}`);
@@ -33,11 +35,6 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
     }, 220);
     return () => clearTimeout(id);
   }, [pid, q]);
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const channels = hits.filter((h) => h.kind === 'channel');
   const people = hits.filter((h) => h.kind === 'person');
@@ -47,8 +44,8 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
   const out = (e: React.MouseEvent<HTMLButtonElement>) => (e.currentTarget.style.background = 'transparent');
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.22)', zIndex: 70, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 84 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 560, maxWidth: '92%', maxHeight: '70%', background: T.bg, borderRadius: 14, border: `1px solid ${T.hair}`, boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.22)" align="top" paddingTop={84} escToClose
+      cardStyle={{ width: 560, maxWidth: '92%', maxHeight: '70%', background: T.bg, borderRadius: 14, border: `1px solid ${T.hair}`, boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '13px 16px', borderBottom: `1px solid ${T.hairSoft}` }}>
           <span style={{ color: T.dim, display: 'flex' }}><Search size={18} /></span>
           <input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder={L('Search messages, channels and people…', 'Buscar mensajes, canales y personas…')}
@@ -86,8 +83,7 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
           </div>}
           {hits.length === 0 && <div style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}>{q ? L(`No results for “${q}”.`, `Sin resultados para “${q}”.`) : L('Type to search.', 'Escribe para buscar.')}</div>}
         </div>
-      </div>
-    </div>
+    </CommsOverlay>
   );
 }
 
@@ -119,8 +115,8 @@ export function CatchUp({ pid, conversations, L, onJump, onClose }: {
   };
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.2)', zIndex: 70, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', paddingTop: 76 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 424, maxWidth: '92%', background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 14, boxShadow: '0 18px 50px rgba(31,35,28,.16)', overflow: 'hidden' }}>
+    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.2)" align="top" paddingTop={76}
+      cardStyle={{ width: 424, maxWidth: '92%', background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 14, boxShadow: '0 18px 50px rgba(31,35,28,.16)', overflow: 'hidden' }}>
         <div style={{ padding: '15px 18px 12px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: T.forest, marginBottom: 5 }}><Sparkles size={15} /><MonoLabel color={T.forest}>{L('Catch up', 'Ponerme al día')}</MonoLabel></div>
@@ -151,8 +147,7 @@ export function CatchUp({ pid, conversations, L, onJump, onClose }: {
                 </button>
           )}
         </div>
-      </div>
-    </div>
+    </CommsOverlay>
   );
 }
 
@@ -163,8 +158,8 @@ export function NewMessageModal({ staff, L, onPick, onClose }: { staff: StaffLit
   const [q, setQ] = React.useState('');
   const filtered = staff.filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.3)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '92%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.2)' }}>
+    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)"
+      cardStyle={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '92%', maxHeight: '70vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.2)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hair}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontWeight: 700, fontFamily: SANS, fontSize: 15 }}>{L('New message', 'Nuevo mensaje')}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
@@ -179,8 +174,7 @@ export function NewMessageModal({ staff, L, onPick, onClose }: { staff: StaffLit
           ))}
           {filtered.length === 0 && <div style={{ padding: 18, color: T.dim, fontSize: 13, fontFamily: SANS }}>{L('No staff found', 'Sin resultados')}</div>}
         </div>
-      </div>
-    </div>
+    </CommsOverlay>
   );
 }
 
@@ -306,11 +300,6 @@ export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items:
 function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistItem; pid: string; staff: StaffLite[]; L: L; onClose: () => void; onDone: () => void }) {
   const [busy, setBusy] = React.useState(false);
   const isPriority = item.sourceType === 'workorder';
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const post = async (payload: Record<string, unknown>) => {
     if (busy) return; setBusy(true);
@@ -319,8 +308,8 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
   };
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.3)', zIndex: 71, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '94%', maxHeight: '78vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.22)' }}>
+    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)" zIndex={71} padding={20} escToClose
+      cardStyle={{ background: T.bg, borderRadius: 16, width: 400, maxWidth: '94%', maxHeight: '78vh', display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 24px 64px rgba(31,35,28,.22)' }}>
         <div style={{ padding: '14px 18px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15 }}>{isPriority ? L('Set priority', 'Definir prioridad') : L('Assign to', 'Asignar a')}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
@@ -358,8 +347,7 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
             {staff.length === 0 && <div style={{ padding: 18, color: T.dim, fontSize: 13, fontFamily: SANS }}>{L('No staff found', 'Sin personal')}</div>}
           </div>
         )}
-      </div>
-    </div>
+    </CommsOverlay>
   );
 }
 
@@ -434,11 +422,6 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
   const [busy, setBusy] = React.useState(false);
   const inp = React.useRef<HTMLInputElement | null>(null);
   React.useEffect(() => { inp.current?.focus(); }, []);
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const submit = async () => {
     const t = text.trim(); if (!t || busy) return;
@@ -452,8 +435,8 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
   const curDept = (DEPT_OPTIONS.find((d) => d.key === dept)?.dept ?? 'management');
 
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,.3)', zIndex: 70, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ background: T.bg, borderRadius: 16, width: 460, maxWidth: '94%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column' }}>
+    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.3)" padding={20} escToClose
+      cardStyle={{ background: T.bg, borderRadius: 16, width: 460, maxWidth: '94%', maxHeight: '88vh', overflowY: 'auto', boxShadow: '0 24px 64px rgba(31,35,28,.22)', display: 'flex', flexDirection: 'column' }}>
         <div style={{ padding: '15px 18px 12px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <span style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, color: T.ink }}>{L('New to-do', 'Nueva tarea')}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
@@ -500,8 +483,7 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
             {busy && <Loader2 size={13} className="comms-spin" />} {L('Add to-do', 'Agregar')}
           </button>
         </div>
-      </div>
-    </div>
+    </CommsOverlay>
   );
 }
 

@@ -20,8 +20,10 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
-import { monthKey, priorMonthKey, type FinanceSummary } from '@/lib/financials/shared';
-import { apiGet, Notice, T, FONT_SANS, FONT_MONO } from './_components/fin-ui';
+import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { monthLabelFromYm } from '@/lib/format-date';
+import { priorMonthKey, type FinanceSummary } from '@/lib/financials/shared';
+import { Notice, T, FONT_SANS, FONT_MONO } from './_components/fin-ui';
 import { SummaryTile, BigMoney } from './_components/fin-board';
 import { ft } from './_components/fin-i18n';
 import { CheckbookTab } from './_components/CheckbookTab';
@@ -37,13 +39,12 @@ function nextMonthKey(m: string): string {
   const nm = mm === 12 ? 1 : mm + 1;
   return `${ny}-${String(nm).padStart(2, '0')}`;
 }
-function monthDisplay(m: string, lang: Lang): string {
-  const [y, mm] = m.split('-').map(Number);
-  return new Date(Date.UTC(y, mm - 1, 1)).toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
-    month: 'long',
-    year: 'numeric',
-    timeZone: 'UTC',
-  });
+
+// The viewer's LOCAL calendar month. shared.ts's monthKey() uses UTC getters,
+// which rolls the page over to next (empty) month during the evening hours
+// west of Greenwich (e.g. after 6-7pm in Texas on the month's last day).
+function localMonthKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
 export default function FinancialsPage() {
@@ -55,11 +56,13 @@ export default function FinancialsPage() {
   const S = ft(lang as Lang);
 
   const [tab, setTab] = useState<TabKey>('checkbook');
-  const [month, setMonth] = useState(() => monthKey(new Date()));
-  const [summary, setSummary] = useState<FinanceSummary | null>(null);
-  const [summaryLoading, setSummaryLoading] = useState(true);
+  const [month, setMonth] = useState(() => localMonthKey(new Date()));
+  // Bumped by onChanged() after any tab mutation. It rides the URL as a
+  // FRAGMENT (never sent over HTTP) so useApiResource treats the refetch as a
+  // new resource — replaying the same "Loading…" flash the old load() showed.
+  const [summaryNonce, setSummaryNonce] = useState(0);
 
-  const currentMonth = monthKey(new Date());
+  const currentMonth = localMonthKey(new Date());
   const allowed = !!user && can('view_financials');
 
   // Redirect a restricted role away (client guard; the API gate is the real
@@ -76,17 +79,19 @@ export default function FinancialsPage() {
     }
   }, [user, authLoading, propLoading, allowed, router]);
 
-  const loadSummary = useCallback(async () => {
-    if (!activePropertyId) return;
-    setSummaryLoading(true);
-    const res = await apiGet<{ summary: FinanceSummary }>(`/api/financials/summary?pid=${activePropertyId}&month=${month}`);
-    setSummary(res.ok && res.data ? res.data.summary : null);
-    setSummaryLoading(false);
-  }, [activePropertyId, month]);
+  const summaryRes = useApiResource<{ summary: FinanceSummary }>(
+    `/api/financials/summary?pid=${activePropertyId}&month=${month}#${summaryNonce}`,
+    { enabled: !!activePropertyId },
+  );
+  const summary = summaryRes.data?.summary ?? null;
+  // Not-yet-fetched reads as loading (loading starts false while the property
+  // id is still resolving, and only flips true in a post-paint effect — the
+  // old code showed "Loading…" from the first paint). On error it still
+  // falls through to the tile fallbacks, exactly like the old code.
+  const summaryLoading = summaryRes.loading || (summaryRes.data == null && summaryRes.error == null);
 
-  useEffect(() => {
-    void loadSummary();
-  }, [loadSummary]);
+  // Tabs call this after any mutation so the header totals stay live.
+  const onTabChanged = useCallback(() => setSummaryNonce((n) => n + 1), []);
 
   if (authLoading || propLoading || !allowed) {
     return (
@@ -134,11 +139,12 @@ export default function FinancialsPage() {
               ‹
             </button>
             <span style={{ fontFamily: FONT_SANS, fontSize: 14.5, fontWeight: 600, color: T.ink, minWidth: 116, textAlign: 'center', textTransform: 'capitalize' }}>
-              {monthDisplay(month, lang as Lang)}
+              {monthLabelFromYm(month, lang)}
             </span>
             <button
               onClick={() => setMonth(nextMonthKey(month))}
-              style={{ ...stepBtn, opacity: month >= currentMonth ? 0.35 : 1, pointerEvents: month >= currentMonth ? 'none' : 'auto' }}
+              disabled={month >= currentMonth}
+              style={{ ...stepBtn, opacity: month >= currentMonth ? 0.35 : 1, cursor: month >= currentMonth ? 'default' : 'pointer' }}
               aria-label="Next month"
             >
               ›
@@ -151,6 +157,12 @@ export default function FinancialsPage() {
           {summaryLoading ? (
             <div style={{ flex: 1 }}>
               <Notice text={S.loading} />
+            </div>
+          ) : summaryRes.error != null ? (
+            // A failed summary read must not render confident $0.00 tiles —
+            // show the load error with the standard tap-to-retry affordance.
+            <div style={{ flex: 1 }}>
+              <Notice text={S.errorLoading} onRetry={onTabChanged} />
             </div>
           ) : (
             <>
@@ -191,7 +203,7 @@ export default function FinancialsPage() {
             </>
           )}
         </div>
-        {!summaryLoading && summary?.revenueCents == null && (
+        {!summaryLoading && summaryRes.error == null && summary?.revenueCents == null && (
           <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3, margin: '12px 0 0' }}>{S.revenueComingSoon}</p>
         )}
 
@@ -225,9 +237,9 @@ export default function FinancialsPage() {
 
         {/* Active tab */}
         <div style={{ marginTop: 22 }}>
-          {tab === 'checkbook' && <CheckbookTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={loadSummary} />}
-          {tab === 'budget' && <BudgetTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={loadSummary} />}
-          {tab === 'capex' && <CapexTab pid={activePropertyId} lang={lang as Lang} onChanged={loadSummary} />}
+          {tab === 'checkbook' && <CheckbookTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
+          {tab === 'budget' && <BudgetTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
+          {tab === 'capex' && <CapexTab pid={activePropertyId} lang={lang as Lang} onChanged={onTabChanged} />}
         </div>
         </div>
       </div>

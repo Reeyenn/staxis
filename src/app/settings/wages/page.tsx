@@ -14,8 +14,7 @@ export const dynamic = 'force-dynamic';
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { ChevronLeft } from 'lucide-react';
-import { useAuth } from '@/contexts/AuthContext';
-import { useProperty } from '@/contexts/PropertyContext';
+import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { LABOR_ROLE_DEPARTMENTS, MAX_HOURLY_WAGE_CENTS, type LaborRole } from '@/lib/labor-cost';
@@ -28,14 +27,13 @@ import {
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, Card } from '@/app/staff/_components/_tokens';
 
 export default function WagesSettingsPage() {
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { uid, pid } = useScope();
   const { lang } = useLang();
   const can = useCan();
 
   // Sensitive pay data — gated by view_wages (default: every role; an admin can
   // switch a role OFF per hotel from the Access tab).
-  if (!user || !can('view_wages')) {
+  if (!uid || !can('view_wages')) {
     return (
       <AppLayout>
         <div style={{ padding: 24, fontFamily: fonts.sans, color: T.ink2 }}>
@@ -45,7 +43,7 @@ export default function WagesSettingsPage() {
     );
   }
 
-  return <AppLayout><WagesBody pid={activePropertyId ?? ''} lang={lang} /></AppLayout>;
+  return <AppLayout><WagesBody pid={pid ?? ''} lang={lang} /></AppLayout>;
 }
 
 /** cents → an editable dollar string ('' when unset). */
@@ -83,6 +81,13 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       for (const o of d.overrides) ovr[o.staffId] = centsToInput(o.hourlyWageCents);
       setOverrideInputs(ovr);
       setLoading(false);
+    }).catch((err) => {
+      // A network throw used to skip setLoading(false) entirely, leaving the
+      // page stuck on "LOADING…" forever.
+      console.error('[wages:settings] load failed', err);
+      if (!active) return;
+      setError(es ? 'No se pudieron cargar los salarios' : 'Failed to load wages');
+      setLoading(false);
     });
     return () => { active = false; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -105,6 +110,12 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
   const save = async () => {
     if (!pid) return;
+    // If the load never succeeded, the inputs are all blank — saving would
+    // clear every role default and per-person override. Block it.
+    if (!data) {
+      setError(es ? 'No se pudieron cargar los salarios — recarga la página antes de guardar.' : 'Wages didn’t load — refresh the page before saving.');
+      return;
+    }
     setError(null);
 
     // Role defaults: blank → null (clear); non-blank must parse to (0, $2000].
@@ -138,23 +149,31 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     }
 
     setSaving(true);
-    const res = await saveWageSettings(pid, { roleDefaults, overrides });
-    setSaving(false);
-    if (!res.ok || !res.data) {
-      setError(res.error || (es ? 'No se pudo guardar' : 'Save failed'));
-      return;
+    try {
+      const res = await saveWageSettings(pid, { roleDefaults, overrides });
+      if (!res.ok || !res.data) {
+        setError(res.error || (es ? 'No se pudo guardar' : 'Save failed'));
+        return;
+      }
+      // Re-seed from the server's fresh state.
+      setData(res.data);
+      setRoleInputs(
+        Object.fromEntries(
+          LABOR_ROLE_DEPARTMENTS.map((dept) => [dept, centsToInput(res.data!.roleDefaults[dept])]),
+        ) as Record<LaborRole, string>,
+      );
+      const ovr: Record<string, string> = {};
+      for (const o of res.data.overrides) ovr[o.staffId] = centsToInput(o.hourlyWageCents);
+      setOverrideInputs(ovr);
+      setSavedAt(Date.now());
+    } catch (err) {
+      // A network throw used to skip setSaving(false), freezing the button on
+      // "Saving…" with no error and no way to retry.
+      console.error('[wages:settings] save failed', err);
+      setError(es ? 'No se pudo guardar — revisa tu conexión e intenta de nuevo' : 'Couldn’t save — check your connection and try again');
+    } finally {
+      setSaving(false);
     }
-    // Re-seed from the server's fresh state.
-    setData(res.data);
-    setRoleInputs(
-      Object.fromEntries(
-        LABOR_ROLE_DEPARTMENTS.map((dept) => [dept, centsToInput(res.data!.roleDefaults[dept])]),
-      ) as Record<LaborRole, string>,
-    );
-    const ovr: Record<string, string> = {};
-    for (const o of res.data.overrides) ovr[o.staffId] = centsToInput(o.hourlyWageCents);
-    setOverrideInputs(ovr);
-    setSavedAt(Date.now());
   };
 
   const orderedDepts = LABOR_ROLE_DEPARTMENTS.filter((d) => grouped[d].length > 0);

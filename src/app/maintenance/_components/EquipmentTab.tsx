@@ -10,7 +10,7 @@
 
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -19,9 +19,10 @@ import type { InventoryItem } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn, Modal, Field, TextInput,
-  PageHead, BoardColumn, BoardCard, CenteredBoard,
-  CX_CARD_SHADOW,
+  PageHead, BoardColumn, BoardCard, CenteredBoard, MtEmptyCard,
+  useBoardGate, BoardLoading, BoardLoadError,
 } from './_mt-snow';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 
 type Status = 'out' | 'low' | 'ok';
 const STAT: Record<Status, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string; es: string }> = {
@@ -62,7 +63,16 @@ function AddItemModal({
   const [busy, setBusy] = useState(false);
 
   const reset = () => { setName(''); setBin(''); setQty(''); setReorderAt(''); setBusy(false); };
-  const close = () => { reset(); onClose(); };
+  const dirty = name.trim() !== '' || bin.trim() !== '' || qty !== '' || reorderAt !== '';
+  // Guard the eaten-form path: Escape / a stray scrim click used to wipe the
+  // half-typed item instantly. Confirm before discarding anything typed.
+  const close = () => {
+    if (dirty && !window.confirm(es
+      ? '¿Descartar este artículo sin agregar? Se perderá lo que escribiste.'
+      : 'Discard this item? What you typed will be lost.')) return;
+    reset();
+    onClose();
+  };
   const can = name.trim() && bin.trim() && !busy;
 
   const submit = async () => {
@@ -72,6 +82,8 @@ function AddItemModal({
       await onCreate({ name: name.trim(), bin: bin.trim(), qty: parseInt(qty, 10) || 0, reorderAt: parseInt(reorderAt, 10) || 1 });
       reset();
       onClose();
+    } catch {
+      // Create failed — the board surfaced a toast; keep the form intact.
     } finally { setBusy(false); }
   };
 
@@ -105,26 +117,51 @@ function ItemModal({
   part: Part | null;
   open: boolean;
   onClose: () => void;
-  onSetQty: (id: string, qty: number) => void;
+  /** Resolves once the (serialized) write settles; false = it failed. */
+  onSetQty: (id: string, qty: number) => Promise<boolean>;
   onRestock: (part: Part) => void;
 }) {
   const { lang } = useLang();
   const es = lang === 'es';
-  // Local draft for snappy stepping; seeded from the live row on open. Re-seed
-  // only when the modal opens or switches items — NOT on every realtime qty
-  // update, which would clobber optimistic stepping mid-tap.
+  // Local draft for snappy stepping; seeded from the live row on open.
   const [draft, setDraft] = useState(0);
+  // Count of taps whose write hasn't settled yet. While >0 we don't adopt
+  // realtime values (would clobber optimistic stepping mid-tap); once all
+  // settle we DO adopt them, so another device's count change isn't silently
+  // overwritten by this modal's stale snapshot. A counter (not a boolean) so
+  // an early tap settling can't unlock adoption while a later tap is in flight.
+  const pendingWrites = useRef(0);
+  // Latest stored qty / item id — used to roll the draft back when a write
+  // fails (the modal must never keep showing a number the DB rejected) and to
+  // ignore settlements for an item the modal is no longer showing.
+  const liveQty = useRef(0);
+  liveQty.current = part?.qty ?? 0;
+  const curId = useRef<string | null>(null);
+  curId.current = part?.id ?? null;
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (part && open) setDraft(part.qty); }, [part?.id, open]);
+  useEffect(() => { if (part && open) { setDraft(part.qty); pendingWrites.current = 0; } }, [part?.id, open]);
+
+  // Adopt external realtime changes when nothing of ours is in flight.
+  useEffect(() => {
+    if (part && open && pendingWrites.current === 0) setDraft(part.qty);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [part?.qty]);
 
   if (!part) return null;
   const status: Status = draft <= 0 ? 'out' : draft <= part.reorderAt ? 'low' : 'ok';
   const meta = STAT[status];
 
   const step = (d: number) => {
+    const id = part.id;
     const next = Math.max(0, draft + d);
     setDraft(next);
-    onSetQty(part.id, next);
+    pendingWrites.current += 1;
+    void onSetQty(id, next).then((ok) => {
+      if (curId.current !== id) return; // modal moved on to another item
+      pendingWrites.current = Math.max(0, pendingWrites.current - 1);
+      if (!ok && pendingWrites.current === 0) setDraft(liveQty.current);
+    });
   };
 
   return (
@@ -167,14 +204,26 @@ export function EquipmentTab() {
   const es = lang === 'es';
 
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
   const [addOpen, setAddOpen] = useState(false);
 
+  // Failure feedback for board writes (same ink pill as the equipment registry).
+  const { toasts, show: flash } = useToast({ durationMs: 3600, max: 1 });
+
+  // Load gate: don't render the happy "Storeroom is empty" state until the
+  // first snapshot arrived; error card + retry when the load failed.
+  const gate = useBoardGate(activePropertyId, 'inventory', loaded);
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    const unsub = subscribeToInventory(user.uid, activePropertyId, setItems);
+    setLoaded(false);
+    const unsub = subscribeToInventory(user.uid, activePropertyId, (rows) => {
+      setLoaded(true);
+      setItems(rows);
+    });
     return () => unsub();
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, gate.retryKey]);
 
   const parts = useMemo(
     () => items.filter((i) => i.category === 'maintenance').map(toPart),
@@ -186,27 +235,60 @@ export function EquipmentTab() {
   const low = parts.filter((p) => p.status === 'low').length;
   const liveBands = STAT_ORDER.filter((s) => parts.some((p) => p.status === s));
 
-  const setQty = (id: string, qty: number) => {
-    if (!user || !activePropertyId) return;
-    void updateInventoryItem(user.uid, activePropertyId, id, { currentStock: Math.max(0, qty) });
+  // Last-value-wins write pump, one per item. Rapid stepper taps used to fire
+  // parallel absolute UPDATEs whose out-of-order completion could persist a
+  // stale intermediate count; the pump keeps at most ONE request in flight
+  // per item and always writes the latest tapped value next. The returned
+  // promise resolves with the FINAL outcome of the tap burst (false = the
+  // last write failed → caller rolls the draft back).
+  const qtyPumps = useRef<Map<string, { desired: number; promise: Promise<boolean> | null }>>(new Map());
+  const setQty = (id: string, qty: number): Promise<boolean> => {
+    if (!user || !activePropertyId) return Promise.resolve(false);
+    const uid = user.uid;
+    const pid = activePropertyId;
+    let pump = qtyPumps.current.get(id);
+    if (!pump) { pump = { desired: qty, promise: null }; qtyPumps.current.set(id, pump); }
+    pump.desired = Math.max(0, qty);
+    if (pump.promise) return pump.promise; // running pump picks up `desired`
+    const state = pump;
+    state.promise = (async () => {
+      let ok = true;
+      for (;;) {
+        const want = state.desired;
+        try { await updateInventoryItem(uid, pid, id, { currentStock: want }); ok = true; }
+        catch { ok = false; }
+        if (state.desired === want) break; // no newer taps → settled
+      }
+      state.promise = null;
+      if (!ok) {
+        flash(es ? 'No se pudo guardar el conteo — revisa la conexión e inténtalo de nuevo.' : "Couldn't save the count — check your connection and try again.");
+      }
+      return ok;
+    })();
+    return state.promise;
   };
   const restock = (part: Part) => {
     const target = part.parLevel > 0 ? part.parLevel : part.reorderAt > 0 ? part.reorderAt * 4 : 1;
-    setQty(part.id, target);
+    void setQty(part.id, target);
   };
   const create = async (args: { name: string; bin: string; qty: number; reorderAt: number }) => {
     if (!user || !activePropertyId) return;
     const par = args.reorderAt > 0 ? args.reorderAt * 4 : Math.max(args.qty, 1);
-    await addInventoryItem(user.uid, activePropertyId, {
-      propertyId: activePropertyId,
-      name: args.name,
-      category: 'maintenance',
-      currentStock: args.qty,
-      parLevel: par,
-      reorderAt: args.reorderAt,
-      unit: 'units',
-      notes: args.bin,
-    });
+    try {
+      await addInventoryItem(user.uid, activePropertyId, {
+        propertyId: activePropertyId,
+        name: args.name,
+        category: 'maintenance',
+        currentStock: args.qty,
+        parLevel: par,
+        reorderAt: args.reorderAt,
+        unit: 'units',
+        notes: args.bin,
+      });
+    } catch (err) {
+      flash(es ? 'No se pudo agregar el artículo — revisa la conexión e inténtalo de nuevo.' : "Couldn't add the item — check your connection and try again.");
+      throw err;
+    }
   };
 
   const lead = out > 0
@@ -224,14 +306,17 @@ export function EquipmentTab() {
         actions={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar artículo' : 'Add item'}</Btn>}
       />
 
-      {parts.length === 0 ? (
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center' }}>
-          <span style={{ fontFamily: FONT_SANS, fontSize: 20, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}</span>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
-            {es ? 'Agrega filtros, focos, piezas — lo que guardes para reparaciones.' : 'Add filters, bulbs, parts — anything you keep on hand for repairs.'}
-          </p>
-          <Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar tu primer artículo' : 'Add your first item'}</Btn>
-        </div>
+      {gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={gate.retry} />
+      ) : gate.status === 'loading' ? (
+        <BoardLoading es={es} />
+      ) : parts.length === 0 ? (
+        <MtEmptyCard
+          titleSize={20}
+          title={es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}
+          body={es ? 'Agrega filtros, focos, piezas — lo que guardes para reparaciones.' : 'Add filters, bulbs, parts — anything you keep on hand for repairs.'}
+          action={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar tu primer artículo' : 'Add your first item'}</Btn>}
+        />
       ) : (
         <CenteredBoard>
           {liveBands.map((s) => {
@@ -257,6 +342,14 @@ export function EquipmentTab() {
 
       <AddItemModal open={addOpen} onClose={() => setAddOpen(false)} onCreate={create} />
       <ItemModal part={sel} open={!!sel} onClose={() => setSelId(null)} onSetQty={setQty} onRestock={restock} />
+
+      <ToastHost
+        toasts={toasts}
+        position="bottom"
+        offset="28px"
+        zIndex={1100}
+        toastStyle={{ background: T.ink, color: T.bg, padding: '12px 22px', borderRadius: 12, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500, boxShadow: '0 12px 32px rgba(31,35,28,0.24)' }}
+      />
     </div>
   );
 }

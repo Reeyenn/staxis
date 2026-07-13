@@ -61,6 +61,11 @@ export default function NotificationsPage() {
         return;
       }
       setPrefs(body.data.preferences);
+    } catch (err) {
+      // A network throw used to escape as an unhandled rejection — the page
+      // rendered blank (prefs null) with no error at all.
+      console.error('[notifications:settings] load failed', err);
+      setError(lang === 'es' ? 'No se pudieron cargar las preferencias — revisa tu conexión' : 'Failed to load preferences — check your connection');
     } finally {
       setLoading(false);
     }
@@ -68,8 +73,9 @@ export default function NotificationsPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const save = async (next: Partial<Preferences>) => {
-    if (!prefs || !propertyId) return;
+  /** Returns true only when the server confirmed the save. */
+  const save = async (next: Partial<Preferences>): Promise<boolean> => {
+    if (!prefs || !propertyId) return false;
     setSaving(true);
     setError('');
     try {
@@ -81,11 +87,18 @@ export default function NotificationsPage() {
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (!res.ok || !body.ok || !body.data) {
         setError(body.error || (lang === 'es' ? 'No se pudo guardar' : 'Failed to save'));
-        return;
+        return false;
       }
       setPrefs(body.data.preferences);
       setSavedFlash(true);
       window.setTimeout(() => setSavedFlash(false), 1800);
+      return true;
+    } catch (err) {
+      // A network throw used to escape silently — toggles/pause buttons did
+      // nothing with zero feedback.
+      console.error('[notifications:settings] save failed', err);
+      setError(lang === 'es' ? 'No se pudo guardar — revisa tu conexión e intenta de nuevo' : 'Failed to save — check your connection and try again');
+      return false;
     } finally {
       setSaving(false);
     }
@@ -100,8 +113,10 @@ export default function NotificationsPage() {
       return;
     }
     const nextList = [...prefs.ccEmails, trim];
-    setNewCc('');
-    await save({ ccEmails: nextList });
+    // Clear the input only AFTER the save succeeds — a failed save used to
+    // throw away what the manager typed.
+    const ok = await save({ ccEmails: nextList });
+    if (ok) setNewCc('');
   };
 
   const handleRemoveCc = async (cc: string) => {

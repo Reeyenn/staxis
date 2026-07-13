@@ -59,6 +59,11 @@ export default function UsersPage() {
         return;
       }
       setUsers(body.data.users);
+    } catch (err) {
+      // A network throw used to escape as an unhandled rejection, rendering a
+      // silently empty user list with no error.
+      console.error('[users:settings] load failed', err);
+      setError(lang === 'es' ? 'No se pudieron cargar los usuarios — revisa tu conexión' : 'Failed to load users — check your connection');
     } finally {
       setLoading(false);
     }
@@ -82,6 +87,11 @@ export default function UsersPage() {
         return;
       }
       await load();
+    } catch (err) {
+      // A network throw used to silently do nothing — the role select just
+      // snapped back and a deactivate looked like it succeeded.
+      console.error('[users:settings] action failed', err);
+      setError(lang === 'es' ? 'La acción falló — revisa tu conexión e intenta de nuevo' : 'Action failed — check your connection and try again');
     } finally {
       setBusyAccountId(null);
     }

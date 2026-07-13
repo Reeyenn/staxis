@@ -27,8 +27,10 @@ import { Btn } from '../Btn';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { Overlay } from './Overlay';
+import { numGuard } from './form-kit';
+import { entriesFingerprint, computeStockUps, unchangedItemIds } from './count-save';
 import type { DisplayItem } from '../types';
-import { t, catLabelFor, type Lang } from '../inv-i18n';
+import { catLabelFor, type Lang } from '../inv-i18n';
 
 interface CountSheetProps {
   lang: Lang;
@@ -44,6 +46,19 @@ interface CountSheetProps {
 // flagging). Photo counting is a manual convenience, not an ML prediction.
 type FillSource = 'manual' | 'photo';
 type Entry = { value: string; source: FillSource; confidence?: 'high' | 'medium' | 'low' };
+
+// One save attempt: the payload computed at first try + per-step completion
+// markers, so a retry after a partial failure resumes instead of re-running
+// (scan-commit.ts pattern). Pure helpers live in count-save.ts.
+type SaveProgress = {
+  fp: string;
+  now: Date;
+  rows: Array<Omit<InventoryCount, 'id'>>;
+  stockUps: Array<{ id: string; delta: number; item: InventoryItem }>;
+  countedIds: Set<string>;
+  orderedIds: Set<string>;
+  stockedIds: Set<string>;
+};
 
 // Co-located strings for the count sheet (too specific for inv-i18n).
 function csStrings(lang: Lang) {
@@ -71,6 +86,7 @@ function csStrings(lang: Lang) {
       reading: 'Reading…',
       choosePhoto: '📷 Choose photo',
       saveFailed: 'Saving the count failed. Please try again.',
+      discardConfirm: 'You have unsaved counts. Close and discard them?',
       noItemsInGroup: 'No items in this group to count.',
       filled: (n: number, total: number) => `Filled ${n} of ${total} item${total === 1 ? '' : 's'}`,
       notRecognized: (n: number) => ` · ${n} not recognized`,
@@ -106,6 +122,7 @@ function csStrings(lang: Lang) {
       reading: 'Leyendo…',
       choosePhoto: '📷 Elegir foto',
       saveFailed: 'No se pudo guardar el conteo. Inténtalo de nuevo.',
+      discardConfirm: 'Tienes conteos sin guardar. ¿Cerrar y descartarlos?',
       noItemsInGroup: 'No hay artículos en este grupo para contar.',
       filled: (n: number, total: number) => `Llenados ${n} de ${total} artículo${total === 1 ? '' : 's'}`,
       notRecognized: (n: number) => ` · ${n} no reconocidos`,
@@ -130,13 +147,32 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   const [entries, setEntries] = useState<Record<string, Entry>>({});
   const [saving, setSaving] = useState(false);
 
+  // Resume bookkeeping across retries of a count (scan-commit.ts pattern):
+  // which save steps already landed per item, so a retry after a partial
+  // failure never duplicates count rows or stock-up orders. Keyed by an
+  // entries fingerprint — editing a number starts a fresh attempt, but the
+  // fresh attempt carries completion forward for entries that didn't change.
+  const progRef = useRef<SaveProgress | null>(null);
+
   // Show the "what to count" chooser fresh on every open (clear any old entries).
   useEffect(() => {
     if (open) {
       setScope(null);
       setEntries({});
+      progRef.current = null;
     }
   }, [open]);
+
+  // Guarded close: a stray tap on the dimmed background, an ESC press, or the
+  // Cancel/✕ buttons must not silently throw away a walk-and-tally in
+  // progress — entries live only in local state and reopen resets them, so
+  // there is no recovery. Confirm before discarding typed counts.
+  const requestClose = () => {
+    if (saving) return;
+    const dirty = Object.values(entries).some((e) => e.value !== '');
+    if (dirty && !confirm(cs.discardConfirm)) return;
+    onClose();
+  };
 
   // The items in the chosen scope. Empty until a scope is picked.
   const scopedDisplay = useMemo(
@@ -175,7 +211,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     const gN = display.filter((d) => d.cat !== 'breakfast').length;
     const bN = display.filter((d) => d.cat === 'breakfast').length;
     return (
-      <Overlay open onClose={onClose} width={560} title={cs.title}>
+      <Overlay open onClose={requestClose} width={560} title={cs.title}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           <ScopeOption title={cs.generalInventory} n={gN} itemsLabel={cs.items} onPick={() => begin('general')} />
           <ScopeOption title={cs.breakfastInventory} n={bN} itemsLabel={cs.items} onPick={() => begin('breakfast')} />
@@ -206,64 +242,116 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     if (!user || !activePropertyId || saving) return;
     setSaving(true);
     try {
-      const now = new Date();
-      const rows: Array<Omit<InventoryCount, 'id'>> = [];
-      // Counted items we need to check for a possible auto-"stock-up". We defer
-      // the delta computation until AFTER a fresh stock re-fetch below — see
-      // the double-log fix note.
-      const counted: Array<{ item: InventoryItem; countedStock: number }> = [];
-      for (const d of scopedDisplay) {
-        const e = entries[d.id];
-        if (!e || e.value === '') continue;
-        const n = Number(e.value);
-        if (!Number.isFinite(n)) continue;
-        const variance = Number.isFinite(d.estimated) ? n - d.estimated : undefined;
-        rows.push({
-          propertyId: activePropertyId,
-          itemId: d.id,
-          itemName: d.name,
-          countedStock: n,
-          estimatedStock: Number.isFinite(d.estimated) ? d.estimated : undefined,
-          variance,
-          varianceValue:
-            variance !== undefined && d.unitCost > 0 ? variance * d.unitCost : undefined,
-          unitCost: d.unitCost || undefined,
-          countedAt: now,
-          countedBy: user.displayName || user.username || 'team',
-        });
-        counted.push({ item: d.raw, countedStock: n });
+      // Resume or fresh attempt? If a previous attempt of the SAME entries
+      // partially failed, resume it — skipping the steps that already landed
+      // so a retry never duplicates count rows or stock-up orders (which
+      // would inflate month spend and feed phantom consumption into the AI).
+      const fp = entriesFingerprint(entries);
+      let attempt = progRef.current;
+      if (!attempt || attempt.fp !== fp) {
+        const prev = attempt;
+        const now = new Date();
+        const rows: Array<Omit<InventoryCount, 'id'>> = [];
+        // Counted items we need to check for a possible auto-"stock-up". We defer
+        // the delta computation until AFTER a fresh stock re-fetch below — see
+        // the double-log fix note.
+        const counted: Array<{
+          id: string;
+          pageLoadStock: number;
+          countedStock: number;
+          item: InventoryItem;
+        }> = [];
+        for (const d of scopedDisplay) {
+          const e = entries[d.id];
+          if (!e || e.value === '') continue;
+          const n = Number(e.value);
+          if (!Number.isFinite(n)) continue;
+          const variance = Number.isFinite(d.estimated) ? n - d.estimated : undefined;
+          rows.push({
+            propertyId: activePropertyId,
+            itemId: d.id,
+            itemName: d.name,
+            countedStock: n,
+            estimatedStock: Number.isFinite(d.estimated) ? d.estimated : undefined,
+            variance,
+            varianceValue:
+              variance !== undefined && d.unitCost > 0 ? variance * d.unitCost : undefined,
+            unitCost: d.unitCost || undefined,
+            countedAt: now,
+            countedBy: user.displayName || user.username || 'team',
+          });
+          counted.push({
+            id: d.id,
+            pageLoadStock: d.raw.currentStock ?? 0,
+            countedStock: n,
+            item: d.raw,
+          });
+        }
+
+        if (rows.length === 0) {
+          setSaving(false);
+          return;
+        }
+
+        // Re-fetch the CURRENT stored stock right before deciding stock-ups. The
+        // page-load value (d.counted) goes stale the moment a delivery is logged
+        // in-app after the sheet opened: counting against the stale value would
+        // re-log the same goods as a phantom "stock-up" order and double-count
+        // them into consumption. Comparing against fresh stock closes that. If an
+        // item vanished from the fetch (deleted mid-session), fall back to the
+        // page-load value so we don't crash — a rare, low-stakes edge.
+        const freshStock = await fetchInventoryStockByIds(
+          user.uid, activePropertyId, counted.map((c) => c.id),
+        );
+        // Counted stock HIGHER than what's on file NOW → log a restock event
+        // (someone received stock between counts and forgot to log it).
+        const stockUps = computeStockUps(counted, freshStock);
+
+        // Editing entries after a PARTIAL failure must not restart from
+        // scratch: the previous attempt's completed steps for items whose
+        // value didn't change already landed, and re-running them would
+        // duplicate count rows and stock-up orders. Carry the previous
+        // per-item completion forward for unchanged entries — only items the
+        // user actually edited (or newly counted) run fresh.
+        const unchanged = prev ? unchangedItemIds(prev.fp, fp) : new Set<string>();
+        const carry = (ids: Set<string>) =>
+          new Set([...ids].filter((id) => unchanged.has(id)));
+
+        attempt = {
+          fp,
+          now,
+          rows,
+          stockUps,
+          countedIds: prev ? carry(prev.countedIds) : new Set(),
+          orderedIds: prev ? carry(prev.orderedIds) : new Set(),
+          stockedIds: prev ? carry(prev.stockedIds) : new Set(),
+        };
+        progRef.current = attempt;
+      }
+      // Progress updates are copy-on-write (never mutate the object the ref
+      // holds) and re-assigned to the ref after every completed step, so a
+      // throw mid-sequence still leaves the completed steps recorded.
+      let prog = attempt;
+      const now = prog.now;
+
+      // 1. Batch count log — only rows that haven't landed yet. On a plain
+      // retry that's all-or-none (the batch insert is atomic); after an
+      // edit-then-retry the carried-forward unchanged rows are skipped and
+      // only edited/new rows insert.
+      const pendingRows = prog.rows.filter((r) => !prog.countedIds.has(r.itemId));
+      if (pendingRows.length > 0) {
+        await addInventoryCountBatch(user.uid, activePropertyId, pendingRows);
+        const countedIds = new Set(prog.countedIds);
+        for (const r of pendingRows) countedIds.add(r.itemId);
+        prog = { ...prog, countedIds };
+        progRef.current = prog;
       }
 
-      if (rows.length === 0) {
-        setSaving(false);
-        return;
-      }
-
-      // Re-fetch the CURRENT stored stock right before deciding stock-ups. The
-      // page-load value (d.counted) goes stale the moment a delivery is logged
-      // in-app after the sheet opened: counting against the stale value would
-      // re-log the same goods as a phantom "stock-up" order and double-count
-      // them into consumption. Comparing against fresh stock closes that. If an
-      // item vanished from the fetch (deleted mid-session), fall back to the
-      // page-load value so we don't crash — a rare, low-stakes edge.
-      const freshStock = await fetchInventoryStockByIds(
-        user.uid, activePropertyId, counted.map((c) => c.item.id),
-      );
-      const stockUps: Array<{ item: InventoryItem; delta: number }> = [];
-      for (const { item, countedStock } of counted) {
-        const baseline = item.id in freshStock ? freshStock[item.id] : (item.currentStock ?? 0);
-        // If counted stock is HIGHER than what's on file NOW, log a restock
-        // event (someone received stock between counts and forgot to log it).
-        const delta = countedStock - baseline;
-        if (delta > 0) stockUps.push({ item, delta });
-      }
-
-      // 1. Batch count log.
-      await addInventoryCountBatch(user.uid, activePropertyId, rows);
-
-      // 2. Restock events for stock-ups.
-      await Promise.all(
-        stockUps.map(({ item, delta }) =>
+      // 2. Restock events for stock-ups — per-item resume: record each
+      // success so a retry only re-sends the ones that actually failed.
+      const pendingOrders = prog.stockUps.filter((s) => !prog.orderedIds.has(s.id));
+      const orderResults = await Promise.allSettled(
+        pendingOrders.map(({ item, delta }) =>
           addInventoryOrder(user.uid, activePropertyId, {
             propertyId: activePropertyId,
             itemId: item.id,
@@ -278,25 +366,43 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           }),
         ),
       );
+      const orderedIds = new Set(prog.orderedIds);
+      orderResults.forEach((r, i) => {
+        if (r.status === 'fulfilled') orderedIds.add(pendingOrders[i].id);
+      });
+      prog = { ...prog, orderedIds };
+      progRef.current = prog;
+      const orderFailure = orderResults.find((r) => r.status === 'rejected');
+      if (orderFailure) throw (orderFailure as PromiseRejectedResult).reason;
 
-      // 3. Persist new currentStock on each item.
-      await Promise.all(
-        rows.map((r) =>
+      // 3. Persist new currentStock on each item — same per-item resume.
+      const pendingStock = prog.rows.filter((r) => !prog.stockedIds.has(r.itemId));
+      const stockResults = await Promise.allSettled(
+        pendingStock.map((r) =>
           updateInventoryItem(user.uid, activePropertyId, r.itemId, {
             currentStock: r.countedStock,
             lastCountedAt: now,
           }),
         ),
       );
+      const stockedIds = new Set(prog.stockedIds);
+      stockResults.forEach((r, i) => {
+        if (r.status === 'fulfilled') stockedIds.add(pendingStock[i].itemId);
+      });
+      prog = { ...prog, stockedIds };
+      progRef.current = prog;
+      const stockFailure = stockResults.find((r) => r.status === 'rejected');
+      if (stockFailure) throw (stockFailure as PromiseRejectedResult).reason;
 
       // 4. Fire-and-forget: ML post-count processing.
-      const itemIds = rows.map((r) => r.itemId);
+      const itemIds = prog.rows.map((r) => r.itemId);
       void fetchWithAuth('/api/inventory/post-count-process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ propertyId: activePropertyId, itemIds }),
       }).catch(() => {});
 
+      progRef.current = null;
       onClose();
     } catch (err) {
       console.error('[count-sheet] save failed', err);
@@ -309,7 +415,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   return (
     <Overlay
       open
-      onClose={onClose}
+      onClose={requestClose}
       accent={statusColor.good}
       eyebrow={cs.countMode}
       italic={cs.walkTally}
@@ -318,7 +424,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
       footer={
         <>
           <span style={{ marginRight: 'auto' }} />
-          <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
+          <Btn variant="ghost" size="md" onClick={requestClose} disabled={saving}>
             {cs.cancel}
           </Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || filled === 0}>
@@ -467,10 +573,9 @@ function CountRow({
             min="0"
             inputMode="decimal"
             value={entry.value}
-            // Reject anything that isn't empty or a non-negative decimal in progress.
-            // Blocks "-5", "abc", "NaN", scientific notation at type-time so the
-            // count we save can't be a negative or non-finite number.
-            onChange={(e) => { const v = e.target.value; if (v === '' || /^\d*\.?\d*$/.test(v)) onChange(v); }}
+            // numGuard blocks "-5", "abc", "NaN", scientific notation at
+            // type-time so the count we save can't be negative or non-finite.
+            onChange={(e) => { const v = e.target.value; if (numGuard(v)) onChange(v); }}
             placeholder="—"
             style={{
               width: '100%',

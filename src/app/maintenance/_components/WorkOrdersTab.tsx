@@ -21,10 +21,13 @@ import type { WorkOrder, WorkOrderPriority } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn, Avatar, Modal, Field, TextInput, TextArea, ChipChoose,
-  StorageImage, PageHead, displayLoc, fmtDateShort, fmtSubmittedAt,
+  StorageImage, PageHead, BoardColumn, MtEmptyCard,
+  useBoardGate, BoardLoading, BoardLoadError,
+  displayLoc, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
   prioColor, prioLabel,
   CX_SPRING, CX_CARD_SHADOW, CX_CARD_SHADOW_HOVER, CX_CARD_BORDER_HOVER,
 } from './_mt-snow';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { EquipmentPicker } from './EquipmentPicker';
 
 // ── placement: the 4-way choice (3 priorities + "professional") ────────────
@@ -40,6 +43,18 @@ function placementOf(w: WorkOrder): Placement {
 function roleLabel(role: string | undefined, es: boolean): string {
   if (role === 'admin') return es ? 'Gerente general' : 'General manager';
   return es ? 'Personal' : 'Staff';
+}
+
+// submitter_role is a free-text column. New rows persist the CANONICAL
+// English label (so the stored value no longer depends on the submitter's
+// language setting); this maps the known labels — including legacy
+// Spanish-persisted rows — to the VIEWER's language. Unknown values pass
+// through verbatim.
+function displayRole(stored: string | undefined, es: boolean): string {
+  if (!stored) return es ? 'Personal' : 'Staff';
+  if (stored === 'General manager' || stored === 'Gerente general') return roleLabel('admin', es);
+  if (stored === 'Staff' || stored === 'Personal') return roleLabel(undefined, es);
+  return stored;
 }
 
 // Professional lane tone — Concourse "muted" slate (the outside-contractor
@@ -152,33 +167,10 @@ function OpenCard({
         </span>
         {w.submitterPhotoPath && <span style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.ink3 }}>📷</span>}
         <span style={{ marginLeft: 'auto', fontFamily: FONT_MONO, fontSize: 10.5, color: T.ink3, whiteSpace: 'nowrap', flexShrink: 0 }}>
-          {fmtSubmittedAt(w.createdAt).replace(' · today', '').replace(/ ago$/, '')}
+          {fmtSubmittedAtCompact(w.createdAt, es)}
         </span>
       </div>
     </button>
-  );
-}
-
-// ── board column ────────────────────────────────────────────────────────────
-function Lane({
-  color, label, items, onOpen, enterId, es,
-}: {
-  color: string; label: string; items: WorkOrder[];
-  onOpen: (w: WorkOrder) => void; enterId: string | null; es: boolean;
-}) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '0 2px 11px', borderBottom: `2px solid ${color}`, marginBottom: 12 }}>
-        <span style={{ width: 10, height: 10, borderRadius: '50%', background: color, flexShrink: 0 }} />
-        <span style={{ fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color }}>{label}</span>
-        <span style={{ marginLeft: 'auto', fontFamily: FONT_SANS, fontWeight: 600, fontSize: 20, color, lineHeight: 1, letterSpacing: '-0.02em' }}>{items.length}</span>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
-        {items.length === 0
-          ? <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3, padding: '6px 2px' }}>{es ? 'Nada aquí.' : 'Nothing here.'}</span>
-          : items.map((w) => <OpenCard key={w.id} w={w} onOpen={onOpen} isEnter={w.id === enterId} es={es} />)}
-      </div>
-    </div>
   );
 }
 
@@ -283,7 +275,16 @@ function SubmitModal({
   const [busy, setBusy] = useState(false);
 
   const reset = () => { setLoc(''); setDesc(''); setPlacement('normal'); setPhoto(null); setEquipmentId(null); setRepairCost(''); };
-  const close = () => { reset(); onClose(); };
+  const dirty = loc.trim() !== '' || desc.trim() !== '' || photo !== null || equipmentId !== null || repairCost.trim() !== '';
+  // Guard the eaten-form path: Escape / a stray scrim click used to wipe the
+  // half-typed order instantly. Confirm before discarding anything typed.
+  const close = () => {
+    if (dirty && !window.confirm(es
+      ? '¿Descartar esta orden sin enviar? Se perderá lo que escribiste.'
+      : 'Discard this work order? What you typed will be lost.')) return;
+    reset();
+    onClose();
+  };
   const canSubmit = loc.trim().length > 0 && desc.trim().length > 0 && !busy;
 
   const submit = async () => {
@@ -297,6 +298,9 @@ function SubmitModal({
       });
       reset();
       onClose();
+    } catch {
+      // Submit failed — the board already surfaced the error in a toast.
+      // Keep the modal open with the form intact so nothing typed is lost.
     } finally {
       setBusy(false);
     }
@@ -369,6 +373,7 @@ function ContractorPanel({
   const save = async () => {
     setBusy(true);
     try { await onSave({ trade: trade.trim(), company: company.trim(), phone: phone.trim() }); setSavedAt(Date.now()); }
+    catch { /* save failed — the board surfaced a toast; keep the fields editable, no "Saved" mark */ }
     finally { setBusy(false); }
   };
 
@@ -376,7 +381,7 @@ function ContractorPanel({
     <div style={{ background: PRO_DIM, border: '1px solid rgba(31,35,28,0.14)', borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
         <Caps size={10} c={PRO} weight={600}>☎ {es ? 'Profesional' : 'Professional'}{w.proTrade ? ` · ${w.proTrade}` : ''}</Caps>
-        {w.proCalledAt && <Caps size={10} c={T.ink3}>{fmtSubmittedAt(w.proCalledAt)}</Caps>}
+        {w.proCalledAt && <Caps size={10} c={T.ink3}>{fmtSubmittedAt(w.proCalledAt, es)}</Caps>}
       </div>
       {!hasContractor(w) && (
         <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2 }}>
@@ -423,12 +428,14 @@ function DetailModal({
   const done = async () => {
     setBusy(true);
     try { await onDone(w.id, note.trim()); setNote(''); onClose(); }
+    catch { /* failed — the board surfaced a toast; keep the modal open so the note isn't lost */ }
     finally { setBusy(false); }
   };
   const attach = async (file: File | null) => {
     if (!file) return;
     setAttaching(true);
     try { await onAttachPhoto(w.id, file); }
+    catch { /* upload/save failed — the board surfaced a toast */ }
     finally { setAttaching(false); }
   };
 
@@ -442,7 +449,7 @@ function DetailModal({
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <Caps size={11} tracking="0.06em">{es ? 'Abierta · enviada' : 'Open · submitted'} {fmtSubmittedAt(w.createdAt)}</Caps>
+        <Caps size={11} tracking="0.06em">{es ? 'Abierta · enviada' : 'Open · submitted'} {fmtSubmittedAt(w.createdAt, es)}</Caps>
 
         <Field label={es ? 'Prioridad' : 'Priority'}>
           <PlacementChips value={placement} onChange={(v) => onSetPlacement(w, v)} es={es} />
@@ -467,7 +474,7 @@ function DetailModal({
           <Avatar name={w.submittedByName || '?'} size={28} />
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 500 }}>{w.submittedByName || (es ? 'Desconocido' : 'Unknown')}</span>
-            <Caps size={10} tracking="0.06em" c={T.ink3}>{w.submitterRole || (es ? 'Personal' : 'Staff')} · {fmtSubmittedAt(w.createdAt)}</Caps>
+            <Caps size={10} tracking="0.06em" c={T.ink3}>{displayRole(w.submitterRole, es)} · {fmtSubmittedAt(w.createdAt, es)}</Caps>
           </div>
         </div>
 
@@ -518,7 +525,7 @@ function HistoryModal({ open, onClose, done, es }: { open: boolean; onClose: () 
                 {w.completionNote && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, fontStyle: 'italic' }}>“{w.completionNote}”</span>}
               </div>
               <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{w.completedByName || '—'}</span>
-              <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>{w.completedAt ? fmtDateShort(w.completedAt) : '—'}</span>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 12, color: T.ink2 }}>{w.completedAt ? fmtDateShort(w.completedAt, es) : '—'}</span>
               <Pill tone="sage">✓ {es ? 'Lista' : 'Done'}</Pill>
             </div>
           ))}
@@ -536,6 +543,7 @@ export function WorkOrdersTab() {
   const es = lang === 'es';
 
   const [orders, setOrders] = useState<WorkOrder[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -544,11 +552,24 @@ export function WorkOrdersTab() {
   const boardRef = useRef<HTMLDivElement>(null);
   const flipRef = useRef<{ id: string; first: DOMRect } | null>(null);
 
+  // Failure feedback for board writes (same replace-on-reshow ink pill as the
+  // equipment registry).
+  const { toasts, show: flash } = useToast({ durationMs: 3600, max: 1 });
+
+  // Load gate: don't render the happy "All caught up" empty state until the
+  // first snapshot actually arrived; show an error card with retry when the
+  // initial load failed (see useBoardGate in _mt-snow).
+  const gate = useBoardGate(activePropertyId, 'work_orders', loaded);
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    const unsub = subscribeToWorkOrders(user.uid, activePropertyId, setOrders);
+    setLoaded(false);
+    const unsub = subscribeToWorkOrders(user.uid, activePropertyId, (rows) => {
+      setLoaded(true);
+      setOrders(rows);
+    });
     return () => unsub();
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, gate.retryKey]);
 
   const open = useMemo(() => orders.filter((o) => o.status === 'open'), [orders]);
   const doneList = useMemo(() => orders.filter((o) => o.status === 'done'), [orders]);
@@ -592,21 +613,38 @@ export function WorkOrdersTab() {
   }) => {
     if (!user || !activePropertyId) return;
     let submitterPhotoPath: string | undefined;
-    if (args.photo) { const p = await uploadPhoto(args.photo); if (p) submitterPhotoPath = p; }
+    if (args.photo) {
+      const p = await uploadPhoto(args.photo);
+      if (!p) {
+        // Don't silently create a photoless order — the fixer would walk in
+        // blind. Surface it and keep the modal open (throw → modal stays).
+        flash(es ? 'No se pudo subir la foto — inténtalo de nuevo o quítala.' : "Couldn't upload the photo — try again or remove it.");
+        throw new Error('photo upload failed');
+      }
+      submitterPhotoPath = p;
+    }
     const isPro = args.placement === 'professional';
-    const newId = await addWorkOrder(user.uid, activePropertyId, {
-      propertyId: activePropertyId,
-      location: args.location,
-      description: args.description,
-      priority: args.placement === 'professional' ? 'normal' : args.placement,
-      status: 'open',
-      submittedByName: user.displayName,
-      submitterRole: roleLabel(user.role, es),
-      submitterPhotoPath,
-      equipmentId: args.equipmentId ?? null,
-      repairCost: args.repairCost ?? null,
-      needsPro: isPro,
-    });
+    let newId: string;
+    try {
+      newId = await addWorkOrder(user.uid, activePropertyId, {
+        propertyId: activePropertyId,
+        location: args.location,
+        description: args.description,
+        priority: args.placement === 'professional' ? 'normal' : args.placement,
+        status: 'open',
+        submittedByName: user.displayName,
+        // Canonical English label — translated to the viewer's language at
+        // display time (displayRole), never persisted pre-translated.
+        submitterRole: roleLabel(user.role, false),
+        submitterPhotoPath,
+        equipmentId: args.equipmentId ?? null,
+        repairCost: args.repairCost ?? null,
+        needsPro: isPro,
+      });
+    } catch (err) {
+      flash(es ? 'No se pudo enviar la orden — revisa la conexión e inténtalo de nuevo.' : "Couldn't submit the work order — check your connection and try again.");
+      throw err;
+    }
     // Trigger the "arrive & glow" once the new card mounts from the subscription.
     if (newId) {
       setEnterId(newId);
@@ -616,16 +654,30 @@ export function WorkOrdersTab() {
 
   const handleDone = async (id: string, note: string) => {
     if (!user) return;
-    await markWorkOrderDone(id, {
-      completedByName: user.displayName,
-      completionNote: note || undefined,
-    });
+    try {
+      await markWorkOrderDone(id, {
+        completedByName: user.displayName,
+        completionNote: note || undefined,
+      });
+    } catch (err) {
+      flash(es ? 'No se pudo marcar como lista — revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done — check your connection and try again.");
+      throw err;
+    }
     setDetailId(null);
   };
 
   const setPlacement = (w: WorkOrder, val: Placement) => {
     if (!user || !activePropertyId) return;
     if (placementOf(w) === val) return;
+    // Leaving the Professional lane permanently erases the saved contractor
+    // (trade / company / phone / called-at) — confirm before a one-tap loss.
+    if (val !== 'professional' && hasContractor(w)) {
+      const who = w.proCompany || w.proTrade || w.proPhone || '';
+      const msg = es
+        ? `Esto quita el contratista guardado${who ? ` (${who})` : ''} de esta orden. ¿Mover de todos modos?`
+        : `This removes the saved contractor${who ? ` (${who})` : ''} from this order. Move it anyway?`;
+      if (!window.confirm(msg)) return;
+    }
     // Record the FLIP start position before the board re-renders.
     const node = boardRef.current?.querySelector<HTMLElement>(`[data-wo-id="${w.id}"]`);
     if (node) {
@@ -636,24 +688,41 @@ export function WorkOrdersTab() {
     const patch = val === 'professional'
       ? { needsPro: true }
       : { priority: val, needsPro: false, proTrade: null, proCompany: null, proPhone: null, proCalledAt: null };
-    void updateWorkOrder(user.uid, activePropertyId, w.id, patch);
+    updateWorkOrder(user.uid, activePropertyId, w.id, patch).catch(() => {
+      // Fire-and-forget no more: the card won't move (realtime never fires on
+      // a failed write), so tell the user why.
+      flash(es ? 'No se pudo mover la orden — revisa la conexión e inténtalo de nuevo.' : "Couldn't move the work order — check your connection and try again.");
+    });
   };
 
   const attachPhoto = async (id: string, file: File) => {
     if (!user || !activePropertyId) return;
     const path = await uploadPhoto(file);
-    if (path) await updateWorkOrder(user.uid, activePropertyId, id, { submitterPhotoPath: path });
+    if (!path) {
+      flash(es ? 'No se pudo subir la foto — inténtalo de nuevo.' : "Couldn't upload the photo — try again.");
+      return;
+    }
+    try {
+      await updateWorkOrder(user.uid, activePropertyId, id, { submitterPhotoPath: path });
+    } catch {
+      flash(es ? 'No se pudo adjuntar la foto — inténtalo de nuevo.' : "Couldn't attach the photo — try again.");
+    }
   };
 
   const saveContractor = async (id: string, args: { trade: string; company: string; phone: string }) => {
     if (!user || !activePropertyId) return;
-    await updateWorkOrder(user.uid, activePropertyId, id, {
-      needsPro: true,
-      proTrade: args.trade || null,
-      proCompany: args.company || null,
-      proPhone: args.phone || null,
-      proCalledAt: new Date(),
-    });
+    try {
+      await updateWorkOrder(user.uid, activePropertyId, id, {
+        needsPro: true,
+        proTrade: args.trade || null,
+        proCompany: args.company || null,
+        proPhone: args.phone || null,
+        proCalledAt: new Date(),
+      });
+    } catch (err) {
+      flash(es ? 'No se pudo guardar el contratista — revisa la conexión e inténtalo de nuevo.' : "Couldn't save the contractor — check your connection and try again.");
+      throw err;
+    }
   };
 
   const laneItems = (p: Placement) => {
@@ -682,17 +751,26 @@ export function WorkOrdersTab() {
         </>}
       />
 
-      {open.length === 0 ? (
-        <div style={{ background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center', boxShadow: CX_CARD_SHADOW }}>
-          <span style={{ fontFamily: FONT_SANS, fontSize: 21, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{es ? 'Todo al día.' : 'All caught up.'}</span>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>{es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}</p>
-          <Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
-        </div>
+      {gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={gate.retry} />
+      ) : gate.status === 'loading' ? (
+        <BoardLoading es={es} />
+      ) : open.length === 0 ? (
+        <MtEmptyCard
+          title={es ? 'Todo al día.' : 'All caught up.'}
+          body={es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}
+          action={<Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>}
+        />
       ) : (
         <div ref={boardRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, alignItems: 'start' }}>
-          {lanes.map((l) => (
-            <Lane key={l.key} color={LANE_COLOR[l.key]} label={l.label} items={laneItems(l.key)} onOpen={(w) => setDetailId(w.id)} enterId={enterId} es={es} />
-          ))}
+          {lanes.map((l) => {
+            const items = laneItems(l.key);
+            return (
+              <BoardColumn key={l.key} color={LANE_COLOR[l.key]} label={l.label} count={items.length} empty={es ? 'Nada aquí.' : 'Nothing here.'}>
+                {items.map((w) => <OpenCard key={w.id} w={w} onOpen={(x) => setDetailId(x.id)} isEnter={w.id === enterId} es={es} />)}
+              </BoardColumn>
+            );
+          })}
         </div>
       )}
 
@@ -707,6 +785,14 @@ export function WorkOrdersTab() {
         onSaveContractor={saveContractor}
       />
       <HistoryModal open={historyOpen} onClose={() => setHistoryOpen(false)} done={doneList} es={es} />
+
+      <ToastHost
+        toasts={toasts}
+        position="bottom"
+        offset="28px"
+        zIndex={1100}
+        toastStyle={{ background: T.ink, color: T.bg, padding: '12px 22px', borderRadius: 12, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500, boxShadow: '0 12px 32px rgba(31,35,28,0.24)' }}
+      />
     </div>
   );
 }

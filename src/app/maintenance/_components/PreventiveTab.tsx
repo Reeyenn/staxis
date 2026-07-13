@@ -24,14 +24,13 @@ import type { PreventiveTask } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO,
   Caps, Pill, Btn, Modal, Field, TextInput, TextArea,
-  PageHead, BoardColumn, BoardCard, CenteredBoard,
-  relDue, fmtDate, fmtDateShort, daysBetween,
-  CX_CARD_SHADOW,
+  PageHead, BoardColumn, BoardCard, CenteredBoard, MtEmptyCard,
+  useBoardGate, BoardLoading, BoardLoadError,
+  relDue, fmtDate, fmtDateShort, daysBetween, addDaysLocal, cadenceLabel,
 } from './_mt-snow';
+import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { EquipmentRegistry } from './EquipmentRegistry';
 import { WheelDatePicker } from '@/components/ui/WheelDatePicker';
-
-const DAY = 24 * 60 * 60 * 1000;
 
 type Band = 'overdue' | 'soon' | 'upcoming';
 const BAND: Record<Band, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string; es: string }> = {
@@ -51,13 +50,29 @@ type Unit = typeof UNITS[number]['value'];
 
 function nextDueDate(t: PreventiveTask): Date {
   if (!t.lastCompletedAt) return new Date();
-  return new Date(t.lastCompletedAt.getTime() + t.frequencyDays * DAY);
+  // Calendar-day addition (DST-safe) — raw ms addition landed backfilled
+  // midnight-anchored dates at 23:00 the previous day across the fall-back,
+  // banding/displaying the due date one day early.
+  return addDaysLocal(t.lastCompletedAt, t.frequencyDays);
 }
 function bandFor(t: PreventiveTask): Band {
   const d = daysBetween(new Date(), nextDueDate(t));
   if (d < 0) return 'overdue';
   if (d <= 30) return 'soon';
   return 'upcoming';
+}
+// Editor draft (count text + unit + optional last-done ISO date) → concrete
+// cadence numbers. Shared by the New-task and edit modals, which previously
+// each re-derived it inline. An empty `last` previews from today — callers
+// must NOT persist `lastDate` when `last` is empty (that would silently stamp
+// a never-completed task as completed today).
+function cadenceFrom(count: string, unit: Unit, last: string): {
+  n: number; freqDays: number; lastDate: Date; nextDue: Date;
+} {
+  const n = parseInt(count, 10) || 0;
+  const freqDays = Math.max(1, n) * UNITS.find((u) => u.value === unit)!.mult;
+  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
+  return { n, freqDays, lastDate, nextDue: addDaysLocal(lastDate, freqDays) };
 }
 // Best count+unit for a day-count (prefilling the editor): largest unit that
 // divides evenly.
@@ -66,12 +81,6 @@ function daysToCountUnit(d: number): { count: number; unit: Unit } {
   if (d % 30 === 0)  return { count: d / 30,  unit: 'months' };
   if (d % 7 === 0)   return { count: d / 7,   unit: 'weeks' };
   return { count: d, unit: 'days' };
-}
-function cadenceLabel(days: number, es: boolean): string {
-  if (days >= 365 && days % 365 === 0) { const n = days / 365; return es ? `cada ${n} año${n > 1 ? 's' : ''}` : `every ${n} yr`; }
-  if (days >= 30) { const n = Math.round(days / 30); return es ? `cada ${n} mes${n > 1 ? 'es' : ''}` : `every ${n} mo`; }
-  if (days >= 7 && days % 7 === 0) { const n = days / 7; return es ? `cada ${n} sem` : `every ${n} wk`; }
-  return es ? `cada ${days} días` : `every ${days} days`;
 }
 
 // ── frequency editor: number box + segmented unit control ──────────────────
@@ -120,13 +129,18 @@ function NewTaskModal({
   const [busy, setBusy] = useState(false);
 
   const reset = () => { setName(''); setArea(''); setCount('1'); setUnit('months'); setLast(''); setBusy(false); };
-  const close = () => { reset(); onClose(); };
+  const dirty = name.trim() !== '' || area.trim() !== '' || last !== '';
+  // Guard the eaten-form path: Escape / a stray scrim click used to wipe the
+  // half-typed task instantly. Confirm before discarding anything typed.
+  const close = () => {
+    if (dirty && !window.confirm(es
+      ? '¿Descartar esta tarea sin agregar? Se perderá lo que escribiste.'
+      : 'Discard this task? What you typed will be lost.')) return;
+    reset();
+    onClose();
+  };
 
-  const mult = UNITS.find((u) => u.value === unit)!.mult;
-  const n = parseInt(count, 10) || 0;
-  const freqDays = Math.max(1, n) * mult;
-  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
-  const nextDue = new Date(lastDate.getTime() + freqDays * DAY);
+  const { n, freqDays, nextDue } = cadenceFrom(count, unit, last);
   const can = name.trim() && area.trim() && n > 0 && !busy;
 
   const submit = async () => {
@@ -136,6 +150,8 @@ function NewTaskModal({
       await onCreate({ name: name.trim(), area: area.trim(), frequencyDays: freqDays, lastCompletedISO: last ? new Date(`${last}T00:00:00`).toISOString() : null });
       reset();
       onClose();
+    } catch {
+      // Create failed — the board surfaced a toast; keep the form intact.
     } finally { setBusy(false); }
   };
 
@@ -162,7 +178,7 @@ function NewTaskModal({
         <div style={{ background: 'rgba(158,183,166,0.14)', border: '1px solid rgba(92,122,96,0.25)', borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
           <Caps size={10} c={T.sageDeep} weight={600}>{es ? 'Calculado' : 'Auto-calculated'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 15, color: T.ink }}>
-            {es ? 'Próxima: ' : 'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue) : '—'}</strong>
+            {es ? 'Próxima: ' : 'Next due: '}<strong style={{ fontWeight: 600 }}>{can ? fmtDate(nextDue, es) : '—'}</strong>
           </span>
         </div>
       </div>
@@ -177,7 +193,7 @@ function TaskModal({
   task: PreventiveTask | null;
   open: boolean;
   onClose: () => void;
-  onSave: (id: string, args: { frequencyDays: number; lastCompletedISO: string; notes: string }) => Promise<void>;
+  onSave: (id: string, args: { frequencyDays: number; lastCompletedISO: string | null; notes: string }) => Promise<void>;
   onCompleteToday: (id: string, args: { frequencyDays: number; notes: string }) => Promise<void>;
 }) {
   const { lang } = useLang();
@@ -202,23 +218,26 @@ function TaskModal({
 
   if (!task) return null;
 
-  const mult = UNITS.find((u) => u.value === unit)!.mult;
-  const n = parseInt(count, 10) || 0;
-  const freqDays = Math.max(1, n) * mult;
-  const lastDate = last ? new Date(`${last}T00:00:00`) : new Date();
-  const nextDue = new Date(lastDate.getTime() + freqDays * DAY);
+  const { freqDays, lastDate, nextDue } = cadenceFrom(count, unit, last);
   const du = daysBetween(new Date(), nextDue);
   const band: Band = du < 0 ? 'overdue' : du <= 30 ? 'soon' : 'upcoming';
   const meta = BAND[band];
 
   const save = async () => {
     setBusy(true);
-    try { await onSave(task.id, { frequencyDays: freqDays, lastCompletedISO: lastDate.toISOString(), notes: notes.trim() }); onClose(); }
+    try {
+      // Empty date field = "no completion recorded" — send null so the save
+      // leaves last_completed_at untouched instead of silently stamping a
+      // never-completed task as completed today.
+      await onSave(task.id, { frequencyDays: freqDays, lastCompletedISO: last ? lastDate.toISOString() : null, notes: notes.trim() });
+      onClose();
+    } catch { /* save failed — the board surfaced a toast; keep the modal open */ }
     finally { setBusy(false); }
   };
   const completeToday = async () => {
     setBusy(true);
     try { await onCompleteToday(task.id, { frequencyDays: freqDays, notes: notes.trim() }); onClose(); }
+    catch { /* failed — the board surfaced a toast; keep the modal open */ }
     finally { setBusy(false); }
   };
 
@@ -235,7 +254,7 @@ function TaskModal({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <Pill tone={meta.tone}>{es ? meta.es : meta.en}</Pill>
-          <Caps size={11} tracking="0.06em">{es ? 'Próxima' : 'Next due'} {fmtDate(nextDue)} · {relDue(du, es)}</Caps>
+          <Caps size={11} tracking="0.06em">{es ? 'Próxima' : 'Next due'} {fmtDate(nextDue, es)} · {relDue(du, es)}</Caps>
         </div>
         <Field label={es ? 'Frecuencia' : 'Frequency'} required hint={es ? '¿Cada cuánto vuelve?' : 'How often does it come around?'}>
           <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
@@ -259,15 +278,27 @@ export function PreventiveTab() {
   const es = lang === 'es';
 
   const [tasks, setTasks] = useState<PreventiveTask[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const [newOpen, setNewOpen] = useState(false);
   const [selId, setSelId] = useState<string | null>(null);
   const [registryOpen, setRegistryOpen] = useState(false);
 
+  // Failure feedback for board writes (same ink pill as the equipment registry).
+  const { toasts, show: flash } = useToast({ durationMs: 3600, max: 1 });
+
+  // Load gate: don't render the happy "No preventive tasks yet" empty state
+  // until the first snapshot arrived; error card + retry when the load failed.
+  const gate = useBoardGate(activePropertyId, 'preventive_tasks', loaded);
+
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    const unsub = subscribeToPreventiveTasks(user.uid, activePropertyId, setTasks);
+    setLoaded(false);
+    const unsub = subscribeToPreventiveTasks(user.uid, activePropertyId, (rows) => {
+      setLoaded(true);
+      setTasks(rows);
+    });
     return () => unsub();
-  }, [user, activePropertyId]);
+  }, [user, activePropertyId, gate.retryKey]);
 
   const sel = selId ? tasks.find((t) => t.id === selId) ?? null : null;
   const overdueCount = useMemo(() => tasks.filter((t) => bandFor(t) === 'overdue').length, [tasks]);
@@ -275,35 +306,54 @@ export function PreventiveTab() {
 
   const handleCreate = async (args: { name: string; area: string; frequencyDays: number; lastCompletedISO: string | null }) => {
     if (!user || !activePropertyId) return;
-    await addPreventiveTask(user.uid, activePropertyId, {
-      propertyId: activePropertyId,
-      name: args.name,
-      area: args.area,
-      frequencyDays: args.frequencyDays,
-      lastCompletedAt: args.lastCompletedISO ? new Date(args.lastCompletedISO) : new Date(),
-      lastCompletedBy: user.displayName,
-      notes: undefined,
-      equipmentId: null,
-    });
+    try {
+      await addPreventiveTask(user.uid, activePropertyId, {
+        propertyId: activePropertyId,
+        name: args.name,
+        area: args.area,
+        frequencyDays: args.frequencyDays,
+        lastCompletedAt: args.lastCompletedISO ? new Date(args.lastCompletedISO) : new Date(),
+        lastCompletedBy: user.displayName,
+        notes: undefined,
+        equipmentId: null,
+      });
+    } catch (err) {
+      flash(es ? 'No se pudo agregar la tarea — revisa la conexión e inténtalo de nuevo.' : "Couldn't add the task — check your connection and try again.");
+      throw err;
+    }
   };
 
-  const handleSave = async (id: string, args: { frequencyDays: number; lastCompletedISO: string; notes: string }) => {
+  const handleSave = async (id: string, args: { frequencyDays: number; lastCompletedISO: string | null; notes: string }) => {
     if (!user || !activePropertyId) return;
-    await updatePreventiveTask(user.uid, activePropertyId, id, {
+    const patch: Partial<PreventiveTask> = {
       frequencyDays: args.frequencyDays,
-      lastCompletedAt: new Date(args.lastCompletedISO),
       notes: args.notes || undefined,
-    });
+    };
+    // Null = the date field was left empty ("never completed") — leave
+    // last_completed_at alone rather than fabricating a completion.
+    if (args.lastCompletedISO) patch.lastCompletedAt = new Date(args.lastCompletedISO);
+    try {
+      await updatePreventiveTask(user.uid, activePropertyId, id, patch);
+    } catch (err) {
+      flash(es ? 'No se pudieron guardar los cambios — revisa la conexión e inténtalo de nuevo.' : "Couldn't save the changes — check your connection and try again.");
+      throw err;
+    }
   };
 
   // Quick-complete (card button or modal "Done today"): stamp last_completed,
-  // persisting any cadence/notes edits first.
+  // persisting any cadence/notes edits first. Failures surface in a toast —
+  // callers see the rejection (modal stays open); the card button swallows it.
   const handleCompleteToday = async (id: string, edits?: { frequencyDays: number; notes: string }) => {
     if (!user || !activePropertyId) return;
-    if (edits) {
-      await updatePreventiveTask(user.uid, activePropertyId, id, { frequencyDays: edits.frequencyDays, notes: edits.notes || undefined });
+    try {
+      if (edits) {
+        await updatePreventiveTask(user.uid, activePropertyId, id, { frequencyDays: edits.frequencyDays, notes: edits.notes || undefined });
+      }
+      await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
+    } catch (err) {
+      flash(es ? 'No se pudo marcar como hecha — revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done — check your connection and try again.");
+      throw err;
     }
-    await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
   };
 
   if (registryOpen) {
@@ -324,14 +374,16 @@ export function PreventiveTab() {
         </>}
       />
 
-      {tasks.length === 0 ? (
-        <div style={{ background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '48px 24px', textAlign: 'center', boxShadow: CX_CARD_SHADOW }}>
-          <span style={{ fontFamily: FONT_SANS, fontSize: 21, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}</span>
-          <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, margin: '8px 0 18px' }}>
-            {es ? 'Inspecciones, cambios de filtro, revisiones de extintores — todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.'}
-          </p>
-          <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Agrega tu primera tarea' : 'Add your first task'}</Btn>
-        </div>
+      {gate.status === 'error' ? (
+        <BoardLoadError es={es} onRetry={gate.retry} />
+      ) : gate.status === 'loading' ? (
+        <BoardLoading es={es} />
+      ) : tasks.length === 0 ? (
+        <MtEmptyCard
+          title={es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}
+          body={es ? 'Inspecciones, cambios de filtro, revisiones de extintores — todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.'}
+          action={<Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Agrega tu primera tarea' : 'Add your first task'}</Btn>}
+        />
       ) : (
         <CenteredBoard>
           {liveBands.map((b) => {
@@ -350,8 +402,8 @@ export function PreventiveTab() {
                       </div>
                       <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{t.area ? `${t.area} · ` : ''}{cadenceLabel(t.frequencyDays, es)}</span>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>
-                        <Caps size={10} tracking="0.06em" c={T.ink3}>{es ? 'próx' : 'next'} · {fmtDateShort(nextDueDate(t))}</Caps>
-                        <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); void handleCompleteToday(t.id); }}>✓ {es ? 'Hecho hoy' : 'Done today'}</Btn>
+                        <Caps size={10} tracking="0.06em" c={T.ink3}>{es ? 'próx' : 'next'} · {fmtDateShort(nextDueDate(t), es)}</Caps>
+                        <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); handleCompleteToday(t.id).catch(() => { /* toast shown */ }); }}>✓ {es ? 'Hecho hoy' : 'Done today'}</Btn>
                       </div>
                     </BoardCard>
                   );
@@ -369,6 +421,14 @@ export function PreventiveTab() {
         onClose={() => setSelId(null)}
         onSave={handleSave}
         onCompleteToday={(id, edits) => handleCompleteToday(id, edits)}
+      />
+
+      <ToastHost
+        toasts={toasts}
+        position="bottom"
+        offset="28px"
+        zIndex={1100}
+        toastStyle={{ background: T.ink, color: T.bg, padding: '12px 22px', borderRadius: 12, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500, boxShadow: '0 12px 32px rgba(31,35,28,0.24)' }}
       />
     </div>
   );

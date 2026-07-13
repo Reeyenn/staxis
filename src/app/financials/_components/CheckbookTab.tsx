@@ -9,13 +9,15 @@
 // finance gate). Money is integer cents; the dollar input is parsed once on
 // save.
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Modal,
   Field,
   TextInput,
   TextArea,
 } from '@/app/maintenance/_components/_mt-snow';
+import { useApiResource, useApiAction } from '@/lib/hooks/use-api-resource';
+import { shortDateFromYmd } from '@/lib/format-date';
 import {
   DEPARTMENTS,
   parseDollarsToCents,
@@ -23,7 +25,7 @@ import {
   type Department,
   type FinancialExpense,
 } from '@/lib/financials/shared';
-import { apiGet, apiSend, Btn, Money, Notice, DollarInput, T, FONT_SANS, FONT_MONO } from './fin-ui';
+import { finSend, Btn, Money, Notice, DollarInput, T, FONT_SANS } from './fin-ui';
 import { ExpenseSourceTag, FinColumn, FlipExpenseCard, BoardScroller, deptColor } from './fin-board';
 import { ft, deptLabel } from './fin-i18n';
 import { ScanButton, type InvoiceDraft } from './ScanButton';
@@ -42,19 +44,15 @@ interface FormState {
 }
 
 function todayYmd(): string {
-  return new Date().toISOString().slice(0, 10);
+  // LOCAL calendar day — toISOString() is UTC and pre-fills tomorrow's date
+  // during the evening hours west of Greenwich (e.g. after 6-7pm in Texas),
+  // silently booking end-of-month expenses into next month.
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 function blankForm(): FormState {
   return { id: null, vendor: '', amount: '', department: 'other', category: '', date: todayYmd(), notes: '', source: 'manual' };
-}
-
-function shortDate(ymd: string, lang: Lang): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
-  if (!m) return ymd;
-  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
-    .toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' })
-    .toUpperCase();
 }
 
 export function CheckbookTab({
@@ -69,43 +67,38 @@ export function CheckbookTab({
   onChanged: () => void;
 }) {
   const S = ft(lang);
-  const [expenses, setExpenses] = useState<FinancialExpense[]>([]);
-  const [total, setTotal] = useState(0);
-  const [budgetByDept, setBudgetByDept] = useState<Record<string, number>>({});
-  const [loading, setLoading] = useState(true);
-  const [errored, setErrored] = useState(false);
   const [deptFilter, setDeptFilter] = useState<Department | 'all'>('all');
+  // Mutation/retry counter — rides the URLs as a fragment (never sent over
+  // HTTP) so a refetch replays the full "Loading…" flash like the old load().
+  const [nonce, setNonce] = useState(0);
 
   const [form, setForm] = useState<FormState | null>(null);
-  const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [anomalyWarning, setAnomalyWarning] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setErrored(false);
-    const qs = new URLSearchParams({ pid, month });
-    if (deptFilter !== 'all') qs.set('department', deptFilter);
-    const [exp, bud] = await Promise.all([
-      apiGet<{ expenses: FinancialExpense[]; total: number }>(`/api/financials/expenses?${qs}`),
-      apiGet<{ budgets: BudgetVsActual[] }>(`/api/financials/budgets?pid=${pid}&month=${month}`),
-    ]);
-    if (!exp.ok || !exp.data) {
-      setErrored(true);
-      setLoading(false);
-      return;
-    }
-    setExpenses(exp.data.expenses);
-    setTotal(exp.data.total);
-    const bmap: Record<string, number> = {};
-    if (bud.ok && bud.data) for (const b of bud.data.budgets) bmap[b.department] = b.budgetCents;
-    setBudgetByDept(bmap);
-    setLoading(false);
-  }, [pid, month, deptFilter]);
+  const qs = new URLSearchParams({ pid, month });
+  if (deptFilter !== 'all') qs.set('department', deptFilter);
+  const exp = useApiResource<{ expenses: FinancialExpense[]; total: number }>(`/api/financials/expenses?${qs}#${nonce}`);
+  // Budget meters are best-effort: a failed budgets read renders the board
+  // without meters (same as the old load(), which only errored on expenses).
+  const bud = useApiResource<{ budgets: BudgetVsActual[] }>(`/api/financials/budgets?pid=${pid}&month=${month}#${nonce}`);
 
+  const loading = exp.loading || bud.loading;
+  const expenses = useMemo(() => exp.data?.expenses ?? [], [exp.data]);
+  // The toolbar total is visible during reloads/errors (the board itself is
+  // gated behind them) — hold last-good so it doesn't flash to $0.00, exactly
+  // like the old load() which only overwrote it when a fetch succeeded.
+  const [total, setTotal] = useState(0);
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (exp.data) setTotal(exp.data.total);
+  }, [exp.data]);
+  const budgetByDept = useMemo(() => {
+    const bmap: Record<string, number> = {};
+    for (const b of bud.data?.budgets ?? []) bmap[b.department] = b.budgetCents;
+    return bmap;
+  }, [bud.data]);
+
+  const reloadAll = () => setNonce((n) => n + 1);
 
   const openAdd = () => {
     setFormError(null);
@@ -142,6 +135,20 @@ export function CheckbookTab({
     });
   };
 
+  const saveAction = useApiAction((f: FormState & { amountCents: number }) =>
+    finSend('/api/financials/expenses', f.id ? 'PATCH' : 'POST', {
+      pid,
+      id: f.id ?? undefined,
+      expenseDate: f.date,
+      amountCents: f.amountCents,
+      vendor: f.vendor.trim() || null,
+      department: f.department,
+      category: f.category.trim() || null,
+      notes: f.notes.trim() || null,
+      source: f.source,
+    }),
+  );
+
   const save = async () => {
     if (!form) return;
     const cents = parseDollarsToCents(form.amount);
@@ -153,39 +160,29 @@ export function CheckbookTab({
       setFormError(lang === 'es' ? 'Ingresa una fecha válida.' : 'Enter a valid date.');
       return;
     }
-    setSaving(true);
     setFormError(null);
-    const payload = {
-      pid,
-      id: form.id ?? undefined,
-      expenseDate: form.date,
-      amountCents: cents,
-      vendor: form.vendor.trim() || null,
-      department: form.department,
-      category: form.category.trim() || null,
-      notes: form.notes.trim() || null,
-      source: form.source,
-    };
-    const res = form.id
-      ? await apiSend('/api/financials/expenses', 'PATCH', payload)
-      : await apiSend('/api/financials/expenses', 'POST', payload);
-    setSaving(false);
-    if (!res.ok) {
+    const res = await saveAction.run({ ...form, amountCents: cents });
+    if (res.error) {
       setFormError(lang === 'es' ? 'No se pudo guardar.' : 'Could not save.');
       return;
     }
     setForm(null);
-    await load();
+    reloadAll();
     onChanged();
   };
 
   const del = async (id: string) => {
     if (!window.confirm(S.confirmDelete)) return;
-    const res = await apiSend('/api/financials/expenses', 'DELETE', { pid, id, month });
-    if (res.ok) {
-      await load();
-      onChanged();
+    const res = await finSend('/api/financials/expenses', 'DELETE', { pid, id, month });
+    if (res.error) {
+      // The card lives outside any modal, and the delete was confirmed via a
+      // native dialog — surface the failure the same native way rather than
+      // silently leaving the expense on the board.
+      window.alert(S.couldNotDelete);
+      return;
     }
+    reloadAll();
+    onChanged();
   };
 
   const deptOptions = useMemo(
@@ -221,7 +218,7 @@ export function CheckbookTab({
               </option>
             ))}
           </select>
-          <ScanButton mode="invoice" pid={pid} label={S.scanInvoice} scanningLabel={S.scanning} failLabel={S.scanFailed} onInvoice={onScanDraft} />
+          <ScanButton mode="invoice" pid={pid} lang={lang} label={S.scanInvoice} scanningLabel={S.scanning} failLabel={S.scanFailed} onInvoice={onScanDraft} />
           <Btn onClick={openAdd}>+ {S.addExpense}</Btn>
         </div>
       </div>
@@ -229,8 +226,8 @@ export function CheckbookTab({
       {/* Board */}
       {loading ? (
         <Notice text={S.loading} />
-      ) : errored ? (
-        <Notice text={S.errorLoading} onRetry={() => void load()} />
+      ) : exp.error != null ? (
+        <Notice text={S.errorLoading} onRetry={reloadAll} />
       ) : columns.length === 0 ? (
         <Notice text={S.noExpenses} />
       ) : (
@@ -248,7 +245,7 @@ export function CheckbookTab({
                     <FlipExpenseCard
                       key={e.id}
                       memo={e.vendor || (e.category ?? (lang === 'es' ? 'Gasto' : 'Expense'))}
-                      dateLabel={shortDate(e.expenseDate, lang)}
+                      dateLabel={shortDateFromYmd(e.expenseDate, lang, { fields: 'month-day', uppercase: true })}
                       amountCents={e.amountCents}
                       sourceTag={<ExpenseSourceTag label={e.source === 'invoice_scan' ? 'SCAN' : 'MANUAL'} tone={e.source === 'invoice_scan' ? 'scan' : 'manual'} />}
                       vendorLabel={e.category || e.vendor || (lang === 'es' ? 'Gasto' : 'Expense')}
@@ -279,8 +276,8 @@ export function CheckbookTab({
               <Btn variant="ghost" onClick={() => setForm(null)}>
                 {S.cancel}
               </Btn>
-              <Btn onClick={() => void save()} disabled={saving}>
-                {saving ? S.saving : S.save}
+              <Btn onClick={() => void save()} disabled={saveAction.saving}>
+                {saveAction.saving ? S.saving : S.save}
               </Btn>
             </>
           }

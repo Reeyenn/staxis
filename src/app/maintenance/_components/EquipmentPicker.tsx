@@ -9,9 +9,8 @@
 import React, { useEffect, useState } from 'react';
 import { fetchEquipmentList } from '@/lib/db';
 import type { Equipment } from '@/lib/equipment/types';
+import { tr } from '@/lib/i18n-utils';
 import { T, FONT_SANS } from './_mt-snow';
-
-const tr = (lang: string, en: string, es: string) => (lang === 'es' ? es : en);
 
 export function EquipmentPicker({
   pid, value, onChange, lang,

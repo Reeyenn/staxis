@@ -27,6 +27,7 @@ import type {
 } from '@/types';
 
 import { T, fonts } from './tokens';
+import { startOfLocalMonth, addLocalMonths, isBudgetForLocalMonth } from './month';
 import { Caps } from './Caps';
 import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
@@ -142,39 +143,51 @@ export function InventoryShell() {
     return () => unsub();
   }, [uid, activePropertyId]);
 
+  // ONE assembly of the board's data fetch — shared by the initial-load effect
+  // and refreshData so the two query sets can never drift apart.
+  // Manual page: fetch occupancy + daily averages (needed for the rule-based
+  // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
+  // no auto-fill map, no ai-status/ai-mode call.
+  const fetchBoardData = useCallback(async (uid: string, pid: string) => {
+    // LOCAL month window — "this month" means the hotel's calendar month, not
+    // the UTC one (which flips hours early in US timezones).
+    const monthStart = startOfLocalMonth(new Date());
+    const monthEnd = addLocalMonths(new Date(), 1);
+    const [occ, avg, ct, od, bd, spend] = await Promise.all([
+      fetchOccupancyBundle(pid, daysAgo(14)),
+      fetchDailyAverages(pid, 14),
+      listInventoryCounts(uid, pid, 200),
+      listInventoryOrders(uid, pid, 200),
+      // Budget + spend are money — only fetch them for the money capability
+      // so the dollar figures never reach a line-staff browser.
+      canViewFinancials
+        ? listInventoryBudgets(uid, pid)
+        : Promise.resolve([] as InventoryBudget[]),
+      canViewFinancials
+        ? monthToDateSpendByCategory(uid, pid, monthStart, monthEnd)
+        : Promise.resolve({} as Record<string, number>),
+    ]);
+    return { occ, avg, ct, od, bd, spend };
+  }, [canViewFinancials]);
+
+  const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
+    setOccupancy(d.occ);
+    setAverages(d.avg);
+    setCounts(d.ct);
+    setOrders(d.od);
+    setBudgets(d.bd);
+    setSpendByCat(d.spend as Record<string, number>);
+  }, []);
+
   useEffect(() => {
     if (!uid || !activePropertyId) return;
     let cancelled = false;
 
     void (async () => {
       try {
-        // Manual page: fetch occupancy + daily averages (needed for the
-        // rule-based days-left) + counts/orders/budgets/spend only. No ML
-        // predicted-rate fetch, no auto-fill map, no ai-status/ai-mode call.
-        const monthStart = startOfMonth(new Date());
-        const monthEnd = startOfMonth(addMonths(new Date(), 1));
-        const [occ, avg, ct, od, bd, spend] =
-          await Promise.all([
-            fetchOccupancyBundle(activePropertyId, daysAgo(14)),
-            fetchDailyAverages(activePropertyId, 14),
-            listInventoryCounts(uid, activePropertyId, 200),
-            listInventoryOrders(uid, activePropertyId, 200),
-            // Budget + spend are money — only fetch them for the money capability
-            // so the dollar figures never reach a line-staff browser.
-            canViewFinancials
-              ? listInventoryBudgets(uid, activePropertyId)
-              : Promise.resolve([] as InventoryBudget[]),
-            canViewFinancials
-              ? monthToDateSpendByCategory(uid, activePropertyId, monthStart, monthEnd)
-              : Promise.resolve({} as Record<string, number>),
-          ]);
+        const d = await fetchBoardData(uid, activePropertyId);
         if (cancelled) return;
-        setOccupancy(occ);
-        setAverages(avg);
-        setCounts(ct);
-        setOrders(od);
-        setBudgets(bd);
-        setSpendByCat(spend as Record<string, number>);
+        applyBoardData(d);
       } catch (err) {
         console.error('[inventory] data load failed', err);
       } finally {
@@ -185,7 +198,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, canViewFinancials]);
+  }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
 
   // ── Ordering mode (management only — drives the Reorder/Orders UX) ──
   useEffect(() => {
@@ -268,15 +281,14 @@ export function InventoryShell() {
     [spendByCat],
   );
 
-  // Sum the active month's budget caps (use the cap relevant for today's month).
+  // Sum the active month's budget caps (use the cap relevant for today's
+  // LOCAL month — see month.ts for the UTC-drift fix).
   const totalCap = useMemo(() => {
     const now = new Date();
-    const ymStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
     let sum = 0;
     for (const b of budgets) {
       if (!b.monthStart) continue;
-      if (b.monthStart.getUTCFullYear() === ymStart.getUTCFullYear()
-          && b.monthStart.getUTCMonth() === ymStart.getUTCMonth()) {
+      if (isBudgetForLocalMonth(b.monthStart, now)) {
         sum += b.budgetCents / 100;
       }
     }
@@ -309,30 +321,11 @@ export function InventoryShell() {
   const refreshData = useCallback(async () => {
     if (!uid || !activePropertyId) return;
     try {
-      const monthStart = startOfMonth(new Date());
-      const monthEnd = startOfMonth(addMonths(new Date(), 1));
-      const [ct, od, bd, spend, occ, avg] = await Promise.all([
-        listInventoryCounts(uid, activePropertyId, 200),
-        listInventoryOrders(uid, activePropertyId, 200),
-        canViewFinancials
-          ? listInventoryBudgets(uid, activePropertyId)
-          : Promise.resolve([] as InventoryBudget[]),
-        canViewFinancials
-          ? monthToDateSpendByCategory(uid, activePropertyId, monthStart, monthEnd)
-          : Promise.resolve({} as Record<string, number>),
-        fetchOccupancyBundle(activePropertyId, daysAgo(14)),
-        fetchDailyAverages(activePropertyId, 14),
-      ]);
-      setCounts(ct);
-      setOrders(od);
-      setBudgets(bd);
-      setSpendByCat(spend as Record<string, number>);
-      setOccupancy(occ);
-      setAverages(avg);
+      applyBoardData(await fetchBoardData(uid, activePropertyId));
     } catch (err) {
       console.error('[inventory] refresh failed', err);
     }
-  }, [uid, activePropertyId, canViewFinancials]);
+  }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
 
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
   // cascade — ONCE. `revealed` is a one-way latch: it flips true when the
@@ -588,12 +581,6 @@ function todayLabel(lang: 'en' | 'es'): string {
 function todayDow(lang: 'en' | 'es'): string {
   const d = new Date();
   return d.toLocaleDateString(dateLocale(lang), { weekday: 'long' });
-}
-function startOfMonth(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
-function addMonths(d: Date, n: number): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + n, 1));
 }
 function daysAgo(n: number): Date {
   return new Date(Date.now() - n * 86_400_000);

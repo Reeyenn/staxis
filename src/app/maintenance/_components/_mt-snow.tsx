@@ -2,23 +2,42 @@
 // the modal / form pieces shared by the WorkOrders and Preventive tabs.
 //
 // Reuses the housekeeping `_snow.tsx` tokens (palette + fonts + Btn / Pill /
-// Caps / Card) so the Maintenance tab stays visually locked to the rest of
-// the app. The extras here are: priority dot/pill, person avatar, modal
-// shell, form fields, chip chooser, photo placeholder, relative-time helper.
+// Caps) so the Maintenance tab stays visually locked to the rest of
+// the app. The extras here are: priority colors/labels, person avatar, modal
+// shell, form fields, chip chooser, date helpers.
+//
+// Why Modal below is NOT the shared F6 primitive (@/app/_components/ui/Modal):
+// this shell is top-aligned (alignItems flex-start, 48px scrim padding), lets
+// tall modals grow past the viewport with the SCRIM scrolling (no card
+// max-height / inner scroll), and closes on scrim *click* (mouseup) rather
+// than mousedown (guarded: the interaction must both start AND end on the
+// scrim, so a text-selection drag out of the card can't close it) — none of
+// which F6's fixed 'center' geometry can reproduce today. It is also imported by financials + front-desk + the parked
+// ComplianceTab, so its behavior must not move. If F6 ever grows scrim
+// align/padding + card max-height overrides, this shell can become a themed
+// wrapper. (Wave-1 precedent: keep the hand-roll when the foundation can't
+// hit byte-identical.)
 
 'use client';
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useLang } from '@/contexts/LanguageContext';
 import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Card,
 } from '@/app/housekeeping/_components/_snow';
+import { EmptyState } from '@/app/_components/ui/EmptyState';
 
 // Re-export the shared Snow primitives so the maintenance tabs have a single
 // import source (tokens + Caps/Card live in housekeeping/_snow). Pill and Btn
 // are defined locally below with the Concourse skin — mono badge pills and
 // sage primary buttons — so the maintenance section reads native to the shell.
 export { T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Card };
+// Pure date/cadence helpers live in mt-dates.ts (plain .ts, unit-testable);
+// re-exported here so the tabs keep a single import source.
+export {
+  fmtDate, fmtDateShort, fmtSubmittedAt, fmtSubmittedAtCompact,
+  daysBetween, addDaysLocal, relDue, displayLoc, cadenceLabel,
+} from './mt-dates';
 export type Priority = 'urgent' | 'normal' | 'low';
 
 // ── Concourse motion + card tokens (mirror concourse-css.tsx) ──────────────
@@ -117,37 +136,6 @@ export const prioLabel: Record<Priority, string> = {
   normal: 'Normal',
   low:    'Low',
 };
-export const prioOrder: Priority[] = ['urgent', 'normal', 'low'];
-
-export function PrioDot({ p, size = 10, ring = false, style = {} }: {
-  p: Priority; size?: number; ring?: boolean; style?: React.CSSProperties;
-}) {
-  const c = prioColor[p];
-  return (
-    <span style={{
-      display: 'inline-block', width: size, height: size, borderRadius: '50%',
-      background: c, boxShadow: ring ? `0 0 0 3px ${c}22` : 'none',
-      flexShrink: 0, ...style,
-    }}/>
-  );
-}
-
-export function PrioPill({ p, style = {} }: { p: Priority; style?: React.CSSProperties }) {
-  const c = prioColor[p];
-  return (
-    <span style={{
-      display: 'inline-flex', alignItems: 'center', gap: 6,
-      padding: '3px 10px 3px 8px', borderRadius: 999, height: 22,
-      background: `${c}1A`, color: c,
-      fontFamily: FONT_MONO, fontSize: 10, fontWeight: 600,
-      letterSpacing: '0.06em', textTransform: 'uppercase',
-      whiteSpace: 'nowrap', ...style,
-    }}>
-      <PrioDot p={p} size={6}/>
-      {prioLabel[p]}
-    </span>
-  );
-}
 
 // ── Avatar — initials in a tinted circle ──────────────────────────────────
 // Deterministic color from a name: the same person always lands on the same
@@ -198,6 +186,12 @@ export function Modal({
   width?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // True only while the current pointer interaction STARTED on the scrim.
+  // A text-selection drag that starts inside the card and releases over the
+  // scrim fires a browser-synthesized click on the scrim (the common
+  // ancestor of mousedown/mouseup targets) — without this guard that click
+  // closed the modal and ate the half-typed form.
+  const downOnScrim = useRef(false);
   useEffect(() => {
     if (!open) return;
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
@@ -211,7 +205,14 @@ export function Modal({
   }, [open, onClose]);
   if (!open) return null;
   return (
-    <div onClick={onClose} style={{
+    <div
+      onMouseDown={(e) => { downOnScrim.current = e.target === e.currentTarget; }}
+      onClick={(e) => {
+        const wasDownOnScrim = downOnScrim.current;
+        downOnScrim.current = false;
+        if (e.target === e.currentTarget && wasDownOnScrim) onClose();
+      }}
+      style={{
       position: 'fixed', inset: 0, zIndex: 1000,
       background: 'rgba(31,35,28,0.32)',
       display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
@@ -363,125 +364,6 @@ export function ChipChoose<V extends string>({
   );
 }
 
-// ── Photo slot — file-picker masquerading as the design's striped tile ────
-// Mirrors hk-shared.jsx PhotoSlot: tap to open a hidden <input type="file">.
-// Caller stores the File and a preview URL; passes them back on submit.
-export function PhotoSlot({
-  file, onFileChange, label = 'Photo (optional)', height = 140,
-}: {
-  file: File | null;
-  onFileChange: (f: File | null) => void;
-  label?: string;
-  height?: number;
-}) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const attached = !!file;
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => {
-          if (attached) onFileChange(null);
-          else inputRef.current?.click();
-        }}
-        style={{
-          width: '100%', height, borderRadius: 12, cursor: 'pointer',
-          background: attached
-            ? 'repeating-linear-gradient(135deg, rgba(92,122,96,0.10) 0 10px, rgba(92,122,96,0.04) 10px 20px)'
-            : 'repeating-linear-gradient(135deg, rgba(31,35,28,0.04) 0 10px, transparent 10px 20px)',
-          border: `1px dashed ${attached ? 'rgba(92,122,96,0.4)' : T.rule}`,
-          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-          gap: 6, fontFamily: FONT_MONO, fontSize: 11,
-          color: attached ? T.sageDeep : T.ink3,
-          letterSpacing: '0.06em', textTransform: 'uppercase', fontWeight: 500,
-        }}
-      >
-        <span style={{ fontSize: 20, color: attached ? T.sageDeep : T.ink2, letterSpacing: 0 }}>
-          {attached ? '✓' : '+'}
-        </span>
-        {attached
-          ? `Photo attached · ${file.name.length > 24 ? file.name.slice(0, 22) + '…' : file.name} · tap to remove`
-          : label}
-        {!attached && (
-          <span style={{ fontFamily: FONT_SANS, fontSize: 11, color: T.ink3, textTransform: 'none', letterSpacing: 0 }}>
-            Tap to take or upload
-          </span>
-        )}
-      </button>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        style={{ display: 'none' }}
-        onChange={e => {
-          const f = e.target.files?.[0] ?? null;
-          onFileChange(f);
-          // Reset input so picking the same file twice still fires onChange.
-          if (e.target) e.target.value = '';
-        }}
-      />
-    </>
-  );
-}
-
-// ── Date helpers ──────────────────────────────────────────────────────────
-// Relative-time string from "days from today" (negative = overdue).
-export function relTime(days: number): string {
-  if (days === 0)  return 'today';
-  if (days < 0)    return `${-days}d overdue`;
-  if (days === 1)  return 'tomorrow';
-  if (days <= 7)   return `in ${days}d`;
-  if (days <= 60)  return `in ${Math.round(days / 7)}w`;
-  return `in ${Math.round(days / 30)}mo`;
-}
-
-export function fmtDate(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-export function fmtDateShort(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-}
-
-// "May 12 · 7:51 AM" / "May 11 · 1d ago" — used in the open-card byline.
-export function fmtSubmittedAt(d: Date | null, now: Date = new Date()): string {
-  if (!d) return '';
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) {
-    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }) + ' · today';
-  }
-  const daysAgo = Math.floor((now.getTime() - d.getTime()) / (24 * 60 * 60 * 1000));
-  if (daysAgo === 1) return `${fmtDateShort(d)} · 1d ago`;
-  if (daysAgo < 7)   return `${fmtDateShort(d)} · ${daysAgo}d ago`;
-  return fmtDate(d);
-}
-
-// Days between two dates ignoring time-of-day. Positive = b is later.
-export function daysBetween(a: Date, b: Date): number {
-  const aa = new Date(a.getFullYear(), a.getMonth(), a.getDate());
-  const bb = new Date(b.getFullYear(), b.getMonth(), b.getDate());
-  return Math.round((bb.getTime() - aa.getTime()) / (24 * 60 * 60 * 1000));
-}
-
-// Due-relative string from "days until due" (negative = overdue). Used on the
-// Preventive board cards. Spanish variants for the bilingual UI.
-export function relDue(days: number, es = false): string {
-  if (days === 0)  return es ? 'vence hoy'    : 'due today';
-  if (days < 0)    return es ? `${-days}d vencido` : `${-days}d overdue`;
-  if (days === 1)  return es ? 'vence mañana' : 'due tomorrow';
-  if (days <= 7)   return es ? `en ${days}d`  : `in ${days}d`;
-  if (days <= 60)  return es ? `en ${Math.round(days / 7)}sem` : `in ${Math.round(days / 7)}w`;
-  return es ? `en ${Math.round(days / 30)}mes` : `in ${Math.round(days / 30)}mo`;
-}
-
-// Format a location for display: bare room numbers get a "Rm " prefix; named
-// areas ("Lobby", "Pool Deck") pass through verbatim.
-export function displayLoc(loc: string, es = false): string {
-  const t = (loc || '').trim();
-  return /^\d{1,4}$/.test(t) ? `${es ? 'Hab' : 'Rm'} ${t}` : t;
-}
-
 // ── Board primitives (shared by the three maintenance tabs) ────────────────
 
 // Page header: mono eyebrow + serif headline (italic lead · faint rest) +
@@ -587,6 +469,102 @@ export function CenteredBoard({ children }: { children: React.ReactNode }) {
   );
 }
 
+// Empty-board card (shared by the three boards + the asset registry): paper
+// card, Geist 600 headline (Concourse — no serif/italic display), sans body
+// line, action button(s) under it.
+// Thin exact-theme wrapper over the shared EmptyState primitive.
+export function MtEmptyCard({
+  title, body, action, titleSize = 21, bodySize = 14,
+}: {
+  title: React.ReactNode;
+  body: React.ReactNode;
+  action?: React.ReactNode;
+  titleSize?: number;
+  bodySize?: number;
+}) {
+  return (
+    <EmptyState
+      style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18 }}
+      padding="48px 24px"
+      title={<span style={{ fontFamily: FONT_SANS, fontSize: titleSize, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>{title}</span>}
+      body={<>
+        <p style={{ fontFamily: FONT_SANS, fontSize: bodySize, color: T.ink2, margin: '8px 0 18px' }}>{body}</p>
+        {action}
+      </>}
+    />
+  );
+}
+
+// ── Board load gate ────────────────────────────────────────────────────────
+// subscribeTable's initial fetch failure is only logged — the callback never
+// fires — so a board that got NO data was indistinguishable from a board that
+// loaded an EMPTY list, and the tabs rendered their happy "all caught up"
+// empty state during a network blip (the silent-empty-state bug class, here
+// for signed-in users). This hook runs a 1-row probe against the same table
+// so the tab can tell "loaded empty" apart from "failed to load", plus a
+// stall timer so a probe-passed-but-subscription-failed race still surfaces
+// as an error instead of an infinite spinner. `loaded` = the subscription
+// callback has fired at least once (data always wins).
+export type BoardLoadStatus = 'loading' | 'error' | 'ready';
+
+export function useBoardGate(
+  pid: string | null | undefined,
+  table: string,
+  loaded: boolean,
+): { status: BoardLoadStatus; retryKey: number; retry: () => void } {
+  const [probe, setProbe] = useState<'pending' | 'ok' | 'error'>('pending');
+  const [stalled, setStalled] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
+
+  useEffect(() => {
+    if (!pid || loaded) return;
+    let alive = true;
+    setProbe('pending');
+    setStalled(false);
+    void (async () => {
+      try {
+        const { supabase } = await import('@/lib/supabase');
+        const { error } = await supabase.from(table).select('id').eq('property_id', pid).limit(1);
+        if (alive) setProbe(error ? 'error' : 'ok');
+      } catch {
+        if (alive) setProbe('error');
+      }
+    })();
+    return () => { alive = false; };
+  }, [pid, table, retryKey, loaded]);
+
+  // Probe passed but the subscription's own initial fetch never delivered —
+  // don't spin forever, offer the retry instead.
+  useEffect(() => {
+    if (loaded || probe !== 'ok') { setStalled(false); return; }
+    const t = window.setTimeout(() => setStalled(true), 15000);
+    return () => window.clearTimeout(t);
+  }, [probe, loaded, retryKey]);
+
+  const status: BoardLoadStatus = loaded ? 'ready' : (probe === 'error' || stalled) ? 'error' : 'loading';
+  return { status, retryKey, retry: () => setRetryKey((k) => k + 1) };
+}
+
+// Neutral first-load placeholder (matches the registry's "Loading…" line).
+export function BoardLoading({ es }: { es: boolean }) {
+  return (
+    <div style={{ padding: '48px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
+      {es ? 'Cargando…' : 'Loading…'}
+    </div>
+  );
+}
+
+// Load-error card with a retry (same recover idiom as MaintenanceErrorBoundary).
+export function BoardLoadError({ es, onRetry }: { es: boolean; onRetry: () => void }) {
+  return (
+    <MtEmptyCard
+      title={es ? 'No se pudo cargar.' : "Couldn't load this."}
+      body={es ? 'Tus datos están a salvo — revisa la conexión e inténtalo de nuevo.' : 'Your data is safe — check your connection and try again.'}
+      action={<Btn variant="primary" onClick={onRetry}>↻ {es ? 'Reintentar' : 'Retry'}</Btn>}
+    />
+  );
+}
+
 // Error boundary: catches a render error in the maintenance subtree and shows
 // a recover card instead of a blank screen (the white-screen-on-tab bug class).
 export class MaintenanceErrorBoundary extends React.Component<
@@ -677,6 +655,7 @@ export function StorageImage({
   alt?: string;
   height?: number;
 }) {
+  const { lang } = useLang();
   const [url, setUrl] = React.useState<string | null>(null);
   React.useEffect(() => {
     let alive = true;
@@ -708,7 +687,7 @@ export function StorageImage({
         fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
         letterSpacing: '0.08em', textTransform: 'uppercase',
       }}>
-        Loading photo…
+        {lang === 'es' ? 'Cargando foto…' : 'Loading photo…'}
       </div>
     );
   }

@@ -7,11 +7,14 @@
 // empty so the box is visible from day one. The full fact lists live in the copilot
 // ("what do you know about my hotel") + the "What Staxis noticed" card above.
 
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
+import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { GlassCard } from './GlassCard';
+import { CARD, CARD_LABEL, SANS } from './palette';
 
 interface KnowItem {
   id: string;
@@ -25,55 +28,26 @@ interface KnowsData {
   learned: KnowItem[];
 }
 
-const C = {
-  ink: '#1F231C',
-  ink2: '#5C625C',
-  ink3: '#A6ABA6',
-} as const;
-
-const FONT_SANS = 'var(--font-geist), system-ui, -apple-system, sans-serif';
-const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
-
-const LABEL: React.CSSProperties = {
-  fontFamily: FONT_MONO,
-  fontSize: 9.5,
-  letterSpacing: '0.14em',
-  textTransform: 'uppercase',
-  color: C.ink3,
-  fontWeight: 600,
-};
+// This compact box uses the standard Concourse eyebrow (9.5px / .14em).
+const LABEL: React.CSSProperties = { ...CARD_LABEL };
 
 export function WhatStaxisKnowsCard() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const [data, setData] = useState<KnowsData | null>(null);
-  const [loaded, setLoaded] = useState(false);
 
   const es = lang === 'es';
   const canSee = !!user && canManageTeam(user.role);
 
-  useEffect(() => {
-    if (!canSee || !activePropertyId) return;
-    let alive = true;
-    setLoaded(false);
-    fetch(`/api/memory/knows?propertyId=${activePropertyId}`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (alive) {
-          setData(j?.ok ? (j.data as KnowsData) : null);
-          setLoaded(true);
-        }
-      })
-      .catch(() => {
-        if (alive) setLoaded(true);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [canSee, activePropertyId]);
+  // Nightly-consolidation stats: a slow 5-min poll keeps a long-lived
+  // (wall-TV) dashboard from going permanently stale; keepDataOnError holds
+  // last-good through a failed poll so the box never blinks out on a blip.
+  const { data, loading } = useApiResource<KnowsData>(
+    `/api/memory/knows?propertyId=${activePropertyId}`,
+    { enabled: canSee && !!activePropertyId, pollMs: 300_000, keepDataOnError: true },
+  );
 
-  if (!canSee || !activePropertyId || !loaded || !data) return null;
+  if (!canSee || !activePropertyId || loading || !data) return null;
 
   const { stats } = data;
   const empty = stats.totalKnown === 0;
@@ -85,23 +59,14 @@ export function WhatStaxisKnowsCard() {
   ];
 
   return (
-    <div
-      style={{
-        background: '#FFFFFF',
-        border: '1px solid rgba(31,35,28,0.08)',
-        borderRadius: 14,
-        boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
-        padding: '12px 14px',
-        maxWidth: 440,
-      }}
-    >
+    <GlassCard radius={14} padding="12px 14px" maxWidth={440}>
       <div style={LABEL}>{es ? 'Lo que Staxis sabe' : 'What Staxis knows'}</div>
 
       {/* compact inline impact stats — real counts only */}
       <div style={{ marginTop: 9, display: 'flex', gap: 20 }}>
         {tiles.map((t) => (
           <div key={t[0]}>
-            <div style={{ fontFamily: FONT_SANS, fontWeight: 600, fontSize: 20, letterSpacing: '-0.02em', lineHeight: 1, color: C.ink, fontVariantNumeric: 'tabular-nums' }}>
+            <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 20, letterSpacing: '-0.02em', lineHeight: 1, color: CARD.ink, fontVariantNumeric: 'tabular-nums' }}>
               {t[1]}
             </div>
             <div style={{ ...LABEL, fontSize: 8.5, marginTop: 4 }}>{t[0]}</div>
@@ -110,12 +75,12 @@ export function WhatStaxisKnowsCard() {
       </div>
 
       {!empty && (
-        <div style={{ marginTop: 10, fontSize: 11.5, color: C.ink2 }}>
+        <div style={{ marginTop: 10, fontSize: 11.5, color: CARD.ink2 }}>
           {data.taught.length} {es ? 'enseñados' : 'taught'} · {data.noticed.length} {es ? 'notados' : 'noticed'} · {data.learned.length} {es ? 'aprendidos' : 'learned'}
         </div>
       )}
 
-      <div style={{ marginTop: 8, fontSize: 10.5, color: C.ink3, lineHeight: 1.45 }}>
+      <div style={{ marginTop: 8, fontSize: 10.5, color: CARD.ink3, lineHeight: 1.45 }}>
         {empty
           ? es
             ? 'Listo — se llena a medida que tu equipo registra actividad.'
@@ -124,6 +89,6 @@ export function WhatStaxisKnowsCard() {
             ? 'El impacto en dólares aparece cuando se conecten los datos de ingresos y nómina.'
             : 'Dollar impact appears once your live revenue & labor data is connected.'}
       </div>
-    </div>
+    </GlassCard>
   );
 }

@@ -29,6 +29,14 @@
 
 import { NextResponse } from 'next/server';
 
+// Client half of the envelope (unwrap a fetch Response into { data } |
+// { error }). Implementation lives in ./api-envelope so 'use client' code
+// can import it without dragging next/server into the browser bundle;
+// re-exported here so server-side callers see one module for the whole
+// envelope story.
+export { readEnvelope } from './api-envelope';
+export type { EnvelopeResult } from './api-envelope';
+
 /** The standard envelope. T is the route-specific payload type. */
 export interface ApiResponse<T = unknown> {
   ok: boolean;

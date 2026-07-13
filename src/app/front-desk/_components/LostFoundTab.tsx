@@ -7,9 +7,10 @@
 // log found items + guest lost reports, run AI auto-describe on photos, AI
 // auto-match lost↔found, mark returned/shipped/disposed, text the guest, and
 // see each found item's 90-day disposal countdown. Snow design system.
+// Chrome comes from the shared register scaffold (_register.tsx).
 // ═══════════════════════════════════════════════════════════════════════════
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   T,
   FONT_SANS,
@@ -35,9 +36,29 @@ import {
   type AutoMatchResult,
 } from '@/lib/db/lost-and-found';
 import { LAF_CATEGORIES } from '@/lib/lost-and-found/types';
-
-type Lang = 'en' | 'es';
-const tr = (lang: Lang, en: string, es: string) => (lang === 'es' ? es : en);
+import {
+  type Lang,
+  tr,
+  fmtWhen,
+  uploadPreparedPhoto,
+  usePhotoDraft,
+  useRegisterFeed,
+  useRegisterToast,
+  RegisterToastHost,
+  useActRunner,
+  REGISTER_WRAP,
+  REGISTER_PRIMARY_BTN,
+  REGISTER_GHOST_BTN,
+  RegisterHeader,
+  CountChips,
+  SearchFilterBar,
+  RegisterList,
+  RegisterCardShell,
+  Tag,
+  SmallBtn,
+  PhotoPickerField,
+  SaveCancelFooter,
+} from './_register';
 
 const CATEGORY_LABELS: Record<string, { en: string; es: string }> = {
   electronics: { en: 'Electronics', es: 'Electrónica' },
@@ -76,20 +97,6 @@ function statusMeta(status: string, lang: Lang): { label: string; color: string 
   }
 }
 
-function fmtWhen(iso: string | null, lang: Lang): string {
-  if (!iso) return '';
-  const ms = Date.parse(iso);
-  if (!Number.isFinite(ms)) return '';
-  const days = Math.floor((Date.now() - ms) / 86_400_000);
-  if (days <= 0) return tr(lang, 'today', 'hoy');
-  if (days === 1) return tr(lang, 'yesterday', 'ayer');
-  if (days < 7) return tr(lang, `${days}d ago`, `hace ${days}d`);
-  return new Date(ms).toLocaleDateString(lang === 'es' ? 'es-US' : 'en-US', {
-    month: 'short',
-    day: 'numeric',
-  });
-}
-
 /** Disposal countdown for an open found item. */
 function disposalInfo(item: LostFoundItem, lang: Lang): { label: string; color: string } | null {
   if (item.type !== 'found' || item.status !== 'open' || !item.holdUntil) return null;
@@ -104,84 +111,32 @@ function disposalInfo(item: LostFoundItem, lang: Lang): { label: string; color: 
   return { label: tr(lang, `Hold ${days}d left`, `Quedan ${days}d`), color: T.ink3 };
 }
 
-// ── Client image helper: downscale to JPEG for AI describe + smaller upload ──
-async function prepareImage(
-  file: File,
-): Promise<{ blob: Blob; ext: string; b64?: string; mime?: 'image/jpeg'; previewUrl: string }> {
-  try {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const fr = new FileReader();
-      fr.onload = () => resolve(String(fr.result));
-      fr.onerror = () => reject(new Error('read'));
-      fr.readAsDataURL(file);
-    });
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const im = new Image();
-      im.onload = () => resolve(im);
-      im.onerror = () => reject(new Error('decode'));
-      im.src = dataUrl;
-    });
-    const maxDim = 1280;
-    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-    const width = Math.max(1, Math.round(img.width * scale));
-    const height = Math.max(1, Math.round(img.height * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('ctx');
-    ctx.drawImage(img, 0, 0, width, height);
-    const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.82);
-    const b64 = jpegDataUrl.split(',')[1];
-    const blob = await (await fetch(jpegDataUrl)).blob();
-    return { blob, ext: 'jpg', b64, mime: 'image/jpeg', previewUrl: jpegDataUrl };
-  } catch {
-    const ext = (file.name.split('.').pop() ?? 'jpg').toLowerCase();
-    return {
-      blob: file,
-      ext: /^(jpe?g|png|webp|heic|heif)$/.test(ext) ? ext : 'jpg',
-      previewUrl: URL.createObjectURL(file),
-    };
+/** AI match-confidence label — bilingual (the raw 'high'/'medium'/'low' value
+ *  used to leak through untranslated on the Spanish UI). */
+function confidenceLabel(c: 'high' | 'medium' | 'low', lang: Lang): string {
+  switch (c) {
+    case 'high':
+      return tr(lang, 'High confidence', 'Confianza alta');
+    case 'medium':
+      return tr(lang, 'Medium confidence', 'Confianza media');
+    default:
+      return tr(lang, 'Low confidence', 'Confianza baja');
   }
 }
 
 type ViewFilter = 'unresolved' | 'found' | 'lost' | 'resolved' | 'all';
 
+const INITIAL_COUNTS: LostFoundCounts = { open: 0, awaitingReturn: 0, nearingDisposal: 0 };
+
 export function LostFoundTab({ pid, lang }: { pid: string; lang: Lang }) {
-  const [items, setItems] = useState<LostFoundItem[]>([]);
-  const [counts, setCounts] = useState<LostFoundCounts>({
-    open: 0,
-    awaitingReturn: 0,
-    nearingDisposal: 0,
-  });
-  const [loading, setLoading] = useState(true);
+  const { items, counts, loading, loadFailed, refetch } = useRegisterFeed<LostFoundItem, LostFoundCounts>(
+    pid, subscribeLostFound, fetchLostFoundRegister, INITIAL_COUNTS,
+  );
   const [search, setSearch] = useState('');
   const [view, setView] = useState<ViewFilter>('unresolved');
-  const [toast, setToast] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   const [logType, setLogType] = useState<'found' | 'lost'>('found');
-
-  const showToast = useCallback((m: string) => {
-    setToast(m);
-    setTimeout(() => setToast(null), 2600);
-  }, []);
-
-  const refetch = useCallback(async () => {
-    const payload = await fetchLostFoundRegister(pid);
-    setItems(payload.items);
-    setCounts(payload.counts);
-  }, [pid]);
-
-  useEffect(() => {
-    if (!pid) return;
-    setLoading(true);
-    const unsub = subscribeLostFound(pid, (payload) => {
-      setItems(payload.items);
-      setCounts(payload.counts);
-      setLoading(false);
-    });
-    return unsub;
-  }, [pid]);
+  const { toasts, showToast } = useRegisterToast();
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -206,161 +161,66 @@ export function LostFoundTab({ pid, lang }: { pid: string; lang: Lang }) {
     });
   }, [items, view, search, lang]);
 
-  // ── styles ──
-  const wrap: React.CSSProperties = { padding: '24px 48px 120px', background: T.bg, minHeight: '70dvh' };
-  const primaryBtn: React.CSSProperties = {
-    padding: '10px 16px',
-    borderRadius: 10,
-    background: T.ink,
-    color: T.bg,
-    border: 'none',
-    cursor: 'pointer',
-    fontFamily: FONT_SANS,
-    fontSize: 13.5,
-    fontWeight: 600,
-  };
-  const ghostBtn: React.CSSProperties = {
-    padding: '10px 16px',
-    borderRadius: 10,
-    background: 'transparent',
-    color: T.ink,
-    border: `1px solid ${T.rule}`,
-    cursor: 'pointer',
-    fontFamily: FONT_SANS,
-    fontSize: 13.5,
-    fontWeight: 600,
-  };
-
   return (
-    <div style={wrap}>
-      {/* Header + counts */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 18 }}>
-        <div>
-          <h1 style={{ fontFamily: FONT_SERIF, fontSize: 30, fontWeight: 400, color: T.ink, margin: 0, letterSpacing: '-0.02em' }}>
-            {tr(lang, 'Lost & Found', 'Objetos perdidos')}
-          </h1>
-          <p style={{ margin: '4px 0 0', fontSize: 13.5, color: T.ink2, fontFamily: FONT_SANS }}>
-            {tr(lang, 'Found items, guest reports, and returns — PMS and staff combined.', 'Objetos encontrados, reportes de huéspedes y devoluciones — del PMS y del personal.')}
-          </p>
-        </div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          <button style={primaryBtn} onClick={() => { setLogType('found'); setLogOpen(true); }}>
-            + {tr(lang, 'Log found item', 'Registrar hallazgo')}
-          </button>
-          <button style={ghostBtn} onClick={() => { setLogType('lost'); setLogOpen(true); }}>
-            + {tr(lang, 'Log lost report', 'Registrar pérdida')}
-          </button>
-        </div>
-      </div>
+    <div style={REGISTER_WRAP}>
+      <RegisterHeader
+        title={tr(lang, 'Lost & Found', 'Objetos perdidos')}
+        subtitle={tr(lang, 'Found items, guest reports, and returns — PMS and staff combined.', 'Objetos encontrados, reportes de huéspedes y devoluciones — del PMS y del personal.')}
+        actions={
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button style={REGISTER_PRIMARY_BTN} onClick={() => { setLogType('found'); setLogOpen(true); }}>
+              + {tr(lang, 'Log found item', 'Registrar hallazgo')}
+            </button>
+            <button style={REGISTER_GHOST_BTN} onClick={() => { setLogType('lost'); setLogOpen(true); }}>
+              + {tr(lang, 'Log lost report', 'Registrar pérdida')}
+            </button>
+          </div>
+        }
+      />
 
-      {/* Count chips */}
-      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 18 }}>
-        {[
+      <CountChips
+        chips={[
           { label: tr(lang, 'Open', 'Abiertos'), value: counts.open, color: T.ink },
           { label: tr(lang, 'Awaiting return', 'Por devolver'), value: counts.awaitingReturn, color: T.caramel },
           { label: tr(lang, 'Nearing disposal', 'Por desechar'), value: counts.nearingDisposal, color: T.warm },
-        ].map((c) => (
-          <div
-            key={c.label}
-            style={{
-              flex: '1 1 160px',
-              border: `1px solid ${T.rule}`,
-              borderRadius: 14,
-              padding: '14px 16px',
-              background: T.paper,
-            }}
-          >
-            <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: T.ink3 }}>
-              {c.label}
-            </div>
-            <div style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 30, fontWeight: 500, color: c.color, lineHeight: 1.1, marginTop: 6 }}>
-              {c.value}
-            </div>
-          </div>
+        ]}
+      />
+
+      <SearchFilterBar<ViewFilter>
+        search={search}
+        onSearch={setSearch}
+        placeholder={tr(lang, 'Search description, room, guest…', 'Buscar descripción, habitación, huésped…')}
+        views={[
+          { key: 'unresolved', label: tr(lang, 'Active', 'Activos') },
+          { key: 'found', label: tr(lang, 'Found', 'Encontrados') },
+          { key: 'lost', label: tr(lang, 'Lost', 'Perdidos') },
+          { key: 'resolved', label: tr(lang, 'Resolved', 'Resueltos') },
+          { key: 'all', label: tr(lang, 'All', 'Todos') },
+        ]}
+        view={view}
+        onView={setView}
+      />
+
+      <RegisterList
+        loading={loading}
+        loadFailed={loadFailed}
+        lang={lang}
+        isEmpty={filtered.length === 0}
+        emptyTitle={tr(lang, 'Nothing here yet', 'Nada por aquí todavía')}
+        emptyHint={tr(lang, 'Log a found item or a guest lost report to get started.', 'Registra un hallazgo o un reporte de pérdida para empezar.')}
+      >
+        {filtered.map((it) => (
+          <ItemCard
+            key={`${it.source}:${it.id}`}
+            item={it}
+            lang={lang}
+            pid={pid}
+            allItems={items}
+            onChanged={refetch}
+            onToast={showToast}
+          />
         ))}
-      </div>
-
-      {/* Search + view filter */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 16 }}>
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={tr(lang, 'Search description, room, guest…', 'Buscar descripción, habitación, huésped…')}
-          style={{
-            flex: '1 1 240px',
-            height: 38,
-            padding: '0 14px',
-            borderRadius: 10,
-            background: T.bg,
-            border: `1px solid ${T.rule}`,
-            fontFamily: FONT_SANS,
-            fontSize: 14,
-            color: T.ink,
-            outline: 'none',
-          }}
-        />
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {(['unresolved', 'found', 'lost', 'resolved', 'all'] as ViewFilter[]).map((v) => {
-            const labels: Record<ViewFilter, string> = {
-              unresolved: tr(lang, 'Active', 'Activos'),
-              found: tr(lang, 'Found', 'Encontrados'),
-              lost: tr(lang, 'Lost', 'Perdidos'),
-              resolved: tr(lang, 'Resolved', 'Resueltos'),
-              all: tr(lang, 'All', 'Todos'),
-            };
-            const active = view === v;
-            return (
-              <button
-                key={v}
-                onClick={() => setView(v)}
-                style={{
-                  padding: '8px 12px',
-                  borderRadius: 9999,
-                  border: `1px solid ${active ? T.ink : T.rule}`,
-                  background: active ? T.ink : 'transparent',
-                  color: active ? T.bg : T.ink2,
-                  fontFamily: FONT_SANS,
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                }}
-              >
-                {labels[v]}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* List */}
-      {loading ? (
-        <div style={{ padding: '60px 0', textAlign: 'center', color: T.ink3, fontFamily: FONT_SANS, fontSize: 14 }}>
-          {tr(lang, 'Loading…', 'Cargando…')}
-        </div>
-      ) : filtered.length === 0 ? (
-        <div style={{ padding: '60px 16px', textAlign: 'center', border: `1px dashed ${T.rule}`, borderRadius: 14 }}>
-          <div style={{ fontFamily: FONT_SERIF, fontSize: 20, color: T.ink2 }}>
-            {tr(lang, 'Nothing here yet', 'Nada por aquí todavía')}
-          </div>
-          <div style={{ fontSize: 13, color: T.ink3, fontFamily: FONT_SANS, marginTop: 6 }}>
-            {tr(lang, 'Log a found item or a guest lost report to get started.', 'Registra un hallazgo o un reporte de pérdida para empezar.')}
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {filtered.map((it) => (
-            <ItemCard
-              key={`${it.source}:${it.id}`}
-              item={it}
-              lang={lang}
-              pid={pid}
-              allItems={items}
-              onChanged={refetch}
-              onToast={showToast}
-            />
-          ))}
-        </div>
-      )}
+      </RegisterList>
 
       {logOpen && (
         <LogModal
@@ -377,27 +237,7 @@ export function LostFoundTab({ pid, lang }: { pid: string; lang: Lang }) {
         />
       )}
 
-      {toast && (
-        <div
-          style={{
-            position: 'fixed',
-            bottom: 24,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 1200,
-            background: T.ink,
-            color: T.bg,
-            padding: '12px 20px',
-            borderRadius: 9999,
-            fontFamily: FONT_SANS,
-            fontSize: 13.5,
-            fontWeight: 600,
-            boxShadow: '0 12px 32px rgba(31,35,28,0.25)',
-          }}
-        >
-          {toast}
-        </div>
-      )}
+      <RegisterToastHost toasts={toasts} />
     </div>
   );
 }
@@ -419,7 +259,7 @@ function ItemCard({
   onChanged: () => Promise<void> | void;
   onToast: (m: string) => void;
 }) {
-  const [busy, setBusy] = useState(false);
+  const { busy, act } = useActRunner(lang, onChanged, onToast);
   const [matches, setMatches] = useState<AutoMatchResult['matches'] | null>(null);
   const [matching, setMatching] = useState(false);
   const sm = statusMeta(item.status, lang);
@@ -430,22 +270,6 @@ function ItemCard({
   const matchedItem = item.matchedItemId
     ? allItems.find((x) => x.source === 'app' && x.id === item.matchedItemId)
     : null;
-
-  const act = async (fn: () => Promise<{ ok: boolean; error?: string }>, okMsg: string) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      const res = await fn();
-      if (res.ok) {
-        await onChanged();
-        onToast(okMsg);
-      } else {
-        onToast(tr(lang, 'Action failed', 'La acción falló') + (res.error ? ` (${res.error})` : ''));
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const runAutoMatch = async () => {
     if (matching) return;
@@ -459,182 +283,138 @@ function ItemCard({
     }
   };
 
-  const tag = (label: string, color: string, bg: string) => (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        padding: '3px 9px',
-        borderRadius: 9999,
-        background: bg,
-        color,
-        border: `1px solid ${color}33`,
-        fontFamily: FONT_SANS,
-        fontSize: 11,
-        fontWeight: 600,
-        whiteSpace: 'nowrap',
-      }}
-    >
-      {label}
-    </span>
-  );
-
-  const smallBtn = (label: string, onClick: () => void, tone: string = T.ink): React.ReactNode => (
-    <button
-      disabled={busy}
-      onClick={onClick}
-      style={{
-        padding: '6px 11px',
-        borderRadius: 8,
-        border: `1px solid ${tone}33`,
-        background: `${tone}10`,
-        color: tone,
-        fontFamily: FONT_SANS,
-        fontSize: 12,
-        fontWeight: 600,
-        cursor: busy ? 'default' : 'pointer',
-        opacity: busy ? 0.5 : 1,
-      }}
-    >
-      {label}
-    </button>
-  );
-
   return (
-    <div style={{ border: `1px solid ${T.rule}`, borderRadius: 16, background: T.paper, padding: 16 }}>
-      <div style={{ display: 'flex', gap: 14 }}>
-        {/* Photo / placeholder */}
-        <div
-          style={{
-            width: 72,
-            height: 72,
-            borderRadius: 12,
-            flexShrink: 0,
-            background: T.bg,
-            border: `1px solid ${T.rule}`,
-            overflow: 'hidden',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            color: T.ink3,
-            fontFamily: FONT_MONO,
-            fontSize: 10,
-          }}
-        >
-          {item.photoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={item.photoUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          ) : (
-            <span style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}>{tr(lang, 'No photo', 'Sin foto')}</span>
-          )}
-        </div>
-
-        {/* Body */}
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
-            {isFound
-              ? tag(tr(lang, 'FOUND', 'ENCONTRADO'), T.sageDeep, T.sageDim)
-              : tag(tr(lang, 'LOST', 'PERDIDO'), T.warm, T.warmDim)}
-            {tag(sm.label, sm.color, `${sm.color}14`)}
-            {!editable && tag(tr(lang, 'From PMS', 'Del PMS'), T.purple, T.purpleDim)}
-            {disposal && tag(disposal.label, disposal.color, `${disposal.color}14`)}
-          </div>
-
-          <div style={{ fontFamily: FONT_SERIF, fontSize: 18, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
-            {item.itemDescription || tr(lang, '(no description)', '(sin descripción)')}
-          </div>
-
-          <div style={{ fontSize: 12.5, color: T.ink2, fontFamily: FONT_SANS, marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            {item.category && <span>{catLabel(item.category, lang)}</span>}
-            {(item.roomNumber || item.location) && (
-              <span>📍 {item.roomNumber ? `${tr(lang, 'Room', 'Hab.')} ${item.roomNumber}` : item.location}</span>
-            )}
-            {item.occurredAt && <span>{isFound ? tr(lang, 'Found', 'Encontrado') : tr(lang, 'Lost', 'Perdido')} {fmtWhen(item.occurredAt, lang)}</span>}
-            {item.foundBy && <span>{tr(lang, 'by', 'por')} {item.foundBy}</span>}
-            {item.guestName && <span>👤 {item.guestName}</span>}
-          </div>
-
-          {matchedItem && (
-            <div style={{ marginTop: 6, fontSize: 12.5, color: T.caramelDeep, fontFamily: FONT_SANS }}>
-              ↔ {tr(lang, 'Matched with', 'Emparejado con')}: {matchedItem.itemDescription}
-            </div>
-          )}
-
-          {item.notes && (
-            <div style={{ marginTop: 6, fontSize: 12.5, color: T.ink2, fontFamily: FONT_SANS, fontStyle: 'italic' }}>
-              {item.notes}
-            </div>
-          )}
-
-          {/* Actions */}
-          {editable && (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
-              {isFound && (item.status === 'open' || item.status === 'matched') && (
-                <>
-                  {smallBtn(tr(lang, 'Returned', 'Devuelto'), () =>
-                    act(() => updateLostFoundItem(pid, item.id, { status: 'returned' }), tr(lang, 'Marked returned', 'Marcado devuelto')), T.sageDeep)}
-                  {smallBtn(tr(lang, 'Shipped', 'Enviado'), () =>
-                    act(() => updateLostFoundItem(pid, item.id, { status: 'shipped' }), tr(lang, 'Marked shipped', 'Marcado enviado')), T.sageDeep)}
-                  {smallBtn(tr(lang, 'Dispose', 'Desechar'), () =>
-                    act(() => updateLostFoundItem(pid, item.id, { status: 'disposed' }), tr(lang, 'Marked disposed', 'Marcado desechado')), T.ink3)}
-                </>
-              )}
-              {!isFound && item.status === 'open' && (
-                <>
-                  {smallBtn(matching ? tr(lang, 'Searching…', 'Buscando…') : '✨ ' + tr(lang, 'Find matches', 'Buscar coincidencias'), runAutoMatch, T.ink)}
-                  {smallBtn(tr(lang, 'Close report', 'Cerrar reporte'), () =>
-                    act(() => updateLostFoundItem(pid, item.id, { status: 'returned' }), tr(lang, 'Closed', 'Cerrado')), T.ink3)}
-                </>
-              )}
-            </div>
-          )}
-          {!editable && (
-            <div style={{ marginTop: 10, fontSize: 11.5, color: T.ink3, fontFamily: FONT_SANS }}>
-              {tr(lang, 'Managed in the PMS — read-only here.', 'Gestionado en el PMS — solo lectura aquí.')}
-            </div>
-          )}
-
-          {/* Auto-match suggestions */}
-          {matches && (
-            <div style={{ marginTop: 12, borderTop: `1px solid ${T.rule}`, paddingTop: 12 }}>
-              <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: T.ink3, marginBottom: 8 }}>
-                {tr(lang, 'Suggested matches', 'Coincidencias sugeridas')}
-              </div>
-              {matches.length === 0 ? (
-                <div style={{ fontSize: 12.5, color: T.ink3, fontFamily: FONT_SANS }}>
-                  {tr(lang, 'No likely matches among open found items.', 'No hay coincidencias probables entre los objetos encontrados.')}
-                </div>
-              ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {matches.map((m) => (
-                    <div
-                      key={m.id}
-                      style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '8px 10px' }}
-                    >
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 13.5, color: T.ink, fontFamily: FONT_SANS, fontWeight: 600 }}>
-                          {m.item.itemDescription}
-                          {m.aiConfidence && (
-                            <span style={{ marginLeft: 8, fontSize: 11, color: m.aiConfidence === 'high' ? T.sageDeep : m.aiConfidence === 'medium' ? T.caramel : T.ink3 }}>
-                              {tr(lang, m.aiConfidence + ' confidence', m.aiConfidence)}
-                            </span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: 11.5, color: T.ink2, fontFamily: FONT_SANS, marginTop: 2 }}>
-                          {(m.aiReason ? [m.aiReason] : m.reasons).slice(0, 3).join(' · ')}
-                        </div>
-                      </div>
-                      {smallBtn(tr(lang, 'Match', 'Emparejar'), () =>
-                        act(() => matchLostFound(pid, item.id, m.item.id), tr(lang, 'Matched', 'Emparejado')), T.sageDeep)}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+    <RegisterCardShell
+      photoUrl={item.photoUrl}
+      placeholder={<span style={{ textTransform: 'uppercase', letterSpacing: '0.06em' }}>{tr(lang, 'No photo', 'Sin foto')}</span>}
+      placeholderFontSize={10}
+    >
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+        {isFound ? (
+          <Tag color={T.sageDeep} bg={T.sageDim}>{tr(lang, 'FOUND', 'ENCONTRADO')}</Tag>
+        ) : (
+          <Tag color={T.warm} bg={T.warmDim}>{tr(lang, 'LOST', 'PERDIDO')}</Tag>
+        )}
+        <Tag color={sm.color} bg={`${sm.color}14`}>{sm.label}</Tag>
+        {!editable && <Tag color={T.purple} bg={T.purpleDim}>{tr(lang, 'From PMS', 'Del PMS')}</Tag>}
+        {disposal && <Tag color={disposal.color} bg={`${disposal.color}14`}>{disposal.label}</Tag>}
       </div>
-    </div>
+
+      <div style={{ fontFamily: FONT_SERIF, fontSize: 18, color: T.ink, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
+        {item.itemDescription || tr(lang, '(no description)', '(sin descripción)')}
+      </div>
+
+      <div style={{ fontSize: 12.5, color: T.ink2, fontFamily: FONT_SANS, marginTop: 4, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {item.category && <span>{catLabel(item.category, lang)}</span>}
+        {(item.roomNumber || item.location) && (
+          <span>📍 {item.roomNumber ? `${tr(lang, 'Room', 'Hab.')} ${item.roomNumber}` : item.location}</span>
+        )}
+        {item.occurredAt && <span>{isFound ? tr(lang, 'Found', 'Encontrado') : tr(lang, 'Lost', 'Perdido')} {fmtWhen(item.occurredAt, lang)}</span>}
+        {item.foundBy && <span>{tr(lang, 'by', 'por')} {item.foundBy}</span>}
+        {item.guestName && <span>👤 {item.guestName}</span>}
+      </div>
+
+      {matchedItem && (
+        <div style={{ marginTop: 6, fontSize: 12.5, color: T.caramelDeep, fontFamily: FONT_SANS }}>
+          ↔ {tr(lang, 'Matched with', 'Emparejado con')}: {matchedItem.itemDescription}
+        </div>
+      )}
+
+      {item.notes && (
+        <div style={{ marginTop: 6, fontSize: 12.5, color: T.ink2, fontFamily: FONT_SANS, fontStyle: 'italic' }}>
+          {item.notes}
+        </div>
+      )}
+
+      {/* Actions */}
+      {editable && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+          {isFound && (item.status === 'open' || item.status === 'matched') && (
+            <>
+              <SmallBtn busy={busy} tone={T.sageDeep} onClick={() =>
+                act(() => updateLostFoundItem(pid, item.id, { status: 'returned' }), tr(lang, 'Marked returned', 'Marcado devuelto'))
+              }>
+                {tr(lang, 'Returned', 'Devuelto')}
+              </SmallBtn>
+              <SmallBtn busy={busy} tone={T.sageDeep} onClick={() =>
+                act(() => updateLostFoundItem(pid, item.id, { status: 'shipped' }), tr(lang, 'Marked shipped', 'Marcado enviado'))
+              }>
+                {tr(lang, 'Shipped', 'Enviado')}
+              </SmallBtn>
+              <SmallBtn busy={busy} tone={T.ink3} onClick={() =>
+                act(() => updateLostFoundItem(pid, item.id, { status: 'disposed' }), tr(lang, 'Marked disposed', 'Marcado desechado'))
+              }>
+                {tr(lang, 'Dispose', 'Desechar')}
+              </SmallBtn>
+            </>
+          )}
+          {!isFound && (item.status === 'open' || item.status === 'matched') && (
+            <>
+              {item.status === 'open' && (
+                <SmallBtn busy={busy} tone={T.ink} onClick={runAutoMatch}>
+                  {matching ? tr(lang, 'Searching…', 'Buscando…') : '✨ ' + tr(lang, 'Find matches', 'Buscar coincidencias')}
+                </SmallBtn>
+              )}
+              {/* Matched lost reports keep "Close report" — resolving the FOUND
+                  side never cascades here, so without this the card would sit
+                  in the Active view forever with no way to clear it. */}
+              <SmallBtn busy={busy} tone={T.ink3} onClick={() =>
+                act(() => updateLostFoundItem(pid, item.id, { status: 'returned' }), tr(lang, 'Closed', 'Cerrado'))
+              }>
+                {tr(lang, 'Close report', 'Cerrar reporte')}
+              </SmallBtn>
+            </>
+          )}
+        </div>
+      )}
+      {!editable && (
+        <div style={{ marginTop: 10, fontSize: 11.5, color: T.ink3, fontFamily: FONT_SANS }}>
+          {tr(lang, 'Managed in the PMS — read-only here.', 'Gestionado en el PMS — solo lectura aquí.')}
+        </div>
+      )}
+
+      {/* Auto-match suggestions */}
+      {matches && (
+        <div style={{ marginTop: 12, borderTop: `1px solid ${T.rule}`, paddingTop: 12 }}>
+          <div style={{ fontFamily: FONT_MONO, fontSize: 10, letterSpacing: '0.08em', textTransform: 'uppercase', color: T.ink3, marginBottom: 8 }}>
+            {tr(lang, 'Suggested matches', 'Coincidencias sugeridas')}
+          </div>
+          {matches.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: T.ink3, fontFamily: FONT_SANS }}>
+              {tr(lang, 'No likely matches among open found items.', 'No hay coincidencias probables entre los objetos encontrados.')}
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {matches.map((m) => (
+                <div
+                  key={m.id}
+                  style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: 'space-between', border: `1px solid ${T.rule}`, borderRadius: 10, padding: '8px 10px' }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13.5, color: T.ink, fontFamily: FONT_SANS, fontWeight: 600 }}>
+                      {m.item.itemDescription}
+                      {m.aiConfidence && (
+                        <span style={{ marginLeft: 8, fontSize: 11, color: m.aiConfidence === 'high' ? T.sageDeep : m.aiConfidence === 'medium' ? T.caramel : T.ink3 }}>
+                          {confidenceLabel(m.aiConfidence, lang)}
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 11.5, color: T.ink2, fontFamily: FONT_SANS, marginTop: 2 }}>
+                      {(m.aiReason ? [m.aiReason] : m.reasons).slice(0, 3).join(' · ')}
+                    </div>
+                  </div>
+                  <SmallBtn busy={busy} tone={T.sageDeep} onClick={() =>
+                    act(() => matchLostFound(pid, item.id, m.item.id), tr(lang, 'Matched', 'Emparejado'))
+                  }>
+                    {tr(lang, 'Match', 'Emparejar')}
+                  </SmallBtn>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </RegisterCardShell>
   );
 }
 
@@ -664,19 +444,11 @@ function LogModal({
   const [notes, setNotes] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [describing, setDescribing] = useState(false);
-  const [preview, setPreview] = useState<string | null>(null);
-  const prepared = useRef<{ blob: Blob; ext: string } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const photo = usePhotoDraft();
 
   const onPickFile = async (file: File | null) => {
-    if (!file) {
-      prepared.current = null;
-      setPreview(null);
-      return;
-    }
-    const p = await prepareImage(file);
-    prepared.current = { blob: p.blob, ext: p.ext };
-    setPreview(p.previewUrl);
+    const p = await photo.pick(file);
+    if (!p) return;
     // AI auto-describe (found items only, and only when we have a JPEG).
     if (type === 'found' && p.b64 && p.mime) {
       setDescribing(true);
@@ -704,24 +476,9 @@ function LogModal({
     setSubmitting(true);
     try {
       // Upload photo first (if any) to get a path.
-      let photoPath: string | null = null;
-      if (prepared.current) {
-        const scopeKey =
-          typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `d${Date.now()}`;
-        const pre = await presignFoundPhoto(pid, scopeKey, `photo.${prepared.current.ext}`);
-        if (pre.ok && pre.data) {
-          try {
-            const up = await fetch(pre.data.signedUrl, {
-              method: 'PUT',
-              headers: { Authorization: `Bearer ${pre.data.token}` },
-              body: prepared.current.blob,
-            });
-            if (up.ok) photoPath = pre.data.path;
-          } catch {
-            /* photo is optional — log without it */
-          }
-        }
-      }
+      const photoPath = photo.prepared.current
+        ? await uploadPreparedPhoto(presignFoundPhoto, pid, 'photo', photo.prepared.current)
+        : null;
 
       const res = await logLostFoundItem({
         pid,
@@ -751,29 +508,19 @@ function LogModal({
       onClose={onClose}
       title={type === 'found' ? tr(lang, 'Log found item', 'Registrar hallazgo') : tr(lang, 'Log lost report', 'Registrar pérdida')}
       subtitle={tr(lang, 'Adds to the Lost & Found register', 'Se agrega al registro de objetos perdidos')}
-      footer={
-        <>
-          <button
-            onClick={onClose}
-            style={{ padding: '9px 14px', borderRadius: 9, background: 'transparent', border: `1px solid ${T.rule}`, color: T.ink2, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-          >
-            {tr(lang, 'Cancel', 'Cancelar')}
-          </button>
-          <button
-            onClick={submit}
-            disabled={submitting}
-            style={{ padding: '9px 16px', borderRadius: 9, background: submitting ? T.ink3 : T.ink, border: 'none', color: T.bg, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 600, cursor: submitting ? 'default' : 'pointer' }}
-          >
-            {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, 'Save', 'Guardar')}
-          </button>
-        </>
-      }
+      footer={<SaveCancelFooter lang={lang} submitting={submitting} onCancel={onClose} onSubmit={submit} />}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Type toggle */}
         <ChipChoose
           value={type}
-          onChange={(v) => setType(v)}
+          onChange={(v) => {
+            // Switching to a lost report hides the photo picker, but the
+            // prepared blob would silently survive and get uploaded onto the
+            // guest's report — drop it so no invisible photo is attached.
+            if (v === 'lost') photo.clear();
+            setType(v);
+          }}
           options={[
             { value: 'found', label: tr(lang, 'Found item', 'Objeto encontrado') },
             { value: 'lost', label: tr(lang, 'Guest lost report', 'Reporte de pérdida') },
@@ -782,46 +529,14 @@ function LogModal({
 
         {/* Photo (found only) */}
         {type === 'found' && (
-          <Field label={tr(lang, 'Photo', 'Foto')} hint={describing ? tr(lang, 'AI reading photo…', 'IA leyendo la foto…') : tr(lang, 'AI auto-fills the description', 'La IA completa la descripción')}>
-            <button
-              type="button"
-              onClick={() => (preview ? (setPreview(null), (prepared.current = null)) : fileRef.current?.click())}
-              style={{
-                width: '100%',
-                minHeight: 120,
-                borderRadius: 12,
-                border: `1px dashed ${preview ? T.sage : T.rule}`,
-                background: T.bg,
-                cursor: 'pointer',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                overflow: 'hidden',
-                padding: 0,
-              }}
-            >
-              {preview ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={preview} alt="" style={{ width: '100%', maxHeight: 220, objectFit: 'contain' }} />
-              ) : (
-                <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink3, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  + {tr(lang, 'Tap to take or upload', 'Tomar o subir foto')}
-                </span>
-              )}
-            </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              capture="environment"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const f = e.target.files?.[0] ?? null;
-                void onPickFile(f);
-                if (e.target) e.target.value = '';
-              }}
-            />
-          </Field>
+          <PhotoPickerField
+            label={tr(lang, 'Photo', 'Foto')}
+            hint={describing ? tr(lang, 'AI reading photo…', 'IA leyendo la foto…') : tr(lang, 'AI auto-fills the description', 'La IA completa la descripción')}
+            placeholder={<>+ {tr(lang, 'Tap to take or upload', 'Tomar o subir foto')}</>}
+            preview={photo.preview}
+            onPick={(f) => void onPickFile(f)}
+            onClear={photo.clear}
+          />
         )}
 
         <Field label={tr(lang, 'Description', 'Descripción')} required>

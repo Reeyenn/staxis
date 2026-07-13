@@ -7,11 +7,15 @@
 // learned, so the dashboard is unchanged on a fresh hotel. Reads/writes go
 // through /api/memory/recap (service-role behind a session + management gate).
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { canManageTeam } from '@/lib/roles';
+import { useApiResource } from '@/lib/hooks/use-api-resource';
+import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import { GlassCard } from './GlassCard';
+import { CARD, CARD_MONO, CARD_LABEL, SANS } from './palette';
 
 interface LearnedItem {
   id: string;
@@ -31,79 +35,53 @@ interface RecapData {
   items: LearnedItem[];
 }
 
-const C = {
-  ink: '#1F231C',
-  ink2: '#5C625C',
-  ink3: '#A6ABA6',
-  rule: 'rgba(31,35,28,0.06)',
-  attn: '#8C6A33', // amber warn-text for "noticed" attention insights
-  attnRule: 'rgba(201,150,68,0.25)',
-} as const;
-
-const FONT_SANS = 'var(--font-geist), system-ui, -apple-system, sans-serif';
-const FONT_MONO = 'var(--font-geist-mono), ui-monospace, monospace';
-
-const LABEL: React.CSSProperties = {
-  fontFamily: FONT_MONO,
-  fontSize: 9.5,
-  letterSpacing: '0.14em',
-  textTransform: 'uppercase',
-  color: C.ink3,
-  fontWeight: 600,
-};
-
 export function MemoryRecapCard() {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
-  const [data, setData] = useState<RecapData | null>(null);
-  const [loaded, setLoaded] = useState(false);
   const [removing, setRemoving] = useState<string | null>(null);
+  // A removal that came back failed (HTTP error / offline / non-JSON body) —
+  // the fact stays on screen AND we say so, instead of the old silent no-op.
+  const [removeFailed, setRemoveFailed] = useState(false);
+  // Facts removed in this session — filtered out locally after a successful
+  // POST, exactly like the previous in-place setData filter.
+  const [removed, setRemoved] = useState<ReadonlySet<string>>(() => new Set());
 
   const es = lang === 'es';
   const canSee = !!user && canManageTeam(user.role);
 
+  // Nightly-consolidation data: a slow 5-min poll keeps a long-lived (wall-TV)
+  // dashboard from going permanently stale; keepDataOnError holds last-good
+  // through a failed poll so the card never blinks out on a blip.
+  const { data, loading } = useApiResource<RecapData>(
+    `/api/memory/recap?propertyId=${activePropertyId}`,
+    { enabled: canSee && !!activePropertyId, pollMs: 300_000, keepDataOnError: true },
+  );
+
   useEffect(() => {
-    if (!canSee || !activePropertyId) return;
-    let alive = true;
-    setLoaded(false);
-    fetch(`/api/memory/recap?propertyId=${activePropertyId}`)
-      .then((r) => r.json())
-      .then((j) => {
-        if (alive) {
-          setData(j?.ok ? (j.data as RecapData) : null);
-          setLoaded(true);
-        }
-      })
-      .catch(() => {
-        if (alive) setLoaded(true);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [canSee, activePropertyId]);
+    setRemoved(new Set());
+    setRemoveFailed(false);
+  }, [activePropertyId]);
 
   const remove = useCallback(
     async (id: string) => {
       if (!activePropertyId) return;
       setRemoving(id);
+      setRemoveFailed(false);
       try {
-        const r = await fetch('/api/memory/recap', {
+        // fetchWithAuth (not bare fetch): the write path rides the same
+        // token/401-recovery as the card's GET.
+        const r = await fetchWithAuth('/api/memory/recap', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ propertyId: activePropertyId, id }),
         });
-        const j = await r.json();
-        if (j?.ok)
-          setData((d) =>
-            d
-              ? {
-                  ...d,
-                  items: d.items.filter((i) => i.id !== id),
-                  noticed: d.noticed.filter((i) => i.id !== id),
-                }
-              : d,
-          );
+        const j = (await r.json().catch(() => null)) as { ok?: boolean } | null;
+        if (j?.ok) setRemoved((prev) => new Set(prev).add(id));
+        else setRemoveFailed(true);
+      } catch (e) {
+        // Signed out mid-request → redirect already firing, show nothing.
+        if (!(e instanceof SessionEndedError)) setRemoveFailed(true);
       } finally {
         setRemoving(null);
       }
@@ -112,10 +90,10 @@ export function MemoryRecapCard() {
   );
 
   if (!canSee || !activePropertyId) return null;
-  const noticed = data?.noticed ?? [];
-  const items = data?.items ?? [];
+  const noticed = (data?.noticed ?? []).filter((i) => !removed.has(i.id));
+  const items = (data?.items ?? []).filter((i) => !removed.has(i.id));
   // Additive-only: nothing to show until Staxis has actually learned/noticed something.
-  if (!loaded || !data || (noticed.length === 0 && items.length === 0)) return null;
+  if (loading || !data || (noticed.length === 0 && items.length === 0)) return null;
 
   const removeBtn = (id: string) => (
     <button
@@ -123,9 +101,9 @@ export function MemoryRecapCard() {
       disabled={removing === id}
       style={{
         flexShrink: 0,
-        fontFamily: FONT_MONO,
+        fontFamily: CARD_MONO,
         fontSize: 11,
-        color: C.ink3,
+        color: CARD.ink3,
         background: 'transparent',
         border: 'none',
         cursor: 'pointer',
@@ -138,19 +116,11 @@ export function MemoryRecapCard() {
   );
 
   return (
-    <div
-      style={{
-        background: '#FFFFFF',
-        border: '1px solid rgba(31,35,28,0.08)',
-        borderRadius: 16,
-        boxShadow: '0 6px 16px -14px rgba(31,42,32,0.35)',
-        padding: '18px 20px',
-      }}
-    >
+    <GlassCard>
       {/* What Staxis noticed — proactive operational insights (attention) */}
       {noticed.length > 0 && (
         <>
-          <div style={{ ...LABEL, color: C.attn }}>
+          <div style={{ ...CARD_LABEL, color: CARD.attn }}>
             {es ? '⚠ Lo que Staxis notó' : '⚠ What Staxis noticed'}
           </div>
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column' }}>
@@ -163,10 +133,10 @@ export function MemoryRecapCard() {
                   justifyContent: 'space-between',
                   gap: 12,
                   padding: '8px 0',
-                  borderTop: `1px solid ${C.attnRule}`,
+                  borderTop: `1px solid ${CARD.attnRule}`,
                 }}
               >
-                <span style={{ fontSize: 13.5, color: C.ink, lineHeight: 1.4, fontWeight: 500 }}>
+                <span style={{ fontSize: 13.5, color: CARD.ink, lineHeight: 1.4, fontWeight: 500 }}>
                   {it.content}
                 </span>
                 {removeBtn(it.id)}
@@ -179,7 +149,7 @@ export function MemoryRecapCard() {
       {/* What Staxis learned — facts from conversations + lower-signal patterns */}
       {items.length > 0 && (
         <>
-          <div style={{ ...LABEL, marginTop: noticed.length > 0 ? 20 : 0 }}>
+          <div style={{ ...CARD_LABEL, marginTop: noticed.length > 0 ? 20 : 0 }}>
             {es ? 'Lo que Staxis aprendió' : 'What Staxis learned'}
           </div>
 
@@ -187,10 +157,10 @@ export function MemoryRecapCard() {
             <div
               style={{
                 marginTop: 10,
-                fontFamily: FONT_SANS,
+                fontFamily: SANS,
                 fontWeight: 500,
                 fontSize: 15,
-                color: C.ink,
+                color: CARD.ink,
                 lineHeight: 1.5,
               }}
             >
@@ -208,10 +178,10 @@ export function MemoryRecapCard() {
                   justifyContent: 'space-between',
                   gap: 12,
                   padding: '8px 0',
-                  borderTop: `1px solid ${C.rule}`,
+                  borderTop: `1px solid ${CARD.rule}`,
                 }}
               >
-                <span style={{ fontSize: 13.5, color: C.ink2, lineHeight: 1.4 }}>{it.content}</span>
+                <span style={{ fontSize: 13.5, color: CARD.ink2, lineHeight: 1.4 }}>{it.content}</span>
                 {removeBtn(it.id)}
               </div>
             ))}
@@ -219,11 +189,19 @@ export function MemoryRecapCard() {
         </>
       )}
 
-      <div style={{ marginTop: 12, fontSize: 11, color: C.ink3, fontFamily: FONT_MONO, lineHeight: 1.5 }}>
+      {removeFailed && (
+        <div style={{ marginTop: 10, fontSize: 12, color: CARD.attn }}>
+          {es
+            ? 'No se pudo quitar la nota. Revisa tu conexión e inténtalo de nuevo.'
+            : 'Couldn’t remove that note — check your connection and try again.'}
+        </div>
+      )}
+
+      <div style={{ marginTop: 12, fontSize: 11, color: CARD.ink3, fontFamily: CARD_MONO, lineHeight: 1.5 }}>
         {es
           ? 'Staxis observa tus operaciones y conversaciones y aprende cada noche. Quita cualquier nota incorrecta.'
           : 'Staxis watches your operations and conversations and learns each night — remove anything that’s off.'}
       </div>
-    </div>
+    </GlassCard>
   );
 }

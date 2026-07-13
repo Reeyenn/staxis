@@ -32,8 +32,6 @@ interface ListPayload {
   counts: PackageCounts;
 }
 
-const EMPTY: ListPayload = { items: [], counts: { held: 0, pickedUp: 0 } };
-
 async function readEnvelope<T>(res: Response): Promise<T | null> {
   const body = (await res.json().catch(() => null)) as { ok?: boolean; data?: T } | null;
   if (!body || body.ok !== true || body.data === undefined) return null;
@@ -80,7 +78,14 @@ export async function fetchPackages(
   if (status) qs.set('status', status);
   const res = await fetchWithAuth(`${BASE}?${qs.toString()}`, { cache: 'no-store' });
   const data = await readEnvelope<ListPayload>(res);
-  return data ?? EMPTY;
+  if (data === null) {
+    // An HTTP error envelope (e.g. a transient 500) must NOT masquerade as an
+    // empty register — returning `EMPTY` here let a brief server blip wipe the
+    // list to "No packages held" mid-shift. Throw instead so subscribers keep
+    // their last-good data (their catch below) and the next poll self-heals.
+    throw new Error(`packages_list_failed_${res.status}`);
+  }
+  return data;
 }
 
 /**
@@ -92,6 +97,7 @@ export function subscribePackages(
   pid: string,
   onData: (payload: ListPayload) => void,
   pollMs = 30_000,
+  onError?: () => void,
 ): () => void {
   let active = true;
   const refresh = async () => {
@@ -99,7 +105,9 @@ export function subscribePackages(
       const payload = await fetchPackages(pid);
       if (active) onData(payload);
     } catch {
-      /* keep last good — transient network blip */
+      // Keep last good — transient network/server blip. onError lets the UI
+      // show a load-error state when there is no last-good data yet.
+      if (active) onError?.();
     }
   };
   void refresh();

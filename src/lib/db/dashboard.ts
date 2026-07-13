@@ -102,34 +102,6 @@ function dashboardFromJson(d: Record<string, unknown> | null): DashboardNumbers 
   };
 }
 
-/**
- * Single-tenant legacy callers (no property scope). Plan v4: deprecated —
- * always fires null. Use subscribeToDashboardByDate instead.
- */
-export function subscribeToDashboardNumbers(
-  callback: (nums: DashboardNumbers | null) => void,
-): () => void {
-  callback(null);
-  return () => {};
-}
-
-function dashboardFromRow(r: Record<string, unknown>): DashboardNumbers {
-  return {
-    inHouse:    typeof r.in_house    === 'number' ? r.in_house    : null,
-    arrivals:   typeof r.arrivals    === 'number' ? r.arrivals    : null,
-    departures: typeof r.departures  === 'number' ? r.departures  : null,
-    inHouseGuests:    typeof r.in_house_guests    === 'number' ? r.in_house_guests    : null,
-    arrivalsGuests:   typeof r.arrivals_guests    === 'number' ? r.arrivals_guests    : null,
-    departuresGuests: typeof r.departures_guests  === 'number' ? r.departures_guests  : null,
-    pulledAt:     toDate(r.pulled_at),
-    errorCode:    typeof r.error_code    === 'string' ? r.error_code as DashboardErrorCode : null,
-    errorMessage: typeof r.error_message === 'string' ? r.error_message : null,
-    errorPage:    typeof r.error_page    === 'string' ? r.error_page    : null,
-    erroredAt:    toDate(r.errored_at),
-    error:        null,
-  };
-}
-
 export async function getDashboardForDate(
   dateStr: string,
   propertyId: string,

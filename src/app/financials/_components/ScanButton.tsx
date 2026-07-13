@@ -7,7 +7,10 @@
 
 import React, { useRef, useState } from 'react';
 import { resizeImageForVision } from '@/lib/image-resize';
-import { apiSend, Btn, T, FONT_SANS } from './fin-ui';
+import { finSend, Btn, T, FONT_SANS } from './fin-ui';
+import { ft, scanErrorLabel } from './fin-i18n';
+
+type Lang = 'en' | 'es';
 
 export interface InvoiceDraft {
   vendor: string | null;
@@ -29,6 +32,7 @@ export interface QuoteDraft {
 export function ScanButton({
   mode,
   pid,
+  lang,
   label,
   scanningLabel,
   failLabel,
@@ -37,12 +41,14 @@ export function ScanButton({
 }: {
   mode: 'invoice' | 'quote';
   pid: string;
+  lang: Lang;
   label: string;
   scanningLabel: string;
   failLabel: string;
   onInvoice?: (draft: InvoiceDraft, anomalyWarning: string | null) => void;
   onQuote?: (draft: QuoteDraft) => void;
 }) {
+  const S = ft(lang);
   const inputRef = useRef<HTMLInputElement>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,12 +59,16 @@ export function ScanButton({
     try {
       const resized = await resizeImageForVision(file);
       const endpoint = mode === 'invoice' ? '/api/financials/scan-invoice' : '/api/financials/scan-quote';
-      const res = await apiSend<{ draft: unknown; anomalyWarning?: string | null }>(endpoint, 'POST', {
+      const res = await finSend<{ draft: unknown; anomalyWarning?: string | null }>(endpoint, 'POST', {
         pid,
         imageBase64: resized.base64,
         mediaType: resized.mediaType,
       });
-      if (!res.ok || !res.data) {
+      if (res.error !== undefined) {
+        setError(scanErrorLabel(S, failLabel, res.code, res.status, res.error));
+        return;
+      }
+      if (!res.data) {
         setError(failLabel);
         return;
       }
