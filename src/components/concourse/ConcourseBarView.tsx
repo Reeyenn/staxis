@@ -24,9 +24,6 @@ export interface BarItem {
 
 export interface ConcourseBarViewProps {
   items: BarItem[];
-  /** EN/ES segmented value; null when the user is on ht/tl/vi (neither lit). */
-  lang: 'en' | 'es' | null;
-  onLang: (l: 'en' | 'es') => void;
   gearActive: boolean;
   onGear: () => void;
   onLogo: () => void;
@@ -37,7 +34,7 @@ export interface ConcourseBarViewProps {
 }
 
 export function ConcourseBarView({
-  items, lang, onLang, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
 }: ConcourseBarViewProps) {
   return (
     <div className="cx-barwrap">
@@ -71,10 +68,6 @@ export function ConcourseBarView({
           </button>
         ))}
         <span className="cx-divider" aria-hidden />
-        <div className="cx-seg" role="group" aria-label="Language">
-          <button type="button" className={lang === 'en' ? 'cx-on' : ''} onClick={() => onLang('en')}>EN</button>
-          <button type="button" className={lang === 'es' ? 'cx-on' : ''} onClick={() => onLang('es')}>ES</button>
-        </div>
         <button
           type="button"
           className={`cx-gear${gearActive ? ' cx-on' : ''}`}

@@ -95,8 +95,6 @@ export default function ConcourseDemoPage() {
       <CxStyle />
       <ConcourseBarView
         items={items}
-        lang={lang}
-        onLang={setLang}
         gearActive={view === 'settings'}
         onGear={() => setView('settings')}
         onLogo={() => setView('home')}

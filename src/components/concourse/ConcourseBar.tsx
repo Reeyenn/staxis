@@ -5,8 +5,8 @@
 //
 // Wires ConcourseBarView to the real app: section pills from the section
 // registry (filtered by the per-hotel toggles + the financials capability
-// gate, exactly like the old Header), logo → /home hub, EN/ES → the shared
-// language context, gear → /settings, and an avatar dropdown that keeps
+// gate, exactly like the old Header), logo → /home hub, gear → /settings,
+// and an avatar dropdown that keeps
 // everything the old header offered: who you are, hotel switching, the full
 // 5-language list, Admin (owners), and sign out.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -159,8 +159,6 @@ export function ConcourseBar() {
   return (
     <ConcourseBarView
       items={items}
-      lang={locale === 'en' ? 'en' : locale === 'es' ? 'es' : null}
-      onLang={(l) => setLocale(l)}
       gearActive={pathname.startsWith('/settings')}
       onGear={() => router.push('/settings')}
       onLogo={() => router.push('/home')}
