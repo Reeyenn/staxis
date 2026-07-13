@@ -153,6 +153,22 @@ export async function POST(req: NextRequest) {
     // fall through to redeem + owner_id transfer.
   }
 
+  // Resolve and validate the requested role BEFORE reserving a use. A shared
+  // code has row.role=null, and malformed/missing role input must not consume
+  // one of its finite slots.
+  let finalRole: AppRole;
+  if (row.role) {
+    finalRole = row.role as AppRole;
+  } else {
+    if (!requestedRole || !STAFF_SIGNUP_ROLES.has(requestedRole as AppRole)) {
+      return err(
+        'role required (front_desk, housekeeping, or maintenance)',
+        { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
+      );
+    }
+    finalRole = requestedRole as AppRole;
+  }
+
   // ── Atomic CAS increment (May 2026 audit pass-4) ──────────────────────
   // Old code did SELECT-then-UPDATE with the increment at the END after
   // account creation. Two parallel signups with the same code (max_uses=1)
@@ -178,24 +194,6 @@ export async function POST(req: NextRequest) {
       'Code is being used by another signup — refresh and try again',
       { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
     );
-  }
-
-  // Pick the role:
-  //   - Legacy code with row.role set → use it (back-compat).
-  //   - New-flow code (row.role null) → require role from the payload,
-  //     restricted to STAFF_SIGNUP_ROLES so users can't grant themselves
-  //     owner/admin via a shared code.
-  let finalRole: AppRole;
-  if (row.role) {
-    finalRole = row.role as AppRole;
-  } else {
-    if (!requestedRole || !STAFF_SIGNUP_ROLES.has(requestedRole as AppRole)) {
-      return err(
-        'role required (front_desk, housekeeping, or maintenance)',
-        { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
-      );
-    }
-    finalRole = requestedRole as AppRole;
   }
 
   const normalizedPhone = normalizePhone(phone);

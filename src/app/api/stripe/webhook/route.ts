@@ -79,15 +79,41 @@ export async function POST(req: NextRequest) {
     .insert({
       event_id: event.id,
       event_type: event.type,
-      metadata: { livemode: event.livemode, created: event.created },
+      metadata: {
+        livemode: event.livemode,
+        created: event.created,
+        processing_state: 'claimed',
+      },
     })
     .select('event_id')
     .maybeSingle();
 
   if (insertErr) {
-    // Unique violation (code 23505) = already processed. 2xx so Stripe
-    // stops retrying.
+    // A completed event is a safe duplicate. A merely claimed event may be
+    // another request still applying billing state (or a prior request whose
+    // claim committed before it crashed), so never acknowledge it as done.
     if ((insertErr as { code?: string }).code === '23505') {
+      const { data: existing, error: existingErr } = await supabaseAdmin
+        .from('stripe_processed_events')
+        .select('metadata')
+        .eq('event_id', event.id)
+        .maybeSingle();
+      if (existingErr || !existing) {
+        log.error('[stripe/webhook] duplicate claim lookup failed', {
+          eventId: event.id,
+          msg: existingErr ? errToString(existingErr) : 'claim row missing',
+        });
+        return NextResponse.json({ error: 'Dedupe lookup failed' }, { status: 500 });
+      }
+      const metadata = existing.metadata as Record<string, unknown> | null;
+      if (metadata?.processing_state === 'claimed') {
+        return NextResponse.json(
+          { error: 'Event is still processing' },
+          { status: 503, headers: { 'Retry-After': '5' } },
+        );
+      }
+      // Legacy rows predate processing_state but were written only by the old
+      // success/dedupe flow, so retain backwards-compatible completed status.
       return NextResponse.json({ received: true, deduped: true });
     }
     // Any OTHER error means the dedupe table is unhealthy — could be
@@ -114,14 +140,34 @@ export async function POST(req: NextRequest) {
 
   try {
     const propertyId = await handleEvent(event);
-    // Stamp the dedupe row with the property_id we resolved during
-    // processing — useful for audit traces ("show me every event that
-    // touched property X").
-    if (propertyId) {
-      await supabaseAdmin
-        .from('stripe_processed_events')
-        .update({ property_id: propertyId })
-        .eq('event_id', event.id);
+    // Mark the claim completed only after billing state was applied. A retry
+    // may return 2xx only for this state; a still-claimed row gets a retryable
+    // response instead of masking an unfinished event.
+    const completionPatch: Record<string, unknown> = {
+      metadata: {
+        livemode: event.livemode,
+        created: event.created,
+        processing_state: 'completed',
+      },
+    };
+    if (propertyId) completionPatch.property_id = propertyId;
+    const { data: completedClaim, error: completionErr } = await supabaseAdmin
+      .from('stripe_processed_events')
+      .update(completionPatch)
+      .eq('event_id', event.id)
+      .select('event_id')
+      .maybeSingle();
+    if (completionErr || !completedClaim) {
+      // The business mutation already committed. Keep the claim fail-closed
+      // and return this request's success; if the response is lost, future
+      // deliveries remain retryable rather than double-applying billing.
+      log.error('[stripe/webhook] processed event could not be marked completed', {
+        eventId: event.id,
+        msg: completionErr ? errToString(completionErr) : 'completion update matched no row',
+      });
+      captureException(new Error('stripe event completion marker failed'), {
+        subsystem: 'stripe-webhook', eventId: event.id,
+      });
     }
   } catch (err) {
     log.error('[stripe/webhook] handler threw', {
@@ -189,20 +235,22 @@ async function handleEvent(event: Stripe.Event): Promise<string | null> {
       // this, mapStripeStatus values like 'unpaid'/'paused' would be
       // silently dropped and Stripe would never retry. (Pass-3 review fix.)
       const code = (error as { code?: string }).code;
-      if (code === '23514') {
-        throw new Error(
-          `subscription_status CHECK constraint violation — migration 0038 may not be applied yet. Original: ${error.message}`,
-        );
-      }
       // customerId is correlatable to PII via the Stripe Dashboard (audit M1).
       // Log the event ID (workflow-correlation only) and a redacted hint.
-      log.warn('[stripe/webhook] subscription update failed', {
+      log.error('[stripe/webhook] subscription update failed — event will be retried', {
         eventId: event.id,
         customerHint: redactStripeId(customerId),
-        errCode: (error as { code?: string }).code,
+        errCode: code,
         errMessage: error.message,
       });
-      return null;
+      // EVERY failed update must throw. The outer handler releases the dedupe
+      // claim and returns 500 so Stripe retries. Returning null here used to
+      // acknowledge the event as successfully processed, permanently losing
+      // cancellations/payment-state changes after a transient DB failure.
+      const prefix = code === '23514'
+        ? 'subscription_status CHECK constraint violation — migration 0038 may not be applied'
+        : 'subscription update failed';
+      throw new Error(`${prefix} (code ${code ?? 'unknown'}): ${error.message}`);
     }
     return (data?.id as string) ?? null;
   };

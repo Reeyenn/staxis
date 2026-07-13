@@ -76,6 +76,29 @@ interface WizardStateResponse {
   inviteRole: 'owner' | 'general_manager' | null;
 }
 
+interface ApiEnvelope {
+  ok?: boolean;
+  error?: unknown;
+}
+
+/** Require the standard API envelope before advancing a wizard step. */
+async function requireApiSuccess<T extends ApiEnvelope = ApiEnvelope>(
+  response: Response,
+  fallbackMessage: string,
+): Promise<T> {
+  const body = await response.json().catch(() => null) as T | null;
+  if (!response.ok || body?.ok !== true) {
+    const errorMessage = typeof body?.error === 'string'
+      ? body.error
+      : body?.error && typeof body.error === 'object'
+        && 'message' in body.error && typeof body.error.message === 'string'
+        ? body.error.message
+        : fallbackMessage;
+    throw new Error(errorMessage);
+  }
+  return body;
+}
+
 const REGION_OPTIONS = ['US-East', 'US-Central', 'US-Mountain', 'US-West', 'Hawaii', 'Other'];
 const PROPERTY_KINDS = [
   { value: 'limited_service', label: 'Limited service' },
@@ -510,10 +533,12 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
         setErr(msg);
         return;
       }
-      // Trigger the OTP email send.
-      await supabase.auth.signInWithOtp({ email });
+      // Trigger the OTP email send. Supabase resolves auth errors in the
+      // returned object, so awaiting alone is not a success check.
+      const { error: otpErr } = await supabase.auth.signInWithOtp({ email });
+      if (otpErr) throw otpErr;
       // PATCH wizard state
-      await fetch('/api/onboard/wizard', {
+      const wizardRes = await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -521,6 +546,7 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
           partialState: { accountCreatedAt: new Date().toISOString() },
         }),
       });
+      await requireApiSuccess(wizardRes, 'Could not save account progress. Please try again.');
       // Stash email so step 3 can verify it
       sessionStorage.setItem('onboard:pendingEmail', email);
       await onNext();
@@ -605,14 +631,18 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
       // requires_2fa → fetchWithAuth signs the user out ("Your session
       // ended") mid-wizard. The onboarding flow skipped this step entirely.
       try {
-        await fetch('/api/auth/trust-device', {
+        const trustRes = await fetch('/api/auth/trust-device', {
           method: 'POST',
           headers: { Authorization: `Bearer ${data.session.access_token}` },
           credentials: 'include',
         });
+        await requireApiSuccess(trustRes, 'Could not secure this device.');
         // Refresh so the JWT carries the mfa_verified claim the auth hook
         // mints (needed for the dashboard's RLS/realtime reads later).
-        await supabase.auth.refreshSession();
+        const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+        if (refreshErr || !refreshed.session) {
+          throw refreshErr ?? new Error('No refreshed session returned');
+        }
       } catch (trustErr) {
         // Surface, don't swallow — a failed trust here is exactly what
         // caused the silent "session ended" before. The most common real
@@ -625,7 +655,7 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
         return;
       }
 
-      await fetch('/api/onboard/wizard', {
+      const verifiedRes = await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -633,6 +663,7 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
           partialState: { emailVerifiedAt: new Date().toISOString() },
         }),
       });
+      await requireApiSuccess(verifiedRes, 'Could not save email verification. Please try again.');
       sessionStorage.removeItem('onboard:pendingEmail');
       await onNext();
     } catch (e) {
@@ -1506,17 +1537,24 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
   const [err, setErr] = useState<string | null>(null);
 
   const skip = async () => {
+    setErr(null);
     setSubmitting(true);
-    await fetch('/api/onboard/wizard', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        code,
-        partialState: { staffAt: new Date().toISOString() },
-      }),
-    });
-    await onNext();
-    setSubmitting(false);
+    try {
+      const res = await fetch('/api/onboard/wizard', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          code,
+          partialState: { staffAt: new Date().toISOString() },
+        }),
+      });
+      await requireApiSuccess(res, 'Could not save progress. Please try again.');
+      await onNext();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const submit = async () => {
@@ -1536,7 +1574,7 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
         const json = await res.json();
         if (!res.ok || !json.ok) { setErr(json.error || 'Save failed'); return; }
       }
-      await fetch('/api/onboard/wizard', {
+      const progressRes = await fetch('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -1544,6 +1582,7 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
           partialState: { staffAt: new Date().toISOString() },
         }),
       });
+      await requireApiSuccess(progressRes, 'Could not save progress. Please try again.');
       await onNext();
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress; suppress error
@@ -1591,14 +1630,17 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
 
 function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
   const [going, setGoing] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
   const finalize = async () => {
     setGoing(true);
+    setErr(null);
     try {
-      await fetchWithAuth('/api/onboard/wizard', {
+      const finalizeRes = await fetchWithAuth('/api/onboard/wizard', {
         method: 'PATCH',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ code, finalize: true }),
       });
+      await requireApiSuccess(finalizeRes, 'Could not finish setup. Please try again.');
       // Full navigation (not router.push) so PropertyContext re-fetches the
       // property FRESH — now with onboarding_completed_at set. A client-side
       // push would leave the cached (pre-completion) property in context, and
@@ -1607,6 +1649,7 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
       window.location.href = '/dashboard';
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress
+      setErr(e instanceof Error ? e.message : 'Could not finish setup. Please try again.');
       setGoing(false);
     }
   };
@@ -1618,6 +1661,7 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
       <p style={{ color: '#5C625C', marginBottom: '16px', lineHeight: 1.5 }}>
         Welcome to Staxis. {wizard.propertyName} is ready.
       </p>
+      {err && <ErrorBox msg={err} />}
       <div style={{ background: 'rgba(201,150,68,0.10)', borderRadius: '8px', padding: '14px', marginBottom: '16px' }}>
         <p style={{ fontSize: '13px', margin: 0, lineHeight: 1.5 }}>
           ✓ Your inventory has 16 default items (sheets, towels, soap, etc.). Customize anytime in the Inventory tab.

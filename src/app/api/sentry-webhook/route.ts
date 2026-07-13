@@ -137,20 +137,44 @@ export async function POST(req: NextRequest) {
   // and short-circuit, but a fresh occurrence of the same issue
   // (different body — different timestamp / count) still pages.
   const eventId = 'sentry:' + crypto.createHash('sha256').update(rawBody).digest('hex').slice(0, 48);
+  const claimMetadata = {
+    issue_id: payload.data?.issue?.id ?? null,
+    level: payload.data?.issue?.level ?? null,
+    processing_state: 'claimed',
+  };
   const { error: dupErr } = await supabaseAdmin
     .from('processed_sentry_webhooks')
     .insert({
       event_id: eventId,
       webhook_kind: payload.action ?? 'unknown',
-      metadata: {
-        issue_id: payload.data?.issue?.id ?? null,
-        level: payload.data?.issue?.level ?? null,
-      },
+      metadata: claimMetadata,
     });
   if (dupErr) {
     const code = (dupErr as { code?: string }).code;
     if (code === '23505') {
-      log.info('[sentry-webhook] duplicate delivery, skipping', { requestId, eventId });
+      const { data: existing, error: existingErr } = await supabaseAdmin
+        .from('processed_sentry_webhooks')
+        .select('metadata')
+        .eq('event_id', eventId)
+        .maybeSingle();
+      if (existingErr || !existing) {
+        log.error('[sentry-webhook] duplicate claim lookup failed', {
+          requestId, eventId, err: existingErr ?? 'claim row missing',
+        });
+        return err('dedup lookup failed', {
+          requestId, status: 503, code: ApiErrorCode.InternalError,
+        });
+      }
+      const metadata = existing.metadata as Record<string, unknown> | null;
+      if (metadata?.processing_state === 'claimed') {
+        return err('event is still processing', {
+          requestId,
+          status: 503,
+          code: ApiErrorCode.IdempotencyConflict,
+          headers: { 'Retry-After': '5' },
+        });
+      }
+      log.info('[sentry-webhook] completed duplicate delivery, skipping', { requestId, eventId });
       return ok({ skipped: true, reason: 'duplicate delivery' }, { requestId });
     }
     // Dedup table unreachable — fail closed; Sentry will retry.
@@ -158,11 +182,33 @@ export async function POST(req: NextRequest) {
     return err('dedup table unhealthy', { requestId, status: 503, code: ApiErrorCode.InternalError });
   }
 
+  const markClaimCompleted = async (outcome: string): Promise<void> => {
+    const { data: completed, error: completionErr } = await supabaseAdmin
+      .from('processed_sentry_webhooks')
+      .update({
+        metadata: { ...claimMetadata, processing_state: 'completed', outcome },
+      })
+      .eq('event_id', eventId)
+      .select('event_id')
+      .maybeSingle();
+    if (completionErr || !completed) {
+      log.error('[sentry-webhook] event could not be marked completed', {
+        requestId,
+        eventId,
+        err: completionErr ?? 'completion update matched no row',
+      });
+      captureException(new Error('sentry webhook completion marker failed'), {
+        subsystem: 'sentry-webhook', failure_mode: 'completion_marker_failed', eventId,
+      });
+    }
+  };
+
   // Only fire on issue.created or issue.alert. Resolved/assigned/etc
   // aren't worth a phone buzz.
   const action = payload.action ?? '';
   const isAlertable = action === 'created' || action === 'triggered' || action === 'alert.triggered';
   if (!isAlertable) {
+    await markClaimCompleted('non_alertable');
     log.info('[sentry-webhook] non-alertable action; skipping SMS', { requestId, action });
     return ok({ skipped: true, reason: 'non-alertable action' }, { requestId });
   }
@@ -173,6 +219,7 @@ export async function POST(req: NextRequest) {
     // 200 so Sentry doesn't retry. The doctor already surfaces this
     // misconfiguration as a fail check, and the email path still
     // works.
+    await markClaimCompleted('phone_not_configured');
     return ok({ skipped: true, reason: 'phone not configured' }, { requestId });
   }
 
@@ -180,11 +227,27 @@ export async function POST(req: NextRequest) {
 
   try {
     await sendSms(phone, body);
+    await markClaimCompleted('sms_sent');
     log.info('[sentry-webhook] SMS sent', { requestId, action, issueId: payload.data?.issue?.id });
     return ok({ sent: true }, { requestId });
   } catch (e) {
     log.error('[sentry-webhook] Twilio send failed', { requestId, err: e });
     captureException(e, { subsystem: 'sentry-webhook', failure_mode: 'twilio_send_failed' });
+    // Release the claim before returning 500. Otherwise Sentry's retry hits
+    // the unique key, receives a false "duplicate" 200, and the critical alert
+    // is permanently lost even though no SMS was sent.
+    const { error: releaseErr } = await supabaseAdmin
+      .from('processed_sentry_webhooks')
+      .delete()
+      .eq('event_id', eventId);
+    if (releaseErr) {
+      log.error('[sentry-webhook] dedupe release failed after SMS failure — retry may be masked', {
+        requestId, eventId, err: releaseErr,
+      });
+      captureException(new Error('sentry webhook dedupe release failed'), {
+        subsystem: 'sentry-webhook', failure_mode: 'dedupe_release_failed', eventId,
+      });
+    }
     return err('twilio send failed', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 }

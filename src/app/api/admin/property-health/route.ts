@@ -4,19 +4,20 @@
  * Per-hotel triage payload for the admin detail page (/admin/properties/[id]).
  *
  * REBUILT 2026-07-09. The original was deleted in 138f8f32's "pre-v4 scraper-era
- * residue" cleanup because it read two tables that no longer exist:
- *   - scraper_credentials (Choice-Advantage login creds), and
- *   - pms_recipes (the learned mapping recipe).
+ * residue" cleanup because its learned-recipe read still targeted the removed
+ * pms_recipes table. PMS credentials themselves still live in the encrypted
+ * scraper_credentials table and remain the source of truth for whether a hotel
+ * can log in.
  * With the route gone the detail page 404'd → res.json() choked on the HTML
  * error page → the WHOLE page rendered "Network error" for every hotel.
  *
  * This version reads ONLY current tables. property / recent onboarding jobs /
  * staff / owner still map 1:1 to the same columns. The mapping "recipe" now
- * comes from pms_knowledge_files (the v4 replacement). Raw PMS login credentials
- * are no longer surfaced here (the table is gone) — but PMS type + connection
- * status still show from the property block, so the page loses nothing an admin
- * relies on. Every sub-read is BEST-EFFORT: a single failure nulls/empties its
- * section and never fails the whole route, so the page always renders.
+ * comes from pms_knowledge_files (the v4 replacement). The credential summary
+ * intentionally exposes only non-secret metadata from scraper_credentials; the
+ * encrypted username/password never leave the server. Every sub-read is
+ * BEST-EFFORT: a single failure nulls/empties its section and never fails the
+ * whole route, so the page always renders.
  *
  * Auth: requireAdmin (a recognized tenant-scope guard) + supabaseAdmin.
  */
@@ -55,12 +56,47 @@ export async function GET(req: NextRequest): Promise<Response> {
   }
   const p = property as Record<string, unknown>;
 
+  // ─── Credentials summary (never return username/password) ────────────────
+  // scraper_credentials is still the live per-property credential table. The
+  // actual username/password live in encrypted columns and are deliberately
+  // excluded from this query and response.
+  let credentials:
+    | {
+        pmsType: string;
+        loginUrl: string | null;
+        username: null;
+        isActive: boolean;
+        scraperInstance: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }
+    | null = null;
+  try {
+    const { data: creds, error: credsErr } = await supabaseAdmin
+      .from('scraper_credentials')
+      .select('pms_type, ca_login_url, is_active, scraper_instance, created_at, updated_at')
+      .eq('property_id', pid)
+      .maybeSingle();
+    if (!credsErr && creds) {
+      const c = creds as Record<string, unknown>;
+      credentials = {
+        pmsType: String(c.pms_type ?? ''),
+        loginUrl: (c.ca_login_url as string | null) ?? null,
+        username: null,
+        isActive: (c.is_active as boolean | null) ?? false,
+        scraperInstance: (c.scraper_instance as string | null) ?? null,
+        createdAt: String(c.created_at ?? ''),
+        updatedAt: String(c.updated_at ?? ''),
+      };
+    }
+  } catch { credentials = null; }
+
   // ─── Active mapping recipe — v4 lives in pms_knowledge_files (was the
   //     deleted pms_recipes). One active file per PMS family. Best-effort. ─
   let activeRecipe:
     | { id: string; version: number; status: string; learned_by_property_id: string | null; notes: string | null; created_at: string }
     | null = null;
-  const family = (p.pms_type as string | null) ?? null;
+  const family = credentials?.pmsType || (p.pms_type as string | null) || null;
   if (family) {
     try {
       const { data: kf } = await supabaseAdmin
@@ -170,10 +206,7 @@ export async function GET(req: NextRequest): Promise<Response> {
         timezone: (p.timezone as string | null) ?? null,
         createdAt: String(p.created_at ?? ''),
       },
-      // Raw PMS login credentials are intentionally no longer surfaced — the
-      // scraper_credentials table was removed in the v4 rebuild. The page
-      // renders its "no credentials" branch; PMS type / connection are above.
-      credentials: null,
+      credentials,
       activeRecipe,
       jobs,
       staff: { count: staffCount, sample: staffSample },

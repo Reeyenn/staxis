@@ -2,6 +2,15 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "shell-mockups",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-c",
+        "import os; os.chdir('/private/tmp/claude-501/-Users-reeyen-Projects-staxis-current/c0975bf7-5ff1-4665-a554-f3217b2948ba/scratchpad/mockups'); from http.server import HTTPServer, SimpleHTTPRequestHandler; HTTPServer(('127.0.0.1',4620), SimpleHTTPRequestHandler).serve_forever()"
+      ],
+      "port": 4620
+    },
+    {
       "name": "propsel-preview",
       "runtimeExecutable": "python3",
       "runtimeArgs": [
@@ -29,6 +38,20 @@
         "3131"
       ],
       "port": 3131
+    },
+    {
+      "name": "concourse-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "/Users/reeyen/Projects/staxis-wt-concourse",
+        "--",
+        "--port",
+        "3145"
+      ],
+      "port": 3145
     },
     {
       "name": "marketing-dev",

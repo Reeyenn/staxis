@@ -540,6 +540,11 @@ export default function HousekeeperRoomPage({
         const ok = res.ok && !!json?.ok;
         if (ok) void refetchRooms();
         return { ok, data: json?.data ?? null };
+      } catch {
+        // Keep Start/Pause/Resume/Complete failures inside the normal result
+        // path so callers can show their existing error UI instead of an
+        // unhandled promise rejection when connectivity drops mid-action.
+        return { ok: false, data: null as unknown };
       } finally {
         inFlightRoomActionsRef.current.delete(lockKey);
       }
@@ -1133,6 +1138,25 @@ export default function HousekeeperRoomPage({
               }}
             >
               {t('hkOfflineSyncing', lang)}
+            </div>
+          )}
+          {offline.online
+            && !offline.draining
+            && offline.lastDrain
+            && offline.lastDrain.pending > 0 && (
+            <div
+              role="status"
+              style={{
+                padding: '10px 14px',
+                background: '#EFF6FF',
+                border: '1px solid #93C5FD',
+                color: '#1E40AF',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              {t('hkOfflineSyncing', lang)} · {offline.lastDrain.pending}
             </div>
           )}
           {offline.online && offline.lastDrain && offline.lastDrain.failed > 0 && (

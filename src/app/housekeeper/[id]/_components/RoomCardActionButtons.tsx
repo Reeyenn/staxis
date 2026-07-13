@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Eye, NotebookPen, X } from 'lucide-react';
 import { t, type HousekeeperLocale } from '@/lib/translations';
+import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 
 /**
  * Two small per-room action buttons that the housekeeper can tap from
@@ -40,7 +41,7 @@ export function AddNoteButton({
     try {
       const res = await enqueueIfOffline({
         endpoint: '/api/housekeeper/add-note',
-        body: { pid, staffId, roomId, noteText: note.trim() },
+        body: withStaffLinkTokenBody({ pid, staffId, roomId, noteText: note.trim() }),
         label: `Note · room ${roomId}`,
       });
       if (!res.ok && !res.queued) {
@@ -152,7 +153,7 @@ export function MarkForInspectionButton(props: CommonProps & { markedAt: string 
     try {
       const res = await enqueueIfOffline({
         endpoint: '/api/housekeeper/mark-for-inspection',
-        body: { pid, staffId, roomId, clear: !next },
+        body: withStaffLinkTokenBody({ pid, staffId, roomId, clear: !next }),
         label: `Inspection · room ${roomId}`,
       });
       if (!res.ok && !res.queued) {

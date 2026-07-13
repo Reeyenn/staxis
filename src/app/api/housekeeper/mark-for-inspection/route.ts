@@ -16,6 +16,11 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
+import {
+  claimOfflineAction,
+  completeOfflineActionClaim,
+  releaseOfflineActionClaim,
+} from '@/lib/housekeeper-workflow/offline-action-replay';
 import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
 
 export const runtime = 'nodejs';
@@ -43,40 +48,46 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // Idempotency — insert-first pattern.
-  if (body.actionId) {
-    const { data: claimed } = await supabaseAdmin
-      .from('offline_action_replays')
-      .insert({
-        action_id: body.actionId,
-        property_id: gate.pid,
-        staff_id: gate.staffId,
+  const replayContext = body.actionId
+    ? {
+        actionId: body.actionId,
+        propertyId: gate.pid,
+        staffId: gate.staffId,
         endpoint: 'mark-for-inspection',
-        result_payload: {},
-      })
-      .select('action_id')
-      .maybeSingle();
-    if (!claimed) {
-      const { data: prev } = await supabaseAdmin
-        .from('offline_action_replays')
-        .select('result_payload')
-        .eq('action_id', body.actionId)
-        .maybeSingle();
+        requestId: gate.requestId,
+      }
+    : null;
+
+  if (replayContext) {
+    const claim = await claimOfflineAction(replayContext);
+    if (!claim.ok) {
+      const pending = claim.reason === 'pending';
+      return err(pending ? 'Action is still processing' : 'Internal server error', {
+        requestId: gate.requestId,
+        status: pending ? 503 : 500,
+        code: pending ? ApiErrorCode.IdempotencyConflict : ApiErrorCode.InternalError,
+        headers: pending ? { ...gate.headers, 'Retry-After': '1' } : gate.headers,
+      });
+    }
+    if (claim.duplicate) {
       return ok(
-        { ...((prev?.result_payload as Record<string, unknown> | undefined) ?? {}), deduped: true },
+        { ...claim.resultPayload, deduped: true },
         { requestId: gate.requestId, headers: gate.headers },
       );
     }
   }
 
-  // Release the idempotency claim on failure so the offline queue's retry can
-  // re-apply instead of hitting the dedup branch and falsely reporting success
-  // with an empty payload (silent data loss). (Audit fix 2026-06-18.)
-  const releaseClaim = async () => {
-    if (!body.actionId) return;
-    try { await supabaseAdmin.from('offline_action_replays').delete().eq('action_id', body.actionId); }
-    catch { /* best-effort */ }
-  };
+  // Release the idempotency claim when the protected write fails so a later
+  // offline replay can attempt the write again instead of remaining pending.
+  const releaseClaim = () => replayContext
+    ? releaseOfflineActionClaim(replayContext)
+    : Promise.resolve(true);
+  const releaseFailureResponse = () => err('Temporary server error', {
+    requestId: gate.requestId,
+    status: 503,
+    code: ApiErrorCode.UpstreamFailure,
+    headers: { ...gate.headers, 'Retry-After': '1' },
+  });
 
   const roomR = await loadRoomForStaff({
     pid: gate.pid,
@@ -85,10 +96,16 @@ export async function POST(req: NextRequest): Promise<Response> {
     requestId: gate.requestId,
     headers: gate.headers,
   });
-  if (!roomR.ok) { await releaseClaim(); return roomR.response; }
+  if (!roomR.ok) {
+    if (!(await releaseClaim())) {
+      return releaseFailureResponse();
+    }
+    return roomR.response;
+  }
   const room = roomR.room;
 
   const now = new Date();
+  let businessMutationCommitted = false;
   try {
     const w = await writeWorkflowFields(gate.pid, body.roomId, {
       marked_for_inspection_at: body.clear === true ? null : now.toISOString(),
@@ -98,7 +115,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         requestId: gate.requestId,
         err: w.error,
       });
-      await releaseClaim();
+      if (!(await releaseClaim())) return releaseFailureResponse();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -106,6 +123,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         headers: gate.headers,
       });
     }
+    businessMutationCommitted = true;
 
     try {
       const today = room.date ?? now.toISOString().slice(0, 10);
@@ -130,15 +148,12 @@ export async function POST(req: NextRequest): Promise<Response> {
       markedAt: body.clear === true ? null : now.toISOString(),
     };
 
-    if (body.actionId) {
-      try {
-        await supabaseAdmin
-          .from('offline_action_replays')
-          .update({ result_payload: result })
-          .eq('action_id', body.actionId);
-      } catch (replayErr) {
-        log.warn('mark-for-inspection: replay log update failed', {
-          requestId: gate.requestId, err: errToString(replayErr),
+    if (replayContext) {
+      const replayCompleted = await completeOfflineActionClaim(replayContext, result);
+      if (!replayCompleted) {
+        log.warn('mark-for-inspection: committed mutation has a pending replay result', {
+          requestId: gate.requestId,
+          actionId: replayContext.actionId,
         });
       }
     }
@@ -149,7 +164,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId: gate.requestId,
       err: errToString(caughtErr),
     });
-    await releaseClaim();
+    if (!businessMutationCommitted && !(await releaseClaim())) {
+      return releaseFailureResponse();
+    }
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,

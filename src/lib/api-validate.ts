@@ -142,7 +142,12 @@ export function validateTimezone(v: unknown, label = 'timezone'): { error?: stri
 
 export function validateDateStr(
   v: unknown,
-  opts: { label: string; allowFutureDays?: number; allowPastDays?: number } = { label: 'date' },
+  opts: {
+    label: string;
+    allowFutureDays?: number;
+    allowPastDays?: number;
+    now?: number;
+  } = { label: 'date' },
 ): { error?: string; value?: string } {
   if (typeof v !== 'string') return { error: `${opts.label} must be a string` };
   if (!DATE_RX.test(v)) return { error: `${opts.label} must be YYYY-MM-DD` };
@@ -154,15 +159,23 @@ export function validateDateStr(
   if (d.getUTCFullYear() !== yr || d.getUTCMonth() + 1 !== mo || d.getUTCDate() !== day) {
     return { error: `${opts.label} is not a real date` };
   }
-  const now = Date.now();
   const dayMs = 24 * 60 * 60 * 1000;
+  const now = new Date(opts.now ?? Date.now());
+  const todayUtc = Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+  );
+  const calendarDayDelta = (d.getTime() - todayUtc) / dayMs;
   if (opts.allowFutureDays !== undefined) {
-    const max = now + (opts.allowFutureDays * dayMs);
-    if (d.getTime() > max) return { error: `${opts.label} is too far in the future (max ${opts.allowFutureDays} days)` };
+    if (calendarDayDelta > opts.allowFutureDays) {
+      return { error: `${opts.label} is too far in the future (max ${opts.allowFutureDays} days)` };
+    }
   }
   if (opts.allowPastDays !== undefined) {
-    const min = now - (opts.allowPastDays * dayMs);
-    if (d.getTime() < min) return { error: `${opts.label} is too far in the past (max ${opts.allowPastDays} days)` };
+    if (calendarDayDelta < -opts.allowPastDays) {
+      return { error: `${opts.label} is too far in the past (max ${opts.allowPastDays} days)` };
+    }
   }
   return { value: v };
 }

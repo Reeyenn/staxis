@@ -553,7 +553,11 @@ async function listWorktrees(): Promise<Worktree[]> {
     // Build path dynamically — avoids Turbopack's static analyzer bundling
     // every file under .claude/worktrees/ into the production output.
     const segments = ['.claude', 'worktrees'];
-    const dir = join(process.cwd(), ...segments);
+    const dir = join(
+      /* turbopackIgnore: true */
+      process.cwd(),
+      ...segments,
+    );
     const entries = await fs.readdir(dir, { withFileTypes: true });
     const out: Worktree[] = [];
     for (const e of entries) {

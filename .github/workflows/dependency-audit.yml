@@ -3,8 +3,8 @@ name: Dependency audit
 # Security audit 2026-06-26: there was no CI gate on dependency advisories, so
 # a vulnerable transitive dep (e.g. axios SSRF via twilio, ws DoS via
 # @supabase/realtime-js) could reach prod undetected. This job fails the build
-# on any HIGH/CRITICAL production advisory in the web app, the CUA worker, and
-# the Python ML service.
+# on any HIGH/CRITICAL production advisory in the web app, CUA worker, email
+# worker, and Python ML service.
 #
 # Why --audit-level=high (not moderate): a few moderate advisories
 # (next/postcss, @opentelemetry baggage) only have fixes behind major bumps and
@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        dir: ['.', 'cua-service']
+        dir: ['.', 'cua-service', 'email-worker']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

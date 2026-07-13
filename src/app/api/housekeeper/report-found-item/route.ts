@@ -21,6 +21,11 @@ import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateString, validateEnum } from '@/lib/api-validate';
 import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
+import {
+  claimOfflineAction,
+  completeOfflineActionClaim,
+  releaseOfflineActionClaim,
+} from '@/lib/housekeeper-workflow/offline-action-replay';
 import { createItem, isValidItemPhotoPath } from '@/lib/lost-and-found/store';
 import { LAF_CATEGORIES } from '@/lib/lost-and-found/types';
 
@@ -102,45 +107,47 @@ export async function POST(req: NextRequest): Promise<Response> {
     photoPath = String(body.photoPath);
   }
 
-  // Idempotency — insert-first pattern (mirrors add-note).
-  if (body.actionId) {
-    const { data: claimed } = await supabaseAdmin
-      .from('offline_action_replays')
-      .insert({
-        action_id: body.actionId,
-        property_id: gate.pid,
-        staff_id: gate.staffId,
+  const replayContext = body.actionId
+    ? {
+        actionId: body.actionId,
+        propertyId: gate.pid,
+        staffId: gate.staffId,
         endpoint: 'report-found-item',
-        result_payload: {},
-      })
-      .select('action_id')
-      .maybeSingle();
-    if (!claimed) {
-      const { data: prev } = await supabaseAdmin
-        .from('offline_action_replays')
-        .select('result_payload')
-        .eq('action_id', body.actionId)
-        .maybeSingle();
+        requestId: gate.requestId,
+      }
+    : null;
+
+  if (replayContext) {
+    const claim = await claimOfflineAction(replayContext);
+    if (!claim.ok) {
+      const pending = claim.reason === 'pending';
+      return err(pending ? 'Action is still processing' : 'Internal server error', {
+        requestId: gate.requestId,
+        status: pending ? 503 : 500,
+        code: pending ? ApiErrorCode.IdempotencyConflict : ApiErrorCode.InternalError,
+        headers: pending ? { ...gate.headers, 'Retry-After': '1' } : gate.headers,
+      });
+    }
+    if (claim.duplicate) {
       return ok(
-        { ...((prev?.result_payload as Record<string, unknown> | undefined) ?? {}), deduped: true },
+        { ...claim.resultPayload, deduped: true },
         { requestId: gate.requestId, headers: gate.headers },
       );
     }
   }
 
-  // Release the idempotency claim so a retry of a failed write isn't deduped
-  // into an empty success (the claim was inserted with an empty payload above).
-  const releaseClaim = async () => {
-    if (!body.actionId) return;
-    try {
-      await supabaseAdmin
-        .from('offline_action_replays')
-        .delete()
-        .eq('action_id', body.actionId);
-    } catch {
-      /* best effort */
-    }
-  };
+  // Release the idempotency claim when the protected write fails so a later
+  // offline replay can attempt the write again instead of remaining pending.
+  const releaseClaim = () => replayContext
+    ? releaseOfflineActionClaim(replayContext)
+    : Promise.resolve(true);
+  const releaseFailureResponse = () => err('Temporary server error', {
+    requestId: gate.requestId,
+    status: 503,
+    code: ApiErrorCode.UpstreamFailure,
+    headers: { ...gate.headers, 'Retry-After': '1' },
+  });
+  let businessMutationCommitted = false;
 
   try {
     const created = await createItem(gate.pid, {
@@ -155,7 +162,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       source: 'housekeeper',
     });
     if (!created.ok) {
-      await releaseClaim();
+      if (!(await releaseClaim())) return releaseFailureResponse();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -163,6 +170,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         headers: gate.headers,
       });
     }
+    businessMutationCommitted = true;
 
     // Audit log (non-fatal).
     try {
@@ -184,27 +192,25 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     const result = { saved: true, itemId: created.id };
-    if (body.actionId) {
-      try {
-        await supabaseAdmin
-          .from('offline_action_replays')
-          .update({ result_payload: result })
-          .eq('action_id', body.actionId);
-      } catch (replayErr) {
-        log.warn('report-found-item: replay log update failed', {
+    if (replayContext) {
+      const replayCompleted = await completeOfflineActionClaim(replayContext, result);
+      if (!replayCompleted) {
+        log.warn('report-found-item: committed mutation has a pending replay result', {
           requestId: gate.requestId,
-          err: errToString(replayErr),
+          actionId: replayContext.actionId,
         });
       }
     }
 
     return ok(result, { requestId: gate.requestId, headers: gate.headers });
   } catch (caughtErr) {
-    await releaseClaim();
     log.error('report-found-item: threw', {
       requestId: gate.requestId,
       err: errToString(caughtErr),
     });
+    if (!businessMutationCommitted && !(await releaseClaim())) {
+      return releaseFailureResponse();
+    }
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,

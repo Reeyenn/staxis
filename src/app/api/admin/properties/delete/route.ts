@@ -88,16 +88,16 @@ export async function POST(req: NextRequest) {
   // touch these — handle them explicitly so a deleted test hotel frees its
   // owner's email too. (Classifier is unit-tested for the over-delete
   // failure modes: never an admin, never a multi-hotel owner.)
-  const { data: linked } = await supabaseAdmin
+  const { data: linked, error: linkedErr } = await supabaseAdmin
     .from('accounts')
     .select('id, data_user_id, role, property_access')
     .contains('property_access', [propertyId]);
-  const plan = classifyAccountsForPropertyDelete((linked ?? []) as LinkedAccount[], propertyId);
-
-  // Accounts that also belong to other hotels: just drop this one.
-  for (const p of plan.prune) {
-    await supabaseAdmin.from('accounts').update({ property_access: p.remaining }).eq('id', p.id);
+  if (linkedErr) {
+    return err(`Could not plan account cleanup: ${linkedErr.message}`, {
+      requestId, status: 500,
+    });
   }
+  const plan = classifyAccountsForPropertyDelete((linked ?? []) as LinkedAccount[], propertyId);
 
   // Delete the hotel — 129 FKs cascade (sessions, staff rows, pms_* data,
   // join codes, …). Re-assert the live guard at write time UNLESS the admin
@@ -105,8 +105,24 @@ export async function POST(req: NextRequest) {
   // hotel, so the null re-assertion would otherwise match zero rows).
   let delQuery = supabaseAdmin.from('properties').delete().eq('id', propertyId);
   if (!confirmedByName) delQuery = delQuery.is('onboarding_completed_at', null);
-  const { error: delErr } = await delQuery;
+  const { data: deletedProperty, error: delErr } = await delQuery
+    .select('id')
+    .maybeSingle();
   if (delErr) return err(`Delete failed: ${delErr.message}`, { requestId, status: 500 });
+  if (!deletedProperty) {
+    // The onboarding state changed after the initial read, or another request
+    // deleted the property first. Crucially, no account mutation has happened.
+    return err('Property changed while deletion was being confirmed; reload and try again.', {
+      requestId, status: 409,
+    });
+  }
+
+  // Accounts that also belong to other hotels: just drop this one. This runs
+  // only after a property row was actually deleted, preventing a concurrent
+  // onboarding completion from stripping otherwise-valid account access.
+  for (const p of plan.prune) {
+    await supabaseAdmin.from('accounts').update({ property_access: p.remaining }).eq('id', p.id);
+  }
 
   // Remove the accounts that existed ONLY for this hotel + free their
   // emails. Delete the account row first, then the auth user (both

@@ -201,6 +201,35 @@ describe('validateDateStr', () => {
       undefined,
     );
   });
+
+  test('uses inclusive calendar-day boundaries rather than elapsed hours', () => {
+    const lateAfternoon = Date.parse('2026-07-09T18:30:00Z');
+
+    assert.equal(
+      validateDateStr('2026-07-08', {
+        label: 'd', allowPastDays: 1, now: lateAfternoon,
+      }).error,
+      undefined,
+    );
+    assert.equal(
+      validateDateStr('2026-07-10', {
+        label: 'd', allowFutureDays: 1, now: lateAfternoon,
+      }).error,
+      undefined,
+    );
+    assert.match(
+      validateDateStr('2026-07-07', {
+        label: 'd', allowPastDays: 1, now: lateAfternoon,
+      }).error!,
+      /too far in the past/,
+    );
+    assert.match(
+      validateDateStr('2026-07-11', {
+        label: 'd', allowFutureDays: 1, now: lateAfternoon,
+      }).error!,
+      /too far in the future/,
+    );
+  });
 });
 
 // ─── validateArray ─────────────────────────────────────────────────────────

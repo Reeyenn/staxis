@@ -49,10 +49,10 @@ interface HealthData {
   };
   credentials: {
     pmsType: string;
-    loginUrl: string;
-    username: string;
+    loginUrl: string | null;
+    username: string | null;
     isActive: boolean;
-    scraperInstance: string;
+    scraperInstance: string | null;
     createdAt: string;
     updatedAt: string;
   } | null;
@@ -242,11 +242,14 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
                 {data.credentials ? (
                   <>
                     <p style={{ fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: '-0.005em' }}>{data.credentials.pmsType}</p>
-                    <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, wordBreak: 'break-all', marginTop: 4 }}>
-                      {data.credentials.loginUrl}
-                    </p>
+                    {data.credentials.loginUrl && (
+                      <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, wordBreak: 'break-all', marginTop: 4 }}>
+                        {data.credentials.loginUrl}
+                      </p>
+                    )}
                     <p style={{ fontSize: 11, color: T.ink3, marginTop: 4 }}>
-                      user: {data.credentials.username} · {data.credentials.isActive ? 'active' : 'inactive'}
+                      {data.credentials.username ? `user: ${data.credentials.username} · ` : ''}
+                      {data.credentials.isActive ? 'active' : 'inactive'}
                     </p>
                   </>
                 ) : (
@@ -270,7 +273,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
 
             {/* Action: regenerate recipe — kept near the header as a small
                 utility. The big "Active recipe" card itself is gone. */}
-            {data.credentials && (
+            {data.credentials?.isActive && (
               <div style={{
                 padding: '14px 16px', border: `1px solid ${T.rule}`, borderRadius: 14,
                 marginBottom: 28, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
