@@ -14,6 +14,16 @@ import { useEffect, useLayoutEffect, useRef, useState, type DependencyList } fro
 // loading branch can be server-rendered — never call useLayoutEffect there).
 const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
+// ── One grand entrance per sitting ────────────────────────────────────────
+// Module state survives client-side navigation (and resets on a hard reload),
+// so the full choreography — rise-in cascade, FLIP newcomer stagger, count-up
+// tallies — plays the FIRST time the page is opened. Returning to the tab
+// renders everything already settled and instant. Replaying the entrance on
+// every visit read as "the same boxes pop up over and over" (Reeyen, 2026-07-13).
+let ENTRANCE_DONE = false;
+export function entrancePlayed(): boolean { return ENTRANCE_DONE; }
+export function markEntrancePlayed(): void { ENTRANCE_DONE = true; }
+
 // Shared easing vocabulary — "paper physics": quick departure, soft settle.
 export const EASE = {
   settle: 'cubic-bezier(.16,.84,.3,1)',   // rise-in / draw-in
@@ -102,6 +112,7 @@ export function useRiseIn<T extends HTMLElement>(
   const ref = useRef<T | null>(null);
   useEffect(() => {
     if (!ref.current) return;
+    if (ENTRANCE_DONE) return; // repeat visit — render settled, no cascade
     const kids = ref.current.querySelectorAll('[data-rise]');
     if (kids.length) Motion.riseIn(kids, opts);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -136,12 +147,16 @@ export function useFlipList<T extends HTMLElement>() {
       const r = k.getBoundingClientRect();
       next.set(id, new DOMRect(r.left - origin.left, r.top - origin.top, r.width, r.height));
     });
+    // First population of the board: cascade only on the sitting's first
+    // visit. (Cards added later mid-session still individually rise in.)
+    const initialPopulation = prev.size === 0;
     let enterIndex = 0;
     kids.forEach((k) => {
       const id = k.dataset.flipId;
       if (!id) return;
       const a = prev.get(id);
       const b = next.get(id)!;
+      if (initialPopulation && ENTRANCE_DONE) return;
       if (a) {
         const dx = a.left - b.left;
         const dy = a.top - b.top;
@@ -180,9 +195,11 @@ export function useFlipList<T extends HTMLElement>() {
 // column counts. Animates from the previously shown value (0 on first mount,
 // so the page-load moment counts everything up from zero). Ease-out cubic.
 export function useCountUp(target: number, duration = 850): number {
-  const [value, setValue] = useState(0);
-  const fromRef = useRef(0);
-  const shownRef = useRef(0);
+  // Repeat visits skip the from-zero tally — numbers land already settled.
+  const initial = ENTRANCE_DONE ? target : 0;
+  const [value, setValue] = useState(initial);
+  const fromRef = useRef(initial);
+  const shownRef = useRef(initial);
 
   useEffect(() => {
     if (!Number.isFinite(target)) return;

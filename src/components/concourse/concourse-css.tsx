@@ -30,8 +30,11 @@ const CX_CSS = `
 }
 @keyframes cx-sparkspin{0%,100%{transform:rotate(0) scale(1);}50%{transform:rotate(12deg) scale(1.12);}}
 @keyframes cx-blinkdot{0%,100%{opacity:1;}50%{opacity:.15;}}
-@keyframes cx-swap{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:none;}}
-.cx-swap{animation:cx-swap .5s ${SPRING};}
+/* Route transition: a quick calm fade. The old .5s slide-up replayed a
+   whole-page "pop" on every tab switch — with per-page entrances on top it
+   read as the UI re-loading itself. */
+@keyframes cx-swap{from{opacity:0;}to{opacity:1;}}
+.cx-swap{animation:cx-swap .22s ease;}
 
 /* ── Pill bar ── */
 .cx-barwrap{display:flex;padding:18px 16px 0;position:sticky;top:18px;z-index:40;
