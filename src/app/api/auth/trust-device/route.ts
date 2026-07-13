@@ -324,7 +324,7 @@ export async function POST(req: NextRequest) {
   // above (cleared on sign-out / session end), so the next sign-in correctly
   // re-prompts for OTP.
   if (remember && newToken) {
-    const opts = trustCookieOptions();
+    const opts = trustCookieOptions(req.headers.get('x-forwarded-host') ?? req.headers.get('host'));
     response.cookies.set({
       name: opts.name,
       value: newToken,
@@ -333,6 +333,7 @@ export async function POST(req: NextRequest) {
       sameSite: opts.sameSite,
       path: opts.path,
       maxAge: opts.maxAge,
+      ...(opts.domain ? { domain: opts.domain } : {}),
     });
   }
   return response;

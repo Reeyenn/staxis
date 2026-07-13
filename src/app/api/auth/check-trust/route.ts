@@ -200,7 +200,7 @@ export async function POST(req: NextRequest) {
     { ok: true, requestId, data: { trusted: true } },
     { status: 200 },
   );
-  const opts = trustCookieOptions();
+  const opts = trustCookieOptions(req.headers.get('x-forwarded-host') ?? req.headers.get('host'));
   response.cookies.set({
     name: opts.name,
     value: cookieValue,
@@ -209,6 +209,7 @@ export async function POST(req: NextRequest) {
     sameSite: opts.sameSite,
     path: opts.path,
     maxAge: opts.maxAge,
+    ...(opts.domain ? { domain: opts.domain } : {}),
   });
   return response;
 }

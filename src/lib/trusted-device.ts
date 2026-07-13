@@ -48,7 +48,20 @@ export function readDeviceCookie(req: NextRequest): string | null {
   return c?.value ?? null;
 }
 
-export function trustCookieOptions() {
+export function trustCookieOptions(requestHost?: string | null) {
+  // Host-only cookies split trust between `getstaxis.com` and
+  // `www.getstaxis.com` — the same person on the same Mac got OTP-prompted
+  // again just for arriving via the other hostname, and a duplicate
+  // trusted_devices row was minted each time (2026-07-13 investigation:
+  // 11 rows for one account). On our production domain, scope the cookie
+  // to `.getstaxis.com` so both hosts share one trust. Previews
+  // (*.vercel.app) and localhost stay host-only: vercel.app is on the
+  // Public Suffix List, so a broader domain there is impossible anyway.
+  const host = (requestHost ?? '').toLowerCase().split(':')[0];
+  const domain =
+    host === 'getstaxis.com' || host.endsWith('.getstaxis.com')
+      ? '.getstaxis.com'
+      : undefined;
   return {
     name: TRUST_COOKIE_NAME,
     httpOnly: true,
@@ -63,5 +76,6 @@ export function trustCookieOptions() {
     sameSite: 'lax' as const,
     path: '/',
     maxAge: TRUST_COOKIE_MAX_AGE_DAYS * 24 * 60 * 60,
+    domain,
   };
 }

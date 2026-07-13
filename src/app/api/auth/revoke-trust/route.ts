@@ -139,7 +139,7 @@ export async function POST(req: NextRequest) {
     { ok: true, requestId, data: { revoked: deletedCount ?? 0 } },
     { status: 200 },
   );
-  const opts = trustCookieOptions();
+  const opts = trustCookieOptions(req.headers.get('x-forwarded-host') ?? req.headers.get('host'));
   response.cookies.set({
     name: TRUST_COOKIE_NAME,
     value: '',
@@ -148,6 +148,7 @@ export async function POST(req: NextRequest) {
     sameSite: opts.sameSite,
     path: opts.path,
     maxAge: 0,
+    ...(opts.domain ? { domain: opts.domain } : {}),
   });
   return response;
 }
