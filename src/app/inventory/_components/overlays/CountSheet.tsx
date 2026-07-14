@@ -417,10 +417,9 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
       open
       onClose={requestClose}
       accent={statusColor.good}
-      eyebrow={cs.countMode}
       italic={cs.walkTally}
       suffix={scopeLabel}
-      width={920}
+      width={620}
       footer={
         <>
           <span style={{ marginRight: 'auto' }} />
@@ -456,23 +455,9 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
         {cs.changeWhatToCount}
       </button>
 
-      {/* Progress (moved out of the old full-screen header into the modal body) */}
-      <div
-        style={{
-          background: T.paper,
-          border: `1px solid ${T.rule}`,
-          borderRadius: 12,
-          padding: '14px 18px',
-          marginBottom: 18,
-        }}
-      >
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-          <Caps size={9}>{cs.progress} · {scopeLabel}</Caps>
-          <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2 }}>
-            {filled}/{total} · {pct}%
-          </span>
-        </div>
-        <span style={{ display: 'block', height: 6, borderRadius: 6, background: T.ruleSoft, overflow: 'hidden' }}>
+      {/* Progress — a slim bar with the count; no label chrome. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+        <span style={{ flex: 1, display: 'block', height: 6, borderRadius: 6, background: T.ruleSoft, overflow: 'hidden' }}>
           <span
             style={{
               display: 'block',
@@ -484,6 +469,9 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
             }}
           />
         </span>
+        <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink2, flex: 'none' }}>
+          {filled}/{total}
+        </span>
       </div>
         <PhotoCountPanel lang={lang} display={scopedDisplay} pid={activePropertyId} onFills={applyPhotoFills} />
 
@@ -491,13 +479,13 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           const catItems = scopedDisplay.filter((d) => d.cat === cat);
           if (catItems.length === 0) return null;
           return (
-            <div key={cat} style={{ marginBottom: 30 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
-                <CatIcon cat={cat} size={24} />
+            <div key={cat} style={{ marginBottom: 16 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
+                <CatIcon cat={cat} size={20} />
                 <span
                   style={{
                     fontFamily: fonts.sans,
-                    fontSize: 15,
+                    fontSize: 13,
                     color: T.ink,
                     fontWeight: 600,
                   }}
@@ -506,7 +494,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
                 </span>
                 <span style={{ flex: 1, height: 1, background: T.rule }} />
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {catItems.map((d) => (
                   <CountRow
                     key={d.id}
@@ -542,15 +530,15 @@ function CountRow({
       style={{
         background: T.paper,
         border: `1px solid ${T.rule}`,
-        borderRadius: 12,
-        padding: '12px 18px',
+        borderRadius: 10,
+        padding: '8px 12px',
         display: 'grid',
-        gridTemplateColumns: '40px minmax(200px, 1.6fr) 220px 80px',
-        gap: 18,
+        gridTemplateColumns: '30px 1fr 92px 52px',
+        gap: 12,
         alignItems: 'center',
       }}
     >
-      <ItemThumb thumb={d.thumb} cat={d.cat} size={36} />
+      <ItemThumb thumb={d.thumb} cat={d.cat} size={30} />
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
         <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink, fontWeight: 600 }}>
           {d.name}
@@ -579,18 +567,19 @@ function CountRow({
             placeholder="—"
             style={{
               width: '100%',
-              height: 42,
-              padding: '0 14px',
-              borderRadius: 10,
+              height: 36,
+              padding: '0 10px',
+              borderRadius: 8,
               boxSizing: 'border-box',
               background: fill.bg,
               border: `1px solid ${fill.border}`,
               fontFamily: fonts.sans,
-              fontSize: 20,
+              fontSize: 16,
               fontWeight: 600,
               color: T.ink,
               letterSpacing: '-0.02em',
               outline: 'none',
+              textAlign: 'center',
             }}
           />
           {fill.badge && (
@@ -664,16 +653,12 @@ function PhotoCountPanel({
 }) {
   const cs = csStrings(lang);
   const fileRef = useRef<HTMLInputElement>(null);
-  const cats = useMemo(
-    () => (['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).filter((c) => display.some((d) => d.cat === c)),
-    [display],
-  );
-  const [scope, setScope] = useState<InvCat | 'all'>(cats[0] ?? 'all');
   const [status, setStatus] = useState<'idle' | 'reading' | 'done' | 'error'>('idle');
   const [message, setMessage] = useState('');
   const [lowCount, setLowCount] = useState(0);
 
-  const scoped = scope === 'all' ? display : display.filter((d) => d.cat === scope);
+  // Photo reads against every item in the current sheet (no per-category scope).
+  const scoped = display;
 
   const handleFile = async (file: File) => {
     if (!pid) return;
@@ -728,39 +713,13 @@ function PhotoCountPanel({
         flexWrap: 'wrap',
         alignItems: 'center',
         gap: 12,
-        marginBottom: 22,
+        marginBottom: 16,
       }}
     >
-      <span style={{ fontFamily: fonts.sans, fontSize: 17, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>
+      <span style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>
         {cs.countByPhoto}
       </span>
-      <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2, flex: '1 1 200px', minWidth: 0 }}>
-        {cs.photoHint}
-      </span>
-      {cats.length > 1 && (
-        <select
-          value={scope}
-          onChange={(e) => setScope(e.target.value as InvCat | 'all')}
-          style={{
-            height: 34,
-            padding: '0 10px',
-            borderRadius: 8,
-            background: T.bg,
-            border: `1px solid ${T.rule}`,
-            fontFamily: fonts.sans,
-            fontSize: 13,
-            color: T.ink,
-            cursor: 'pointer',
-          }}
-        >
-          <option value="all">{cs.allVisible}</option>
-          {cats.map((c) => (
-            <option key={c} value={c}>
-              {catLabelFor(lang, c)}
-            </option>
-          ))}
-        </select>
-      )}
+      <span style={{ flex: 1 }} />
       <Btn variant="ghost" size="md" onClick={() => fileRef.current?.click()} disabled={status === 'reading'}>
         {status === 'reading' ? cs.reading : cs.choosePhoto}
       </Btn>
