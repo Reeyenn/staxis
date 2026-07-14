@@ -11,7 +11,10 @@ import {
   listInventoryOrders,
   listInventoryBudgets,
   monthToDateSpendByCategory,
+  addInventoryCount,
+  updateInventoryItem,
 } from '@/lib/db';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import { fetchOccupancyBundle, type OccupancyBundle } from '@/lib/inventory-estimate';
 import {
   fetchDailyAverages,
@@ -33,10 +36,10 @@ import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
 import { Sidebar, type SidebarAction } from './Sidebar';
 import { FilterBar } from './FilterBar';
-import { StockList } from './StockList';
+import { LedgerTable } from './LedgerTable';
 import { useRiseIn } from './motion';
 import { InvFx, HealthRing, CountUp, PingDot } from './fx';
-import { toDisplayItem } from './adapter';
+import { toDisplayItem, applyDraft } from './adapter';
 import { fmtMoney } from './format';
 import type { DisplayItem } from './types';
 import type { StockBucket, StockStatus } from './tokens';
@@ -115,6 +118,10 @@ export function InventoryShell() {
   const [spendByCat, setSpendByCat] = useState<Record<string, number>>({});
   const [bucket, setBucket] = useState<StockBucket>('all');
   const [query, setQuery] = useState('');
+  // In-flight quick counts from the ledger's −/+ steppers, keyed by item id.
+  // Layered over the display until the debounced single-item save lands and the
+  // realtime snapshot catches up (then reconciled away below). Optimistic UI.
+  const [draftCounts, setDraftCounts] = useState<Map<string, number>>(() => new Map());
   const [overlay, setOverlay] = useState<OverlayKey>(null);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [orderingMode, setOrderingMode] = useState<OrderingMode>('simple');
@@ -242,13 +249,22 @@ export function InventoryShell() {
     [items, occupancy, averages, EMPTY_ML_RATES, NO_GRADUATED],
   );
 
-  const totalItems = display.length;
-  const generalCount = display.filter((d) => d.cat !== 'breakfast').length;
-  const breakfastCount = display.filter((d) => d.cat === 'breakfast').length;
+  // Draft-applied view: layer the ledger's in-flight quick counts over the
+  // display so the masthead ring, order-now count, shelf value AND the ledger
+  // rows all recompute live before the debounced save lands. Overlays keep the
+  // authoritative (persisted) `display` — a draft is at most ~1.5s from saving.
+  const effectiveDisplay: DisplayItem[] = useMemo(
+    () => (draftCounts.size === 0 ? display : display.map((d) => applyDraft(d, draftCounts.get(d.id)))),
+    [display, draftCounts],
+  );
+
+  const totalItems = effectiveDisplay.length;
+  const generalCount = effectiveDisplay.filter((d) => d.cat !== 'breakfast').length;
+  const breakfastCount = effectiveDisplay.filter((d) => d.cat === 'breakfast').length;
   // Never-counted items (new-hotel day 1) have no real status — exclude them
   // from the triage stats so they don't read as "16 to order now". They still
   // count toward totalItems / the "All" filter (they ARE items in the catalog).
-  const countedItems = useMemo(() => display.filter((d) => !d.uncounted), [display]);
+  const countedItems = useMemo(() => effectiveDisplay.filter((d) => !d.uncounted), [effectiveDisplay]);
 
   const statusCounts = useMemo(() => {
     const acc: Record<StockStatus, number> = { good: 0, low: 0, critical: 0 };
@@ -260,7 +276,10 @@ export function InventoryShell() {
   const stockHealth = countedItems.length > 0
     ? Math.round((100 * statusCounts.good) / countedItems.length)
     : null;
-  const shelfValue = useMemo(() => display.reduce((s, d) => s + d.value, 0), [display]);
+  // Inventory asset valuation — last-counted stock × unit cost (stable between
+  // counts; it doesn't drift with occupancy). Live-updates as quick counts land,
+  // since applyDraft rewrites `value` for drafted items.
+  const shelfValue = useMemo(() => effectiveDisplay.reduce((s, d) => s + d.value, 0), [effectiveDisplay]);
 
   const reorderCount = useMemo(
     () => countedItems.filter((d) => d.status !== 'good').length,
@@ -317,6 +336,232 @@ export function InventoryShell() {
     setEditItem(d.raw);
     setOverlay('add');
   }, []);
+
+  // ── Quick count (ledger −/+ steppers) ──────────────────────────────────
+  // Optimistic + debounced single-item counts. Refs let the debounced save and
+  // the reconcile read the latest display/drafts without rebuilding the timers.
+  const displayRef = React.useRef(display);
+  displayRef.current = display;
+  const draftCountsRef = React.useRef(draftCounts);
+  draftCountsRef.current = draftCounts;
+  const quickTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Value armed on each item's pending timer, so unmount can flush it.
+  const quickPending = React.useRef<Map<string, number>>(new Map());
+  // Values whose write has SUCCESSFULLY landed, awaiting the realtime snapshot.
+  // The reconcile gates on THIS (not bare value-equality): a still-pending save
+  // is never cancelled just because the draft happens to equal the already-
+  // stored stock (the "recount confirms the same value" case).
+  const savedCounts = React.useRef<Map<string, number>>(new Map());
+  // Backstop timers: retire an optimistic draft a couple seconds after its write
+  // lands, in case the realtime snapshot never clears it (a concurrent writer to
+  // the same item, or a refetch that beat savedCounts) — so a row can't strand
+  // on a stale optimistic value.
+  const quickBackstop = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  const removeDraft = useCallback((itemId: string) => {
+    setDraftCounts((prev) => {
+      if (!prev.has(itemId)) return prev;
+      const next = new Map(prev);
+      next.delete(itemId);
+      return next;
+    });
+  }, []);
+
+  const scheduleBackstop = useCallback((itemId: string, value: number) => {
+    const existing = quickBackstop.current.get(itemId);
+    if (existing) clearTimeout(existing);
+    quickBackstop.current.set(itemId, setTimeout(() => {
+      quickBackstop.current.delete(itemId);
+      // Retire only if this exact value is still the un-reconciled optimistic one
+      // (the realtime snapshot never cleared it). Then `display` — the
+      // authoritative refetched snapshot — takes over the row.
+      if (savedCounts.current.get(itemId) !== value) return;
+      savedCounts.current.delete(itemId);
+      setDraftCounts((prev) => {
+        if (prev.get(itemId) !== value) return prev;
+        const next = new Map(prev);
+        next.delete(itemId);
+        return next;
+      });
+    }, 2500));
+  }, []);
+
+  // Persist one quick count through the same write path Count Mode uses. The
+  // stock update (reorder-critical) goes first, then the count-history row,
+  // then fire-and-forget ML post-count. Deliberately NO auto stock-up order —
+  // that belongs to an authoritative full count; a ±1 correction must not
+  // inflate month spend. The two writes are not transactional; stock-first
+  // ordering keeps the reorder-critical value correct if the audit row alone
+  // fails. On a stock-write failure the optimistic draft is rolled back.
+  const saveQuickCount = useCallback(async (itemId: string, value: number) => {
+    if (!uid || !activePropertyId || !stableUser) return;
+    const d = displayRef.current.find((x) => x.id === itemId);
+    if (!d) return;
+    // Dedup: don't re-write a value that's already persisted (the net-return
+    // "wiggle" case) — it would add a duplicate count-history row.
+    // • savedCounts match → the original save owns the draft cleanup; just skip.
+    if (savedCounts.current.get(itemId) === value) return;
+    // • value already stored → skip AND retire the redundant draft so it can't
+    //   strand over a later external change to the same item.
+    if ((d.raw.currentStock ?? 0) === value && d.lastCountedAt != null) {
+      setDraftCounts((prev) => {
+        if (prev.get(itemId) !== value) return prev;
+        const next = new Map(prev);
+        next.delete(itemId);
+        return next;
+      });
+      return;
+    }
+    const now = new Date();
+    const variance = Number.isFinite(d.estimated) ? value - d.estimated : undefined;
+    try {
+      await updateInventoryItem(uid, activePropertyId, itemId, {
+        currentStock: value,
+        lastCountedAt: now,
+      });
+      // Stock has landed — record it so the reconcile clears the draft once the
+      // realtime snapshot catches up (no flicker back to the old value), even
+      // if the audit-row write below happens to fail.
+      savedCounts.current.set(itemId, value);
+      scheduleBackstop(itemId, value);
+      await addInventoryCount(uid, activePropertyId, {
+        propertyId: activePropertyId,
+        itemId,
+        itemName: d.name,
+        countedStock: value,
+        estimatedStock: Number.isFinite(d.estimated) ? d.estimated : undefined,
+        variance,
+        varianceValue: variance !== undefined && d.unitCost > 0 ? variance * d.unitCost : undefined,
+        unitCost: d.unitCost || undefined,
+        countedAt: now,
+        countedBy: stableUser.displayName || stableUser.username || tx.team,
+      });
+      void fetchWithAuth('/api/inventory/post-count-process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: activePropertyId, itemIds: [itemId] }),
+      }).catch(() => {});
+    } catch (err) {
+      console.error('[inventory] quick-count save failed', err);
+      // Roll back the optimistic draft ONLY if the STOCK write itself failed
+      // (nothing persisted). If stock landed and only the audit row failed, the
+      // count is already reflected in stock — leave the draft for the reconcile
+      // to clear. Never clobber a newer pending edit for the same item.
+      if (savedCounts.current.get(itemId) !== value) {
+        setDraftCounts((prev) => {
+          if (prev.get(itemId) !== value) return prev;
+          const next = new Map(prev);
+          next.delete(itemId);
+          return next;
+        });
+      }
+    }
+  }, [uid, activePropertyId, stableUser, tx.team, scheduleBackstop]);
+
+  const saveQuickCountRef = React.useRef(saveQuickCount);
+  saveQuickCountRef.current = saveQuickCount;
+
+  // Flush any still-pending debounced counts on unmount — leaving /inventory
+  // within the debounce window must not silently drop the write.
+  useEffect(() => {
+    const timers = quickTimers.current;
+    const pending = quickPending.current;
+    const backstops = quickBackstop.current;
+    return () => {
+      for (const [id, tm] of timers) {
+        clearTimeout(tm);
+        const v = pending.get(id);
+        if (v != null) void saveQuickCountRef.current(id, v);
+      }
+      timers.clear();
+      pending.clear();
+      for (const tm of backstops.values()) clearTimeout(tm);
+      backstops.clear();
+    };
+  }, []);
+
+  // Ledger row tapped −/+ : update the draft immediately, debounce the save so a
+  // burst of taps writes once (~1.5s after the last tap).
+  const onQuickCount = useCallback((itemId: string, nextValue: number) => {
+    const d = displayRef.current.find((x) => x.id === itemId);
+    const curDraft = draftCountsRef.current.get(itemId);
+    const have = curDraft != null ? curDraft : Math.max(0, Math.round(d?.estimated ?? 0));
+    const v = Math.max(0, Math.round(nextValue));
+    if (v === have) return; // no change (e.g. − at floor 0) → never write
+
+    // A never-counted item returning to 0 stays "not counted" — don't fabricate
+    // a counted-zero stockout from an accidental − or a +/− undo. Only while no
+    // count has landed for it yet (savedCounts empty); once a real count exists,
+    // stepping to 0 is a legitimate stockout and must persist. (savedCounts,
+    // not the realtime-lagged d.uncounted, is what tells us a save has landed.)
+    if (d?.uncounted && v === 0 && !savedCounts.current.has(itemId)) {
+      const tm = quickTimers.current.get(itemId);
+      if (tm) { clearTimeout(tm); quickTimers.current.delete(itemId); }
+      quickPending.current.delete(itemId);
+      removeDraft(itemId);
+      return;
+    }
+
+    setDraftCounts((prev) => {
+      const next = new Map(prev);
+      next.set(itemId, v);
+      return next;
+    });
+    quickPending.current.set(itemId, v);
+    const timers = quickTimers.current;
+    const existing = timers.get(itemId);
+    if (existing) clearTimeout(existing);
+    timers.set(itemId, setTimeout(() => {
+      timers.delete(itemId);
+      quickPending.current.delete(itemId);
+      void saveQuickCount(itemId, v);
+    }, 1500));
+  }, [saveQuickCount, removeDraft]);
+
+  // Reconcile: once a realtime snapshot reflects a SAVED quick count
+  // (savedCounts[id] === currentStock) drop the draft, and cancel the now-
+  // redundant same-value timer + backstop. Gating on savedCounts (a confirmed
+  // write) — not bare equality — is what prevents a pending save from being lost.
+  useEffect(() => {
+    const saved = savedCounts.current;
+    if (saved.size === 0) return;
+    const drafts = draftCountsRef.current;
+    let changed = false;
+    const next = new Map(drafts);
+    for (const it of items) {
+      const sv = saved.get(it.id);
+      if (sv != null && (it.currentStock ?? 0) === sv) {
+        saved.delete(it.id);
+        const bt = quickBackstop.current.get(it.id);
+        if (bt) { clearTimeout(bt); quickBackstop.current.delete(it.id); }
+        if (next.get(it.id) === sv) {
+          next.delete(it.id);
+          changed = true;
+          const tm = quickTimers.current.get(it.id);
+          if (tm) { clearTimeout(tm); quickTimers.current.delete(it.id); quickPending.current.delete(it.id); }
+        }
+      }
+    }
+    if (changed) setDraftCounts(next);
+  }, [items]);
+
+  // Property switch: the shell is NOT remounted, so drop any in-flight
+  // quick-count state — its drafts/timers belong to the previous property and
+  // the debounced save (which reads the now-swapped display) can't reliably
+  // persist them across the switch. Clearing also stops a stale optimistic value
+  // from resurrecting when switching back.
+  const prevPidRef = React.useRef(activePropertyId);
+  useEffect(() => {
+    if (prevPidRef.current === activePropertyId) return;
+    prevPidRef.current = activePropertyId;
+    for (const tm of quickTimers.current.values()) clearTimeout(tm);
+    quickTimers.current.clear();
+    for (const tm of quickBackstop.current.values()) clearTimeout(tm);
+    quickBackstop.current.clear();
+    quickPending.current.clear();
+    savedCounts.current.clear();
+    setDraftCounts((prev) => (prev.size === 0 ? prev : new Map()));
+  }, [activePropertyId]);
 
   const refreshData = useCallback(async () => {
     if (!uid || !activePropertyId) return;
@@ -447,14 +692,15 @@ export function InventoryShell() {
               onAdd={() => { setEditItem(null); setOverlay('add'); }}
             />
           </div>
-          <StockList
+          <LedgerTable
             lang={L}
-            items={display}
+            items={effectiveDisplay}
             bucket={bucket}
             query={query}
+            canViewFinancials={canViewFinancials}
             onEdit={onEditItem}
+            onQuickCount={onQuickCount}
             onCount={() => setOverlay('count')}
-            onReorder={() => setOverlay('reorder')}
             onAdd={() => { setEditItem(null); setOverlay('add'); }}
           />
         </div>

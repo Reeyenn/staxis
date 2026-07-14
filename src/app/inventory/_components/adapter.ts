@@ -102,6 +102,36 @@ export function toDisplayItem(
   };
 }
 
+// Layer an in-flight quick-count over a DisplayItem so the ledger row AND the
+// masthead stats recompute live before the debounced save lands (README:
+// "draftCounts … layered over DisplayItem.estimated until the save lands, then
+// cleared on refresh"). A tapped item is now a real count, so `uncounted`
+// flips false and it rejoins triage; status/value follow the draft, and
+// days-left scales proportionally off the original burn (no re-plumbing of the
+// burn math — `burnSource` is preserved so the honesty em-dash rule still
+// applies for fallback/no-data items).
+export function applyDraft(d: DisplayItem, draft: number | undefined): DisplayItem {
+  if (draft == null) return d;
+  const value = Math.max(0, Math.round(draft));
+  let daysLeft: number;
+  if (d.estimated > 0) {
+    // burn/day ≈ estimated / daysLeft → new days = value / burn = value·days/est
+    daysLeft = Math.max(0, Math.min(90, Math.round((value / d.estimated) * d.daysLeft)));
+  } else {
+    // Stepping up off a zero estimate: no burn signal to project from.
+    daysLeft = value > 0 ? 90 : 0;
+  }
+  return {
+    ...d,
+    counted: value,
+    estimated: value,
+    status: ratioStatus(value, d.par),
+    daysLeft,
+    value: value * d.unitCost,
+    uncounted: false,
+  };
+}
+
 // Convert a DisplayItem + DailyAverages into a reorder recommendation
 // (now/soon/ok) using the existing predictReorder helper.
 const EMPTY_AVERAGES: DailyAverages = {
