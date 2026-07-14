@@ -20,8 +20,6 @@ import {
 import type { InventoryItem, InventoryCount } from '@/types';
 
 import { T, fonts, statusColor, type InvCat } from '../tokens';
-import { CatIcon } from '../CatIcon';
-import { ItemThumb } from '../ItemThumb';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Serif } from '../Serif';
@@ -40,10 +38,9 @@ interface CountSheetProps {
   display: DisplayItem[];
 }
 
-// A count entry and where its value came from. The manual inventory tab never
-// pre-fills from AI — counts start empty and are typed (`manual`) or filled
-// from a shelf photo (`photo`, carries the model's confidence for visual
-// flagging). Photo counting is a manual convenience, not an ML prediction.
+// A count entry and where its value came from: typed (`manual`) or filled from
+// a reviewed shelf photo (`photo`, carries the model's confidence so the input
+// stays tinted). Photo counting is a manual convenience, not an ML prediction.
 type FillSource = 'manual' | 'photo';
 type Entry = { value: string; source: FillSource; confidence?: 'high' | 'medium' | 'low' };
 
@@ -60,6 +57,10 @@ type SaveProgress = {
   stockedIds: Set<string>;
 };
 
+// A photo result awaiting review — the AI's estimate, adjustable before it
+// touches the count.
+type ReviewFill = { itemId: string; name: string; value: string; confidence?: 'high' | 'medium' | 'low' };
+
 // Co-located strings for the count sheet (too specific for inv-i18n).
 function csStrings(lang: Lang) {
   return {
@@ -70,34 +71,26 @@ function csStrings(lang: Lang) {
       countBoth: 'Count both',
       everything: 'Everything',
       items: 'items',
-      countMode: 'Count mode',
-      walkTally: 'Walk & tally',
       cancel: 'Cancel',
+      back: 'Back',
       saving: 'Saving…',
       saveCount: '✓ Save count',
       changeWhatToCount: 'Change what to count',
-      progress: 'Progress',
-      par: 'par',
-      last: 'last',
-      skip: 'Skip',
-      countByPhoto: 'Count by photo',
-      photoHint: 'Snap a shelf — we’ll fill the counts for you to review. Nothing saves until you hit Save count.',
-      allVisible: 'All visible',
-      reading: 'Reading…',
-      choosePhoto: '📷 Choose photo',
+      countByPhoto: '📷 Count by photo',
+      reading: 'Reading photo…',
+      photoCheck: 'Check the photo counts',
+      useCounts: 'Use these counts',
+      notInPhoto: (n: number) => `${n} item${n === 1 ? '' : 's'} not in the photo`,
       saveFailed: 'Saving the count failed. Please try again.',
       discardConfirm: 'You have unsaved counts. Close and discard them?',
-      noItemsInGroup: 'No items in this group to count.',
-      filled: (n: number, total: number) => `Filled ${n} of ${total} item${total === 1 ? '' : 's'}`,
-      notRecognized: (n: number) => ` · ${n} not recognized`,
-      reviewAndSave: '. Review the numbers and Save.',
-      lowConfidence: (n: number) => ` ${n} low-confidence — please verify (flagged in red).`,
-      couldntReadPhoto: 'Couldn’t read that photo — try a clearer, well-lit shot.',
-      errTooMany: 'Too many items for one photo — scan one shelf or category at a time.',
+      noItemsInGroup: 'No items to count.',
+      errTooMany: 'Too many items for one photo — snap one shelf at a time.',
       errBadImage: 'Couldn’t read that image. Try a clearer, well-lit photo.',
       errRateLimit: 'Too many photo scans this hour — please try again shortly.',
-      errUnavailable: 'Photo counting is briefly unavailable — enter counts manually for now.',
+      errUnavailable: 'Photo counting is briefly unavailable — type the counts for now.',
       errGeneric: 'Couldn’t count that photo. Please try again.',
+      couldntReadPhoto: 'Couldn’t read that photo — try a clearer, well-lit shot.',
+      nothingRecognized: 'Nothing in the photo matched your items — try a closer shot.',
     },
     es: {
       title: 'Conteo de inventario',
@@ -106,34 +99,26 @@ function csStrings(lang: Lang) {
       countBoth: 'Contar ambos',
       everything: 'Todo',
       items: 'artículos',
-      countMode: 'Modo de conteo',
-      walkTally: 'Recorrer y contar',
       cancel: 'Cancelar',
+      back: 'Atrás',
       saving: 'Guardando…',
       saveCount: '✓ Guardar conteo',
       changeWhatToCount: 'Cambiar qué contar',
-      progress: 'Progreso',
-      par: 'par',
-      last: 'último',
-      skip: 'Omitir',
-      countByPhoto: 'Contar por foto',
-      photoHint: 'Toma una foto del estante — llenamos los conteos para que los revises. Nada se guarda hasta que toques Guardar conteo.',
-      allVisible: 'Todos visibles',
-      reading: 'Leyendo…',
-      choosePhoto: '📷 Elegir foto',
+      countByPhoto: '📷 Contar por foto',
+      reading: 'Leyendo foto…',
+      photoCheck: 'Revisa los conteos de la foto',
+      useCounts: 'Usar estos conteos',
+      notInPhoto: (n: number) => `${n} artículo${n === 1 ? '' : 's'} no salen en la foto`,
       saveFailed: 'No se pudo guardar el conteo. Inténtalo de nuevo.',
       discardConfirm: 'Tienes conteos sin guardar. ¿Cerrar y descartarlos?',
-      noItemsInGroup: 'No hay artículos en este grupo para contar.',
-      filled: (n: number, total: number) => `Llenados ${n} de ${total} artículo${total === 1 ? '' : 's'}`,
-      notRecognized: (n: number) => ` · ${n} no reconocidos`,
-      reviewAndSave: '. Revisa los números y Guarda.',
-      lowConfidence: (n: number) => ` ${n} de baja confianza — verifica (marcados en rojo).`,
-      couldntReadPhoto: 'No se pudo leer la foto — intenta una toma más clara y bien iluminada.',
-      errTooMany: 'Demasiados artículos para una foto — escanea un estante o categoría a la vez.',
+      noItemsInGroup: 'No hay artículos para contar.',
+      errTooMany: 'Demasiados artículos para una foto — toma un estante a la vez.',
       errBadImage: 'No se pudo leer la imagen. Intenta una foto más clara y bien iluminada.',
       errRateLimit: 'Demasiados escaneos de foto esta hora — inténtalo de nuevo en un momento.',
-      errUnavailable: 'El conteo por foto no está disponible por ahora — ingresa los conteos manualmente.',
+      errUnavailable: 'El conteo por foto no está disponible por ahora — escribe los conteos.',
       errGeneric: 'No se pudo contar esa foto. Inténtalo de nuevo.',
+      couldntReadPhoto: 'No se pudo leer la foto — intenta una toma más clara y bien iluminada.',
+      nothingRecognized: 'Nada en la foto coincidió con tus artículos — intenta una toma más cercana.',
     },
   }[lang];
 }
@@ -142,10 +127,17 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const cs = csStrings(lang);
-  // scope: null shows the "what to count" chooser; a value shows the scoped count.
+  // scope: null shows the "what to count" chooser; a value shows the count list.
   const [scope, setScope] = useState<Scope | null>(null);
   const [entries, setEntries] = useState<Record<string, Entry>>({});
   const [saving, setSaving] = useState(false);
+  // Photo flow: choose photo → AI reads → `review` holds its estimates for the
+  // user to adjust before they're applied to the count list.
+  const [review, setReview] = useState<ReviewFill[] | null>(null);
+  const [reviewMissing, setReviewMissing] = useState(0);
+  const [photoBusy, setPhotoBusy] = useState(false);
+  const [photoErr, setPhotoErr] = useState('');
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // Resume bookkeeping across retries of a count (scan-commit.ts pattern):
   // which save steps already landed per item, so a retry after a partial
@@ -154,22 +146,26 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   // fresh attempt carries completion forward for entries that didn't change.
   const progRef = useRef<SaveProgress | null>(null);
 
-  // Show the "what to count" chooser fresh on every open (clear any old entries).
+  // Show the "what to count" chooser fresh on every open (clear any old state).
   useEffect(() => {
     if (open) {
       setScope(null);
       setEntries({});
+      setReview(null);
+      setReviewMissing(0);
+      setPhotoBusy(false);
+      setPhotoErr('');
       progRef.current = null;
     }
   }, [open]);
 
   // Guarded close: a stray tap on the dimmed background, an ESC press, or the
-  // Cancel/✕ buttons must not silently throw away a walk-and-tally in
-  // progress — entries live only in local state and reopen resets them, so
-  // there is no recovery. Confirm before discarding typed counts.
+  // Cancel/✕ buttons must not silently throw away a count in progress —
+  // entries live only in local state and reopen resets them. An unapplied
+  // photo review counts as dirty too.
   const requestClose = () => {
     if (saving) return;
-    const dirty = Object.values(entries).some((e) => e.value !== '');
+    const dirty = Object.values(entries).some((e) => e.value !== '') || review != null;
     if (dirty && !confirm(cs.discardConfirm)) return;
     onClose();
   };
@@ -181,7 +177,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   );
 
   // Pick a scope → seed the count inputs for just that subset and proceed.
-  // Manual page: counts always start EMPTY. No AI pre-fill.
+  // Counts always start EMPTY. No AI pre-fill.
   const begin = (s: Scope) => {
     const next: Record<string, Entry> = {};
     for (const d of display.filter((d) => inScope(d.cat, s))) {
@@ -194,19 +190,83 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   const setEntry = (id: string, val: string) =>
     setEntries((prev) => ({ ...prev, [id]: { value: val, source: 'manual' } }));
 
-  // Apply shelf-photo counts onto the entries. Photo overrides an AI prefill on
-  // the items it covers; items the photo didn't return are left untouched.
-  const applyPhotoFills = (fills: MergedFill[]) =>
+  // ── Photo → AI estimates → review ──────────────────────────────────
+  const handleFile = async (file: File) => {
+    if (!activePropertyId) return;
+    if (scopedDisplay.length === 0) {
+      setPhotoErr(cs.noItemsInGroup);
+      return;
+    }
+    setPhotoBusy(true);
+    setPhotoErr('');
+    try {
+      const resized = await resizeImageForVision(file);
+      const res = await fetchWithAuth('/api/inventory/photo-count', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pid: activePropertyId,
+          imageBase64: resized.base64,
+          mediaType: resized.mediaType,
+          itemNames: scopedDisplay.map((d) => d.name),
+        }),
+      });
+      const json = (await res.json()) as { ok?: boolean; counts?: PhotoCount[]; error?: string; detail?: string };
+      if (!res.ok || !json.ok) {
+        setPhotoErr(photoCountErrorFor(lang, res.status, json.detail || json.error));
+        return;
+      }
+      const { filled } = mergePhotoCounts(json.counts ?? [], buildNameToIdMap(scopedDisplay));
+      if (filled.length === 0) {
+        setPhotoErr(cs.nothingRecognized);
+        return;
+      }
+      const nameOf = new Map(scopedDisplay.map((d) => [d.id, d.name]));
+      setReview(filled.map((f: MergedFill) => ({
+        itemId: f.itemId,
+        name: nameOf.get(f.itemId) ?? f.itemId,
+        value: f.value,
+        confidence: f.confidence,
+      })));
+      setReviewMissing(scopedDisplay.length - filled.length);
+    } catch (err) {
+      console.error('[photo-count] failed', err);
+      setPhotoErr(cs.couldntReadPhoto);
+    } finally {
+      setPhotoBusy(false);
+    }
+  };
+
+  const setReviewValue = (itemId: string, val: string) =>
+    setReview((prev) => prev?.map((r) => (r.itemId === itemId ? { ...r, value: val } : r)) ?? prev);
+
+  const bumpReview = (itemId: string, d: number) =>
+    setReview((prev) => prev?.map((r) => {
+      if (r.itemId !== itemId) return r;
+      const n = Math.max(0, (Number(r.value) || 0) + d);
+      return { ...r, value: String(n) };
+    }) ?? prev);
+
+  // Apply the reviewed photo counts onto the entries; items the photo didn't
+  // cover are left untouched.
+  const applyReview = () => {
+    if (!review) return;
     setEntries((prev) => {
       const next: Record<string, Entry> = { ...prev };
-      for (const f of fills) next[f.itemId] = { value: f.value, source: 'photo', confidence: f.confidence };
+      for (const r of review) {
+        if (r.value === '') continue;
+        next[r.itemId] = { value: r.value, source: 'photo', confidence: r.confidence };
+      }
       return next;
     });
+    setReview(null);
+    setReviewMissing(0);
+  };
 
   if (!open) return null;
 
   // STEP 1 — the chooser. Plain modal: just the title + three rows (label +
-  // item count). No eyebrow, no property name, no subtext, no category chips.
+  // item count).
   if (scope === null) {
     const gN = display.filter((d) => d.cat !== 'breakfast').length;
     const bN = display.filter((d) => d.cat === 'breakfast').length;
@@ -221,7 +281,6 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     );
   }
 
-  // STEP 2 — the existing walk-&-tally, scoped to the chosen subset.
   const total = scopedDisplay.length;
   const filled = scopedDisplay.filter((d) => {
     const e = entries[d.id];
@@ -231,12 +290,6 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
 
   const scopeLabel =
     scope === 'general' ? cs.generalInventory : scope === 'breakfast' ? cs.breakfastInventory : cs.everything;
-  const cats: InvCat[] =
-    scope === 'breakfast'
-      ? ['breakfast']
-      : scope === 'general'
-        ? ['housekeeping', 'maintenance']
-        : ['housekeeping', 'maintenance', 'breakfast'];
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
@@ -412,14 +465,101 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     }
   };
 
+  // STEP 3 — photo review: the AI's estimates, adjustable, before they touch
+  // the count. Same modal shell; its own footer.
+  if (review) {
+    return (
+      <Overlay
+        open
+        onClose={requestClose}
+        accent={statusColor.good}
+        italic={cs.photoCheck}
+        width={480}
+        footer={
+          <>
+            <span style={{ marginRight: 'auto' }} />
+            <Btn variant="ghost" size="md" onClick={() => { setReview(null); setReviewMissing(0); }}>
+              {cs.back}
+            </Btn>
+            <Btn variant="primary" size="md" onClick={applyReview}>
+              {cs.useCounts}
+            </Btn>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {review.map((r) => {
+            const low = r.confidence === 'low';
+            return (
+              <div
+                key={r.itemId}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 12,
+                  padding: '9px 2px',
+                  borderBottom: `1px solid ${T.ruleFaint}`,
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink,
+                    minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {r.name}
+                  {low && <span style={{ color: T.warm, marginLeft: 6, fontSize: 12 }}>⚠</span>}
+                </span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, flex: 'none' }}>
+                  <StepBtn label="−" onClick={() => bumpReview(r.itemId, -1)} />
+                  <input
+                    type="number"
+                    min="0"
+                    inputMode="decimal"
+                    value={r.value}
+                    onChange={(e) => { const v = e.target.value; if (numGuard(v)) setReviewValue(r.itemId, v); }}
+                    style={{
+                      width: 64, height: 34, borderRadius: 8, boxSizing: 'border-box',
+                      textAlign: 'center', outline: 'none',
+                      background: low ? T.warmDim : T.bg,
+                      border: `1px solid ${low ? `${T.warm}55` : T.rule}`,
+                      fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink,
+                    }}
+                  />
+                  <StepBtn label="+" onClick={() => bumpReview(r.itemId, 1)} solid />
+                </span>
+              </div>
+            );
+          })}
+          {reviewMissing > 0 && (
+            <div style={{ paddingTop: 12, textAlign: 'center' }}>
+              <Caps size={8.5}>{cs.notInPhoto(reviewMissing)}</Caps>
+            </div>
+          )}
+        </div>
+      </Overlay>
+    );
+  }
+
+  // STEP 2 — the count list. One slim line per item: name + number box.
+  // Blank = skipped. Category dividers only when the scope spans more than one.
+  const allCats: InvCat[] =
+    scope === 'breakfast'
+      ? ['breakfast']
+      : scope === 'general'
+        ? ['housekeeping', 'maintenance']
+        : ['housekeeping', 'maintenance', 'breakfast'];
+  const cats = allCats.filter((c) => scopedDisplay.some((d) => d.cat === c));
+  const showDividers = cats.length > 1;
+
   return (
     <Overlay
       open
       onClose={requestClose}
       accent={statusColor.good}
-      italic={cs.walkTally}
-      suffix={scopeLabel}
-      width={620}
+      italic={scopeLabel}
+      width={520}
       footer={
         <>
           <span style={{ marginRight: 'auto' }} />
@@ -432,40 +572,50 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
         </>
       }
     >
-      <button
-        type="button"
-        onClick={() => setScope(null)}
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: 6,
-          marginBottom: 16,
-          padding: '5px 11px 5px 8px',
-          borderRadius: 8,
-          cursor: 'pointer',
-          background: T.bg,
-          border: `1px solid ${T.rule}`,
-          color: T.ink2,
-          fontFamily: fonts.sans,
-          fontSize: 12,
-          fontWeight: 600,
-        }}
-      >
-        <span style={{ fontFamily: fonts.sans, fontWeight: 600, fontSize: 15 }}>‹</span>
-        {cs.changeWhatToCount}
-      </button>
+      {/* Top row: change scope · photo count */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
+        <button
+          type="button"
+          onClick={() => setScope(null)}
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            padding: '5px 11px 5px 8px', borderRadius: 8, cursor: 'pointer',
+            background: T.bg, border: `1px solid ${T.rule}`, color: T.ink2,
+            fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
+          }}
+        >
+          <span style={{ fontFamily: fonts.sans, fontWeight: 600, fontSize: 15 }}>‹</span>
+          {cs.changeWhatToCount}
+        </button>
+        <Btn variant="teal" size="sm" onClick={() => fileRef.current?.click()} disabled={photoBusy}>
+          {photoBusy ? cs.reading : cs.countByPhoto}
+        </Btn>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) void handleFile(f);
+            e.target.value = '';
+          }}
+        />
+      </div>
+      {photoErr && (
+        <div style={{ marginBottom: 10, fontFamily: fonts.sans, fontSize: 12.5, color: T.warm }}>
+          {photoErr}
+        </div>
+      )}
 
-      {/* Progress — a slim bar with the count; no label chrome. */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
-        <span style={{ flex: 1, display: 'block', height: 6, borderRadius: 6, background: T.ruleSoft, overflow: 'hidden' }}>
+      {/* Slim progress */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+        <span style={{ flex: 1, display: 'block', height: 5, borderRadius: 5, background: T.ruleSoft, overflow: 'hidden' }}>
           <span
             style={{
-              display: 'block',
-              height: '100%',
-              width: `${pct}%`,
-              background: statusColor.good,
-              borderRadius: 6,
-              transition: 'width .25s',
+              display: 'block', height: '100%', width: `${pct}%`,
+              background: statusColor.good, borderRadius: 5, transition: 'width .25s',
             }}
           />
         </span>
@@ -473,162 +623,113 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           {filled}/{total}
         </span>
       </div>
-        <PhotoCountPanel lang={lang} display={scopedDisplay} pid={activePropertyId} onFills={applyPhotoFills} />
 
-        {cats.map((cat) => {
-          const catItems = scopedDisplay.filter((d) => d.cat === cat);
-          if (catItems.length === 0) return null;
-          return (
-            <div key={cat} style={{ marginBottom: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 8 }}>
-                <CatIcon cat={cat} size={20} />
-                <span
-                  style={{
-                    fontFamily: fonts.sans,
-                    fontSize: 13,
-                    color: T.ink,
-                    fontWeight: 600,
-                  }}
-                >
-                  {catLabelFor(lang, cat)}
-                </span>
-                <span style={{ flex: 1, height: 1, background: T.rule }} />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {catItems.map((d) => (
-                  <CountRow
-                    key={d.id}
-                    lang={lang}
-                    d={d}
-                    entry={entries[d.id] || { value: '', source: 'manual' }}
-                    onChange={(v) => setEntry(d.id, v)}
-                  />
-                ))}
-              </div>
+      {cats.map((cat) => (
+        <div key={cat}>
+          {showDividers && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 2px' }}>
+              <Caps size={8.5}>{catLabelFor(lang, cat)}</Caps>
+              <span style={{ flex: 1, height: 1, background: T.ruleSoft }} />
             </div>
-          );
-        })}
+          )}
+          {scopedDisplay.filter((d) => d.cat === cat).map((d) => (
+            <CountLine
+              key={d.id}
+              d={d}
+              entry={entries[d.id] || { value: '', source: 'manual' }}
+              onChange={(v) => setEntry(d.id, v)}
+            />
+          ))}
+        </div>
+      ))}
     </Overlay>
   );
 }
 
-function CountRow({
-  lang,
+// One slim count line: item name + a number box. Nothing else.
+function CountLine({
   d,
   entry,
   onChange,
 }: {
-  lang: Lang;
   d: DisplayItem;
   entry: Entry;
   onChange: (v: string) => void;
 }) {
-  const cs = csStrings(lang);
   const fill = fillStyle(entry);
   return (
     <div
       style={{
-        background: T.paper,
-        border: `1px solid ${T.rule}`,
-        borderRadius: 10,
-        padding: '8px 12px',
-        display: 'grid',
-        gridTemplateColumns: '30px 1fr 92px 52px',
-        gap: 12,
+        display: 'flex',
         alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        padding: '8px 2px',
+        borderBottom: `1px solid ${T.ruleFaint}`,
       }}
     >
-      <ItemThumb thumb={d.thumb} cat={d.cat} size={30} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-        <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink, fontWeight: 600 }}>
-          {d.name}
-        </span>
-        <span
-          style={{
-            fontFamily: fonts.mono,
-            fontSize: 10,
-            color: T.ink3,
-            letterSpacing: '0.04em',
-          }}
-        >
-          {cs.par} {d.par} · {cs.last} {d.counted}
-        </span>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <div style={{ position: 'relative', flex: 1 }}>
-          <input
-            type="number"
-            min="0"
-            inputMode="decimal"
-            value={entry.value}
-            // numGuard blocks "-5", "abc", "NaN", scientific notation at
-            // type-time so the count we save can't be negative or non-finite.
-            onChange={(e) => { const v = e.target.value; if (numGuard(v)) onChange(v); }}
-            placeholder="—"
-            style={{
-              width: '100%',
-              height: 36,
-              padding: '0 10px',
-              borderRadius: 8,
-              boxSizing: 'border-box',
-              background: fill.bg,
-              border: `1px solid ${fill.border}`,
-              fontFamily: fonts.sans,
-              fontSize: 16,
-              fontWeight: 600,
-              color: T.ink,
-              letterSpacing: '-0.02em',
-              outline: 'none',
-              textAlign: 'center',
-            }}
-          />
-          {fill.badge && (
-            <span
-              style={{
-                position: 'absolute',
-                right: 10,
-                top: '50%',
-                transform: 'translateY(-50%)',
-                fontFamily: fonts.mono,
-                fontSize: 9,
-                fontWeight: 600,
-                color: fill.badge.color,
-                background: `${fill.badge.color}22`,
-                padding: '2px 6px',
-                borderRadius: 4,
-                letterSpacing: '0.08em',
-              }}
-            >
-              {fill.badge.text}
-            </span>
-          )}
-        </div>
-      </div>
-      <Btn
-        variant="ghost"
-        size="sm"
-        onClick={() => onChange('')}
-        style={{ height: 30, fontSize: 11, padding: '0 10px' }}
+      <span
+        style={{
+          fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink,
+          minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        }}
       >
-        {cs.skip}
-      </Btn>
+        {d.name}
+      </span>
+      <input
+        type="number"
+        min="0"
+        inputMode="decimal"
+        value={entry.value}
+        // numGuard blocks "-5", "abc", "NaN", scientific notation at
+        // type-time so the count we save can't be negative or non-finite.
+        onChange={(e) => { const v = e.target.value; if (numGuard(v)) onChange(v); }}
+        placeholder="—"
+        style={{
+          width: 88, height: 34, borderRadius: 8, boxSizing: 'border-box',
+          flex: 'none', textAlign: 'center', outline: 'none',
+          background: fill.bg,
+          border: `1px solid ${fill.border}`,
+          fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink,
+          letterSpacing: '-0.02em',
+        }}
+      />
     </div>
   );
 }
 
-type FillVisual = { bg: string; border: string; badge: { text: string; color: string } | null };
+// −/+ stepper for the photo review (matches the ledger's quick-count buttons).
+function StepBtn({ label, onClick, solid = false }: { label: string; onClick: () => void; solid?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        width: 26, height: 26, borderRadius: 8, padding: 0, lineHeight: 1, fontSize: 14,
+        fontFamily: fonts.sans, cursor: 'pointer', flex: 'none',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        border: solid ? '1px solid rgba(92,122,96,.35)' : `1px solid rgba(31,35,28,.12)`,
+        background: solid ? T.tealDim : T.bg,
+        color: solid ? T.tealText : T.ink,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
 
-// Maps an entry's source + confidence to its input styling + corner badge.
-// The manual page has no AI pre-fill, so there's no purple AUTO state — only
-// photo counting tints the input (sage/caramel/warm by confidence, with low
-// deliberately loud (warm + ⚠) so a shaky guess is never quietly trusted).
+type FillVisual = { bg: string; border: string };
+
+// Photo-reviewed values stay tinted by confidence in the count list so it's
+// clear which numbers came from the camera (low = loud so a shaky guess is
+// never quietly trusted).
 function fillStyle(entry: Entry): FillVisual {
   if (entry.source === 'photo') {
-    if (entry.confidence === 'high') return { bg: T.sageDim, border: `${T.sageDeep}44`, badge: { text: 'PHOTO', color: T.sageDeep } };
-    if (entry.confidence === 'medium') return { bg: `${T.caramel}14`, border: `${T.caramel}55`, badge: { text: 'PHOTO', color: T.caramelDeep } };
-    return { bg: T.warmDim, border: `${T.warm}55`, badge: { text: 'PHOTO ⚠', color: T.warm } };
+    if (entry.confidence === 'high') return { bg: T.sageDim, border: `${T.sageDeep}44` };
+    if (entry.confidence === 'medium') return { bg: `${T.caramel}14`, border: `${T.caramel}55` };
+    return { bg: T.warmDim, border: `${T.warm}55` };
   }
-  return { bg: T.bg, border: T.rule, badge: null };
+  return { bg: T.bg, border: T.rule };
 }
 
 function photoCountErrorFor(lang: Lang, status: number, detail?: string): string {
@@ -638,118 +739,6 @@ function photoCountErrorFor(lang: Lang, status: number, detail?: string): string
   if (status === 429) return cs.errRateLimit;
   if (status === 503) return cs.errUnavailable;
   return detail || cs.errGeneric;
-}
-
-function PhotoCountPanel({
-  lang,
-  display,
-  pid,
-  onFills,
-}: {
-  lang: Lang;
-  display: DisplayItem[];
-  pid: string | null;
-  onFills: (fills: MergedFill[]) => void;
-}) {
-  const cs = csStrings(lang);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const [status, setStatus] = useState<'idle' | 'reading' | 'done' | 'error'>('idle');
-  const [message, setMessage] = useState('');
-  const [lowCount, setLowCount] = useState(0);
-
-  // Photo reads against every item in the current sheet (no per-category scope).
-  const scoped = display;
-
-  const handleFile = async (file: File) => {
-    if (!pid) return;
-    if (scoped.length === 0) {
-      setStatus('error');
-      setMessage(cs.noItemsInGroup);
-      return;
-    }
-    setStatus('reading');
-    setMessage('');
-    setLowCount(0);
-    try {
-      // Scope the item list to the chosen category so we stay well within the
-      // route's input budget and keep the Vision cost down (one shelf ≈ one category).
-      const resized = await resizeImageForVision(file);
-      const res = await fetchWithAuth('/api/inventory/photo-count', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid, imageBase64: resized.base64, mediaType: resized.mediaType, itemNames: scoped.map((d) => d.name) }),
-      });
-      const json = (await res.json()) as { ok?: boolean; counts?: PhotoCount[]; error?: string; detail?: string };
-      if (!res.ok || !json.ok) {
-        setStatus('error');
-        setMessage(photoCountErrorFor(lang, res.status, json.detail || json.error));
-        return;
-      }
-      const { filled, unmatched } = mergePhotoCounts(json.counts ?? [], buildNameToIdMap(scoped));
-      onFills(filled);
-      const low = filled.filter((f) => f.confidence === 'low').length;
-      setLowCount(low);
-      setStatus('done');
-      setMessage(
-        cs.filled(filled.length, scoped.length) +
-          (unmatched.length > 0 ? cs.notRecognized(unmatched.length) : '') +
-          cs.reviewAndSave,
-      );
-    } catch (err) {
-      console.error('[photo-count] failed', err);
-      setStatus('error');
-      setMessage(cs.couldntReadPhoto);
-    }
-  };
-
-  return (
-    <div
-      style={{
-        background: T.paper,
-        border: `1px solid ${T.rule}`,
-        borderRadius: 12,
-        padding: '12px 16px',
-        display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'center',
-        gap: 12,
-        marginBottom: 16,
-      }}
-    >
-      <span style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>
-        {cs.countByPhoto}
-      </span>
-      <span style={{ flex: 1 }} />
-      <Btn variant="ghost" size="md" onClick={() => fileRef.current?.click()} disabled={status === 'reading'}>
-        {status === 'reading' ? cs.reading : cs.choosePhoto}
-      </Btn>
-      <input
-        ref={fileRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        style={{ display: 'none' }}
-        onChange={(e) => {
-          const f = e.target.files?.[0];
-          if (f) void handleFile(f);
-          e.target.value = '';
-        }}
-      />
-      {status !== 'idle' && message && (
-        <div
-          style={{
-            flexBasis: '100%',
-            fontFamily: fonts.sans,
-            fontSize: 12.5,
-            color: status === 'error' ? T.warm : lowCount > 0 ? T.caramelDeep : T.forestText,
-          }}
-        >
-          {message}
-          {lowCount > 0 && status === 'done' ? cs.lowConfidence(lowCount) : ''}
-        </div>
-      )}
-    </div>
-  );
 }
 
 // What the count is scoped to: general = housekeeping + maintenance,
@@ -763,7 +752,6 @@ function inScope(cat: InvCat, scope: Scope): boolean {
 }
 
 // One chooser row: serif label on the left, "{n} items" + arrow on the right.
-// Deliberately plain — no category chip, no subtext (per the handoff).
 function ScopeOption({ title, n, itemsLabel, onPick }: { title: string; n: number; itemsLabel: string; onPick: () => void }) {
   const ref = useRef<HTMLButtonElement>(null);
   return (
