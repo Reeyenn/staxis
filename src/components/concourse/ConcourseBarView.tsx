@@ -31,14 +31,28 @@ export interface ConcourseBarViewProps {
   settingsLabel: string;
   /** Avatar slot — the connected bar passes its dropdown, the demo a plain circle. */
   avatar?: React.ReactNode;
+  /** Show a labelled Home button in the empty space left of the centered bar
+   *  (every screen except the /home hub). Replaces the old full-width row that
+   *  used to sit under the bar — reclaims that vertical line. */
+  showHome?: boolean;
 }
 
 export function ConcourseBarView({
-  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar, showHome = false,
 }: ConcourseBarViewProps) {
   return (
     <div className="cx-barwrap">
       <CxStyle />
+      {/* Left region: the Home button, flush-left. Its flex:1 twin (cx-barspacer)
+          on the right keeps the pill bar itself perfectly centered. */}
+      {showHome && (
+        <div className="cx-homeslot">
+          <button type="button" className="cx-homebtn" onClick={onLogo} aria-label={homeLabel}>
+            <CxIcon name="back" size={13} />
+            {homeLabel}
+          </button>
+        </div>
+      )}
       <div className="cx-bar">
         {/* Logo is a pill like the rest: same green hover pull-out, word = "Home". */}
         <button type="button" className="cx-pill" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
@@ -79,6 +93,7 @@ export function ConcourseBarView({
         </button>
         {avatar}
       </div>
+      {showHome && <div className="cx-barspacer" aria-hidden />}
     </div>
   );
 }

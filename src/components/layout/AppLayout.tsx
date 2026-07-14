@@ -1,9 +1,8 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { ConcourseBar } from '@/components/concourse/ConcourseBar';
-import { CxIcon } from '@/components/concourse/icons';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
@@ -35,7 +34,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
      the Header stays mounted so the user can navigate to an enabled section,
      and redirecting would loop if Staxis (or every section) were off. */
   const pathname = usePathname();
-  const router = useRouter();
   const currentSection = sectionForPath(pathname);
   const sectionOff = Boolean(
     activeProperty &&
@@ -117,16 +115,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         flexDirection: 'column',
         minHeight: 0,
       }}>
-        {/* Concourse chrome — a Home pill on every screen except the hub
-            itself, so non-technical staff always have one obvious way back. */}
-        {pathname !== '/home' && (
-          <div style={{ padding: '14px clamp(16px, 3vw, 48px) 0' }}>
-            <button type="button" className="cx-homebtn" onClick={() => router.push('/home')}>
-              <CxIcon name="back" size={13} />
-              {lang === 'es' ? 'Inicio' : 'Home'}
-            </button>
-          </div>
-        )}
+        {/* The Home button now lives in the Concourse bar row (left of the
+            pills), so it no longer takes its own line here. */}
         {sectionOff ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',

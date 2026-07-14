@@ -193,6 +193,9 @@ export function ConcourseBar() {
       homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
       settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
       avatar={avatar}
+      // Home button lives in the bar row now (left of the pills) — on every
+      // screen except the hub itself.
+      showHome={pathname !== '/home'}
     />
   );
 }

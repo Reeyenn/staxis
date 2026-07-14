@@ -101,6 +101,7 @@ export default function ConcourseDemoPage() {
         homeLabel={es ? 'Inicio' : 'Home'}
         settingsLabel={es ? 'Configuración' : 'Settings'}
         avatar={<div className="cx-avatarbtn" style={{ cursor: 'default' }}>R</div>}
+        showHome={view !== 'home'}
       />
 
       {view === 'home' ? (

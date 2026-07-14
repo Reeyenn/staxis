@@ -37,9 +37,16 @@ const CX_CSS = `
 .cx-swap{animation:cx-swap .22s ease;}
 
 /* ── Pill bar ── */
-.cx-barwrap{display:flex;padding:18px 16px 0;position:sticky;top:18px;z-index:40;
+.cx-barwrap{display:flex;align-items:center;padding:18px 16px 0;position:sticky;top:18px;z-index:40;
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
 .cx-barwrap::-webkit-scrollbar{display:none;}
+/* Home button sits in the empty space left of the centered pill bar; its flex:1
+   twin on the right keeps the bar itself dead-centered regardless of Home's
+   width. Below 900px the bar fills the row, so Home hides (the logo pill is
+   still Home) and the bar re-centers on its own. */
+.cx-homeslot{flex:1 1 0;min-width:0;display:flex;align-items:center;justify-content:flex-start;}
+.cx-barspacer{flex:1 1 0;min-width:0;}
+@media(max-width:900px){.cx-homeslot,.cx-barspacer{display:none;}}
 .cx-bar{display:flex;align-items:center;gap:3px;margin:0 auto;flex-shrink:0;
   background:rgba(255,255,255,.85);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
   border:1px solid rgba(255,255,255,.95);border-radius:999px;padding:7px 9px;
