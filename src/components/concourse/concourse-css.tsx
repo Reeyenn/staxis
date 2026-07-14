@@ -40,9 +40,10 @@ const CX_CSS = `
 .cx-barwrap{display:flex;padding:18px 16px 0;position:sticky;top:18px;z-index:40;
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
 .cx-barwrap::-webkit-scrollbar{display:none;}
-/* Home pill sits first in the bar (beside the logo) with its label always open,
-   so it reads clearly as "Home" rather than an icon that only labels on hover. */
-.cx-pill.cx-homepill .cx-labw{grid-template-columns:1fr;opacity:1;}
+/* [Home button + bar] centered as a group; the Home button stays its own
+   distinct pill just left of the bar (gap), not a tab inside it. margin:0 auto
+   collapses on overflow so it still scrolls from the left on mobile. */
+.cx-barcluster{margin:0 auto;display:flex;align-items:center;gap:10px;flex-shrink:0;}
 .cx-bar{display:flex;align-items:center;gap:3px;margin:0 auto;flex-shrink:0;
   background:rgba(255,255,255,.85);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
   border:1px solid rgba(255,255,255,.95);border-radius:999px;padding:7px 9px;

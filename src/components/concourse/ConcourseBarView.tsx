@@ -43,15 +43,17 @@ export function ConcourseBarView({
   return (
     <div className="cx-barwrap">
       <CxStyle />
-      <div className="cx-bar">
-        {/* Home button lives right beside the logo, as the first item in the
-            bar (every screen except the /home hub). */}
+      {/* Home is its own distinct button sitting just left of the bar (NOT a tab
+          inside it), on every screen except the /home hub. The cluster keeps
+          [Home + bar] centered as a group. */}
+      <div className="cx-barcluster">
         {showHome && (
-          <button type="button" className="cx-pill cx-homepill" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
-            <CxIcon name="back" size={15} />
-            <span className="cx-labw"><span className="cx-lab">{homeLabel}</span></span>
+          <button type="button" className="cx-homebtn" onClick={onLogo} aria-label={homeLabel}>
+            <CxIcon name="back" size={13} />
+            {homeLabel}
           </button>
         )}
+        <div className="cx-bar">
         {/* Logo is a pill like the rest: same green hover pull-out, word = "Home". */}
         <button type="button" className="cx-pill" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
           <CxLogo size={19} color="currentColor" />
@@ -90,6 +92,7 @@ export function ConcourseBarView({
           <CxIcon name="gear" size={16} />
         </button>
         {avatar}
+        </div>
       </div>
     </div>
   );
