@@ -1,10 +1,16 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { T, fonts } from '../tokens';
 import { Caps } from '../Caps';
 import { Serif } from '../Serif';
 import { EASE } from '../motion';
+
+// SSR-safe layout effect: the entrance animation must apply its hidden
+// start-state BEFORE the first paint (see the entrance effect below), which a
+// plain useEffect (runs after paint) can't do. On the server it falls back to
+// useEffect so React doesn't warn.
+const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
 // Triage modal shell used by every overlay. Click-outside or ESC closes.
 // Blurred ink scrim, white card (radius 18), eyebrow + serif title header with
@@ -85,22 +91,28 @@ export function Overlay({
     };
   }, [open, onClose]);
 
-  // WAAPI entrance — fill:'none' so the resting state is the element's own
-  // visible style (never stuck invisible if the timeline is throttled). Keyed
-  // on `render` too: the first open mounts the DOM one commit after `open`
-  // flips, and the animation must run on that commit, when the refs exist.
-  useEffect(() => {
+  // WAAPI entrance. Runs as a LAYOUT effect so the from-keyframe (opacity 0)
+  // takes effect BEFORE the first paint of the freshly-mounted card. With a
+  // plain useEffect the card paints once at its resting style, then the
+  // animation restarts it from the start — that "settled → gone → animate in"
+  // flash reads as the modal flickering / popping up twice (Reeyen, 2026-07-14).
+  // delay is dropped (was 10ms) for the same reason: with fill:'none' a pre-
+  // active delay window would show the resting style. fill stays 'none' so the
+  // resting state after the animation is the element's own visible style (never
+  // stuck invisible if the timeline is throttled). Keyed on `render` too: the
+  // first open mounts the DOM one commit after `open` flips, when the refs exist.
+  useIsoLayoutEffect(() => {
     if (!open || !render) return;
     scrimRef.current?.animate(
       [{ opacity: 0 }, { opacity: 1 }],
-      { duration: 200, delay: 10, easing: 'ease-out', fill: 'none' },
+      { duration: 200, easing: 'ease-out', fill: 'none' },
     );
     cardRef.current?.animate(
       [
         { opacity: 0, transform: full ? 'scale(.985)' : 'translateY(20px) scale(.97)' },
         { opacity: 1, transform: 'none' },
       ],
-      { duration: 380, delay: 10, easing: EASE.spring, fill: 'none' },
+      { duration: 380, easing: EASE.spring, fill: 'none' },
     );
   }, [open, render, full]);
 
