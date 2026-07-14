@@ -49,7 +49,7 @@ import { ReorderPanel } from './overlays/ReorderPanel';
 import { ReportsPanel } from './overlays/ReportsPanel';
 import { HistoryPanel } from './overlays/HistoryPanel';
 import { BudgetsPanel } from './overlays/BudgetsPanel';
-import { ScanInvoiceSheet } from './overlays/ScanInvoiceSheet';
+import { DeliverySheet } from './overlays/DeliverySheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
 import { OrdersPanel } from './overlays/OrdersPanel';
 import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
@@ -782,7 +782,9 @@ export function InventoryShell() {
         onClose={closeOverlay}
       />
 
-      <ScanInvoiceSheet
+      {/* "Add a delivery" — chooser over the scan flow + a typed-in path.
+          Keeps the 'scan' overlay key so ?action=scan deep links still work. */}
+      <DeliverySheet
         lang={L}
         open={overlay === 'scan'}
         onClose={() => { closeOverlay(); void refreshData(); }}
