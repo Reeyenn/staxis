@@ -143,18 +143,29 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
   const setDecision = (row: ReviewRow, value: string) => {
     if (value === '__create__') {
       patchRow(row.key, { decision: 'create' });
-    } else if (value === '__skip__') {
-      patchRow(row.key, { decision: 'skip' });
-    } else {
-      patchRow(row.key, {
-        decision: 'match',
-        matchedItemId: value,
-        // An explicit pick answers the "two close matches" question — clear it.
-        ambiguous: false,
-        afterDirty: false,
-        afterInput: String(onHandFor(value) + (Number(row.qtyInput) || 0)),
-      });
+      return;
     }
+    if (value === '__skip__') {
+      patchRow(row.key, { decision: 'skip' });
+      return;
+    }
+    const patch: Partial<ReviewRow> = {
+      decision: 'match',
+      matchedItemId: value,
+      // An explicit pick answers the "two close matches" question — clear it.
+      ambiguous: false,
+      afterDirty: false,
+      afterInput: String(onHandFor(value) + (Number(row.qtyInput) || 0)),
+    };
+    // Picked via the full-catalog ⇄ button: the name select renders from the
+    // row's shortlist, so an off-shortlist pick must join it (front of the
+    // list) or the row would keep showing the old name.
+    if (!row.candidates.some((c) => c.id === value)) {
+      const name = byId.get(value)?.name;
+      // A human pick outranks anything the matcher scored.
+      if (name) patch.candidates = [{ id: value, name, score: 1, tier: 'exact' }, ...row.candidates];
+    }
+    patchRow(row.key, patch);
   };
 
   // Fold newly-picked/dropped files into the staged set (rules live in
@@ -421,6 +432,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
                 key={row.key}
                 lang={lang}
                 row={row}
+                display={display}
                 onDecision={(v) => setDecision(row, v)}
                 onQty={(v) => setQty(row, v)}
                 onNewCategory={(c) => patchRow(row.key, { newCategory: c })}

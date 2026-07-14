@@ -66,13 +66,20 @@ export function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[])
   };
 }
 
+const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
+
 // Receipt-style line: the item name IS the control (a borderless select —
 // tap it to fix a wrong match or make it a new item), a quantity box, and ✕
 // to drop the line. Unit cost isn't shown — the scanned cost still saves with
 // the delivery, it just isn't a decision the manager makes on this screen.
+//
+// The ⇄ button beside the quantity box opens the WHOLE catalog (grouped by
+// category) — the rescue for when the invoice's wording is nothing like the
+// inventory name and the matcher's shortlist missed it entirely.
 export function ReviewRowView({
   lang,
   row,
+  display,
   onDecision,
   onQty,
   onNewCategory,
@@ -81,6 +88,7 @@ export function ReviewRowView({
 }: {
   lang: Lang;
   row: ReviewRow;
+  display: DisplayItem[];
   onDecision: (v: string) => void;
   onQty: (v: string) => void;
   onNewCategory: (c: InvCat) => void;
@@ -218,6 +226,35 @@ export function ReviewRowView({
           )}
         </div>
 
+        {display.length > 0 && (
+          <span title={ss.pickDifferent} style={pickerShell}>
+            <span aria-hidden style={{ fontSize: 12, color: T.ink3, lineHeight: 1 }}>⇄</span>
+            {/* Invisible select stretched over the icon — tapping the button
+                opens the native full-catalog picker. value stays '' so it acts
+                as a menu, never a display. */}
+            <select
+              value=""
+              onChange={(e) => { if (e.target.value) onDecision(e.target.value); }}
+              aria-label={ss.pickDifferent}
+              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
+            >
+              <option value="" disabled>
+                {ss.pickDifferent}
+              </option>
+              {CAT_ORDER.filter((c) => display.some((d) => d.cat === c)).map((cat) => (
+                <optgroup key={cat} label={catLabelFor(lang, cat)}>
+                  {display
+                    .filter((d) => d.cat === cat)
+                    .map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                </optgroup>
+              ))}
+            </select>
+          </span>
+        )}
         <input
           value={row.qtyInput}
           inputMode="decimal"
@@ -248,6 +285,19 @@ const captionStyle: React.CSSProperties = {
   whiteSpace: 'nowrap',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
+};
+
+const pickerShell: React.CSSProperties = {
+  position: 'relative',
+  flex: 'none',
+  width: 26,
+  height: 26,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  border: `1px solid ${T.rule}`,
+  borderRadius: 6,
+  background: 'transparent',
 };
 
 const removeBtn: React.CSSProperties = {
