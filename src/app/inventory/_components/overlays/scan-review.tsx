@@ -74,7 +74,6 @@ export function ReviewRowView({
   onDecision,
   onQty,
   onUnitCost,
-  onAfter,
   onNewCategory,
   onNewUnit,
   onNewPar,
@@ -86,104 +85,149 @@ export function ReviewRowView({
   onDecision: (v: string) => void;
   onQty: (v: string) => void;
   onUnitCost: (v: string) => void;
-  onAfter: (v: string) => void;
   onNewCategory: (c: InvCat) => void;
   onNewUnit: (v: string) => void;
   onNewPar: (v: string) => void;
 }) {
   const ss = ssStrings(lang);
   const skipped = row.decision === 'skip';
-  const selectValue = row.decision === 'create' ? '__create__' : row.decision === 'skip' ? '__skip__' : row.matchedItemId ?? '__create__';
+  const matched = row.decision === 'match';
+  const creating = row.decision === 'create';
+  const selectValue = creating ? '__create__' : skipped ? '__skip__' : row.matchedItemId ?? '__create__';
   // Loud if we'd re-baseline to roughly just the received qty even though the
   // item has stored stock — usually a stale usage rate, worth a second look.
-  const staleEstimate = row.decision === 'match' && onHand === 0 && matchedCounted > 0;
+  const staleEstimate = matched && onHand === 0 && matchedCounted > 0;
   const caseCaption =
     row.raw.quantity_cases && row.raw.pack_size ? ss.cases(row.raw.quantity_cases, row.raw.pack_size) : null;
+  // Drop the "(100%)" noise from confident matches; keep the score only when
+  // it's worth a second look.
+  const optLabel = (name: string, score: number) => (score >= 0.995 ? name : `${name} (${Math.round(score * 100)}%)`);
+
+  const qtyField = (
+    <label style={{ flex: 'none' }}>
+      <span style={miniLabel}>{ss.qtyReceived}</span>
+      <input
+        value={row.qtyInput}
+        inputMode="decimal"
+        onChange={(e) => onQty(e.target.value)}
+        style={{ ...inputSm, width: 58, textAlign: 'center' }}
+        aria-label={ss.qtyReceived}
+      />
+    </label>
+  );
+  const costField = (
+    <label style={{ flex: 'none' }}>
+      <span style={miniLabel}>{ss.unitCost}</span>
+      <input
+        value={row.unitCostInput}
+        inputMode="decimal"
+        placeholder="—"
+        onChange={(e) => onUnitCost(e.target.value)}
+        style={{ ...inputSm, width: 68, textAlign: 'center' }}
+        aria-label={ss.unitCost}
+      />
+    </label>
+  );
 
   return (
     <div
       style={{
-        border: `1px solid ${row.error ? `${T.warm}55` : T.rule}`,
-        borderRadius: 12,
-        padding: '12px 14px',
-        background: skipped ? T.ruleSoft : row.saved ? T.sageDim : T.paper,
-        opacity: skipped ? 0.6 : 1,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 10,
+        borderBottom: `1px solid ${T.ruleFaint}`,
+        padding: '9px 2px',
+        background: row.saved ? T.sageDim : undefined,
+        opacity: skipped ? 0.5 : 1,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <div style={{ flex: '1 1 200px', minWidth: 0 }}>
-          <div style={{ fontFamily: fonts.mono, fontSize: 13, color: T.ink, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+      {/* One tight line: what it is (dropdown) · how many · what it becomes. */}
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
+        <div style={{ flex: '1 1 0', minWidth: 0 }}>
+          <select
+            value={selectValue}
+            onChange={(e) => onDecision(e.target.value)}
+            style={{ ...inputSm, width: '100%', cursor: 'pointer' }}
+          >
+            {row.candidates.map((c) => (
+              <option key={c.id} value={c.id}>
+                {optLabel(c.name, c.score)}
+              </option>
+            ))}
+            <option value="__create__">{ss.createNew}</option>
+            <option value="__skip__">{ss.skipLine}</option>
+          </select>
+          <div
+            style={{
+              fontFamily: fonts.mono,
+              fontSize: 10.5,
+              color: T.faint,
+              marginTop: 4,
+              whiteSpace: 'nowrap',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}
+          >
             {row.saved && '✓ '}
             {row.raw.item_name}
+            {caseCaption ? ` · ${caseCaption}` : ''}
           </div>
-          {caseCaption && <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3 }}>{caseCaption}</div>}
         </div>
-        <select value={selectValue} onChange={(e) => onDecision(e.target.value)} style={{ ...inputSm, width: 'auto', flex: '1 1 200px', cursor: 'pointer' }}>
-          {row.candidates.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} ({Math.round(c.score * 100)}%)
-            </option>
-          ))}
-          <option value="__create__">{ss.createNew}</option>
-          <option value="__skip__">{ss.skipLine}</option>
-        </select>
+
+        {matched && (
+          <>
+            {qtyField}
+            {costField}
+            <div style={{ flex: 'none', textAlign: 'right' }}>
+              <span style={miniLabel}>{staleEstimate ? `→${ss.checkSuffix}` : '→'}</span>
+              <div
+                style={{
+                  fontFamily: fonts.sans,
+                  fontSize: 16,
+                  fontWeight: 600,
+                  letterSpacing: '-0.02em',
+                  color: staleEstimate ? T.warm : T.ink,
+                  lineHeight: 1.3,
+                }}
+              >
+                {row.afterInput}
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
-      {row.ambiguous && row.decision === 'match' && (
-        <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.caramel }}>{ss.twoCloseMatches}</div>
+      {row.ambiguous && matched && (
+        <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.caramel, marginTop: 6 }}>{ss.twoCloseMatches}</div>
       )}
-      {row.error && <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.warm }}>{row.error}</div>}
+      {row.error && (
+        <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.warm, marginTop: 6 }}>{row.error}</div>
+      )}
 
-      {!skipped && (
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
-          <label style={{ flex: '0 0 92px' }}>
-            <span style={miniLabel}>{ss.qtyReceived}</span>
-            <input value={row.qtyInput} inputMode="decimal" onChange={(e) => onQty(e.target.value)} style={inputSm} />
+      {/* New item: the extra fields only this path needs, kept on one wrapped line. */}
+      {creating && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 8 }}>
+          {qtyField}
+          {costField}
+          <label style={{ flex: '0 0 140px' }}>
+            <span style={miniLabel}>{ss.newItemCategory}</span>
+            <select
+              value={row.newCategory}
+              onChange={(e) => onNewCategory(e.target.value as InvCat)}
+              style={{ ...inputSm, cursor: 'pointer' }}
+            >
+              {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((c) => (
+                <option key={c} value={c}>
+                  {catLabelFor(lang, c)}
+                </option>
+              ))}
+            </select>
           </label>
-          <label style={{ flex: '0 0 100px' }}>
-            <span style={miniLabel}>{ss.unitCost}</span>
-            <input value={row.unitCostInput} inputMode="decimal" placeholder="—" onChange={(e) => onUnitCost(e.target.value)} style={inputSm} />
+          <label style={{ flex: '0 0 84px' }}>
+            <span style={miniLabel}>{ss.unit}</span>
+            <input value={row.newUnit} onChange={(e) => onNewUnit(e.target.value)} style={inputSm} />
           </label>
-
-          {row.decision === 'match' && (
-            <label style={{ flex: '1 1 160px' }}>
-              <span style={miniLabel}>
-                {ss.onHand(onHand)}{staleEstimate ? ss.checkSuffix : ''}
-              </span>
-              <input
-                value={row.afterInput}
-                inputMode="decimal"
-                onChange={(e) => onAfter(e.target.value)}
-                style={{ ...inputSm, borderColor: staleEstimate ? `${T.warm}66` : T.rule }}
-              />
-            </label>
-          )}
-
-          {row.decision === 'create' && (
-            <>
-              <label style={{ flex: '0 0 150px' }}>
-                <span style={miniLabel}>{ss.newItemCategory}</span>
-                <select value={row.newCategory} onChange={(e) => onNewCategory(e.target.value as InvCat)} style={{ ...inputSm, cursor: 'pointer' }}>
-                  {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((c) => (
-                    <option key={c} value={c}>
-                      {catLabelFor(lang, c)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label style={{ flex: '0 0 90px' }}>
-                <span style={miniLabel}>{ss.unit}</span>
-                <input value={row.newUnit} onChange={(e) => onNewUnit(e.target.value)} style={inputSm} />
-              </label>
-              <label style={{ flex: '0 0 80px' }}>
-                <span style={miniLabel}>{ss.par}</span>
-                <input value={row.newPar} inputMode="decimal" onChange={(e) => onNewPar(e.target.value)} style={inputSm} />
-              </label>
-            </>
-          )}
+          <label style={{ flex: '0 0 70px' }}>
+            <span style={miniLabel}>{ss.par}</span>
+            <input value={row.newPar} inputMode="decimal" onChange={(e) => onNewPar(e.target.value)} style={inputSm} />
+          </label>
         </div>
       )}
     </div>

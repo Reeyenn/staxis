@@ -305,7 +305,6 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
   const actionable = rows.filter((r) => r.decision !== 'skip').length;
   const matchedCount = rows.filter((r) => r.decision === 'match').length;
   const createCount = rows.filter((r) => r.decision === 'create').length;
-  const skipCount = rows.filter((r) => r.decision === 'skip').length;
 
   return (
     <Overlay
@@ -313,9 +312,9 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       onClose={handleClose}
       eyebrow={ss.scanInvoice}
       italic={reviewing ? ss.reviewSave : phase === 'done' ? ss.saved : ss.dropOneIn}
-      suffix={reviewing ? `${matchedCount} ${ss.matched} · ${createCount} ${ss.new} · ${skipCount} ${ss.skipped}` : ss.autoUpdateStock}
+      suffix={reviewing ? undefined : ss.autoUpdateStock}
       accent={T.sageDeep}
-      width={reviewing ? 900 : 640}
+      width={reviewing ? 660 : 640}
       footer={
         reviewing ? (
           <>
@@ -417,7 +416,6 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
                 onDecision={(v) => setDecision(row, v)}
                 onQty={(v) => setQty(row, v)}
                 onUnitCost={(v) => { if (numGuard(v)) patchRow(row.key, { unitCostInput: v }); }}
-                onAfter={(v) => { if (numGuard(v)) patchRow(row.key, { afterInput: v, afterDirty: true }); }}
                 onNewCategory={(c) => patchRow(row.key, { newCategory: c })}
                 onNewUnit={(v) => patchRow(row.key, { newUnit: v })}
                 onNewPar={(v) => { if (numGuard(v)) patchRow(row.key, { newPar: v }); }}
