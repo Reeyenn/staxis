@@ -66,181 +66,213 @@ export function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[])
   };
 }
 
+// Receipt-style line: the item name IS the control (a borderless select —
+// tap it to fix a wrong match or make it a new item), a quantity box, and ✕
+// to drop the line. Unit cost isn't shown — the scanned cost still saves with
+// the delivery, it just isn't a decision the manager makes on this screen.
 export function ReviewRowView({
   lang,
   row,
-  onHand,
-  matchedCounted,
   onDecision,
   onQty,
-  onUnitCost,
   onNewCategory,
-  onNewUnit,
-  onNewPar,
+  onSkip,
+  onUnskip,
 }: {
   lang: Lang;
   row: ReviewRow;
-  onHand: number;
-  matchedCounted: number;
   onDecision: (v: string) => void;
   onQty: (v: string) => void;
-  onUnitCost: (v: string) => void;
   onNewCategory: (c: InvCat) => void;
-  onNewUnit: (v: string) => void;
-  onNewPar: (v: string) => void;
+  onSkip: () => void;
+  onUnskip: () => void;
 }) {
   const ss = ssStrings(lang);
-  const skipped = row.decision === 'skip';
-  const matched = row.decision === 'match';
   const creating = row.decision === 'create';
-  const selectValue = creating ? '__create__' : skipped ? '__skip__' : row.matchedItemId ?? '__create__';
-  // Loud if we'd re-baseline to roughly just the received qty even though the
-  // item has stored stock — usually a stale usage rate, worth a second look.
-  const staleEstimate = matched && onHand === 0 && matchedCounted > 0;
+  const skipped = row.decision === 'skip';
+  const selectValue = creating ? '__create__' : row.matchedItemId ?? '__create__';
+  const chosen = creating ? null : row.candidates.find((c) => c.id === row.matchedItemId);
+  const norm = (s: string) => s.trim().toLowerCase();
+  // Echo the invoice's own wording only when it differs from the matched item
+  // (that's when the manager needs it to judge the match) or when the case
+  // math explains the quantity.
+  const rawEcho = chosen && norm(chosen.name) !== norm(row.raw.item_name) ? row.raw.item_name : null;
   const caseCaption =
     row.raw.quantity_cases && row.raw.pack_size ? ss.cases(row.raw.quantity_cases, row.raw.pack_size) : null;
-  // Drop the "(100%)" noise from confident matches; keep the score only when
-  // it's worth a second look.
-  const optLabel = (name: string, score: number) => (score >= 0.995 ? name : `${name} (${Math.round(score * 100)}%)`);
+  const caption = [rawEcho, caseCaption].filter(Boolean).join(' · ');
 
-  const qtyField = (
-    <label style={{ flex: 'none' }}>
-      <span style={miniLabel}>{ss.qtyReceived}</span>
-      <input
-        value={row.qtyInput}
-        inputMode="decimal"
-        onChange={(e) => onQty(e.target.value)}
-        style={{ ...inputSm, width: 58, textAlign: 'center' }}
-        aria-label={ss.qtyReceived}
-      />
-    </label>
-  );
-  const costField = (
-    <label style={{ flex: 'none' }}>
-      <span style={miniLabel}>{ss.unitCost}</span>
-      <input
-        value={row.unitCostInput}
-        inputMode="decimal"
-        placeholder="—"
-        onChange={(e) => onUnitCost(e.target.value)}
-        style={{ ...inputSm, width: 68, textAlign: 'center' }}
-        aria-label={ss.unitCost}
-      />
-    </label>
-  );
+  if (skipped) {
+    return (
+      <div style={{ ...lineShell, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <span
+          style={{
+            flex: '1 1 0',
+            minWidth: 0,
+            fontFamily: fonts.sans,
+            fontSize: 14.5,
+            color: T.faint,
+            textDecoration: 'line-through',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {chosen?.name ?? row.raw.item_name}
+        </span>
+        <button type="button" onClick={onUnskip} style={putBackBtn}>
+          {ss.putBack}
+        </button>
+      </div>
+    );
+  }
 
   return (
-    <div
-      style={{
-        borderBottom: `1px solid ${T.ruleFaint}`,
-        padding: '9px 2px',
-        background: row.saved ? T.sageDim : undefined,
-        opacity: skipped ? 0.5 : 1,
-      }}
-    >
-      {/* One tight line: what it is (dropdown) · how many · what it becomes. */}
-      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10 }}>
+    <div style={{ ...lineShell, background: row.saved ? T.sageDim : undefined }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{ flex: '1 1 0', minWidth: 0 }}>
-          <select
-            value={selectValue}
-            onChange={(e) => onDecision(e.target.value)}
-            style={{ ...inputSm, width: '100%', cursor: 'pointer' }}
-          >
-            {row.candidates.map((c) => (
-              <option key={c.id} value={c.id}>
-                {optLabel(c.name, c.score)}
-              </option>
-            ))}
-            <option value="__create__">{ss.createNew}</option>
-            <option value="__skip__">{ss.skipLine}</option>
-          </select>
-          <div
-            style={{
-              fontFamily: fonts.mono,
-              fontSize: 10.5,
-              color: T.faint,
-              marginTop: 4,
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
-          >
-            {row.saved && '✓ '}
-            {row.raw.item_name}
-            {caseCaption ? ` · ${caseCaption}` : ''}
-          </div>
-        </div>
-
-        {matched && (
-          <>
-            {qtyField}
-            {costField}
-            <div style={{ flex: 'none', textAlign: 'right' }}>
-              <span style={miniLabel}>{staleEstimate ? `→${ss.checkSuffix}` : '→'}</span>
-              <div
-                style={{
-                  fontFamily: fonts.sans,
-                  fontSize: 16,
-                  fontWeight: 600,
-                  letterSpacing: '-0.02em',
-                  color: staleEstimate ? T.warm : T.ink,
-                  lineHeight: 1.3,
-                }}
-              >
-                {row.afterInput}
-              </div>
-            </div>
-          </>
-        )}
-      </div>
-
-      {row.ambiguous && matched && (
-        <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.caramel, marginTop: 6 }}>{ss.twoCloseMatches}</div>
-      )}
-      {row.error && (
-        <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.warm, marginTop: 6 }}>{row.error}</div>
-      )}
-
-      {/* New item: the extra fields only this path needs, kept on one wrapped line. */}
-      {creating && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 8 }}>
-          {qtyField}
-          {costField}
-          <label style={{ flex: '0 0 140px' }}>
-            <span style={miniLabel}>{ss.newItemCategory}</span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', maxWidth: '100%' }}>
+            {row.saved && <span style={{ color: T.forestText, marginRight: 5, fontSize: 13 }}>✓</span>}
+            {/* The name is the control. A select sizes itself to its LONGEST
+                option, so any positioned chevron drifts away from the visible
+                text — a dotted underline is the tap affordance instead. */}
             <select
-              value={row.newCategory}
-              onChange={(e) => onNewCategory(e.target.value as InvCat)}
-              style={{ ...inputSm, cursor: 'pointer' }}
+              value={selectValue}
+              onChange={(e) => onDecision(e.target.value)}
+              style={{
+                appearance: 'none',
+                WebkitAppearance: 'none',
+                border: 'none',
+                background: 'transparent',
+                fontFamily: fonts.sans,
+                fontSize: 15,
+                fontWeight: 600,
+                color: row.ambiguous && !creating ? T.caramel : T.ink,
+                textDecoration: 'underline',
+                textDecorationStyle: 'dotted',
+                textDecorationColor: row.ambiguous && !creating ? T.caramel : T.faint,
+                textUnderlineOffset: 4,
+                padding: 0,
+                margin: 0,
+                cursor: 'pointer',
+                maxWidth: '100%',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
             >
-              {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((c) => (
-                <option key={c} value={c}>
-                  {catLabelFor(lang, c)}
+              {row.candidates.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
                 </option>
               ))}
+              <option value="__create__">{ss.newItemOpt(row.raw.item_name)}</option>
             </select>
-          </label>
-          <label style={{ flex: '0 0 84px' }}>
-            <span style={miniLabel}>{ss.unit}</span>
-            <input value={row.newUnit} onChange={(e) => onNewUnit(e.target.value)} style={inputSm} />
-          </label>
-          <label style={{ flex: '0 0 70px' }}>
-            <span style={miniLabel}>{ss.par}</span>
-            <input value={row.newPar} inputMode="decimal" onChange={(e) => onNewPar(e.target.value)} style={inputSm} />
-          </label>
+          </span>
+          {caption && <div style={captionStyle}>{caption}</div>}
+          {row.ambiguous && !creating && (
+            <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.caramel, marginTop: 3 }}>{ss.twoCloseMatches}</div>
+          )}
+          {row.error && (
+            <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.warm, marginTop: 3 }}>{row.error}</div>
+          )}
+          {creating && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
+              <span
+                style={{
+                  fontFamily: fonts.mono,
+                  fontSize: 9.5,
+                  letterSpacing: '0.06em',
+                  textTransform: 'uppercase',
+                  color: T.ink3,
+                  fontWeight: 600,
+                }}
+              >
+                {ss.goesIn}
+              </span>
+              <select
+                value={row.newCategory}
+                onChange={(e) => onNewCategory(e.target.value as InvCat)}
+                style={{
+                  appearance: 'none',
+                  WebkitAppearance: 'none',
+                  border: 'none',
+                  background: 'transparent',
+                  fontFamily: fonts.sans,
+                  fontSize: 12,
+                  fontWeight: 500,
+                  color: T.ink2,
+                  textDecoration: 'underline',
+                  textDecorationStyle: 'dotted',
+                  textDecorationColor: T.faint,
+                  textUnderlineOffset: 3,
+                  padding: 0,
+                  cursor: 'pointer',
+                }}
+              >
+                {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((c) => (
+                  <option key={c} value={c}>
+                    {catLabelFor(lang, c)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
-      )}
+
+        <input
+          value={row.qtyInput}
+          inputMode="decimal"
+          onChange={(e) => onQty(e.target.value)}
+          aria-label={ss.qtyReceived}
+          style={{ ...inputSm, width: 58, textAlign: 'center', flex: 'none' }}
+        />
+        <button type="button" onClick={onSkip} aria-label={ss.skipLine} style={removeBtn}>
+          ✕
+        </button>
+      </div>
     </div>
   );
 }
 
-const miniLabel: React.CSSProperties = {
-  display: 'block',
+const lineShell: React.CSSProperties = {
+  borderBottom: `1px solid ${T.ruleFaint}`,
+  padding: '10px 2px',
+  minHeight: 50,
+  boxSizing: 'border-box',
+};
+
+const captionStyle: React.CSSProperties = {
   fontFamily: fonts.mono,
-  fontSize: 9.5,
-  letterSpacing: '0.06em',
-  textTransform: 'uppercase',
+  fontSize: 10.5,
+  color: T.faint,
+  marginTop: 3,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+const removeBtn: React.CSSProperties = {
+  flex: 'none',
+  width: 26,
+  height: 26,
+  border: 'none',
+  background: 'transparent',
   color: T.ink3,
-  marginBottom: 4,
-  fontWeight: 600,
+  fontFamily: fonts.sans,
+  fontSize: 13,
+  lineHeight: 1,
+  cursor: 'pointer',
+  borderRadius: 6,
+};
+
+const putBackBtn: React.CSSProperties = {
+  flex: 'none',
+  border: 'none',
+  background: 'transparent',
+  color: T.ink2,
+  fontFamily: fonts.sans,
+  fontSize: 12,
+  fontWeight: 500,
+  textDecoration: 'underline',
+  cursor: 'pointer',
+  padding: '4px 2px',
 };

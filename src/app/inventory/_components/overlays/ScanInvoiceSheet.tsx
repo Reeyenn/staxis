@@ -28,12 +28,11 @@ import {
 } from '@/lib/inventory-invoice-commit';
 
 import { T, fonts } from '../tokens';
-import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import type { DisplayItem } from '../types';
 import { type Lang } from '../inv-i18n';
-import { numGuard, inputSm } from './form-kit';
+import { numGuard } from './form-kit';
 import { ssStrings, scanErrorFor } from './scan-i18n';
 import { StagingStep, foldFiles, fileToBase64, type Staged } from './scan-staging';
 import { buildRow, ReviewRowView, type RawInvoiceLine, type ReviewRow } from './scan-review';
@@ -52,6 +51,19 @@ const warmStrip: React.CSSProperties = {
   fontSize: 12.5,
   color: T.warm,
 };
+
+// "2026-07-14" → "Jul 14, 2026" for the read-only invoice caption. Built from
+// the date parts directly (a bare `new Date('YYYY-MM-DD')` parses as UTC and
+// shows yesterday in western timezones). Non-ISO input passes through as-is.
+function fmtInvoiceDate(iso: string, lang: Lang): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
+  if (!m) return iso;
+  return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
 
 export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang; open: boolean; onClose: () => void; display: DisplayItem[] }) {
   const { user } = useAuth();
@@ -137,6 +149,8 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       patchRow(row.key, {
         decision: 'match',
         matchedItemId: value,
+        // An explicit pick answers the "two close matches" question — clear it.
+        ambiguous: false,
         afterDirty: false,
         afterInput: String(onHandFor(value) + (Number(row.qtyInput) || 0)),
       });
@@ -311,10 +325,10 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       open={open}
       onClose={handleClose}
       eyebrow={ss.scanInvoice}
-      italic={reviewing ? ss.reviewSave : phase === 'done' ? ss.saved : ss.dropOneIn}
+      italic={reviewing ? ss.whatArrived : phase === 'done' ? ss.saved : ss.dropOneIn}
       suffix={reviewing ? undefined : ss.autoUpdateStock}
       accent={T.sageDeep}
-      width={reviewing ? 660 : 640}
+      width={reviewing ? 560 : 640}
       footer={
         reviewing ? (
           <>
@@ -322,7 +336,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
               {ss.cancel}
             </Btn>
             <Btn variant="primary" size="md" onClick={handleCommit} disabled={phase === 'committing' || actionable === 0}>
-              {phase === 'committing' ? ss.saving : ss.saveLines(actionable)}
+              {phase === 'committing' ? ss.adding : ss.addItems(actionable)}
             </Btn>
           </>
         ) : undefined
@@ -390,35 +404,32 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       )}
 
       {reviewing && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           {dupWarn && <div style={warmStrip}>{ss.dupWarn}</div>}
           {banner && <div style={warmStrip}>{banner}</div>}
 
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ flex: '1 1 240px' }}>
-              <Caps>{ss.vendor}</Caps>
-              <input value={vendor} onChange={(e) => setVendor(e.target.value)} placeholder={ss.supplier} style={inputSm} />
+          {/* Where it came from — read straight off the invoice, not a form. */}
+          {(vendor || invoiceDate) && (
+            <div style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.02em' }}>
+              {[vendor, fmtInvoiceDate(invoiceDate, lang)].filter(Boolean).join(' · ')}
             </div>
-            <div style={{ flex: '1 1 160px' }}>
-              <Caps>{ss.invoiceDate}</Caps>
-              <input type="date" value={invoiceDate} onChange={(e) => setInvoiceDate(e.target.value)} style={inputSm} />
-            </div>
-          </div>
+          )}
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ display: 'flex', flexDirection: 'column' }}>
             {rows.map((row) => (
               <ReviewRowView
                 key={row.key}
                 lang={lang}
                 row={row}
-                onHand={onHandFor(row.matchedItemId)}
-                matchedCounted={row.matchedItemId ? byId.get(row.matchedItemId)?.counted ?? 0 : 0}
                 onDecision={(v) => setDecision(row, v)}
                 onQty={(v) => setQty(row, v)}
-                onUnitCost={(v) => { if (numGuard(v)) patchRow(row.key, { unitCostInput: v }); }}
                 onNewCategory={(c) => patchRow(row.key, { newCategory: c })}
-                onNewUnit={(v) => patchRow(row.key, { newUnit: v })}
-                onNewPar={(v) => { if (numGuard(v)) patchRow(row.key, { newPar: v }); }}
+                onSkip={() => patchRow(row.key, { decision: 'skip' })}
+                onUnskip={() =>
+                  patchRow(row.key, {
+                    decision: row.matchedItemId && row.candidates.length > 0 ? 'match' : 'create',
+                  })
+                }
               />
             ))}
           </div>
