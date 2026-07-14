@@ -1,13 +1,15 @@
 'use client';
 
 /* ──────────────────────────────────────────────────────────────────────
-   Add a delivery — chooser → (scan invoice | type it in)
+   Add a delivery — chooser → (scan invoice | pick items)
    A delivery ADDS stock on top of what's on hand (counting REPLACES it —
    that's Count Mode's job). Two ways in:
      • Scan the invoice — the existing ScanInvoiceSheet flow, untouched.
-     • Type it in — a slim list (item + how many arrived); saving logs one
-       received order per item and re-baselines stock to on-hand + received,
-       matching the invoice commit's semantics (inventory-invoice-commit.ts).
+     • Pick items — a few dropdown rows (pick an item + how many arrived,
+       "+ Add another item" for more). A delivery is usually one or two
+       things, so you pick rather than scroll the whole catalog. Saving logs
+       one received order per item and re-baselines stock to on-hand +
+       received, matching the invoice commit (inventory-invoice-commit.ts).
    ────────────────────────────────────────────────────────────────────── */
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -20,7 +22,6 @@ import {
 } from '@/lib/db';
 import type { InvCat } from '../tokens';
 import { T, fonts } from '../tokens';
-import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
@@ -49,51 +50,61 @@ function dsStrings(lang: Lang) {
     en: {
       title: 'Add a delivery',
       scanOption: '📷 Scan the invoice',
-      manualOption: 'Type it in',
-      arrived: 'How many arrived',
-      cancel: 'Cancel',
+      manualOption: 'Pick items',
+      selectItem: 'Select an item…',
+      qtyPh: 'Qty',
+      addAnother: '+ Add another item',
+      remove: 'Remove',
       back: 'Back',
       saving: 'Saving…',
       addBtn: '✓ Add to inventory',
       discardConfirm: 'You have an unsaved delivery. Close and discard it?',
       saveFailed: 'Saving the delivery failed. Please try again.',
-      note: 'Delivery — typed in',
+      note: 'Delivery — added manually',
     },
     es: {
       title: 'Agregar entrega',
       scanOption: '📷 Escanear la factura',
-      manualOption: 'Escribirla a mano',
-      arrived: 'Cuántos llegaron',
-      cancel: 'Cancelar',
+      manualOption: 'Elegir artículos',
+      selectItem: 'Elige un artículo…',
+      qtyPh: 'Cant.',
+      addAnother: '+ Agregar otro artículo',
+      remove: 'Quitar',
       back: 'Atrás',
       saving: 'Guardando…',
       addBtn: '✓ Agregar al inventario',
       discardConfirm: 'Tienes una entrega sin guardar. ¿Cerrar y descartarla?',
       saveFailed: 'No se pudo guardar la entrega. Inténtalo de nuevo.',
-      note: 'Entrega — escrita a mano',
+      note: 'Entrega — agregada a mano',
     },
   }[lang];
 }
 
 type Mode = null | 'manual' | 'scan';
+type Row = { key: number; itemId: string; qty: string };
+
+const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
 export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ds = dsStrings(lang);
   const [mode, setMode] = useState<Mode>(null);
-  const [qty, setQty] = useState<Record<string, string>>({});
+  const [rows, setRows] = useState<Row[]>([{ key: 0, itemId: '', qty: '' }]);
+  const rowSeq = useRef(1);
   const [saving, setSaving] = useState(false);
   // Session-scoped write ledger (see the idempotence note above).
   const sessionBaseline = useRef<Map<string, number>>(new Map());
   const orderedEver = useRef<Set<string>>(new Set());
   const writtenFinal = useRef<Map<string, number>>(new Map());
 
+  const resetRows = () => { setRows([{ key: 0, itemId: '', qty: '' }]); rowSeq.current = 1; };
+
   // Fresh chooser on every open.
   useEffect(() => {
     if (open) {
       setMode(null);
-      setQty({});
+      resetRows();
       sessionBaseline.current = new Map();
       orderedEver.current = new Set();
       writtenFinal.current = new Map();
@@ -107,7 +118,7 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
     return <ScanInvoiceSheet lang={lang} open onClose={onClose} display={display} />;
   }
 
-  const dirty = Object.values(qty).some((v) => v !== '');
+  const dirty = rows.some((r) => r.itemId !== '' || r.qty !== '');
   const requestClose = () => {
     if (saving) return;
     if (dirty && !confirm(ds.discardConfirm)) return;
@@ -115,12 +126,12 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
   };
 
   // Chooser — two ways to log the delivery. Switching to the scan flow
-  // discards any typed quantities (its close exits the whole sheet), so a
-  // dirty manual draft asks first.
+  // discards any picked rows (its close exits the whole sheet), so a dirty
+  // manual draft asks first.
   if (mode === null) {
     const pickScan = () => {
       if (dirty && !confirm(ds.discardConfirm)) return;
-      setQty({});
+      resetRows();
       setMode('scan');
     };
     return (
@@ -133,12 +144,30 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
     );
   }
 
-  // Manual path — slim list: item name + "how many arrived". Whole units:
-  // quantities are rounded at parse time so what the button counts is exactly
-  // what gets written (a "0.4" that rounds to 0 never writes anything).
-  const entered = display
-    .map((d) => ({ d, n: Math.round(Number(qty[d.id])) }))
-    .filter(({ d, n }) => qty[d.id] != null && qty[d.id] !== '' && Number.isFinite(n) && n >= 1);
+  // ── Manual path — dropdown rows ────────────────────────────────────
+  const updateRow = (key: number, patch: Partial<Row>) =>
+    setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const addRow = () =>
+    setRows((prev) => [...prev, { key: rowSeq.current++, itemId: '', qty: '' }]);
+  const removeRow = (key: number) =>
+    setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.key !== key) : prev));
+
+  // Whole units. Coalesce by itemId (a safety net — the dropdowns already hide
+  // an item picked in another row) so a duplicate pick sums instead of racing.
+  const picked = new Map<string, number>();
+  for (const r of rows) {
+    if (!r.itemId) continue;
+    const n = Math.round(Number(r.qty));
+    if (!Number.isFinite(n) || n < 1) continue;
+    picked.set(r.itemId, (picked.get(r.itemId) ?? 0) + n);
+  }
+  const entered = [...picked].flatMap(([itemId, n]) => {
+    const d = display.find((x) => x.id === itemId);
+    return d ? [{ d, n }] : [];
+  });
+
+  const selectedIds = new Set(rows.map((r) => r.itemId).filter(Boolean));
+  const canAddRow = selectedIds.size < display.length && rows.every((r) => r.itemId !== '');
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving || entered.length === 0) return;
@@ -217,10 +246,6 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
     }
   };
 
-  const allCats: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
-  const cats = allCats.filter((c) => display.some((d) => d.cat === c));
-  const showDividers = cats.length > 1;
-
   return (
     <Overlay
       open
@@ -239,59 +264,90 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
         </>
       }
     >
-      <div style={{ textAlign: 'right', marginBottom: 4 }}>
-        <Caps size={8.5}>{ds.arrived}</Caps>
-      </div>
-      {cats.map((cat) => (
-        <div key={cat}>
-          {showDividers && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 2px' }}>
-              <Caps size={8.5}>{catLabelFor(lang, cat)}</Caps>
-              <span style={{ flex: 1, height: 1, background: T.ruleSoft }} />
-            </div>
-          )}
-          {display.filter((d) => d.cat === cat).map((d) => (
-            <div
-              key={d.id}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 12,
-                padding: '8px 2px',
-                borderBottom: `1px solid ${T.ruleFaint}`,
-              }}
-            >
-              <span
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {rows.map((r) => {
+          // A row's dropdown offers items not picked in OTHER rows (+ its own).
+          const availableFor = (cat: InvCat) =>
+            display.filter((d) => d.cat === cat && (d.id === r.itemId || !selectedIds.has(d.id)));
+          return (
+            <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <select
+                value={r.itemId}
+                onChange={(e) => updateRow(r.key, { itemId: e.target.value })}
                 style={{
-                  fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink,
-                  minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  flex: 1, minWidth: 0, height: 40, padding: '0 12px', borderRadius: 9,
+                  boxSizing: 'border-box', cursor: 'pointer', outline: 'none',
+                  background: T.bg, border: `1px solid ${T.rule}`,
+                  fontFamily: fonts.sans, fontSize: 14, fontWeight: 600,
+                  color: r.itemId ? T.ink : T.dim,
                 }}
               >
-                {d.name}
-              </span>
+                <option value="">{ds.selectItem}</option>
+                {CAT_ORDER.filter((c) => display.some((d) => d.cat === c)).map((cat) => {
+                  const opts = availableFor(cat);
+                  if (opts.length === 0) return null;
+                  return (
+                    <optgroup key={cat} label={catLabelFor(lang, cat)}>
+                      {opts.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name}</option>
+                      ))}
+                    </optgroup>
+                  );
+                })}
+              </select>
               <input
                 type="number"
                 min="0"
                 inputMode="decimal"
-                value={qty[d.id] ?? ''}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  if (numGuard(v)) setQty((prev) => ({ ...prev, [d.id]: v }));
-                }}
-                placeholder="—"
+                value={r.qty}
+                onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { qty: v }); }}
+                placeholder={ds.qtyPh}
+                aria-label={ds.qtyPh}
                 style={{
-                  width: 88, height: 34, borderRadius: 8, boxSizing: 'border-box',
+                  width: 76, height: 40, borderRadius: 9, boxSizing: 'border-box',
                   flex: 'none', textAlign: 'center', outline: 'none',
                   background: T.bg, border: `1px solid ${T.rule}`,
                   fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink,
                   letterSpacing: '-0.02em',
                 }}
               />
+              <button
+                type="button"
+                onClick={() => removeRow(r.key)}
+                aria-label={ds.remove}
+                disabled={rows.length === 1}
+                style={{
+                  width: 30, height: 30, flex: 'none', borderRadius: 8, padding: 0,
+                  cursor: rows.length === 1 ? 'default' : 'pointer',
+                  background: 'transparent', border: 'none',
+                  color: rows.length === 1 ? T.ruleFaint : T.dim,
+                  fontFamily: fonts.sans, fontSize: 18, lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
             </div>
-          ))}
-        </div>
-      ))}
+          );
+        })}
+      </div>
+
+      <button
+        type="button"
+        onClick={addRow}
+        disabled={!canAddRow}
+        style={{
+          marginTop: 12,
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          padding: '8px 14px', borderRadius: 999,
+          cursor: canAddRow ? 'pointer' : 'not-allowed',
+          background: canAddRow ? T.tealDim : 'transparent',
+          color: canAddRow ? T.tealText : T.faint,
+          border: `1px solid ${canAddRow ? 'rgba(92,122,96,0.28)' : T.rule}`,
+          fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600,
+        }}
+      >
+        {ds.addAnother}
+      </button>
     </Overlay>
   );
 }
