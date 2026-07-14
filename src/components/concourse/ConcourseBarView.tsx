@@ -43,17 +43,15 @@ export function ConcourseBarView({
   return (
     <div className="cx-barwrap">
       <CxStyle />
-      {/* Left region: the Home button, flush-left. Its flex:1 twin (cx-barspacer)
-          on the right keeps the pill bar itself perfectly centered. */}
-      {showHome && (
-        <div className="cx-homeslot">
-          <button type="button" className="cx-homebtn" onClick={onLogo} aria-label={homeLabel}>
-            <CxIcon name="back" size={13} />
-            {homeLabel}
-          </button>
-        </div>
-      )}
       <div className="cx-bar">
+        {/* Home button lives right beside the logo, as the first item in the
+            bar (every screen except the /home hub). */}
+        {showHome && (
+          <button type="button" className="cx-pill cx-homepill" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
+            <CxIcon name="back" size={15} />
+            <span className="cx-labw"><span className="cx-lab">{homeLabel}</span></span>
+          </button>
+        )}
         {/* Logo is a pill like the rest: same green hover pull-out, word = "Home". */}
         <button type="button" className="cx-pill" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
           <CxLogo size={19} color="currentColor" />
@@ -93,7 +91,6 @@ export function ConcourseBarView({
         </button>
         {avatar}
       </div>
-      {showHome && <div className="cx-barspacer" aria-hidden />}
     </div>
   );
 }
