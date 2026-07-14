@@ -224,6 +224,9 @@ export function InventoryShell() {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
       if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
+      // A deep-linked add opens a NEW item — clear any stale edited item (we no
+      // longer clear it on close, see closeOverlay).
+      if (action === 'add') setEditItem(null);
       setOverlay(action as OverlayKey);
     }
     // Run only on initial mount + param changes — we want sticky URLs.
@@ -323,8 +326,13 @@ export function InventoryShell() {
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
-    setEditItem(null);
-    // strip ?action= from the URL on close
+    // Intentionally DON'T clear editItem here. The Overlay keeps the sheet
+    // mounted for its ~0.2s exit animation; clearing editItem now would flip the
+    // still-visible AddItemSheet from "Edit item / King Sheets" to the smaller
+    // empty "New item" layout mid-exit — a flash Reeyen saw (2026-07-14). It's
+    // harmless to leave stale: every path that opens the Add/Edit sheet sets
+    // editItem first (onEditItem → the row; onAdd → null; the ?action=add deep
+    // link is guarded below), so it's only ever read with a correct value.
     const url = new URL(window.location.href);
     if (url.searchParams.has('action')) {
       url.searchParams.delete('action');
