@@ -76,11 +76,6 @@ export const EDITABLE_FIELDS: Record<string, FieldSpec[]> = {
     { key: 'roomNumber', label: { en: 'Room', es: 'Habitación' }, kind: 'text' },
     { key: 'staffName', label: { en: 'Housekeeper', es: 'Camarista' }, kind: 'text' },
   ],
-  createMaintenanceWorkOrder: [
-    { key: 'room_number', label: { en: 'Room', es: 'Habitación' }, kind: 'text' },
-    { key: 'item', label: { en: 'Item', es: 'Objeto' }, kind: 'text' },
-    { key: 'note', label: { en: 'Note', es: 'Nota' }, kind: 'multiline' },
-  ],
   remove_from_shift: [
     { key: 'staffName', label: { en: 'Staff', es: 'Personal' }, kind: 'text' },
     { key: 'date', label: { en: 'Date', es: 'Fecha' }, kind: 'text' },

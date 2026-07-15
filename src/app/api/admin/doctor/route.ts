@@ -321,26 +321,14 @@ const checks: Array<[string, CheckFn]> = [
   ['sentry_auth_token_present',      checkSentryAuthTokenPresent],
   ['sentry_client_initialized',      checkSentryClientInitialized],
   ['sentry_ingest_probe_recent',     checkSentryIngestProbeRecent],
-  // Picovoice wake-word — operator-visible state for "Hey Staxis". Warns
-  // on half-configured (key OR .ppn but not both), oks both ways for
-  // intentional disabled state and fully-wired state. Replaces the
-  // pre-2026-05-14 PICOVOICE_ACCESS_KEY-in-REQUIRED_ENV_VARS approach that
-  // hard-failed CI any time the key wasn't set.
-  ['picovoice_wake_word_config',     checkPicovoiceWakeWordConfig],
   // Plan v2 F-AI-1 — confirm the operator has documented an AI data-
-  // retention posture for Anthropic / OpenAI / ElevenLabs. The check is
-  // a stamp (STAXIS_AI_DATA_POLICY env) rather than an inline policy
-  // because the actual configuration lives in the provider dashboards;
-  // the env is "the operator says they've confirmed it on date X." A
-  // missing stamp returns yellow, not red — the live app still works,
-  // we just don't know whether ZDR is in force.
+  // retention posture for Anthropic / OpenAI. The check is a stamp
+  // (STAXIS_AI_DATA_POLICY env) rather than an inline policy because the
+  // actual configuration lives in the provider dashboards; the env is
+  // "the operator says they've confirmed it on date X." A missing stamp
+  // returns yellow, not red — the live app still works, we just don't
+  // know whether ZDR is in force.
   ['ai_data_policy_documented',      checkAiDataPolicyDocumented],
-  // Plan v2 M-1 rollout readiness — reports the fraction of voice
-  // sessions in the last 24h whose ElevenLabs conversation_id we
-  // observed and bound. When ≥ 95%, it's safe to flip
-  // STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true; below that, doing so
-  // would refuse legitimate voice turns.
-  ['voice_binding_readiness',        checkVoiceBindingReadiness],
   // Plan v2.1 CR-3 — surface whether the CUA action allowlist is in
   // enforce mode on the Fly worker. The code shipped warn-mode-by-
   // default (CUA_POLICY_ENFORCE='warn'); refusals are logged but the
@@ -433,24 +421,10 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   // alert + the new captureException in llm.ts's getClient() are the
   // detection layers; THIS list is what makes both possible.
   { name: 'ANTHROPIC_API_KEY',                 group: 'anthropic' },
-  // Voice surface (2026-05-14)
-  //   - ElevenLabs Conversational AI powers voice mode (Phone icon + Cmd+/).
-  //     ELEVENLABS_API_KEY mints signed URLs server-side AND drives the
-  //     walkthrough's one-shot TTS (/api/agent/speak → Jessica voice).
-  //     ELEVENLABS_AGENT_ID names the agent the browser connects to,
-  //     ELEVENLABS_WEBHOOK_SECRET gates the brain webhook.
-  //     ELEVENLABS_VOICE_ID is the voice the walkthrough narrates as
-  //     (Jessica — matches the conversational surface for consistency).
-  //   - OPENAI_API_KEY remains on the required list for other surfaces
-  //     (transcription, embedding) but is no longer used by the walkthrough.
-  //   - PICOVOICE_ACCESS_KEY backs "Hey Staxis" wake word and is
-  //     intentionally OPTIONAL (gated on both the access key AND a .ppn
-  //     file in public/wake-words/) — see checkPicovoiceWakeWordConfig.
-  { name: 'OPENAI_API_KEY',                    group: 'voice' },
-  { name: 'ELEVENLABS_API_KEY',                group: 'voice' },
-  { name: 'ELEVENLABS_AGENT_ID',               group: 'voice' },
-  { name: 'ELEVENLABS_WEBHOOK_SECRET',         group: 'voice' },
-  { name: 'ELEVENLABS_VOICE_ID',               group: 'voice' },
+  // OPENAI_API_KEY powers Whisper transcription (comms voice messages) and
+  // knowledge-search embeddings — required for those surfaces even though
+  // the ElevenLabs voice feature was removed 2026-07-15.
+  { name: 'OPENAI_API_KEY',                    group: 'openai' },
   // Billing — these are checked for SHAPE in checkStripeBillingConfigured.
   // Listing here so the env_vars check reports a clean "missing" message
   // when none are set, but the billing-configured check is the source of
@@ -2037,7 +2011,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // service is gone. The new `vercel-watchdog` (5-min, listed at the
   // bottom) replaces it.
   { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron; GH sms-jobs-cron.yml kept as redundant backup, audit 2026-06-26)' },
-  { name: 'ingest-voice-costs',            cadenceHours: 15/60, description: '15-min ElevenLabs voice-minute → agent_costs ledger ingest so the daily $ cap includes voice (Vercel native cron, audit 2026-06-26)' },
   { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
   { name: 'compliance-reminders',          cadenceHours: 1,     description: 'hourly engineering-compliance reminders + GM overdue escalation by SMS (Vercel native cron) — feature #19' },
   { name: 'compliance-anomaly-sweep',      cadenceHours: 30/60, description: 'every-30-min leak/spike anomaly sweep — slow-trend + stuck-meter detection + AI phrasing (Vercel native cron) — feature #19 v2' },
@@ -3259,13 +3232,13 @@ async function checkAiDataPolicyDocumented(): Promise<Omit<Check, 'name' | 'dura
       status: 'warn',
       detail:
         'STAXIS_AI_DATA_POLICY not set — operator has not documented ' +
-        'an AI data-retention posture for Anthropic / OpenAI / ElevenLabs. ' +
+        'an AI data-retention posture for Anthropic / OpenAI. ' +
         "Guest PII flows to these providers under each one's default " +
         '30-day retention until an org-level data control is confirmed.',
       fix:
         'Confirm Zero Data Retention (or equivalent data controls) in ' +
-        'console.anthropic.com, platform.openai.com Data Controls, and ' +
-        'elevenlabs.io workspace settings. Then set ' +
+        'console.anthropic.com and platform.openai.com Data Controls. ' +
+        'Then set ' +
         '`STAXIS_AI_DATA_POLICY=zdr-confirmed-YYYY-MM-DD-<provider list>` ' +
         'in Vercel. See RUNBOOKS.md > "AI Data Retention Posture".',
     };
@@ -3275,19 +3248,18 @@ async function checkAiDataPolicyDocumented(): Promise<Omit<Check, 'name' | 'dura
   // would pass and turn the check green without proving anything.
   // The stamp is an attestation, so the quality of the stamp is the
   // only signal of operator diligence. Now requires a YYYY-MM-DD date
-  // AND mentions of all three providers. See RUNBOOKS.md > "AI Data
+  // AND mentions of both remaining providers (ElevenLabs was removed
+  // 2026-07-15 with the voice feature). See RUNBOOKS.md > "AI Data
   // Retention Posture" for the canonical format.
   const hasDate = /\b20\d{2}-\d{2}-\d{2}\b/.test(stamp);
   const mentionsAnthropic = /anthropic|claude/i.test(stamp);
   const mentionsOpenAI = /openai|whisper/i.test(stamp);
-  const mentionsElevenLabs = /elevenlabs|11labs/i.test(stamp);
-  const allProviders = mentionsAnthropic && mentionsOpenAI && mentionsElevenLabs;
+  const allProviders = mentionsAnthropic && mentionsOpenAI;
   if (!hasDate || !allProviders) {
     const missing: string[] = [];
     if (!hasDate) missing.push('YYYY-MM-DD date');
     if (!mentionsAnthropic) missing.push('Anthropic');
     if (!mentionsOpenAI) missing.push('OpenAI');
-    if (!mentionsElevenLabs) missing.push('ElevenLabs');
     return {
       status: 'warn',
       detail:
@@ -3295,88 +3267,13 @@ async function checkAiDataPolicyDocumented(): Promise<Omit<Check, 'name' | 'dura
         'The stamp must record when AND which providers were confirmed.',
       fix:
         'Replace with the canonical format, e.g. ' +
-        '`audit-2026-05-20-anthropic:30d-default-openai:sharing-off-logging-off-elevenlabs:starter-default`. ' +
+        '`audit-2026-05-20-anthropic:30d-default-openai:sharing-off-logging-off`. ' +
         'See RUNBOOKS.md > "AI Data Retention Posture".',
     };
   }
   return {
     status: 'ok',
     detail: `AI data policy stamp present: "${stamp.slice(0, 120)}".`,
-  };
-}
-
-/**
- * voice_binding_readiness — Plan v2 M-1 rollout gauge.
- *
- * We can't flip STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true blind: if
- * ElevenLabs doesn't reliably forward conversation_id in the custom-LLM
- * webhook body, the binding-required mode would refuse every legitimate
- * voice turn. This check reports the bind-rate — the fraction of recent
- * voice sessions whose elevenlabs_conversation_id we observed and stored
- * — so the operator knows when it's safe to flip.
- *
- * Status mapping:
- *   - already enforcing → ok (the flip happened; the gauge is moot)
- *   - 0 sessions in the window → ok with "no data" note (don't fail
- *     the doctor for an idle voice surface)
- *   - bind_rate ≥ 95% → ok with the recommendation to flip
- *   - bind_rate <  95% → warn with the actual rate so the operator can
- *     decide whether the gap is "needs more traffic" or "ElevenLabs
- *     SDK changed which field carries conversation_id"
- */
-async function checkVoiceBindingReadiness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const enforce = (env.STAXIS_VOICE_REQUIRE_CONNECTION_BINDING ?? 'false') === 'true';
-  if (enforce) {
-    return {
-      status: 'ok',
-      detail: 'STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true — binding already enforced. This check is moot.',
-    };
-  }
-
-  // 24 h window keeps the gauge useful for low-traffic deployments.
-  // Anything shorter risks "zero sessions" being the steady state.
-  const sinceIso = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
-  const { data, error } = await supabaseAdmin
-    .from('agent_voice_sessions')
-    .select('elevenlabs_conversation_id, created_at')
-    .gte('created_at', sinceIso);
-
-  if (error) {
-    return {
-      status: 'warn',
-      detail: `Could not read agent_voice_sessions for readiness gauge: ${error.message}.`,
-    };
-  }
-
-  const total = (data ?? []).length;
-  if (total === 0) {
-    return {
-      status: 'ok',
-      detail:
-        'No voice sessions in the last 24h — readiness gauge has no data. ' +
-        'Trigger a real voice turn on the hotel app to populate; re-check after.',
-    };
-  }
-  const bound = (data ?? []).filter((r) => !!(r as { elevenlabs_conversation_id: string | null }).elevenlabs_conversation_id).length;
-  const pct = Math.round((bound / total) * 100);
-  if (pct >= 95) {
-    return {
-      status: 'ok',
-      detail:
-        `Voice-binding rate ${pct}% (${bound}/${total}) over the last 24h — ` +
-        'safe to flip STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true on Vercel.',
-    };
-  }
-  return {
-    status: 'warn',
-    detail:
-      `Voice-binding rate ${pct}% (${bound}/${total}) over the last 24h. ` +
-      'Below the 95% safety floor — flipping enforce now would refuse legitimate turns.',
-    fix:
-      'Investigate the missing conversation_id source. Either ElevenLabs changed ' +
-      'the field name (check elevenlabs_extra_body / extra_body / body.user in a ' +
-      'recent [voice-brain] log line) or low traffic is hiding the real rate. ' +
-      'When this check turns green, set STAXIS_VOICE_REQUIRE_CONNECTION_BINDING=true.',
   };
 }
 
@@ -3972,75 +3869,6 @@ async function checkSentryIngestProbeRecent(): Promise<Omit<Check, 'name' | 'dur
       detail: `Probe recency check threw: ${errToString(e)}`,
     };
   }
-}
-
-/**
- * picovoice_wake_word_config — operator-visible state for the "Hey Staxis"
- * wake word.
- *
- * Wake-word needs TWO things: PICOVOICE_ACCESS_KEY in env AND at least one
- * .ppn keyword file in public/wake-words/. Voice mode itself works without
- * wake-word — users can click the Phone icon or hit Cmd+/ to use OpenAI
- * Whisper STT. So the doctor must NOT hard-fail when both are absent
- * (intentional disabled state, the default until Picovoice approves).
- *
- * Pre-2026-05-14 the env_vars check listed PICOVOICE_ACCESS_KEY as
- * REQUIRED, which hard-failed the entire doctor any time the key wasn't
- * set — producing a flood of post-deploy-smoke and ML-smoke-nightly CI
- * failures despite voice mode working correctly via fallback. This check
- * replaces that: warn ONLY on the half-configured state (one side wired,
- * the other not — the real broken case).
- */
-async function checkPicovoiceWakeWordConfig(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const keySet = (env.PICOVOICE_ACCESS_KEY ?? '').trim() !== '';
-
-  let ppnPresent = false;
-  let ppnReadFailed = false;
-  try {
-    const { readdirSync, existsSync } = require('node:fs') as typeof import('node:fs');
-    const { join } = require('node:path') as typeof import('node:path');
-    const dir = join(process.cwd(), 'public', 'wake-words');
-    if (existsSync(dir)) {
-      ppnPresent = readdirSync(dir).some(f => f.endsWith('.ppn'));
-    }
-  } catch {
-    ppnReadFailed = true;
-  }
-
-  if (ppnReadFailed) {
-    return {
-      status: 'warn',
-      detail: 'Could not read public/wake-words/ directory to verify wake-word .ppn files. Voice mode still works via Phone-button / Cmd+/ fallback.',
-    };
-  }
-
-  if (!keySet && !ppnPresent) {
-    return {
-      status: 'ok',
-      detail: 'Wake word ("Hey Staxis") not configured — voice mode uses Phone-button / Cmd+/ Whisper fallback. Set PICOVOICE_ACCESS_KEY in Vercel + add a .ppn file to public/wake-words/ when ready to enable.',
-    };
-  }
-
-  if (keySet && !ppnPresent) {
-    return {
-      status: 'warn',
-      detail: 'Wake word half-configured: PICOVOICE_ACCESS_KEY is set but no .ppn keyword file exists in public/wake-words/. The Picovoice SDK will load but find no keyword to listen for.',
-      fix: 'Either add a trained .ppn file to public/wake-words/ (Picovoice Console → Wake Word), OR unset PICOVOICE_ACCESS_KEY in Vercel to fully disable wake-word.',
-    };
-  }
-
-  if (!keySet && ppnPresent) {
-    return {
-      status: 'warn',
-      detail: 'Wake word half-configured: public/wake-words/ contains .ppn file(s) but PICOVOICE_ACCESS_KEY is not set. The Picovoice SDK will fail to initialize at runtime.',
-      fix: 'Set PICOVOICE_ACCESS_KEY in Vercel → Project Settings → Environment Variables (from Picovoice Console → AccessKey) and redeploy.',
-    };
-  }
-
-  return {
-    status: 'ok',
-    detail: 'Wake word ("Hey Staxis") fully configured (PICOVOICE_ACCESS_KEY set + .ppn file present)',
-  };
 }
 
 /**

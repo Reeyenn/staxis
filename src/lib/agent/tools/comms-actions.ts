@@ -379,9 +379,9 @@ registerTool<PostAnnouncementArgs>({
 });
 
 // ─── Add-ons for the card-tier tools that create work ──────────────────────
-// "Also add to the to-do list" for log_complaint + createMaintenanceWorkOrder.
-// Both assign the follow-up task to the maintenance department (that's who acts
-// on a complaint/work-order). Deterministic — no model free-text.
+// "Also add to the to-do list" for log_complaint. Assigns the follow-up task
+// to the maintenance department (that's who acts on a complaint). Deterministic
+// — no model free-text.
 
 registerAddon('log_complaint', {
   id: 'add_to_maintenance_todo',
@@ -404,22 +404,3 @@ registerAddon('log_complaint', {
   },
 });
 
-registerAddon('createMaintenanceWorkOrder', {
-  id: 'add_to_maintenance_todo',
-  label: () => ({
-    en: 'Also add to the to-do list',
-    es: 'También agregar a la lista de tareas',
-  }),
-  run: async (ctx) => {
-    const r = (ctx.primaryResult ?? {}) as { room_number?: string | null; action?: string; item?: string };
-    const room = r.room_number ? `Room ${r.room_number}: ` : '';
-    const title = `${room}${[r.action, r.item].filter(Boolean).join(' ') || 'Maintenance follow-up'}`.slice(0, 200);
-    await createTask(ctx.propertyId, {
-      title,
-      assignedDepartment: 'maintenance',
-      priority: 'high',
-      createdByStaffId: ctx.callerStaffId,
-    });
-    return { note: 'Added to the maintenance to-do list.' };
-  },
-});

@@ -78,11 +78,7 @@ describe('shouldSampleTransaction', () => {
     );
   });
 
-  test('downsamples /api/agent/voice-brain and nudges/check to 5%', () => {
-    assert.equal(
-      shouldSampleTransaction({ name: 'POST /api/agent/voice-brain/chat/completions' }),
-      0.05,
-    );
+  test('downsamples nudges/check to 5%', () => {
     assert.equal(
       shouldSampleTransaction({ name: 'POST /api/agent/nudges/check' }),
       0.05,

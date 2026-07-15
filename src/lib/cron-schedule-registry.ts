@@ -40,10 +40,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // safe because staxis_claim_sms_jobs uses FOR UPDATE SKIP LOCKED (no
   // double-send). This entry is the scheduler of record (Vercel).
   { heartbeatName: 'process-sms-jobs',                  source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },                  cronExpr: '*/5 * * * *' },
-  // Voice-cost ingest (2026-06-26 audit): every 15 min, pulls ended
-  // ElevenLabs Conversational AI sessions and books their platform minutes
-  // into the agent_costs ledger so the daily $ cap includes voice.
-  { heartbeatName: 'ingest-voice-costs',                source: { kind: 'vercel', cronPath: '/api/cron/ingest-voice-costs' },                cronExpr: '*/15 * * * *' },
   // Plan v4 (2026-05-24): removed `scraper-health` cron entry — Railway
   // scraper service is gone, `vercel-watchdog` (5-min, listed below) is
   // its replacement.

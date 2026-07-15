@@ -47,7 +47,7 @@ export function getBaseSentryOptions() {
  * Picks one of:
  *   - 0.0   "drop" — known-no-signal transactions (healthchecks)
  *   - 0.01  "noisy" — high-QPS event hooks
- *   - 0.05  "medium" — cron + voice-brain (volume scales with hotels)
+ *   - 0.05  "medium" — cron fans-out (volume scales with hotels)
  *   - default rate ("inherit") — every other route
  *
  * Structurally typed against Sentry's TracesSamplerSamplingContext so it
@@ -87,9 +87,8 @@ export function shouldSampleTransaction(ctx: RouteSamplingContext): number {
   if (route.includes('/api/events')) return 0.01;
   if (route.includes('/api/sms-reply')) return 0.01;
 
-  // 0.05: cron fans-out + voice agent.
+  // 0.05: cron fans-out.
   if (route.includes('/api/cron/')) return 0.05;
-  if (route.includes('/api/agent/voice-brain')) return 0.05;
   if (route.includes('/api/agent/nudges/check')) return 0.05;
 
   // Default — inherit parent-trace decision or fall back to the global rate.

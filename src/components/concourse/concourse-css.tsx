@@ -137,10 +137,6 @@ const CX_CSS = `
 .cx-ask input{flex:1;min-width:0;border:none;outline:none;background:transparent;color:#1F231C;height:38px;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;font-size:14px;}
 .cx-ask input::placeholder{color:#A6ABA6;}
-.cx-talk{height:38px;padding:0 17px;border-radius:999px;border:none;background:#3E5C48;color:#fff;
-  cursor:pointer;font-size:12.5px;font-weight:600;display:flex;align-items:center;gap:7px;flex-shrink:0;
-  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
-.cx-talk:hover{filter:brightness(1.08);}
 
 .cx-board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin-top:30px;}
 .cx-tile{background:#fff;border:1px solid rgba(31,35,28,.08);border-radius:18px;padding:15px 15px 13px;
@@ -229,7 +225,6 @@ const CX_CSS = `
 .cx-capsule input{flex:1;min-width:0;border:none;outline:none;background:transparent;color:#1F231C;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;font-size:13px;}
 .cx-capsule input::placeholder{color:#A6ABA6;}
-.cx-capsule .cx-talk{height:30px;padding:0 14px;font-size:12px;}
 
 @media (max-width:760px){
   .cx-board{grid-template-columns:repeat(2,minmax(0,1fr));}

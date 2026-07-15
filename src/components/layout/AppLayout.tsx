@@ -7,11 +7,6 @@ import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
 import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
 import { AiActivityButton } from '@/components/agent/AiActivityButton';
-import { WakeWord } from '@/components/agent/WakeWord';
-import { VoicePanelProvider } from '@/components/agent/VoicePanelContext';
-import { VoiceModeOverlay } from '@/components/agent/VoiceModeOverlay';
-import { useVoiceModeKeyboard } from '@/components/agent/useVoiceModeKeyboard';
-import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSyncContext } from '@/contexts/SyncContext';
@@ -23,9 +18,7 @@ import { sectionForPath, isSectionEnabled } from '@/lib/sections/registry';
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { lang } = useLang();
   const { isOnline, pendingCount, isSyncing } = useSyncContext();
-  const { user } = useAuth();
-  const { activePropertyId, activeProperty } = useProperty();
-  const voiceSurfaceAvailable = Boolean(user && activePropertyId);
+  const { activeProperty } = useProperty();
 
   /* ── Per-hotel section gate ──
      Block a page whose section this hotel has turned off — even via a direct
@@ -67,7 +60,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <VoicePanelProvider>
     <div style={{
       minHeight: '100vh', display: 'flex', flexDirection: 'column',
       // Concourse shell — the soft top-lit page wash every screen sits on.
@@ -148,20 +140,6 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <FeedbackButton />
       <AiActivityButton />
       <AskStaxisBar />
-      {voiceSurfaceAvailable && <WakeWord />}
-      {voiceSurfaceAvailable && <VoiceModeMount />}
     </div>
-    </VoicePanelProvider>
   );
-}
-
-// ─── Inner mount — has access to VoicePanelContext ───────────────────────
-//
-// Owns the global voice-mode keyboard shortcut (Cmd+/) and the overlay.
-// Lives inside the provider so the keyboard hook can read voice-mode
-// state. There is no "talk back to me?" onboarding modal — ElevenLabs
-// always speaks; opting out lives in Settings → Voice.
-function VoiceModeMount() {
-  useVoiceModeKeyboard({ suppressed: false });
-  return <VoiceModeOverlay />;
 }

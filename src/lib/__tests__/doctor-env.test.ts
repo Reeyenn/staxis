@@ -51,9 +51,7 @@ describe('doctor: REQUIRED_ENV_VARS', () => {
     assert.match(REQUIRED_BODY, /name:\s*['"]ANTHROPIC_API_KEY['"]/);
   });
 
-  test('includes the voice surface secrets', () => {
+  test('includes OPENAI_API_KEY (Whisper transcription + embeddings)', () => {
     assert.match(REQUIRED_BODY, /name:\s*['"]OPENAI_API_KEY['"]/);
-    assert.match(REQUIRED_BODY, /name:\s*['"]ELEVENLABS_API_KEY['"]/);
-    assert.match(REQUIRED_BODY, /name:\s*['"]ELEVENLABS_WEBHOOK_SECRET['"]/);
   });
 });

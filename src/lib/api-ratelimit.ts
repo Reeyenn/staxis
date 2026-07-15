@@ -130,24 +130,6 @@ export type RateLimitEndpoint =
   // the page's legacy branch. IP-keyed; 30/hr is generous because real
   // legitimate redemptions are bounded by SMS volume.
   | 'housekeeper-log-legacy-token'
-  // Comms-voice audit P4 (2026-05-22) — /api/agent/speak walkthrough
-  // narration. ElevenLabs Turbo v2.5 costs ~$0.10/1k chars; a runaway
-  // client or compromised session can burn the $5 daily budget cap in
-  // ~50 calls of 1k chars each, but a request-count cap kicks in long
-  // before that. Keyed on accountId (one bucket per user across
-  // properties). MUST also be added to BILLING_IMPACTING_ENDPOINTS below
-  // so an RPC failure fails closed.
-  | 'agent-tts-speak'
-  // Voice-session mint (2026-06-26 pre-onboarding audit). POST
-  // /api/agent/voice-session opens an ElevenLabs Conversational AI socket
-  // (metered platform minutes + a DB row + a conversation row per call).
-  // The route had NO rate limit, so a compromised/looping client could
-  // spam signed-URL mints. Keyed on accountId (one bucket per user across
-  // properties), same shape as agent-tts-speak. Fail-OPEN: the mint itself
-  // is cheap and the audio-budget gate (which fails CLOSED) already guards
-  // real spend — blocking all voice on a Supabase blip is worse than
-  // letting a few extra mints through. NOT in BILLING_IMPACTING_ENDPOINTS.
-  | 'agent-voice-session'
   // Sick-callout coverage flow (feature #6, 2026-05-24). Each entry point
   // gets its own bucket so a runaway in one channel doesn't lock the
   // others. Caps tuned to "this is a person tapping a button" — anything
@@ -470,16 +452,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // redemptions and decide when the in-flight SMS drain is complete.
   // 30/hr per IP — well above any single phone's realistic re-tap rate.
   'housekeeper-log-legacy-token': 30,
-  // Comms-voice audit P4 (2026-05-22) — TTS narration cap per user/hour.
-  // Real walkthroughs play 5–15 narrations; 30/hr is "do the full
-  // walkthrough twice with retries" headroom. Catches runaway clients
-  // long before the $5 daily budget cap trips. Easy to bump if a real
-  // user hits it.
-  'agent-tts-speak':             30,
-  // Voice-session mint per user/hour. A real user opens voice a handful of
-  // times an hour; 20/hr is generous headroom while bounding signed-URL /
-  // metered-session spam. Keyed on accountId. Fail-open (not billing-set).
-  'agent-voice-session':         20,
   // Sick-callout buckets — see RateLimitEndpoint union comment for rationale.
   'callout-housekeeper':          10,
   'callout-manager':              30,
@@ -735,11 +707,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'test-sms-flow',
   // Resend transactional email (per-recipient charge).
   'email-transactional',
-  // Comms-voice audit P4 (2026-05-22) — ElevenLabs TTS billed per char.
-  // MUST be in this set so an RPC failure fails CLOSED (denies the call).
-  // Without this, a Supabase blip would let a runaway client bypass the
-  // cap until the daily budget tripped.
-  'agent-tts-speak',
   // Codex review 2026-05-24 (Probe 10) — sick-callout report endpoints
   // fan out Twilio SMS to every affected housekeeper plus the manager
   // via sendCalloutNotifications. A rate-limit RPC failure would let a

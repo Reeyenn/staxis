@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Volume2, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks } from 'lucide-react';
+import { Wifi, Users, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks } from 'lucide-react';
 import { useCan } from '@/lib/capabilities/useCan';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
 import { T, fonts } from '@/app/staff/_components/_tokens';
@@ -23,7 +23,6 @@ export default function SettingsPage() {
   // personal preference and stays visible to everyone.
   const allSections: { href: string; icon: typeof Wifi; label: string; desc: string; cap?: CapabilityKey }[] = [
     { href:'/settings/pms', icon:Wifi, label:t('pmsConnection', lang), desc: lang === 'es' ? 'Sincronización automática con tu sistema de gestión hotelera' : 'Auto-sync data from your property management system', cap:'manage_settings' },
-    { href:'/settings/voice', icon: Volume2, label: lang === 'es' ? 'Voz' : 'Voice', desc: lang === 'es' ? 'Activa o desactiva las respuestas habladas de Staxis' : 'Tune how Staxis listens and speaks' },
     { href:'/settings/reports', icon:BarChart3, label: lang === 'es' ? 'Reportes' : 'Reports', desc: lang === 'es' ? 'Genera, exporta y programa reportes cuando los necesites' : 'Run, export, and schedule reports on demand', cap:'run_reports' },
     { href:'/settings/checklists', icon:ListChecks, label: t('checklistsTitle', lang), desc: t('checklistsCardDesc', lang), cap:'manage_checklists' },
     { href:'/settings/accounts', icon:Users, label: lang === 'es' ? 'Cuenta y equipo' : 'Account & Team', desc: lang === 'es' ? 'Tu perfil, contraseña y cuentas del equipo' : 'Your profile, password, and team accounts', cap:'manage_team' },
