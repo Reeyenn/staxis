@@ -7,9 +7,8 @@ import {
   addInventoryItem,
   updateInventoryItem,
   deleteInventoryItem,
-  addInventoryDiscard,
 } from '@/lib/db';
-import type { InventoryItem, InventoryCategory, InventoryDiscardReason } from '@/types';
+import type { InventoryItem, InventoryCategory } from '@/types';
 import type { Vendor } from '@/lib/ordering/types';
 
 import { T, fonts, type InvCat } from '../tokens';
@@ -57,27 +56,18 @@ function aisStrings(lang: Lang) {
       vendor: 'Vendor',
       supplier: 'Supplier',
       leadDays: 'Lead days',
-      notes: 'Notes (optional)',
-      notesPh: 'Anything worth remembering',
       saveFailed: 'Saving the item failed. Please try again.',
       confirmRemove: (n: string) => `Remove "${n}" from inventory?`,
       couldNotRemove: 'Could not remove the item.',
-      // Write-off (waste) section.
-      writeOff: 'Write off waste',
-      writeOffHint: 'Removes damaged / lost stock so it isn’t counted as usage.',
-      writeOffQty: 'Quantity',
-      writeOffReason: 'Reason',
-      writeOffNotes: 'Note (optional)',
-      writeOffNotesPh: 'e.g. water-damaged case',
-      writeOffBtn: 'Write off',
-      writingOff: 'Writing off…',
-      writeOffDone: 'Written off',
-      writeOffFailed: 'Could not write off. Please try again.',
-      reasonStained: 'Stained',
-      reasonDamaged: 'Damaged',
-      reasonLost: 'Lost',
-      reasonTheft: 'Theft',
-      reasonOther: 'Other',
+      // Field tooltips (hover the ⓘ) — one plain line each.
+      tipName: 'What you call this item.',
+      tipCategory: 'Which team uses it — housekeeping, maintenance, or food & beverage.',
+      tipOnHand: 'How many you have right now.',
+      tipParLevel: 'The amount you want to keep in stock. Below it means it’s time to reorder.',
+      tipUnit: 'How you count it — each, case, roll, bottle, etc.',
+      tipUnitCost: 'What one unit costs you to buy.',
+      tipVendor: 'Who you order this from.',
+      tipLeadDays: 'Days from placing an order to it arriving.',
     },
     es: {
       editItem: 'Editar artículo',
@@ -100,27 +90,18 @@ function aisStrings(lang: Lang) {
       vendor: 'Proveedor',
       supplier: 'Proveedor',
       leadDays: 'Días de entrega',
-      notes: 'Notas (opcional)',
-      notesPh: 'Algo que valga la pena recordar',
       saveFailed: 'No se pudo guardar el artículo. Inténtalo de nuevo.',
       confirmRemove: (n: string) => `¿Quitar "${n}" del inventario?`,
       couldNotRemove: 'No se pudo quitar el artículo.',
-      // Write-off (waste) section.
-      writeOff: 'Dar de baja (merma)',
-      writeOffHint: 'Quita el stock dañado / perdido para que no cuente como uso.',
-      writeOffQty: 'Cantidad',
-      writeOffReason: 'Motivo',
-      writeOffNotes: 'Nota (opcional)',
-      writeOffNotesPh: 'ej. caja dañada por agua',
-      writeOffBtn: 'Dar de baja',
-      writingOff: 'Dando de baja…',
-      writeOffDone: 'Dado de baja',
-      writeOffFailed: 'No se pudo dar de baja. Inténtalo de nuevo.',
-      reasonStained: 'Manchado',
-      reasonDamaged: 'Dañado',
-      reasonLost: 'Perdido',
-      reasonTheft: 'Robo',
-      reasonOther: 'Otro',
+      // Tooltips de cada campo (pasa el cursor sobre la ⓘ) — una línea simple.
+      tipName: 'Cómo llamas a este artículo.',
+      tipCategory: 'Qué equipo lo usa — limpieza, mantenimiento o alimentos y bebidas.',
+      tipOnHand: 'Cuántos tienes en este momento.',
+      tipParLevel: 'La cantidad que quieres mantener en stock. Por debajo, toca volver a pedir.',
+      tipUnit: 'Cómo lo cuentas — unidad, caja, rollo, botella, etc.',
+      tipUnitCost: 'Lo que te cuesta comprar una unidad.',
+      tipVendor: 'A quién le pides este artículo.',
+      tipLeadDays: 'Días desde que haces el pedido hasta que llega.',
     },
   }[lang];
 }
@@ -149,15 +130,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
   const [vendorId, setVendorId] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [leadDays, setLeadDays] = useState<string>('3');
-  const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
-
-  // Write-off (waste) sub-form — edit mode only.
-  const [woQty, setWoQty] = useState('');
-  const [woReason, setWoReason] = useState<InventoryDiscardReason>('damaged');
-  const [woNotes, setWoNotes] = useState('');
-  const [woSaving, setWoSaving] = useState(false);
-  const [woDone, setWoDone] = useState(false);
 
   // Load real vendor records so an item can link to one (vendor_name stays as
   // the free-text fallback). Management-gated API → non-managers just get the
@@ -173,11 +146,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
 
   useEffect(() => {
     if (!open) return;
-    // Reset the write-off sub-form whenever the sheet opens or switches items.
-    setWoQty('');
-    setWoReason('damaged');
-    setWoNotes('');
-    setWoDone(false);
     if (item) {
       setName(item.name);
       setCategory(item.category as InvCat);
@@ -189,7 +157,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setVendor(item.vendorName || '');
       setVendorId(item.vendorId ?? null);
       setLeadDays(String(item.reorderLeadDays ?? 3));
-      setNotes(item.notes || '');
     } else {
       setName('');
       setCategory(defaultCategory);
@@ -201,7 +168,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setVendor('');
       setVendorId(null);
       setLeadDays('3');
-      setNotes('');
     }
   }, [open, item, defaultCategory]);
 
@@ -219,7 +185,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         vendorName: vendor.trim() || undefined,
         vendorId: vendorId ?? null,
         reorderLeadDays: leadDays ? Number(leadDays) : undefined,
-        notes: notes.trim() || undefined,
       };
       if (isEdit && item) {
         // Metadata edit: only send currentStock if the user deliberately
@@ -266,58 +231,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
     }
   };
 
-  const woQtyNum = Number(woQty);
-  const woValid = Number.isFinite(woQtyNum) && woQtyNum > 0;
-
-  const handleWriteOff = async () => {
-    if (!user || !activePropertyId || !item || woSaving || !woValid) return;
-    setWoSaving(true);
-    setWoDone(false);
-    try {
-      // Snapshot the unit cost from the item edit form (may differ from the
-      // stored value if the user just changed it) so cost_value is truthful.
-      const uc = unitCost ? Number(unitCost) : (item.unitCost ?? undefined);
-      const res = await addInventoryDiscard(user.uid, activePropertyId, {
-        propertyId: activePropertyId,
-        itemId: item.id,
-        itemName: item.name,
-        quantity: woQtyNum,
-        reason: woReason,
-        unitCost: uc,
-        costValue: uc != null ? Math.round(uc * woQtyNum * 100) / 100 : undefined,
-        discardedAt: new Date(),
-        discardedBy: user.displayName || user.username || undefined,
-        notes: woNotes.trim() || undefined,
-      });
-      // Reflect the decremented stock in the on-hand field. Use the DB's
-      // AUTHORITATIVE post-decrement value (res.newStock) — NOT a number
-      // derived from the editable on-hand field, which may have drifted from
-      // the stored value and could otherwise overwrite real stock on a later
-      // Save. Fall back to the stored item value if the read-back failed.
-      const nextStock = res.newStock ?? Math.max(0, (item.currentStock ?? 0) - woQtyNum);
-      setCurrentStock(String(nextStock));
-      // The DB already holds nextStock after the write-off — rebase so a
-      // later Save doesn't re-send it as a "stock change" (fake count).
-      stockBaselineRef.current = nextStock;
-      setWoQty('');
-      setWoNotes('');
-      setWoDone(true);
-    } catch (err) {
-      console.error('[add-item] write-off failed', err);
-      alert(ais.writeOffFailed);
-    } finally {
-      setWoSaving(false);
-    }
-  };
-
-  const reasonOptions: Array<{ value: InventoryDiscardReason; label: string }> = [
-    { value: 'damaged', label: ais.reasonDamaged },
-    { value: 'stained', label: ais.reasonStained },
-    { value: 'lost', label: ais.reasonLost },
-    { value: 'theft', label: ais.reasonTheft },
-    { value: 'other', label: ais.reasonOther },
-  ];
-
   return (
     <Overlay
       open={open}
@@ -342,7 +255,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <Field label={ais.name}>
+        <Field label={ais.name} tip={ais.tipName}>
           <input
             type="text"
             value={name}
@@ -352,7 +265,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
           />
         </Field>
 
-        <Field label={ais.category}>
+        <Field label={ais.category} tip={ais.tipCategory}>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {CATS.map((c) => {
               const active = category === c;
@@ -381,7 +294,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         </Field>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-          <Field label={ais.onHand}>
+          <Field label={ais.onHand} tip={ais.tipOnHand}>
             <input
               type="number"
               min="0"
@@ -393,7 +306,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               style={inputStyle}
             />
           </Field>
-          <Field label={ais.parLevel}>
+          <Field label={ais.parLevel} tip={ais.tipParLevel}>
             <input
               type="number"
               min="0"
@@ -403,7 +316,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               style={inputStyle}
             />
           </Field>
-          <Field label={ais.unit}>
+          <Field label={ais.unit} tip={ais.tipUnit}>
             <input
               type="text"
               value={unit}
@@ -415,7 +328,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
-          <Field label={ais.unitCost}>
+          <Field label={ais.unitCost} tip={ais.tipUnitCost}>
             <input
               type="number"
               min="0"
@@ -427,7 +340,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               style={inputStyle}
             />
           </Field>
-          <Field label={ais.vendor}>
+          <Field label={ais.vendor} tip={ais.tipVendor}>
             {vendors.length > 0 && (
               <select
                 value={vendorId ?? ''}
@@ -455,7 +368,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               style={inputStyle}
             />
           </Field>
-          <Field label={ais.leadDays}>
+          <Field label={ais.leadDays} tip={ais.tipLeadDays}>
             <input
               type="number"
               min="0"
@@ -466,106 +379,98 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
             />
           </Field>
         </div>
-
-        <Field label={ais.notes}>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={2}
-            placeholder={ais.notesPh}
-            style={{
-              ...inputStyle,
-              height: 'auto',
-              padding: '10px 14px',
-              resize: 'vertical',
-              lineHeight: 1.5,
-            }}
-          />
-        </Field>
-
-        {/* Write-off (waste) — edit mode only. Logs a discard so thrown-away
-            stock isn't learned as consumption, and drops the on-hand count. */}
-        {isEdit && (
-          <div
-            style={{
-              marginTop: 4,
-              paddingTop: 16,
-              borderTop: `1px solid ${T.rule}`,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-            }}
-          >
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-              <Caps>{ais.writeOff}</Caps>
-              <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, lineHeight: 1.4 }}>
-                {ais.writeOffHint}
-              </span>
-            </div>
-
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.4fr', gap: 12 }}>
-              <Field label={ais.writeOffQty}>
-                <input
-                  type="number"
-                  min="0"
-                  inputMode="decimal"
-                  value={woQty}
-                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) { setWoQty(v); setWoDone(false); } }}
-                  placeholder="0"
-                  style={inputStyle}
-                />
-              </Field>
-              <Field label={ais.writeOffReason}>
-                <select
-                  value={woReason}
-                  onChange={(e) => { setWoReason(e.target.value as InventoryDiscardReason); setWoDone(false); }}
-                  style={inputStyle}
-                >
-                  {reasonOptions.map((r) => (
-                    <option key={r.value} value={r.value}>{r.label}</option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-
-            <Field label={ais.writeOffNotes}>
-              <input
-                type="text"
-                value={woNotes}
-                onChange={(e) => { setWoNotes(e.target.value); setWoDone(false); }}
-                placeholder={ais.writeOffNotesPh}
-                style={inputStyle}
-              />
-            </Field>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-              <Btn
-                variant="ghost"
-                size="md"
-                onClick={handleWriteOff}
-                disabled={woSaving || saving || !woValid}
-                style={{ color: T.warm, borderColor: T.warm }}
-              >
-                {woSaving ? ais.writingOff : ais.writeOffBtn}
-              </Btn>
-              {woDone && (
-                <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, fontWeight: 500 }}>
-                  {ais.writeOffDone}
-                </span>
-              )}
-            </div>
-          </div>
-        )}
       </div>
     </Overlay>
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, tip, children }: { label: string; tip?: string; children: React.ReactNode }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <Caps>{label}</Caps>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Caps>{label}</Caps>
+        {tip && <InfoTip text={tip} />}
+      </div>
       {children}
     </div>
+  );
+}
+
+// A tiny ⓘ that reveals a plain-language tooltip on hover/focus. The bubble is
+// position:fixed (measured off the icon) so it never clips inside the sheet's
+// scroll box — the Overlay scrim's backdrop-filter makes it the containing
+// block, and the scrim spans the viewport, so these are effectively viewport
+// coordinates (same trick as the StaxisMenu popover).
+function InfoTip({ text }: { text: string }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const show = () => {
+    const r = ref.current?.getBoundingClientRect();
+    if (r) setPos({ top: r.top - 8, left: r.left + r.width / 2 });
+  };
+  const hide = () => setPos(null);
+  return (
+    <span style={{ display: 'inline-flex' }}>
+      <button
+        ref={ref}
+        type="button"
+        onMouseEnter={show}
+        onMouseLeave={hide}
+        onFocus={show}
+        onBlur={hide}
+        onClick={(e) => e.preventDefault()}
+        aria-label={text}
+        style={{
+          width: 15,
+          height: 15,
+          flex: 'none',
+          borderRadius: 999,
+          border: `1px solid ${T.rule}`,
+          background: 'transparent',
+          color: T.ink3,
+          cursor: 'help',
+          padding: 0,
+          fontFamily: fonts.serif ?? fonts.sans,
+          fontSize: 10,
+          fontStyle: 'italic',
+          fontWeight: 700,
+          lineHeight: 1,
+          textTransform: 'none',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        i
+      </button>
+      {pos && (
+        <span
+          role="tooltip"
+          style={{
+            position: 'fixed',
+            top: pos.top,
+            left: pos.left,
+            transform: 'translate(-50%, -100%)',
+            zIndex: 2200,
+            width: 'max-content',
+            maxWidth: 240,
+            background: T.ink,
+            color: T.bg,
+            borderRadius: 9,
+            padding: '8px 11px',
+            fontFamily: fonts.sans,
+            fontSize: 12,
+            fontWeight: 400,
+            lineHeight: 1.45,
+            letterSpacing: 0,
+            textTransform: 'none',
+            boxShadow: '0 10px 30px -10px rgba(31,42,32,0.45)',
+            pointerEvents: 'none',
+          }}
+        >
+          {text}
+        </span>
+      )}
+    </span>
   );
 }
