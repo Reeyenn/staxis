@@ -20,7 +20,6 @@ import { HomeHubView, type HubTile } from '@/components/concourse/HomeHubView';
 import { QueueView } from '@/components/concourse/QueueView';
 import { AskHeroView } from '@/components/concourse/AskHero';
 import { CxStyle } from '@/components/concourse/concourse-css';
-import { CxIcon } from '@/components/concourse/icons';
 import { SAMPLE_DECISIONS, QUEUE_COUNT_EVENT } from '@/components/concourse/sample-decisions';
 
 type Lang = 'en' | 'es';
@@ -119,7 +118,6 @@ export default function ConcourseDemoPage() {
         // NOT keyed by lang — a language flip must re-render strings in
         // place, never reset approve/dismiss state (badge would desync).
         <div style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
-          <DemoHomeBtn es={es} onHome={() => setView('home')} />
           <QueueView lang={lang} />
         </div>
       ) : (
@@ -128,7 +126,6 @@ export default function ConcourseDemoPage() {
           es={es}
           title={view === 'settings' ? (es ? 'Configuración' : 'Settings') : (es ? DEMO_TILES.find(s => s.key === view)!.es : DEMO_TILES.find(s => s.key === view)!.en)}
           isSettings={view === 'settings'}
-          onHome={() => setView('home')}
         />
       )}
 
@@ -156,19 +153,8 @@ export default function ConcourseDemoPage() {
   );
 }
 
-function DemoHomeBtn({ es, onHome }: { es: boolean; onHome: () => void }) {
-  return (
-    <div style={{ maxWidth: '880px', margin: '0 auto', padding: '22px 24px 0', width: '100%', boxSizing: 'border-box' }}>
-      <button type="button" className="cx-homebtn" onClick={onHome}>
-        <CxIcon name="back" size={13} />
-        {es ? 'Inicio' : 'Home'}
-      </button>
-    </div>
-  );
-}
-
-function DemoSectionPage({ es, title, isSettings, onHome }: {
-  es: boolean; title: string; isSettings: boolean; onHome: () => void;
+function DemoSectionPage({ es, title, isSettings }: {
+  es: boolean; title: string; isSettings: boolean;
 }) {
   const stats = isSettings ? [] : [
     { k: es ? 'Ocupación' : 'Occupancy', v: '87%', d: '+4 vs LW', tone: 'ok' },
@@ -177,10 +163,6 @@ function DemoSectionPage({ es, title, isSettings, onHome }: {
   ];
   return (
     <div className="cx-page cx-swap" style={{ paddingTop: '22px' }}>
-      <button type="button" className="cx-homebtn" onClick={onHome}>
-        <CxIcon name="back" size={13} />
-        {es ? 'Inicio' : 'Home'}
-      </button>
       <div className="cx-ptitle">{title}</div>
       <div className="cx-psub">
         {es ? 'Contenido de muestra — la app real muestra las páginas del módulo aquí.' : 'Sample content — the real app shows the module pages here.'}

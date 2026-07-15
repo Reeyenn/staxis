@@ -107,8 +107,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         flexDirection: 'column',
         minHeight: 0,
       }}>
-        {/* The Home button now lives in the Concourse bar row (left of the
-            pills), so it no longer takes its own line here. */}
+        {/* Home navigation lives in the leftmost Concourse bar pill. */}
         {sectionOff ? (
           <div style={{
             display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',

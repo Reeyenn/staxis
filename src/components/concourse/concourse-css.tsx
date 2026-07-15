@@ -40,9 +40,8 @@ const CX_CSS = `
 .cx-barwrap{display:flex;padding:18px 16px 0;position:sticky;top:18px;z-index:40;
   overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
 .cx-barwrap::-webkit-scrollbar{display:none;}
-/* [Home button + bar] centered as a group; the Home button stays its own
-   distinct pill just left of the bar (gap), not a tab inside it. margin:0 auto
-   collapses on overflow so it still scrolls from the left on mobile. */
+/* Keep the bar centered; margin collapses on overflow so it still scrolls
+   from the left on mobile. */
 .cx-barcluster{margin:0 auto;display:flex;align-items:center;gap:10px;flex-shrink:0;}
 .cx-bar{display:flex;align-items:center;gap:3px;margin:0 auto;flex-shrink:0;
   background:rgba(255,255,255,.85);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
@@ -59,7 +58,7 @@ const CX_CSS = `
   /* leave = soft release: slower fade, tiny linger so a sweep leaves a gentle
      trail instead of hard on/off flashing */
   transition:background .45s ease .05s,color .45s ease .05s,box-shadow .45s ease .05s;}
-/* Label opens on hover (and stays open on the active page).
+/* Label opens on hover (and stays open on the active page or contextual Home).
    The 0fr→1fr grid trick animates to the label's NATURAL width — no
    max-width dead zone, so the motion has no end-of-track snap. */
 .cx-pill .cx-labw{display:grid;grid-template-columns:0fr;opacity:0;
@@ -67,7 +66,7 @@ const CX_CSS = `
 .cx-pill .cx-lab{min-width:0;overflow:hidden;white-space:nowrap;display:block;
   padding:0 4px 0 7px;font-size:12px;font-weight:600;}
 .cx-pill.cx-active{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
-.cx-pill.cx-active .cx-labw{grid-template-columns:1fr;opacity:1;}
+.cx-pill.cx-active .cx-labw,.cx-pill.cx-context-home .cx-labw{grid-template-columns:1fr;opacity:1;}
 /* Hover takeover — instant open. Pills sit edge-to-edge (bar gap 3px) so
    moving along the bar hands hover from pill to pill with no dead zone. */
 .cx-pill:hover{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);
@@ -169,10 +168,6 @@ const CX_CSS = `
 .cx-tile:hover .cx-tile-status.cx-ok{color:#5C7A60;}
 
 /* ── Section-page chrome ── */
-.cx-homebtn{display:inline-flex;align-items:center;gap:7px;height:36px;padding:0 15px;border-radius:999px;
-  border:1px solid rgba(31,35,28,.11);background:#fff;color:#5C625C;font-size:12.5px;font-weight:600;
-  cursor:pointer;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
-.cx-homebtn:hover{color:#1F231C;}
 .cx-page{max-width:880px;margin:0 auto;padding:22px 24px 130px;width:100%;box-sizing:border-box;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .cx-ptitle{font-size:26px;font-weight:600;color:#1F231C;letter-spacing:-0.02em;margin-top:18px;}

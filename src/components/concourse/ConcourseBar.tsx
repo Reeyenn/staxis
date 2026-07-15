@@ -240,8 +240,8 @@ export function ConcourseBar() {
         homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
         settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
         avatar={avatar}
-        // Home button lives in the bar row now (left of the pills) — on every
-        // screen except the hub itself.
+        // Away from the hub, the leftmost Staxis pill becomes a back-to-Home
+        // control without changing the bar's visual language.
         showHome={pathname !== '/home'}
       />
       <PhoneHandoffDialog

@@ -31,9 +31,8 @@ export interface ConcourseBarViewProps {
   settingsLabel: string;
   /** Avatar slot — the connected bar passes its dropdown, the demo a plain circle. */
   avatar?: React.ReactNode;
-  /** Show a labelled Home button in the empty space left of the centered bar
-   *  (every screen except the /home hub). Replaces the old full-width row that
-   *  used to sit under the bar — reclaims that vertical line. */
+  /** Replace the Staxis mark with a labelled back-to-Home control while away
+   *  from the Home hub. The control stays in the same leftmost bar pill. */
   showHome?: boolean;
 }
 
@@ -43,20 +42,20 @@ export function ConcourseBarView({
   return (
     <div className="cx-barwrap">
       <CxStyle />
-      {/* Home is its own distinct button sitting just left of the bar (NOT a tab
-          inside it), on every screen except the /home hub. The cluster keeps
-          [Home + bar] centered as a group. */}
       <div className="cx-barcluster">
-        {showHome && (
-          <button type="button" className="cx-homebtn" onClick={onLogo} aria-label={homeLabel}>
-            <CxIcon name="back" size={13} />
-            {homeLabel}
-          </button>
-        )}
         <div className="cx-bar">
-        {/* Logo is a pill like the rest: same green hover pull-out, word = "Home". */}
-        <button type="button" className="cx-pill" onClick={onLogo} aria-label={homeLabel} title={homeLabel}>
-          <CxLogo size={19} color="currentColor" />
+        {/* The same leftmost pill is the Staxis mark on Home and a persistent
+            back-to-Home label everywhere else. */}
+        <button
+          type="button"
+          className={`cx-pill${showHome ? ' cx-context-home' : ''}`}
+          onClick={onLogo}
+          aria-label={homeLabel}
+          title={homeLabel}
+        >
+          {showHome
+            ? <CxIcon name="back" size={13} />
+            : <CxLogo size={19} color="currentColor" />}
           <span className="cx-labw" aria-hidden>
             <span className="cx-lab">{homeLabel}</span>
           </span>
