@@ -25,7 +25,7 @@
  *   maintenance    — work_orders not yet 'resolved' (legacy enum:
  *                    submitted/assigned/in_progress all mean open;
  *                    severity 'urgent' is the "high" bucket)
- *   inventory      — counted inventory current_stock vs par_level (70/30 rule)
+ *   inventory      — counted inventory current_stock vs par_level (same rule as Inventory)
  *   staff          — scheduled_shifts assigned for today (kind='shift')
  *   financials     — pms_revenue_daily via getMonthRevenue() (the same
  *                    single source of truth Dashboard + Financials use)

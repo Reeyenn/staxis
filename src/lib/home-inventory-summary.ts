@@ -15,7 +15,9 @@ export interface HomeInventorySummaryRow {
 /**
  * Turn inventory rows into the short Home-tile status without pretending an
  * uncounted catalog is out of stock. A brand-new hotel's zeroes mean
- * "unknown" until the first physical count, not "critical".
+ * "unknown" until the first physical count, not "critical". Counted rows use
+ * the Inventory tab's existing rule: below 50% of par is critical, below par
+ * is low, and at/above par is healthy.
  */
 export function summarizeHomeInventory(
   rows: readonly HomeInventorySummaryRow[],
@@ -38,8 +40,8 @@ export function summarizeHomeInventory(
     if (!Number.isFinite(stock) || !Number.isFinite(par) || par <= 0) continue;
     comparable++;
     const ratio = stock / par;
-    if (ratio <= 0.3) critical++;
-    else if (ratio < 0.7) low++;
+    if (ratio < 0.5) critical++;
+    else if (ratio < 1) low++;
   }
 
   if (critical > 0) {

@@ -33,7 +33,19 @@ describe('summarizeHomeInventory', () => {
       { current_stock: 5, par_level: 10, last_counted_at: '2026-07-15T12:00:00Z' },
     ]).tone, 'warn');
     assert.equal(summarizeHomeInventory([
-      { current_stock: 8, par_level: 10, last_counted_at: '2026-07-15T12:00:00Z' },
+      { current_stock: 10, par_level: 10, last_counted_at: '2026-07-15T12:00:00Z' },
+    ]).tone, 'ok');
+  });
+
+  test('matches Inventory boundaries at half-par and par', () => {
+    assert.equal(summarizeHomeInventory([
+      { current_stock: 49, par_level: 100, last_counted_at: '2026-07-15T12:00:00Z' },
+    ]).tone, 'bad');
+    assert.equal(summarizeHomeInventory([
+      { current_stock: 50, par_level: 100, last_counted_at: '2026-07-15T12:00:00Z' },
+    ]).tone, 'warn');
+    assert.equal(summarizeHomeInventory([
+      { current_stock: 100, par_level: 100, last_counted_at: '2026-07-15T12:00:00Z' },
     ]).tone, 'ok');
   });
 
