@@ -71,7 +71,8 @@ async function resolveInventoryItem(propertyId: string, query: string): Promise<
   const { data, error } = await supabaseAdmin
     .from('inventory')
     .select(INV_SELECT)
-    .eq('property_id', propertyId);
+    .eq('property_id', propertyId)
+    .is('archived_at', null);
   if (error || !data) return { kind: 'none' };
   const rows = data as unknown as InvItemRow[];
   const q = raw.toLowerCase();
@@ -110,7 +111,8 @@ registerTool<GetLowStockArgs>({
     let q = supabaseAdmin
       .from('inventory')
       .select(INV_SELECT)
-      .eq('property_id', ctx.propertyId);
+      .eq('property_id', ctx.propertyId)
+      .is('archived_at', null);
     if (cat) q = q.eq('category', cat);
     const { data, error } = await q;
     if (error) return { ok: false, error: 'Failed to load inventory.' };
@@ -205,15 +207,23 @@ registerTool<AdjustStockArgs>({
 
     const nowIso = new Date().toISOString();
 
-    // 1) Adjust the on-hand count. Stamp last_counted_at (a count was recorded) —
-    //    same rule the inventory db helper enforces.
+    // 1) Save the physical count and its audit row in ONE transaction. The
+    //    request UUID makes an ambiguous retry safe: the database receipt and
+    //    both operational writes commit together, or none of them do.
     if (wantsCount && count !== null) {
-      const { error: updErr } = await supabaseAdmin
-        .from('inventory')
-        .update({ current_stock: count, last_counted_at: nowIso, updated_at: nowIso })
-        .eq('property_id', ctx.propertyId)
-        .eq('id', item.id);
-      if (updErr) return { ok: false, error: 'Failed to update the stock count.' };
+      const { error: countErr } = await supabaseAdmin.rpc('staxis_save_inventory_count', {
+        p_property_id: ctx.propertyId,
+        p_request_id: crypto.randomUUID(),
+        p_counted_at: nowIso,
+        p_counted_by: ctx.user.displayName || ctx.user.username || 'team',
+        p_rows: [{
+          item_id: item.id,
+          expected_stock: Number(item.current_stock ?? 0),
+          counted_stock: count,
+          notes: 'Counted via Staxis assistant',
+        }],
+      });
+      if (countErr) return { ok: false, error: 'Failed to update the stock count.' };
     }
 
     // 2) Record an order placed: append to the restock ledger + stamp the item's
@@ -236,7 +246,8 @@ registerTool<AdjustStockArgs>({
           .from('inventory')
           .update({ last_ordered_at: nowIso, updated_at: nowIso })
           .eq('property_id', ctx.propertyId)
-          .eq('id', item.id);
+          .eq('id', item.id)
+          .is('archived_at', null);
       }
     }
 

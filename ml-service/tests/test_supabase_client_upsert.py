@@ -73,3 +73,39 @@ def test_upsert_omits_on_conflict_when_not_passed():
         "When the caller doesn't pass on_conflict, the wrapper must not "
         "inject it (None vs missing is meaningful to supabase-py)."
     )
+
+
+def _configure_select_query(fake_table):
+    query = MagicMock()
+    response = MagicMock()
+    response.data = []
+    fake_table.select.return_value = query
+    query.eq.return_value = query
+    query.is_.return_value = query
+    query.limit.return_value = query
+    query.execute.return_value = response
+    return query
+
+
+def test_fetch_many_translates_none_filter_to_sql_is_null():
+    wrapper, fake_table = _build_wrapper_with_fake_client()
+    query = _configure_select_query(fake_table)
+
+    wrapper.fetch_many(
+        "inventory",
+        filters={"property_id": "p1", "archived_at": None},
+        limit=500,
+    )
+
+    query.eq.assert_called_once_with("property_id", "p1")
+    query.is_.assert_called_once_with("archived_at", "null")
+
+
+def test_fetch_one_translates_none_filter_to_sql_is_null():
+    wrapper, fake_table = _build_wrapper_with_fake_client()
+    query = _configure_select_query(fake_table)
+
+    wrapper.fetch_one("inventory", filters={"id": "i1", "archived_at": None})
+
+    query.eq.assert_called_once_with("id", "i1")
+    query.is_.assert_called_once_with("archived_at", "null")

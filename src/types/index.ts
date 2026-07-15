@@ -255,6 +255,14 @@ export type InventoryCategory = 'housekeeping' | 'maintenance' | 'breakfast';
 export interface InventoryItem {
   id: string;
   propertyId: string;
+  /** Immutable provenance recorded by Postgres for new rows. Legacy rows may
+   * be null because inventory predates item-level authorship tracking. */
+  createdAt?: Date | null;
+  createdBy?: string | null;
+  /** Soft-archive provenance. Archived items stay in the database so their
+   * count, delivery, discard, and purchase-order history remains intact. */
+  archivedAt?: Date | null;
+  archivedBy?: string | null;
   name: string;
   category: InventoryCategory;
   /**
@@ -289,6 +297,8 @@ export interface InventoryItem {
 export interface InventoryCount {
   id: string;
   propertyId: string;
+  /** Shared request UUID for every row written by one atomic Count Mode save. */
+  countSessionId?: string;
   itemId: string;
   itemName: string;             // snapshotted (survives item deletion)
   countedStock: number;

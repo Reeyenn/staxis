@@ -50,7 +50,11 @@ export async function addInventoryOrder(
     if (order.vendorName) stampRow.vendor_name = order.vendorName;
     if (order.unitCost != null) stampRow.unit_cost = order.unitCost;
     const { error: stampErr } = await supabase
-      .from('inventory').update(stampRow).eq('id', order.itemId);
+      .from('inventory')
+      .update(stampRow)
+      .eq('id', order.itemId)
+      .eq('property_id', pid)
+      .is('archived_at', null);
     if (stampErr) {
       logErr('addInventoryOrder: stamp update failed (non-fatal)', stampErr);
     }

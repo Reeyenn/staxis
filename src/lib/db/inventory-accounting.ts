@@ -113,7 +113,8 @@ export async function getInventoryAccountingSummary(
   const { data: itemsRaw, error: itemsErr } = await client
     .from('inventory')
     .select('id, category, current_stock, unit_cost')
-    .eq('property_id', pid);
+    .eq('property_id', pid)
+    .is('archived_at', null);
   if (itemsErr) { logErr('accounting/items', itemsErr); throw itemsErr; }
   const items = (itemsRaw ?? []) as InventoryItemRow[];
 

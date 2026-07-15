@@ -18,9 +18,12 @@ export function subscribeToInventory(
     async () => {
       const columns = includeFinancials
         ? '*'
-        : 'id,property_id,name,category,custom_category_id,current_stock,par_level,reorder_at,unit,notes,updated_at,usage_per_checkout,usage_per_stayover,reorder_lead_days,vendor_name,vendor_id,last_ordered_at,last_alerted_at,last_counted_at,pack_size,case_unit';
+        : 'id,property_id,created_at,created_by,archived_at,archived_by,name,category,custom_category_id,current_stock,par_level,reorder_at,unit,notes,updated_at,usage_per_checkout,usage_per_stayover,reorder_lead_days,vendor_name,vendor_id,last_ordered_at,last_alerted_at,last_counted_at,pack_size,case_unit';
       const { data, error } = await supabase
-        .from('inventory').select(columns).eq('property_id', pid);
+        .from('inventory')
+        .select(columns)
+        .eq('property_id', pid)
+        .is('archived_at', null);
       if (error) throw error;
       return asRecordRows(data).map(fromInventoryRow);
     },
@@ -31,7 +34,10 @@ export function subscribeToInventory(
   );
 }
 
-type InventoryItemPatch = Omit<Partial<InventoryItem>, 'unitCost' | 'vendorName'> & {
+type InventoryItemPatch = Omit<
+  Partial<InventoryItem>,
+  'unitCost' | 'vendorName' | 'currentStock' | 'lastCountedAt' | 'lastOrderedAt'
+> & {
   unitCost?: number | null;
   vendorName?: string | null;
 };
@@ -39,6 +45,7 @@ type InventoryItemPatch = Omit<Partial<InventoryItem>, 'unitCost' | 'vendorName'
 export async function addInventoryItem(
   _uid: string, pid: string,
   item: Omit<InventoryItem, 'id' | 'updatedAt'>,
+  requestedId?: string,
 ): Promise<string> {
   // Anchor the estimate window via last_counted_at. Honor an explicit
   // lastCountedAt when the caller provides one (e.g. an invoice scan seeding a
@@ -47,6 +54,7 @@ export async function addInventoryItem(
   // Defaults (currentStock=0, no lastCountedAt) leave it null so the UI shows
   // "Never" instead of "Just now" right after seeding.
   const row: Record<string, unknown> = { ...toInventoryRow({ ...item, propertyId: pid }), property_id: pid };
+  if (requestedId) row.id = requestedId;
   if (item.lastCountedAt instanceof Date) {
     row.last_counted_at = item.lastCountedAt.toISOString();
   } else if (typeof item.currentStock === 'number' && item.currentStock > 0) {
@@ -54,33 +62,54 @@ export async function addInventoryItem(
   }
   const { data: inserted, error } = await supabase
     .from('inventory').insert(row).select('id').single();
-  if (error) { logErr('addInventoryItem', error); throw error; }
+  if (error) {
+    // The Add Item sheet supplies a client UUID and an unguessable marker. A
+    // duplicate-key response on retry means the first insert may have committed
+    // while its response was lost. Treat it as success only when that exact
+    // marked row exists in the same property; every other conflict still fails.
+    if (requestedId && error.code === '23505' && typeof item.notes === 'string') {
+      const { data: existing, error: existingErr } = await supabase
+        .from('inventory')
+        .select('id, notes')
+        .eq('id', requestedId)
+        .eq('property_id', pid)
+        .is('archived_at', null)
+        .maybeSingle();
+      if (existingErr) {
+        // Verification failed after a duplicate response. Its outcome is
+        // ambiguous: keep the durable UUID/payload locked so a later retry can
+        // prove whether this exact row exists instead of clearing the envelope.
+        throw new Error('Could not verify the existing inventory item after retry.');
+      }
+      if (existing?.id === requestedId && (
+        existing.notes === item.notes || existing.notes == null || existing.notes === ''
+      )) {
+        return requestedId;
+      }
+    }
+    logErr('addInventoryItem', error);
+    throw error;
+  }
   return String(inserted.id);
 }
 
 export async function updateInventoryItem(
   _uid: string, pid: string, iid: string, data: InventoryItemPatch,
 ): Promise<void> {
-  // Server-side guarantee: if the caller is changing current_stock, they're
-  // recording a count, so stamp last_counted_at. Metadata edits (vendor, lead
-  // days, usage rates, unit cost, etc.) leave last_counted_at alone — that
-  // way the estimate window stays anchored to the real last count and doesn't
-  // collapse to "now" every time someone tweaks a number.
-  //
-  // Caller can still override by explicitly passing lastCountedAt in the patch
-  // (used by Count Mode bulk save which already wrote a count and may want
-  // to set a uniform timestamp across items).
-  const patch: InventoryItemPatch = { ...data };
-  if ('currentStock' in data && data.currentStock !== undefined && !('lastCountedAt' in data)) {
-    patch.lastCountedAt = new Date();
+  // Stock and its timestamps are ledger-owned. Keeping this helper metadata-
+  // only prevents a future stale caller from accidentally recreating the old
+  // split stock/history write path; Postgres enforces the same boundary.
+  if ('currentStock' in data || 'lastCountedAt' in data || 'lastOrderedAt' in data) {
+    throw new Error('Use an atomic inventory count or delivery operation to change stock.');
   }
   // Scope writes by property_id too (defense-in-depth alongside RLS): a stale
   // item id can't update a row from another property.
   const { data: updated, error } = await supabase
     .from('inventory')
-    .update(toInventoryRow(patch))
+    .update(toInventoryRow(data))
     .eq('id', iid)
     .eq('property_id', pid)
+    .is('archived_at', null)
     .select('id')
     .maybeSingle();
   if (error) { logErr('updateInventoryItem', error); throw error; }
@@ -91,9 +120,32 @@ export async function updateInventoryItem(
   }
 }
 
-export async function deleteInventoryItem(_uid: string, pid: string, iid: string): Promise<void> {
-  const { error } = await supabase.from('inventory').delete().eq('id', iid).eq('property_id', pid);
-  if (error) { logErr('deleteInventoryItem', error); throw error; }
+/**
+ * Hide an item from active inventory without destroying the item row or any
+ * count/delivery/discard/PO history that points at it.
+ *
+ * Both id and property are matched (tenant defense-in-depth), and the active
+ * guard makes retries explicit instead of silently claiming an already
+ * archived or foreign item was changed. The selected row is our affected-row
+ * verification; Supabase updates that match zero rows are otherwise reported
+ * as successful.
+ */
+export async function archiveInventoryItem(uid: string, pid: string, iid: string): Promise<void> {
+  const now = new Date().toISOString();
+  const { data: archived, error } = await supabase
+    .from('inventory')
+    .update({ archived_at: now, archived_by: uid, updated_at: now })
+    .eq('id', iid)
+    .eq('property_id', pid)
+    .is('archived_at', null)
+    .select('id')
+    .maybeSingle();
+  if (error) { logErr('archiveInventoryItem', error); throw error; }
+  if (!archived) {
+    const missing = new Error('Inventory item was not found in active inventory for this property. Refresh and try again.');
+    logErr('archiveInventoryItem', missing);
+    throw missing;
+  }
 }
 
 /**
@@ -116,6 +168,7 @@ export async function fetchInventoryStockByIds(
     .from('inventory')
     .select('id, current_stock')
     .eq('property_id', pid)
+    .is('archived_at', null)
     .in('id', itemIds);
   if (error) { logErr('fetchInventoryStockByIds', error); throw error; }
   const out: Record<string, number> = {};

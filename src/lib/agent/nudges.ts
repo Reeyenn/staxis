@@ -489,7 +489,8 @@ async function checkInventory(propertyId: string): Promise<NudgeDraft[]> {
   const { data, error } = await supabaseAdmin
     .from('inventory')
     .select('name, category, current_stock, reorder_at, unit')
-    .eq('property_id', propertyId);
+    .eq('property_id', propertyId)
+    .is('archived_at', null);
   if (error) {
     // Surface schema errors loudly so we notice if the table changes again.
     console.error('[nudges] inventory query failed', error);

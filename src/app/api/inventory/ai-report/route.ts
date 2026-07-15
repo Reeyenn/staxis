@@ -32,6 +32,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { propertyLocalToday, addDaysInTz } from '@/lib/schedule/local-date';
+import {
+  activeInventoryItemIds,
+  filterInventoryMlRowsToActiveItems,
+} from '@/lib/inventory-ml-active';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -112,6 +116,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           .from('inventory')
           .select('id,name')
           .eq('property_id', propertyId)
+          .is('archived_at', null)
           .limit(2000),
         supabaseAdmin
           .from('model_runs')
@@ -144,16 +149,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         // Most-recent prediction overall — drives lastInferenceAt / stale flag.
         supabaseAdmin
           .from('inventory_rate_predictions')
-          .select('predicted_at')
+          .select('item_id,predicted_at')
           .eq('property_id', propertyId)
           .order('predicted_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
+          .limit(50000),
         supabaseAdmin
           .from('inventory_rate_predictions')
-          .select('property_id', { count: 'exact', head: true })
+          .select('item_id')
           .eq('property_id', propertyId)
-          .gte('predicted_at', sevenDaysAgoIso),
+          .gte('predicted_at', sevenDaysAgoIso)
+          .limit(50000),
         // Robot-data census: which recent days have real checkout/stayover
         // numbers? NULL (or a missing row) = robot gap = every learning
         // window spanning that day is voided. Drives the starvation banner.
@@ -174,17 +179,22 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       ]);
 
     const items = (itemsRes.data ?? []) as Array<{ id: string; name: string }>;
-    const runs = (runsRes.data ?? []) as Array<{
+    const activeItemIds = activeInventoryItemIds(items);
+    const runs = filterInventoryMlRowsToActiveItems((runsRes.data ?? []) as Array<{
       item_id: string | null;
       validation_mae: number | null;
       auto_fill_enabled: boolean | null;
       training_row_count: number | null;
       hyperparameters: Record<string, unknown> | null;
-    }>;
+    }>, activeItemIds);
 
     // Latest prediction per item.
     const predByItem = new Map<string, { rate: number | null; stock: number | null; at: string | null }>();
-    for (const p of (predsRes.data ?? []) as Array<Record<string, unknown>>) {
+    const activePredictions = filterInventoryMlRowsToActiveItems(
+      (predsRes.data ?? []) as Array<Record<string, unknown>>,
+      activeItemIds,
+    );
+    for (const p of activePredictions) {
       const id = String(p.item_id);
       if (predByItem.has(id)) continue;
       predByItem.set(id, {
@@ -349,13 +359,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       gateRatio = gateRatios.reduce((a, b) => a + b, 0) / gateRatios.length;
     }
 
-    const lastInferenceAt = lastPredRes.data?.predicted_at ?? null;
+    const latestActivePredictions = filterInventoryMlRowsToActiveItems(
+      lastPredRes.data ?? [],
+      activeItemIds,
+    );
+    const lastInferenceAt = latestActivePredictions[0]?.predicted_at ?? null;
     const lastInferenceStale = (() => {
       if (!lastInferenceAt) return true;
       const ageHours = (Date.now() - new Date(lastInferenceAt).getTime()) / 3600000;
       return ageHours > STALE_INFERENCE_HOURS;
     })();
-    const predictionsLast7Days = predsLast7Res.count ?? 0;
+    const predictionsLast7Days = filterInventoryMlRowsToActiveItems(
+      predsLast7Res.data ?? [],
+      activeItemIds,
+    ).length;
 
     // ── Robot-data-gap census (starvation visibility) ────────────────────
     // Fresh predictions keep flowing even when ZERO learning is happening —

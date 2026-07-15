@@ -676,6 +676,10 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
   return {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
+    createdAt: toDate(r.created_at),
+    createdBy: (r.created_by as string | null) ?? null,
+    archivedAt: toDate(r.archived_at),
+    archivedBy: (r.archived_by as string | null) ?? null,
     name: String(r.name ?? ''),
     category: parseUnionField(r.category, INVENTORY_CATEGORIES, 'housekeeping'),
     customCategoryId: (r.custom_category_id as string | null) ?? null,
@@ -734,6 +738,7 @@ export function fromInventoryCountRow(r: Record<string, unknown>): InventoryCoun
   return {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
+    countSessionId: parseStringField(r.count_session_id),
     itemId: String(r.item_id ?? ''),
     itemName: String(r.item_name ?? ''),
     countedStock: Number(r.counted_stock ?? 0),
@@ -750,6 +755,7 @@ export function fromInventoryCountRow(r: Record<string, unknown>): InventoryCoun
 export function toInventoryCountRow(c: Partial<InventoryCount>): Record<string, unknown> {
   return dropUndefined({
     property_id: c.propertyId,
+    count_session_id: c.countSessionId,
     item_id: c.itemId,
     item_name: c.itemName,
     counted_stock: c.countedStock,

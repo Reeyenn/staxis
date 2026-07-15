@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import type { InventoryCount, InventoryOrder } from '@/types';
 import { shortDateFromDate } from '@/lib/format-date';
+import { groupInventoryCountsByEvent } from '@/lib/inventory-history';
 import { T, fonts, statusColor } from '../tokens';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
@@ -79,20 +80,15 @@ export function HistoryPanel({ lang, open, onClose, counts, orders, canViewFinan
         amount: canViewFinancials ? o.totalCost : undefined,
       });
     }
-    // Bucket counts by countedAt date — multiple items recorded at the same second
-    // logically belong to one "Physical count" event.
-    const byCountedAt = new Map<string, InventoryCount[]>();
-    for (const c of counts) {
-      const k = c.countedAt ? c.countedAt.toISOString() : 'unknown';
-      const list = byCountedAt.get(k) ?? [];
-      list.push(c);
-      byCountedAt.set(k, list);
-    }
-    for (const [k, group] of byCountedAt.entries()) {
-      if (k === 'unknown') continue;
-      const first = group[0];
-      const dt = first.countedAt!;
-      const who = first.countedBy || hp.team;
+    // Atomic saves share a countSessionId, so one full count stays one event
+    // even if individual rows do not receive byte-identical timestamps. Rows
+    // written before 0310 keep the legacy exact-timestamp fallback.
+    for (const group of groupInventoryCountsByEvent(counts)) {
+      const dt = group.reduce(
+        (latest, c) => c.countedAt && c.countedAt > latest ? c.countedAt : latest,
+        group[0].countedAt!,
+      );
+      const who = group.find((c) => c.countedBy)?.countedBy || hp.team;
       const variance = group.reduce(
         (s, c) => s + (typeof c.varianceValue === 'number' ? c.varianceValue : 0),
         0,

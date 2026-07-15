@@ -20,10 +20,11 @@
 // up the existing login by email and:
 //   • no existing login  → returns the original error (weak password, bad
 //     email, transient — nothing to reclaim).
-//   • login HAS an accounts row → it's a REAL account. Returns
+//   • login HAS an accounts row OR owns a property → it's protected. Returns
 //     { alreadyHasAccount: true }. It NEVER deletes it. This is the one hard
 //     rule of this module.
-//   • login has NO accounts row → it's an orphan. Deletes it and retries
+//   • login has neither an accounts row nor an owned property → it's an
+//     orphan. Deletes it and retries
 //     createUser once → { user, reclaimed: true }.
 //
 // email_confirm:true is set here for all callers (each flow runs its own
@@ -47,9 +48,9 @@ export interface CreateOrReclaimResult {
   /** True when success came from reclaiming an orphan (delete + recreate). */
   reclaimed?: boolean;
   /**
-   * True when the email already belongs to a REAL account (has an accounts
-   * row). The login is NEVER deleted in this case — the caller should return
-   * a 409 "sign in instead".
+   * True when the email already belongs to a protected login (has an accounts
+   * row or owns a property). The login is NEVER deleted in this case — the
+   * caller should return a 409 "sign in instead".
    */
   alreadyHasAccount?: boolean;
   /**
@@ -125,7 +126,26 @@ export async function createOrReclaimAuthUser(
     return { alreadyHasAccount: true };
   }
 
-  // 4) Orphan login (auth row, no accounts row). Reclaim: delete + recreate.
+  // A rolling deploy can temporarily expose an owner login before its
+  // accounts row exists (or after a partial repair). Property ownership is an
+  // equally authoritative protection edge: never reclaim that auth identity.
+  const { data: ownedProperty, error: ownerErr } = await supabaseAdmin
+    .from('properties')
+    .select('id')
+    .eq('owner_id', existing.id)
+    .limit(1)
+    .maybeSingle();
+  if (ownerErr) {
+    log.error('[auth-create-user] property-owner lookup failed — refusing to reclaim', {
+      authUserId: existing.id, err: ownerErr.message,
+    });
+    return { error: first.error ?? { message: 'Failed to create account' } };
+  }
+  if (ownedProperty) {
+    return { alreadyHasAccount: true };
+  }
+
+  // 4) Orphan login (auth row, no account or owned property). Reclaim it.
   const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(existing.id);
   if (delErr) {
     log.error('[auth-create-user] orphan deleteUser failed — leaving for the sweeper', {

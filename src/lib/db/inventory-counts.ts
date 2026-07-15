@@ -50,7 +50,7 @@ export async function listInventoryCounts(
 ): Promise<InventoryCount[]> {
   const columns = includeFinancials
     ? '*'
-    : 'id,property_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes';
+    : 'id,property_id,count_session_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes';
   const { data, error } = await supabase
     .from('inventory_counts')
     .select(columns)

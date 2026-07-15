@@ -444,6 +444,31 @@ export async function DELETE(req: NextRequest) {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
+  // Historically properties.owner_id cascaded from auth.users, so deleting an
+  // owning login could erase a hotel and all of its operational data. Migration
+  // 0310 changes the FK to RESTRICT; keep this fail-closed application check as
+  // an earlier, clearer guard and as protection during a rolling deployment.
+  const { count: ownedPropertyCount, error: ownershipErr } = await supabaseAdmin
+    .from('properties')
+    .select('id', { count: 'exact', head: true })
+    .eq('owner_id', target.data_user_id);
+  if (ownershipErr || ownedPropertyCount == null) {
+    log.error('[accounts:DELETE] property ownership check failed', {
+      requestId,
+      msg: ownershipErr ? errToString(ownershipErr) : 'ownership count missing',
+      accountId,
+      authUserId: target.data_user_id,
+    });
+    return err('Failed to verify whether this account owns a hotel', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+  if (ownedPropertyCount > 0) {
+    return err('Cannot delete this account while it owns one or more hotels. Transfer or delete those hotels first.', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+
   // Delete the auth user — the FK cascade removes the accounts row too.
   const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
   if (delErr) {

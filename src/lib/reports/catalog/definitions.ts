@@ -431,6 +431,7 @@ const inventoryLowStock: ReportDefinition = {
       .from('inventory')
       .select('name, category, current_stock, par_level, reorder_at')
       .eq('property_id', ctx.propertyId)
+      .is('archived_at', null)
       .limit(5_000);
     if (error) throw error;
     const items = (data ?? []) as InventoryItemLite[];

@@ -17,8 +17,6 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
-import { toInventoryOrderRow } from '@/lib/db-mappers';
-import type { InventoryOrder } from '@/types';
 import type {
   CartLineInput,
   CatalogItem,
@@ -200,7 +198,8 @@ export async function importCatalog(
   const { data: existing, error: exErr } = await supabaseAdmin
     .from('inventory')
     .select('name, category')
-    .eq('property_id', pid);
+    .eq('property_id', pid)
+    .is('archived_at', null);
   if (exErr) {
     log.error('[ordering] importCatalog: read existing failed', { pid, err: exErr.message });
     throw exErr;
@@ -364,7 +363,12 @@ async function stampOrderedItems(pid: string, lines: CartLineInput[], vendorName
         // cart line carrying another hotel's inventory UUID would overwrite that
         // hotel's vendor/cost/last_ordered_at. A foreign itemId now matches 0
         // rows (silent no-op). (Security audit 2026-06-18.)
-        const { error } = await supabaseAdmin.from('inventory').update(stamp).eq('id', l.itemId!).eq('property_id', pid);
+        const { error } = await supabaseAdmin
+          .from('inventory')
+          .update(stamp)
+          .eq('id', l.itemId!)
+          .eq('property_id', pid)
+          .is('archived_at', null);
         if (error) {
           log.error('[ordering] stampOrderedItems failed (non-fatal)', {
             itemId: l.itemId,
@@ -480,9 +484,12 @@ export async function markPurchaseOrderSent(
 }
 
 // Receive deliveries against a PO. qtyReceived per line is a CUMULATIVE TARGET
-// (the new total received), clamped to [0, qty_ordered]. We apply only the
-// positive delta to inventory.current_stock + the inventory_orders ledger, so
-// re-submitting the same numbers is idempotent and can never double-count.
+// (the new total received), clamped to [0, qty_ordered]. Migration 0310 makes
+// the database authoritative for the delta: it locks each line, computes
+// target - CURRENT qty_received, increments stock, appends the delivery ledger,
+// and updates the PO status in one transaction. The caller never supplies a
+// trusted delta or item id, so concurrent retries of the same target are true
+// no-ops instead of double receipts.
 export async function receivePurchaseOrder(
   pid: string,
   id: string,
@@ -504,59 +511,15 @@ export async function receivePurchaseOrder(
     targets.set(rl.lineId, clamped);
   }
 
-  // Build the atomic receive payload: one {line_id, target_qty, item_id, delta}
-  // per line that actually moves (positive delta). The line bump AND the stock
-  // increment for the whole receive land in ONE transaction inside
-  // staxis_receive_po_lines (migration 0286) — so a mid-receive DB hiccup can
-  // never leave a line marked received with its stock not moved (which the old
-  // two-write path could, and then permanently understated stock because the
-  // next retry recomputes delta = target - qty_received = 0). The stock bump is
-  // a single atomic `current_stock + delta`, closing the read-modify-write race
-  // too. Every write is id-scoped (line by PO, inventory by property), so a PO
-  // line carrying another hotel's UUID is a no-op. (Audit fix #10, 2026-06-18.)
-  const rpcLines: Array<{ line_id: string; target_qty: number; item_id: string | null; delta: number }> = [];
-  const ledgerWrites: Promise<unknown>[] = [];
-  const nowIso = new Date().toISOString();
+  const rpcLines = [...targets].map(([lineId, target]) => ({
+    line_id: lineId,
+    target_qty: target,
+  }));
 
-  for (const [lineId, target] of targets) {
-    const line = lineById.get(lineId)!;
-    const delta = target - line.qtyReceived;
-    if (delta <= 0) continue;
-
-    rpcLines.push({ line_id: lineId, target_qty: target, item_id: line.itemId ?? null, delta });
-    line.qtyReceived = target; // keep local copy current for status calc
-
-    // Write the dollars-based inventory_orders restock-log row (reuse
-    // addInventoryOrder's row shape so spend metrics keep working). Non-fatal:
-    // the ledger is a metrics side-channel, not the source of truth for stock.
-    const unitCostDollars = line.unitCostCents > 0 ? line.unitCostCents / 100 : undefined;
-    const totalCostDollars =
-      unitCostDollars != null ? Math.round(delta * line.unitCostCents) / 100 : undefined;
-    const order: Partial<InventoryOrder> = {
-      propertyId: pid,
-      itemId: line.itemId ?? undefined,
-      itemName: line.description,
-      quantity: delta,
-      unitCost: unitCostDollars,
-      totalCost: totalCostDollars,
-      vendorName: po.vendorName ?? undefined,
-      orderedAt: po.sentAt ? new Date(po.sentAt) : new Date(po.createdAt),
-      receivedAt: new Date(nowIso),
-      notes: `Received ${po.poNumber}`,
-    };
-    const row = { ...toInventoryOrderRow(order), property_id: pid };
-    ledgerWrites.push(
-      (async () => {
-        const { error } = await supabaseAdmin.from('inventory_orders').insert(row);
-        if (error) log.error('[ordering] receive: ledger insert failed (non-fatal)', { err: error.message });
-      })(),
-    );
-  }
-
-  // Apply every line bump + stock increment atomically. If this throws, NOTHING
-  // moved and the receive is safely retryable.
+  // Apply line totals, stock increments, ledger rows, and PO status atomically.
+  // If this throws, nothing moved and the exact request is safely retryable.
   if (rpcLines.length > 0) {
-    const { error: rpcErr } = await supabaseAdmin.rpc('staxis_receive_po_lines', {
+    const { error: rpcErr } = await supabaseAdmin.rpc('staxis_receive_po_lines_v2', {
       p_property_id: pid,
       p_po_id: id,
       p_lines: rpcLines,
@@ -567,34 +530,12 @@ export async function receivePurchaseOrder(
     }
   }
 
-  await Promise.all(ledgerWrites);
-
-  // Recompute status from the (locally-updated) lines.
-  const allReceived = po.lines.every((l) => l.qtyReceived >= l.qtyOrdered);
-  const anyReceived = po.lines.some((l) => l.qtyReceived > 0);
-  const newStatus: OrderStatus = allReceived
-    ? 'received'
-    : anyReceived
-      ? 'partially_received'
-      : po.status;
-  const statusPatch: Record<string, unknown> = { status: newStatus, updated_at: nowIso };
-  if (allReceived) statusPatch.received_at = nowIso;
-  const { error: stErr } = await supabaseAdmin
-    .from('purchase_orders')
-    .update(statusPatch)
-    .eq('id', id)
-    .eq('property_id', pid);
-  if (stErr) {
-    log.error('[ordering] receive: status update failed', { id, err: stErr.message });
-    throw stErr;
-  }
-
-  const shortLines = po.lines
+  const order = await getPurchaseOrder(pid, id);
+  if (!order) return { ok: false, reason: 'not_found' };
+  const shortLines = order.lines
     .filter((l) => l.qtyReceived < l.qtyOrdered)
     .map((l) => ({ lineId: l.id, ordered: l.qtyOrdered, received: l.qtyReceived }));
-
-  const order = await getPurchaseOrder(pid, id);
-  return order ? { ok: true, order, shortLines } : { ok: false, reason: 'not_found' };
+  return { ok: true, order, shortLines };
 }
 
 // ── Cross-property spend rollup (Phase E) ───────────────────────────────────

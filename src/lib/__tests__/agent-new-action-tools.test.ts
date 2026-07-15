@@ -42,8 +42,10 @@ let lafRows: Array<Record<string, unknown>>;
 const inserted: Record<string, Array<Record<string, unknown>>> = {};
 const updated: Record<string, Array<Record<string, unknown>>> = {};
 const deleted: Record<string, number> = {};
+const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
+const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
 
 beforeEach(() => {
   staffRows = [
@@ -57,11 +59,18 @@ beforeEach(() => {
   for (const k of Object.keys(inserted)) delete inserted[k];
   for (const k of Object.keys(updated)) delete updated[k];
   for (const k of Object.keys(deleted)) delete deleted[k];
+  rpcCalls.length = 0;
   // @ts-expect-error monkey-patch the singleton for the test
   supabaseAdmin.from = (table: string) => buildStub(table);
+  // @ts-expect-error monkey-patch the singleton for the test
+  supabaseAdmin.rpc = async (fn: string, args: Record<string, unknown>) => {
+    rpcCalls.push({ fn, args });
+    return { data: { replayed: false, saved: 1 }, error: null };
+  };
 });
 afterEach(() => {
   supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
 });
 
 function record(bucket: Record<string, Array<Record<string, unknown>>>, table: string, row: Record<string, unknown>) {
@@ -246,13 +255,31 @@ describe('get_low_stock', () => {
 });
 
 describe('adjust_stock', () => {
-  test('sets the on-hand count and stamps last_counted_at', async () => {
+  test('atomically saves the on-hand count and audit row with an idempotency UUID', async () => {
     inventoryRows = [{ id: 'i1', name: 'Towels', category: 'housekeeping', current_stock: 30, par_level: 100, unit: 'ea' }];
     const res = await executeTool('adjust_stock', { itemName: 'Towels', newCount: 120 }, ctx());
     assert.equal(res.ok, true);
-    const upd = (updated['inventory'] ?? [])[0];
-    assert.equal(upd.current_stock, 120);
-    assert.ok(upd.last_counted_at, 'last_counted_at stamped on a count');
+    assert.deepEqual(res.data, {
+      itemName: 'Towels',
+      category: 'housekeeping',
+      newCount: 120,
+      unit: 'ea',
+      markedOrdered: false,
+      orderLogged: false,
+      orderQuantity: null,
+    });
+    assert.equal(updated.inventory?.length ?? 0, 0, 'count must not use a standalone inventory update');
+    assert.equal(rpcCalls.length, 1);
+    assert.equal(rpcCalls[0].fn, 'staxis_save_inventory_count');
+    assert.equal(rpcCalls[0].args.p_property_id, PID);
+    assert.match(String(rpcCalls[0].args.p_request_id), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.equal(rpcCalls[0].args.p_counted_by, 'Reeyen Boss');
+    assert.deepEqual(rpcCalls[0].args.p_rows, [{
+      item_id: 'i1',
+      expected_stock: 30,
+      counted_stock: 120,
+      notes: 'Counted via Staxis assistant',
+    }]);
   });
 
   test('records an order when markOrdered is set', async () => {
@@ -263,6 +290,7 @@ describe('adjust_stock', () => {
     assert.ok(ord, 'an inventory_orders row was written');
     assert.equal(ord.item_id, 'i1');
     assert.equal(ord.quantity, 24);
+    assert.equal(rpcCalls.length, 0, 'order-only actions do not create a count session');
   });
 
   test('refuses when neither a count nor an order is given', async () => {

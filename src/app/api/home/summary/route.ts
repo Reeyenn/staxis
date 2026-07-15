@@ -259,6 +259,7 @@ async function inventoryTile(pid: string): Promise<TileLine> {
     .from('inventory')
     .select('current_stock, par_level, last_counted_at')
     .eq('property_id', pid)
+    .is('archived_at', null)
     .limit(1000);
   if (error) throw new Error(error.message);
   return summarizeHomeInventory(data ?? []);
