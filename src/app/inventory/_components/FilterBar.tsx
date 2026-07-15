@@ -7,6 +7,8 @@ import { EASE } from './motion';
 import { TickNum } from './fx';
 import { t, type Lang } from './inv-i18n';
 
+export type InventoryView = 'ledger' | 'board';
+
 interface FilterBarProps {
   lang: Lang;
   bucket: StockBucket;
@@ -16,6 +18,8 @@ interface FilterBarProps {
   allCount: number;
   generalCount: number;
   breakfastCount: number;
+  view: InventoryView;
+  onView: (v: InventoryView) => void;
   onAdd: () => void;
 }
 
@@ -28,6 +32,8 @@ export function FilterBar({
   allCount,
   generalCount,
   breakfastCount,
+  view,
+  onView,
   onAdd,
 }: FilterBarProps) {
   const tx = t(lang);
@@ -155,6 +161,43 @@ export function FilterBar({
           outline: 'none',
         }}
       />
+      {/* View switch — Ledger table ↔ triage board. Static segmented control. */}
+      <div
+        style={{
+          display: 'inline-flex',
+          border: `1px solid ${T.rule}`,
+          borderRadius: 999,
+          padding: 3,
+          background: T.bg,
+          flexShrink: 0,
+        }}
+      >
+        {(['ledger', 'board'] as const).map((v) => {
+          const active = view === v;
+          return (
+            <button
+              key={v}
+              type="button"
+              onClick={() => onView(v)}
+              aria-pressed={active}
+              style={{
+                padding: '7px 13px',
+                cursor: 'pointer',
+                background: active ? T.ink : 'transparent',
+                color: active ? T.bg : T.ink2,
+                border: 'none',
+                borderRadius: 999,
+                fontFamily: fonts.sans,
+                fontSize: 12.5,
+                fontWeight: active ? 600 : 500,
+                transition: 'background .18s ease, color .18s ease',
+              }}
+            >
+              {v === 'ledger' ? tx.viewLedger : tx.viewBoard}
+            </button>
+          );
+        })}
+      </div>
       <Btn variant="ghost" size="md" onClick={onAdd}>
         {tx.addItem}
       </Btn>

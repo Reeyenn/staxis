@@ -39,8 +39,9 @@ import { Caps } from './Caps';
 import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
 import { Sidebar, type SidebarAction } from './Sidebar';
-import { FilterBar } from './FilterBar';
+import { FilterBar, type InventoryView } from './FilterBar';
 import { LedgerTable } from './LedgerTable';
+import { StockList } from './StockList';
 import { useRiseIn } from './motion';
 import { InvFx, HealthRing, CountUp, PingDot } from './fx';
 import { toDisplayItem, applyDraft } from './adapter';
@@ -138,6 +139,17 @@ export function InventoryShell() {
   }, [storedMode]);
   const [bucket, setBucket] = useState<StockBucket>('all');
   const [query, setQuery] = useState('');
+  // Layout: the Ledger table (default) or the old triage board (Order now /
+  // Order soon / Stocked columns). Remembered per browser so a manager who
+  // prefers the board keeps it. Lazy-init reads localStorage on the client only
+  // (this is a 'use client' component) → no default 'ledger' flash for board fans.
+  const [view, setView] = useState<InventoryView>(() => {
+    if (typeof window === 'undefined') return 'ledger';
+    return window.localStorage.getItem('staxis:inventory-view') === 'board' ? 'board' : 'ledger';
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem('staxis:inventory-view', view); } catch { /* private mode */ }
+  }, [view]);
   // In-flight quick counts from the ledger's −/+ steppers, keyed by item id.
   // Layered over the display until the debounced single-item save lands and the
   // realtime snapshot catches up (then reconciled away below). Optimistic UI.
@@ -722,20 +734,35 @@ export function InventoryShell() {
               allCount={totalItems}
               generalCount={generalCount}
               breakfastCount={breakfastCount}
+              view={view}
+              onView={setView}
               onAdd={() => { setEditItem(null); setOverlay('add'); }}
             />
           </div>
-          <LedgerTable
-            lang={L}
-            items={effectiveDisplay}
-            bucket={bucket}
-            query={query}
-            canViewFinancials={canViewFinancials}
-            onEdit={onEditItem}
-            onQuickCount={onQuickCount}
-            onCount={() => setOverlay('count')}
-            onAdd={() => { setEditItem(null); setOverlay('add'); }}
-          />
+          {view === 'ledger' ? (
+            <LedgerTable
+              lang={L}
+              items={effectiveDisplay}
+              bucket={bucket}
+              query={query}
+              canViewFinancials={canViewFinancials}
+              onEdit={onEditItem}
+              onQuickCount={onQuickCount}
+              onCount={() => setOverlay('count')}
+              onAdd={() => { setEditItem(null); setOverlay('add'); }}
+            />
+          ) : (
+            <StockList
+              lang={L}
+              items={effectiveDisplay}
+              bucket={bucket}
+              query={query}
+              onEdit={onEditItem}
+              onCount={() => setOverlay('count')}
+              onReorder={() => setOverlay('reorder')}
+              onAdd={() => { setEditItem(null); setOverlay('add'); }}
+            />
+          )}
         </div>
       </div>
 

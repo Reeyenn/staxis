@@ -120,6 +120,9 @@ const STRINGS = {
     notCountedPill: 'Not counted',
     nothingMatches: 'Nothing matches your search.',
     ledgerHint: 'Quick counts save to history the moment you tap · full walk lives in Start count',
+    // ── View toggle (Ledger table ↔ triage board) ──
+    viewLedger: 'Ledger',
+    viewBoard: 'Board',
   },
   es: {
     // ── Shell ──
@@ -195,6 +198,9 @@ const STRINGS = {
     notCountedPill: 'Sin contar',
     nothingMatches: 'Nada coincide con tu búsqueda.',
     ledgerHint: 'Los conteos rápidos se guardan en el historial al tocar · el recorrido completo está en Iniciar conteo',
+    // ── View toggle (tabla Libro ↔ tablero) ──
+    viewLedger: 'Tabla',
+    viewBoard: 'Tablero',
   },
 };
 
