@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { partitionMobileInventory } from '@/app/inventory/_components/mobile-inventory-triage';
 import type { DisplayItem } from '@/app/inventory/_components/types';
 
@@ -66,5 +67,25 @@ describe('partitionMobileInventory', () => {
     ], 'all');
 
     assert.deepEqual(partition.critical.map(({ id }) => id), ['first', 'later', 'fallback']);
+  });
+});
+
+describe('Mobile Inventory theme contract', () => {
+  const css = readFileSync(
+    new URL('../../app/inventory/_components/MobileInventoryTriage.module.css', import.meta.url),
+    'utf8',
+  );
+
+  it('keeps the mobile experience light regardless of device or root theme', () => {
+    assert.doesNotMatch(css, /prefers-color-scheme\s*:\s*dark/i);
+    assert.doesNotMatch(css, /:global\(\.dark\)/);
+    assert.match(css, /--mi-page:\s*radial-gradient\([^;]+#fff[^;]+#f0f3ef[^;]+\);/);
+    assert.match(css, /--mi-surface:\s*#fff;/);
+    assert.match(css, /--mi-ink:\s*#1f231c;/);
+  });
+
+  it('uses accessible secondary text tokens on the light page wash', () => {
+    assert.match(css, /--mi-dim:\s*#5c625c;/);
+    assert.match(css, /--mi-faint:\s*#5c625c;/);
   });
 });
