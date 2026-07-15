@@ -759,7 +759,6 @@ export function InventoryShell() {
               query={query}
               onEdit={onEditItem}
               onCount={() => setOverlay('count')}
-              onReorder={() => setOverlay('reorder')}
               onAdd={() => { setEditItem(null); setOverlay('add'); }}
             />
           )}

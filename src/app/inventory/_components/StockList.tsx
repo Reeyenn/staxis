@@ -28,7 +28,6 @@ interface StockListProps {
   query: string;
   onEdit?: (item: DisplayItem) => void;
   onCount?: () => void;
-  onReorder?: () => void;
   onAdd?: () => void;
 }
 
@@ -48,7 +47,7 @@ function sortKey(it: DisplayItem): number {
   return it.daysLeft;
 }
 
-export function StockList({ lang, items, bucket, query, onEdit, onCount, onReorder, onAdd }: StockListProps) {
+export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }: StockListProps) {
   const tx = t(lang);
   const COLUMNS = columnsFor(lang);
   const filtered = useMemo(() => {
@@ -125,14 +124,7 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                   {colItems.map((it) => (
-                    <BoardCard
-                      key={it.id}
-                      lang={lang}
-                      it={it}
-                      onEdit={onEdit}
-                      onCount={onCount}
-                      onReorder={onReorder}
-                    />
+                    <BoardCard key={it.id} lang={lang} it={it} onEdit={onEdit} />
                   ))}
                   {colItems.length === 0 && (
                     col.status === 'critical' ? (
@@ -166,7 +158,6 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onReord
           dayOne={dayOne}
           onEdit={onEdit}
           onCount={onCount}
-          onReorder={onReorder}
         />
       )}
     </div>
@@ -218,14 +209,13 @@ function NoItemsPanel({ lang, onAdd }: { lang: Lang; onAdd?: () => void }) {
 // Neutral "not counted yet" group — brand-new items with no physical count.
 // Rendered grey (never red), excluded from the triage columns above.
 function NotCountedSection({
-  lang, items, dayOne, onEdit, onCount, onReorder,
+  lang, items, dayOne, onEdit, onCount,
 }: {
   lang: Lang;
   items: DisplayItem[];
   dayOne: boolean;
   onEdit?: (item: DisplayItem) => void;
   onCount?: () => void;
-  onReorder?: () => void;
 }) {
   const tx = t(lang);
   return (
@@ -262,7 +252,7 @@ function NotCountedSection({
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 9 }}>
         {items.map((it) => (
-          <BoardCard key={it.id} lang={lang} it={it} onEdit={onEdit} onCount={onCount} onReorder={onReorder} />
+          <BoardCard key={it.id} lang={lang} it={it} onEdit={onEdit} />
         ))}
       </div>
     </div>
