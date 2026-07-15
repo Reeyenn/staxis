@@ -659,10 +659,13 @@ export default function MarketingLanding() {
   const feedIdx = useRef(4);
   const [chipTab, setChipTab] = useState<Record<string, number>>({});
   const [notifStage, setNotifStage] = useState<'idle' | 'pressed' | 'done'>('idle');
+  const [peek, setPeek] = useState(false);
   const notifStarted = useRef(false);
+  const peekStarted = useRef(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
   const notifRef = useRef<HTMLDivElement>(null);
+  const orbitRef = useRef<HTMLDivElement>(null);
 
   /* ticking ops feed */
   useEffect(() => {
@@ -702,6 +705,31 @@ export default function MarketingLanding() {
         }
       },
       { threshold: 0.5 }
+    );
+    io.observe(el);
+    return () => {
+      io.disconnect();
+      timers.forEach(clearTimeout);
+    };
+  }, []);
+
+  /* one-time auto-preview: when the orbit scrolls in, bloom one chip's
+     demo open for a beat so people learn the pages are hoverable */
+  useEffect(() => {
+    const el = orbitRef.current;
+    if (!el) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (window.matchMedia('(hover: none)').matches) return;
+    let timers: ReturnType<typeof setTimeout>[] = [];
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting) && !peekStarted.current) {
+          peekStarted.current = true;
+          timers.push(setTimeout(() => setPeek(true), 650));
+          timers.push(setTimeout(() => setPeek(false), 2950));
+        }
+      },
+      { threshold: 0.4 }
     );
     io.observe(el);
     return () => {
@@ -850,6 +878,122 @@ export default function MarketingLanding() {
         </div>
       </div>
 
+      {/* ---------------- one page ---------------- */}
+      {/* z-index above sibling sections so hover demos from bottom chips
+          paint over the next section instead of dying under it */}
+      <section className="section sec-top" id="onepage">
+        <div className="kicker rv">ONE PAGE</div>
+        <h2 className="rv">One page <em>runs the hotel.</em></h2>
+        <p className="section-lede rv">
+          Everything that needs you lands in one place. Every other page is still
+          one tap away when you want to look deeper.
+        </p>
+
+        <div className="orbit-hint rv" aria-hidden="true">
+          <svg className="oh-cur" viewBox="0 0 24 24" width="14" height="14">
+            <path d="M4 2 L4 18 L8.4 13.9 L11.4 20.4 L14 19.2 L11 12.8 L17 12.8 Z" fill="currentColor" />
+          </svg>
+          Hover any page for a live preview
+        </div>
+
+        <div className="orbit rv" aria-hidden="true" ref={orbitRef}>
+          <svg className="orbit-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
+            {ORBIT_PAGES.map((p) => (
+              <line key={p.label} className={'soon' in p ? 'l-soon' : ''} x1="50" y1="50" x2={p.x} y2={p.y} />
+            ))}
+          </svg>
+          {ORBIT_PAGES.map((p, i) => (
+            <span
+              key={p.label}
+              className={`orbit-chip ${'soon' in p ? 'chip-soon' : ''} ${peek && p.id === 'financials' ? 'peek' : ''}`}
+              style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
+            >
+              {p.label}
+              <span className={`chip-pop pop-${p.dir} ${'soon' in p ? 'pop-soon' : ''}`}>
+                <span className="cp-head">
+                  <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
+                  <b>{'soon' in p ? 'Guest Experience' : p.label}</b>
+                  <i>{'soon' in p ? 'COMING SOON' : 'LIVE DEMO · SCROLLS'}</i>
+                </span>
+                {p.tabs.length > 1 && (
+                  <span className="cp-tabs">
+                    {p.tabs.map((t, ti) => (
+                      <button
+                        type="button"
+                        key={t}
+                        tabIndex={-1}
+                        className={`cp-tab ${(chipTab[p.id] ?? 0) === ti ? 'on' : ''}`}
+                        onClick={() => setChipTab((prev) => ({ ...prev, [p.id]: ti }))}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </span>
+                )}
+                <span className="cp-body" key={chipTab[p.id] ?? 0}>
+                  <ChipDemo id={p.id} sub={chipTab[p.id] ?? 0} />
+                </span>
+              </span>
+            </span>
+          ))}
+          {/* the center IS the app's Staxis page, exact mini, always live */}
+          <div className="today stx-center">
+            <span className="cp-head">
+              <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
+              <b>Staxis</b>
+              <i>YOUR ONE PAGE · SCROLLS</i>
+            </span>
+            <div className="cp-body stx-body">
+              <div className="ap">
+                <div className="x-headrow">
+                  <span className="x-caps" style={{ margin: 0 }}>GOOD EVENING · SUNDAY, JULY 5</span>
+                  <span className="x-spacer" />
+                  <span className="fl-leg"><i className="lane-dot ld-sage" />78% occupancy · all shifts staffed</span>
+                </div>
+                <div className="ap-card stx-wrap">
+                  <span className="stx-moon">☾</span>
+                  <div className="ap-wo-mid">
+                    <span className="x-caps" style={{ margin: 0 }}>EVENING WRAP-UP</span>
+                    <b className="stx-wrap-title">Wrapping up: 6 items to clear before you go.</b>
+                    <span>Tomorrow&rsquo;s crew is set · night shift briefed</span>
+                  </div>
+                </div>
+                <div className="ap-card stx-labor">
+                  <div className="ap-wo-mid">
+                    <span className="x-caps" style={{ margin: 0 }}>LABOR TODAY</span>
+                    <b className="stx-labor-n">$1,840 <i>/ $1,910</i></b>
+                    <div className="ap-bar big"><i className="f-good" style={{ width: '96%' }} /></div>
+                  </div>
+                  <div className="stx-under"><b>$70</b><span>under budget</span></div>
+                </div>
+                <div className="x-headrow">
+                  <span className="x-caps" style={{ margin: 0 }}>NEEDS YOU</span>
+                  <b className="x-attn-badge dark">6</b>
+                </div>
+                {[
+                  ['GUESTS', 'Room 207 messaged about noise, twice', 'Guest is still up. An apology + 10% off tonight is drafted and ready to send.', 'Send reply', 'rust', 'Edit', 'protects your review score', true],
+                  ['STAFF', 'Maria hasn’t confirmed tomorrow', 'No reply since last night. Lupe is available as backup. Text her to be safe?', 'Text Lupe', 'dark', 'Call Maria', '↓ avoids a morning scramble', false],
+                  ['HOUSEKEEPING', 'Tomorrow’s crew is ready', '86 rooms · 4 housekeepers. Board balanced by floor and checkout load.', 'Approve & send', 'dark', 'Adjust', '↓ saves ~$210 vs a flat 5-person crew', false],
+                  ['INVENTORY', 'Towels run out Thursday', 'At today’s pace you’ll be short by Thursday. Order drafted: 6 cases · $310 · ABC Supply.', 'Approve order', 'dark', 'Change', '$310', false],
+                ].map(([cat, title, body, act, tone, alt, note, hot]) => (
+                  <div className={`ap-card stx-need ${hot ? 'hot' : ''}`} key={title as string}>
+                    <span className="x-caps" style={{ margin: 0 }}>{cat}</span>
+                    <b className="stx-need-title">{title}</b>
+                    <span className="stx-need-body">{body}</span>
+                    <div className="x-btnrow">
+                      <span className={tone === 'rust' ? 'xb-rust' : 'xb-dark'}>{act}</span>
+                      <span className="xb-light">{alt}</span>
+                      <span className="x-spacer" />
+                      <span className="stx-note">{note}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* ---------------- the difference: side by side ---------------- */}
       <section className="section" id="story">
         <div className="kicker rv">THE DIFFERENCE</div>
@@ -950,115 +1094,6 @@ export default function MarketingLanding() {
               ].map((o, i) => (
                 <span className="oc good rv" key={o} style={{ transitionDelay: `${i * 110}ms` }}>{o}</span>
               ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* ---------------- one page ---------------- */}
-      {/* z-index above sibling sections so hover demos from bottom chips
-          paint over the next section instead of dying under it */}
-      <section className="section sec-top" id="onepage">
-        <div className="kicker rv">ONE PAGE</div>
-        <h2 className="rv">One page <em>runs the hotel.</em></h2>
-        <p className="section-lede rv">
-          Everything that needs you lands in one place. Every other page is still
-          one tap away when you want to look deeper.
-        </p>
-
-        <div className="orbit rv" aria-hidden="true">
-          <svg className="orbit-lines" viewBox="0 0 100 100" preserveAspectRatio="none">
-            {ORBIT_PAGES.map((p) => (
-              <line key={p.label} className={'soon' in p ? 'l-soon' : ''} x1="50" y1="50" x2={p.x} y2={p.y} />
-            ))}
-          </svg>
-          {ORBIT_PAGES.map((p, i) => (
-            <span
-              key={p.label}
-              className={`orbit-chip ${'soon' in p ? 'chip-soon' : ''}`}
-              style={{ left: `${p.x}%`, top: `${p.y}%`, animationDelay: `${i * 0.7}s` }}
-            >
-              {p.label}
-              <span className={`chip-pop pop-${p.dir} ${'soon' in p ? 'pop-soon' : ''}`}>
-                <span className="cp-head">
-                  <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
-                  <b>{'soon' in p ? 'Guest Experience' : p.label}</b>
-                  <i>{'soon' in p ? 'COMING SOON' : 'LIVE DEMO · SCROLLS'}</i>
-                </span>
-                {p.tabs.length > 1 && (
-                  <span className="cp-tabs">
-                    {p.tabs.map((t, ti) => (
-                      <button
-                        type="button"
-                        key={t}
-                        tabIndex={-1}
-                        className={`cp-tab ${(chipTab[p.id] ?? 0) === ti ? 'on' : ''}`}
-                        onClick={() => setChipTab((prev) => ({ ...prev, [p.id]: ti }))}
-                      >
-                        {t}
-                      </button>
-                    ))}
-                  </span>
-                )}
-                <span className="cp-body" key={chipTab[p.id] ?? 0}>
-                  <ChipDemo id={p.id} sub={chipTab[p.id] ?? 0} />
-                </span>
-              </span>
-            </span>
-          ))}
-          {/* the center IS the app's Staxis page, exact mini, always live */}
-          <div className="today stx-center">
-            <span className="cp-head">
-              <span className="cp-brand"><ChevronMark size={13} color="#fff" /></span>
-              <b>Staxis</b>
-              <i>YOUR ONE PAGE · SCROLLS</i>
-            </span>
-            <div className="cp-body stx-body">
-              <div className="ap">
-                <div className="x-headrow">
-                  <span className="x-caps" style={{ margin: 0 }}>GOOD EVENING · SUNDAY, JULY 5</span>
-                  <span className="x-spacer" />
-                  <span className="fl-leg"><i className="lane-dot ld-sage" />78% occupancy · all shifts staffed</span>
-                </div>
-                <div className="ap-card stx-wrap">
-                  <span className="stx-moon">☾</span>
-                  <div className="ap-wo-mid">
-                    <span className="x-caps" style={{ margin: 0 }}>EVENING WRAP-UP</span>
-                    <b className="stx-wrap-title">Wrapping up: 6 items to clear before you go.</b>
-                    <span>Tomorrow&rsquo;s crew is set · night shift briefed</span>
-                  </div>
-                </div>
-                <div className="ap-card stx-labor">
-                  <div className="ap-wo-mid">
-                    <span className="x-caps" style={{ margin: 0 }}>LABOR TODAY</span>
-                    <b className="stx-labor-n">$1,840 <i>/ $1,910</i></b>
-                    <div className="ap-bar big"><i className="f-good" style={{ width: '96%' }} /></div>
-                  </div>
-                  <div className="stx-under"><b>$70</b><span>under budget</span></div>
-                </div>
-                <div className="x-headrow">
-                  <span className="x-caps" style={{ margin: 0 }}>NEEDS YOU</span>
-                  <b className="x-attn-badge dark">6</b>
-                </div>
-                {[
-                  ['GUESTS', 'Room 207 messaged about noise, twice', 'Guest is still up. An apology + 10% off tonight is drafted and ready to send.', 'Send reply', 'rust', 'Edit', 'protects your review score', true],
-                  ['STAFF', 'Maria hasn’t confirmed tomorrow', 'No reply since last night. Lupe is available as backup. Text her to be safe?', 'Text Lupe', 'dark', 'Call Maria', '↓ avoids a morning scramble', false],
-                  ['HOUSEKEEPING', 'Tomorrow’s crew is ready', '86 rooms · 4 housekeepers. Board balanced by floor and checkout load.', 'Approve & send', 'dark', 'Adjust', '↓ saves ~$210 vs a flat 5-person crew', false],
-                  ['INVENTORY', 'Towels run out Thursday', 'At today’s pace you’ll be short by Thursday. Order drafted: 6 cases · $310 · ABC Supply.', 'Approve order', 'dark', 'Change', '$310', false],
-                ].map(([cat, title, body, act, tone, alt, note, hot]) => (
-                  <div className={`ap-card stx-need ${hot ? 'hot' : ''}`} key={title as string}>
-                    <span className="x-caps" style={{ margin: 0 }}>{cat}</span>
-                    <b className="stx-need-title">{title}</b>
-                    <span className="stx-need-body">{body}</span>
-                    <div className="x-btnrow">
-                      <span className={tone === 'rust' ? 'xb-rust' : 'xb-dark'}>{act}</span>
-                      <span className="xb-light">{alt}</span>
-                      <span className="x-spacer" />
-                      <span className="stx-note">{note}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
             </div>
           </div>
         </div>
@@ -1589,7 +1624,21 @@ const CSS = `
 }
 
 /* ---------- one page (orbit) ---------- */
-.orbit { position: relative; margin: 70px auto 0; max-width: 920px; height: 620px; }
+/* discoverability hint — tells people the orbiting pages are hoverable */
+.orbit-hint { display: flex; align-items: center; gap: 9px; width: fit-content;
+  margin: 26px auto 0; padding: 8px 16px 8px 13px;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: .13em;
+  text-transform: uppercase; color: var(--sage-deep);
+  background: var(--sage-dim); border: 1px solid rgba(92,122,96,.3);
+  border-radius: 999px; box-shadow: 0 4px 12px rgba(31,35,28,.05); }
+.oh-cur { flex: none; transform-origin: 20% 20%;
+  animation: ohtap 2.7s ease-in-out infinite; }
+@keyframes ohtap {
+  0%, 62%, 100% { transform: translate(0, 0) scale(1); }
+  72% { transform: translate(1px, 1px) scale(.8); }
+  82% { transform: translate(0, 0) scale(1); }
+}
+.orbit { position: relative; margin: 30px auto 0; max-width: 920px; height: 620px; }
 .orbit-lines { position: absolute; inset: 0; width: 100%; height: 100%; }
 .orbit-lines line { stroke: rgba(92,122,96,.3); stroke-width: .35;
   stroke-dasharray: 2 2.4; animation: march 2.4s linear infinite; }
@@ -1598,7 +1647,7 @@ const CSS = `
   font-family: var(--mono); font-size: 11.5px; letter-spacing: .1em;
   text-transform: uppercase; color: var(--dim); white-space: nowrap;
   background: #FAFAF7; border: 1px solid var(--rule-soft); border-radius: 999px;
-  padding: 9px 16px; box-shadow: 0 4px 12px rgba(31,35,28,.05); cursor: default;
+  padding: 9px 16px; box-shadow: 0 4px 12px rgba(31,35,28,.05); cursor: pointer;
   animation: chipfloat 6s ease-in-out infinite;
   transition: color .25s ease, background .25s ease, border-color .25s ease,
     box-shadow .25s ease; }
@@ -1658,6 +1707,16 @@ const CSS = `
 .pop-up { bottom: calc(100% + 10px); left: 50%;
   transform: translateX(-50%) scale(.5); transform-origin: center bottom; }
 .orbit-chip:hover .pop-up { transform: translateX(-50%) scale(1); }
+
+/* auto-preview: same open state as :hover, driven by a JS-toggled class,
+   so one chip demos itself when the orbit first scrolls into view */
+.orbit-chip.peek { color: var(--ink); background: #fff;
+  border-color: var(--sage); box-shadow: 0 14px 34px rgba(31,35,28,.14);
+  animation-play-state: paused; z-index: 5; }
+.orbit-chip.peek .chip-pop { opacity: 1; visibility: visible;
+  transition: opacity .3s cubic-bezier(.19,1,.22,1),
+    transform .4s cubic-bezier(.34,1.56,.64,1), visibility 0s 0s; }
+.orbit-chip.peek .pop-up { transform: translateX(-50%) scale(1); }
 
 .pop-up-left, .pop-up-right, .pop-down-left, .pop-down-right {
   transform: scale(.5); }
@@ -2156,6 +2215,7 @@ const CSS = `
   .orbit-lines { display: none; }
   .orbit-chip { position: static; transform: none; color: var(--ink-soft); }
   .chip-pop { display: none; }
+  .orbit-hint { display: none; }
   .today { position: static; transform: none; width: 100%; max-width: 420px;
     flex: none; order: -1; margin-bottom: 12px; }
 }
