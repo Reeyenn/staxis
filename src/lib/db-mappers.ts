@@ -42,6 +42,7 @@ import type {
   InventoryBudget,
   InventoryBudgetSection,
   InventoryCustomCategory,
+  InventoryTabLayout,
   HandoffEntry,
   GuestRequest,
   ShiftConfirmation,
@@ -171,6 +172,24 @@ const DEEP_CLEAN_STATUSES = ['in_progress', 'completed'] as const;
 
 // ─── Property ───────────────────────────────────────────────────────────────
 
+// Parse properties.inventory_tab_layout (0308) into a clean {order,hidden} of
+// string arrays. Accepts a jsonb object or a JSON string. Any malformed shape
+// ⇒ null ⇒ the caller uses the default layout. `hidden` is clamped to the two
+// removable built-ins so a bad value can never hide something unexpected.
+function normalizeTabLayout(raw: unknown): InventoryTabLayout | null {
+  let v = raw;
+  if (typeof v === 'string') {
+    try { v = JSON.parse(v); } catch { return null; }
+  }
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const obj = v as Record<string, unknown>;
+  const strArr = (x: unknown): string[] =>
+    Array.isArray(x) ? x.filter((s): s is string => typeof s === 'string') : [];
+  const order = strArr(obj.order);
+  const hidden = strArr(obj.hidden).filter((k) => k === 'general' || k === 'breakfast');
+  return { order, hidden };
+}
+
 export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
   return dropUndefined({
     name: p.name,
@@ -193,6 +212,9 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     last_synced_at: toISO(p.lastSyncedAt),
     alert_phone: p.alertPhone,
     inventory_budget_mode: p.inventoryBudgetMode,
+    // JSON tab layout ({order,hidden}). null clears; undefined leaves it be
+    // (dropUndefined). Stored as jsonb (0308).
+    inventory_tab_layout: p.inventoryTabLayout,
   });
 }
 
@@ -246,6 +268,10 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     // How this hotel budgets inventory (0306). Missing/unknown ⇒ 'sections',
     // the pre-0306 behavior.
     inventoryBudgetMode: r.inventory_budget_mode === 'total' ? 'total' : 'sections',
+    // Per-hotel inventory tab layout (0308). Parsed defensively (object OR
+    // JSON-string) into {order,hidden} string arrays. NULL / missing / bad
+    // shape ⇒ null ⇒ the default layout (nothing hidden, default order).
+    inventoryTabLayout: normalizeTabLayout(r.inventory_tab_layout),
     createdAt: toDate(r.created_at) ?? new Date(),
   };
 }

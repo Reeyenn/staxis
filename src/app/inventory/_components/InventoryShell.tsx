@@ -14,6 +14,7 @@ import {
   listInventoryCustomCategories,
   upsertInventoryCustomCategory,
   deleteInventoryCustomCategory,
+  updateProperty,
   monthToDateSpendDetail,
   sectionBudgetKey,
   addInventoryCount,
@@ -35,6 +36,7 @@ import type {
   InventoryBudgetMode,
   InventoryBudgetSection,
   InventoryCustomCategory,
+  InventoryTabLayout,
 } from '@/types';
 
 import { T, fonts } from './tokens';
@@ -44,6 +46,7 @@ import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
 import { Sidebar, type SidebarAction } from './Sidebar';
 import { FilterBar, type InventoryView } from './FilterBar';
+import type { InvTab } from './InventoryTabs';
 import { LedgerTable } from './LedgerTable';
 import { StockList } from './StockList';
 import { useRiseIn } from './motion';
@@ -143,6 +146,21 @@ export function InventoryShell() {
   useEffect(() => {
     if (storedMode) setBudgetMode(storedMode);
   }, [storedMode]);
+  // Per-hotel inventory tab layout (0308): tab order + removed built-ins.
+  // Seeded from the property record; persisted via updateProperty (like mode).
+  const [tabLayout, setTabLayout] = useState<InventoryTabLayout>(
+    activeProperty?.inventoryTabLayout ?? { order: [], hidden: [] },
+  );
+  // Resync from the property record when it hydrates / on property switch. Dep
+  // is a stable JSON key (not the object identity, which churns on auth-token
+  // rebuilds) so an optimistic local layout is never clobbered by a re-render.
+  const storedLayoutKey = activeProperty?.inventoryTabLayout
+    ? JSON.stringify(activeProperty.inventoryTabLayout)
+    : '';
+  useEffect(() => {
+    if (!storedLayoutKey) return;
+    try { setTabLayout(JSON.parse(storedLayoutKey) as InventoryTabLayout); } catch { /* ignore */ }
+  }, [storedLayoutKey]);
   const [bucket, setBucket] = useState<StockBucket>('all');
   const [query, setQuery] = useState('');
   // Layout: the Ledger table (default) or the old triage board (Order now /
@@ -310,6 +328,34 @@ export function InventoryShell() {
     for (const d of effectiveDisplay) if (d.customCategoryId) m[d.customCategoryId] = (m[d.customCategoryId] ?? 0) + 1;
     return m;
   }, [effectiveDisplay]);
+
+  // Assemble the visible filter tabs (0308). Built-ins can be hidden; every tab
+  // is orderable by the stored `order`. 'All' is pinned separately by the tab
+  // bar and never appears here.
+  const { visibleTabs, hiddenTabs } = useMemo(() => {
+    const hiddenSet = new Set(tabLayout.hidden);
+    const builtins: InvTab[] = [
+      { key: 'general', label: tx.generalInventory, count: generalCount, kind: 'builtin' },
+      { key: 'breakfast', label: tx.breakfastInventory, count: breakfastCount, kind: 'builtin' },
+    ];
+    const customs: InvTab[] = customCategories.map((c) => ({
+      key: `custom:${c.id}`,
+      label: c.name,
+      count: customCounts[c.id] ?? 0,
+      kind: 'custom',
+    }));
+    const all = [...builtins, ...customs];
+    const orderIndex = new Map(tabLayout.order.map((k, i) => [k, i]));
+    // Stable sort by stored order; tabs not yet in `order` keep their natural
+    // position (built-ins first, then customs by their own sort).
+    const visible = all
+      .filter((tb) => !(tb.kind === 'builtin' && hiddenSet.has(tb.key)))
+      .map((tb, i) => ({ tb, i }))
+      .sort((a, b) => (orderIndex.get(a.tb.key) ?? 1000 + a.i) - (orderIndex.get(b.tb.key) ?? 1000 + b.i))
+      .map(({ tb }) => tb);
+    const hidden = builtins.filter((tb) => hiddenSet.has(tb.key));
+    return { visibleTabs: visible, hiddenTabs: hidden };
+  }, [tabLayout, tx, generalCount, breakfastCount, customCategories, customCounts]);
   // Never-counted items (new-hotel day 1) have no real status — exclude them
   // from the triage stats so they don't read as "16 to order now". They still
   // count toward totalItems / the "All" filter (they ARE items in the catalog).
@@ -662,6 +708,42 @@ export function InventoryShell() {
     }
   }, [uid, activePropertyId, refreshData]);
 
+  // ── Tab layout (0308) — reorder / remove / restore built-ins ────────────
+  // Persist optimistically: update local state now, write to the property in the
+  // background. updateProperty only touches inventory_tab_layout (dropUndefined),
+  // so it never collides with the budget-mode write.
+  const persistLayout = useCallback((next: InventoryTabLayout) => {
+    setTabLayout(next);
+    if (uid && activePropertyId) {
+      void updateProperty(uid, activePropertyId, { inventoryTabLayout: next })
+        .catch((err) => console.error('[inventory] save tab layout failed', err));
+    }
+  }, [uid, activePropertyId]);
+
+  const reorderTabs = useCallback((keys: string[]) => {
+    persistLayout({ order: keys, hidden: tabLayout.hidden });
+  }, [persistLayout, tabLayout.hidden]);
+
+  const removeTab = useCallback((key: string) => {
+    if (key.startsWith('custom:')) {
+      const id = key.slice(7);
+      void deleteCustomCategory(id); // deletes the row (items detach) + resets bucket
+      persistLayout({ order: tabLayout.order.filter((k) => k !== key), hidden: tabLayout.hidden });
+    } else {
+      // Hide a built-in tab. Items keep their category and still show under All.
+      const hidden = Array.from(new Set([...tabLayout.hidden, key]));
+      persistLayout({ order: tabLayout.order.filter((k) => k !== key), hidden });
+      setBucket((b) => (b === key ? 'all' : b));
+    }
+  }, [persistLayout, deleteCustomCategory, tabLayout]);
+
+  const restoreTab = useCallback((key: string) => {
+    persistLayout({
+      order: [...tabLayout.order.filter((k) => k !== key), key],
+      hidden: tabLayout.hidden.filter((k) => k !== key),
+    });
+  }, [persistLayout, tabLayout]);
+
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
   // cascade — ONCE. `revealed` is a one-way latch: it flips true when the
   // initial data is in (or after a 3.5s failsafe so a single failed fetch can
@@ -777,13 +859,13 @@ export function InventoryShell() {
               query={query}
               onQuery={setQuery}
               allCount={totalItems}
-              generalCount={generalCount}
-              breakfastCount={breakfastCount}
-              customCategories={customCategories}
-              customCounts={customCounts}
+              tabs={visibleTabs}
+              hiddenBuiltins={hiddenTabs}
               canManage={canManage}
+              onReorder={reorderTabs}
+              onRemove={removeTab}
+              onRestore={restoreTab}
               onAddCategory={(name) => void addCustomCategory(name)}
-              onDeleteCategory={(id) => void deleteCustomCategory(id)}
               view={view}
               onView={setView}
               onAdd={() => { setEditItem(null); setOverlay('add'); }}

@@ -123,11 +123,19 @@ const STRINGS = {
     // ── View toggle (Ledger table ↔ triage board) ──
     viewLedger: 'Ledger',
     viewBoard: 'Board',
-    // ── Custom category tabs (0307) ──
+    // ── Custom category tabs (0307) + tab layout editing (0308) ──
     addTab: 'Add a tab',
     newTabPh: 'Name (e.g. Liquor)',
     removeTab: 'Remove tab',
-    removeTabConfirm: 'Remove this tab? Its items move back to their normal category — nothing is deleted.',
+    editTabs: 'Edit tabs',
+    doneEditing: 'Done',
+    dragHint: 'Drag to reorder · tap ✕ to remove',
+    restoreTab: 'Add back',
+    removeTabTitle: 'Remove this tab?',
+    removeCustomMsg: 'This removes the tab for good. Its items aren’t deleted — they return to their normal category and show under All.',
+    removeBuiltinMsg: 'This tab is hidden — its items keep their category and still show under All. You can add it back anytime.',
+    removeConfirmBtn: 'Remove',
+    cancelBtn: 'Cancel',
   },
   es: {
     // ── Shell ──
@@ -206,11 +214,19 @@ const STRINGS = {
     // ── View toggle (tabla Libro ↔ tablero) ──
     viewLedger: 'Tabla',
     viewBoard: 'Tablero',
-    // ── Pestañas de categoría personalizadas (0307) ──
+    // ── Pestañas de categoría personalizadas (0307) + edición de pestañas (0308) ──
     addTab: 'Agregar pestaña',
     newTabPh: 'Nombre (ej. Licor)',
     removeTab: 'Quitar pestaña',
-    removeTabConfirm: '¿Quitar esta pestaña? Sus artículos vuelven a su categoría normal — no se elimina nada.',
+    editTabs: 'Editar pestañas',
+    doneEditing: 'Listo',
+    dragHint: 'Arrastra para reordenar · toca ✕ para quitar',
+    restoreTab: 'Volver a agregar',
+    removeTabTitle: '¿Quitar esta pestaña?',
+    removeCustomMsg: 'Esto elimina la pestaña de forma permanente. Sus artículos no se eliminan — vuelven a su categoría normal y aparecen en Todos.',
+    removeBuiltinMsg: 'Esta pestaña se oculta — sus artículos conservan su categoría y siguen apareciendo en Todos. Puedes volver a agregarla cuando quieras.',
+    removeConfirmBtn: 'Quitar',
+    cancelBtn: 'Cancelar',
   },
 };
 

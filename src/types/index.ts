@@ -82,10 +82,26 @@ export interface Property {
    * inventory Budgets panel.
    */
   inventoryBudgetMode?: InventoryBudgetMode;
+  /**
+   * How this hotel arranges its inventory filter tabs
+   * (properties.inventory_tab_layout, migration 0308). `order` is the display
+   * order of tab keys ('general' | 'breakfast' | 'custom:<uuid>'); 'all' is
+   * always pinned first and never listed. `hidden` is the set of built-in tabs
+   * the hotel removed. Undefined / null (every existing hotel) = the default
+   * layout (All, General, Breakfast, then customs) with nothing hidden.
+   */
+  inventoryTabLayout?: InventoryTabLayout | null;
   createdAt: Date;
 }
 
 export type InventoryBudgetMode = 'total' | 'sections';
+
+export interface InventoryTabLayout {
+  /** Display order of tab keys: 'general' | 'breakfast' | `custom:${uuid}`. */
+  order: string[];
+  /** Built-in tab keys the hotel has removed: subset of 'general' | 'breakfast'. */
+  hidden: string[];
+}
 
 // ─── Staff ─────────────────────────────────────────────────────────────────
 
