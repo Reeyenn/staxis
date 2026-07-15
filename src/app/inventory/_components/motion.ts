@@ -117,12 +117,21 @@ export function useRiseIn<T extends HTMLElement>(
 
 // ── FLIP layout animation ─────────────────────────────────────────────────
 // Put the returned ref on a container; every `[data-flip-id]` descendant gets
-// tracked across renders. When a card's on-screen position changes (filter,
-// search, a count moving it between triage columns) it glides from its old
-// spot instead of teleporting; brand-new cards rise in with a cascade stagger.
-// Removed cards unmount instantly — the survivors' glide carries the eye.
-// WAAPI, so it plays under prefers-reduced-motion like the rest of this file.
-export function useFlipList<T extends HTMLElement>() {
+// tracked across renders. When a card's/row's on-screen position changes
+// (filter, search, a sort, or an insert pushing others down) it glides from its
+// old spot instead of teleporting — that glide is what "makes room" for a new
+// item. Brand-new items slide in from the left (matching the Staff → Schedule
+// add-staff entrance) so you can see exactly what was just added, and the
+// newest one scrolls into view. Removed items unmount instantly. WAAPI, so it
+// plays under prefers-reduced-motion like the rest of this file.
+//
+// `revealNew` (opt-in) scrolls the single newest item into view after an add —
+// the sorted list can drop it anywhere, so without this the entrance can play
+// off-screen where you'd never see it.
+const ENTER_EASE = 'cubic-bezier(.2,.85,.3,1)'; // Staff add-staff easing.
+
+export function useFlipList<T extends HTMLElement>(opts: { revealNew?: boolean } = {}) {
+  const { revealNew = false } = opts;
   const ref = useRef<T | null>(null);
   const rects = useRef<Map<string, DOMRect>>(new Map());
 
@@ -142,10 +151,11 @@ export function useFlipList<T extends HTMLElement>() {
       const r = k.getBoundingClientRect();
       next.set(id, new DOMRect(r.left - origin.left, r.top - origin.top, r.width, r.height));
     });
-    // First population of the board always renders settled — no stagger.
-    // (Cards added later mid-session still individually rise in.)
+    // First population always renders settled — no stagger. (Items added later
+    // mid-session still individually slide in.)
     const initialPopulation = prev.size === 0;
     let enterIndex = 0;
+    const entered: HTMLElement[] = [];
     kids.forEach((k) => {
       const id = k.dataset.flipId;
       if (!id) return;
@@ -162,24 +172,35 @@ export function useFlipList<T extends HTMLElement>() {
           );
         }
       } else {
-        // Entering card — rise-and-settle, staggered but capped so a long
-        // board never keeps the tail invisible for more than ~a third of a second.
+        // Entering item — slide in from the left + fade, like the add-staff
+        // board. Siblings gliding (above) is the "make room" motion. Staggered
+        // but capped so a bulk add never keeps the tail invisible for long.
         k.animate(
           [
-            { opacity: 0, transform: 'translateY(12px) scale(.985)' },
+            { opacity: 0, transform: 'translateX(-26px)' },
             { opacity: 1, transform: 'none' },
           ],
           {
-            duration: 400,
-            delay: Math.min(enterIndex * 22, 330),
-            easing: EASE.settle,
+            duration: 440,
+            delay: Math.min(enterIndex * 24, 240),
+            easing: ENTER_EASE,
             fill: 'none',
           },
         );
+        entered.push(k);
         enterIndex += 1;
       }
     });
     rects.current = next;
+
+    // Bring the just-added item into view so the entrance is actually seen.
+    // Only for a small add (1–3) — a bulk import shouldn't yank the scroll.
+    // block:'nearest' no-ops when it's already visible.
+    if (revealNew && entered.length > 0 && entered.length <= 3) {
+      // Direct call (not rAF-wrapped): this is a layout effect, so the new row
+      // is already at its final position. block:'nearest' no-ops if visible.
+      try { entered[entered.length - 1].scrollIntoView({ block: 'nearest' }); } catch { /* noop */ }
+    }
   });
 
   return ref;

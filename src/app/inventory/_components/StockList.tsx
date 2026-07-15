@@ -69,7 +69,7 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }
   // FLIP over every card on the board: filtering/searching glides the
   // survivors into place, new cards rise in with a cascade, and an item that
   // changes triage column after a recount physically travels there.
-  const boardRef = useFlipList<HTMLDivElement>();
+  const boardRef = useFlipList<HTMLDivElement>({ revealNew: true });
 
   // Brand-new hotel (nothing counted at all, in the unfiltered "All" view) →
   // skip the empty triage board and show only the friendly "count to get

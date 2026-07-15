@@ -19,6 +19,7 @@ import { Serif } from './Serif';
 import { Btn } from './Btn';
 import { StatusDot } from './StatusPill';
 import { fmtMoney, fmtInt } from './format';
+import { useFlipList } from './motion';
 import type { DisplayItem } from './types';
 import { t, statusLabelFor, type Lang, type InvStrings } from './inv-i18n';
 
@@ -88,6 +89,10 @@ export function LedgerTable({
   const tx = t(lang);
   const [sortKey, setSortKey] = useState<SortKey>('days');
   const [sortDir, setSortDir] = useState<SortDir>(1);
+  // Rows glide when the sort/filter reorders them, and a newly-added item slides
+  // in from the left + scrolls into view (same feel as the add-staff board) so
+  // you can see what landed where. See useFlipList.
+  const rowsRef = useFlipList<HTMLDivElement>({ revealNew: true });
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -216,7 +221,7 @@ export function LedgerTable({
           boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)',
         }}
       >
-        <div style={{ overflowX: 'auto' }}>
+        <div ref={rowsRef} style={{ overflowX: 'auto' }}>
           {/* Header */}
           <div
             style={{
@@ -336,6 +341,7 @@ function LedgerRow({
   return (
     <div
       className="inv-ledger-row"
+      data-flip-id={d.id}
       onClick={() => onEdit?.(d)}
       style={{
         display: 'grid',
