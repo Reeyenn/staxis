@@ -18,9 +18,9 @@ import {
   type PhotoCount,
   type MergedFill,
 } from '@/lib/photo-count-merge';
-import type { InventoryItem, InventoryCount, InventoryCategory } from '@/types';
+import type { InventoryItem, InventoryCount, InventoryCategory, InventoryCustomCategory, InventoryTabLayout } from '@/types';
 
-import { T, fonts, statusColor, type InvCat } from '../tokens';
+import { T, fonts, statusColor, inBucket, type InvCat, type StockBucket } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Serif } from '../Serif';
@@ -38,6 +38,10 @@ interface CountSheetProps {
   onClose: () => void;
   items: InventoryItem[];
   display: DisplayItem[];
+  /** Hotel-defined custom category tabs (0307) — countable scopes. */
+  customCategories: InventoryCustomCategory[];
+  /** Tab layout (0308) — respects hidden built-ins + order for the chooser. */
+  tabLayout: InventoryTabLayout;
 }
 
 // A count entry and where its value came from: typed (`manual`) or filled from
@@ -70,7 +74,6 @@ function csStrings(lang: Lang) {
       title: 'Inventory counting',
       generalInventory: 'General inventory',
       breakfastInventory: 'Breakfast inventory',
-      countBoth: 'Count both',
       everything: 'Everything',
       items: 'items',
       cancel: 'Cancel',
@@ -107,7 +110,6 @@ function csStrings(lang: Lang) {
       title: 'Conteo de inventario',
       generalInventory: 'Inventario general',
       breakfastInventory: 'Inventario de desayuno',
-      countBoth: 'Contar ambos',
       everything: 'Todo',
       items: 'artículos',
       cancel: 'Cancelar',
@@ -143,12 +145,14 @@ function csStrings(lang: Lang) {
   }[lang];
 }
 
-export function CountSheet({ lang, open, onClose, items, display }: CountSheetProps) {
+export function CountSheet({ lang, open, onClose, items, display, customCategories, tabLayout }: CountSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const cs = csStrings(lang);
-  // scope: null shows the "what to count" chooser; a value shows the count list.
-  const [scope, setScope] = useState<Scope | null>(null);
+  // scope: null shows the "what to count" chooser; a StockBucket shows the count
+  // list for that tab. Mirrors the ledger's tabs — general/breakfast/custom:<id>
+  // or 'all' (Count everything) — via the shared inBucket().
+  const [scope, setScope] = useState<StockBucket | null>(null);
   const [entries, setEntries] = useState<Record<string, Entry>>({});
   const [saving, setSaving] = useState(false);
   // Items created via the inline "Add item" form during this count session.
@@ -234,21 +238,39 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     const byId = new Map<string, DisplayItem>();
     for (const d of extra) byId.set(d.id, d);
     for (const d of display) byId.set(d.id, d);
-    return [...byId.values()].filter((d) => inScope(d.cat, scope));
+    return [...byId.values()].filter((d) => inBucket(d, scope));
   }, [display, extra, scope]);
+
+  // The countable scopes = the hotel's VISIBLE tabs (built-ins minus any hidden
+  // via the tab editor, plus every custom tab), ordered like the ledger's tabs.
+  // "Count everything" ('all') is offered separately below.
+  const scopeOptions = useMemo(() => {
+    const hidden = new Set(tabLayout.hidden);
+    const opts: Array<{ bucket: StockBucket; label: string }> = [];
+    if (!hidden.has('general')) opts.push({ bucket: 'general', label: cs.generalInventory });
+    if (!hidden.has('breakfast')) opts.push({ bucket: 'breakfast', label: cs.breakfastInventory });
+    for (const c of customCategories) opts.push({ bucket: `custom:${c.id}` as StockBucket, label: c.name });
+    const orderIndex = new Map(tabLayout.order.map((k, i) => [k, i]));
+    opts.sort((a, b) => (orderIndex.get(a.bucket) ?? 999) - (orderIndex.get(b.bucket) ?? 999));
+    return opts;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- cs strings stable per lang
+  }, [tabLayout, customCategories, lang]);
+
+  const bucketLabel = (b: StockBucket): string =>
+    b === 'all' ? cs.everything : scopeOptions.find((o) => o.bucket === b)?.label ?? cs.everything;
 
   // Pick a scope → seed the count inputs for just that subset and proceed.
   // Counts always start EMPTY. No AI pre-fill.
-  const begin = (s: Scope) => {
+  const begin = (s: StockBucket) => {
     const next: Record<string, Entry> = {};
-    for (const d of display.filter((d) => inScope(d.cat, s))) {
+    for (const d of display.filter((d) => inBucket(d, s))) {
       next[d.id] = { value: '', source: 'manual' };
     }
     // Keep any in-sheet created items that belong to this scope (and their typed
     // count) so switching scope doesn't lose a just-added item before realtime
     // echoes it into `display`.
     for (const d of extra) {
-      if (inScope(d.cat, s)) next[d.id] = entries[d.id] ?? { value: '', source: 'manual' };
+      if (inBucket(d, s)) next[d.id] = entries[d.id] ?? { value: '', source: 'manual' };
     }
     resetAddForm();
     setEntries(next);
@@ -267,7 +289,10 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     // NaN-safe: numGuard permits a lone ".", which Number() turns into NaN.
     const parNum = addPar.trim() !== '' && Number.isFinite(Number(addPar)) ? Number(addPar) : 0;
     const costNum = addCost.trim() !== '' && Number.isFinite(Number(addCost)) ? Number(addCost) : undefined;
-    // Scope forces the built-in category (count scopes are general/breakfast).
+    // Land the new item in the tab being counted: a custom scope assigns its
+    // customCategoryId (so it shows only under that tab); breakfast → breakfast;
+    // general / everything → a plain housekeeping item.
+    const customId = typeof scope === 'string' && scope.startsWith('custom:') ? scope.slice(7) : null;
     const category: InventoryCategory = scope === 'breakfast' ? 'breakfast' : 'housekeeping';
     addLockRef.current = true;
     setAddBusy(true);
@@ -275,7 +300,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
       const id = await addInventoryItem(user.uid, activePropertyId, {
         name: nm,
         category,
-        customCategoryId: null,
+        customCategoryId: customId,
         currentStock: qty,
         parLevel: parNum,
         unitCost: costNum,
@@ -289,7 +314,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
         propertyId: activePropertyId,
         name: nm,
         category,
-        customCategoryId: null,
+        customCategoryId: customId,
         currentStock: qty,
         parLevel: parNum,
         unit: 'each',
@@ -399,17 +424,28 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
 
   if (!open) return null;
 
-  // STEP 1 — the chooser. Plain modal: just the title + three rows (label +
-  // item count).
+  // STEP 1 — the chooser: one row per visible tab (General / Breakfast / each
+  // custom tab), plus "Count everything". "Everything" always appears when a
+  // single tab wouldn't cover every item (multiple tabs, or items whose tab is
+  // hidden) so nothing is ever un-countable.
   if (scope === null) {
-    const gN = display.filter((d) => d.cat !== 'breakfast').length;
-    const bN = display.filter((d) => d.cat === 'breakfast').length;
+    const showEverything = scopeOptions.length !== 1
+      || display.some((d) => !inBucket(d, scopeOptions[0].bucket));
     return (
       <Overlay open onClose={requestClose} width={560} title={cs.title}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <ScopeOption title={cs.generalInventory} n={gN} itemsLabel={cs.items} onPick={() => begin('general')} />
-          <ScopeOption title={cs.breakfastInventory} n={bN} itemsLabel={cs.items} onPick={() => begin('breakfast')} />
-          <ScopeOption title={cs.countBoth} n={gN + bN} itemsLabel={cs.items} onPick={() => begin('all')} />
+          {scopeOptions.map((o) => (
+            <ScopeOption
+              key={o.bucket}
+              title={o.label}
+              n={display.filter((d) => inBucket(d, o.bucket)).length}
+              itemsLabel={cs.items}
+              onPick={() => begin(o.bucket)}
+            />
+          ))}
+          {showEverything && (
+            <ScopeOption title={cs.everything} n={display.length} itemsLabel={cs.items} onPick={() => begin('all')} />
+          )}
         </div>
       </Overlay>
     );
@@ -422,8 +458,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   }).length;
   const pct = total > 0 ? Math.round((100 * filled) / total) : 0;
 
-  const scopeLabel =
-    scope === 'general' ? cs.generalInventory : scope === 'breakfast' ? cs.breakfastInventory : cs.everything;
+  const scopeLabel = bucketLabel(scope);
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
@@ -685,14 +720,11 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   }
 
   // STEP 2 — the count list. One slim line per item: name + number box.
-  // Blank = skipped. Category dividers only when the scope spans more than one.
-  const allCats: InvCat[] =
-    scope === 'breakfast'
-      ? ['breakfast']
-      : scope === 'general'
-        ? ['housekeeping', 'maintenance']
-        : ['housekeeping', 'maintenance', 'breakfast'];
-  const cats = allCats.filter((c) => scopedDisplay.some((d) => d.cat === c));
+  // Blank = skipped. Group by whatever built-in categories are actually present
+  // in the scope (a custom tab's items keep their built-in category for the
+  // icon/divider); dividers only when more than one category is present.
+  const cats = (['housekeeping', 'maintenance', 'breakfast'] as InvCat[])
+    .filter((c) => scopedDisplay.some((d) => d.cat === c));
   const showDividers = cats.length > 1;
 
   return (
@@ -970,16 +1002,6 @@ function photoCountErrorFor(lang: Lang, status: number, detail?: string): string
   if (status === 429) return cs.errRateLimit;
   if (status === 503) return cs.errUnavailable;
   return detail || cs.errGeneric;
-}
-
-// What the count is scoped to: general = housekeeping + maintenance,
-// breakfast = food & beverage only, all = everything.
-type Scope = 'general' | 'breakfast' | 'all';
-
-function inScope(cat: InvCat, scope: Scope): boolean {
-  if (scope === 'all') return true;
-  if (scope === 'breakfast') return cat === 'breakfast';
-  return cat !== 'breakfast';
 }
 
 // One chooser row: serif label on the left, "{n} items" + arrow on the right.
