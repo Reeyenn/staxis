@@ -4,6 +4,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import {
+  addInventoryItem,
   addInventoryCountBatch,
   addInventoryOrder,
   fetchInventoryStockByIds,
@@ -17,13 +18,14 @@ import {
   type PhotoCount,
   type MergedFill,
 } from '@/lib/photo-count-merge';
-import type { InventoryItem, InventoryCount } from '@/types';
+import type { InventoryItem, InventoryCount, InventoryCategory } from '@/types';
 
 import { T, fonts, statusColor, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
+import { toDisplayItem } from '../adapter';
 import { Overlay } from './Overlay';
 import { numGuard } from './form-kit';
 import { entriesFingerprint, computeStockUps, unchangedItemIds } from './count-save';
@@ -91,6 +93,15 @@ function csStrings(lang: Lang) {
       errGeneric: 'Couldn’t count that photo. Please try again.',
       couldntReadPhoto: 'Couldn’t read that photo — try a clearer, well-lit shot.',
       nothingRecognized: 'Nothing in the photo matched your items — try a closer shot.',
+      addItem: 'Add an item',
+      fName: 'Name',
+      fNamePh: 'e.g. Orange juice',
+      fCount: 'Count',
+      fPar: 'Par level',
+      fCost: 'Unit cost',
+      optional: 'optional',
+      addBtn: 'Add',
+      addFailed: 'Couldn’t add the item. Please try again.',
     },
     es: {
       title: 'Conteo de inventario',
@@ -119,6 +130,15 @@ function csStrings(lang: Lang) {
       errGeneric: 'No se pudo contar esa foto. Inténtalo de nuevo.',
       couldntReadPhoto: 'No se pudo leer la foto — intenta una toma más clara y bien iluminada.',
       nothingRecognized: 'Nada en la foto coincidió con tus artículos — intenta una toma más cercana.',
+      addItem: 'Agregar un artículo',
+      fName: 'Nombre',
+      fNamePh: 'ej. Jugo de naranja',
+      fCount: 'Conteo',
+      fPar: 'Nivel par',
+      fCost: 'Costo unitario',
+      optional: 'opcional',
+      addBtn: 'Agregar',
+      addFailed: 'No se pudo agregar el artículo. Inténtalo de nuevo.',
     },
   }[lang];
 }
@@ -131,6 +151,19 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   const [scope, setScope] = useState<Scope | null>(null);
   const [entries, setEntries] = useState<Record<string, Entry>>({});
   const [saving, setSaving] = useState(false);
+  // Items created via the inline "Add item" form during this count session.
+  // `extra` is the local optimistic copy (merged into scopedDisplay until
+  // realtime echoes the real row into the `display` prop); `createdIdsRef`
+  // marks them so handleSave never mistakes a just-catalogued item for a
+  // received stock-up (which would fabricate a phantom order + inflate spend).
+  const [extra, setExtra] = useState<DisplayItem[]>([]);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addName, setAddName] = useState('');
+  const [addQty, setAddQty] = useState('');
+  const [addPar, setAddPar] = useState('');
+  const [addCost, setAddCost] = useState('');
+  const [addBusy, setAddBusy] = useState(false);
+  const createdIdsRef = useRef<Set<string>>(new Set());
   // Photo flow: choose photo → AI reads → `review` holds its estimates for the
   // user to adjust before they're applied to the count list.
   const [review, setReview] = useState<ReviewFill[] | null>(null);
@@ -145,6 +178,21 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
   // entries fingerprint — editing a number starts a fresh attempt, but the
   // fresh attempt carries completion forward for entries that didn't change.
   const progRef = useRef<SaveProgress | null>(null);
+  // Synchronous re-entrancy lock for handleAdd — `addBusy` state lags the insert
+  // by a render, so a fast double-click / Enter would otherwise create two rows.
+  const addLockRef = useRef(false);
+
+  // Collapse + clear the inline add form. Does NOT clear `extra`/`createdIds`
+  // (those persist for the whole count session; only a fresh open resets them),
+  // so a created item survives a scope change instead of vanishing before the
+  // realtime echo lands.
+  const resetAddForm = () => {
+    setAddOpen(false);
+    setAddName('');
+    setAddQty('');
+    setAddPar('');
+    setAddCost('');
+  };
 
   // Show the "what to count" chooser fresh on every open (clear any old state).
   useEffect(() => {
@@ -156,6 +204,13 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
       setPhotoBusy(false);
       setPhotoErr('');
       progRef.current = null;
+      setExtra([]);
+      setAddOpen(false);
+      setAddName('');
+      setAddQty('');
+      setAddPar('');
+      setAddCost('');
+      createdIdsRef.current = new Set();
     }
   }, [open]);
 
@@ -170,11 +225,17 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     onClose();
   };
 
-  // The items in the chosen scope. Empty until a scope is picked.
-  const scopedDisplay = useMemo(
-    () => (scope === null ? [] : display.filter((d) => inScope(d.cat, scope))),
-    [display, scope],
-  );
+  // The items in the chosen scope. Empty until a scope is picked. Items created
+  // in-sheet (`extra`) are merged in and deduped by id — once realtime echoes
+  // the real row into `display`, the prop version wins (same id), so there's no
+  // double render.
+  const scopedDisplay = useMemo(() => {
+    if (scope === null) return [];
+    const byId = new Map<string, DisplayItem>();
+    for (const d of extra) byId.set(d.id, d);
+    for (const d of display) byId.set(d.id, d);
+    return [...byId.values()].filter((d) => inScope(d.cat, scope));
+  }, [display, extra, scope]);
 
   // Pick a scope → seed the count inputs for just that subset and proceed.
   // Counts always start EMPTY. No AI pre-fill.
@@ -183,8 +244,81 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
     for (const d of display.filter((d) => inScope(d.cat, s))) {
       next[d.id] = { value: '', source: 'manual' };
     }
+    // Keep any in-sheet created items that belong to this scope (and their typed
+    // count) so switching scope doesn't lose a just-added item before realtime
+    // echoes it into `display`.
+    for (const d of extra) {
+      if (inScope(d.cat, s)) next[d.id] = entries[d.id] ?? { value: '', source: 'manual' };
+    }
+    resetAddForm();
     setEntries(next);
     setScope(s);
+  };
+
+  // Create a brand-new item from the inline "Add item" form and drop it into the
+  // count list immediately (with an optional pre-typed count). Created with
+  // currentStock = the typed count so its on-hand reads right away; its id is
+  // recorded in createdIdsRef so Save never fabricates a stock-up order for it.
+  const handleAdd = async () => {
+    if (!user || !activePropertyId || addBusy || addLockRef.current) return;
+    const nm = addName.trim();
+    if (!nm) return;
+    const qty = Number(addQty) || 0;
+    // NaN-safe: numGuard permits a lone ".", which Number() turns into NaN.
+    const parNum = addPar.trim() !== '' && Number.isFinite(Number(addPar)) ? Number(addPar) : 0;
+    const costNum = addCost.trim() !== '' && Number.isFinite(Number(addCost)) ? Number(addCost) : undefined;
+    // Scope forces the built-in category (count scopes are general/breakfast).
+    const category: InventoryCategory = scope === 'breakfast' ? 'breakfast' : 'housekeeping';
+    addLockRef.current = true;
+    setAddBusy(true);
+    try {
+      const id = await addInventoryItem(user.uid, activePropertyId, {
+        name: nm,
+        category,
+        customCategoryId: null,
+        currentStock: qty,
+        parLevel: parNum,
+        unitCost: costNum,
+        unit: 'each',
+        reorderLeadDays: 3,
+        propertyId: activePropertyId,
+      });
+      createdIdsRef.current.add(id);
+      const raw: InventoryItem = {
+        id,
+        propertyId: activePropertyId,
+        name: nm,
+        category,
+        customCategoryId: null,
+        currentStock: qty,
+        parLevel: parNum,
+        unit: 'each',
+        reorderLeadDays: 3,
+        unitCost: costNum,
+        updatedAt: null,
+        lastCountedAt: qty > 0 ? new Date() : null,
+      };
+      // occupancy:null ⇒ estimated = currentStock, so variance at Save is 0.
+      const d = toDisplayItem(raw, {
+        occupancy: null,
+        dailyAverages: null,
+        mlRateMap: new Map(),
+        autoFillGraduated: new Set(),
+      });
+      setExtra((p) => [...p, d]);
+      setEntries((p) => ({ ...p, [id]: { value: addQty, source: 'manual' } }));
+      setAddOpen(false);
+      setAddName('');
+      setAddQty('');
+      setAddPar('');
+      setAddCost('');
+    } catch (err) {
+      console.error('[count-sheet] add item failed', err);
+      alert(cs.addFailed);
+    } finally {
+      addLockRef.current = false;
+      setAddBusy(false);
+    }
   };
 
   const setEntry = (id: string, val: string) =>
@@ -319,13 +453,17 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           if (!e || e.value === '') continue;
           const n = Number(e.value);
           if (!Number.isFinite(n)) continue;
-          const variance = Number.isFinite(d.estimated) ? n - d.estimated : undefined;
+          // An item catalogued in-sheet has no prior estimate to vary from — its
+          // count IS the initial on-hand — so record no variance (a fabricated
+          // surplus/shrinkage $ figure would otherwise land in count history).
+          const isNew = createdIdsRef.current.has(d.id);
+          const variance = !isNew && Number.isFinite(d.estimated) ? n - d.estimated : undefined;
           rows.push({
             propertyId: activePropertyId,
             itemId: d.id,
             itemName: d.name,
             countedStock: n,
-            estimatedStock: Number.isFinite(d.estimated) ? d.estimated : undefined,
+            estimatedStock: !isNew && Number.isFinite(d.estimated) ? d.estimated : undefined,
             variance,
             varianceValue:
               variance !== undefined && d.unitCost > 0 ? variance * d.unitCost : undefined,
@@ -357,8 +495,12 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           user.uid, activePropertyId, counted.map((c) => c.id),
         );
         // Counted stock HIGHER than what's on file NOW → log a restock event
-        // (someone received stock between counts and forgot to log it).
-        const stockUps = computeStockUps(counted, freshStock);
+        // (someone received stock between counts and forgot to log it). Items
+        // just catalogued via the inline "Add item" form are excluded: their
+        // count is an initial catalog entry, not a received delivery, so logging
+        // an order would fabricate phantom spend.
+        const stockUps = computeStockUps(counted, freshStock)
+          .filter((s) => !createdIdsRef.current.has(s.id));
 
         // Editing entries after a PARTIAL failure must not restart from
         // scratch: the previous attempt's completed steps for items whose
@@ -576,7 +718,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
         <button
           type="button"
-          onClick={() => setScope(null)}
+          onClick={() => { setScope(null); resetAddForm(); }}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '5px 11px 5px 8px', borderRadius: 8, cursor: 'pointer',
@@ -624,6 +766,74 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
         </span>
       </div>
 
+      {/* Add an item mid-count — collapsed button that drops down into a small
+          form (name + count, optional par + unit cost). Created on Add and
+          appears in the list right below, ready to keep counting. */}
+      <div style={{ margin: '12px 0 2px' }}>
+        {!addOpen ? (
+          <button
+            type="button"
+            onClick={() => setAddOpen(true)}
+            style={{
+              width: '100%', height: 38, borderRadius: 10, cursor: 'pointer',
+              background: T.bg, border: `1px dashed ${T.rule}`, color: T.ink2,
+              fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            }}
+          >
+            <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span>{cs.addItem}
+          </button>
+        ) : (
+          <div
+            style={{
+              padding: 12, borderRadius: 12, background: T.inkWash,
+              border: `1px solid ${T.rule}`, display: 'flex', flexDirection: 'column', gap: 10,
+            }}
+          >
+            <AddField label={cs.fName}>
+              <input
+                autoFocus
+                type="text"
+                value={addName}
+                onChange={(e) => setAddName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && addName.trim() && !addBusy) { e.preventDefault(); void handleAdd(); } }}
+                placeholder={cs.fNamePh}
+                style={addInputStyle}
+              />
+            </AddField>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <AddField label={cs.fCount}>
+                <input
+                  type="number" min="0" inputMode="decimal" value={addQty}
+                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddQty(v); }}
+                  placeholder="—" style={addInputStyle}
+                />
+              </AddField>
+              <AddField label={cs.fPar} hint={cs.optional}>
+                <input
+                  type="number" min="0" inputMode="decimal" value={addPar}
+                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddPar(v); }}
+                  placeholder="—" style={addInputStyle}
+                />
+              </AddField>
+              <AddField label={cs.fCost} hint={cs.optional}>
+                <input
+                  type="number" min="0" step="0.01" inputMode="decimal" value={addCost}
+                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddCost(v); }}
+                  placeholder="0.00" style={addInputStyle}
+                />
+              </AddField>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <Btn variant="ghost" size="sm" onClick={resetAddForm} disabled={addBusy}>{cs.cancel}</Btn>
+              <Btn variant="primary" size="sm" onClick={() => void handleAdd()} disabled={addBusy || !addName.trim()}>
+                {addBusy ? cs.saving : cs.addBtn}
+              </Btn>
+            </div>
+          </div>
+        )}
+      </div>
+
       {cats.map((cat) => (
         <div key={cat}>
           {showDividers && (
@@ -643,6 +853,27 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
         </div>
       ))}
     </Overlay>
+  );
+}
+
+// Compact input for the inline add-item form (matches the sheet's density).
+const addInputStyle: React.CSSProperties = {
+  width: '100%', height: 36, padding: '0 11px', borderRadius: 8, boxSizing: 'border-box',
+  background: T.bg, border: `1px solid ${T.rule}`, outline: 'none',
+  fontFamily: fonts.sans, fontSize: 13.5, color: T.ink,
+};
+
+// A tiny labelled field for the inline add-item form: a caps label (with an
+// optional "optional" hint) stacked over its input.
+function AddField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <span style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+        <Caps size={8.5}>{label}</Caps>
+        {hint && <span style={{ fontFamily: fonts.sans, fontSize: 9, color: T.faint }}>{hint}</span>}
+      </span>
+      {children}
+    </div>
   );
 }
 
