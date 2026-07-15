@@ -57,6 +57,11 @@ interface BudgetsPanelProps {
 
 const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
+// Constant height for the budget-rows panel so the modal never changes size
+// between modes. Sized to show the three categories + "Add a section" without
+// scrolling; more sections (or the section form) scroll inside it.
+const ROWS_PANEL_H = 268;
+
 function bpStrings(lang: Lang) {
   return {
     en: {
@@ -68,6 +73,7 @@ function bpStrings(lang: Lang) {
       howBudgetsWork: 'How budgets work',
       totalTitle: 'One total budget',
       totalSub: 'A single number for the whole inventory.',
+      totalCovers: 'This one budget covers every category — housekeeping, maintenance, food & beverage, and any sections.',
       sectionsTitle: 'By section',
       sectionsSub: 'Housekeeping, maintenance, food & beverage — plus your own sections.',
       month: 'Month',
@@ -101,6 +107,7 @@ function bpStrings(lang: Lang) {
       howBudgetsWork: 'Cómo funcionan los presupuestos',
       totalTitle: 'Un presupuesto total',
       totalSub: 'Un solo número para todo el inventario.',
+      totalCovers: 'Este presupuesto cubre todas las categorías — limpieza, mantenimiento, alimentos y cualquier sección.',
       sectionsTitle: 'Por sección',
       sectionsSub: 'Limpieza, mantenimiento, alimentos — más tus propias secciones.',
       month: 'Mes',
@@ -398,8 +405,20 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
           </div>
         </div>
 
-        {/* Budget rows */}
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 18px' }}>
+        {/* Budget rows — FIXED height + internal scroll so the panel is the
+            exact same size in both modes (and whether the section form is
+            open). One total row, three categories, or a dozen sections all
+            live in the same footprint; extra rows scroll. */}
+        <div
+          style={{
+            background: T.paper,
+            border: `1px solid ${T.rule}`,
+            borderRadius: 14,
+            padding: '4px 18px',
+            height: ROWS_PANEL_H,
+            overflowY: 'auto',
+          }}
+        >
           {rows.map((row, i) => (
             <div
               key={row.key}
@@ -438,6 +457,14 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
               <DollarInput value={arrFor(row.key)[month]} onChange={(v) => setVal(row.key, v)} />
             </div>
           ))}
+
+          {/* Total mode has just one row — a quiet line so the panel doesn't
+              read as empty. */}
+          {mode === 'total' && (
+            <div style={{ padding: '12px 2px 4px', borderTop: `1px solid ${T.ruleSoft}`, fontFamily: fonts.sans, fontSize: 12, color: T.ink3, lineHeight: 1.5 }}>
+              {bp.totalCovers}
+            </div>
+          )}
 
           {/* Add a section */}
           {mode === 'sections' && !formOpen && (
