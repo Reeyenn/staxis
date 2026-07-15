@@ -826,6 +826,7 @@ export function InventoryShell() {
         sections={budgetSections}
         mode={budgetMode}
         display={display}
+        spendDetail={spendDetail}
         onChanged={(m) => { if (m) setBudgetMode(m); void refreshData(); }}
       />
 

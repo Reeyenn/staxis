@@ -1,20 +1,23 @@
 'use client';
 
-// Budgets — how much the hotel has to spend on inventory, per month.
+// Budgets — set the hotel's monthly inventory spend caps, and see this month's
+// spend against them.
 //
 // Two ways to budget (properties.inventory_budget_mode, migration 0306):
 //   • One total budget — a single whole-inventory number per month.
 //   • By section — the three app categories PLUS custom hotel sections
 //     ("Pool supplies"), each mapped to specific items so spend tracks.
 //
-// Numbers are always per-month (the old "same every month" mode is gone —
-// "Copy to the whole year" covers that workflow). A year switcher covers
-// planning next year's budgets in the fall. $0 = no cap.
+// Numbers are always per-month; "Copy to the whole year" fills a year. A year
+// switcher covers planning next year in the fall. An empty box = no cap.
 //
-// Sections are created/removed immediately (with their budget rows); the
-// dollar numbers save on Save. Switching modes never wipes the other mode's
-// numbers — they keep living in inventory_budgets and come back if you
-// switch back.
+// Spend vs budget: when the panel is showing the CURRENT calendar month, each
+// row shows what's been spent against its cap (green under, amber near, red
+// over) and the footer rolls it up — a GM opening Budgets sees where they
+// stand at a glance. Other months (planning ahead) just show the caps.
+//
+// Values are held as strings so an empty field stays empty (not "0") and typing
+// never leaves a stray leading zero.
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
@@ -25,6 +28,7 @@ import {
   deleteInventoryBudgetSection,
   sectionBudgetKey,
   updateProperty,
+  type MonthSpendDetail,
 } from '@/lib/db';
 import type { InventoryBudget, InventoryBudgetMode, InventoryBudgetSection } from '@/types';
 
@@ -33,6 +37,7 @@ import { CatIcon } from '../CatIcon';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
+import { numGuard } from './form-kit';
 import { fmtMoney } from '../format';
 import type { DisplayItem } from '../types';
 import { catLabelFor, monthsFor, type Lang } from '../inv-i18n';
@@ -46,6 +51,8 @@ interface BudgetsPanelProps {
   mode: InventoryBudgetMode;
   /** Full catalog — the custom-section item picker. */
   display: DisplayItem[];
+  /** Month-to-date spend (dollars) — total, per category, per item. */
+  spendDetail: MonthSpendDetail;
   /**
    * Fired after any persisted change so the parent refetches. `mode` is set
    * ONLY when Save wrote it to the property — section add/remove must not
@@ -58,15 +65,13 @@ interface BudgetsPanelProps {
 const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
 // Constant height for the budget-rows panel so the modal never changes size
-// between modes. Sized to show the three categories + "Add a section" without
-// scrolling; more sections (or the section form) scroll inside it.
-const ROWS_PANEL_H = 268;
+// between modes. Sized to show the three categories + "Add a section".
+const ROWS_PANEL_H = 300;
 
 function bpStrings(lang: Lang) {
   return {
     en: {
       eyebrow: 'Budgets',
-      italic: 'How much you have to spend',
       cancel: 'Cancel',
       saving: 'Saving…',
       save: 'Save',
@@ -79,8 +84,6 @@ function bpStrings(lang: Lang) {
       month: 'Month',
       wholeInventory: 'Whole inventory',
       forMonth: (m: string, y: number) => `for ${m} ${y}`,
-      totalThisMonth: 'Total this month',
-      copyToYear: (m: string, y: number) => `Copy ${m} to all of ${y}`,
       addSection: '＋ Add a section',
       sectionNamePh: 'Section name (e.g. Pool supplies)',
       whichItems: 'Which items count toward it',
@@ -88,19 +91,28 @@ function bpStrings(lang: Lang) {
       nothingMatches: 'Nothing matches.',
       createSection: 'Create section',
       saveSection: 'Save section',
-      itemsCount: (n: number) => `${n} item${n === 1 ? '' : 's'} tracked`,
-      noItemsYet: 'no items yet — spending won’t track',
+      items: (n: number) => `${n} item${n === 1 ? '' : 's'}`,
+      noItemsYet: 'no items yet',
       edit: 'Edit',
       remove: 'Remove',
       confirmRemove: 'Remove?',
-      removeNote: 'Removing a section also removes its budget numbers.',
       sectionFailed: 'Saving the section failed. Please try again.',
       saveFailed: 'Saving the budgets failed. Please try again.',
-      zeroHint: '$0 means no cap.',
+      noCapHint: 'Leave a box empty for no cap.',
+      // Spend
+      spentOf: (spent: string, cap: string) => `${spent} spent of ${cap}`,
+      left: (v: string) => `${v} left`,
+      over: (v: string) => `${v} over`,
+      noBudget: (spent: string) => `${spent} spent · no budget set`,
+      thisMonthSpend: 'This month’s spend',
+      totalBudget: 'Total budget',
+      noBudgetsYet: 'No budgets set for this month. Add caps below to track spend against them.',
+      overBanner: (names: string) => `Over budget: ${names}.`,
+      nearBanner: (names: string) => `Close to budget: ${names}.`,
+      planningNote: (m: string, y: number) => `Planning ${m} ${y} — spend shows on the current month.`,
     },
     es: {
       eyebrow: 'Presupuestos',
-      italic: 'Cuánto tienes para gastar',
       cancel: 'Cancelar',
       saving: 'Guardando…',
       save: 'Guardar',
@@ -113,8 +125,6 @@ function bpStrings(lang: Lang) {
       month: 'Mes',
       wholeInventory: 'Todo el inventario',
       forMonth: (m: string, y: number) => `para ${m} ${y}`,
-      totalThisMonth: 'Total este mes',
-      copyToYear: (m: string, y: number) => `Copiar ${m} a todo ${y}`,
       addSection: '＋ Agregar sección',
       sectionNamePh: 'Nombre de la sección (ej. Artículos de piscina)',
       whichItems: 'Qué artículos cuentan para ella',
@@ -122,43 +132,59 @@ function bpStrings(lang: Lang) {
       nothingMatches: 'Nada coincide.',
       createSection: 'Crear sección',
       saveSection: 'Guardar sección',
-      itemsCount: (n: number) => `${n} artículo${n === 1 ? '' : 's'} seguido${n === 1 ? '' : 's'}`,
-      noItemsYet: 'sin artículos — el gasto no se seguirá',
+      items: (n: number) => `${n} artículo${n === 1 ? '' : 's'}`,
+      noItemsYet: 'sin artículos',
       edit: 'Editar',
       remove: 'Quitar',
       confirmRemove: '¿Quitar?',
-      removeNote: 'Quitar una sección también quita sus números de presupuesto.',
       sectionFailed: 'No se pudo guardar la sección. Inténtalo de nuevo.',
       saveFailed: 'No se pudieron guardar los presupuestos. Inténtalo de nuevo.',
-      zeroHint: '$0 significa sin límite.',
+      noCapHint: 'Deja una casilla vacía para no poner límite.',
+      // Spend
+      spentOf: (spent: string, cap: string) => `${spent} gastado de ${cap}`,
+      left: (v: string) => `${v} disponible`,
+      over: (v: string) => `${v} sobre`,
+      noBudget: (spent: string) => `${spent} gastado · sin presupuesto`,
+      thisMonthSpend: 'Gasto de este mes',
+      totalBudget: 'Presupuesto total',
+      noBudgetsYet: 'Sin presupuestos este mes. Agrega límites abajo para seguir el gasto.',
+      overBanner: (names: string) => `Sobre presupuesto: ${names}.`,
+      nearBanner: (names: string) => `Cerca del límite: ${names}.`,
+      planningNote: (m: string, y: number) => `Planeando ${m} ${y} — el gasto se muestra en el mes actual.`,
     },
   }[lang];
 }
 
 const valKey = (budgetKey: string, year: number) => `${budgetKey}|${year}`;
+const EMPTY12 = (): string[] => Array(12).fill('');
+const numOf = (s: string): number => Number(s) || 0;
 
-export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: savedMode, display, onChanged }: BudgetsPanelProps) {
+type SpendStatus = 'ok' | 'near' | 'over' | 'nocap';
+function spendColor(s: SpendStatus): string {
+  return s === 'over' ? T.warm : s === 'near' ? T.caramel : s === 'ok' ? T.forestText : T.ink3;
+}
+
+export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: savedMode, display, spendDetail, onChanged }: BudgetsPanelProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const bp = bpStrings(lang);
   const MONTHS = monthsFor(lang);
-  // LOCAL year/month for "where the panel opens" — a GM typing "this month's
-  // budget" on July 31, 8pm CDT means July, not the UTC August. (Budget ROWS
-  // stay keyed by UTC month starts — only the "now" side is local.)
-  const thisYear = new Date().getFullYear();
+  // LOCAL now — "this month" is the hotel's calendar month, and it's the only
+  // month spendDetail covers.
+  const now = useMemo(() => new Date(), []);
+  const curMonth = now.getMonth();
+  const curYear = now.getFullYear();
+  const thisYear = curYear;
   const YEARS = [thisYear, thisYear + 1];
 
   const [mode, setMode] = useState<InventoryBudgetMode>(savedMode);
   const [year, setYear] = useState<number>(thisYear);
-  const [month, setMonth] = useState<number>(new Date().getMonth());
-  // Dollar values per (budget key, year): key `<budgetKey>|<year>` → 12 months.
-  const [vals, setVals] = useState<Record<string, number[]>>({});
-  // Composite keys with unsaved edits — the only arrays Save writes.
+  const [month, setMonth] = useState<number>(curMonth);
+  // Raw string values per (budget key, year): key `<budgetKey>|<year>` → 12 months.
+  const [vals, setVals] = useState<Record<string, string[]>>({});
   const [dirty, setDirty] = useState<Set<string>>(() => new Set());
   const [saving, setSaving] = useState(false);
-  // Local mirror so a freshly-created section appears before the parent refetch.
   const [localSections, setLocalSections] = useState<InventoryBudgetSection[]>(sections);
-  // Add/edit section mini-form.
   const [formOpen, setFormOpen] = useState(false);
   const [formId, setFormId] = useState<string | null>(null); // null = creating
   const [formName, setFormName] = useState('');
@@ -167,11 +193,11 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
   const [formBusy, setFormBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
 
-  // Hydration. Two distinct cases, and getting them wrong loses typed money:
-  //   1. closed→open: full reset from props (fresh session).
-  //   2. `budgets` refreshes WHILE open (section add/remove triggers a parent
-  //      refetch): merge the fresh numbers ONLY if the GM has no unsaved
-  //      edits — never wipe `dirty` values or reset mode/month/year mid-edit.
+  // Whether the panel is showing the live month (the only one with spend).
+  const showSpend = year === curYear && month === curMonth;
+
+  // Hydration. closed→open: full reset. Mid-edit `budgets` refresh: merge only
+  // if the GM has no unsaved edits, so typed money is never wiped.
   const wasOpenRef = useRef(false);
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
@@ -182,89 +208,116 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     }
     const firstOpen = !wasOpenRef.current;
     wasOpenRef.current = true;
-    if (!firstOpen && dirtyRef.current.size > 0) return; // mid-edit refresh — keep typed values
+    if (!firstOpen && dirtyRef.current.size > 0) return;
 
-    const next: Record<string, number[]> = {};
+    const next: Record<string, string[]> = {};
     for (const b of budgets) {
       if (!b.monthStart) continue;
       const y = b.monthStart.getUTCFullYear();
       if (!YEARS.includes(y)) continue;
       const k = valKey(b.category, y);
-      if (!next[k]) next[k] = Array(12).fill(0);
-      next[k][b.monthStart.getUTCMonth()] = b.budgetCents / 100;
+      if (!next[k]) next[k] = EMPTY12();
+      // 0 cents = no cap → keep the box empty; only real amounts show a number.
+      next[k][b.monthStart.getUTCMonth()] = b.budgetCents > 0 ? String(b.budgetCents / 100) : '';
     }
     setVals(next);
     setDirty(new Set());
     if (firstOpen) {
       setMode(savedMode);
       setYear(thisYear);
-      setMonth(new Date().getMonth());
+      setMonth(curMonth);
       setFormOpen(false);
       setConfirmingRemove(null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- YEARS/thisYear derived; savedMode only read on open
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- YEARS/thisYear/curMonth derived; savedMode read on open
   }, [open, budgets]);
 
   useEffect(() => {
     setLocalSections(sections);
   }, [sections]);
 
-  const arrFor = (budgetKey: string): number[] => vals[valKey(budgetKey, year)] ?? Array(12).fill(0);
+  const arrFor = (budgetKey: string): string[] => vals[valKey(budgetKey, year)] ?? EMPTY12();
+  const capOf = (budgetKey: string): number => numOf(arrFor(budgetKey)[month]);
 
-  const setVal = (budgetKey: string, dollars: number) => {
+  const setVal = (budgetKey: string, raw: string) => {
     const k = valKey(budgetKey, year);
     setVals((p) => {
-      const arr = [...(p[k] ?? Array(12).fill(0))];
-      arr[month] = dollars;
+      const arr = [...(p[k] ?? EMPTY12())];
+      arr[month] = raw;
       return { ...p, [k]: arr };
     });
     setDirty((p) => new Set(p).add(k));
   };
 
-  // The budget keys the active mode edits.
   const activeKeys = useMemo(
     () => (mode === 'total' ? ['total'] : [...CATS, ...localSections.map((s) => sectionBudgetKey(s.id))]),
     [mode, localSections],
   );
 
+  // Spend against a budget key (only meaningful for the live month).
+  const spentFor = (budgetKey: string): number => {
+    if (budgetKey === 'total') return spendDetail.total;
+    if (budgetKey.startsWith('section:')) {
+      const sec = localSections.find((s) => sectionBudgetKey(s.id) === budgetKey);
+      if (!sec) return 0;
+      return sec.itemIds.reduce((s, id) => s + (spendDetail.byItem[id] ?? 0), 0);
+    }
+    return spendDetail.byCat[budgetKey as InvCat] ?? 0;
+  };
+
+  const statusFor = (cap: number, spent: number): SpendStatus => {
+    if (cap <= 0) return 'nocap';
+    if (spent > cap) return 'over';
+    if (spent >= cap * 0.8) return 'near';
+    return 'ok';
+  };
+
   const copyToYear = () => {
     setVals((p) => {
-      const next = { ...p };
+      const nextVals = { ...p };
       for (const key of activeKeys) {
         const k = valKey(key, year);
-        const v = (p[k] ?? Array(12).fill(0))[month];
-        next[k] = Array(12).fill(v);
+        const v = (p[k] ?? EMPTY12())[month];
+        nextVals[k] = Array(12).fill(v);
       }
-      return next;
+      return nextVals;
     });
     setDirty((p) => {
-      const next = new Set(p);
-      for (const key of activeKeys) next.add(valKey(key, year));
-      return next;
+      const nextD = new Set(p);
+      for (const key of activeKeys) nextD.add(valKey(key, year));
+      return nextD;
     });
   };
 
-  const monthTotal = useMemo(
-    () => activeKeys.reduce((s, key) => s + arrFor(key)[month], 0),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- arrFor reads vals/year
+  const monthBudgetTotal = useMemo(
+    () => activeKeys.reduce((s, key) => s + capOf(key), 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- capOf reads vals/year/month
     [activeKeys, vals, year, month],
   );
+  const monthSpentTotal = spendDetail.total;
+
+  // GM alerts for the live month: which rows are over / near their cap.
+  const alerts = useMemo(() => {
+    if (!showSpend) return { over: [] as string[], near: [] as string[] };
+    const over: string[] = [];
+    const near: string[] = [];
+    for (const key of activeKeys) {
+      const cap = capOf(key);
+      if (cap <= 0) continue;
+      const st = statusFor(cap, spentFor(key));
+      const label = key === 'total' ? bp.wholeInventory
+        : key.startsWith('section:') ? (localSections.find((s) => sectionBudgetKey(s.id) === key)?.name ?? '')
+        : catLabelFor(lang, key as InvCat);
+      if (st === 'over') over.push(label);
+      else if (st === 'near') near.push(label);
+    }
+    return { over, near };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reads vals via capOf
+  }, [showSpend, activeKeys, vals, year, month, spendDetail, localSections, lang]);
 
   // ── Section create / edit / remove (persist immediately) ────────────
-  const openCreateForm = () => {
-    setFormId(null);
-    setFormName('');
-    setFormItems(new Set());
-    setFormQuery('');
-    setFormOpen(true);
-  };
-  const openEditForm = (s: InventoryBudgetSection) => {
-    setFormId(s.id);
-    setFormName(s.name);
-    setFormItems(new Set(s.itemIds));
-    setFormQuery('');
-    setFormOpen(true);
-  };
+  const openCreateForm = () => { setFormId(null); setFormName(''); setFormItems(new Set()); setFormQuery(''); setFormOpen(true); };
+  const openEditForm = (s: InventoryBudgetSection) => { setFormId(s.id); setFormName(s.name); setFormItems(new Set(s.itemIds)); setFormQuery(''); setFormOpen(true); };
 
   const submitSection = async () => {
     if (!user || !activePropertyId || formBusy) return;
@@ -306,25 +359,23 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     }
   };
 
-  // ── Save the numbers (+ mode) ────────────────────────────────────────
+  // ── Save ─────────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
     setSaving(true);
     try {
       const writes: Array<Promise<void>> = [];
-      // Every dirty (key, year) array writes in full — including arrays edited
-      // in the OTHER mode before switching; nothing typed is silently dropped.
       for (const composite of dirty) {
         const sep = composite.lastIndexOf('|');
         const budgetKey = composite.slice(0, sep);
         const y = Number(composite.slice(sep + 1));
-        const arr = vals[composite] ?? Array(12).fill(0);
+        const arr = vals[composite] ?? EMPTY12();
         for (let m = 0; m < 12; m++) {
           writes.push(
             upsertInventoryBudget(user.uid, activePropertyId, {
               category: budgetKey,
               monthStart: new Date(Date.UTC(y, m, 1)),
-              budgetCents: Math.max(0, Math.round(arr[m] * 100)),
+              budgetCents: Math.max(0, Math.round(numOf(arr[m]) * 100)),
             }),
           );
         }
@@ -357,26 +408,36 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     return q ? display.filter((d) => d.name.toLowerCase().includes(q)) : display;
   }, [display, formQuery]);
 
+  const summarySt = statusFor(monthBudgetTotal, monthSpentTotal);
+
   return (
     <Overlay
       open={open}
       onClose={onClose}
       eyebrow={bp.eyebrow}
-      italic={bp.italic}
-      suffix={`· ${MONTHS[month]} ${year}`}
+      italic={`${MONTHS[month]} ${year}`}
       width={720}
       footer={
         <>
-          <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
-            {bp.cancel}
-          </Btn>
+          <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>{bp.cancel}</Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving}>
             {saving ? bp.saving : bp.save}
           </Btn>
         </>
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+        {/* GM alerts — over / near budget on the live month. */}
+        {showSpend && alerts.over.length > 0 && (
+          <div style={bannerStyle(T.warm)}>{bp.overBanner(alerts.over.join(', '))}</div>
+        )}
+        {showSpend && alerts.over.length === 0 && alerts.near.length > 0 && (
+          <div style={bannerStyle(T.caramel)}>{bp.nearBanner(alerts.near.join(', '))}</div>
+        )}
+        {!showSpend && (
+          <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>{bp.planningNote(MONTHS[month], year)}</div>
+        )}
+
         {/* Mode: one total number, or per-section */}
         <div>
           <Caps>{bp.howBudgetsWork}</Caps>
@@ -391,108 +452,88 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
           <Caps>{bp.month}</Caps>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
             {MONTHS.map((m, i) => (
-              <Chip key={m} active={i === month} onClick={() => setMonth(i)}>
-                {m}
-              </Chip>
+              <Chip key={m} active={i === month} onClick={() => setMonth(i)}>{m}</Chip>
             ))}
           </div>
           <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
             {YEARS.map((y) => (
-              <Chip key={y} active={y === year} onClick={() => setYear(y)}>
-                {String(y)}
-              </Chip>
+              <Chip key={y} active={y === year} onClick={() => setYear(y)}>{String(y)}</Chip>
             ))}
           </div>
         </div>
 
-        {/* Budget rows — FIXED height + internal scroll so the panel is the
-            exact same size in both modes (and whether the section form is
-            open). One total row, three categories, or a dozen sections all
-            live in the same footprint; extra rows scroll. */}
-        <div
-          style={{
-            background: T.paper,
-            border: `1px solid ${T.rule}`,
-            borderRadius: 14,
-            padding: '4px 18px',
-            height: ROWS_PANEL_H,
-            overflowY: 'auto',
-          }}
-        >
-          {rows.map((row, i) => (
-            <div
-              key={row.key}
-              style={{
-                display: 'grid',
-                gridTemplateColumns: '40px 1fr 160px',
-                gap: 14,
-                padding: '14px 0',
-                alignItems: 'center',
-                borderTop: i === 0 ? 'none' : `1px solid ${T.ruleSoft}`,
-              }}
-            >
-              {row.icon}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-                <span style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  {row.label}
-                </span>
-                <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                  {row.section
-                    ? (row.section.itemIds.length > 0 ? bp.itemsCount(row.section.itemIds.length) : bp.noItemsYet)
-                    : bp.forMonth(MONTHS[month], year)}
-                  {row.section && (
+        {/* Budget rows — fixed height + internal scroll (same size in both modes). */}
+        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 18px', height: ROWS_PANEL_H, overflowY: 'auto' }}>
+          {rows.map((row, i) => {
+            const cap = capOf(row.key);
+            const spent = spentFor(row.key);
+            const st = statusFor(cap, spent);
+            return (
+              <div
+                key={row.key}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '40px 1fr 150px',
+                  gap: 14,
+                  padding: '13px 0',
+                  alignItems: 'center',
+                  borderTop: i === 0 ? 'none' : `1px solid ${T.ruleSoft}`,
+                }}
+              >
+                {row.icon}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+                  <span style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {row.label}
+                  </span>
+                  {/* Spend line (live month) or the plain "for month" caption. */}
+                  {showSpend ? (
                     <>
+                      <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: spendColor(st), fontWeight: 500 }}>
+                        {cap > 0
+                          ? `${bp.spentOf(fmtMoney(spent), fmtMoney(cap))} · ${st === 'over' ? bp.over(fmtMoney(spent - cap)) : bp.left(fmtMoney(Math.max(0, cap - spent)))}`
+                          : bp.noBudget(fmtMoney(spent))}
+                      </span>
+                      {cap > 0 && <MiniBar spent={spent} cap={cap} status={st} />}
+                    </>
+                  ) : (
+                    <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3 }}>{bp.forMonth(MONTHS[month], year)}</span>
+                  )}
+                  {/* Section controls */}
+                  {row.section && (
+                    <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      {row.section.itemIds.length > 0 ? bp.items(row.section.itemIds.length) : bp.noItemsYet}
                       <TextBtn onClick={() => openEditForm(row.section!)}>{bp.edit}</TextBtn>
                       {confirmingRemove === row.section.id ? (
-                        <TextBtn warm onClick={() => void removeSection(row.section!.id)}>
-                          {bp.confirmRemove}
-                        </TextBtn>
+                        <TextBtn warm onClick={() => void removeSection(row.section!.id)}>{bp.confirmRemove}</TextBtn>
                       ) : (
                         <TextBtn onClick={() => setConfirmingRemove(row.section!.id)}>{bp.remove}</TextBtn>
                       )}
-                    </>
+                    </span>
                   )}
-                </span>
+                </div>
+                <DollarInput value={arrFor(row.key)[month]} onChange={(v) => setVal(row.key, v)} />
               </div>
-              <DollarInput value={arrFor(row.key)[month]} onChange={(v) => setVal(row.key, v)} />
-            </div>
-          ))}
+            );
+          })}
 
-          {/* Total mode has just one row — a quiet line so the panel doesn't
-              read as empty. */}
           {mode === 'total' && (
             <div style={{ padding: '12px 2px 4px', borderTop: `1px solid ${T.ruleSoft}`, fontFamily: fonts.sans, fontSize: 12, color: T.ink3, lineHeight: 1.5 }}>
               {bp.totalCovers}
             </div>
           )}
 
-          {/* Add a section */}
           {mode === 'sections' && !formOpen && (
             <div style={{ padding: '12px 0', borderTop: rows.length > 0 ? `1px solid ${T.ruleSoft}` : 'none' }}>
-              <TextBtn onClick={openCreateForm} size={13}>
-                {bp.addSection}
-              </TextBtn>
+              <TextBtn onClick={openCreateForm} size={13}>{bp.addSection}</TextBtn>
             </div>
           )}
 
-          {/* Section mini-form (create / edit) */}
           {mode === 'sections' && formOpen && (
             <div style={{ padding: '14px 0 16px', borderTop: `1px solid ${T.ruleSoft}`, display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <input
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-                placeholder={bp.sectionNamePh}
-                maxLength={60}
-                style={textInput}
-              />
+              <input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder={bp.sectionNamePh} maxLength={60} style={textInput} />
               <div>
                 <Caps size={9}>{bp.whichItems}</Caps>
-                <input
-                  value={formQuery}
-                  onChange={(e) => setFormQuery(e.target.value)}
-                  placeholder={bp.searchItems}
-                  style={{ ...textInput, height: 32, fontSize: 12.5, margin: '6px 0' }}
-                />
+                <input value={formQuery} onChange={(e) => setFormQuery(e.target.value)} placeholder={bp.searchItems} style={{ ...textInput, height: 32, fontSize: 12.5, margin: '6px 0' }} />
                 <div style={{ maxHeight: 180, overflowY: 'auto', border: `1px solid ${T.ruleSoft}`, borderRadius: 10, padding: 6 }}>
                   {pickerItems.length === 0 && (
                     <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, padding: '8px 6px' }}>{bp.nothingMatches}</div>
@@ -500,28 +541,15 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                   {pickerItems.map((d) => {
                     const on = formItems.has(d.id);
                     return (
-                      <label
-                        key={d.id}
-                        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 6px', cursor: 'pointer', borderRadius: 7 }}
-                        className="inv-menu-opt"
-                      >
+                      <label key={d.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 6px', cursor: 'pointer', borderRadius: 7 }} className="inv-menu-opt">
                         <input
                           type="checkbox"
                           checked={on}
-                          onChange={() =>
-                            setFormItems((p) => {
-                              const next = new Set(p);
-                              if (on) next.delete(d.id);
-                              else next.add(d.id);
-                              return next;
-                            })
-                          }
+                          onChange={() => setFormItems((p) => { const n = new Set(p); if (on) n.delete(d.id); else n.add(d.id); return n; })}
                           style={{ accentColor: T.brand }}
                         />
                         <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink }}>{d.name}</span>
-                        <span style={{ fontFamily: fonts.sans, fontSize: 10.5, color: T.faint, marginLeft: 'auto' }}>
-                          {catLabelFor(lang, d.cat)}
-                        </span>
+                        <span style={{ fontFamily: fonts.sans, fontSize: 10.5, color: T.faint, marginLeft: 'auto' }}>{catLabelFor(lang, d.cat)}</span>
                       </label>
                     );
                   })}
@@ -531,58 +559,72 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                 <Btn variant="primary" size="sm" onClick={() => void submitSection()} disabled={formBusy || !formName.trim()}>
                   {formBusy ? bp.saving : formId ? bp.saveSection : bp.createSection}
                 </Btn>
-                <Btn variant="ghost" size="sm" onClick={() => setFormOpen(false)} disabled={formBusy}>
-                  {bp.cancel}
-                </Btn>
+                <Btn variant="ghost" size="sm" onClick={() => setFormOpen(false)} disabled={formBusy}>{bp.cancel}</Btn>
               </div>
             </div>
           )}
         </div>
 
-        {/* Total + copy shortcut */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            flexWrap: 'wrap',
-            padding: '14px 18px',
-            background: T.paper,
-            border: `1px solid ${T.rule}`,
-            borderRadius: 14,
-          }}
-        >
-          <div>
-            <Caps>{bp.totalThisMonth}</Caps>
-            <div style={{ fontFamily: fonts.sans, fontSize: 30, color: T.ink, letterSpacing: '-0.02em', fontWeight: 600, lineHeight: 1.05, marginTop: 4 }}>
-              {fmtMoney(monthTotal)}
+        {/* Footer summary — spend vs budget (live month) or just the total cap. */}
+        <div style={{ padding: '14px 18px', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+            <div>
+              <Caps>{showSpend ? bp.thisMonthSpend : bp.totalBudget}</Caps>
+              {showSpend ? (
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: fonts.sans, fontSize: 30, color: spendColor(summarySt), letterSpacing: '-0.02em', fontWeight: 600, lineHeight: 1.05 }}>
+                    {fmtMoney(monthSpentTotal)}
+                  </span>
+                  {monthBudgetTotal > 0 && (
+                    <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
+                      of {fmtMoney(monthBudgetTotal)} · {summarySt === 'over' ? bp.over(fmtMoney(monthSpentTotal - monthBudgetTotal)) : bp.left(fmtMoney(Math.max(0, monthBudgetTotal - monthSpentTotal)))}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                <div style={{ fontFamily: fonts.sans, fontSize: 30, color: T.ink, letterSpacing: '-0.02em', fontWeight: 600, lineHeight: 1.05, marginTop: 4 }}>
+                  {fmtMoney(monthBudgetTotal)}
+                </div>
+              )}
+              <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, marginTop: 4 }}>
+                {showSpend && monthBudgetTotal === 0 ? bp.noBudgetsYet : bp.noCapHint}
+              </div>
             </div>
-            <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, marginTop: 4 }}>{bp.zeroHint}</div>
+            <Btn variant="ghost" size="md" onClick={copyToYear}>{`Copy ${MONTHS[month]} → all of ${year}`}</Btn>
           </div>
-          <Btn variant="ghost" size="md" onClick={copyToYear}>
-            {bp.copyToYear(MONTHS[month], year)}
-          </Btn>
+          {showSpend && monthBudgetTotal > 0 && <MiniBar spent={monthSpentTotal} cap={monthBudgetTotal} status={summarySt} height={7} />}
         </div>
       </div>
     </Overlay>
   );
 }
 
+function MiniBar({ spent, cap, status, height = 5 }: { spent: number; cap: number; status: SpendStatus; height?: number }) {
+  const pct = cap > 0 ? Math.min(1, spent / cap) : 0;
+  const color = spendColor(status);
+  return (
+    <span style={{ display: 'block', position: 'relative', height, borderRadius: height, background: T.ruleSoft, overflow: 'hidden', marginTop: 4 }}>
+      <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${pct * 100}%`, background: color, borderRadius: height }} />
+    </span>
+  );
+}
+
+function bannerStyle(color: string): React.CSSProperties {
+  return {
+    padding: '10px 14px',
+    borderRadius: 10,
+    background: `${color}14`,
+    border: `1px solid ${color}44`,
+    fontFamily: fonts.sans,
+    fontSize: 12.5,
+    fontWeight: 500,
+    color,
+  };
+}
+
 function SectionDot() {
   return (
-    <span
-      style={{
-        width: 32,
-        height: 32,
-        borderRadius: 10,
-        background: T.ruleSoft,
-        border: `1px solid ${T.rule}`,
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
+    <span style={{ width: 32, height: 32, borderRadius: 10, background: T.ruleSoft, border: `1px solid ${T.rule}`, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
       <span style={{ width: 9, height: 9, borderRadius: 999, background: T.ink3 }} />
     </span>
   );
@@ -594,16 +636,9 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
       type="button"
       onClick={onClick}
       style={{
-        padding: '6px 10px',
-        borderRadius: 7,
-        cursor: 'pointer',
-        background: active ? T.ink : 'transparent',
-        color: active ? T.bg : T.ink2,
-        border: `1px solid ${active ? T.ink : T.rule}`,
-        fontFamily: fonts.sans,
-        fontSize: 12,
-        fontWeight: 600,
-        minWidth: 42,
+        padding: '6px 10px', borderRadius: 7, cursor: 'pointer',
+        background: active ? T.ink : 'transparent', color: active ? T.bg : T.ink2,
+        border: `1px solid ${active ? T.ink : T.rule}`, fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, minWidth: 42,
       }}
     >
       {children}
@@ -616,59 +651,26 @@ function TextBtn({ onClick, children, warm, size = 11 }: { onClick: () => void; 
     <button
       type="button"
       onClick={onClick}
-      style={{
-        border: 'none',
-        background: 'transparent',
-        padding: 0,
-        fontFamily: fonts.sans,
-        fontSize: size,
-        fontWeight: 600,
-        color: warm ? T.warm : T.ink2,
-        textDecoration: 'underline',
-        cursor: 'pointer',
-      }}
+      style={{ border: 'none', background: 'transparent', padding: 0, fontFamily: fonts.sans, fontSize: size, fontWeight: 600, color: warm ? T.warm : T.ink2, textDecoration: 'underline', cursor: 'pointer' }}
     >
       {children}
     </button>
   );
 }
 
-function DollarInput({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+function DollarInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
     <div style={{ position: 'relative' }}>
-      <span
-        style={{
-          position: 'absolute',
-          left: 14,
-          top: '50%',
-          transform: 'translateY(-50%)',
-          fontFamily: fonts.sans,
-          fontSize: 18,
-          fontWeight: 600,
-          color: T.ink2,
-        }}
-      >
-        $
-      </span>
+      <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontFamily: fonts.sans, fontSize: 18, fontWeight: 600, color: value ? T.ink2 : T.faint }}>$</span>
       <input
-        type="number"
-        value={Number.isFinite(value) ? value : 0}
-        onChange={(e) => onChange(Number(e.target.value) || 0)}
+        type="text"
+        inputMode="decimal"
+        value={value}
+        onChange={(e) => { const v = e.target.value; if (numGuard(v)) onChange(v); }}
         style={{
-          width: '100%',
-          height: 42,
-          padding: '0 14px 0 28px',
-          borderRadius: 10,
-          boxSizing: 'border-box',
-          background: T.bg,
-          border: `1px solid ${T.rule}`,
-          fontFamily: fonts.sans,
-          fontSize: 20,
-          fontWeight: 600,
-          color: T.ink,
-          letterSpacing: '-0.02em',
-          outline: 'none',
-          textAlign: 'right',
+          width: '100%', height: 42, padding: '0 14px 0 28px', borderRadius: 10, boxSizing: 'border-box',
+          background: T.bg, border: `1px solid ${T.rule}`, fontFamily: fonts.sans, fontSize: 20, fontWeight: 600,
+          color: T.ink, letterSpacing: '-0.02em', outline: 'none', textAlign: 'right',
         }}
       />
     </div>
@@ -681,17 +683,9 @@ function ModeBtn({ active, onClick, title, sub }: { active: boolean; onClick: ()
       type="button"
       onClick={onClick}
       style={{
-        flex: 1,
-        padding: '14px 16px',
-        borderRadius: 12,
-        cursor: 'pointer',
-        background: active ? T.ink : 'transparent',
-        color: active ? T.bg : T.ink,
-        border: `1px solid ${active ? T.ink : T.rule}`,
-        textAlign: 'left',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 3,
+        flex: 1, padding: '14px 16px', borderRadius: 12, cursor: 'pointer',
+        background: active ? T.ink : 'transparent', color: active ? T.bg : T.ink,
+        border: `1px solid ${active ? T.ink : T.rule}`, textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 3,
       }}
     >
       <span style={{ fontFamily: fonts.sans, fontSize: 13, fontWeight: 600 }}>{title}</span>
@@ -701,15 +695,6 @@ function ModeBtn({ active, onClick, title, sub }: { active: boolean; onClick: ()
 }
 
 const textInput: React.CSSProperties = {
-  width: '100%',
-  height: 38,
-  padding: '0 12px',
-  borderRadius: 9,
-  boxSizing: 'border-box',
-  background: T.bg,
-  border: `1px solid ${T.rule}`,
-  fontFamily: fonts.sans,
-  fontSize: 13.5,
-  color: T.ink,
-  outline: 'none',
+  width: '100%', height: 38, padding: '0 12px', borderRadius: 9, boxSizing: 'border-box',
+  background: T.bg, border: `1px solid ${T.rule}`, fontFamily: fonts.sans, fontSize: 13.5, color: T.ink, outline: 'none',
 };
