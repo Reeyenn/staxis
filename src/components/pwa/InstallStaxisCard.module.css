@@ -138,24 +138,6 @@
   outline-offset: 2px;
 }
 
-.path {
-  margin-top: 14px;
-  padding: 9px 10px;
-  color: var(--install-accent);
-  background: var(--install-surface-strong);
-  border-radius: 8px;
-  font-family: var(--font-geist), system-ui, sans-serif;
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1.4;
-  text-align: center;
-}
-
-.path span {
-  padding-inline: 3px;
-  opacity: 0.72;
-}
-
 .steps {
   display: grid;
   gap: 8px;
@@ -175,8 +157,29 @@
   border-radius: 10px;
 }
 
+.numberedStep {
+  min-height: 56px;
+  gap: 8px;
+}
+
 .compact .step {
   min-height: 48px;
+}
+
+.stepNumber {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--install-on-accent);
+  background: var(--install-accent);
+  border-radius: 999px;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .stepIcon {
@@ -190,6 +193,14 @@
   background: var(--install-surface);
   border: 1px solid var(--install-border);
   border-radius: 9px;
+}
+
+.addAction {
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+  line-height: 1;
 }
 
 .stepCopy {
@@ -206,10 +217,27 @@
   line-height: 1.35;
 }
 
+.numberedStep .stepCopy strong {
+  font-size: 14px;
+}
+
 .stepCopy > span {
   color: var(--install-muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.stepsLabel {
+  margin: 16px 0 0;
+  color: var(--install-muted);
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.stepsLabel + .steps {
+  margin-top: 8px;
 }
 
 .primaryButton {

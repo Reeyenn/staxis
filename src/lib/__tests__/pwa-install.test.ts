@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
   createInstallUrl,
   detectInstallPlatform,
+  IOS_INSTALL_STEPS,
   isAndroidInstallPlatform,
   isIosInstallPlatform,
   isStandaloneMode,
@@ -20,6 +21,16 @@ const ANDROID_CHROME =
   'Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36';
 const ANDROID_SAMSUNG =
   'Mozilla/5.0 (Linux; Android 14; SM-S921U) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.0 Chrome/121.0.0.0 Mobile Safari/537.36';
+
+describe('iPhone install instructions', () => {
+  it('keeps the Safari flow to three plain-language actions', () => {
+    assert.deepEqual(IOS_INSTALL_STEPS, [
+      { number: 1, label: 'Tap Share' },
+      { number: 2, label: 'Tap Add to Home Screen' },
+      { number: 3, label: 'Tap Add' },
+    ]);
+  });
+});
 
 describe('detectInstallPlatform', () => {
   it('detects Safari on iPhone', () => {

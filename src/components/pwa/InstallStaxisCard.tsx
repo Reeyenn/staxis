@@ -7,13 +7,16 @@ import {
   Download,
   Loader2,
   MoreVertical,
-  Plus,
-  Share2,
+  Share,
+  SquarePlus,
   Smartphone,
   X,
 } from 'lucide-react';
 import { useInstallStaxis } from '@/contexts/InstallStaxisContext';
-import { isAndroidInstallPlatform } from '@/lib/pwa-install';
+import {
+  IOS_INSTALL_STEPS,
+  isAndroidInstallPlatform,
+} from '@/lib/pwa-install';
 import styles from './InstallStaxisCard.module.css';
 
 export interface InstallStaxisCardProps {
@@ -25,20 +28,56 @@ export interface InstallStaxisCardProps {
 interface InstallStepProps {
   icon: ReactNode;
   title: string;
-  detail: string;
+  detail?: string;
+  number?: number;
 }
 
-function InstallStep({ icon, title, detail }: InstallStepProps) {
+function InstallStep({ icon, title, detail, number }: InstallStepProps) {
+  const numbered = number !== undefined;
+
   return (
-    <li className={styles.step}>
+    <li
+      className={`${styles.step} ${numbered ? styles.numberedStep : ''}`}
+    >
+      {numbered ? (
+        <span className={styles.stepNumber} aria-hidden="true">
+          {number}
+        </span>
+      ) : null}
       <span className={styles.stepIcon} aria-hidden="true">
         {icon}
       </span>
       <span className={styles.stepCopy}>
         <strong>{title}</strong>
-        <span>{detail}</span>
+        {detail ? <span>{detail}</span> : null}
       </span>
     </li>
+  );
+}
+
+function IosInstallSteps() {
+  return (
+    <ol
+      className={styles.steps}
+      role="list"
+      aria-label="Install Staxis in Safari in three steps"
+    >
+      <InstallStep
+        number={IOS_INSTALL_STEPS[0].number}
+        icon={<Share size={18} strokeWidth={2} />}
+        title={IOS_INSTALL_STEPS[0].label}
+      />
+      <InstallStep
+        number={IOS_INSTALL_STEPS[1].number}
+        icon={<SquarePlus size={18} strokeWidth={2} />}
+        title={IOS_INSTALL_STEPS[1].label}
+      />
+      <InstallStep
+        number={IOS_INSTALL_STEPS[2].number}
+        icon={<span className={styles.addAction}>Add</span>}
+        title={IOS_INSTALL_STEPS[2].label}
+      />
+    </ol>
   );
 }
 
@@ -91,8 +130,8 @@ export function InstallStaxisCard({
     setCopyState(copied ? 'copied' : 'failed');
     setStatus(
       copied
-        ? 'Link copied. Open Safari, paste it, and sign in there if asked.'
-        : 'Could not copy automatically. Open this page in Safari instead.',
+        ? 'Copied. Open Safari and paste the link.'
+        : 'Open this page in Safari instead.',
     );
 
     if (copyResetTimer.current) clearTimeout(copyResetTimer.current);
@@ -118,14 +157,12 @@ export function InstallStaxisCard({
   } else if (isIosSafari) {
     eyebrow = 'Install on iPhone';
     title = 'Add Staxis to your Home Screen';
-    description =
-      'In Safari, follow these three steps to make Staxis feel like an app.';
+    description = 'In Safari, do these 3 steps:';
     icon = <Smartphone size={22} strokeWidth={2} />;
   } else if (isIosNonSafari) {
     eyebrow = 'Install on iPhone';
-    title = 'Open Staxis in Safari first';
-    description =
-      'Safari keeps its own Staxis session. Open this page there and sign in if asked before installing.';
+    title = 'Open Staxis in Safari';
+    description = 'Copy this link. Open Safari and paste it.';
     icon = <Smartphone size={22} strokeWidth={2} />;
   } else if (promptAvailable && isAndroid) {
     eyebrow = 'Install on Android';
@@ -188,29 +225,7 @@ export function InstallStaxisCard({
       ) : null}
 
       {!installed && isIosSafari ? (
-        <>
-          <div className={styles.path} aria-label="Install path">
-            Share <span aria-hidden="true">→</span> Add to Home Screen{' '}
-            <span aria-hidden="true">→</span> Open as Web App
-          </div>
-          <ol className={styles.steps}>
-            <InstallStep
-              icon={<Share2 size={18} />}
-              title="Tap Share"
-              detail="Use the Share button in Safari’s toolbar."
-            />
-            <InstallStep
-              icon={<Plus size={18} />}
-              title="Add to Home Screen"
-              detail="Scroll the share sheet if the option is not visible."
-            />
-            <InstallStep
-              icon={<Smartphone size={18} />}
-              title="Open as Web App"
-              detail="Leave this option on, then tap Add."
-            />
-          </ol>
-        </>
+        <IosInstallSteps />
       ) : null}
 
       {!installed && isIosNonSafari ? (
@@ -232,30 +247,10 @@ export function InstallStaxisCard({
               ? 'Copying…'
               : copyState === 'copied'
                 ? 'Link copied'
-                : 'Copy link for Safari'}
+                : 'Copy link'}
           </button>
-          <ol className={styles.steps}>
-            <InstallStep
-              icon={<Smartphone size={18} />}
-              title="Open Safari"
-              detail="Paste the copied link into Safari’s address bar."
-            />
-            <InstallStep
-              icon={<Check size={18} />}
-              title="Sign in if asked"
-              detail="Safari has a separate session from this browser."
-            />
-            <InstallStep
-              icon={<Share2 size={18} />}
-              title="Tap Share"
-              detail="Choose Add to Home Screen from the share sheet."
-            />
-            <InstallStep
-              icon={<Plus size={18} />}
-              title="Open as Web App"
-              detail="Leave the option on, then tap Add."
-            />
-          </ol>
+          <p className={styles.stepsLabel}>Then in Safari:</p>
+          <IosInstallSteps />
         </>
       ) : null}
 

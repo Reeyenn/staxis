@@ -1,5 +1,11 @@
 export const INSTALL_START_PATH = '/home';
 
+export const IOS_INSTALL_STEPS = [
+  { number: 1, label: 'Tap Share' },
+  { number: 2, label: 'Tap Add to Home Screen' },
+  { number: 3, label: 'Tap Add' },
+] as const;
+
 export type InstallPlatform =
   | 'ios-safari'
   | 'ios-non-safari'
