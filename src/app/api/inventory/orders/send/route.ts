@@ -44,7 +44,7 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const po = await getPurchaseOrder(pid, orderId);
   if (!po) return err('order not found', { requestId, status: 404, code: 'not_found' });
-  if (!['draft', 'approved', 'sent'].includes(po.status)) {
+  if (!['draft', 'sent'].includes(po.status)) {
     return err(`cannot send an order in status "${po.status}"`, { requestId, status: 409, code: 'bad_status' });
   }
 

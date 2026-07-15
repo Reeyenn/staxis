@@ -23,7 +23,6 @@ import type {
   CartLineInput,
   CatalogItem,
   OrderStatus,
-  OrderingMode,
   PurchaseOrder,
   PurchaseOrderLine,
   ReceiveLineInput,
@@ -77,8 +76,6 @@ function fromPoRow(
     subtotalCents: Number(r.subtotal_cents ?? 0),
     notes: (r.notes as string | null) ?? null,
     createdBy: (r.created_by as string | null) ?? null,
-    approvedBy: (r.approved_by as string | null) ?? null,
-    approvedAt: (r.approved_at as string | null) ?? null,
     sentAt: (r.sent_at as string | null) ?? null,
     sentToEmail: (r.sent_to_email as string | null) ?? null,
     receivedAt: (r.received_at as string | null) ?? null,
@@ -102,35 +99,9 @@ function fromCatalogRow(r: Record<string, unknown>): CatalogItem {
   };
 }
 
-// ── Ordering mode (per-property feature flag) ───────────────────────────────
-
-export async function getOrderingMode(pid: string): Promise<OrderingMode> {
-  const { data, error } = await supabaseAdmin
-    .from('properties')
-    .select('ordering_mode')
-    .eq('id', pid)
-    .maybeSingle();
-  if (error) {
-    log.error('[ordering] getOrderingMode failed', { pid, err: error.message });
-    return 'simple';
-  }
-  return (data?.ordering_mode as OrderingMode) === 'pro' ? 'pro' : 'simple';
-}
-
 export async function getPropertyName(pid: string): Promise<string> {
   const { data } = await supabaseAdmin.from('properties').select('name').eq('id', pid).maybeSingle();
   return (data?.name as string) ?? 'Our property';
-}
-
-export async function setOrderingMode(pid: string, mode: OrderingMode): Promise<void> {
-  const { error } = await supabaseAdmin
-    .from('properties')
-    .update({ ordering_mode: mode })
-    .eq('id', pid);
-  if (error) {
-    log.error('[ordering] setOrderingMode failed', { pid, mode, err: error.message });
-    throw error;
-  }
 }
 
 // ── Vendors ─────────────────────────────────────────────────────────────────
@@ -405,18 +376,17 @@ async function stampOrderedItems(pid: string, lines: CartLineInput[], vendorName
 }
 
 // Create one purchase order PER VENDOR from the reorder cart. Status follows
-// the property's ordering mode: simple → 'draft' (ready to send), pro →
-// 'pending_approval' (must be approved before send).
+// Orders start as 'draft' (ready to send); the client then emails each vendor
+// that has an address on file.
 export async function createPurchaseOrders(
   pid: string,
   accountId: string,
   cartLines: CartLineInput[],
-): Promise<{ orders: PurchaseOrder[]; mode: OrderingMode }> {
+): Promise<{ orders: PurchaseOrder[] }> {
   const lines = cartLines.filter((l) => l.qtyOrdered > 0);
-  if (lines.length === 0) return { orders: [], mode: await getOrderingMode(pid) };
+  if (lines.length === 0) return { orders: [] };
 
-  const mode = await getOrderingMode(pid);
-  const status: OrderStatus = mode === 'pro' ? 'pending_approval' : 'draft';
+  const status: OrderStatus = 'draft';
 
   // Resolve vendor records once for the whole property (id + name → record).
   const vendors = await listVendors(pid, true);
@@ -474,43 +444,13 @@ export async function createPurchaseOrders(
     if (full) created.push(full);
   }
 
-  return { orders: created, mode };
-}
-
-// Pro mode: pending_approval → approved.
-export async function approvePurchaseOrder(
-  pid: string,
-  id: string,
-  accountId: string,
-): Promise<{ ok: true; order: PurchaseOrder } | { ok: false; reason: string }> {
-  const po = await getPurchaseOrder(pid, id);
-  if (!po) return { ok: false, reason: 'not_found' };
-  if (po.status !== 'pending_approval') {
-    return { ok: false, reason: `cannot approve an order in status "${po.status}"` };
-  }
-  const { error } = await supabaseAdmin
-    .from('purchase_orders')
-    .update({
-      status: 'approved',
-      approved_by: accountId,
-      approved_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', id)
-    .eq('property_id', pid);
-  if (error) {
-    log.error('[ordering] approvePurchaseOrder failed', { pid, id, err: error.message });
-    throw error;
-  }
-  const order = await getPurchaseOrder(pid, id);
-  return order ? { ok: true, order } : { ok: false, reason: 'not_found' };
+  return { orders: created };
 }
 
 // Stamp a PO sent (status → 'sent', sent_at, sent_to_email). The email itself
 // is fired by the route via src/lib/ordering/email.ts BEFORE calling this, so a
 // failed email never flips the status. Guarded by the status state machine:
-//   simple: only from 'draft'      pro: only from 'approved'
-// (both may re-send a 'sent' order — re-emailing is allowed.)
+// only from 'draft' (a 'sent' order may be re-sent — re-emailing is allowed).
 export async function markPurchaseOrderSent(
   pid: string,
   id: string,
@@ -518,7 +458,7 @@ export async function markPurchaseOrderSent(
 ): Promise<{ ok: true; order: PurchaseOrder } | { ok: false; reason: string }> {
   const po = await getPurchaseOrder(pid, id);
   if (!po) return { ok: false, reason: 'not_found' };
-  if (!['draft', 'approved', 'sent'].includes(po.status)) {
+  if (!['draft', 'sent'].includes(po.status)) {
     return { ok: false, reason: `cannot send an order in status "${po.status}"` };
   }
   const { error } = await supabaseAdmin

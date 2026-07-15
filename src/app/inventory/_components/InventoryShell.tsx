@@ -24,7 +24,6 @@ import {
   type DailyAverages,
 } from '@/lib/inventory-predictions';
 import { useCan } from '@/lib/capabilities/useCan';
-import type { OrderingMode } from '@/lib/ordering/types';
 import type {
   InventoryItem,
   InventoryCount,
@@ -59,7 +58,6 @@ import { AddItemSheet } from './overlays/AddItemSheet';
 import { OrdersPanel } from './overlays/OrdersPanel';
 import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
 import { AiReportSheet } from './overlays/AiReportSheet';
-import { apiGetMode } from './ordering-api';
 import { t, invLang, dateLocale } from './inv-i18n';
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
@@ -146,7 +144,6 @@ export function InventoryShell() {
   const [draftCounts, setDraftCounts] = useState<Map<string, number>>(() => new Map());
   const [overlay, setOverlay] = useState<OverlayKey>(null);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
-  const [orderingMode, setOrderingMode] = useState<OrderingMode>('simple');
   // Initial-load gate: the page reveals ONCE, after both the first items
   // snapshot AND the stats bundle have landed. Without this, the 3-4 fetch
   // waves each reshuffled/re-animated the freshly-mounted board — the
@@ -236,16 +233,6 @@ export function InventoryShell() {
       cancelled = true;
     };
   }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
-
-  // ── Ordering mode (management only — drives the Reorder/Orders UX) ──
-  useEffect(() => {
-    if (!activePropertyId || !canManage) return;
-    let cancelled = false;
-    void apiGetMode(activePropertyId)
-      .then((m) => { if (!cancelled) setOrderingMode(m); })
-      .catch(() => { /* default 'simple' */ });
-    return () => { cancelled = true; };
-  }, [activePropertyId, canManage]);
 
   // ── Honour ?action= deep links once on mount + when property switches ──
   useEffect(() => {
@@ -773,7 +760,6 @@ export function InventoryShell() {
         mlRateMap={EMPTY_ML_RATES}
         canManage={canManage}
         canViewFinancials={canViewFinancials}
-        orderingMode={orderingMode}
         onViewOrders={() => setOverlay('orders')}
       />
 
@@ -781,7 +767,6 @@ export function InventoryShell() {
         open={overlay === 'orders'}
         onClose={() => { closeOverlay(); void refreshData(); }}
         canManage={canManage}
-        orderingMode={orderingMode}
         onChanged={() => void refreshData()}
       />
 
@@ -789,8 +774,6 @@ export function InventoryShell() {
         open={overlay === 'ordersettings'}
         onClose={closeOverlay}
         canManage={canManage}
-        orderingMode={orderingMode}
-        onModeChange={setOrderingMode}
         onChanged={() => void refreshData()}
       />
 

@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import type { OrderingMode, Vendor } from '@/lib/ordering/types';
+import type { Vendor } from '@/lib/ordering/types';
 
 import { T, fonts, statusColor } from '../tokens';
 import { Btn } from '../Btn';
@@ -14,7 +14,6 @@ import {
   apiImportCatalog,
   apiListCatalog,
   apiListVendors,
-  apiSetMode,
   apiUpdateVendor,
   type VendorFields,
 } from '../ordering-api';
@@ -23,8 +22,6 @@ interface OrderingSettingsPanelProps {
   open: boolean;
   onClose: () => void;
   canManage: boolean;
-  orderingMode: OrderingMode;
-  onModeChange: (m: OrderingMode) => void;
   /** Inventory items may have been seeded (catalog import) — refresh the shell. */
   onChanged?: () => void;
 }
@@ -35,13 +32,8 @@ function osStrings(lang: 'en' | 'es') {
   return {
     en: {
       eyebrow: 'Ordering settings',
-      modeTitle: 'Ordering mode',
-      simpleName: 'Simple',
-      simpleDesc: 'Place an order from the reorder list and it emails the vendor right away. Track Sent → Received. No approval step.',
-      proName: 'Pro',
-      proDesc: 'Orders get a PO number and start as "Needs approval". A manager approves before the order can be emailed. Best for management companies.',
-      current: 'Current',
-      use: 'Use this',
+      italic: 'Vendors & catalog',
+      howItWorks: 'Place an order from the reorder list and it emails the vendor right away, then track Sent → Received.',
       saving: 'Saving…',
       done: 'Done',
       managerOnly: 'Only managers can change ordering settings.',
@@ -67,13 +59,8 @@ function osStrings(lang: 'en' | 'es') {
     },
     es: {
       eyebrow: 'Ajustes de pedidos',
-      modeTitle: 'Modo de pedidos',
-      simpleName: 'Simple',
-      simpleDesc: 'Crea una orden desde la lista de reorden y se envía al proveedor de inmediato. Sigue Enviado → Recibido. Sin aprobación.',
-      proName: 'Pro',
-      proDesc: 'Las órdenes reciben un número de OC y empiezan como "Requiere aprobación". Un gerente aprueba antes de enviarse. Ideal para empresas gestoras.',
-      current: 'Actual',
-      use: 'Usar este',
+      italic: 'Proveedores y catálogo',
+      howItWorks: 'Crea una orden desde la lista de reorden y se envía al proveedor de inmediato; luego sigue Enviado → Recibido.',
       saving: 'Guardando…',
       done: 'Listo',
       managerOnly: 'Solo gerentes pueden cambiar estos ajustes.',
@@ -104,8 +91,6 @@ export function OrderingSettingsPanel({
   open,
   onClose,
   canManage,
-  orderingMode,
-  onModeChange,
   onChanged,
 }: OrderingSettingsPanelProps) {
   const { activePropertyId } = useProperty();
@@ -145,20 +130,6 @@ export function OrderingSettingsPanel({
     void loadVendors();
     void apiListCatalog(activePropertyId).then((c) => setCatalogCount(c.length)).catch(() => setCatalogCount(null));
   }, [open, activePropertyId, loadVendors]);
-
-  const pickMode = async (mode: OrderingMode) => {
-    if (!activePropertyId || saving || mode === orderingMode) return;
-    setSaving(true);
-    setError(null);
-    try {
-      await apiSetMode(activePropertyId, mode);
-      onModeChange(mode);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to save');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const openNew = () => { setEditing('new'); setForm({ name: '', email: '', phone: '', account: '' }); };
   const openEdit = (v: Vendor) => {
@@ -222,35 +193,16 @@ export function OrderingSettingsPanel({
     <span style={{ fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: T.ink3, fontWeight: 600 }}>{s}</span>
   );
 
-  const modeCard = (mode: OrderingMode, label: string, desc: string) => {
-    const active = orderingMode === mode;
-    return (
-      <div style={{ flex: 1, background: T.paper, border: `1.5px solid ${active ? statusColor.good : T.rule}`, borderRadius: 14, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontFamily: fonts.sans, fontSize: 20, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink }}>{label}</span>
-          {active && <span style={{ fontFamily: fonts.mono, fontSize: 10, letterSpacing: '0.1em', textTransform: 'uppercase', color: statusColor.good, fontWeight: 700 }}>{tt.current}</span>}
-        </div>
-        <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.5, margin: 0, flex: 1 }}>{desc}</p>
-        {canManage && !active && <Btn variant="primary" size="sm" disabled={saving} onClick={() => pickMode(mode)}>{saving ? tt.saving : tt.use}</Btn>}
-      </div>
-    );
-  };
-
   return (
-    <Overlay open={open} onClose={onClose} eyebrow={tt.eyebrow} italic={orderingMode === 'pro' ? tt.proName : tt.simpleName} accent={statusColor.good} width={900}
+    <Overlay open={open} onClose={onClose} eyebrow={tt.eyebrow} italic={tt.italic} accent={statusColor.good} width={900}
       footer={<Btn variant="ghost" size="md" onClick={onClose}>{tt.done}</Btn>}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
         {error && <div style={banner(statusColor.critical)}>{error}</div>}
         {!canManage && <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>{tt.managerOnly}</div>}
 
-        {/* Mode */}
-        <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {sectionLabel(tt.modeTitle)}
-          <div style={{ display: 'flex', gap: 12 }}>
-            {modeCard('simple', tt.simpleName, tt.simpleDesc)}
-            {modeCard('pro', tt.proName, tt.proDesc)}
-          </div>
-        </section>
+        {/* How ordering works — one plain line (no modes; ordering is always
+            "place → email the vendor → track Sent/Received"). */}
+        <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.5, margin: 0 }}>{tt.howItWorks}</p>
 
         {/* Vendors */}
         <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>

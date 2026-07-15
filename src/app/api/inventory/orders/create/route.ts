@@ -1,8 +1,7 @@
 // POST /api/inventory/orders/create — turn the reorder cart into real purchase
-// orders, grouped by vendor. Management-only (requireOrderingAccess). Status
-// follows the property ordering mode: simple → 'draft', pro → 'pending_approval'.
-// The client sends each created PO to /api/inventory/orders/send afterward
-// (simple mode auto-sends where a vendor email is on file).
+// orders, grouped by vendor. Management-only (requireOrderingAccess). Orders
+// start as 'draft'; the client then sends each created PO to
+// /api/inventory/orders/send (auto-sending where a vendor email is on file).
 
 import type { NextRequest } from 'next/server';
 import { ok, err } from '@/lib/api-response';
@@ -73,8 +72,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   try {
-    const { orders, mode } = await createPurchaseOrders(pid, gate.accountId, lines);
-    return ok({ orders, mode }, { requestId, status: 201 });
+    const { orders } = await createPurchaseOrders(pid, gate.accountId, lines);
+    return ok({ orders }, { requestId, status: 201 });
   } catch {
     return err('failed to create purchase orders', { requestId, status: 500, code: 'create_failed' });
   }

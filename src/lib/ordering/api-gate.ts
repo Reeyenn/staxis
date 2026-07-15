@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // Inventory Ordering API gate — the single auth choke point for the
-// /api/inventory/{orders,vendors,catalog,ordering-mode}/* write + read surface.
+// /api/inventory/{orders,vendors,catalog}/* write + read surface.
 //
 // Ordering touches spend + external vendor relationships, so EVERY ordering
 // route calls requireOrderingAccess(req, pid) before any supabaseAdmin access.

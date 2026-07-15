@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import type { OrderStatus, OrderingMode, PurchaseOrder, SpendRollup } from '@/lib/ordering/types';
+import type { OrderStatus, PurchaseOrder, SpendRollup } from '@/lib/ordering/types';
 
 import { T, fonts, statusColor } from '../tokens';
 import { Btn } from '../Btn';
@@ -11,7 +11,6 @@ import { Overlay } from './Overlay';
 import { banner } from './form-kit';
 import { fmtMoney } from '../format';
 import {
-  apiApproveOrder,
   apiListOrders,
   apiReceiveOrder,
   apiSendOrder,
@@ -22,14 +21,11 @@ interface OrdersPanelProps {
   open: boolean;
   onClose: () => void;
   canManage: boolean;
-  orderingMode: OrderingMode;
   onChanged?: () => void;
 }
 
 // Display order: action-needed statuses first.
 const STATUS_ORDER: OrderStatus[] = [
-  'pending_approval',
-  'approved',
   'draft',
   'sent',
   'partially_received',
@@ -40,8 +36,6 @@ const STATUS_ORDER: OrderStatus[] = [
 function statusMeta(s: OrderStatus, lang: 'en' | 'es'): { label: string; color: string } {
   const L: Record<OrderStatus, { en: string; es: string; color: string }> = {
     draft: { en: 'Draft', es: 'Borrador', color: T.ink3 },
-    pending_approval: { en: 'Needs approval', es: 'Requiere aprobación', color: statusColor.low },
-    approved: { en: 'Approved', es: 'Aprobada', color: T.forestText },
     sent: { en: 'Sent', es: 'Enviada', color: statusColor.good },
     partially_received: { en: 'Partially received', es: 'Recibida en parte', color: statusColor.low },
     received: { en: 'Received', es: 'Recibida', color: statusColor.good },
@@ -62,7 +56,6 @@ function opStrings(lang: 'en' | 'es') {
       send: 'Send to vendor',
       sendEmail: 'Email order',
       resend: 'Resend',
-      approve: 'Approve',
       receive: 'Receive',
       receiveFull: 'Receive in full',
       confirmReceive: 'Confirm received',
@@ -98,7 +91,6 @@ function opStrings(lang: 'en' | 'es') {
       send: 'Enviar al proveedor',
       sendEmail: 'Enviar por correo',
       resend: 'Reenviar',
-      approve: 'Aprobar',
       receive: 'Recibir',
       receiveFull: 'Recibir completo',
       confirmReceive: 'Confirmar recibido',
@@ -129,7 +121,7 @@ function opStrings(lang: 'en' | 'es') {
   }[lang];
 }
 
-export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged }: OrdersPanelProps) {
+export function OrdersPanel({ open, onClose, canManage, onChanged }: OrdersPanelProps) {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const L = lang === 'es' ? 'es' : 'en';
@@ -214,23 +206,6 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
     [activePropertyId, L, tt.sentTo, afterAction],
   );
 
-  const doApprove = useCallback(
-    async (po: PurchaseOrder) => {
-      if (!activePropertyId) return;
-      setBusyId(po.id);
-      setError(null);
-      try {
-        await apiApproveOrder(activePropertyId, po.id);
-        await afterAction();
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Approve failed');
-      } finally {
-        setBusyId(null);
-      }
-    },
-    [activePropertyId, afterAction],
-  );
-
   const openReceive = useCallback((po: PurchaseOrder) => {
     setReceiveFor(po.id);
     const draft: Record<string, string> = {};
@@ -278,7 +253,6 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
       open={open}
       onClose={onClose}
       eyebrow={tt.eyebrow}
-      italic={orderingMode === 'pro' ? 'Pro' : ''}
       suffix={`${orders.length} ${orders.length === 1 ? tt.order : tt.orders}`}
       accent={statusColor.good}
       width={1080}
@@ -337,7 +311,6 @@ export function OrdersPanel({ open, onClose, canManage, orderingMode, onChanged 
                       onOpenEmail={() => { setEmailFor(po.id); setEmailDraft(po.vendorEmail ?? ''); }}
                       onSend={() => doSend(po)}
                       onSendEmail={() => doSend(po, emailDraft.trim())}
-                      onApprove={() => doApprove(po)}
                       onOpenReceive={() => openReceive(po)}
                       onCancelReceive={() => setReceiveFor(null)}
                       onReceiveFull={() => {
@@ -452,7 +425,6 @@ function OrderCard({
   onOpenEmail,
   onSend,
   onSendEmail,
-  onApprove,
   onOpenReceive,
   onCancelReceive,
   onReceiveFull,
@@ -471,16 +443,14 @@ function OrderCard({
   onOpenEmail: () => void;
   onSend: () => void;
   onSendEmail: () => void;
-  onApprove: () => void;
   onOpenReceive: () => void;
   onCancelReceive: () => void;
   onReceiveFull: () => void;
   onConfirmReceive: () => void;
 }) {
-  const canSend = po.status === 'draft' || po.status === 'approved';
+  const canSend = po.status === 'draft';
   const canResend = po.status === 'sent';
-  const canApprove = po.status === 'pending_approval';
-  const canReceive = ['sent', 'partially_received', 'approved'].includes(po.status);
+  const canReceive = ['sent', 'partially_received'].includes(po.status);
 
   return (
     <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 12, padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -540,7 +510,6 @@ function OrderCard({
       {/* Actions */}
       {canManage && !receiveOpen && (
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-          {canApprove && <Btn variant="primary" size="sm" disabled={busy} onClick={onApprove}>{tt.approve}</Btn>}
           {canSend && (po.vendorEmail
             ? <Btn variant="primary" size="sm" disabled={busy} onClick={onSend}>{tt.send}</Btn>
             : <Btn variant="primary" size="sm" disabled={busy} onClick={onOpenEmail}>{tt.send}</Btn>)}

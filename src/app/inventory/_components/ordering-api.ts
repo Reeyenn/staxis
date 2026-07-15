@@ -7,7 +7,6 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import type {
   CartLineInput,
   CatalogItem,
-  OrderingMode,
   PurchaseOrder,
   ReceiveLineInput,
   SpendRollup,
@@ -46,7 +45,7 @@ const jsonInit = (body: unknown): RequestInit => ({
 export async function apiCreateOrders(
   pid: string,
   lines: CartLineInput[],
-): Promise<{ orders: PurchaseOrder[]; mode: OrderingMode }> {
+): Promise<{ orders: PurchaseOrder[] }> {
   return call('/api/inventory/orders/create', jsonInit({ pid, lines }));
 }
 
@@ -57,13 +56,6 @@ export async function apiSendOrder(
   lang: string,
 ): Promise<{ order: PurchaseOrder; emailId: string }> {
   return call('/api/inventory/orders/send', jsonInit({ pid, orderId, toEmail, lang }));
-}
-
-export async function apiApproveOrder(
-  pid: string,
-  orderId: string,
-): Promise<{ order: PurchaseOrder }> {
-  return call('/api/inventory/orders/approve', jsonInit({ pid, orderId }));
 }
 
 export async function apiReceiveOrder(
@@ -80,18 +72,6 @@ export async function apiListOrders(pid: string): Promise<PurchaseOrder[]> {
     { cache: 'no-store' },
   );
   return data.orders;
-}
-
-export async function apiGetMode(pid: string): Promise<OrderingMode> {
-  const data = await call<{ mode: OrderingMode }>(
-    `/api/inventory/ordering-mode?pid=${encodeURIComponent(pid)}`,
-    { cache: 'no-store' },
-  );
-  return data.mode;
-}
-
-export async function apiSetMode(pid: string, mode: OrderingMode): Promise<void> {
-  await call('/api/inventory/ordering-mode', jsonInit({ pid, mode }));
 }
 
 export async function apiListVendors(pid: string, includeInactive = false): Promise<Vendor[]> {

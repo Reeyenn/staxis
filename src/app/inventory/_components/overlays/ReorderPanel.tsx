@@ -11,7 +11,7 @@ import type {
   InventoryBudgetSection,
 } from '@/types';
 import type { DailyAverages } from '@/lib/inventory-predictions';
-import type { CartLineInput, OrderingMode } from '@/lib/ordering/types';
+import type { CartLineInput } from '@/lib/ordering/types';
 import { sectionBudgetKey, type MonthSpendDetail } from '@/lib/db';
 import { apiCreateOrders, apiSendOrder } from '../ordering-api';
 
@@ -51,7 +51,6 @@ interface ReorderPanelProps {
    *  meters. The reorder list itself (what to order) stays visible to staff.
    *  (Access cleanup 2026-06-26.) */
   canViewFinancials: boolean;
-  orderingMode: OrderingMode;
   /** Jump to the Orders panel after placing. */
   onViewOrders: () => void;
 }
@@ -62,12 +61,10 @@ function reorderStrings(lang: Lang) {
   return {
     en: {
       placeSimple: 'Place & email orders →',
-      placePro: 'Submit for approval →',
       placing: 'Placing…',
       close: 'Close',
       viewOrders: 'View orders →',
       managerOnly: 'Only managers can place orders.',
-      proNote: 'Orders will need approval before they can be sent.',
       reorder: 'Reorder',
       item: 'item',
       items: 'items',
@@ -86,18 +83,15 @@ function reorderStrings(lang: Lang) {
       cap: 'cap',
       daysLeftSuffix: 'd left',
       lead: 'lead',
-      createdPending: (n: number) => `${n} order(s) created — pending approval.`,
       placedEmailed: (placed: number, sent: number, draft: number) =>
         `${placed} order(s) placed · ${sent} emailed${draft ? `, ${draft} saved as draft (add a vendor email to send)` : ''}.`,
     },
     es: {
       placeSimple: 'Crear y enviar órdenes →',
-      placePro: 'Enviar a aprobación →',
       placing: 'Creando…',
       close: 'Cerrar',
       viewOrders: 'Ver órdenes →',
       managerOnly: 'Solo gerentes pueden crear órdenes.',
-      proNote: 'Las órdenes necesitarán aprobación antes de enviarse.',
       reorder: 'Pedido',
       item: 'artículo',
       items: 'artículos',
@@ -116,7 +110,6 @@ function reorderStrings(lang: Lang) {
       cap: 'límite',
       daysLeftSuffix: 'd restantes',
       lead: 'entrega',
-      createdPending: (n: number) => `${n} orden(es) creada(s) — pendientes de aprobación.`,
       placedEmailed: (placed: number, sent: number, draft: number) =>
         `${placed} orden(es) creada(s) · ${sent} enviada(s)${draft ? `, ${draft} en borrador (agrega un correo del proveedor para enviar)` : ''}.`,
     },
@@ -150,7 +143,6 @@ export function ReorderPanel({
   mlRateMap,
   canManage,
   canViewFinancials,
-  orderingMode,
   onViewOrders,
 }: ReorderPanelProps) {
   const { user } = useAuth();
@@ -246,8 +238,8 @@ export function ReorderPanel({
   const distinctVendors = new Set(cartItems.map((r) => r.display.vendor || '—')).size;
 
   // Place orders: create real purchase_orders grouped BY VENDOR (server-side),
-  // then — in simple mode — auto-email each vendor that has an address on file.
-  // Pro mode stops at 'pending_approval' (approve from the Orders panel).
+  // then auto-email each vendor that has an address on file. Vendors with no
+  // email stay as drafts to send from the Orders panel once an address is added.
   const handlePlaceOrders = async () => {
     if (!user || !activePropertyId || saving || cartItems.length === 0 || !canManage) return;
     setSaving(true);
@@ -261,26 +253,24 @@ export function ReorderPanel({
         vendorName: r.display.vendor || null,
         vendorId: null,
       }));
-      const { orders, mode } = await apiCreateOrders(activePropertyId, lines);
+      const { orders } = await apiCreateOrders(activePropertyId, lines);
 
       let sent = 0;
       let draft = 0;
       const errors: string[] = [];
-      if (mode === 'simple') {
-        // Auto-send to any vendor with an email; others stay as drafts to send
-        // from the Orders panel once an address is added.
-        for (const po of orders) {
-          if (po.vendorEmail) {
-            try {
-              await apiSendOrder(activePropertyId, po.id, undefined, L);
-              sent++;
-            } catch (e) {
-              draft++;
-              errors.push(`${po.poNumber}: ${e instanceof Error ? e.message : 'send failed'}`);
-            }
-          } else {
+      // Auto-send to any vendor with an email; others stay as drafts to send
+      // from the Orders panel once an address is added.
+      for (const po of orders) {
+        if (po.vendorEmail) {
+          try {
+            await apiSendOrder(activePropertyId, po.id, undefined, L);
+            sent++;
+          } catch (e) {
             draft++;
+            errors.push(`${po.poNumber}: ${e instanceof Error ? e.message : 'send failed'}`);
           }
+        } else {
+          draft++;
         }
       }
       // Clear the cart so re-clicking can't double-order.
@@ -303,14 +293,12 @@ export function ReorderPanel({
   };
 
   const TT = reorderStrings(L);
-  const placeLabel = orderingMode === 'pro' ? TT.placePro : TT.placeSimple;
+  const placeLabel = TT.placeSimple;
 
   const resultMsg = placeResult
     ? (placeResult.placed === 0
         ? (placeResult.errors[0] ?? '—')
-        : orderingMode === 'pro'
-          ? TT.createdPending(placeResult.placed)
-          : TT.placedEmailed(placeResult.placed, placeResult.sent, placeResult.draft))
+        : TT.placedEmailed(placeResult.placed, placeResult.sent, placeResult.draft))
     : null;
 
   return (
@@ -345,7 +333,7 @@ export function ReorderPanel({
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-        {/* Place-orders result / manager-only / pro-mode notices */}
+        {/* Place-orders result + manager-only notice */}
         {resultMsg && (
           <div
             style={{
@@ -364,9 +352,6 @@ export function ReorderPanel({
         )}
         {!canManage && (
           <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>{TT.managerOnly}</div>
-        )}
-        {canManage && orderingMode === 'pro' && !placeResult && (
-          <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>{TT.proNote}</div>
         )}
 
         {/* Budget meters — budget vs spend dollars, money-capability only.

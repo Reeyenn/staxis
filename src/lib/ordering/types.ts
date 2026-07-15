@@ -11,14 +11,10 @@
 
 export type OrderStatus =
   | 'draft'
-  | 'pending_approval'
-  | 'approved'
   | 'sent'
   | 'partially_received'
   | 'received'
   | 'cancelled';
-
-export type OrderingMode = 'simple' | 'pro';
 
 export type CatalogCategory = 'housekeeping' | 'maintenance' | 'breakfast';
 
@@ -56,8 +52,6 @@ export interface PurchaseOrder {
   subtotalCents: number;
   notes: string | null;
   createdBy: string | null;
-  approvedBy: string | null;
-  approvedAt: string | null;
   sentAt: string | null;
   sentToEmail: string | null;
   receivedAt: string | null;
