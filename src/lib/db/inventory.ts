@@ -4,24 +4,37 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { InventoryItem } from '@/types';
-import { supabase, logErr, subscribeTable } from './_common';
+import { supabase, logErr, subscribeTable, asRecordRows } from './_common';
 import { toInventoryRow, fromInventoryRow } from '../db-mappers';
 
 export function subscribeToInventory(
   _uid: string, pid: string,
   callback: (items: InventoryItem[]) => void,
+  onError?: (error: unknown) => void,
+  includeFinancials = true,
 ): () => void {
   return subscribeTable<InventoryItem>(
     `inventory:${pid}`, 'inventory', `property_id=eq.${pid}`,
     async () => {
+      const columns = includeFinancials
+        ? '*'
+        : 'id,property_id,name,category,custom_category_id,current_stock,par_level,reorder_at,unit,notes,updated_at,usage_per_checkout,usage_per_stayover,reorder_lead_days,vendor_name,vendor_id,last_ordered_at,last_alerted_at,last_counted_at,pack_size,case_unit';
       const { data, error } = await supabase
-        .from('inventory').select('*').eq('property_id', pid);
+        .from('inventory').select(columns).eq('property_id', pid);
       if (error) throw error;
-      return (data ?? []).map(fromInventoryRow);
+      return asRecordRows(data).map(fromInventoryRow);
     },
     callback,
+    undefined,
+    undefined,
+    onError,
   );
 }
+
+type InventoryItemPatch = Omit<Partial<InventoryItem>, 'unitCost' | 'vendorName'> & {
+  unitCost?: number | null;
+  vendorName?: string | null;
+};
 
 export async function addInventoryItem(
   _uid: string, pid: string,
@@ -46,7 +59,7 @@ export async function addInventoryItem(
 }
 
 export async function updateInventoryItem(
-  _uid: string, pid: string, iid: string, data: Partial<InventoryItem>,
+  _uid: string, pid: string, iid: string, data: InventoryItemPatch,
 ): Promise<void> {
   // Server-side guarantee: if the caller is changing current_stock, they're
   // recording a count, so stamp last_counted_at. Metadata edits (vendor, lead
@@ -57,14 +70,25 @@ export async function updateInventoryItem(
   // Caller can still override by explicitly passing lastCountedAt in the patch
   // (used by Count Mode bulk save which already wrote a count and may want
   // to set a uniform timestamp across items).
-  const patch: Partial<InventoryItem> = { ...data };
+  const patch: InventoryItemPatch = { ...data };
   if ('currentStock' in data && data.currentStock !== undefined && !('lastCountedAt' in data)) {
     patch.lastCountedAt = new Date();
   }
   // Scope writes by property_id too (defense-in-depth alongside RLS): a stale
   // item id can't update a row from another property.
-  const { error } = await supabase.from('inventory').update(toInventoryRow(patch)).eq('id', iid).eq('property_id', pid);
+  const { data: updated, error } = await supabase
+    .from('inventory')
+    .update(toInventoryRow(patch))
+    .eq('id', iid)
+    .eq('property_id', pid)
+    .select('id')
+    .maybeSingle();
   if (error) { logErr('updateInventoryItem', error); throw error; }
+  if (!updated) {
+    const missing = new Error('Inventory item was not found for the active property. Refresh and try again.');
+    logErr('updateInventoryItem', missing);
+    throw missing;
+  }
 }
 
 export async function deleteInventoryItem(_uid: string, pid: string, iid: string): Promise<void> {

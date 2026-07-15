@@ -739,6 +739,15 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onOpenSections, onDetached
         )}
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Btn
+            variant="forest"
+            onClick={() => {
+              localStorage.setItem('hotelops-active-property', h.id);
+              window.location.href = '/home';
+            }}
+          >
+            Open hotel →
+          </Btn>
           <Btn variant="primary" href={`/admin/properties/${h.id}`}>Property page →</Btn>
           <Btn variant="ghost" onClick={onOpenSections}>
             Sections{APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length > 0 ? ` · ${APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length} off` : ''}

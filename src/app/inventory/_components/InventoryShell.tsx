@@ -190,6 +190,9 @@ export function InventoryShell() {
   // "everything reloads five times" bug.
   const [itemsLoaded, setItemsLoaded] = useState(false);
   const [bundleLoaded, setBundleLoaded] = useState(false);
+  const [itemsLoadError, setItemsLoadError] = useState(false);
+  const [inventoryReload, setInventoryReload] = useState(0);
+  const [quickCountError, setQuickCountError] = useState(false);
 
   // ── Subscribe + fetch when property loads ──────────────────────────
   // Both mount effects depend on the user's stable uid, NOT the user object —
@@ -200,14 +203,35 @@ export function InventoryShell() {
   const uid = stableUser?.uid ?? null;
   useEffect(() => {
     if (!uid || !activePropertyId) return;
+    setItems([]);
     setItemsLoaded(false);
     setBundleLoaded(false);
-    const unsub = subscribeToInventory(uid, activePropertyId, (snap) => {
-      setItems(snap);
+    setItemsLoadError(false);
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      setItemsLoadError(true);
       setItemsLoaded(true);
-    });
-    return () => unsub();
-  }, [uid, activePropertyId]);
+    }, 8000);
+    const unsub = subscribeToInventory(uid, activePropertyId, (snap) => {
+      settled = true;
+      window.clearTimeout(timeout);
+      setItems(snap);
+      setItemsLoadError(false);
+      setItemsLoaded(true);
+    }, () => {
+      settled = true;
+      window.clearTimeout(timeout);
+      setItemsLoadError(true);
+      setItemsLoaded(true);
+    }, canViewFinancials);
+    return () => {
+      settled = true;
+      window.clearTimeout(timeout);
+      unsub();
+    };
+  }, [uid, activePropertyId, inventoryReload, canViewFinancials]);
 
   // ONE assembly of the board's data fetch — shared by the initial-load effect
   // and refreshData so the two query sets can never drift apart.
@@ -224,8 +248,8 @@ export function InventoryShell() {
     const [occ, avg, ct, od, bd, sec, spend, hist, cats] = await Promise.all([
       fetchOccupancyBundle(pid, daysAgo(14)),
       fetchDailyAverages(pid, 14),
-      listInventoryCounts(uid, pid, 200),
-      listInventoryOrders(uid, pid, 200),
+      listInventoryCounts(uid, pid, 200, canViewFinancials),
+      listInventoryOrders(uid, pid, 200, canViewFinancials),
       // Budget + spend are money — only fetch them for the money capability
       // so the dollar figures never reach a line-staff browser.
       canViewFinancials
@@ -282,7 +306,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
+  }, [uid, activePropertyId, fetchBoardData, applyBoardData, inventoryReload]);
 
   // ── Honour ?action= deep links once on mount + when property switches ──
   useEffect(() => {
@@ -291,6 +315,7 @@ export function InventoryShell() {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
       if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
+      if ((action === 'scan' || action === 'orders' || action === 'ordersettings') && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
       if (action === 'add') setEditItem(null);
@@ -298,7 +323,7 @@ export function InventoryShell() {
     }
     // Run only on initial mount + param changes — we want sticky URLs.
 
-  }, [searchParams, canViewFinancials]);
+  }, [searchParams, canViewFinancials, canManage]);
 
   // ── Derived display items ──────────────────────────────────────────
   // Fully manual: no ML rates and no "ai-tracked" graduation marks. Empty
@@ -431,8 +456,10 @@ export function InventoryShell() {
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
+    if ((k === 'scan' || k === 'orders' || k === 'ordersettings') && !canManage) return;
+    if ((k === 'reports' || k === 'budgets') && !canViewFinancials) return;
     setOverlay(k as OverlayKey);
-  }, []);
+  }, [canManage, canViewFinancials]);
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
@@ -531,8 +558,12 @@ export function InventoryShell() {
       return;
     }
     const now = new Date();
-    const variance = Number.isFinite(d.estimated) ? value - d.estimated : undefined;
+    const hadPriorCount = d.lastCountedAt != null;
+    const variance = hadPriorCount && Number.isFinite(d.estimated)
+      ? value - d.estimated
+      : undefined;
     try {
+      setQuickCountError(false);
       await updateInventoryItem(uid, activePropertyId, itemId, {
         currentStock: value,
         lastCountedAt: now,
@@ -547,7 +578,7 @@ export function InventoryShell() {
         itemId,
         itemName: d.name,
         countedStock: value,
-        estimatedStock: Number.isFinite(d.estimated) ? d.estimated : undefined,
+        estimatedStock: hadPriorCount && Number.isFinite(d.estimated) ? d.estimated : undefined,
         variance,
         varianceValue: variance !== undefined && d.unitCost > 0 ? variance * d.unitCost : undefined,
         unitCost: d.unitCost || undefined,
@@ -561,6 +592,7 @@ export function InventoryShell() {
       }).catch(() => {});
     } catch (err) {
       console.error('[inventory] quick-count save failed', err);
+      setQuickCountError(true);
       // Roll back the optimistic draft ONLY if the STOCK write itself failed
       // (nothing persisted). If stock landed and only the audit row failed, the
       // count is already reflected in stock — leave the draft for the reconcile
@@ -770,7 +802,39 @@ export function InventoryShell() {
   }, []);
   const pageRef = useRiseIn<HTMLDivElement>([revealed], { step: 75, dist: 16 });
 
-  if (!revealed) {
+  if (itemsLoadError) {
+    return (
+      <div
+        role="alert"
+        style={{
+          padding: '64px 24px',
+          textAlign: 'center',
+          fontFamily: fonts.sans,
+          color: T.ink2,
+        }}
+      >
+        <div style={{ marginBottom: 14 }}>{tx.loadFailed}</div>
+        <button
+          type="button"
+          onClick={() => setInventoryReload((n) => n + 1)}
+          style={{
+            minHeight: 44,
+            padding: '0 18px',
+            borderRadius: 10,
+            border: 0,
+            background: T.brand,
+            color: '#fff',
+            cursor: 'pointer',
+            fontWeight: 600,
+          }}
+        >
+          {tx.retry}
+        </button>
+      </div>
+    );
+  }
+
+  if (!revealed || !itemsLoaded) {
     return (
       <div
         style={{
@@ -797,6 +861,24 @@ export function InventoryShell() {
       }}
     >
       <InvFx />
+
+      {quickCountError && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          style={{
+            margin: '0 4px 14px',
+            padding: '10px 14px',
+            borderRadius: 10,
+            border: `1px solid ${T.terra}55`,
+            background: T.terraDim,
+            color: T.terra,
+            fontSize: 13,
+          }}
+        >
+          {tx.quickCountSaveFailed}
+        </div>
+      )}
 
       {/* Masthead — editorial title block on the left, living stats on the right.
           Kept deliberately tight: this row + hairline is the only air above the board. */}
@@ -958,6 +1040,7 @@ export function InventoryShell() {
         onClose={closeOverlay}
         counts={counts}
         orders={orders}
+        canViewFinancials={canViewFinancials}
       />
 
       <BudgetsPanel
@@ -983,7 +1066,7 @@ export function InventoryShell() {
           Keeps the 'scan' overlay key so ?action=scan deep links still work. */}
       <DeliverySheet
         lang={L}
-        open={overlay === 'scan'}
+        open={overlay === 'scan' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         display={display}
       />
@@ -993,6 +1076,8 @@ export function InventoryShell() {
         open={overlay === 'add'}
         onClose={() => { closeOverlay(); }}
         item={editItem}
+        canViewFinancials={canViewFinancials}
+        defaultCategory={bucket === 'breakfast' ? 'breakfast' : 'housekeeping'}
         customCategories={customCategories}
         defaultCustomCategoryId={bucket.startsWith('custom:') ? bucket.slice(7) : null}
       />

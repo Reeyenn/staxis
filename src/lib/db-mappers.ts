@@ -699,7 +699,10 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
   };
 }
 
-export function toInventoryRow(i: Partial<InventoryItem>): Record<string, unknown> {
+export function toInventoryRow(i: Omit<Partial<InventoryItem>, 'unitCost' | 'vendorName'> & {
+  unitCost?: number | null;
+  vendorName?: string | null;
+}): Record<string, unknown> {
   return dropUndefined({
     property_id: i.propertyId,
     name: i.name,
@@ -1132,4 +1135,3 @@ export function fromWeekPublicationRow(r: Record<string, unknown>): WeekPublicat
     publishedBy:  r.published_by == null ? null : String(r.published_by),
   };
 }
-

@@ -55,12 +55,19 @@ export function unchangedItemIds(prevFp: string, nextFp: string): Set<string> {
  * log them. `freshStock` wins over the page-load baseline; items missing from
  * the fetch (deleted mid-session) fall back to `pageLoadStock`.
  */
-export function computeStockUps<T extends { id: string; pageLoadStock: number; countedStock: number }>(
+export function computeStockUps<T extends {
+  id: string;
+  pageLoadStock: number;
+  countedStock: number;
+  /** Explicit false for an initial baseline count, which is never a delivery. */
+  stockUpEligible?: boolean;
+}>(
   counted: T[],
   freshStock: Record<string, number>,
 ): Array<T & { delta: number }> {
   const out: Array<T & { delta: number }> = [];
   for (const c of counted) {
+    if (c.stockUpEligible === false) continue;
     const baseline = c.id in freshStock ? freshStock[c.id] : c.pageLoadStock;
     const delta = c.countedStock - baseline;
     if (delta > 0) out.push({ ...c, delta });

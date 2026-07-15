@@ -14,6 +14,7 @@ interface HistoryPanelProps {
   onClose: () => void;
   counts: InventoryCount[];
   orders: InventoryOrder[];
+  canViewFinancials: boolean;
 }
 
 function hpStrings(lang: Lang) {
@@ -63,7 +64,7 @@ type Row = {
   varianceSign?: -1 | 0 | 1;
 };
 
-export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPanelProps) {
+export function HistoryPanel({ lang, open, onClose, counts, orders, canViewFinancials }: HistoryPanelProps) {
   const hp = useMemo(() => hpStrings(lang), [lang]);
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
@@ -75,7 +76,7 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
         label: o.itemName ? `${hp.order} · ${o.itemName}` : hp.order,
         who: o.vendorName || hp.vendor,
         meta: `${o.quantity} ${o.quantity === 1 ? hp.unit : hp.units}`,
-        amount: o.totalCost,
+        amount: canViewFinancials ? o.totalCost : undefined,
       });
     }
     // Bucket counts by countedAt date — multiple items recorded at the same second
@@ -102,13 +103,13 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
         label: hp.physicalCount,
         who,
         meta: `${group.length} ${group.length === 1 ? hp.item : hp.items}`,
-        amount: variance,
-        varianceSign: variance < 0 ? -1 : variance > 0 ? 1 : 0,
+        amount: canViewFinancials ? variance : undefined,
+        varianceSign: canViewFinancials ? (variance < 0 ? -1 : variance > 0 ? 1 : 0) : undefined,
       });
     }
     out.sort((a, b) => b.date.getTime() - a.date.getTime());
     return out;
-  }, [counts, orders, hp]);
+  }, [counts, orders, hp, canViewFinancials]);
 
   const kindStyle = {
     order: {
@@ -157,7 +158,9 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
                 key={i}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '88px 80px 1fr 1fr 100px',
+                  gridTemplateColumns: canViewFinancials
+                    ? '88px 80px 1fr 1fr 100px'
+                    : '88px 80px 1fr 1fr',
                   gap: 14,
                   padding: '14px 0',
                   alignItems: 'center',
@@ -208,29 +211,31 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
                 <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
                   {row.who} · {row.meta}
                 </span>
-                <span
-                  style={{
-                    fontFamily: fonts.sans,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    textAlign: 'right',
-                  }}
-                >
-                  {row.kind === 'order' && typeof row.amount === 'number' && row.amount > 0 ? (
-                    <span style={{ color: T.ink }}>{fmtMoney(row.amount)}</span>
-                  ) : row.kind === 'count' && typeof row.amount === 'number' ? (
-                    <span
-                      style={{
-                        color: (row.varianceSign ?? 0) < 0 ? statusColor.critical : T.ink2,
-                        fontWeight: 500,
-                      }}
-                    >
-                      {fmtMoney(row.amount)}
-                    </span>
-                  ) : (
-                    <span style={{ color: T.ink3 }}>—</span>
-                  )}
-                </span>
+                {canViewFinancials && (
+                  <span
+                    style={{
+                      fontFamily: fonts.sans,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      textAlign: 'right',
+                    }}
+                  >
+                    {row.kind === 'order' && typeof row.amount === 'number' && row.amount > 0 ? (
+                      <span style={{ color: T.ink }}>{fmtMoney(row.amount)}</span>
+                    ) : row.kind === 'count' && typeof row.amount === 'number' ? (
+                      <span
+                        style={{
+                          color: (row.varianceSign ?? 0) < 0 ? statusColor.critical : T.ink2,
+                          fontWeight: 500,
+                        }}
+                      >
+                        {fmtMoney(row.amount)}
+                      </span>
+                    ) : (
+                      <span style={{ color: T.ink3 }}>—</span>
+                    )}
+                  </span>
+                )}
               </div>
             );
           })

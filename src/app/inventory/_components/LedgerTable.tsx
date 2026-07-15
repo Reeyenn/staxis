@@ -144,7 +144,7 @@ export function LedgerTable({
     { key: 'days', label: tx.sortDays },
     { key: 'stock', label: tx.sortStock },
     { key: 'name', label: tx.sortAZ },
-    { key: 'value', label: tx.sortValue },
+    ...(canViewFinancials ? [{ key: 'value' as const, label: tx.sortValue }] : []),
   ];
 
   const clickSort = (key: SortKey) => {

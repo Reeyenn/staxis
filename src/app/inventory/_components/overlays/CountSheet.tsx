@@ -447,6 +447,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           pageLoadStock: number;
           countedStock: number;
           item: InventoryItem;
+          stockUpEligible: boolean;
         }> = [];
         for (const d of scopedDisplay) {
           const e = entries[d.id];
@@ -457,13 +458,17 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
           // count IS the initial on-hand — so record no variance (a fabricated
           // surplus/shrinkage $ figure would otherwise land in count history).
           const isNew = createdIdsRef.current.has(d.id);
-          const variance = !isNew && Number.isFinite(d.estimated) ? n - d.estimated : undefined;
+          // A first-ever count establishes the baseline; it is neither
+          // shrinkage nor a delivery. This includes pre-seeded/imported catalog
+          // rows, not only items added inside this sheet.
+          const hadPriorCount = !isNew && d.lastCountedAt != null;
+          const variance = hadPriorCount && Number.isFinite(d.estimated) ? n - d.estimated : undefined;
           rows.push({
             propertyId: activePropertyId,
             itemId: d.id,
             itemName: d.name,
             countedStock: n,
-            estimatedStock: !isNew && Number.isFinite(d.estimated) ? d.estimated : undefined,
+            estimatedStock: hadPriorCount && Number.isFinite(d.estimated) ? d.estimated : undefined,
             variance,
             varianceValue:
               variance !== undefined && d.unitCost > 0 ? variance * d.unitCost : undefined,
@@ -476,6 +481,7 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
             pageLoadStock: d.raw.currentStock ?? 0,
             countedStock: n,
             item: d.raw,
+            stockUpEligible: hadPriorCount,
           });
         }
 
@@ -496,11 +502,10 @@ export function CountSheet({ lang, open, onClose, items, display }: CountSheetPr
         );
         // Counted stock HIGHER than what's on file NOW → log a restock event
         // (someone received stock between counts and forgot to log it). Items
-        // just catalogued via the inline "Add item" form are excluded: their
-        // count is an initial catalog entry, not a received delivery, so logging
-        // an order would fabricate phantom spend.
-        const stockUps = computeStockUps(counted, freshStock)
-          .filter((s) => !createdIdsRef.current.has(s.id));
+        // First-ever counts (including pre-seeded/imported rows) are excluded:
+        // they establish on-hand stock, not a received delivery, so logging an
+        // order would fabricate phantom spend.
+        const stockUps = computeStockUps(counted, freshStock);
 
         // Editing entries after a PARTIAL failure must not restart from
         // scratch: the previous attempt's completed steps for items whose

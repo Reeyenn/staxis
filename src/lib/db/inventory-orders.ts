@@ -9,7 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { InventoryOrder } from '@/types';
-import { supabase, logErr } from './_common';
+import { supabase, logErr, asRecordRows } from './_common';
 import { toInventoryOrderRow, fromInventoryOrderRow } from '../db-mappers';
 
 export async function addInventoryOrder(
@@ -63,13 +63,17 @@ export async function listInventoryOrders(
   _uid: string,
   pid: string,
   limit = 200,
+  includeFinancials = true,
 ): Promise<InventoryOrder[]> {
+  const columns = includeFinancials
+    ? '*'
+    : 'id,property_id,item_id,item_name,quantity,quantity_cases,vendor_name,ordered_at,received_at,notes';
   const { data, error } = await supabase
     .from('inventory_orders')
-    .select('*')
+    .select(columns)
     .eq('property_id', pid)
     .order('received_at', { ascending: false })
     .limit(limit);
   if (error) { logErr('listInventoryOrders', error); throw error; }
-  return (data ?? []).map(fromInventoryOrderRow);
+  return asRecordRows(data).map(fromInventoryOrderRow);
 }

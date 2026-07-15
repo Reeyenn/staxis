@@ -13,7 +13,8 @@
  * Resilience contract: every tile computes inside its own guard. If one
  * domain's query fails (missing table, RPC error, cold-start emptiness),
  * that tile alone degrades to its muted "Open …" fallback — the route
- * never 500s because one of eight reads broke. All 8 run concurrently.
+ * never 500s because one read broke. Enabled tiles run concurrently; disabled
+ * sections are never queried.
  *
  * Sources per tile (all read-only, via supabaseAdmin):
  *   staxis         — agent_nudges (status='pending', scoped to the
@@ -24,7 +25,7 @@
  *   maintenance    — work_orders not yet 'resolved' (legacy enum:
  *                    submitted/assigned/in_progress all mean open;
  *                    severity 'urgent' is the "high" bucket)
- *   inventory      — inventory current_stock vs par_level (70/30 rule)
+ *   inventory      — counted inventory current_stock vs par_level (70/30 rule)
  *   staff          — scheduled_shifts assigned for today (kind='shift')
  *   financials     — pms_revenue_daily via getMonthRevenue() (the same
  *                    single source of truth Dashboard + Financials use)
@@ -39,6 +40,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid } from '@/lib/api-validate';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { getMonthRevenue } from '@/lib/financials/revenue';
+import { canForUserId } from '@/lib/capabilities/server';
+import { getEnabledSections } from '@/lib/sections/server';
+import { isSectionEnabled, type AppSection } from '@/lib/sections/registry';
+import { summarizeHomeInventory } from '@/lib/home-inventory-summary';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -252,38 +257,11 @@ async function maintenanceTile(pid: string): Promise<TileLine> {
 async function inventoryTile(pid: string): Promise<TileLine> {
   const { data, error } = await supabaseAdmin
     .from('inventory')
-    .select('current_stock, par_level')
+    .select('current_stock, par_level, last_counted_at')
     .eq('property_id', pid)
     .limit(1000);
   if (error) throw new Error(error.message);
-
-  const rows = data ?? [];
-  // No items tracked yet — "Stock healthy" would be a fib; muted door in.
-  if (rows.length === 0) return FALLBACK.inventory;
-
-  // House convention (CLAUDE.md): Good ≥ 70% of par, Low 30-70%, Critical ≤ 30%.
-  let critical = 0;
-  let low = 0;
-  for (const r of rows) {
-    const stock = Number((r as { current_stock?: unknown }).current_stock ?? 0);
-    const par = Number((r as { par_level?: unknown }).par_level ?? 0);
-    if (!Number.isFinite(stock) || !Number.isFinite(par) || par <= 0) continue;
-    const ratio = stock / par;
-    if (ratio <= 0.3) critical++;
-    else if (ratio < 0.7) low++;
-  }
-
-  if (critical > 0) {
-    return critical === 1
-      ? { en: '1 item critical', es: '1 artículo crítico', tone: 'bad' }
-      : { en: `${critical} items critical`, es: `${critical} artículos críticos`, tone: 'bad' };
-  }
-  if (low > 0) {
-    return low === 1
-      ? { en: '1 item low', es: '1 artículo bajo', tone: 'warn' }
-      : { en: `${low} items low`, es: `${low} artículos bajos`, tone: 'warn' };
-  }
-  return { en: 'Stock healthy', es: 'Inventario bien', tone: 'ok' };
+  return summarizeHomeInventory(data ?? []);
 }
 
 /** staff — distinct staff with an assigned shift today. */
@@ -345,23 +323,43 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   // Property-local "today" — never throws (getPropertyOpsConfig returns
   // defaults on any failure), so this is safe outside the tile guards.
-  const opsConfig = await getPropertyOpsConfig(pid);
+  const [opsConfig, enabledSections] = await Promise.all([
+    getPropertyOpsConfig(pid),
+    getEnabledSections(pid),
+  ]);
   const today = todayInTz(opsConfig.timezone);
   const localHour = localHourInTz(opsConfig.timezone);
 
-  // All 8 tiles concurrently, each individually guarded.
+  const runIfEnabled = (
+    section: AppSection,
+    tile: keyof HomeSummaryTiles,
+    fn: () => Promise<TileLine>,
+  ): Promise<TileLine> => isSectionEnabled(enabledSections, section)
+    ? guarded(tile, requestId, fn)
+    : Promise.resolve(FALLBACK[tile]);
+
+  // Unlike the client-side tile filter, this prevents revenue from being read
+  // or returned at all for roles that cannot view financials.
+  const canViewFinancials = isSectionEnabled(enabledSections, 'financials')
+    ? await canForUserId(auth.userId, 'view_financials', pid)
+    : false;
+
+  // Enabled tiles concurrently, each individually guarded. Disabled tiles
+  // keep their neutral fallback without touching that domain's tables.
   const [
     staxis, dashboard, housekeeping, communications,
     maintenance, inventory, staff, financials,
   ] = await Promise.all([
-    guarded('staxis', requestId, () => staxisTile(pid, auth.userId)),
-    guarded('dashboard', requestId, () => dashboardTile(pid, today)),
-    guarded('housekeeping', requestId, () => housekeepingTile(pid, today, localHour)),
-    guarded('communications', requestId, () => communicationsTile(pid)),
-    guarded('maintenance', requestId, () => maintenanceTile(pid)),
-    guarded('inventory', requestId, () => inventoryTile(pid)),
-    guarded('staff', requestId, () => staffTile(pid, today)),
-    guarded('financials', requestId, () => financialsTile(pid, today)),
+    runIfEnabled('staxis', 'staxis', () => staxisTile(pid, auth.userId)),
+    runIfEnabled('dashboard', 'dashboard', () => dashboardTile(pid, today)),
+    runIfEnabled('housekeeping', 'housekeeping', () => housekeepingTile(pid, today, localHour)),
+    runIfEnabled('communications', 'communications', () => communicationsTile(pid)),
+    runIfEnabled('maintenance', 'maintenance', () => maintenanceTile(pid)),
+    runIfEnabled('inventory', 'inventory', () => inventoryTile(pid)),
+    runIfEnabled('staff', 'staff', () => staffTile(pid, today)),
+    canViewFinancials
+      ? guarded('financials', requestId, () => financialsTile(pid, today))
+      : Promise.resolve(FALLBACK.financials),
   ]);
 
   const tiles: HomeSummaryTiles = {

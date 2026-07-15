@@ -24,6 +24,7 @@ interface AddItemSheetProps {
   open: boolean;
   onClose: () => void;
   item: InventoryItem | null;
+  canViewFinancials: boolean;
   /** Category a *new* item starts on. Defaults to 'housekeeping' (Inventory
    *  page). The Maintenance → Parts tab passes 'maintenance' so a part added
    *  there lands back in that filtered view. Ignored when editing. */
@@ -100,7 +101,7 @@ function aisStrings(lang: Lang) {
   }[lang];
 }
 
-export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'housekeeping', customCategories = [], defaultCustomCategoryId = null }: AddItemSheetProps) {
+export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, defaultCategory = 'housekeeping', customCategories = [], defaultCustomCategoryId = null }: AddItemSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ais = aisStrings(lang);
@@ -180,8 +181,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         // back in its built-in category's bucket.
         customCategoryId: customCategoryId,
         parLevel: Number(parLevel) || 0,
-        unitCost: unitCost ? Number(unitCost) : undefined,
-        vendorName: vendor.trim() || undefined,
         vendorId: vendorId ?? null,
       };
       if (isEdit && item) {
@@ -196,11 +195,17 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
           Number.isFinite(stockNum) && stockNum !== stockBaselineRef.current;
         await updateInventoryItem(user.uid, activePropertyId, item.id, {
           ...base,
+          ...(canViewFinancials
+            ? { unitCost: unitCost ? Number(unitCost) : null }
+            : {}),
+          vendorName: vendor.trim() || null,
           ...(stockChanged ? { currentStock: stockNum } : {}),
         });
       } else {
         await addInventoryItem(user.uid, activePropertyId, {
           ...base,
+          unitCost: canViewFinancials && unitCost ? Number(unitCost) : undefined,
+          vendorName: vendor.trim() || undefined,
           unit: 'each',
           reorderLeadDays: 3,
           currentStock: Number(currentStock) || 0,
@@ -310,19 +315,21 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
           </Field>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <Field label={ais.unitCost} tip={ais.tipUnitCost}>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              inputMode="decimal"
-              value={unitCost}
-              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setUnitCost(v); }}
-              placeholder="0.00"
-              style={inputStyle}
-            />
-          </Field>
+        <div style={{ display: 'grid', gridTemplateColumns: canViewFinancials ? '1fr 1fr' : '1fr', gap: 12 }}>
+          {canViewFinancials && (
+            <Field label={ais.unitCost} tip={ais.tipUnitCost}>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={unitCost}
+                onChange={(e) => { const v = e.target.value; if (numGuard(v)) setUnitCost(v); }}
+                placeholder="0.00"
+                style={inputStyle}
+              />
+            </Field>
+          )}
           <Field label={ais.vendor} tip={ais.tipVendor}>
             {vendors.length > 0 && (
               <select

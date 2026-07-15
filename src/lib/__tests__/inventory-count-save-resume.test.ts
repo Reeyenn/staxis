@@ -94,6 +94,18 @@ describe('computeStockUps', () => {
     assert.equal(ups.length, 0);
   });
 
+  test('a first-ever count establishes stock without fabricating a delivery', () => {
+    const out = computeStockUps([
+      {
+        id: 'new-catalog-item',
+        pageLoadStock: 0,
+        countedStock: 50,
+        stockUpEligible: false,
+      },
+    ], { 'new-catalog-item': 0 });
+    assert.deepEqual(out, []);
+  });
+
   test('extra fields on counted items are carried through (the sheet keeps item refs)', () => {
     const ups = computeStockUps(
       [{ id: 'a', pageLoadStock: 1, countedStock: 3, item: { name: 'Towels' } }],
