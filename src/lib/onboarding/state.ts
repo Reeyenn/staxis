@@ -7,6 +7,7 @@
  */
 
 export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type OnboardingReviewStep = 1 | 2;
 
 /**
  * Placeholder name a property is created with when the admin generates an
@@ -103,6 +104,19 @@ export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
   if (!state.mappingCompletedAt && !state.pmsSkippedAt) return 6;
   if (!state.staffAt) return 7;
   return 8;
+}
+
+/**
+ * Keep early-step review navigation separate from durable onboarding progress.
+ * Welcome and Account are safe to revisit as read-only screens after the
+ * account exists; rewinding the persisted auth markers is not safe because it
+ * would strand an already-created Supabase user in the signup flow.
+ */
+export function resolveOnboardingDisplayStep(
+  currentStep: OnboardingStep,
+  reviewStep: OnboardingReviewStep | null,
+): OnboardingStep {
+  return reviewStep !== null && reviewStep < currentStep ? reviewStep : currentStep;
 }
 
 /**
