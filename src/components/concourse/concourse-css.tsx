@@ -35,6 +35,7 @@ const CX_CSS = `
    read as the UI re-loading itself. */
 @keyframes cx-swap{from{opacity:0;}to{opacity:1;}}
 .cx-swap{animation:cx-swap .22s ease;}
+.staxis-app-shell{--staxis-app-background:radial-gradient(ellipse 1000px 500px at 50% 0%,#FFFFFF 0%,#F5F7F4 100%);}
 
 /* ── Pill bar ── */
 .cx-barwrap{display:flex;padding:18px 16px 0;position:sticky;top:18px;z-index:40;
@@ -149,6 +150,8 @@ const CX_CSS = `
   transition:background .55s ${SPRING},border-color .55s ${SPRING},box-shadow .55s ${SPRING},transform .55s ${SPRING};}
 .cx-tile:hover{background:rgba(158,183,166,.16);border-color:rgba(92,122,96,.45);
   box-shadow:0 18px 36px -20px rgba(62,92,72,.5);transform:translateY(-5px);}
+.cx-tile:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.cx-tile:active{transform:scale(.99);}
 .cx-tile.cx-hot{background:rgba(158,183,166,.14);border-color:rgba(92,122,96,.35);}
 .cx-tile-top{display:flex;align-items:center;justify-content:space-between;width:100%;}
 .cx-chip{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;color:#5C625C;
@@ -226,14 +229,26 @@ const CX_CSS = `
 .cx-capsule input::placeholder{color:#A6ABA6;}
 
 @media (max-width:760px){
-  .cx-board{grid-template-columns:repeat(2,minmax(0,1fr));}
-  .cx-hub{padding:24px 16px 40px;}
+  .staxis-app-shell{min-height:100dvh!important;--staxis-app-background:radial-gradient(ellipse 1100px 560px at 50% -4%,#FFFFFF 0%,#F0F3EF 100%);}
+  .cx-desktop-bar{display:none;}
+  .cx-hub{zoom:1;margin:0;padding:14px 20px 104px;text-align:left;max-width:none;}
+  .cx-greet{font-size:30px;line-height:1.08;}
+  .cx-dateline{margin-top:7px;}
+  .cx-ask{display:none;}
+  .cx-board{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:20px;}
+  .cx-tile{min-height:110px;padding:14px 14px 13px;}
+  .cx-tile:hover{transform:none;}
+  .cx-tile:active{transform:scale(.985);}
+  .cx-tile-lab{font-size:14px;}
+  .cx-tile-status{font-size:10px;}
   .cx-page{padding:18px 16px 130px;}
-  .cx-barwrap{padding:12px 12px 0;top:12px;}
+  .staxis-feedback-slot,.staxis-ai-activity-slot{display:none;}
 }
 
 /* Reduced motion: drop the looping decorative animations, keep one-shot entrances. */
 @media (prefers-reduced-motion: reduce){
+  .cx-swap{animation:none;}
+  .cx-tile{transition:none;}
   .cx-ask,.cx-capsule{animation:none;}
   .cx-ask .cx-spark,.cx-dot.cx-warn,.cx-dot.cx-bad{animation:none;}
 }

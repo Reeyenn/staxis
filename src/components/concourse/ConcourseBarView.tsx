@@ -34,13 +34,18 @@ export interface ConcourseBarViewProps {
   /** Replace the Staxis mark with a labelled back-to-Home control while away
    *  from the Home hub. The control stays in the same leftmost bar pill. */
   showHome?: boolean;
+  /** The connected app supplies a dedicated phone header/drawer, so its
+   *  desktop pill bar is hidden at the mobile breakpoint. Demo callers that
+   *  do not supply the replacement keep the legacy scrollable preview. */
+  desktopOnly?: boolean;
 }
 
 export function ConcourseBarView({
-  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar, showHome = false,
+  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  showHome = false, desktopOnly = false,
 }: ConcourseBarViewProps) {
   return (
-    <div className="cx-barwrap">
+    <div className={`cx-barwrap${desktopOnly ? ' cx-desktop-bar' : ''}`}>
       <CxStyle />
       <div className="cx-barcluster">
         <div className="cx-bar">

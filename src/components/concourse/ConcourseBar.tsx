@@ -28,6 +28,8 @@ import { InstallStaxisDialog } from '@/components/pwa/InstallStaxisDialog';
 import { useInstallStaxis } from '@/contexts/InstallStaxisContext';
 import { shouldShowMobileInstallReminder } from '@/lib/pwa-install';
 import { Download, Smartphone } from 'lucide-react';
+import { roleLabel } from '@/lib/roles';
+import { MobileConcourseNav } from './MobileConcourseNav';
 
 // Session-wide guard: the bar remounts on every route (each page renders its
 // own AppLayout), and an unguarded prefetch effect re-fired the whole batch
@@ -53,6 +55,7 @@ export function ConcourseBar() {
   // the measured rect stays put while the menu is open.
   const avatarWrapRef = React.useRef<HTMLDivElement | null>(null);
   const avatarButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const installReturnFocusRef = React.useRef<HTMLElement | null>(null);
   const [menuPos, setMenuPos] = React.useState<{ top: number; right: number } | null>(null);
   const toggleMenu = () => {
     const r = avatarWrapRef.current?.getBoundingClientRect();
@@ -123,6 +126,20 @@ export function ConcourseBar() {
   }
 
   const initial = (user?.displayName?.[0] ?? user?.username?.[0] ?? 'U').toUpperCase();
+  const spanishRoleLabels: Record<string, string> = {
+    admin: 'Admin',
+    owner: 'Propietario',
+    general_manager: 'Gerente general',
+    front_desk: 'Recepción',
+    housekeeping: 'Limpieza',
+    maintenance: 'Mantenimiento',
+    staff: 'Personal',
+  };
+  const roleName = user?.role
+    ? (lang === 'es' ? spanishRoleLabels[user.role] : roleLabel(user.role))
+    : '';
+  const userName = user?.displayName ?? user?.username ?? (lang === 'es' ? 'Usuario' : 'User');
+  const userMeta = [roleName, activeProperty?.name].filter(Boolean).join(' · ');
   const showInstallReminder = shouldShowMobileInstallReminder(
     platform,
     installed,
@@ -208,6 +225,7 @@ export function ConcourseBar() {
                 className="cx-menu-item cx-phone-item cx-install-item"
                 onClick={() => {
                   setMenuOpen(false);
+                  installReturnFocusRef.current = avatarButtonRef.current;
                   setInstallStaxisOpen(true);
                 }}
               >
@@ -232,6 +250,50 @@ export function ConcourseBar() {
 
   return (
     <>
+      <MobileConcourseNav
+        items={items}
+        propertyOptions={properties.map((property) => ({ value: property.id, label: property.name }))}
+        activePropertyId={activeProperty?.id ?? null}
+        languageOptions={SUPPORTED_LOCALES.map((supportedLocale) => ({
+          value: supportedLocale,
+          label: LOCALE_META[supportedLocale].nativeName,
+        }))}
+        activeLocale={locale}
+        userName={userName}
+        userMeta={userMeta}
+        userInitial={initial}
+        homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
+        menuLabel={lang === 'es' ? 'Abrir navegación' : 'Open navigation'}
+        closeLabel={lang === 'es' ? 'Cerrar navegación' : 'Close navigation'}
+        navigationLabel={lang === 'es' ? 'Navegación principal' : 'Main navigation'}
+        sectionsLabel={lang === 'es' ? 'Secciones' : 'Sections'}
+        accountLabel={lang === 'es' ? 'Cuenta' : 'Account'}
+        propertyLabel={lang === 'es' ? 'Hotel' : 'Hotel'}
+        languageLabel={lang === 'es' ? 'Idioma' : 'Language'}
+        accountMenuLabel={lang === 'es'
+          ? `Abrir menú de usuario de ${userName}`
+          : `Open user menu for ${userName}`}
+        settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
+        signOutLabel={t('signOut', lang)}
+        installLabel={lang === 'es' ? 'Añadir Staxis a la pantalla de inicio' : 'Add Staxis to Home Screen'}
+        showInstallAction={showInstallReminder}
+        settingsActive={pathname.startsWith('/settings')}
+        onHome={() => go('/home')}
+        onSettings={() => go('/settings')}
+        onSignOut={() => { void signOut(); }}
+        onPropertyChange={(propertyId) => {
+          setActivePropertyId(propertyId);
+          sessionStorage.setItem('hotelops-session-selected', '1');
+        }}
+        onLanguageChange={(nextLocale) => {
+          const supportedLocale = SUPPORTED_LOCALES.find((candidate) => candidate === nextLocale);
+          if (supportedLocale) setLocale(supportedLocale);
+        }}
+        onInstall={(returnFocusElement) => {
+          installReturnFocusRef.current = returnFocusElement;
+          setInstallStaxisOpen(true);
+        }}
+      />
       <ConcourseBarView
         items={items}
         gearActive={pathname.startsWith('/settings')}
@@ -243,6 +305,7 @@ export function ConcourseBar() {
         // Away from the hub, the leftmost Staxis pill becomes a back-to-Home
         // control without changing the bar's visual language.
         showHome={pathname !== '/home'}
+        desktopOnly
       />
       <PhoneHandoffDialog
         open={phoneHandoffOpen}
@@ -252,7 +315,7 @@ export function ConcourseBar() {
       <InstallStaxisDialog
         open={installStaxisOpen}
         onClose={closeInstallDialog}
-        returnFocusRef={avatarButtonRef}
+        returnFocusRef={installReturnFocusRef}
       />
     </>
   );

@@ -41,6 +41,20 @@ const SUGGESTIONS = {
   en: ['What needs my attention?', "Who's behind on rooms?", 'Should I raise rates?'],
   es: ['¿Qué necesita mi atención?', '¿Quién va atrasado con las habitaciones?', '¿Debería subir tarifas?'],
 };
+const MOBILE_WELCOME = {
+  en: 'I’m here and thinking with you. What should we handle first?',
+  es: 'Estoy aquí para ayudarte. ¿Qué resolvemos primero?',
+};
+const MOBILE_PROMPTS = {
+  en: [
+    { label: 'What needs attention?', prompt: 'What needs my attention this morning?' },
+    { label: 'Show open shifts', prompt: 'Show me the open shifts.' },
+  ],
+  es: [
+    { label: '¿Qué necesita atención?', prompt: '¿Qué necesita mi atención esta mañana?' },
+    { label: 'Ver turnos abiertos', prompt: 'Muéstrame los turnos abiertos.' },
+  ],
+};
 
 // Minimal shape of the Web Speech API we touch — it isn't in the standard DOM
 // lib types and is `webkit`-prefixed in Chrome/Safari.
@@ -68,10 +82,15 @@ export function AskStaxisBar() {
   const [focused, setFocused] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [dictating, setDictating] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const dockRef = useRef<HTMLDivElement>(null);
+  const mobileInputRef = useRef<HTMLInputElement>(null);
+  const mobileThreadRef = useRef<HTMLDivElement>(null);
+  const mobileSheetRef = useRef<HTMLElement>(null);
+  const mobileFabRef = useRef<HTMLButtonElement>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
 
@@ -91,7 +110,7 @@ export function AskStaxisBar() {
     propertyId: activePropertyId,
     // Lazily warm the conversation list once the user engages the bar, so the
     // Past-chats sheet is populated by the time they open it.
-    active: focused || historyOpen || chatState !== 'empty',
+    active: focused || historyOpen || mobileOpen || chatState !== 'empty',
   });
 
   const hasText = input.trim().length > 0;
@@ -107,8 +126,9 @@ export function AskStaxisBar() {
 
   const scrollBottomSoon = useCallback(() => {
     requestAnimationFrame(() => {
-      const el = threadRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      for (const el of [threadRef.current, mobileThreadRef.current]) {
+        if (el) el.scrollTop = el.scrollHeight;
+      }
     });
   }, []);
 
@@ -131,9 +151,38 @@ export function AskStaxisBar() {
     setHistoryOpen(false);
     if (recognitionRef.current) stopDictation();
     setChatState('active');
+    if (window.matchMedia('(max-width: 760px)').matches) setMobileOpen(true);
     setInput('');
     void sendMessage(text);
   }, [streaming, sendMessage, clearCloseTimer, stopDictation]);
+
+  const openMobile = useCallback(() => {
+    setMobileOpen(true);
+    setHistoryOpen(false);
+    requestAnimationFrame(() => mobileInputRef.current?.focus({ preventScroll: true }));
+  }, []);
+
+  const closeMobile = useCallback(() => {
+    setMobileOpen(false);
+    mobileInputRef.current?.blur();
+    requestAnimationFrame(() => mobileFabRef.current?.focus({ preventScroll: true }));
+  }, []);
+
+  // A rotation or responsive resize into the desktop shell must not leave a
+  // hidden mobile sheet owning Escape/focus behavior.
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 760px)');
+    const sync = () => { if (!media.matches) setMobileOpen(false); };
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+
+  // The phone thread is conditionally mounted. Scroll after that mount so
+  // reopening a long conversation lands on its newest message, not the top.
+  useEffect(() => {
+    if (mobileOpen) scrollBottomSoon();
+  }, [mobileOpen, scrollBottomSoon]);
 
   const closeChat = useCallback(() => {
     if (chatState !== 'active' || messages.length === 0) return;
@@ -209,10 +258,13 @@ export function AskStaxisBar() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
+      if (mobileOpen) { closeMobile(); return; }
       if (historyOpen) { setHistoryOpen(false); return; }
       if (chatState === 'active') closeChat();
     };
     const onPointerDown = (e: PointerEvent) => {
+      if (mobileOpen && mobileSheetRef.current?.contains(e.target as Node)) return;
+      if (mobileOpen) return;
       if (dockRef.current && !dockRef.current.contains(e.target as Node)) {
         if (historyOpen) setHistoryOpen(false);
         if (chatState === 'active') closeChat();
@@ -224,7 +276,7 @@ export function AskStaxisBar() {
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('pointerdown', onPointerDown);
     };
-  }, [historyOpen, chatState, closeChat]);
+  }, [historyOpen, chatState, closeChat, mobileOpen, closeMobile]);
 
   // A walkthrough (Clicky-style cursor demo) takes over the screen — collapse.
   useEffect(() => {
@@ -289,6 +341,103 @@ export function AskStaxisBar() {
         dismissResultCard={dismissResultCard}
         actionErrors={actionErrors}
       />
+
+      {/* Phone surface — the confirmed Concourse design uses one compact FAB
+          and a bottom sheet. It shares every message/action with the desktop
+          dock above; this is only a responsive presentation, not a second chat. */}
+      {mobileOpen && (
+        <section
+          ref={mobileSheetRef}
+          id="staxis-mobile-sheet"
+          className="asx-mobile-sheet"
+          role="dialog"
+          aria-modal="false"
+          aria-labelledby="staxis-mobile-title"
+        >
+          <div className="asx-mobile-grab" aria-hidden><span /></div>
+          <header className="asx-mobile-head">
+            <div className="asx-mobile-id">
+              <span className="asx-mobile-spark" aria-hidden>✦</span>
+              <span>
+                <strong id="staxis-mobile-title">Staxis</strong>
+                <small><i aria-hidden />{streaming
+                  ? (lang === 'es' ? 'pensando…' : 'thinking…')
+                  : (lang === 'es' ? 'pensando contigo' : 'thinking with you')}</small>
+              </span>
+            </div>
+            <button type="button" className="asx-mobile-close" onClick={closeMobile} aria-label={lang === 'es' ? 'Cerrar Staxis' : 'Close Staxis'}>
+              <CloseX />
+            </button>
+          </header>
+
+          <div ref={mobileThreadRef} className="asx-mobile-thread" aria-live="polite">
+            {messages.length === 0 ? (
+              <>
+                <div className="asx-mobile-welcome">{MOBILE_WELCOME[lang]}</div>
+                <div className="asx-mobile-quick" aria-label={lang === 'es' ? 'Sugerencias' : 'Suggestions'}>
+                  {MOBILE_PROMPTS[lang].map((item, index) => (
+                    <button
+                      key={item.label}
+                      type="button"
+                      className={index === 0 ? 'asx-mobile-quick-primary' : undefined}
+                      onClick={() => submit(item.prompt)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                  <button type="button" onClick={closeMobile}>{lang === 'es' ? 'Ahora no' : 'Not now'}</button>
+                </div>
+              </>
+            ) : (
+              messages.map((message, index) => <Bubble key={index} message={message} />)
+            )}
+            {showTyping && (
+              <div className="asx-typing" aria-label={lang === 'es' ? 'Staxis está pensando' : 'Staxis is thinking'}>
+                <i /><i /><i />
+              </div>
+            )}
+            {error && <div className="asx-msg asx-err">{error}</div>}
+          </div>
+
+          <div className="asx-mobile-composer">
+            <span aria-hidden>✦</span>
+            <input
+              ref={mobileInputRef}
+              value={input}
+              placeholder={lang === 'es' ? 'Pregunta o da una orden…' : 'Ask or command…'}
+              aria-label={lang === 'es' ? 'Preguntar a Staxis' : 'Ask Staxis'}
+              onChange={(e) => setInput(e.target.value)}
+              onFocus={() => setFocused(true)}
+              onBlur={() => setFocused(false)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); submit(input); }
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => submit(input)}
+              aria-label={lang === 'es' ? 'Enviar' : 'Send'}
+              disabled={!hasText || streaming}
+            >
+              <ArrowUp />
+            </button>
+          </div>
+        </section>
+      )}
+      <button
+        ref={mobileFabRef}
+        type="button"
+        className={`asx-mobile-fab${mobileOpen ? ' asx-mobile-fab-open' : ''}`}
+        onClick={mobileOpen ? closeMobile : openMobile}
+        aria-label={mobileOpen
+          ? (lang === 'es' ? 'Cerrar Staxis' : 'Close Staxis')
+          : (lang === 'es' ? 'Preguntar a Staxis' : 'Ask Staxis')}
+        aria-expanded={mobileOpen}
+        aria-controls="staxis-mobile-sheet"
+      >
+        {mobileOpen ? <CloseX /> : <span aria-hidden>✦</span>}
+      </button>
+
       <div
         className={`asx-scrim${dimOn ? ' asx-scrim-on' : ''}${chatting ? ' asx-scrim-chat' : ''}`}
         style={{ ['--asx-dimrise']: `${dimRise}%` } as React.CSSProperties}
@@ -474,6 +623,9 @@ const Mic = () => (
 const ArrowUp = () => (
   <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"><path d="M10 16V4.5M5 9l5-5 5 5" /></svg>
 );
+const CloseX = () => (
+  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round"><path d="M5 5l10 10M15 5L5 15" /></svg>
+);
 const ChevronDown = () => (
   <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round"><path d="M2 4l4 4 4-4" /></svg>
 );
@@ -490,6 +642,7 @@ const ASX_CSS = `
   --asx-ink:var(--snow-ink,#1F231C);--asx-ink2:var(--snow-ink2,#5C625C);--asx-ink3:var(--snow-ink3,#A6ABA6);
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .asx-dock,.asx-dock *{box-sizing:border-box;}
+.asx-mobile-fab,.asx-mobile-sheet{display:none;}
 
 /* Rising dim — scrim that fades the page from the bottom up while a chat is open
    and climbs with the conversation. Below the dock (z 60), above the page; never
@@ -621,11 +774,87 @@ const ASX_CSS = `
 .asx-pchat small{display:block;font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10px;color:var(--asx-ink3);margin-top:2px;letter-spacing:.02em;}
 .asx-pempty{padding:14px 12px;text-align:center;color:var(--asx-ink3);font-size:12.5px;}
 
+/* ── Confirmed phone shell: compact magic button + flush bottom sheet ── */
+@keyframes asx-mobile-sheet-in{from{transform:translateY(100%)}to{transform:translateY(0)}}
+@media (max-width:760px){
+  .asx-dock,.asx-scrim{display:none!important;}
+
+  .asx-mobile-fab{position:fixed;right:18px;bottom:max(30px,calc(env(safe-area-inset-bottom,0px) + 14px));z-index:72;display:grid;
+    width:56px;height:56px;border-radius:18px;border:1px solid rgba(92,122,96,.4);
+    background:linear-gradient(150deg,#5C7A60,#3E5C48);color:#fff;cursor:pointer;padding:0;
+    place-items:center;box-shadow:0 14px 30px -8px rgba(62,92,72,.6);
+    animation:asx-breathe 4.2s ease-in-out infinite;-webkit-tap-highlight-color:transparent;}
+  .asx-mobile-fab>span{font-size:24px;line-height:1;animation:asx-sparkspin 3.5s ease-in-out infinite;}
+  .asx-mobile-fab>svg{width:20px;height:20px;}
+  .asx-mobile-fab:active{transform:scale(.96);}
+  .asx-mobile-fab:focus-visible{outline:2px solid #1F231C;outline-offset:3px;}
+  .asx-mobile-fab-open{animation:none;}
+
+  .asx-mobile-sheet{position:fixed;left:0;right:0;bottom:0;z-index:71;height:46dvh;min-height:350px;max-height:520px;
+    display:flex;flex-direction:column;overflow:hidden;background:#fff;color:#1F231C;
+    border:0;border-top:1px solid rgba(92,122,96,.22);border-radius:26px 26px 0 0;
+    box-shadow:0 -18px 50px -18px rgba(31,42,32,.4);animation:asx-mobile-sheet-in .34s cubic-bezier(.22,1,.36,1);
+    font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;box-sizing:border-box;}
+  .asx-mobile-sheet *{box-sizing:border-box;}
+  .asx-mobile-grab{height:12px;display:flex;justify-content:center;padding-top:8px;flex:none;background:#fff;}
+  .asx-mobile-grab span{width:38px;height:4px;border-radius:999px;background:rgba(31,35,28,.14);}
+  .asx-mobile-head{min-height:61px;padding:9px 9px 9px 15px;display:flex;align-items:center;justify-content:space-between;flex:none;
+    background:linear-gradient(135deg,rgba(158,183,166,.26),rgba(158,183,166,.05));
+    border-bottom:1px solid rgba(92,122,96,.16);}
+  .asx-mobile-id{display:flex;align-items:center;gap:9px;min-width:0;}
+  .asx-mobile-spark{width:32px;height:32px;border-radius:11px;display:grid;place-items:center;flex:none;
+    background:rgba(92,122,96,.18);color:#3E5C48;font-size:17px;line-height:1;animation:asx-sparkspin 3.5s ease-in-out infinite;}
+  .asx-mobile-id>span:last-child{display:flex;flex-direction:column;min-width:0;}
+  .asx-mobile-id strong{font-size:14px;line-height:18px;font-weight:600;color:#1F231C;}
+  .asx-mobile-id small{display:flex;align-items:center;gap:5px;margin-top:2px;color:#356B4C;
+    font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;line-height:12px;font-weight:400;letter-spacing:.06em;}
+  .asx-mobile-id small i{width:6px;height:6px;border-radius:50%;background:#5C7A60;flex:none;}
+  .asx-mobile-close{width:44px;height:44px;border-radius:50%;border:none;background:transparent;color:#5C625C;cursor:pointer;
+    display:grid;place-items:center;padding:0;}
+  .asx-mobile-close::before{content:'';position:absolute;width:28px;height:28px;border-radius:50%;background:rgba(31,35,28,.05);z-index:-1;}
+  .asx-mobile-close{position:relative;isolation:isolate;}
+  .asx-mobile-close svg{width:13px;height:13px;}
+  .asx-mobile-close:focus-visible{outline:2px solid #3E5C48;outline-offset:-4px;}
+
+  .asx-mobile-thread{flex:1;min-height:0;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:11px;
+    background:#FCFDFB;scrollbar-width:none;-webkit-overflow-scrolling:touch;}
+  .asx-mobile-thread::-webkit-scrollbar{display:none;}
+  .asx-mobile-thread .asx-msg{padding:10px 13px;font-size:13px;line-height:1.5;animation:asx-msgin .34s cubic-bezier(.22,1,.36,1);}
+  .asx-mobile-thread .asx-msg.asx-u{align-self:flex-end;max-width:82%;background:#1F231C;color:#fff;border:1px solid #1F231C;
+    border-radius:16px 16px 5px 16px;box-shadow:none;}
+  .asx-mobile-thread .asx-msg.asx-a{align-self:flex-start;max-width:90%;background:rgba(158,183,166,.16);color:#1F231C;
+    border:1px solid rgba(92,122,96,.2);border-radius:16px 16px 16px 5px;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;}
+  .asx-mobile-thread .asx-msg.asx-err{align-self:flex-start;max-width:90%;}
+  .asx-mobile-thread .asx-typing{background:rgba(158,183,166,.16);border:1px solid rgba(92,122,96,.2);box-shadow:none;}
+  .asx-mobile-welcome{align-self:flex-start;max-width:90%;padding:11px 13px;border-radius:16px 16px 16px 5px;
+    background:rgba(158,183,166,.16);border:1px solid rgba(92,122,96,.2);font-size:13px;line-height:1.5;color:#1F231C;}
+  .asx-mobile-quick{display:flex;flex-wrap:wrap;gap:7px;}
+  .asx-mobile-quick button{height:44px;padding:0 13px;border-radius:999px;border:1px solid rgba(31,35,28,.14);background:#fff;
+    color:#5C625C;font:500 12px/1 var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;cursor:pointer;}
+  .asx-mobile-quick button.asx-mobile-quick-primary{border-color:#3E5C48;background:#3E5C48;color:#fff;font-weight:600;}
+  .asx-mobile-quick button:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+  .asx-mobile-quick button:active{transform:scale(.98);}
+
+  .asx-mobile-composer{min-height:58px;padding:8px 78px max(8px,env(safe-area-inset-bottom,0px)) 12px;display:flex;align-items:center;gap:9px;flex:none;
+    background:#fff;border-top:1px solid rgba(31,35,28,.08);}
+  .asx-mobile-composer>span{color:#5C7A60;font-size:15px;line-height:1;flex:none;}
+  .asx-mobile-composer input{flex:1;min-width:0;height:40px;border:none;outline:none;background:transparent;color:#1F231C;
+    font:400 16px/20px var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
+  .asx-mobile-composer input::placeholder{color:#A6ABA6;}
+  .asx-mobile-composer input:focus-visible{box-shadow:inset 0 -2px #5C7A60;}
+  .asx-mobile-composer button{width:44px;height:44px;flex:none;border-radius:50%;border:none;background:#3E5C48;color:#fff;cursor:pointer;
+    display:grid;place-items:center;padding:4px;}
+  .asx-mobile-composer button svg{width:15px;height:15px;}
+  .asx-mobile-composer button:focus-visible{outline:2px solid #1F231C;outline-offset:2px;}
+  .asx-mobile-composer button:disabled{opacity:.38;cursor:not-allowed;}
+}
+
 /* Reduced-motion: keep the essential one-shot motion the design intends (the
    pill expanding into the bar, the slide-up entrance, message reveal) — only
    drop the LOOPING/decorative animations, per the Ask Staxis handoff. */
 @media (prefers-reduced-motion: reduce){
   .asx-typing i,.asx-ico.asx-dict.asx-listening{animation:none;}
   .asx-dock.asx-idle .asx-glass,.asx-sp{animation:none;}
+  .asx-mobile-sheet,.asx-mobile-fab,.asx-mobile-fab>span,.asx-mobile-spark,.asx-mobile-thread .asx-msg{animation:none;}
 }
 `;

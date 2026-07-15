@@ -1,0 +1,456 @@
+.mobileHeader {
+  display: none;
+}
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  visibility: hidden;
+  pointer-events: none;
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  transition: visibility 0s linear 300ms;
+}
+
+.overlayOpen {
+  visibility: visible;
+  pointer-events: auto;
+  transition-delay: 0s;
+}
+
+.scrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: rgba(31, 35, 28, 0.34);
+  opacity: 0;
+  cursor: default;
+  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.overlayOpen .scrim {
+  opacity: 1;
+}
+
+.drawer {
+  position: absolute;
+  inset: 0 auto 0 0;
+  display: flex;
+  flex-direction: column;
+  width: min(302px, calc(100vw - 40px));
+  height: 100%;
+  height: 100dvh;
+  overflow: hidden;
+  color: #1f231c;
+  background: #fff;
+  box-shadow: 24px 0 60px -20px rgba(31, 42, 32, 0.5);
+  transform: translateX(-104%);
+  transition: transform 300ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.overlayOpen .drawer {
+  transform: translateX(0);
+}
+
+.drawerHeader {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  min-height: calc(72px + env(safe-area-inset-top, 0px));
+  padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 8px 20px;
+  border-bottom: 1px solid rgba(31, 35, 28, 0.08);
+  box-sizing: border-box;
+}
+
+.drawerBrand,
+.topBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: #1f231c;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.closeButton {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  color: #5c625c;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.closeButton::before {
+  position: absolute;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(31, 35, 28, 0.05);
+  content: '';
+}
+
+.closeButton svg {
+  position: relative;
+}
+
+.closeButton:hover::before {
+  background: rgba(31, 35, 28, 0.09);
+}
+
+.identity {
+  flex: none;
+  padding: 14px 20px 6px;
+}
+
+.userName {
+  overflow: hidden;
+  color: #1f231c;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userMeta {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #8a9187;
+  font-size: 11.5px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drawerScroll {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 12px max(12px, env(safe-area-inset-bottom, 0px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.eyebrow {
+  padding: 8px 8px 4px;
+  color: #a6aba6;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.sectionList {
+  display: flex;
+  flex-direction: column;
+}
+
+.navRow {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 52px;
+  gap: 12px;
+  padding: 10px;
+  border: 0;
+  border-radius: 11px;
+  color: #1f231c;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+  transition: background-color 200ms cubic-bezier(0.2, 0, 0, 1), color 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.navRow:hover {
+  background: rgba(31, 35, 28, 0.05);
+}
+
+.navRow:active {
+  background: rgba(31, 35, 28, 0.09);
+}
+
+.navRowActive,
+.navRowActive:hover,
+.navRowActive:active {
+  background: rgba(158, 183, 166, 0.14);
+}
+
+.iconChip {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  color: #5c625c;
+  background: rgba(31, 35, 28, 0.05);
+}
+
+.navRowActive .iconChip {
+  color: #3e5c48;
+  background: rgba(92, 122, 96, 0.16);
+}
+
+.rowLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.navRowActive .rowLabel {
+  color: #1f231c;
+  font-weight: 600;
+}
+
+.badge {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #fff;
+  background: #b85c3d;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
+
+.chevron {
+  flex: none;
+  color: rgba(31, 35, 28, 0.25);
+}
+
+.divider {
+  height: 1px;
+  margin: 8px;
+  background: rgba(31, 35, 28, 0.08);
+}
+
+.accountControls {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.accountControl {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  gap: 10px;
+  padding: 4px 10px;
+  color: #5c625c;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 18px;
+}
+
+.accountControl > span {
+  flex: none;
+}
+
+.accountControl select {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 8px;
+  overflow: hidden;
+  border: 1px solid rgba(31, 35, 28, 0.12);
+  border-radius: 9px;
+  color: #1f231c;
+  text-overflow: ellipsis;
+  background: #fff;
+  font: 500 12px/18px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.installRow {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 44px;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 11px;
+  color: #356b4c;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+  font: 600 12px/18px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.installRow:hover,
+.installRow:active {
+  background: rgba(53, 107, 76, 0.08);
+}
+
+.signOutRow {
+  color: #b85c3d;
+}
+
+.signOutRow:hover,
+.signOutRow:active {
+  background: rgba(184, 92, 61, 0.08);
+}
+
+.signOutRow .rowLabel {
+  font-weight: 500;
+}
+
+.signOutChip {
+  color: #b85c3d;
+  background: rgba(184, 92, 61, 0.1);
+}
+
+.menuButton,
+.topBrand {
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.menuButton {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid rgba(31, 35, 28, 0.1);
+  border-radius: 12px;
+  color: #1f231c;
+  background: #fff;
+  box-shadow: 0 4px 12px -10px rgba(31, 42, 32, 0.4);
+  transition: background-color 200ms cubic-bezier(0.2, 0, 0, 1), transform 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.menuButton::after {
+  position: absolute;
+  inset: -2px;
+  content: '';
+}
+
+.menuButton:hover {
+  background: #f7f8f6;
+}
+
+.menuButton:active {
+  transform: scale(0.98);
+}
+
+.topBrand {
+  justify-self: center;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 4px;
+  background: transparent;
+}
+
+.topBrand:hover {
+  opacity: 0.75;
+}
+
+.avatar {
+  position: relative;
+  display: grid;
+  justify-self: end;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: #fff;
+  background: #1f231c;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.avatar::after {
+  position: absolute;
+  inset: -2px;
+  content: '';
+}
+
+.avatar:hover {
+  background: #353a32;
+}
+
+.avatar:active {
+  transform: scale(0.98);
+}
+
+.menuButton:focus-visible,
+.topBrand:focus-visible,
+.avatar:focus-visible,
+.closeButton:focus-visible,
+.navRow:focus-visible,
+.accountControl select:focus-visible,
+.installRow:focus-visible {
+  outline: 2px solid #3e5c48;
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .mobileHeader {
+    position: relative;
+    z-index: 42;
+    display: grid;
+    flex: none;
+    grid-template-columns: 40px minmax(0, 1fr) 40px;
+    align-items: center;
+    width: 100%;
+    min-height: calc(56px + env(safe-area-inset-top, 0px));
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 20px 8px;
+    box-sizing: border-box;
+    font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+}
+
+@media (min-width: 761px) {
+  .overlay {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .scrim,
+  .drawer,
+  .menuButton,
+  .navRow {
+    transition: none;
+  }
+
+  .avatar:active {
+    transform: none;
+  }
+}
