@@ -119,11 +119,11 @@ const CX_CSS = `
 .cx-menu-item.cx-danger{color:#B85C3D;border-top:1px solid rgba(31,35,28,.08);}
 
 /* ── Home hub ── */
-/* Reeyen asked for the whole hub ~15% larger — greeting, Ask bar, Talk
+/* Reeyen wanted the whole hub a touch larger — greeting, Ask bar, Talk
    button, tiles, their numbers + icons all scale together via zoom (reflows,
-   so nothing clips). The shared pill bar sits outside .cx-hub and stays one
-   consistent size across every page. */
-.cx-hub{zoom:1.15;max-width:1010px;margin:0 auto;padding:32px 40px 44px;text-align:center;width:100%;box-sizing:border-box;
+   so nothing clips). 1.15 read too big; dialed back 6% → 1.081. The shared
+   pill bar sits outside .cx-hub and stays one consistent size across pages. */
+.cx-hub{zoom:1.081;max-width:1010px;margin:0 auto;padding:32px 40px 44px;text-align:center;width:100%;box-sizing:border-box;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .cx-greet{font-family:var(--font-fraunces),Georgia,serif;font-style:italic;font-weight:400;
   font-size:clamp(26px,4.5vw,35px);color:#1F231C;letter-spacing:-0.01em;}
