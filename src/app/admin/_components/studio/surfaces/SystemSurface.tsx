@@ -264,14 +264,6 @@ export function SystemSurface() {
         <div style={{ marginBottom: 18, color: 'var(--terracotta)', fontSize: 13 }}>{error}</div>
       )}
 
-      {/* Global 2FA master switch — always visible, independent of build load. */}
-      <div style={{ marginBottom: 24 }}>
-        <span className="caps" style={{ color: dimWhite(.5) }}>Security</span>
-        <div style={{ marginTop: 10 }}>
-          <SecuritySwitch />
-        </div>
-      </div>
-
       {!build && !error ? (
         <div style={{ padding: '80px 0', textAlign: 'center' }}><DarkSpinner /></div>
       ) : (
@@ -304,110 +296,6 @@ export function SystemSurface() {
         </>
       )}
     </SurfaceShell>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// SECURITY — global 2FA master switch. Reads/writes /api/admin/settings.
-// OFF disables ALL human Staxis 2FA fleet-wide (signup, new-device login,
-// admin panel, phone handoff). Does NOT touch the PMS/CUA robot MFA.
-// ═══════════════════════════════════════════════════════════════════════
-function SecuritySwitch() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        const res = await fetchWithAuth('/api/admin/settings');
-        const json = await res.json();
-        if (alive && json?.data && typeof json.data.twoFactorEnabled === 'boolean') {
-          setEnabled(json.data.twoFactorEnabled);
-        } else if (alive) {
-          setErr('Could not load the 2FA setting.');
-        }
-      } catch {
-        if (alive) setErr('Could not load the 2FA setting.');
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
-
-  const apply = async (next: boolean) => {
-    if (next === false) {
-      const okConfirm = window.confirm(
-        'Turn OFF two-factor for EVERY human login?\n\n'
-        + 'Signup, password login on a new device, the admin panel, and phone handoff '
-        + 'will all skip the security code until you turn this back on.\n\n'
-        + 'The hotel PMS robot is unaffected.',
-      );
-      if (!okConfirm) return;
-    }
-    setSaving(true);
-    setErr(null);
-    try {
-      const res = await fetchWithAuth('/api/admin/settings', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ twoFactorEnabled: next }),
-      });
-      const json = await res.json();
-      if (!res.ok || !json?.ok || !json?.data) {
-        throw new Error(json?.error ?? `save failed (${res.status})`);
-      }
-      setEnabled(json.data.twoFactorEnabled);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Save failed.');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const on = enabled === true;
-  const off = enabled === false;
-
-  return (
-    <DarkCard>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 650, color: off ? 'var(--terracotta)' : dimWhite(.92) }}>
-            {enabled === null ? 'Two-factor (2FA)' : off ? 'Two-factor is OFF' : 'Require two-factor (2FA)'}
-          </div>
-          <div style={{ fontSize: 12.5, color: dimWhite(.5), marginTop: 4, lineHeight: 1.45, maxWidth: 520 }}>
-            {off
-              ? 'Every human login currently skips the security code. The hotel PMS robot is unaffected. Turn back on to restore 2FA everywhere.'
-              : 'On = signup, new-device login, the admin panel and phone handoff all ask for a security code. Turning it off skips the code for every human login (not the PMS robot).'}
-          </div>
-          {err && <div style={{ fontSize: 12, color: 'var(--terracotta)', marginTop: 8 }}>{err}</div>}
-        </div>
-        <ToggleSwitch on={on} disabled={enabled === null || saving} onClick={() => void apply(!on)} />
-      </div>
-    </DarkCard>
-  );
-}
-
-function ToggleSwitch({ on, disabled, onClick }: { on: boolean; disabled?: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      aria-pressed={on}
-      title={on ? '2FA is on' : '2FA is off'}
-      style={{
-        flexShrink: 0, width: 52, height: 30, borderRadius: 999, border: 'none',
-        cursor: disabled ? 'not-allowed' : 'pointer', position: 'relative',
-        background: on ? 'var(--forest, #2E6E4E)' : 'rgba(255,255,255,0.18)',
-        opacity: disabled ? 0.55 : 1, transition: 'background .18s ease',
-      }}
-    >
-      <span style={{
-        position: 'absolute', top: 3, left: on ? 25 : 3, width: 24, height: 24, borderRadius: '50%',
-        background: '#fff', transition: 'left .18s ease', boxShadow: '0 1px 3px rgba(0,0,0,.3)',
-      }} />
-    </button>
   );
 }
 
