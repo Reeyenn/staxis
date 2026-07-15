@@ -15,7 +15,7 @@ import { T, fonts, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
-import { numGuard, intGuard, inputLg as inputStyle } from './form-kit';
+import { numGuard, inputLg as inputStyle } from './form-kit';
 import { apiListVendors } from '../ordering-api';
 import { catLabelFor, type Lang } from '../inv-i18n';
 
@@ -50,12 +50,9 @@ function aisStrings(lang: Lang) {
       category: 'Category',
       onHand: 'On hand',
       parLevel: 'Par level',
-      unit: 'Unit',
-      unitPh: 'each / bottle / case',
       unitCost: 'Unit cost ($)',
       vendor: 'Vendor',
       supplier: 'Supplier',
-      leadDays: 'Lead days',
       saveFailed: 'Saving the item failed. Please try again.',
       confirmRemove: (n: string) => `Remove "${n}" from inventory?`,
       couldNotRemove: 'Could not remove the item.',
@@ -64,10 +61,8 @@ function aisStrings(lang: Lang) {
       tipCategory: 'Which team uses it — housekeeping, maintenance, or food & beverage.',
       tipOnHand: 'How many you have right now.',
       tipParLevel: 'The amount you want to keep in stock. Below it means it’s time to reorder.',
-      tipUnit: 'How you count it — each, case, roll, bottle, etc.',
       tipUnitCost: 'What one unit costs you to buy.',
       tipVendor: 'Who you order this from.',
-      tipLeadDays: 'Days from placing an order to it arriving.',
     },
     es: {
       editItem: 'Editar artículo',
@@ -84,12 +79,9 @@ function aisStrings(lang: Lang) {
       category: 'Categoría',
       onHand: 'Disponible',
       parLevel: 'Nivel par',
-      unit: 'Unidad',
-      unitPh: 'unidad / botella / caja',
       unitCost: 'Costo unitario ($)',
       vendor: 'Proveedor',
       supplier: 'Proveedor',
-      leadDays: 'Días de entrega',
       saveFailed: 'No se pudo guardar el artículo. Inténtalo de nuevo.',
       confirmRemove: (n: string) => `¿Quitar "${n}" del inventario?`,
       couldNotRemove: 'No se pudo quitar el artículo.',
@@ -98,10 +90,8 @@ function aisStrings(lang: Lang) {
       tipCategory: 'Qué equipo lo usa — limpieza, mantenimiento o alimentos y bebidas.',
       tipOnHand: 'Cuántos tienes en este momento.',
       tipParLevel: 'La cantidad que quieres mantener en stock. Por debajo, toca volver a pedir.',
-      tipUnit: 'Cómo lo cuentas — unidad, caja, rollo, botella, etc.',
       tipUnitCost: 'Lo que te cuesta comprar una unidad.',
       tipVendor: 'A quién le pides este artículo.',
-      tipLeadDays: 'Días desde que haces el pedido hasta que llega.',
     },
   }[lang];
 }
@@ -124,12 +114,10 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
   // someone else while the sheet was open.
   const stockBaselineRef = useRef<number>(0);
   const [parLevel, setParLevel] = useState<string>('0');
-  const [unit, setUnit] = useState('each');
   const [unitCost, setUnitCost] = useState<string>('');
   const [vendor, setVendor] = useState('');
   const [vendorId, setVendorId] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
-  const [leadDays, setLeadDays] = useState<string>('3');
   const [saving, setSaving] = useState(false);
 
   // Load real vendor records so an item can link to one (vendor_name stays as
@@ -152,22 +140,18 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setCurrentStock(String(item.currentStock ?? 0));
       stockBaselineRef.current = item.currentStock ?? 0;
       setParLevel(String(item.parLevel ?? 0));
-      setUnit(item.unit || 'each');
       setUnitCost(item.unitCost != null ? String(item.unitCost) : '');
       setVendor(item.vendorName || '');
       setVendorId(item.vendorId ?? null);
-      setLeadDays(String(item.reorderLeadDays ?? 3));
     } else {
       setName('');
       setCategory(defaultCategory);
       setCurrentStock('0');
       stockBaselineRef.current = 0;
       setParLevel('0');
-      setUnit('each');
       setUnitCost('');
       setVendor('');
       setVendorId(null);
-      setLeadDays('3');
     }
   }, [open, item, defaultCategory]);
 
@@ -176,15 +160,17 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
     if (!name.trim()) return;
     setSaving(true);
     try {
+      // Unit + lead days are no longer edited here. On EDIT we don't send them
+      // (the stored values are preserved); on CREATE we seed sensible defaults
+      // below so the ledger's "/ par each" display and reorder lead-time still
+      // work.
       const base = {
         name: name.trim(),
         category: category as InventoryCategory,
         parLevel: Number(parLevel) || 0,
-        unit: unit.trim() || 'each',
         unitCost: unitCost ? Number(unitCost) : undefined,
         vendorName: vendor.trim() || undefined,
         vendorId: vendorId ?? null,
-        reorderLeadDays: leadDays ? Number(leadDays) : undefined,
       };
       if (isEdit && item) {
         // Metadata edit: only send currentStock if the user deliberately
@@ -203,6 +189,8 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       } else {
         await addInventoryItem(user.uid, activePropertyId, {
           ...base,
+          unit: 'each',
+          reorderLeadDays: 3,
           currentStock: Number(currentStock) || 0,
           propertyId: activePropertyId,
         });
@@ -293,7 +281,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
           </div>
         </Field>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <Field label={ais.onHand} tip={ais.tipOnHand}>
             <input
               type="number"
@@ -316,18 +304,9 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               style={inputStyle}
             />
           </Field>
-          <Field label={ais.unit} tip={ais.tipUnit}>
-            <input
-              type="text"
-              value={unit}
-              onChange={(e) => setUnit(e.target.value)}
-              placeholder={ais.unitPh}
-              style={inputStyle}
-            />
-          </Field>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <Field label={ais.unitCost} tip={ais.tipUnitCost}>
             <input
               type="number"
@@ -365,16 +344,6 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
               value={vendor}
               onChange={(e) => { setVendor(e.target.value); setVendorId(null); }}
               placeholder={ais.supplier}
-              style={inputStyle}
-            />
-          </Field>
-          <Field label={ais.leadDays} tip={ais.tipLeadDays}>
-            <input
-              type="number"
-              min="0"
-              inputMode="numeric"
-              value={leadDays}
-              onChange={(e) => { const v = e.target.value; if (intGuard(v)) setLeadDays(v); }}
               style={inputStyle}
             />
           </Field>
