@@ -33,6 +33,7 @@ describe('middleware — public allowlist', () => {
     '/signin/verify',
     '/signin/forgot',
     '/signin/reset',
+    '/phone-signin',
     '/signup',
     '/onboard',
     '/onboard/property',

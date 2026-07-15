@@ -77,6 +77,7 @@ describe('middleware — known PUBLIC paths pass through without auth cookie', (
     '/signin/verify',
     '/signin/forgot',
     '/signin/reset',
+    '/phone-signin',
     '/signup',
     '/onboard',
     '/onboard/step-1',

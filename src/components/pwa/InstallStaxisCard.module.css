@@ -1,0 +1,328 @@
+.card {
+  --install-surface: #ffffff;
+  --install-surface-soft: #f5f7f4;
+  --install-surface-strong: #e7eee8;
+  --install-ink: #1f231c;
+  --install-muted: #626960;
+  --install-border: #dce2dc;
+  --install-accent: #5c7a60;
+  --install-accent-hover: #4f6b53;
+  --install-on-accent: #ffffff;
+  --install-ring: #7e9d83;
+
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  padding: 20px;
+  color: var(--install-ink);
+  background:
+    radial-gradient(circle at 100% 0%, rgb(92 122 96 / 10%), transparent 42%),
+    var(--install-surface);
+  border: 1px solid var(--install-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgb(31 35 28 / 8%);
+}
+
+.card::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  content: '';
+  background: linear-gradient(90deg, var(--install-accent), #c99644);
+}
+
+.compact {
+  padding: 16px;
+  box-shadow: 0 4px 14px rgb(31 35 28 / 7%);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+  padding-right: 30px;
+}
+
+.brandIcon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  color: var(--install-accent);
+  background: var(--install-surface-strong);
+  border: 1px solid color-mix(in srgb, var(--install-accent) 20%, transparent);
+  border-radius: 12px;
+}
+
+.compact .brandIcon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.headingCopy {
+  display: block;
+  min-width: 0;
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--install-accent);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.title {
+  margin: 0;
+  color: var(--install-ink);
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+.compact .title {
+  font-size: 17px;
+}
+
+.description {
+  margin: 14px 0 0;
+  color: var(--install-muted);
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.compact .description {
+  margin-top: 12px;
+  font-size: 13px;
+}
+
+.dismiss {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  padding: 0;
+  color: var(--install-muted);
+  background: transparent;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.dismiss:hover {
+  color: var(--install-ink);
+  background: var(--install-surface-soft);
+}
+
+.dismiss:focus-visible,
+.primaryButton:focus-visible {
+  outline: 2px solid var(--install-ring);
+  outline-offset: 2px;
+}
+
+.path {
+  margin-top: 14px;
+  padding: 9px 10px;
+  color: var(--install-accent);
+  background: var(--install-surface-strong);
+  border-radius: 8px;
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.path span {
+  padding-inline: 3px;
+  opacity: 0.72;
+}
+
+.steps {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--install-surface-soft);
+  border: 1px solid color-mix(in srgb, var(--install-border) 72%, transparent);
+  border-radius: 10px;
+}
+
+.compact .step {
+  min-height: 48px;
+}
+
+.stepIcon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: var(--install-accent);
+  background: var(--install-surface);
+  border: 1px solid var(--install-border);
+  border-radius: 9px;
+}
+
+.stepCopy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+  font-family: var(--font-geist), system-ui, sans-serif;
+}
+
+.stepCopy strong {
+  color: var(--install-ink);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.stepCopy > span {
+  color: var(--install-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.primaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 48px;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 11px 16px;
+  color: var(--install-on-accent);
+  background: var(--install-accent);
+  border: 1px solid transparent;
+  border-radius: 10px;
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--install-accent-hover);
+}
+
+.primaryButton:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.primaryButton:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.spinner {
+  animation: install-card-spin 800ms linear infinite;
+}
+
+.status {
+  margin: 12px 0 0;
+  color: var(--install-muted);
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.successMessage {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 9px 11px;
+  color: var(--install-accent);
+  background: var(--install-surface-strong);
+  border-radius: 9px;
+  font-family: var(--font-geist), system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.installed::before {
+  background: var(--install-accent);
+}
+
+@keyframes install-card-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.darkAppearance,
+:global(.dark) .card {
+  --install-surface: #1c211d;
+  --install-surface-soft: #242a25;
+  --install-surface-strong: #2c382f;
+  --install-ink: #f2f5f0;
+  --install-muted: #b8c0b8;
+  --install-border: #39433b;
+  --install-accent: #a8c5ad;
+  --install-accent-hover: #bad2be;
+  --install-on-accent: #172019;
+  --install-ring: #a8c5ad;
+
+  box-shadow: 0 10px 28px rgb(0 0 0 / 28%);
+}
+
+:global(.light) .card {
+  --install-surface: #ffffff;
+  --install-surface-soft: #f5f7f4;
+  --install-surface-strong: #e7eee8;
+  --install-ink: #1f231c;
+  --install-muted: #626960;
+  --install-border: #dce2dc;
+  --install-accent: #5c7a60;
+  --install-accent-hover: #4f6b53;
+  --install-on-accent: #ffffff;
+  --install-ring: #7e9d83;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dismiss,
+  .primaryButton {
+    transition: none;
+  }
+
+  .primaryButton:active:not(:disabled) {
+    transform: none;
+  }
+
+  .spinner {
+    animation: none;
+  }
+}

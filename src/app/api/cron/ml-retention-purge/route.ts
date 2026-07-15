@@ -1,8 +1,8 @@
 /**
  * GET /api/cron/ml-retention-purge
  *
- * Daily purge for high-volume ML observation tables. Honors the retention
- * comments declared in migration 0103. Cutoff is computed in JS as
+ * Daily purge for high-volume observation/auth-lifecycle tables. Honors the
+ * retention comments declared in migrations 0103 and 0309. Cutoff is computed in JS as
  * `now() - N days` then handed to Supabase as `.lt(column, cutoff)` —
  * NEVER string-interpolated into SQL. The MAX_PURGE_PER_TABLE anomaly
  * guard tags the heartbeat 'degraded' when an unusual number of rows
@@ -35,6 +35,11 @@ const RETENTION: ReadonlyArray<RetentionEntry> = [
   { table: 'prediction_log', column: 'logged_at',  days: 365 },
   { table: 'app_events',     column: 'ts',         days:  90 },
   { table: 'agent_costs',    column: 'created_at', days:  90 },
+  // Every pairing capability expires within roughly two minutes. Two days
+  // from creation guarantees at least a full day of operational audit after
+  // the terminal/expiry event; the daily job then bounds removal to 2–3 days
+  // even if this account never starts another pairing.
+  { table: 'phone_pairings', column: 'created_at', days:   2 },
 ];
 
 // Anomaly guard: a single table purging more than this many rows in one

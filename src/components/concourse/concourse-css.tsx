@@ -97,9 +97,11 @@ const CX_CSS = `
   display:grid;place-items:center;color:#5C625C;flex-shrink:0;padding:0;}
 .cx-gear:hover{background:rgba(31,35,28,.06);}
 .cx-gear.cx-on{background:rgba(158,183,166,.25);color:#3E5C48;}
-.cx-avatarbtn{width:32px;height:32px;border-radius:50%;background:#1F231C;color:#fff;display:grid;
-  place-items:center;font-size:12px;font-weight:600;border:none;cursor:pointer;flex-shrink:0;padding:0;
-  font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
+.cx-avatarbtn{position:relative;isolation:isolate;width:44px;height:44px;border-radius:50%;background:transparent;
+  color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600;border:none;cursor:pointer;
+  flex-shrink:0;padding:0;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
+.cx-avatarbtn::before{content:"";position:absolute;z-index:-1;inset:6px;border-radius:50%;background:#1F231C;}
+.cx-avatarbtn:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
 
 /* Dropdown card under the avatar */
 .cx-menu{position:absolute;right:0;top:calc(100% + 10px);background:#fff;
@@ -116,6 +118,8 @@ const CX_CSS = `
   font-family:inherit;}
 .cx-menu-item:hover{background:rgba(31,35,28,.04);}
 .cx-menu-item.cx-on{background:rgba(158,183,166,.12);color:#356B4C;font-weight:600;}
+.cx-menu-item.cx-phone-item{margin-top:7px;border-top:1px solid rgba(31,35,28,.08);padding-top:11px;}
+.cx-menu-item.cx-install-item{min-height:44px;color:#356B4C;font-weight:600;}
 .cx-menu-item.cx-danger{color:#B85C3D;border-top:1px solid rgba(31,35,28,.08);}
 
 /* ── Home hub ── */

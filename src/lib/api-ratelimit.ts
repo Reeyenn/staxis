@@ -71,6 +71,15 @@ export type RateLimitEndpoint =
   // token-spray attacks matter. (Codex audit 2026-05-12.)
   | 'auth-use-join-code'
   | 'auth-accept-invite'
+  // Desktop-to-phone QR handoff. Create is keyed per account; the public
+  // claim/resend/verify surfaces are keyed per trusted source IP; complete is
+  // checked against both IP and account scopes. Claim/resend send Resend email
+  // and therefore fail closed below.
+  | 'auth-phone-pairing-create'
+  | 'auth-phone-pairing-claim'
+  | 'auth-phone-pairing-resend'
+  | 'auth-phone-pairing-verify'
+  | 'auth-phone-pairing-complete'
   // Onboard wizard PATCH + GET — IP-keyed. Pre-account paths (steps 1-3)
   // are gated only by a hotel-join-code, which is brute-forceable at
   // ~50 bits without a rate limit. Without this cap, an attacker could
@@ -380,6 +389,13 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Invite acceptance — 10/hour per source IP. One-shot per token in
   // normal use; the cap exists to bound token-spray brute force.
   'auth-accept-invite':         10,
+  // QR phone handoff. Database state adds the stronger per-pair limits:
+  // three sends (10-second cooldown) and five verification attempts.
+  'auth-phone-pairing-create':   10,
+  'auth-phone-pairing-claim':    30,
+  'auth-phone-pairing-resend':   10,
+  'auth-phone-pairing-verify':   30,
+  'auth-phone-pairing-complete': 10,
   // Phase M1.5 transactional email — keyed on recipient. 5/hour stops
   // an admin click-spamming "send invite" from blasting one inbox; a
   // legitimate admin re-sending after a typo has 4 retries before they
@@ -707,6 +723,11 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'test-sms-flow',
   // Resend transactional email (per-recipient charge).
   'email-transactional',
+  // Claim/resend each attempt a transactional OTP email. The inner Resend
+  // wrapper also enforces its recipient cap; these outer guards keep an
+  // api-limit outage from reaching link generation/email at all.
+  'auth-phone-pairing-claim',
+  'auth-phone-pairing-resend',
   // Codex review 2026-05-24 (Probe 10) — sick-callout report endpoints
   // fan out Twilio SMS to every affected housekeeper plus the manager
   // via sendCalloutNotifications. A rate-limit RPC failure would let a

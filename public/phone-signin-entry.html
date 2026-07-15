@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <meta name="theme-color" content="#F5F7F4" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+    />
+    <title>Open Staxis on your phone</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f5f7f4;
+        color: #1f231c;
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100svh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 20px;
+        background:
+          radial-gradient(circle at 50% -8%, rgba(158, 183, 166, .38), transparent 36%),
+          #f5f7f4;
+      }
+      main {
+        width: min(100%, 480px);
+        padding: 30px 24px;
+        border: 1px solid rgba(31, 35, 28, .1);
+        border-radius: 20px;
+        background: rgba(255, 255, 255, .94);
+        box-shadow: 0 26px 70px -34px rgba(31, 42, 32, .45);
+        text-align: center;
+      }
+      .mark {
+        width: 62px;
+        height: 62px;
+        margin: 0 auto 18px;
+        display: grid;
+        place-items: center;
+        border-radius: 18px;
+        color: #3e5c48;
+        background: rgba(92, 122, 96, .12);
+        font-size: 26px;
+        font-weight: 750;
+      }
+      .mark svg { width: 36px; height: 36px; }
+      .eyebrow {
+        margin: 0 0 8px;
+        color: #3e5c48;
+        font: 700 10px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+        letter-spacing: .13em;
+        text-transform: uppercase;
+      }
+      h1 { margin: 0; font-size: 29px; line-height: 1.12; letter-spacing: -.035em; }
+      p { margin: 11px auto 0; color: #5c625c; font-size: 15px; line-height: 1.5; }
+      .steps { margin: 22px 0 0; padding: 0; list-style: none; text-align: left; }
+      .steps li {
+        min-height: 52px;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        margin-top: 8px;
+        padding: 9px 11px;
+        border-radius: 11px;
+        background: #f5f7f4;
+        color: #4e554d;
+        font-size: 13px;
+        line-height: 1.35;
+      }
+      .steps span {
+        width: 30px;
+        height: 30px;
+        flex: 0 0 30px;
+        display: grid;
+        place-items: center;
+        border-radius: 9px;
+        color: #3e5c48;
+        background: #fff;
+        font: 700 12px/1 ui-monospace, monospace;
+      }
+      button {
+        width: 100%;
+        min-height: 48px;
+        margin-top: 20px;
+        padding: 0 18px;
+        border: 0;
+        border-radius: 10px;
+        color: #fff;
+        background: #3e5c48;
+        font: 700 14px/20px inherit;
+        cursor: pointer;
+      }
+      button:focus-visible { outline: 3px solid rgba(92, 122, 96, .5); outline-offset: 3px; }
+      .status { min-height: 19px; margin-top: 11px; font-size: 12px; }
+      .spinner {
+        width: 34px;
+        height: 34px;
+        margin: 4px auto 22px;
+        border: 3px solid rgba(92, 122, 96, .15);
+        border-top-color: #3e5c48;
+        border-radius: 50%;
+        animation: spin .75s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      @media (prefers-color-scheme: dark) {
+        :root { background: #0f120f; color: #f1f3ef; }
+        body { background: radial-gradient(circle at 50% -8%, rgba(87, 119, 95, .28), transparent 36%), #0f120f; }
+        main { background: rgba(25, 29, 25, .95); border-color: rgba(238, 244, 237, .12); }
+        .mark, .eyebrow { color: #a9c5af; }
+        .mark { background: rgba(169, 197, 175, .13); }
+        p, .steps li { color: #b8beb7; }
+        .steps li { background: #202420; }
+        .steps span { color: #a9c5af; background: #171a17; }
+        button { color: #172018; background: #a9c5af; }
+        .spinner { border-color: rgba(169, 197, 175, .16); border-top-color: #a9c5af; }
+      }
+      @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+    </style>
+  </head>
+  <body>
+    <main id="card" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <p class="eyebrow">Secure phone sign-in</p>
+      <h1>Opening Staxis…</h1>
+      <p>Preparing the one-time phone handoff.</p>
+    </main>
+    <noscript>JavaScript is required to open this secure Staxis phone link.</noscript>
+    <script>
+      (() => {
+        'use strict';
+        const card = document.getElementById('card');
+        const raw = location.hash.startsWith('#') ? location.hash.slice(1) : '';
+        const token = new URLSearchParams(raw).get('pair');
+        const valid = typeof token === 'string' && /^[0-9a-f]{64}$/i.test(token);
+
+        // This static bootstrap intentionally contains no third-party tracking or app
+        // runtime. Remove the capability from the address bar before any
+        // instrumented Staxis JavaScript is loaded.
+        history.replaceState(null, '', location.pathname + location.search);
+
+        if (!valid) {
+          if (window.name.startsWith('staxis-phone-pairing:')) window.name = '';
+          card.innerHTML = '<div class="mark" aria-hidden="true">!</div>' +
+            '<p class="eyebrow">Phone sign-in stopped</p>' +
+            '<h1>Open a new QR code</h1>' +
+            '<p>This link is missing or no longer valid. Create a new QR code from the Staxis account menu.</p>';
+          return;
+        }
+
+        const ua = navigator.userAgent || '';
+        const ipadDesktop = /MacIntel|Macintosh/i.test(navigator.platform || ua) && navigator.maxTouchPoints > 1;
+        const ios = /iPad|iPhone|iPod/i.test(ua) || ipadDesktop;
+        const nonSafari = /CriOS|FxiOS|EdgiOS|OPiOS|DuckDuckGo|Ddg\/|GSA\/|YaBrowser|Coast\/|FBAN|FBAV|Instagram/i.test(ua);
+        const safari = /Safari\//i.test(ua) && /Version\/[\d.]+/i.test(ua) && !nonSafari;
+
+        if (ios && !safari) {
+          const secureUrl = location.origin + location.pathname + '#pair=' + encodeURIComponent(token);
+          card.innerHTML = '<div class="mark" aria-hidden="true">' +
+            '<svg viewBox="0 0 64 64" focusable="false"><path d="M18 28 L26 20 M18 38 L38 18 M28 38 L38 28 M28 48 L46 30" stroke="currentColor" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" fill="none"></path></svg></div>' +
+            '<p class="eyebrow">iPhone setup</p>' +
+            '<h1>Open this link in Safari</h1>' +
+            '<p>Safari must complete the secure sign-in so the Home Screen app stays signed in.</p>' +
+            '<ol class="steps"><li><span>1</span>Copy the secure Staxis link</li>' +
+            '<li><span>2</span>Open Safari and paste it in the address bar</li>' +
+            '<li><span>3</span>Enter the code sent to your registered email</li></ol>' +
+            '<button id="copy" type="button">Copy secure link for Safari</button>' +
+            '<p id="copy-status" class="status" role="status"></p>';
+
+          document.getElementById('copy').addEventListener('click', async () => {
+            let copied = false;
+            try {
+              await navigator.clipboard.writeText(secureUrl);
+              copied = true;
+            } catch (_) {
+              const field = document.createElement('textarea');
+              field.value = secureUrl;
+              field.setAttribute('readonly', '');
+              field.style.position = 'fixed';
+              field.style.left = '-9999px';
+              document.body.appendChild(field);
+              field.select();
+              copied = document.execCommand('copy');
+              field.remove();
+            }
+            document.getElementById('copy-status').textContent = copied
+              ? 'Copied. Open Safari and paste the link now—it expires quickly.'
+              : 'Could not copy automatically. Scan a new QR code with Safari instead.';
+          });
+          return;
+        }
+
+        // window.name survives this same-tab, same-origin navigation but is
+        // cleared by /phone-signin before its first network request. It keeps
+        // the capability out of URLs, storage, logs, referrers, and telemetry.
+        window.name = 'staxis-phone-pairing:' + token;
+        location.replace('/phone-signin');
+      })();
+    </script>
+  </body>
+</html>

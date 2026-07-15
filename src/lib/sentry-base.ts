@@ -16,7 +16,7 @@
  * stays in the runtime-specific config file and is merged in via spread.
  */
 
-import { scrubSentryEvent } from '@/lib/sentry-scrub';
+import { scrubSentryEvent, scrubSentryTransaction } from '@/lib/sentry-scrub';
 
 export function getBaseSentryOptions() {
   return {
@@ -30,6 +30,7 @@ export function getBaseSentryOptions() {
     // (Security audit 2026-06-26.)
     includeLocalVariables: false,
     beforeSend: scrubSentryEvent,
+    beforeSendTransaction: scrubSentryTransaction,
     ignoreErrors: ['failed to pipe response', /other side closed/] as (string | RegExp)[],
   };
 }

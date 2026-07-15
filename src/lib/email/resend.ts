@@ -51,6 +51,10 @@ export interface SendEmailParams {
   // hash of (to, subject) — good enough to swallow accidental double
   // submits and SDK-level retries.
   idempotencyKey?: string;
+  // Authentication emails can opt out of writing the recipient address or
+  // provider error text to admin_audit_log/Sentry. The message still goes to
+  // `to`; only observability is redacted and should use a non-PII targetId.
+  redactRecipientInAudit?: boolean;
   // Optional audit metadata. The standard write to admin_audit_log
   // includes action, target, and the recipient; this lets callers
   // attach context like "hotel name" or "invite role".
@@ -120,7 +124,7 @@ export async function sendTransactionalEmail(
     captureException(new Error('email subject contained control chars'), {
       subsystem: 'email',
       failure_mode: 'subject_control_chars',
-      to: params.to,
+      ...(params.redactRecipientInAudit ? {} : { to: params.to }),
       subjectLen: String(params.subject.length),
     });
     await logEmailOutcome(params, result);
@@ -134,7 +138,7 @@ export async function sendTransactionalEmail(
     captureException(new Error('email body contained null bytes'), {
       subsystem: 'email',
       failure_mode: 'body_null_bytes',
-      to: params.to,
+      ...(params.redactRecipientInAudit ? {} : { to: params.to }),
     });
     await logEmailOutcome(params, result);
     return result;
@@ -277,20 +281,28 @@ async function logEmailOutcome(
   result: SendEmailResult,
 ): Promise<void> {
   const ctx = params.auditContext ?? {};
+  const redactRecipient = params.redactRecipientInAudit === true;
   try {
     await writeAudit({
       action: result.ok ? 'email.sent' : 'email.failed',
       actorUserId: ctx.actorUserId,
       actorEmail: ctx.actorEmail,
       targetType: ctx.targetType ?? 'email',
-      targetId: ctx.targetId ?? params.to,
+      targetId: ctx.targetId ?? (redactRecipient ? 'redacted-recipient' : params.to),
       hotelId: ctx.hotelId,
       metadata: {
-        recipient: params.to,
+        ...(redactRecipient
+          ? { recipientRedacted: true }
+          : { recipient: params.to }),
         subject: params.subject,
         tags: params.tags,
         ...ctx.metadata,
-        ...(result.ok ? { resendId: result.id } : { error: result.error, status: result.status }),
+        ...(result.ok
+          ? { resendId: result.id }
+          : {
+              error: redactRecipient ? 'email_delivery_failed' : result.error,
+              status: result.status,
+            }),
       },
     });
   } catch (e) {

@@ -34,6 +34,7 @@ const PUBLIC_ROUTE_SEGMENTS = new Set([
   'housekeeper',
   'laundry',
   'signin',
+  'phone-signin',
   'signup',
   'onboard',
   'invite',

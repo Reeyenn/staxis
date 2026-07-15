@@ -5,6 +5,7 @@ import { AuthProvider } from '@/contexts/AuthContext';
 import { LanguageProvider } from '@/contexts/LanguageContext';
 import { PropertyProvider } from '@/contexts/PropertyContext';
 import { SyncProvider } from '@/contexts/SyncContext';
+import { InstallStaxisProvider } from '@/contexts/InstallStaxisContext';
 import { WalkthroughOverlay } from '@/components/walkthrough/WalkthroughOverlay';
 
 // Snow design system — typography from the locked Dashboard Explorations
@@ -74,7 +75,7 @@ export const viewport: Viewport = {
   initialScale: 1,
   // No maximumScale — pinch-to-zoom must stay enabled (WCAG 2.1 SC 1.4.4)
   // so low-vision staff can enlarge room notes/guest names on shared phones.
-  themeColor: '#F0F2F5',
+  themeColor: '#F5F7F4',
 };
 
 export default function RootLayout({
@@ -89,7 +90,7 @@ export default function RootLayout({
         <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
         <meta name="apple-mobile-web-app-title" content="Staxis" />
         <link rel="manifest" href="/manifest.json" />
-        <link rel="apple-touch-icon" href="/icons/icon.svg" />
+        <link rel="apple-touch-icon" sizes="180x180" href="/icons/staxis-180.png" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         {/*
@@ -115,19 +116,21 @@ export default function RootLayout({
         <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block" />
       </head>
       <body>
-        <SyncProvider>
-          <AuthProvider>
-            <LanguageProvider>
-              <PropertyProvider>
-                {children}
-                {/* Mounted at the root so the loop survives page navigations
-                    (AppLayout is per-page and unmounts when the URL changes,
-                    which would kill an in-flight multi-step walkthrough). */}
-                <WalkthroughOverlay />
-              </PropertyProvider>
-            </LanguageProvider>
-          </AuthProvider>
-        </SyncProvider>
+        <InstallStaxisProvider>
+          <SyncProvider>
+            <AuthProvider>
+              <LanguageProvider>
+                <PropertyProvider>
+                  {children}
+                  {/* Mounted at the root so the loop survives page navigations
+                      (AppLayout is per-page and unmounts when the URL changes,
+                      which would kill an in-flight multi-step walkthrough). */}
+                  <WalkthroughOverlay />
+                </PropertyProvider>
+              </LanguageProvider>
+            </AuthProvider>
+          </SyncProvider>
+        </InstallStaxisProvider>
       </body>
     </html>
   );

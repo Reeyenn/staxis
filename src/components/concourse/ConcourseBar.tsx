@@ -23,6 +23,11 @@ import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
 import { ConcourseBarView, type BarItem } from './ConcourseBarView';
 import { SAMPLE_DECISIONS, QUEUE_COUNT_EVENT } from './sample-decisions';
+import { PhoneHandoffDialog } from '@/components/phone-handoff/PhoneHandoffDialog';
+import { InstallStaxisDialog } from '@/components/pwa/InstallStaxisDialog';
+import { useInstallStaxis } from '@/contexts/InstallStaxisContext';
+import { shouldShowMobileInstallReminder } from '@/lib/pwa-install';
+import { Download, Smartphone } from 'lucide-react';
 
 // Session-wide guard: the bar remounts on every route (each page renders its
 // own AppLayout), and an unguarded prefetch effect re-fired the whole batch
@@ -38,12 +43,16 @@ export function ConcourseBar() {
   const router = useRouter();
   const pathname = usePathname();
   const enabled = useEnabledSections();
+  const { platform, installed } = useInstallStaxis();
   const [menuOpen, setMenuOpen] = React.useState(false);
+  const [phoneHandoffOpen, setPhoneHandoffOpen] = React.useState(false);
+  const [installStaxisOpen, setInstallStaxisOpen] = React.useState(false);
   // The bar wrap is a horizontal scroll container (mobile), which clips
   // anything hanging below it — so the menu is portaled to <body> at a
   // fixed position measured from the avatar button. The bar is sticky, so
   // the measured rect stays put while the menu is open.
   const avatarWrapRef = React.useRef<HTMLDivElement | null>(null);
+  const avatarButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const [menuPos, setMenuPos] = React.useState<{ top: number; right: number } | null>(null);
   const toggleMenu = () => {
     const r = avatarWrapRef.current?.getBoundingClientRect();
@@ -114,10 +123,19 @@ export function ConcourseBar() {
   }
 
   const initial = (user?.displayName?.[0] ?? user?.username?.[0] ?? 'U').toUpperCase();
+  const showInstallReminder = shouldShowMobileInstallReminder(
+    platform,
+    installed,
+  );
+  const closeInstallDialog = React.useCallback(
+    () => setInstallStaxisOpen(false),
+    [],
+  );
 
   const avatar = user ? (
     <div ref={avatarWrapRef} style={{ position: 'relative', flexShrink: 0 }}>
       <button
+        ref={avatarButtonRef}
         type="button"
         className="cx-avatarbtn"
         onClick={toggleMenu}
@@ -170,6 +188,34 @@ export function ConcourseBar() {
               </button>
             ))}
 
+            {platform === 'desktop' ? (
+              <button
+                type="button"
+                className="cx-menu-item cx-phone-item"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setPhoneHandoffOpen(true);
+                }}
+              >
+                <Smartphone size={16} aria-hidden="true" />
+                Open on my phone
+              </button>
+            ) : null}
+
+            {showInstallReminder ? (
+              <button
+                type="button"
+                className="cx-menu-item cx-phone-item cx-install-item"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setInstallStaxisOpen(true);
+                }}
+              >
+                <Download size={16} aria-hidden="true" />
+                Add Staxis to Home Screen
+              </button>
+            ) : null}
+
             <button
               type="button"
               className="cx-menu-item cx-danger"
@@ -185,17 +231,29 @@ export function ConcourseBar() {
   ) : undefined;
 
   return (
-    <ConcourseBarView
-      items={items}
-      gearActive={pathname.startsWith('/settings')}
-      onGear={() => go('/settings')}
-      onLogo={() => go('/home')}
-      homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
-      settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
-      avatar={avatar}
-      // Home button lives in the bar row now (left of the pills) — on every
-      // screen except the hub itself.
-      showHome={pathname !== '/home'}
-    />
+    <>
+      <ConcourseBarView
+        items={items}
+        gearActive={pathname.startsWith('/settings')}
+        onGear={() => go('/settings')}
+        onLogo={() => go('/home')}
+        homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
+        settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
+        avatar={avatar}
+        // Home button lives in the bar row now (left of the pills) — on every
+        // screen except the hub itself.
+        showHome={pathname !== '/home'}
+      />
+      <PhoneHandoffDialog
+        open={phoneHandoffOpen}
+        onClose={() => setPhoneHandoffOpen(false)}
+        returnFocusRef={avatarButtonRef}
+      />
+      <InstallStaxisDialog
+        open={installStaxisOpen}
+        onClose={closeInstallDialog}
+        returnFocusRef={avatarButtonRef}
+      />
+    </>
   );
 }

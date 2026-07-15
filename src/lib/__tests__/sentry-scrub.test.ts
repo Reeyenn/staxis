@@ -11,8 +11,9 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { scrubString, scrubSentryEvent } from '@/lib/sentry-scrub';
+import { scrubString, scrubSentryEvent, scrubSentryTransaction } from '@/lib/sentry-scrub';
 import type { ErrorEvent } from '@sentry/nextjs';
+import type { TransactionEvent } from '@sentry/core';
 
 describe('scrubString — value-regex pass', () => {
   test('redacts Anthropic API keys (sk-ant-api03-…)', () => {
@@ -53,6 +54,39 @@ describe('scrubString — value-regex pass', () => {
     const out = scrubString('contact maria@hotel.com or +1-555-123-4567');
     assert.ok(out.includes('<email>'));
     assert.ok(out.includes('<phone>'));
+  });
+
+  test('redacts literal and encoded phone-pairing URL fragments', () => {
+    const token = 'a'.repeat(64);
+    const literal = scrubString(`https://getstaxis.com/phone-signin-entry.html#pair=${token}`);
+    const encoded = scrubString(`url=https%3A%2F%2Fgetstaxis.com%2Fphone-signin-entry.html%23pair%3D${token}`);
+    assert.equal(literal.includes(token), false);
+    assert.equal(encoded.includes(token), false);
+    assert.match(literal, /<phone-pairing-token>/);
+    assert.match(encoded, /<phone-pairing-token>/);
+  });
+});
+
+describe('phone-pairing telemetry URL defense', () => {
+  test('scrubs request.url on error events', () => {
+    const token = 'b'.repeat(64);
+    const event = {
+      request: { url: `https://getstaxis.com/phone-signin-entry.html#pair=${token}` },
+    } as ErrorEvent;
+    const out = scrubSentryEvent(event)!;
+    assert.equal(out.request?.url?.includes(token), false);
+  });
+
+  test('scrubs transaction request, name, description, and span data', () => {
+    const token = 'c'.repeat(64);
+    const event = {
+      type: 'transaction',
+      transaction: `/phone-signin-entry.html#pair=${token}`,
+      request: { url: `https://getstaxis.com/phone-signin-entry.html#pair=${token}` },
+      spans: [{ description: `pageload #pair=${token}`, data: { url: `#pair=${token}` } }],
+    } as unknown as TransactionEvent;
+    const out = scrubSentryTransaction(event)!;
+    assert.equal(JSON.stringify(out).includes(token), false);
   });
 });
 

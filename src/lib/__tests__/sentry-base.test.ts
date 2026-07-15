@@ -17,12 +17,16 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { getBaseSentryOptions, shouldSampleTransaction } from '@/lib/sentry-base';
-import { scrubSentryEvent } from '@/lib/sentry-scrub';
+import { scrubSentryEvent, scrubSentryTransaction } from '@/lib/sentry-scrub';
 
 describe('getBaseSentryOptions', () => {
   test('beforeSend is the shared scrubber (fails if anyone deletes the wiring)', () => {
     const opts = getBaseSentryOptions();
     assert.equal(opts.beforeSend, scrubSentryEvent);
+  });
+
+  test('beforeSendTransaction is the shared transaction scrubber', () => {
+    assert.equal(getBaseSentryOptions().beforeSendTransaction, scrubSentryTransaction);
   });
 
   test('sendDefaultPii is false', () => {

@@ -2,23 +2,30 @@
   "name": "Staxis",
   "short_name": "Staxis",
   "description": "AI-powered hotel operations platform — housekeeping, staffing, and maintenance in one app",
-  "start_url": "/dashboard",
+  "id": "/",
+  "start_url": "/home",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#060c14",
-  "theme_color": "#D49040",
+  "background_color": "#F5F7F4",
+  "theme_color": "#5C7A60",
   "icons": [
     {
-      "src": "/icons/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/icons/staxis-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
       "purpose": "any"
     },
     {
-      "src": "/icons/icon-maskable.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/icons/staxis-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/staxis-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "maskable"
     }
   ],

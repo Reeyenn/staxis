@@ -137,6 +137,27 @@ describe('sendTransactionalEmail — happy path', () => {
     assert.equal(metadata.recipient, 'alice@hotel.com');
     assert.equal(metadata.resendId, 'email_resend_id_xyz');
   });
+
+  test('auth-email mode redacts recipient PII from its audit row', async () => {
+    await sendTransactionalEmail({
+      to: 'private.manager@hotel.com',
+      subject: 'Your sign-in code',
+      html: '<p>code</p>',
+      redactRecipientInAudit: true,
+      auditContext: {
+        targetType: 'phone_pairing',
+        targetId: 'pairing-safe-id',
+      },
+    });
+
+    assert.equal(auditWrites.length, 1);
+    assert.equal(auditWrites[0].target_id, 'pairing-safe-id');
+    const serialized = JSON.stringify(auditWrites[0]);
+    assert.doesNotMatch(serialized, /private\.manager@hotel\.com/);
+    const metadata = auditWrites[0].metadata as Record<string, unknown>;
+    assert.equal(metadata.recipientRedacted, true);
+    assert.equal(metadata.recipient, undefined);
+  });
 });
 
 // ─── Soft-fail paths ─────────────────────────────────────────────────────
@@ -197,6 +218,25 @@ describe('sendTransactionalEmail — soft-fail (returns ok:false, does not throw
       assert.match(result.error, /domain getstaxis.com is not verified/);
       assert.equal(result.status, 422);
     }
+  });
+
+  test('auth-email mode redacts provider failure text from its audit row', async () => {
+    nextResendResponse = {
+      status: 422,
+      body: { message: 'private.manager@hotel.com rejected', name: 'validation_error' },
+    };
+    const result = await sendTransactionalEmail({
+      to: 'private.manager@hotel.com',
+      subject: 'Your sign-in code',
+      html: '<p>code</p>',
+      redactRecipientInAudit: true,
+      auditContext: { targetId: 'pairing-safe-id' },
+    });
+    assert.equal(result.ok, false);
+    const serialized = JSON.stringify(auditWrites[0]);
+    assert.doesNotMatch(serialized, /private\.manager@hotel\.com/);
+    const metadata = auditWrites[0].metadata as Record<string, unknown>;
+    assert.equal(metadata.error, 'email_delivery_failed');
   });
 
   test('Resend 2xx but missing id → ok:false (malformed response)', async () => {

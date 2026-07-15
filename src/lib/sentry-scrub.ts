@@ -20,6 +20,7 @@
 // Event whose `type` is undefined — transaction events go to
 // beforeSendTransaction).
 import type { ErrorEvent, EventHint } from '@sentry/nextjs';
+import type { TransactionEvent } from '@sentry/core';
 
 // 2026-05-12 (Codex audit follow-up): tightened PHONE_RX to reduce
 // false-positive redaction of legitimate 10-digit IDs (order numbers,
@@ -50,6 +51,12 @@ const ANTHROPIC_KEY_RX = /sk-ant-api\d{2}-[A-Za-z0-9_-]{80,}/g;
 const BASE64_IMAGE_RX = /data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/g;
 const SUPABASE_KEY_RX = /sb-[a-z0-9-]+-auth-token/gi;
 const TWILIO_SID_RX = /\b(AC|SM|MM)[a-f0-9]{32}\b/gi;
+// QR handoff capabilities live in a URL fragment so they never reach the
+// server, but browser telemetry can still observe location.href. Match both
+// literal and percent-encoded fragment forms as defense in depth; the normal
+// flow clears the fragment in an uninstrumented static bootstrap page first.
+const PHONE_PAIRING_FRAGMENT_RX = /([#&]pair=)[^&#\s"']+/gi;
+const PHONE_PAIRING_FRAGMENT_ENCODED_RX = /(%23pair%3d)[^&#\s"']+/gi;
 
 // Keys we should scrub in tags / contexts / extras / frame-vars even if
 // their VALUE doesn't match a regex (e.g. raw staff name as the value
@@ -83,6 +90,8 @@ export function scrubString(s: string): string {
   out = out.replace(COOKIE_RX, '$1<redacted>');
   out = out.replace(SUPABASE_KEY_RX, '<supabase-key>');
   out = out.replace(TWILIO_SID_RX, '<twilio-sid>');
+  out = out.replace(PHONE_PAIRING_FRAGMENT_RX, '$1<phone-pairing-token>');
+  out = out.replace(PHONE_PAIRING_FRAGMENT_ENCODED_RX, '$1<phone-pairing-token>');
   out = out.replace(PHONE_RX, '<phone>');
   out = out.replace(EMAIL_RX, '<email>');
   return out;
@@ -155,6 +164,9 @@ export function scrubSentryEvent(event: ErrorEvent, _hint?: EventHint): ErrorEve
 
   // Request body / query / headers / cookies
   if (event.request) {
+    if (typeof event.request.url === 'string') {
+      event.request.url = scrubString(event.request.url);
+    }
     if (event.request.data && typeof event.request.data === 'string') {
       event.request.data = scrubString(event.request.data);
     } else if (event.request.data && typeof event.request.data === 'object') {
@@ -233,4 +245,24 @@ export function scrubSentryEvent(event: ErrorEvent, _hint?: EventHint): ErrorEve
   }
 
   return event;
+}
+
+/** Transaction events bypass beforeSend, so scrub their URL/name/span data. */
+export function scrubSentryTransaction(event: TransactionEvent): TransactionEvent | null {
+  const scrubbed = scrubSentryEvent(event as unknown as ErrorEvent) as unknown as TransactionEvent | null;
+  if (!scrubbed) return null;
+  if (typeof scrubbed.transaction === 'string') {
+    scrubbed.transaction = scrubString(scrubbed.transaction);
+  }
+  if (Array.isArray(scrubbed.spans)) {
+    for (const span of scrubbed.spans) {
+      if (typeof span.description === 'string') {
+        span.description = scrubString(span.description);
+      }
+      if (span.data && typeof span.data === 'object') {
+        span.data = scrubRecord(span.data as Record<string, unknown>) as typeof span.data;
+      }
+    }
+  }
+  return scrubbed;
 }

@@ -237,6 +237,39 @@ describe('checkAndIncrementRateLimit — per-staff subKey', () => {
   });
 });
 
+// ─── QR phone handoff ────────────────────────────────────────────────────
+
+describe('checkAndIncrementRateLimit — phone pairing caps', () => {
+  test('registers finite caps for every mutating pairing endpoint', async () => {
+    const cases = [
+      ['auth-phone-pairing-create', 10],
+      ['auth-phone-pairing-claim', 30],
+      ['auth-phone-pairing-resend', 10],
+      ['auth-phone-pairing-verify', 30],
+      ['auth-phone-pairing-complete', 10],
+    ] as const;
+
+    for (const [endpoint, cap] of cases) {
+      nextRpcResult = { data: cap + 1, error: null };
+      const result = await checkAndIncrementRateLimit(endpoint, NO_PROPERTY_RATE_LIMIT_KEY);
+      assert.equal(result.allowed, false, `${endpoint} must deny above ${cap}/hr`);
+      if (!result.allowed) assert.equal(result.cap, cap);
+    }
+  });
+
+  test('email-sending claim/resend fail closed when the limiter is unavailable', async () => {
+    nextRpcResult = { data: null, error: { message: 'connection terminated' } };
+    assert.equal(
+      (await checkAndIncrementRateLimit('auth-phone-pairing-claim', NO_PROPERTY_RATE_LIMIT_KEY)).allowed,
+      false,
+    );
+    assert.equal(
+      (await checkAndIncrementRateLimit('auth-phone-pairing-resend', NO_PROPERTY_RATE_LIMIT_KEY)).allowed,
+      false,
+    );
+  });
+});
+
 // ─── rateLimitedResponse ─────────────────────────────────────────────────
 
 describe('rateLimitedResponse — 429 builder', () => {

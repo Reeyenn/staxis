@@ -41,6 +41,7 @@ const PUBLIC_EXACT = new Set<string>([
 
 const PUBLIC_PREFIXES = [
   '/signin',         // /signin, /signin/verify, /signin/forgot, /signin/reset
+  '/phone-signin',   // QR phone handoff; all data/auth gates live in /api routes
   '/onboard/',       // unified onboarding wizard sub-steps
   '/invite/',        // /invite/[token]
   '/housekeeper/',   // /housekeeper/[id]

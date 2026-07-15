@@ -2859,6 +2859,119 @@ export type Database = {
           },
         ]
       }
+      phone_pairings: {
+        Row: {
+          account_id: string
+          auth_user_id: string
+          challenge_expires_at: string | null
+          challenge_token_hash: string | null
+          claimed_at: string | null
+          completed_at: string | null
+          completed_device_token_hash: string | null
+          completed_session_id: string | null
+          completion_expires_at: string | null
+          completion_token_hash: string | null
+          created_at: string
+          desktop_ip: string | null
+          desktop_user_agent: string | null
+          id: string
+          last_send_started_at: string | null
+          otp_digest: string | null
+          otp_expires_at: string | null
+          otp_sent_at: string | null
+          otp_verified_at: string | null
+          pair_expires_at: string
+          pairing_token_hash: string | null
+          pending_otp_digest: string | null
+          pending_supabase_hashed_token: string | null
+          phone_ip: string | null
+          phone_user_agent: string | null
+          revoked_at: string | null
+          send_count: number
+          send_reservation_count: number | null
+          send_reservation_id: string | null
+          send_reservation_started_at: string | null
+          supabase_hashed_token: string | null
+          verify_attempt_count: number
+        }
+        Insert: {
+          account_id: string
+          auth_user_id: string
+          challenge_expires_at?: string | null
+          challenge_token_hash?: string | null
+          claimed_at?: string | null
+          completed_at?: string | null
+          completed_device_token_hash?: string | null
+          completed_session_id?: string | null
+          completion_expires_at?: string | null
+          completion_token_hash?: string | null
+          created_at?: string
+          desktop_ip?: string | null
+          desktop_user_agent?: string | null
+          id?: string
+          last_send_started_at?: string | null
+          otp_digest?: string | null
+          otp_expires_at?: string | null
+          otp_sent_at?: string | null
+          otp_verified_at?: string | null
+          pair_expires_at: string
+          pairing_token_hash?: string | null
+          pending_otp_digest?: string | null
+          pending_supabase_hashed_token?: string | null
+          phone_ip?: string | null
+          phone_user_agent?: string | null
+          revoked_at?: string | null
+          send_count?: number
+          send_reservation_count?: number | null
+          send_reservation_id?: string | null
+          send_reservation_started_at?: string | null
+          supabase_hashed_token?: string | null
+          verify_attempt_count?: number
+        }
+        Update: {
+          account_id?: string
+          auth_user_id?: string
+          challenge_expires_at?: string | null
+          challenge_token_hash?: string | null
+          claimed_at?: string | null
+          completed_at?: string | null
+          completed_device_token_hash?: string | null
+          completed_session_id?: string | null
+          completion_expires_at?: string | null
+          completion_token_hash?: string | null
+          created_at?: string
+          desktop_ip?: string | null
+          desktop_user_agent?: string | null
+          id?: string
+          last_send_started_at?: string | null
+          otp_digest?: string | null
+          otp_expires_at?: string | null
+          otp_sent_at?: string | null
+          otp_verified_at?: string | null
+          pair_expires_at?: string
+          pairing_token_hash?: string | null
+          pending_otp_digest?: string | null
+          pending_supabase_hashed_token?: string | null
+          phone_ip?: string | null
+          phone_user_agent?: string | null
+          revoked_at?: string | null
+          send_count?: number
+          send_reservation_count?: number | null
+          send_reservation_id?: string | null
+          send_reservation_started_at?: string | null
+          supabase_hashed_token?: string | null
+          verify_attempt_count?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "phone_pairings_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       pms_recipes: {
         Row: {
           created_at: string
@@ -4729,6 +4842,36 @@ export type Database = {
           worker_id: string
         }[]
       }
+      staxis_claim_phone_pairing: {
+        Args: {
+          p_challenge_token_hash: string
+          p_pairing_token_hash: string
+          p_phone_ip?: string | null
+          p_phone_user_agent?: string | null
+        }
+        Returns: {
+          account_id: string
+          auth_user_id: string
+          challenge_expires_at: string
+          newly_claimed: boolean
+          pairing_id: string
+          send_count: number
+          send_reservation_id: string | null
+        }[]
+      }
+      staxis_cancel_phone_pairing_send: {
+        Args: {
+          p_challenge_token_hash: string
+          p_pairing_id: string
+          p_send_count: number
+          p_send_reservation_id: string
+        }
+        Returns: boolean
+      }
+      staxis_cleanup_phone_pairings: {
+        Args: { p_account_id: string }
+        Returns: number
+      }
       staxis_claim_sms_jobs: {
         Args: { p_limit: number }
         Returns: {
@@ -4748,6 +4891,18 @@ export type Database = {
         Returns: number
       }
       staxis_count_swept_today: { Args: never; Returns: number }
+      staxis_complete_phone_pairing: {
+        Args: {
+          p_completion_token_hash: string
+          p_device_expires_at: string
+          p_device_token_hash: string
+          p_ip?: string | null
+          p_session_id: string
+          p_user_agent?: string | null
+          p_user_id: string
+        }
+        Returns: string
+      }
       staxis_enqueue_property_pull: {
         Args: {
           p_pms_type: string
@@ -4768,6 +4923,15 @@ export type Database = {
           p_tokens_out: number
         }
         Returns: undefined
+      }
+      staxis_finalize_phone_pairing_send: {
+        Args: {
+          p_challenge_token_hash: string
+          p_pairing_id: string
+          p_send_count: number
+          p_send_reservation_id: string
+        }
+        Returns: string
       }
       staxis_heal_conversation_counters: {
         Args: { p_dry_run?: boolean }
@@ -4906,6 +5070,17 @@ export type Database = {
         }
         Returns: undefined
       }
+      staxis_reserve_phone_pairing_resend: {
+        Args: { p_challenge_token_hash: string }
+        Returns: {
+          account_id: string
+          auth_user_id: string
+          challenge_expires_at: string
+          pairing_id: string
+          send_count: number
+          send_reservation_id: string
+        }[]
+      }
       staxis_reserve_agent_spend: {
         Args: {
           p_estimated_usd: number
@@ -4956,6 +5131,31 @@ export type Database = {
       staxis_set_staff_language: {
         Args: { p_conf_token: string; p_lang: string; p_staff: string }
         Returns: undefined
+      }
+      staxis_store_phone_pairing_otp: {
+        Args: {
+          p_challenge_token_hash: string
+          p_otp_digest: string
+          p_pairing_id: string
+          p_send_count: number
+          p_send_reservation_id: string
+          p_supabase_hashed_token: string
+        }
+        Returns: boolean
+      }
+      staxis_verify_phone_pairing: {
+        Args: {
+          p_challenge_token_hash: string
+          p_completion_token_hash: string
+          p_otp_digest: string
+        }
+        Returns: {
+          auth_user_id: string | null
+          completion_expires_at: string | null
+          pairing_id: string | null
+          supabase_hashed_token: string | null
+          verified: boolean
+        }[]
       }
       staxis_swap_active_recipe: {
         Args: { p_new_recipe_id: string; p_pms_type: string }
