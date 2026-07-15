@@ -121,9 +121,11 @@ const CX_CSS = `
 /* ── Home hub ── */
 /* Reeyen wanted the whole hub a touch larger — greeting, Ask bar, Talk
    button, tiles, their numbers + icons all scale together via zoom (reflows,
-   so nothing clips). 1.15 read too big; dialed back 6% → 1.081. The shared
-   pill bar sits outside .cx-hub and stays one consistent size across pages. */
-.cx-hub{zoom:1.081;max-width:1010px;margin:0 auto;padding:32px 40px 44px;text-align:center;width:100%;box-sizing:border-box;
+   so nothing clips). Zoom scales width AND height, so the footprint grows by
+   the square (1.15 → ~1.32× area, which read far bigger than "15%"). Stepped
+   down to 1.049 (~1.10× area). The shared pill bar sits outside .cx-hub and
+   stays one consistent size across every page. */
+.cx-hub{zoom:1.049;max-width:1010px;margin:0 auto;padding:32px 40px 44px;text-align:center;width:100%;box-sizing:border-box;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .cx-greet{font-family:var(--font-fraunces),Georgia,serif;font-style:italic;font-weight:400;
   font-size:clamp(26px,4.5vw,35px);color:#1F231C;letter-spacing:-0.01em;}
