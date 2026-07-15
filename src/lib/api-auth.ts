@@ -28,6 +28,7 @@ import { log } from '@/lib/log';
 import { env } from '@/lib/env';
 import { hashDeviceToken, readDeviceCookie } from '@/lib/trusted-device';
 import { logSecurityEvent } from '@/lib/audit';
+import { isTwoFactorEnabled } from '@/lib/two-factor';
 
 /**
  * Classification of session-validation failure modes. The client (fetchWithAuth)
@@ -206,8 +207,15 @@ function authFailureResponse(
  * property_access) is honored here too, so investor demo accounts
  * keep working exactly as before.
  *
+ * Global switch: when the admin-toggleable human-2FA switch (migration
+ * 0310, src/lib/two-factor.ts) is OFF, this returns ok immediately with
+ * via='twofa_disabled' — the single server choke-point for the bypass.
+ * isTwoFactorEnabled() fail-safes to TRUE on any error, so the bypass
+ * only fires when the flag is provably off.
+ *
  * Returns:
- *   { ok: true, via: 'device' | 'skip_2fa' } — caller proceeds
+ *   { ok: true, via: 'device' | 'skip_2fa' | 'mfa_session' | 'twofa_disabled' }
+ *                                             — caller proceeds
  *   { ok: false, reason }                     — caller returns 401 requires_2fa
  *
  * Fail-closed: any thrown error (DB outage, etc.) returns ok:false with
@@ -238,7 +246,7 @@ async function validateDeviceTrust(
   // path is always available to real app traffic).
   accessToken: string | null = null,
 ): Promise<
-  | { ok: true; via: 'device' | 'skip_2fa' | 'mfa_session' }
+  | { ok: true; via: 'device' | 'skip_2fa' | 'mfa_session' | 'twofa_disabled' }
   | { ok: false; reason: DeviceTrustReason }
 > {
   // Break-glass kill switch — now FAILS SAFE. Setting this env var on any
@@ -275,6 +283,14 @@ async function validateDeviceTrust(
       });
       return { ok: true, via: 'device' };
     }
+  }
+
+  if (!(await isTwoFactorEnabled())) {
+    // Global human-2FA switch is OFF (migration 0310, admin-toggleable).
+    // Bypass device-cookie + mfa claim + skip_2fa allowlist in one stroke
+    // for all callers. Fail-safe: isTwoFactorEnabled() returns true on any
+    // error, so this only fires when the flag is provably off.
+    return { ok: true, via: 'twofa_disabled' };
   }
 
   try {

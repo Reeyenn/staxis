@@ -207,6 +207,25 @@ export default function PhoneSignInPage() {
         setExpiresAt(claimed.expiresAt);
         setNow(Date.now());
         setResendCooldown(RESEND_COOLDOWN_SECONDS);
+
+        // Global human-2FA switch off: the server issued the code itself (no
+        // email) and returned it, so run the existing verify → session →
+        // complete → refresh sequence directly instead of showing the code
+        // screen. Fail-safe: absent/malformed bypassCode falls through to
+        // the normal code screen (2FA-on behavior); if the auto-verify hits
+        // a bad-code error, finishPendingHandoff already lands back on the
+        // code screen where "Send a new code" emails a real code.
+        if (typeof claimed.bypassCode === 'string' && /^\d{6}$/.test(claimed.bypassCode)) {
+          pendingHandoffRef.current = {
+            challengeToken: claimed.challengeToken,
+            code: claimed.bypassCode,
+            sessionCreated: false,
+            completionConfirmed: false,
+          };
+          await finishPendingHandoff();
+          return;
+        }
+
         setStage('code');
         window.requestAnimationFrame(() => codeRef.current?.focus());
       } catch (err) {

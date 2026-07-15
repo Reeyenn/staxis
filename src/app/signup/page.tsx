@@ -64,18 +64,45 @@ function SignupInner() {
           phone: phone.trim() || null,
         }),
       });
-      const body = await res.json() as { ok?: boolean; error?: string };
+      const body = await res.json() as {
+        ok?: boolean;
+        error?: string;
+        data?: { email?: string; twoFactorEnabled?: boolean };
+      };
       if (!res.ok || !body.ok) {
         setError(body.error ?? (lang === 'es' ? 'No se pudo crear la cuenta.' : 'Failed to create account.'));
         setSubmitting(false);
         return;
       }
 
-      // Account created but email is unverified. Send the OTP and bounce
+      const normalizedEmail = email.trim().toLowerCase();
+
+      // Global human-2FA switch: when the server says it's OFF, the account
+      // was created ready to sign in (email already confirmed), so sign in
+      // with the password the user just typed and go straight to the app —
+      // no code email, no verify screen. Fail-safe: ONLY an explicit
+      // `false` takes this path; a missing/odd value or a failed password
+      // sign-in falls through to the normal OTP flow below.
+      if (body.data?.twoFactorEnabled === false) {
+        try {
+          const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+            email: normalizedEmail,
+            password,
+          });
+          if (!signInErr && signInData.session) {
+            router.replace('/property-selector');
+            return;
+          }
+          console.warn('post-signup signInWithPassword failed — falling back to OTP flow', signInErr);
+        } catch (signInErr) {
+          console.warn('post-signup signInWithPassword threw — falling back to OTP flow', signInErr);
+        }
+      }
+
+      // 2FA on (or the fast path above failed): send the OTP and bounce
       // to /signin/verify with postSignup=1 so the verify page auto-trusts
       // this browser (no extra checkbox needed — Reeyen wants the device
       // remembered automatically right after signup).
-      const normalizedEmail = email.trim().toLowerCase();
       try {
         await supabase.auth.signInWithOtp({
           email: normalizedEmail,

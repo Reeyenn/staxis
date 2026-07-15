@@ -496,7 +496,11 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ code, email, displayName, password, phone, role: 'front_desk' /* ignored, baked-in role wins */ }),
       });
-      const json = await res.json();
+      const json = await res.json() as {
+        ok?: boolean;
+        error?: string;
+        data?: { twoFactorEnabled?: boolean };
+      };
       if (!res.ok || !json.ok) {
         const msg: string = json.error || `Sign-up failed (${res.status})`;
         // "already exists" / "used up" → the account is already created; route
@@ -510,7 +514,38 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
         setErr(msg);
         return;
       }
-      // Trigger the OTP email send.
+
+      // Global human-2FA switch OFF: the account was created ready to sign in
+      // (email already confirmed), so sign in with the password the user just
+      // typed and mark the email step done — the wizard derives its step from
+      // server state, so it skips straight to hotel details, no code screen.
+      // Fail-safe: ONLY an explicit `false` takes this path; a missing/odd
+      // value or a failed password sign-in falls through to the OTP flow.
+      if (json.data?.twoFactorEnabled === false) {
+        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password,
+        });
+        if (!signInErr && signInData.session) {
+          await fetch('/api/onboard/wizard', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              code,
+              partialState: {
+                accountCreatedAt: new Date().toISOString(),
+                emailVerifiedAt: new Date().toISOString(),
+              },
+            }),
+          });
+          sessionStorage.removeItem('onboard:pendingEmail');
+          await onNext();
+          return;
+        }
+        console.warn('onboard: post-signup signInWithPassword failed — falling back to OTP', signInErr);
+      }
+
+      // Trigger the OTP email send. (2FA on, or the fast path above failed.)
       await supabase.auth.signInWithOtp({ email });
       // PATCH wizard state
       await fetch('/api/onboard/wizard', {

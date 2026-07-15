@@ -1,8 +1,13 @@
 import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { digestPhonePairingOtp, hashPhonePairingToken } from '@/lib/phone-pairing';
+import {
+  derivePhonePairingBypassCode,
+  digestPhonePairingOtp,
+  hashPhonePairingToken,
+} from '@/lib/phone-pairing';
 import { sendPhonePairingCodeEmail } from '@/lib/email/phone-pairing-code';
+import { env } from '@/lib/env';
 import { log } from '@/lib/log';
 
 export interface PhonePairingSendReservation {
@@ -215,5 +220,155 @@ export async function issuePhonePairingCode(
       generation: reservation.sendCount,
     });
     return { ok: false, emailSent: false };
+  }
+}
+
+// ── Global 2FA switch OFF: bypass-code issue (no email) ─────────────────
+//
+// Used by the claim route ONLY while the global human-2FA switch (migration
+// 0310) is off. Runs the exact same store → finalize state machine as the
+// email path — same reservation, same digest storage, same Supabase
+// magic-link hashed token — but the six-digit code is the deterministic
+// derivePhonePairingBypassCode() value and NO email is sent. The code is
+// returned to the phone in the claim response, and the phone drives the
+// unchanged /verify → verifyOtp → /complete sequence with it.
+//
+// Fail-safe posture: on ANY failure the reservation is compensated and the
+// caller falls back to the normal code screen (where "Send a new code"
+// still emails a real code), so a broken bypass can never strand the flow.
+
+export type IssuePhonePairingBypassResult =
+  | { ok: true; expiresAt: string; bypassCode: string }
+  | { ok: false };
+
+async function issueReservedPhonePairingBypass(
+  reservation: PhonePairingSendReservation,
+  rawChallengeToken: string,
+): Promise<IssuePhonePairingBypassResult> {
+  if (!reservation.sendReservationId) return { ok: false };
+
+  // Same eligibility rule as the email path: synthetic @staxis.local /
+  // @staxis.invalid logins cannot phone-pair today (no reachable inbox), and
+  // the bypass deliberately does not widen that — behavior parity when the
+  // switch flips back on.
+  const email = await registeredEmailForAuthUser(reservation.authUserId);
+  if (!email) {
+    await cancelPhonePairingSend(reservation, rawChallengeToken);
+    return { ok: false };
+  }
+
+  // The magic-link hashed token is still what mints the Supabase session in
+  // the verify step; only Supabase's email_otp is unused here.
+  const { data: linkData, error: linkError } = await supabaseAdmin.auth.admin.generateLink({
+    type: 'magiclink',
+    email,
+  });
+  const hashedToken = linkData?.properties?.hashed_token;
+  if (linkError || typeof hashedToken !== 'string' || !hashedToken) {
+    await cancelPhonePairingSend(reservation, rawChallengeToken);
+    return { ok: false };
+  }
+
+  const bypassCode = derivePhonePairingBypassCode(
+    rawChallengeToken,
+    env.SUPABASE_SERVICE_ROLE_KEY,
+  );
+  const otpDigest = digestPhonePairingOtp(rawChallengeToken, bypassCode);
+  const { data: stored, error: storeError } = await supabaseAdmin.rpc(
+    'staxis_store_phone_pairing_otp',
+    {
+      p_pairing_id: reservation.pairingId,
+      p_challenge_token_hash: hashPhonePairingToken(rawChallengeToken),
+      p_send_count: reservation.sendCount,
+      p_send_reservation_id: reservation.sendReservationId,
+      p_otp_digest: otpDigest,
+      p_supabase_hashed_token: hashedToken,
+    },
+  );
+  if (storeError || stored !== true) {
+    await cancelPhonePairingSend(reservation, rawChallengeToken);
+    return { ok: false };
+  }
+
+  const challengeHash = hashPhonePairingToken(rawChallengeToken);
+  const { data: finalizedExpiry, error: finalizeError } = await supabaseAdmin.rpc(
+    'staxis_finalize_phone_pairing_send',
+    {
+      p_pairing_id: reservation.pairingId,
+      p_challenge_token_hash: challengeHash,
+      p_send_count: reservation.sendCount,
+      p_send_reservation_id: reservation.sendReservationId,
+    },
+  );
+  if (!finalizeError && typeof finalizedExpiry === 'string') {
+    return { ok: true, expiresAt: finalizedExpiry, bypassCode };
+  }
+
+  // Lost finalize response after Postgres committed: recover by recognizing
+  // the exact pending digest now active on this pairing (same recovery shape
+  // as the email path).
+  const { data: committed } = await supabaseAdmin
+    .from('phone_pairings')
+    .select('send_count, otp_digest, challenge_expires_at')
+    .eq('id', reservation.pairingId)
+    .eq('challenge_token_hash', challengeHash)
+    .maybeSingle();
+  if (
+    committed?.send_count === reservation.sendCount &&
+    committed.otp_digest === otpDigest &&
+    typeof committed.challenge_expires_at === 'string'
+  ) {
+    return { ok: true, expiresAt: committed.challenge_expires_at, bypassCode };
+  }
+
+  await cancelPhonePairingSend(reservation, rawChallengeToken);
+  return { ok: false };
+}
+
+export async function issuePhonePairingBypassCode(
+  reservation: PhonePairingSendReservation,
+  rawChallengeToken: string,
+): Promise<IssuePhonePairingBypassResult> {
+  try {
+    return await issueReservedPhonePairingBypass(reservation, rawChallengeToken);
+  } catch {
+    await cancelPhonePairingSend(reservation, rawChallengeToken);
+    log.warn('[phone-pairing] bypass code issue threw; reservation compensated', {
+      pairingId: reservation.pairingId,
+      generation: reservation.sendCount,
+    });
+    return { ok: false };
+  }
+}
+
+/**
+ * Claim-replay recovery for the bypass path: an exact QR retry after a lost
+ * claim response hits the RPC's replay branch (newlyClaimed=false). If the
+ * previously finalized digest on the row matches the deterministic bypass
+ * code for this challenge, return the same code so the retry is seamless.
+ * Returns null otherwise (caller falls back to the normal code screen,
+ * where explicit resend still works). Read-only; never mutates state.
+ */
+export async function recoverPhonePairingBypassCode(
+  reservation: PhonePairingSendReservation,
+  rawChallengeToken: string,
+): Promise<string | null> {
+  try {
+    const bypassCode = derivePhonePairingBypassCode(
+      rawChallengeToken,
+      env.SUPABASE_SERVICE_ROLE_KEY,
+    );
+    const { data: row, error } = await supabaseAdmin
+      .from('phone_pairings')
+      .select('otp_digest')
+      .eq('id', reservation.pairingId)
+      .eq('challenge_token_hash', hashPhonePairingToken(rawChallengeToken))
+      .maybeSingle();
+    if (error || !row) return null;
+    return row.otp_digest === digestPhonePairingOtp(rawChallengeToken, bypassCode)
+      ? bypassCode
+      : null;
+  } catch {
+    return null;
   }
 }

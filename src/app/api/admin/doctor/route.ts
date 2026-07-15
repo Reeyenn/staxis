@@ -57,6 +57,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminOrCron } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { readTwoFactorEnabledFresh } from '@/lib/two-factor';
 import { errToString } from '@/lib/utils';
 import { env } from '@/lib/env';
 
@@ -140,6 +141,11 @@ const checks: Array<[string, CheckFn]> = [
   // JWT without mfa_verified. Calls the hook directly with a known
   // skip_2fa demo user and asserts the claim is set correctly.
   ['mfa_verified_hook_self_test',    checkMfaVerifiedHookSelfTest],
+  // Global 2FA switch (app_settings.two_factor_enabled). WARN when a human
+  // admin has turned 2FA OFF fleet-wide, so a disabled 2FA wall can never
+  // hide on the doctor page — parity with how DISABLE_SERVER_2FA_ENFORCEMENT
+  // is surfaced. Separate signal from the env break-glass above.
+  ['two_factor_switch_state',        checkTwoFactorSwitchState],
   ['supabase_admin_auth',            checkSupabaseAdminAuth],
   ['supabase_jwt_expiry',            checkSupabaseJwtExpiry],
   // Project consistency: NEXT_PUBLIC_SUPABASE_URL (where the browser
@@ -531,6 +537,33 @@ async function checkServer2faEnforcementActive(): Promise<Omit<Check, 'name' | '
     };
   }
   return { status: 'ok', detail: 'server-side 2FA enforcement active (DISABLE_SERVER_2FA_ENFORCEMENT unset)' };
+}
+
+/**
+ * Global human-2FA switch (app_settings.two_factor_enabled, migration 0310).
+ * This is the admin-toggleable master switch. When an admin turns it OFF, ALL
+ * human Staxis 2FA is skipped fleet-wide — a deliberate operator action, but
+ * one that must never be invisible. We surface it as WARN (not fail): it's an
+ * intentional, reversible state, not a misconfiguration.
+ *
+ * status: 'ok'   when 2FA is ON (default / today's behavior)
+ * status: 'warn' when 2FA is globally OFF
+ * Does NOT report on the PMS/CUA robot MFA (separate machinery).
+ */
+async function checkTwoFactorSwitchState(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  const enabled = await readTwoFactorEnabledFresh();
+  if (!enabled) {
+    return {
+      status: 'warn',
+      detail:
+        'Global human-2FA switch is OFF (app_settings.two_factor_enabled=false). Every human login '
+        + '— signup, password-login on a new device, the admin panel, phone handoff — currently skips '
+        + 'the 2FA code. This is an intentional admin toggle, surfaced here so it is never forgotten. '
+        + 'The PMS/CUA robot MFA is unaffected.',
+      fix: 'Admin → System → turn the "Require 2FA" switch back ON to restore 2FA fleet-wide.',
+    };
+  }
+  return { status: 'ok', detail: 'global 2FA switch ON (app_settings.two_factor_enabled=true)' };
 }
 
 /**
@@ -1004,6 +1037,9 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   'agent_pending_actions',
   'agent_reminders',
   'recurring_task_templates',
+  // 0310 — global app settings singleton (the master 2FA switch). Service-role
+  // only; the anon/authenticated clients are denied by app_settings_deny_browser.
+  'app_settings',
 ]);
 
 async function checkSupabaseRlsPolicyCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {

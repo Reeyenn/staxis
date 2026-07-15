@@ -24,6 +24,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse, trustedClientIp, ipToR
 import type { AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
 import { deriveCurrentStep, type OnboardingState } from '@/lib/onboarding/state';
+import { isTwoFactorEnabled } from '@/lib/two-factor';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -445,5 +446,14 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  return ok({ email: normalizedEmail }, { requestId });
+  // Global human-2FA switch (migration 0310): tell the client which
+  // post-signup path to take. createOrReclaimAuthUser already creates every
+  // login with email_confirm:true (see auth-create-user.ts), so when the
+  // switch is OFF the client can signInWithPassword immediately — no OTP
+  // email, no /signin/verify stop. When ON (or on any read error —
+  // isTwoFactorEnabled fail-safes to true) the client keeps the existing
+  // signInWithOtp → /signin/verify flow, unchanged.
+  const twoFactorEnabled = await isTwoFactorEnabled();
+
+  return ok({ email: normalizedEmail, twoFactorEnabled }, { requestId });
 }
