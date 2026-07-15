@@ -16,10 +16,12 @@ import {
   deleteInventoryCustomCategory,
   updateProperty,
   monthToDateSpendDetail,
+  monthlySpendHistory,
   sectionBudgetKey,
   addInventoryCount,
   updateInventoryItem,
   type MonthSpendDetail,
+  type MonthlySpend,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { fetchOccupancyBundle, type OccupancyBundle } from '@/lib/inventory-estimate';
@@ -139,6 +141,8 @@ export function InventoryShell() {
     byItem: {},
     total: 0,
   });
+  // Per-month spend for the Budgets timeline (last 6 months). Money-gated.
+  const [spendHistory, setSpendHistory] = useState<MonthlySpend[]>([]);
   // The property record hydrates after mount — pick up its stored mode when it
   // lands (and on property switch). Post-save the context stays quiet, so this
   // never clobbers a mode the panel just wrote.
@@ -215,7 +219,9 @@ export function InventoryShell() {
     // the UTC one (which flips hours early in US timezones).
     const monthStart = startOfLocalMonth(new Date());
     const monthEnd = addLocalMonths(new Date(), 1);
-    const [occ, avg, ct, od, bd, sec, spend, cats] = await Promise.all([
+    // Timeline window: the last 6 calendar months through the end of this month.
+    const historyStart = addLocalMonths(monthStart, -5);
+    const [occ, avg, ct, od, bd, sec, spend, hist, cats] = await Promise.all([
       fetchOccupancyBundle(pid, daysAgo(14)),
       fetchDailyAverages(pid, 14),
       listInventoryCounts(uid, pid, 200),
@@ -235,11 +241,14 @@ export function InventoryShell() {
             byItem: {},
             total: 0,
           } as MonthSpendDetail),
+      canViewFinancials
+        ? monthlySpendHistory(uid, pid, historyStart, monthEnd)
+        : Promise.resolve([] as MonthlySpend[]),
       // Custom category tabs are not money — everyone who can see inventory
       // sees the tabs.
       listInventoryCustomCategories(uid, pid),
     ]);
-    return { occ, avg, ct, od, bd, sec, spend, cats };
+    return { occ, avg, ct, od, bd, sec, spend, hist, cats };
   }, [canViewFinancials]);
 
   const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
@@ -250,6 +259,7 @@ export function InventoryShell() {
     setBudgets(d.bd);
     setBudgetSections(d.sec);
     setSpendDetail(d.spend);
+    setSpendHistory(d.hist);
     setCustomCategories(d.cats);
   }, []);
 
@@ -959,6 +969,7 @@ export function InventoryShell() {
         mode={budgetMode}
         display={display}
         spendDetail={spendDetail}
+        spendHistory={spendHistory}
         onChanged={(m) => { if (m) setBudgetMode(m); void refreshData(); }}
       />
 

@@ -215,3 +215,63 @@ export async function monthToDateSpendByCategory(
 ): Promise<Record<InventoryCategory, number>> {
   return (await monthToDateSpendDetail(uid, pid, monthStart, monthEndExclusive)).byCat;
 }
+
+/** One month's spend detail, tagged with the (local) first-of-month it covers. */
+export interface MonthlySpend extends MonthSpendDetail {
+  monthStart: Date;
+}
+
+/**
+ * Per-month inventory spend across a window, for the Budgets timeline / history.
+ * One `inventory_orders` query over [earliestMonthStart, endExclusive), bucketed
+ * into calendar months by each order's `received_at` (read in LOCAL time, to match
+ * the month windows the rest of the inventory UI uses). Same MonthSpendDetail
+ * shape per month (byCat / byItem / total, in DOLLARS) so the panel can reuse its
+ * spend logic. Months with no orders are simply absent (caller treats as $0).
+ */
+export async function monthlySpendHistory(
+  _uid: string,
+  pid: string,
+  earliestMonthStart: Date,
+  endExclusive: Date,
+): Promise<MonthlySpend[]> {
+  const { data, error } = await supabase
+    .from('inventory_orders')
+    .select('received_at, total_cost, quantity, unit_cost, item_id, inventory!inner(category)')
+    .eq('property_id', pid)
+    .gte('received_at', earliestMonthStart.toISOString())
+    .lt('received_at', endExclusive.toISOString());
+  if (error) { logErr('monthlySpendHistory', error); throw error; }
+
+  const buckets = new Map<string, MonthlySpend>();
+  for (const r of (data ?? []) as Array<{
+    received_at: string | null;
+    total_cost: number | null;
+    quantity: number | null;
+    unit_cost: number | null;
+    item_id: string | null;
+    inventory: { category: InventoryCategory } | null | Array<{ category: InventoryCategory }>;
+  }>) {
+    if (!r.received_at) continue;
+    const dt = new Date(r.received_at);
+    const key = `${dt.getFullYear()}-${dt.getMonth()}`;
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = {
+        monthStart: new Date(dt.getFullYear(), dt.getMonth(), 1),
+        byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
+        byItem: {},
+        total: 0,
+      };
+      buckets.set(key, bucket);
+    }
+    const cat = Array.isArray(r.inventory) ? r.inventory[0]?.category : r.inventory?.category;
+    const totalCost = r.total_cost != null
+      ? Number(r.total_cost)
+      : (r.unit_cost != null && r.quantity != null ? Number(r.unit_cost) * Number(r.quantity) : 0);
+    bucket.total += totalCost;
+    if (r.item_id) bucket.byItem[r.item_id] = (bucket.byItem[r.item_id] ?? 0) + totalCost;
+    if (cat && cat in bucket.byCat) bucket.byCat[cat] += totalCost;
+  }
+  return [...buckets.values()].sort((a, b) => a.monthStart.getTime() - b.monthStart.getTime());
+}

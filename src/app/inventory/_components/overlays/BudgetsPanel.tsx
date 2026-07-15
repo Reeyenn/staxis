@@ -29,6 +29,7 @@ import {
   sectionBudgetKey,
   updateProperty,
   type MonthSpendDetail,
+  type MonthlySpend,
 } from '@/lib/db';
 import type { InventoryBudget, InventoryBudgetMode, InventoryBudgetSection } from '@/types';
 
@@ -39,6 +40,7 @@ import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import { numGuard } from './form-kit';
 import { fmtMoney } from '../format';
+import { startOfLocalMonth, addLocalMonths } from '../month';
 import type { DisplayItem } from '../types';
 import { catLabelFor, monthsFor, type Lang } from '../inv-i18n';
 
@@ -53,6 +55,8 @@ interface BudgetsPanelProps {
   display: DisplayItem[];
   /** Month-to-date spend (dollars) — total, per category, per item. */
   spendDetail: MonthSpendDetail;
+  /** Per-month spend for the last 6 months (dollars) — drives the timeline. */
+  spendHistory: MonthlySpend[];
   /**
    * Fired after any persisted change so the parent refetches. `mode` is set
    * ONLY when Save wrote it to the property — section add/remove must not
@@ -67,6 +71,9 @@ const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 // Constant height for the budget-rows panel so the modal never changes size
 // between modes. Sized to show the three categories + "Add a section".
 const ROWS_PANEL_H = 300;
+// Constant max-height for the history strip so the modal height doesn't depend
+// on how many months have data.
+const HISTORY_PANEL_H = 210;
 
 function bpStrings(lang: Lang) {
   return {
@@ -110,6 +117,12 @@ function bpStrings(lang: Lang) {
       overBanner: (names: string) => `Over budget: ${names}.`,
       nearBanner: (names: string) => `Close to budget: ${names}.`,
       planningNote: (m: string, y: number) => `Planning ${m} ${y} — spend shows on the current month.`,
+      // History timeline
+      budgetHistory: 'Budget history',
+      thisMonthTag: 'NOW',
+      monthNoData: 'no activity',
+      noBudgetShort: (v: string) => `${v} · no budget`,
+      historyEmpty: 'Your month-by-month budget vs spend appears here as you set budgets and log received orders.',
     },
     es: {
       eyebrow: 'Presupuestos',
@@ -151,6 +164,12 @@ function bpStrings(lang: Lang) {
       overBanner: (names: string) => `Sobre presupuesto: ${names}.`,
       nearBanner: (names: string) => `Cerca del límite: ${names}.`,
       planningNote: (m: string, y: number) => `Planeando ${m} ${y} — el gasto se muestra en el mes actual.`,
+      // History timeline
+      budgetHistory: 'Historial de presupuesto',
+      thisMonthTag: 'AHORA',
+      monthNoData: 'sin actividad',
+      noBudgetShort: (v: string) => `${v} · sin presupuesto`,
+      historyEmpty: 'Tu presupuesto vs gasto mes a mes aparece aquí a medida que fijas presupuestos y registras pedidos recibidos.',
     },
   }[lang];
 }
@@ -164,7 +183,7 @@ function spendColor(s: SpendStatus): string {
   return s === 'over' ? T.warm : s === 'near' ? T.caramel : s === 'ok' ? T.forestText : T.ink3;
 }
 
-export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: savedMode, display, spendDetail, onChanged }: BudgetsPanelProps) {
+export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: savedMode, display, spendDetail, spendHistory, onChanged }: BudgetsPanelProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const bp = bpStrings(lang);
@@ -314,6 +333,53 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     return { over, near };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reads vals via capOf
   }, [showSpend, activeKeys, vals, year, month, spendDetail, localSections, lang]);
+
+  // ── Budget-vs-spend timeline (last 6 months) ─────────────────────────
+  // Read-only, backward-looking. For each of the last 6 calendar months:
+  //   • budget = sum of the STORED caps (dollars) for that month over the active
+  //     keys (mode-aware). Read straight from the `budgets` prop (all months) —
+  //     matched by UTC year/month, the same way hydration buckets them.
+  //   • spent  = that month's total received-order spend (from spendHistory).
+  // Newest month first. A month with no budget AND no spend reads as "no activity".
+  const timeline = useMemo(() => {
+    const activeSet = new Set(activeKeys);
+    const spendByKey = new Map<string, MonthlySpend>();
+    for (const h of spendHistory) spendByKey.set(`${h.monthStart.getFullYear()}-${h.monthStart.getMonth()}`, h);
+    const base = startOfLocalMonth(now);
+    const out: Array<{
+      y: number; m: number; label: string; budget: number; spent: number;
+      status: SpendStatus; isCurrent: boolean; hasAny: boolean;
+    }> = [];
+    for (let i = 0; i < 6; i++) {
+      const d = addLocalMonths(base, -i);
+      const y = d.getFullYear();
+      const mo = d.getMonth();
+      let budget = 0;
+      for (const b of budgets) {
+        if (!b.monthStart) continue;
+        if (b.monthStart.getUTCFullYear() === y && b.monthStart.getUTCMonth() === mo && activeSet.has(b.category)) {
+          budget += b.budgetCents / 100;
+        }
+      }
+      let spent = spendByKey.get(`${y}-${mo}`)?.total ?? 0;
+      const isCurrent = y === curYear && mo === curMonth;
+      // The current-month row mirrors the live footer (edited caps + MTD spend)
+      // rather than the last-saved budget, so the two "this month" figures on
+      // screen can never disagree while a cap is being typed.
+      if (isCurrent) { budget = monthBudgetTotal; spent = monthSpentTotal; }
+      out.push({
+        y, m: mo,
+        label: `${MONTHS[mo]} ’${String(y).slice(2)}`,
+        budget, spent,
+        status: statusFor(budget, spent),
+        isCurrent,
+        hasAny: budget > 0 || spent > 0,
+      });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- statusFor/MONTHS stable per render
+  }, [spendHistory, budgets, activeKeys, now, curYear, curMonth, monthBudgetTotal, monthSpentTotal]);
+  const historyHasData = timeline.some((t) => t.hasAny);
 
   // ── Section create / edit / remove (persist immediately) ────────────
   const openCreateForm = () => { setFormId(null); setFormName(''); setFormItems(new Set()); setFormQuery(''); setFormOpen(true); };
@@ -593,6 +659,35 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
             <Btn variant="ghost" size="md" onClick={copyToYear}>{`Copy ${MONTHS[month]} → all of ${year}`}</Btn>
           </div>
           {showSpend && monthBudgetTotal > 0 && <MiniBar spent={monthSpentTotal} cap={monthBudgetTotal} status={summarySt} height={7} />}
+        </div>
+
+        {/* Budget history — month-by-month spent vs budget (newest first). */}
+        <div style={{ padding: '14px 18px', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14 }}>
+          <Caps>{bp.budgetHistory}</Caps>
+          {historyHasData ? (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 13, maxHeight: HISTORY_PANEL_H, overflowY: 'auto' }}>
+              {timeline.map((t) => (
+                <div key={`${t.y}-${t.m}`} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 158px', gap: 12, alignItems: 'center' }}>
+                  <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: t.isCurrent ? T.ink : T.ink2, whiteSpace: 'nowrap' }}>
+                    {t.label}
+                    {t.isCurrent && <span style={{ fontFamily: fonts.mono, fontSize: 8, letterSpacing: '0.08em', color: T.faint, marginLeft: 5 }}>{bp.thisMonthTag}</span>}
+                  </span>
+                  <MiniBar spent={t.spent} cap={t.budget} status={t.status} height={7} />
+                  <span style={{ fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 500, textAlign: 'right', color: !t.hasAny ? T.faint : t.budget > 0 ? spendColor(t.status) : T.ink3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {!t.hasAny
+                      ? bp.monthNoData
+                      : t.budget > 0
+                        ? `${fmtMoney(t.spent)} / ${fmtMoney(t.budget)}`
+                        : bp.noBudgetShort(fmtMoney(t.spent))}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ marginTop: 10, fontFamily: fonts.sans, fontSize: 12, color: T.ink3, lineHeight: 1.5 }}>
+              {bp.historyEmpty}
+            </div>
+          )}
         </div>
       </div>
     </Overlay>
