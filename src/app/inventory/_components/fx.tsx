@@ -12,9 +12,9 @@ import { EASE, useCountUp } from './motion';
 //
 // Split of responsibilities with motion.ts: functional motion (entrances,
 // FLIP, flips, pops) is WAAPI there so it survives prefers-reduced-motion;
-// everything here that is purely decorative (sheen, shimmer, ping loops) is
-// CSS gated behind `prefers-reduced-motion: no-preference` so crews who ask
-// for calm get calm — without losing the functional animations.
+// everything here that is purely decorative (e.g. the ping loop) is CSS gated
+// behind `prefers-reduced-motion: no-preference` so crews who ask for calm get
+// calm — without losing the functional animations.
 
 // ── Page stylesheet ───────────────────────────────────────────────────────
 const CSS = `
@@ -79,27 +79,6 @@ const CSS = `
     100% { transform: scale(2.6); opacity: 0; }
   }
   .inv-ping { animation: inv-ping 2.4s cubic-bezier(.2,.6,.35,1) infinite; }
-
-  @keyframes inv-sheen {
-    0%, 76% { transform: translateX(-130%); }
-    100%    { transform: translateX(130%); }
-  }
-  .inv-sheen { position: relative; overflow: hidden; }
-  .inv-sheen::after {
-    content: ''; position: absolute; inset: 0; pointer-events: none;
-    background: linear-gradient(105deg, transparent 42%, rgba(255,255,255,.16) 50%, transparent 58%);
-    animation: inv-sheen 7s ease-in-out infinite;
-  }
-
-  @keyframes inv-shimmer {
-    0%, 55% { transform: translateX(-110%); }
-    100%    { transform: translateX(110%); }
-  }
-  .inv-shimmer {
-    position: absolute; inset: 0; pointer-events: none;
-    background: linear-gradient(100deg, transparent 38%, rgba(255,255,255,.5) 50%, transparent 62%);
-    animation: inv-shimmer 3.2s ease-in-out infinite;
-  }
 }
 
 /* Masthead hairline: load-time draw retired with the rest of the entrance

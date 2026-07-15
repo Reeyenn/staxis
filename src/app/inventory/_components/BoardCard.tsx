@@ -85,7 +85,6 @@ export function BoardCard({ lang, it, onEdit }: BoardCardProps) {
             status={it.status}
             height={6}
             neutral={uncounted}
-            shimmer={!uncounted && it.status === 'critical'}
           />
         </div>
         <div

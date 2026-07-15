@@ -38,9 +38,9 @@ interface SidebarProps {
 }
 
 // The Triage left action rail (224px, sticky). Full action set; Orders +
-// Ordering settings are management-only. The primary "Start count" button
-// carries a slow sheen sweep (decorative, reduced-motion gated) so the #1
-// daily action is always the brightest thing on the rail.
+// Ordering settings are management-only. The primary "Start count" button is
+// the brightest thing on the rail (solid brand fill) so the #1 daily action
+// stands out.
 export function Sidebar({
   lang,
   totalItems,
@@ -123,7 +123,6 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
       className={[
         'inv-rail-btn',
         plain ? 'inv-rail-plain' : '',
-        primary ? 'inv-sheen' : '',
       ].join(' ').trim()}
       onClick={() => { Motion.pop(ref.current, 0.96); onClick(); }}
       style={{

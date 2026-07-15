@@ -11,8 +11,7 @@ import { EASE } from './motion';
 // The fill inks itself in: on mount it sweeps from empty to its level, and on
 // any later change (a recount, an order received) it glides from the previous
 // level. WAAPI so it plays under reduced motion, like all functional movement
-// on this tab. Critical bars additionally carry a slow shimmer (decorative,
-// CSS-gated) so the most urgent items catch the eye without shouting.
+// on this tab.
 export function StockBar({
   current,
   par,
@@ -22,7 +21,6 @@ export function StockBar({
   showPar = true,
   track = T.ruleSoft,
   neutral = false,
-  shimmer = false,
 }: {
   current: number;
   par: number;
@@ -34,8 +32,6 @@ export function StockBar({
   /** Never-counted item: render an empty grey track (no status color, no par
    *  tick) so a brand-new item reads as "unknown", not red "critical". */
   neutral?: boolean;
-  /** Slow highlight sweep across the fill — used on critical board cards. */
-  shimmer?: boolean;
 }) {
   const c = neutral ? T.dim : statusColor[status];
   const pct = neutral ? 0 : (par > 0 ? Math.min(1.15, current / par) : 0);
@@ -81,9 +77,7 @@ export function StockBar({
             position: 'relative',
             overflow: 'hidden',
           }}
-        >
-          {shimmer && !neutral && <span className="inv-shimmer" />}
-        </span>
+        />
       </span>
       {showPar && (
         <span
