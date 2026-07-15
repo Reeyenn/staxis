@@ -55,6 +55,32 @@ const MOBILE_PROMPTS = {
     { label: 'Ver turnos abiertos', prompt: 'Muéstrame los turnos abiertos.' },
   ],
 };
+const INVENTORY_MOBILE_WELCOME = {
+  en: 'I can review what’s under par and help draft the next reorder. Want me to start?',
+  es: 'Puedo revisar lo que está bajo el nivel ideal y preparar el próximo pedido. ¿Empiezo?',
+};
+const INVENTORY_MOBILE_PROMPTS = {
+  en: [
+    {
+      label: 'Draft reorder',
+      prompt: 'Review the inventory items under par and draft a reorder for the items that need attention now.',
+    },
+    {
+      label: 'Show low stock',
+      prompt: 'Show me all inventory items that are currently under par, grouped by urgency.',
+    },
+  ],
+  es: [
+    {
+      label: 'Preparar pedido',
+      prompt: 'Revisa los artículos bajo el nivel ideal y prepara un pedido para los que necesitan atención ahora.',
+    },
+    {
+      label: 'Ver existencias bajas',
+      prompt: 'Muéstrame los artículos que están bajo el nivel ideal, agrupados por urgencia.',
+    },
+  ],
+};
 
 // Minimal shape of the Web Speech API we touch — it isn't in the standard DOM
 // lib types and is `webkit`-prefixed in Chrome/Safari.
@@ -74,6 +100,7 @@ export function AskStaxisBar() {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const pathname = usePathname();
+  const onInventory = pathname === '/inventory' || pathname.startsWith('/inventory/');
 
   const [input, setInput] = useState('');
   const [chatState, setChatState] = useState<ChatState>('empty');
@@ -362,7 +389,9 @@ export function AskStaxisBar() {
                 <strong id="staxis-mobile-title">Staxis</strong>
                 <small><i aria-hidden />{streaming
                   ? (lang === 'es' ? 'pensando…' : 'thinking…')
-                  : (lang === 'es' ? 'pensando contigo' : 'thinking with you')}</small>
+                  : onInventory
+                    ? (lang === 'es' ? 'en inventario' : 'on inventory')
+                    : (lang === 'es' ? 'pensando contigo' : 'thinking with you')}</small>
               </span>
             </div>
             <button type="button" className="asx-mobile-close" onClick={closeMobile} aria-label={lang === 'es' ? 'Cerrar Staxis' : 'Close Staxis'}>
@@ -373,9 +402,11 @@ export function AskStaxisBar() {
           <div ref={mobileThreadRef} className="asx-mobile-thread" aria-live="polite">
             {messages.length === 0 ? (
               <>
-                <div className="asx-mobile-welcome">{MOBILE_WELCOME[lang]}</div>
+                <div className="asx-mobile-welcome">
+                  {(onInventory ? INVENTORY_MOBILE_WELCOME : MOBILE_WELCOME)[lang]}
+                </div>
                 <div className="asx-mobile-quick" aria-label={lang === 'es' ? 'Sugerencias' : 'Suggestions'}>
-                  {MOBILE_PROMPTS[lang].map((item, index) => (
+                  {(onInventory ? INVENTORY_MOBILE_PROMPTS : MOBILE_PROMPTS)[lang].map((item, index) => (
                     <button
                       key={item.label}
                       type="button"

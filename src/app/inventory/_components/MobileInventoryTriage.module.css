@@ -1,0 +1,867 @@
+.shell {
+  --mi-page: radial-gradient(ellipse 1100px 560px at 50% -4%, #fff 0%, #f0f3ef 100%);
+  --mi-surface: #fff;
+  --mi-surface-soft: #fcfdfb;
+  --mi-ink: #1f231c;
+  --mi-ink-2: #5c625c;
+  --mi-dim: #8a9187;
+  --mi-faint: #a6aba6;
+  --mi-rule: rgba(31, 35, 28, 0.08);
+  --mi-rule-soft: rgba(31, 35, 28, 0.06);
+  --mi-focus: #3e5c48;
+  --mi-brand: #3e5c48;
+  --mi-brand-hover: #5c7a60;
+  --mi-brand-text: #fff;
+  --mi-sage: #5c7a60;
+  --mi-sage-text: #356b4c;
+  --mi-sage-wash: rgba(158, 183, 166, 0.16);
+  --mi-rust: #b85c3d;
+  --mi-rust-wash: rgba(184, 92, 61, 0.1);
+  --mi-amber: #c99644;
+  --mi-amber-text: #8c6a33;
+  --mi-amber-wash: rgba(201, 150, 68, 0.14);
+  --mi-category-housekeeping: #3e5c48;
+  --mi-category-maintenance: #8c6a33;
+  --mi-category-breakfast: #b85c3d;
+}
+
+.desktopOnly {
+  display: block;
+}
+
+.mobileOnly {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .shell {
+    --mi-page: radial-gradient(ellipse 1100px 560px at 50% -4%, #232822 0%, #111410 100%);
+    --mi-surface: #1c211c;
+    --mi-surface-soft: #171b17;
+    --mi-ink: #f1f4f0;
+    --mi-ink-2: #c8cec7;
+    --mi-dim: #a9b0a8;
+    --mi-faint: #858d84;
+    --mi-rule: rgba(241, 244, 240, 0.13);
+    --mi-rule-soft: rgba(241, 244, 240, 0.08);
+    --mi-focus: #9fc3a5;
+    --mi-brand: #3e5c48;
+    --mi-brand-hover: #4f6f56;
+    --mi-sage: #8caf91;
+    --mi-sage-text: #a8cbae;
+    --mi-sage-wash: rgba(140, 175, 145, 0.15);
+    --mi-rust: #e28a6c;
+    --mi-rust-wash: rgba(226, 138, 108, 0.13);
+    --mi-amber: #e3b462;
+    --mi-amber-text: #ebc57f;
+    --mi-amber-wash: rgba(227, 180, 98, 0.14);
+    --mi-category-housekeeping: #b9d8be;
+    --mi-category-maintenance: #efc77e;
+    --mi-category-breakfast: #f0a187;
+  }
+}
+
+:global(.dark) .shell {
+  --mi-page: radial-gradient(ellipse 1100px 560px at 50% -4%, #232822 0%, #111410 100%);
+  --mi-surface: #1c211c;
+  --mi-surface-soft: #171b17;
+  --mi-ink: #f1f4f0;
+  --mi-ink-2: #c8cec7;
+  --mi-dim: #a9b0a8;
+  --mi-faint: #858d84;
+  --mi-rule: rgba(241, 244, 240, 0.13);
+  --mi-rule-soft: rgba(241, 244, 240, 0.08);
+  --mi-focus: #9fc3a5;
+  --mi-brand: #3e5c48;
+  --mi-brand-hover: #4f6f56;
+  --mi-sage: #8caf91;
+  --mi-sage-text: #a8cbae;
+  --mi-sage-wash: rgba(140, 175, 145, 0.15);
+  --mi-rust: #e28a6c;
+  --mi-rust-wash: rgba(226, 138, 108, 0.13);
+  --mi-amber: #e3b462;
+  --mi-amber-text: #ebc57f;
+  --mi-amber-wash: rgba(227, 180, 98, 0.14);
+  --mi-category-housekeeping: #b9d8be;
+  --mi-category-maintenance: #efc77e;
+  --mi-category-breakfast: #f0a187;
+}
+
+@media (max-width: 760px) {
+  .shell {
+    min-height: calc(100dvh - 56px) !important;
+    padding: 0 !important;
+    color: var(--mi-ink) !important;
+    background: var(--mi-page) !important;
+  }
+
+  .desktopOnly {
+    display: none;
+  }
+
+  .mobileOnly {
+    display: block;
+    min-width: 0;
+    color: var(--mi-ink);
+    font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+}
+
+.masthead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 20px;
+  padding: 16px 20px 0;
+  animation: mobileInventoryRise 260ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}
+
+.stats {
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  gap: 28px;
+}
+
+.stat {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.statLabel {
+  overflow: hidden;
+  color: var(--mi-faint);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 12px;
+  letter-spacing: 0.14em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.statValue,
+.statValueCritical {
+  color: var(--mi-ink);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 26px;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.statValueCritical {
+  color: var(--mi-rust);
+}
+
+.healthRing {
+  position: relative;
+  display: grid;
+  flex: none;
+  width: 50px;
+  height: 50px;
+  place-items: center;
+  color: var(--mi-sage);
+}
+
+.healthRing svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+.ringTrack,
+.ringArc {
+  fill: none;
+  stroke-width: 5;
+}
+
+.ringTrack {
+  stroke: var(--mi-rule-soft);
+}
+
+.ringArc {
+  stroke: currentcolor;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 300ms cubic-bezier(0.2, 0, 0, 1), stroke 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.ringGood {
+  color: var(--mi-sage);
+}
+
+.ringLow {
+  color: var(--mi-amber);
+}
+
+.ringCritical {
+  color: var(--mi-rust);
+}
+
+.ringUnknown {
+  color: var(--mi-dim);
+}
+
+.ringValue {
+  position: relative;
+  color: var(--mi-ink);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  letter-spacing: -0.02em;
+}
+
+.hairline {
+  height: 1px;
+  margin: 14px 20px 0;
+  background: var(--mi-rule);
+  transform-origin: left center;
+  animation: mobileInventoryRule 320ms cubic-bezier(0.05, 0.7, 0.1, 1) 80ms both;
+}
+
+.actionRail,
+.filterRail {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.actionRail::-webkit-scrollbar,
+.filterRail::-webkit-scrollbar {
+  display: none;
+}
+
+.actionRail {
+  padding: 11px 20px 0;
+  animation: mobileInventoryRise 260ms cubic-bezier(0.05, 0.7, 0.1, 1) 70ms both;
+}
+
+.actionButton {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  height: 44px;
+  gap: 7px;
+  padding: 0 13px;
+  border: 0;
+  color: var(--mi-ink-2);
+  background: transparent;
+  cursor: pointer;
+  font: 600 12px/16px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  white-space: nowrap;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.actionButton::before {
+  position: absolute;
+  inset: 3px 0;
+  border: 1px solid var(--mi-rule);
+  border-radius: 10px;
+  background: var(--mi-surface);
+  content: '';
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), border-color 150ms cubic-bezier(0.2, 0, 0, 1), transform 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.actionButton > * {
+  position: relative;
+}
+
+.actionButton:hover::before {
+  background: var(--mi-rule-soft);
+}
+
+.actionButton:active::before {
+  transform: scale(0.98);
+}
+
+.actionButton:focus-visible {
+  outline: none;
+}
+
+.actionButton:focus-visible::before {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: 1px;
+}
+
+.actionPrimary {
+  color: var(--mi-brand-text);
+}
+
+.actionPrimary::before {
+  border-color: var(--mi-brand);
+  background: var(--mi-brand);
+}
+
+.actionPrimary:hover::before {
+  background: var(--mi-brand-hover);
+}
+
+.actionSage {
+  color: var(--mi-sage-text);
+}
+
+.actionSage::before {
+  border-color: color-mix(in srgb, var(--mi-sage) 35%, transparent);
+  background: var(--mi-sage-wash);
+}
+
+.actionAttention {
+  color: var(--mi-ink-2);
+}
+
+.actionArrow {
+  font-size: 14px;
+}
+
+.actionDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--mi-rust);
+}
+
+.actionLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.actionBadge {
+  min-width: 18px;
+  padding: 2px 5px;
+  border-radius: 999px;
+  color: var(--mi-ink-2);
+  background: var(--mi-rule-soft);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  text-align: center;
+}
+
+.actionPrimary .actionBadge {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.filterRail {
+  padding: 9px 20px 0;
+  animation: mobileInventoryRise 260ms cubic-bezier(0.05, 0.7, 0.1, 1) 120ms both;
+}
+
+.filterTarget {
+  display: inline-grid;
+  flex: none;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  place-items: center;
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.filterTarget:focus-visible {
+  outline: none;
+}
+
+.filterChip,
+.filterChipActive {
+  display: inline-flex;
+  align-items: center;
+  height: 34px;
+  gap: 7px;
+  padding: 0 13px;
+  border: 1px solid var(--mi-rule);
+  border-radius: 999px;
+  color: var(--mi-ink-2);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), color 150ms cubic-bezier(0.2, 0, 0, 1), transform 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.filterTarget:hover .filterChip {
+  background: var(--mi-rule-soft);
+}
+
+.filterTarget:active > span {
+  transform: scale(0.98);
+}
+
+.filterTarget:focus-visible > span {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: 1px;
+}
+
+.filterChipActive {
+  border-color: var(--mi-ink);
+  color: var(--mi-surface);
+  background: var(--mi-ink);
+}
+
+.filterCount {
+  color: var(--mi-dim);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.filterChipActive .filterCount {
+  color: color-mix(in srgb, var(--mi-surface) 65%, transparent);
+}
+
+.triageBoard {
+  padding: 8px 20px calc(108px + env(safe-area-inset-bottom, 0px));
+}
+
+.group {
+  --mi-status: var(--mi-dim);
+  --mi-status-text: var(--mi-dim);
+  animation: mobileInventoryRise 280ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}
+
+.group:nth-child(1) {
+  animation-delay: 150ms;
+}
+
+.group:nth-child(2) {
+  animation-delay: 190ms;
+}
+
+.group:nth-child(3) {
+  animation-delay: 230ms;
+}
+
+.group:nth-child(4) {
+  animation-delay: 270ms;
+}
+
+.group + .group {
+  margin-top: 12px;
+}
+
+.statusCritical {
+  --mi-status: var(--mi-rust);
+  --mi-status-text: var(--mi-rust);
+}
+
+.statusLow {
+  --mi-status: var(--mi-amber);
+  --mi-status-text: var(--mi-amber-text);
+}
+
+.statusGood {
+  --mi-status: var(--mi-sage);
+  --mi-status-text: var(--mi-sage-text);
+}
+
+.statusNeutral {
+  --mi-status: var(--mi-dim);
+  --mi-status-text: var(--mi-dim);
+}
+
+.groupHeader {
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+  gap: 7px;
+  margin: 6px 0 10px;
+  color: var(--mi-status-text);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.groupDot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--mi-status);
+}
+
+.groupCount {
+  color: var(--mi-dim);
+  font-size: 9.5px;
+  letter-spacing: 0;
+}
+
+.groupEmpty {
+  padding: 8px 13px 10px;
+  border: 1px dashed var(--mi-rule);
+  border-radius: 12px;
+  color: var(--mi-faint);
+  font-size: 11px;
+}
+
+.cardList {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.itemCard {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 11px;
+  padding: 11px 13px;
+  border: 1px solid var(--mi-rule);
+  border-radius: 14px;
+  color: var(--mi-ink);
+  background: var(--mi-surface);
+  box-shadow: 0 5px 14px -14px rgba(31, 42, 32, 0.35);
+  transition: border-color 160ms cubic-bezier(0.2, 0, 0, 1), box-shadow 160ms cubic-bezier(0.2, 0, 0, 1), transform 160ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.itemCard.statusCritical {
+  border-color: color-mix(in srgb, var(--mi-rust) 28%, transparent);
+}
+
+.itemCard:focus-within {
+  border-color: color-mix(in srgb, var(--mi-focus) 48%, transparent);
+  box-shadow: 0 7px 18px -12px rgba(62, 92, 72, 0.38);
+}
+
+.monogram {
+  display: grid;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--mi-category-border);
+  border-radius: 10px;
+  place-items: center;
+  color: var(--mi-category);
+  background: var(--mi-category-bg);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 14px;
+  letter-spacing: 0.02em;
+}
+
+.categoryHousekeeping {
+  --mi-category: var(--mi-category-housekeeping);
+  --mi-category-bg: rgba(62, 92, 72, 0.1);
+  --mi-category-border: rgba(62, 92, 72, 0.2);
+}
+
+.categoryMaintenance {
+  --mi-category: var(--mi-category-maintenance);
+  --mi-category-bg: rgba(201, 150, 68, 0.1);
+  --mi-category-border: rgba(201, 150, 68, 0.2);
+}
+
+.categoryBreakfast {
+  --mi-category: var(--mi-category-breakfast);
+  --mi-category-bg: rgba(184, 92, 61, 0.1);
+  --mi-category-border: rgba(184, 92, 61, 0.2);
+}
+
+.itemBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.itemName {
+  overflow: hidden;
+  color: var(--mi-ink);
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stockRow {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 7px;
+  margin-top: 5px;
+}
+
+.stockBar {
+  position: relative;
+  display: block;
+  flex: 1;
+  min-width: 28px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: var(--mi-rule-soft);
+}
+
+.stockFill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--mobile-stock-width);
+  border-radius: inherit;
+  background: var(--mi-status);
+  transition: width 250ms cubic-bezier(0.05, 0.7, 0.1, 1), background-color 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.statusNeutral .stockFill {
+  width: 0;
+}
+
+.stockCaption {
+  flex: none;
+  color: var(--mi-dim);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 12px;
+  white-space: nowrap;
+}
+
+.stepper {
+  display: flex;
+  flex: none;
+  align-items: center;
+  width: 118px;
+  color: var(--mi-status-text);
+}
+
+.stepButton {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  margin: -5px 0;
+  padding: 0;
+  border: 0;
+  place-items: center;
+  color: var(--mi-ink);
+  background: transparent;
+  cursor: pointer;
+  font: 500 16px/1 var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.stepButton::before {
+  position: absolute;
+  inset: 9px;
+  border: 1px solid color-mix(in srgb, var(--mi-ink) 14%, transparent);
+  border-radius: 8px;
+  background: var(--mi-surface);
+  content: '';
+  transition: background-color 100ms cubic-bezier(0.2, 0, 0, 1), transform 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.stepButton > span {
+  position: relative;
+}
+
+.stepButton:hover::before {
+  background: var(--mi-rule-soft);
+}
+
+.stepButton:active::before {
+  transform: scale(0.94);
+}
+
+.stepButton:focus-visible {
+  outline: none;
+}
+
+.stepButton:focus-visible::before {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: 1px;
+}
+
+.stepButton:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.stepButtonPlus {
+  color: var(--mi-sage-text);
+}
+
+.stepButtonPlus::before {
+  border-color: color-mix(in srgb, var(--mi-sage) 35%, transparent);
+  background: var(--mi-sage-wash);
+}
+
+.stepValue {
+  position: relative;
+  z-index: 2;
+  width: 30px;
+  overflow: hidden;
+  color: var(--mi-status-text);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.noMatches,
+.emptyCatalog {
+  margin-top: 14px;
+  border: 1px solid var(--mi-rule);
+  border-radius: 14px;
+  color: var(--mi-ink-2);
+  background: var(--mi-surface);
+}
+
+.noMatches {
+  padding: 28px 20px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.emptyCatalog {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  padding: 36px 24px;
+  text-align: center;
+}
+
+.emptyCatalog strong {
+  margin-top: 12px;
+  color: var(--mi-ink);
+  font-size: 16px;
+}
+
+.emptyCatalog > span:not(.emptyIcon) {
+  margin-top: 5px;
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.emptyIcon {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  place-items: center;
+  color: var(--mi-sage-text);
+  background: var(--mi-sage-wash);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.emptyCatalog button {
+  min-height: 44px;
+  margin-top: 18px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--mi-brand-text);
+  background: var(--mi-brand);
+  cursor: pointer;
+  font: 600 13px/18px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.emptyCatalog button:focus-visible {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: 2px;
+}
+
+@keyframes mobileInventoryRise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes mobileInventoryRule {
+  from {
+    transform: scaleX(0);
+  }
+
+  to {
+    transform: scaleX(1);
+  }
+}
+
+@media (max-width: 350px) {
+  .masthead,
+  .actionRail,
+  .filterRail,
+  .triageBoard {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .hairline {
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+
+  .stats {
+    gap: 18px;
+  }
+
+  .itemCard {
+    gap: 8px;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+
+  .stepper {
+    width: 110px;
+  }
+
+  .stepValue {
+    width: 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .masthead,
+  .hairline,
+  .actionRail,
+  .filterRail,
+  .group {
+    animation: none;
+  }
+
+  .ringArc,
+  .actionButton::before,
+  .filterChip,
+  .filterChipActive,
+  .itemCard,
+  .stockFill,
+  .stepButton::before {
+    transition: none;
+  }
+
+  .actionButton:active::before,
+  .filterTarget:active > span,
+  .stepButton:active::before {
+    transform: none;
+  }
+}

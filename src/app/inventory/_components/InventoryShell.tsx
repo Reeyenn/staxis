@@ -51,6 +51,8 @@ import { FilterBar, type InventoryView } from './FilterBar';
 import type { InvTab } from './InventoryTabs';
 import { LedgerTable } from './LedgerTable';
 import { StockList } from './StockList';
+import { MobileInventoryTriage } from './MobileInventoryTriage';
+import mobileStyles from './MobileInventoryTriage.module.css';
 import { useRiseIn } from './motion';
 import { InvFx, HealthRing, CountUp, PingDot } from './fx';
 import { toDisplayItem, applyDraft } from './adapter';
@@ -788,6 +790,7 @@ export function InventoryShell() {
   return (
     <div
       ref={pageRef}
+      className={mobileStyles.shell}
       style={{
         padding: '12px 30px 130px',
         background: 'transparent',
@@ -798,6 +801,22 @@ export function InventoryShell() {
     >
       <InvFx />
 
+      <MobileInventoryTriage
+        lang={L}
+        items={effectiveDisplay}
+        bucket={bucket}
+        onBucket={setBucket}
+        tabs={visibleTabs}
+        stockHealth={stockHealth}
+        shelfValue={shelfValue}
+        canManage={canManage}
+        canViewFinancials={canViewFinancials}
+        onAction={openOverlay}
+        onQuickCount={onQuickCount}
+        onAdd={() => { setEditItem(null); setOverlay('add'); }}
+      />
+
+      <div className={mobileStyles.desktopOnly}>
       {/* Masthead — editorial title block on the left, living stats on the right.
           Kept deliberately tight: this row + hairline is the only air above the board. */}
       <div
@@ -905,6 +924,7 @@ export function InventoryShell() {
             />
           )}
         </div>
+      </div>
       </div>
 
       <CountSheet

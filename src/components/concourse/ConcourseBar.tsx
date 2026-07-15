@@ -263,6 +263,9 @@ export function ConcourseBar() {
         userMeta={userMeta}
         userInitial={initial}
         homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
+        mobileTitle={pathname === '/inventory' || pathname.startsWith('/inventory/')
+          ? (lang === 'es' ? 'Inventario' : 'Inventory')
+          : undefined}
         menuLabel={lang === 'es' ? 'Abrir navegación' : 'Open navigation'}
         closeLabel={lang === 'es' ? 'Cerrar navegación' : 'Close navigation'}
         navigationLabel={lang === 'es' ? 'Navegación principal' : 'Main navigation'}

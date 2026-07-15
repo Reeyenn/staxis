@@ -1,0 +1,81 @@
+.toggleMark {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  place-items: center;
+}
+
+.thumb {
+  display: grid;
+  place-items: center;
+}
+
+@media (max-width: 760px) {
+  .budgetGrid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+
+  .reorderRow {
+    grid-template-areas:
+      'toggle identity cost'
+      'thumb stock stock'
+      'thumb quantity quantity'
+      'detail detail detail';
+    grid-template-columns: 44px minmax(0, 1fr) auto !important;
+    gap: 8px 10px !important;
+    padding: 12px 12px 14px 16px !important;
+    overflow: visible !important;
+  }
+
+  .toggle {
+    grid-area: toggle;
+    width: 44px !important;
+    height: 44px !important;
+    border: 0 !important;
+    place-items: center;
+    background: transparent !important;
+  }
+
+  .toggleMark {
+    flex: none;
+  }
+
+  .thumb {
+    grid-area: thumb;
+    align-self: start;
+    min-height: 44px;
+  }
+
+  .identity {
+    grid-area: identity;
+    align-self: center;
+  }
+
+  .stock {
+    grid-area: stock;
+    align-self: center;
+  }
+
+  .quantity {
+    grid-area: quantity;
+    width: 100%;
+    height: 44px !important;
+  }
+
+  .quantity button {
+    width: 44px !important;
+    min-width: 44px;
+  }
+
+  .detail {
+    grid-area: detail;
+    padding-top: 2px;
+  }
+
+  .cost {
+    grid-area: cost;
+    align-self: center;
+    font-size: 15px !important;
+  }
+}

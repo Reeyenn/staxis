@@ -374,6 +374,22 @@
   opacity: 0.75;
 }
 
+.pageTitle {
+  justify-self: center;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: #1f231c;
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 22px;
+  letter-spacing: -0.01em;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .avatar {
   position: relative;
   display: grid;

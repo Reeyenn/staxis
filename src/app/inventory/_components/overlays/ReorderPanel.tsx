@@ -28,6 +28,7 @@ import { isBudgetForLocalMonth } from '../month';
 import { fmtMoney } from '../format';
 import { recommendReorder, suggestQuantity } from '../adapter';
 import type { DisplayItem, ReorderRec } from '../types';
+import styles from './ReorderPanel.module.css';
 import { catLabelFor, type Lang } from '../inv-i18n';
 
 interface ReorderPanelProps {
@@ -360,6 +361,7 @@ export function ReorderPanel({
             three categories plus each custom section (0306). */}
         {canViewFinancials && (
           <div
+            className={styles.budgetGrid}
             style={{
               display: 'grid',
               gridTemplateColumns: budgetMode === 'total' ? '1fr' : 'repeat(3, 1fr)',
@@ -700,6 +702,7 @@ function ReorderRow({
   const step = rec.suggestQty >= 24 ? 12 : 1;
   return (
     <div
+      className={styles.reorderRow}
       style={{
         background: T.paper,
         border: `1px solid ${T.rule}`,
@@ -716,16 +719,17 @@ function ReorderRow({
       <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 3, background: c }} />
       <button
         type="button"
+        className={styles.toggle}
         onClick={onToggle}
-        aria-label="Toggle"
+        aria-label={`Include ${d.name} in reorder`}
+        aria-pressed={line.checked}
         style={{
           width: 20,
           height: 20,
-          borderRadius: 5,
           cursor: 'pointer',
           padding: 0,
-          background: line.checked ? T.ink : 'transparent',
-          border: `1.5px solid ${line.checked ? T.ink : T.rule}`,
+          background: 'transparent',
+          border: 'none',
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -734,10 +738,19 @@ function ReorderRow({
           lineHeight: 1,
         }}
       >
-        {line.checked && '✓'}
+        <span
+          className={styles.toggleMark}
+          style={{
+            color: T.bg,
+            background: line.checked ? T.ink : 'transparent',
+            border: `1.5px solid ${line.checked ? T.ink : T.rule}`,
+          }}
+        >
+          {line.checked && '✓'}
+        </span>
       </button>
-      <ItemThumb thumb={d.thumb} cat={d.cat} size={36} />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+      <div className={styles.thumb}><ItemThumb thumb={d.thumb} cat={d.cat} size={36} /></div>
+      <div className={styles.identity} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
         <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink, fontWeight: 600 }}>
           {d.name}
         </span>
@@ -755,7 +768,7 @@ function ReorderRow({
           {(d.vendor || '—')} · {leadLabel} {d.leadDays}d
         </span>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+      <div className={styles.stock} style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
         <StockBar current={d.estimated} par={d.par} status={d.status} height={5} />
         <span
           style={{
@@ -771,6 +784,7 @@ function ReorderRow({
         </span>
       </div>
       <div
+        className={styles.quantity}
         style={{
           display: 'flex',
           alignItems: 'center',
@@ -830,7 +844,7 @@ function ReorderRow({
           +
         </button>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
+      <div className={styles.detail} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
         <span
           style={{
             fontFamily: fonts.sans,
@@ -862,6 +876,7 @@ function ReorderRow({
       {/* Per-line cost ($) — money-capability only. The grid cell stays so the
           row layout is unchanged; only the dollar amount is withheld. */}
       <span
+        className={styles.cost}
         style={{
           fontFamily: fonts.sans,
           fontSize: 17,
