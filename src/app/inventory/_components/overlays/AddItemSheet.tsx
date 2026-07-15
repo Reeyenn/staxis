@@ -8,7 +8,7 @@ import {
   updateInventoryItem,
   deleteInventoryItem,
 } from '@/lib/db';
-import type { InventoryItem, InventoryCategory } from '@/types';
+import type { InventoryItem, InventoryCategory, InventoryCustomCategory } from '@/types';
 import type { Vendor } from '@/lib/ordering/types';
 
 import { T, fonts, type InvCat } from '../tokens';
@@ -28,6 +28,10 @@ interface AddItemSheetProps {
    *  page). The Maintenance → Parts tab passes 'maintenance' so a part added
    *  there lands back in that filtered view. Ignored when editing. */
   defaultCategory?: InvCat;
+  /** Hotel-defined custom categories (0307) — extra picks in the category row. */
+  customCategories?: InventoryCustomCategory[];
+  /** Custom category a *new* item starts in (when added from a custom tab). */
+  defaultCustomCategoryId?: string | null;
 }
 
 const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
@@ -96,7 +100,7 @@ function aisStrings(lang: Lang) {
   }[lang];
 }
 
-export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'housekeeping' }: AddItemSheetProps) {
+export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'housekeeping', customCategories = [], defaultCustomCategoryId = null }: AddItemSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ais = aisStrings(lang);
@@ -105,6 +109,9 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
 
   const [name, setName] = useState('');
   const [category, setCategory] = useState<InvCat>(defaultCategory);
+  // null = the item lives in its built-in `category`; a string id = it lives in
+  // that hotel-defined custom category tab (0307).
+  const [customCategoryId, setCustomCategoryId] = useState<string | null>(defaultCustomCategoryId);
   const [currentStock, setCurrentStock] = useState<string>('0');
   // What the on-hand field was seeded with (item value at open, or the DB's
   // post-write-off value). On edit-save we only send currentStock if the user
@@ -137,6 +144,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
     if (item) {
       setName(item.name);
       setCategory(item.category as InvCat);
+      setCustomCategoryId(item.customCategoryId ?? null);
       setCurrentStock(String(item.currentStock ?? 0));
       stockBaselineRef.current = item.currentStock ?? 0;
       setParLevel(String(item.parLevel ?? 0));
@@ -146,6 +154,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
     } else {
       setName('');
       setCategory(defaultCategory);
+      setCustomCategoryId(defaultCustomCategoryId);
       setCurrentStock('0');
       stockBaselineRef.current = 0;
       setParLevel('0');
@@ -153,7 +162,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setVendor('');
       setVendorId(null);
     }
-  }, [open, item, defaultCategory]);
+  }, [open, item, defaultCategory, defaultCustomCategoryId]);
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
@@ -167,6 +176,9 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       const base = {
         name: name.trim(),
         category: category as InventoryCategory,
+        // Always explicit: an id assigns the item to a custom tab, null puts it
+        // back in its built-in category's bucket.
+        customCategoryId: customCategoryId,
         parLevel: Number(parLevel) || 0,
         unitCost: unitCost ? Number(unitCost) : undefined,
         vendorName: vendor.trim() || undefined,
@@ -256,28 +268,20 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         <Field label={ais.category} tip={ais.tipCategory}>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
             {CATS.map((c) => {
-              const active = category === c;
+              // A built-in chip is active only when the item isn't in a custom tab.
+              const active = !customCategoryId && category === c;
               return (
-                <button
-                  key={c}
-                  type="button"
-                  onClick={() => setCategory(c)}
-                  style={{
-                    padding: '8px 14px',
-                    borderRadius: 8,
-                    cursor: 'pointer',
-                    background: active ? T.ink : 'transparent',
-                    color: active ? T.bg : T.ink2,
-                    border: `1px solid ${active ? T.ink : T.rule}`,
-                    fontFamily: fonts.sans,
-                    fontSize: 13,
-                    fontWeight: 500,
-                  }}
-                >
-                  {catLabelFor(lang, c)}
-                </button>
+                <CatChip key={c} active={active} label={catLabelFor(lang, c)} onClick={() => { setCategory(c); setCustomCategoryId(null); }} />
               );
             })}
+            {customCategories.map((cc) => (
+              <CatChip
+                key={cc.id}
+                active={customCategoryId === cc.id}
+                label={cc.name}
+                onClick={() => setCustomCategoryId(cc.id)}
+              />
+            ))}
           </div>
         </Field>
 
@@ -350,6 +354,32 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         </div>
       </div>
     </Overlay>
+  );
+}
+
+function CatChip({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      style={{
+        padding: '8px 14px',
+        borderRadius: 8,
+        cursor: 'pointer',
+        background: active ? T.ink : 'transparent',
+        color: active ? T.bg : T.ink2,
+        border: `1px solid ${active ? T.ink : T.rule}`,
+        fontFamily: fonts.sans,
+        fontSize: 13,
+        fontWeight: 500,
+        maxWidth: 200,
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {label}
+    </button>
   );
 }
 

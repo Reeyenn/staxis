@@ -123,6 +123,11 @@ const STRINGS = {
     // ── View toggle (Ledger table ↔ triage board) ──
     viewLedger: 'Ledger',
     viewBoard: 'Board',
+    // ── Custom category tabs (0307) ──
+    addTab: 'Add a tab',
+    newTabPh: 'Name (e.g. Liquor)',
+    removeTab: 'Remove tab',
+    removeTabConfirm: 'Remove this tab? Its items move back to their normal category — nothing is deleted.',
   },
   es: {
     // ── Shell ──
@@ -201,6 +206,11 @@ const STRINGS = {
     // ── View toggle (tabla Libro ↔ tablero) ──
     viewLedger: 'Tabla',
     viewBoard: 'Tablero',
+    // ── Pestañas de categoría personalizadas (0307) ──
+    addTab: 'Agregar pestaña',
+    newTabPh: 'Nombre (ej. Licor)',
+    removeTab: 'Quitar pestaña',
+    removeTabConfirm: '¿Quitar esta pestaña? Sus artículos vuelven a su categoría normal — no se elimina nada.',
   },
 };
 

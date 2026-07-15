@@ -879,6 +879,7 @@ const RLS_REQUIRED_TABLES = [
   'inventory',
   'inventory_budgets',
   'inventory_budget_sections',
+  'inventory_custom_categories',
   'inventory_counts',
   'inventory_discards',
   'inventory_orders',

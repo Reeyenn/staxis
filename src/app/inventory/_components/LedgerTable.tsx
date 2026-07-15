@@ -92,7 +92,7 @@ export function LedgerTable({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items
-      .filter((it) => inBucket(it.cat, bucket))
+      .filter((it) => inBucket(it, bucket))
       .filter((it) => (q ? `${it.name} ${it.vendor} ${it.id}`.toLowerCase().includes(q) : true));
   }, [items, bucket, query]);
 

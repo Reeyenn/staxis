@@ -53,7 +53,7 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return items
-      .filter((it) => inBucket(it.cat, bucket))
+      .filter((it) => inBucket(it, bucket))
       .filter((it) => {
         if (!q) return true;
         return `${it.name} ${it.vendor} ${it.id}`.toLowerCase().includes(q);

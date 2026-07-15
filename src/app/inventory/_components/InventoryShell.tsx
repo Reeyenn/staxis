@@ -11,6 +11,9 @@ import {
   listInventoryOrders,
   listInventoryBudgets,
   listInventoryBudgetSections,
+  listInventoryCustomCategories,
+  upsertInventoryCustomCategory,
+  deleteInventoryCustomCategory,
   monthToDateSpendDetail,
   sectionBudgetKey,
   addInventoryCount,
@@ -31,6 +34,7 @@ import type {
   InventoryBudget,
   InventoryBudgetMode,
   InventoryBudgetSection,
+  InventoryCustomCategory,
 } from '@/types';
 
 import { T, fonts } from './tokens';
@@ -120,6 +124,8 @@ export function InventoryShell() {
   const [orders, setOrders] = useState<InventoryOrder[]>([]);
   const [budgets, setBudgets] = useState<InventoryBudget[]>([]);
   const [budgetSections, setBudgetSections] = useState<InventoryBudgetSection[]>([]);
+  // Hotel-defined custom category tabs (0307).
+  const [customCategories, setCustomCategories] = useState<InventoryCustomCategory[]>([]);
   // How this hotel budgets (0306): one total number vs per-section. Seeded
   // from the property record; BudgetsPanel reports changes back via onChanged.
   const [budgetMode, setBudgetMode] = useState<InventoryBudgetMode>(
@@ -191,7 +197,7 @@ export function InventoryShell() {
     // the UTC one (which flips hours early in US timezones).
     const monthStart = startOfLocalMonth(new Date());
     const monthEnd = addLocalMonths(new Date(), 1);
-    const [occ, avg, ct, od, bd, sec, spend] = await Promise.all([
+    const [occ, avg, ct, od, bd, sec, spend, cats] = await Promise.all([
       fetchOccupancyBundle(pid, daysAgo(14)),
       fetchDailyAverages(pid, 14),
       listInventoryCounts(uid, pid, 200),
@@ -211,8 +217,11 @@ export function InventoryShell() {
             byItem: {},
             total: 0,
           } as MonthSpendDetail),
+      // Custom category tabs are not money — everyone who can see inventory
+      // sees the tabs.
+      listInventoryCustomCategories(uid, pid),
     ]);
-    return { occ, avg, ct, od, bd, sec, spend };
+    return { occ, avg, ct, od, bd, sec, spend, cats };
   }, [canViewFinancials]);
 
   const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
@@ -223,6 +232,7 @@ export function InventoryShell() {
     setBudgets(d.bd);
     setBudgetSections(d.sec);
     setSpendDetail(d.spend);
+    setCustomCategories(d.cats);
   }, []);
 
   useEffect(() => {
@@ -291,8 +301,15 @@ export function InventoryShell() {
   );
 
   const totalItems = effectiveDisplay.length;
-  const generalCount = effectiveDisplay.filter((d) => d.cat !== 'breakfast').length;
-  const breakfastCount = effectiveDisplay.filter((d) => d.cat === 'breakfast').length;
+  // Built-in bucket counts EXCLUDE items that live in a custom tab (0307) — a
+  // custom item shows only under its own tab (and All), never General/Breakfast.
+  const generalCount = effectiveDisplay.filter((d) => !d.customCategoryId && d.cat !== 'breakfast').length;
+  const breakfastCount = effectiveDisplay.filter((d) => !d.customCategoryId && d.cat === 'breakfast').length;
+  const customCounts = useMemo(() => {
+    const m: Record<string, number> = {};
+    for (const d of effectiveDisplay) if (d.customCategoryId) m[d.customCategoryId] = (m[d.customCategoryId] ?? 0) + 1;
+    return m;
+  }, [effectiveDisplay]);
   // Never-counted items (new-hotel day 1) have no real status — exclude them
   // from the triage stats so they don't read as "16 to order now". They still
   // count toward totalItems / the "All" filter (they ARE items in the catalog).
@@ -617,6 +634,34 @@ export function InventoryShell() {
     }
   }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
 
+  // ── Custom category tabs (0307) — add / delete ──────────────────────
+  const addCustomCategory = useCallback(async (name: string) => {
+    if (!uid || !activePropertyId || !name.trim()) return;
+    const trimmed = name.trim();
+    // Don't create a duplicate — if a tab with this name already exists, just
+    // jump to it.
+    const existing = customCategories.find((c) => c.name.trim().toLowerCase() === trimmed.toLowerCase());
+    if (existing) { setBucket(`custom:${existing.id}`); return; }
+    try {
+      const id = await upsertInventoryCustomCategory(uid, activePropertyId, { name: trimmed, sort: customCategories.length });
+      await refreshData();
+      setBucket(`custom:${id}`); // jump to the new tab
+    } catch (err) {
+      console.error('[inventory] add category failed', err);
+    }
+  }, [uid, activePropertyId, customCategories, refreshData]);
+
+  const deleteCustomCategory = useCallback(async (id: string) => {
+    if (!uid || !activePropertyId) return;
+    try {
+      await deleteInventoryCustomCategory(uid, activePropertyId, id);
+      setBucket((b) => (b === `custom:${id}` ? 'all' : b)); // leave the deleted tab
+      await refreshData();
+    } catch (err) {
+      console.error('[inventory] delete category failed', err);
+    }
+  }, [uid, activePropertyId, refreshData]);
+
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
   // cascade — ONCE. `revealed` is a one-way latch: it flips true when the
   // initial data is in (or after a 3.5s failsafe so a single failed fetch can
@@ -734,6 +779,11 @@ export function InventoryShell() {
               allCount={totalItems}
               generalCount={generalCount}
               breakfastCount={breakfastCount}
+              customCategories={customCategories}
+              customCounts={customCounts}
+              canManage={canManage}
+              onAddCategory={(name) => void addCustomCategory(name)}
+              onDeleteCategory={(id) => void deleteCustomCategory(id)}
               view={view}
               onView={setView}
               onAdd={() => { setEditItem(null); setOverlay('add'); }}
@@ -850,6 +900,8 @@ export function InventoryShell() {
         open={overlay === 'add'}
         onClose={() => { closeOverlay(); }}
         item={editItem}
+        customCategories={customCategories}
+        defaultCustomCategoryId={bucket.startsWith('custom:') ? bucket.slice(7) : null}
       />
     </div>
   );

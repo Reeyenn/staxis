@@ -241,6 +241,13 @@ export interface InventoryItem {
   propertyId: string;
   name: string;
   category: InventoryCategory;
+  /**
+   * Optional hotel-defined custom category (migration 0307). NULL/undefined
+   * (every legacy item) = the item lives in its built-in `category`'s
+   * General/Breakfast bucket, unchanged. Set → the item shows only under its
+   * custom tab. The built-in `category` still drives its icon/color.
+   */
+  customCategoryId?: string | null;
   currentStock: number;
   parLevel: number;             // minimum desired stock
   reorderAt?: number;           // stock threshold that triggers a reorder notification
@@ -357,6 +364,16 @@ export interface InventoryBudgetSection {
   propertyId: string;
   name: string;
   itemIds: string[];
+  sort: number;
+}
+
+// A hotel-defined custom inventory category shown as a filter tab (e.g.
+// "Liquor", "Petty cash"). Items point at one via inventory.custom_category_id.
+// Migration 0307.
+export interface InventoryCustomCategory {
+  id: string;
+  propertyId: string;
+  name: string;
   sort: number;
 }
 

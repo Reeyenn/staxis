@@ -104,13 +104,21 @@ export const catGlyph: Record<InvCat, string> = {
 //   all       = every item
 //   general   = housekeeping + maintenance
 //   breakfast = breakfast only
-export type StockBucket = 'all' | 'general' | 'breakfast';
+// Filter buckets: the built-in All / General / Breakfast, plus `custom:<id>`
+// for a hotel-defined category tab (migration 0307).
+export type StockBucket = 'all' | 'general' | 'breakfast' | `custom:${string}`;
 
 // Does an item's category belong in the currently-selected bucket?
-export function inBucket(cat: InvCat, bucket: StockBucket): boolean {
+// Whether an item belongs in a filter bucket. Additive custom-category rule
+// (0307): an item WITH a custom category lives ONLY under its custom tab (and
+// All) — never in the built-in General/Breakfast buckets. Items WITHOUT one
+// (every legacy item) behave exactly as before.
+export function inBucket(item: { cat: InvCat; customCategoryId?: string | null }, bucket: StockBucket): boolean {
   if (bucket === 'all') return true;
-  if (bucket === 'breakfast') return cat === 'breakfast';
-  return cat !== 'breakfast';
+  if (bucket.startsWith('custom:')) return item.customCategoryId === bucket.slice(7);
+  if (item.customCategoryId) return false; // custom items stay out of General/Breakfast
+  if (bucket === 'breakfast') return item.cat === 'breakfast';
+  return item.cat !== 'breakfast'; // 'general'
 }
 
 // Two-letter monogram from an item name (e.g. "Bath towels, white" → "BT").

@@ -41,6 +41,7 @@ import type {
   InventoryReconciliation,
   InventoryBudget,
   InventoryBudgetSection,
+  InventoryCustomCategory,
   HandoffEntry,
   GuestRequest,
   ShiftConfirmation,
@@ -651,6 +652,7 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
     propertyId: String(r.property_id ?? ''),
     name: String(r.name ?? ''),
     category: parseUnionField(r.category, INVENTORY_CATEGORIES, 'housekeeping'),
+    customCategoryId: (r.custom_category_id as string | null) ?? null,
     currentStock: Number(r.current_stock ?? 0),
     parLevel: Number(r.par_level ?? 0),
     reorderAt: r.reorder_at == null ? undefined : Number(r.reorder_at),
@@ -676,6 +678,8 @@ export function toInventoryRow(i: Partial<InventoryItem>): Record<string, unknow
     property_id: i.propertyId,
     name: i.name,
     category: i.category,
+    // undefined → not sent (preserve). null → clear (back to built-in bucket).
+    custom_category_id: i.customCategoryId,
     current_stock: i.currentStock,
     par_level: i.parLevel,
     reorder_at: i.reorderAt,
@@ -868,6 +872,26 @@ export function toInventoryBudgetSectionRow(s: Partial<InventoryBudgetSection>):
     name: s.name,
     item_ids: s.itemIds,
     sort: s.sort,
+  });
+}
+
+// ─── Inventory custom categories (hotel-defined filter tabs, 0307) ──────────
+
+export function fromInventoryCustomCategoryRow(r: Record<string, unknown>): InventoryCustomCategory {
+  return {
+    id: String(r.id ?? ''),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    sort: Number(r.sort ?? 0),
+  };
+}
+
+export function toInventoryCustomCategoryRow(c: Partial<InventoryCustomCategory>): Record<string, unknown> {
+  return dropUndefined({
+    id: c.id,
+    property_id: c.propertyId,
+    name: c.name,
+    sort: c.sort,
   });
 }
 

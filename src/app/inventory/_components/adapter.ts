@@ -78,6 +78,7 @@ export function toDisplayItem(
     id: item.id,
     name: item.name,
     cat: item.category as InvCat,
+    customCategoryId: item.customCategoryId ?? null,
     thumb: thumbKindFor(item.name, item.category as InvCat),
     counted: item.currentStock,
     estimated: Math.max(0, Math.round(estimated)),

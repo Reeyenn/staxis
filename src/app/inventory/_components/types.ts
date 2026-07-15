@@ -12,6 +12,8 @@ export interface DisplayItem {
   id: string;
   name: string;
   cat: InvCat;
+  /** Hotel-defined custom category id (0307), or null for a built-in item. */
+  customCategoryId: string | null;
   thumb: ThumbKind;
   counted: number;          // last physical count (currentStock)
   estimated: number;        // ML/occupancy estimate as of now
