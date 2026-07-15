@@ -8,6 +8,7 @@ import React from 'react';
 import { matchInvoiceLine, type MatchCandidate } from '@/lib/inventory-match';
 import { T, fonts, type InvCat } from '../tokens';
 import { inputSm } from './form-kit';
+import { StaxisMenu, type MenuGroup } from './menu-kit';
 import type { DisplayItem } from '../types';
 import { catLabelFor, type Lang } from '../inv-i18n';
 import { ssStrings } from './scan-i18n';
@@ -68,14 +69,14 @@ export function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[])
 
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-// Receipt-style line: the item name IS the control (a borderless select —
-// tap it to fix a wrong match or make it a new item), a quantity box, and ✕
-// to drop the line. Unit cost isn't shown — the scanned cost still saves with
-// the delivery, it just isn't a decision the manager makes on this screen.
+// Receipt-style line: [⇄ full-catalog picker] [name] ………… [qty] [✕].
 //
-// The ⇄ button beside the quantity box opens the WHOLE catalog (grouped by
-// category) — the rescue for when the invoice's wording is nothing like the
-// inventory name and the matcher's shortlist missed it entirely.
+// The ⇄ button on the far left opens the WHOLE catalog (grouped by category,
+// via the custom StaxisMenu) — the rescue for when the invoice's wording is
+// nothing like the inventory name and the matcher's shortlist missed it
+// entirely. The name itself is also a menu (the matcher's shortlist + "＋ New
+// item") for the quick fix. Unit cost isn't shown — the scanned cost still
+// saves with the delivery, it just isn't a decision made on this screen.
 export function ReviewRowView({
   lang,
   row,
@@ -98,8 +99,9 @@ export function ReviewRowView({
   const ss = ssStrings(lang);
   const creating = row.decision === 'create';
   const skipped = row.decision === 'skip';
-  const selectValue = creating ? '__create__' : row.matchedItemId ?? '__create__';
   const chosen = creating ? null : row.candidates.find((c) => c.id === row.matchedItemId);
+  const warn = row.ambiguous && !creating;
+  const hasPicker = display.length > 0;
   const norm = (s: string) => s.trim().toLowerCase();
   // Echo the invoice's own wording only when it differs from the matched item
   // (that's when the manager needs it to judge the match) or when the case
@@ -109,9 +111,23 @@ export function ReviewRowView({
     row.raw.quantity_cases && row.raw.pack_size ? ss.cases(row.raw.quantity_cases, row.raw.pack_size) : null;
   const caption = [rawEcho, caseCaption].filter(Boolean).join(' · ');
 
+  const nameGroups: MenuGroup[] = [
+    {
+      options: [
+        ...row.candidates.map((c) => ({ value: c.id, label: c.name })),
+        { value: '__create__', label: ss.newItemOpt(row.raw.item_name) },
+      ],
+    },
+  ];
+  const catalogGroups: MenuGroup[] = CAT_ORDER.filter((c) => display.some((d) => d.cat === c)).map((cat) => ({
+    label: catLabelFor(lang, cat),
+    options: display.filter((d) => d.cat === cat).map((d) => ({ value: d.id, label: d.name })),
+  }));
+
   if (skipped) {
     return (
       <div style={{ ...lineShell, display: 'flex', alignItems: 'center', gap: 10 }}>
+        {hasPicker && <span style={{ width: 26, flex: 'none' }} />}
         <span
           style={{
             flex: '1 1 0',
@@ -137,46 +153,47 @@ export function ReviewRowView({
   return (
     <div style={{ ...lineShell, background: row.saved ? T.sageDim : undefined }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {hasPicker && (
+          <StaxisMenu
+            groups={catalogGroups}
+            selected={creating ? null : row.matchedItemId}
+            onPick={onDecision}
+            title={ss.pickDifferent}
+            menuWidth={280}
+            triggerStyle={pickerShell}
+            triggerLabel={<span aria-hidden style={{ fontSize: 12, color: T.ink3, lineHeight: 1 }}>⇄</span>}
+          />
+        )}
+
         <div style={{ flex: '1 1 0', minWidth: 0 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', maxWidth: '100%' }}>
             {row.saved && <span style={{ color: T.forestText, marginRight: 5, fontSize: 13 }}>✓</span>}
-            {/* The name is the control. A select sizes itself to its LONGEST
-                option, so any positioned chevron drifts away from the visible
-                text — a dotted underline is the tap affordance instead. */}
-            <select
-              value={selectValue}
-              onChange={(e) => onDecision(e.target.value)}
-              style={{
-                appearance: 'none',
-                WebkitAppearance: 'none',
-                border: 'none',
-                background: 'transparent',
-                fontFamily: fonts.sans,
-                fontSize: 15,
-                fontWeight: 600,
-                color: row.ambiguous && !creating ? T.caramel : T.ink,
-                textDecoration: 'underline',
-                textDecorationStyle: 'dotted',
-                textDecorationColor: row.ambiguous && !creating ? T.caramel : T.faint,
-                textUnderlineOffset: 4,
-                padding: 0,
-                margin: 0,
-                cursor: 'pointer',
-                maxWidth: '100%',
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-              }}
-            >
-              {row.candidates.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-              <option value="__create__">{ss.newItemOpt(row.raw.item_name)}</option>
-            </select>
+            <StaxisMenu
+              groups={nameGroups}
+              selected={creating ? '__create__' : row.matchedItemId ?? '__create__'}
+              onPick={onDecision}
+              menuWidth={280}
+              triggerStyle={nameTrigger}
+              triggerLabel={
+                <>
+                  <span
+                    style={{
+                      color: warn ? T.caramel : T.ink,
+                      textDecoration: 'underline',
+                      textDecorationStyle: 'dotted',
+                      textDecorationColor: warn ? T.caramel : T.faint,
+                      textUnderlineOffset: 4,
+                    }}
+                  >
+                    {creating ? ss.newItemOpt(row.raw.item_name) : chosen?.name ?? row.raw.item_name}
+                  </span>
+                  <span aria-hidden style={{ marginLeft: 6, fontSize: 8.5, color: T.faint }}>▾</span>
+                </>
+              }
+            />
           </span>
           {caption && <div style={captionStyle}>{caption}</div>}
-          {row.ambiguous && !creating && (
+          {warn && (
             <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.caramel, marginTop: 3 }}>{ss.twoCloseMatches}</div>
           )}
           {row.error && (
@@ -184,77 +201,33 @@ export function ReviewRowView({
           )}
           {creating && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-              <span
-                style={{
-                  fontFamily: fonts.mono,
-                  fontSize: 9.5,
-                  letterSpacing: '0.06em',
-                  textTransform: 'uppercase',
-                  color: T.ink3,
-                  fontWeight: 600,
-                }}
-              >
-                {ss.goesIn}
-              </span>
-              <select
-                value={row.newCategory}
-                onChange={(e) => onNewCategory(e.target.value as InvCat)}
-                style={{
-                  appearance: 'none',
-                  WebkitAppearance: 'none',
-                  border: 'none',
-                  background: 'transparent',
-                  fontFamily: fonts.sans,
-                  fontSize: 12,
-                  fontWeight: 500,
-                  color: T.ink2,
-                  textDecoration: 'underline',
-                  textDecorationStyle: 'dotted',
-                  textDecorationColor: T.faint,
-                  textUnderlineOffset: 3,
-                  padding: 0,
-                  cursor: 'pointer',
-                }}
-              >
-                {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((c) => (
-                  <option key={c} value={c}>
-                    {catLabelFor(lang, c)}
-                  </option>
-                ))}
-              </select>
+              <span style={goesInLabel}>{ss.goesIn}</span>
+              <StaxisMenu
+                groups={[{ options: CAT_ORDER.map((c) => ({ value: c, label: catLabelFor(lang, c) })) }]}
+                selected={row.newCategory}
+                onPick={(v) => onNewCategory(v as InvCat)}
+                menuWidth={200}
+                triggerStyle={catTrigger}
+                triggerLabel={
+                  <>
+                    <span
+                      style={{
+                        textDecoration: 'underline',
+                        textDecorationStyle: 'dotted',
+                        textDecorationColor: T.faint,
+                        textUnderlineOffset: 3,
+                      }}
+                    >
+                      {catLabelFor(lang, row.newCategory)}
+                    </span>
+                    <span aria-hidden style={{ marginLeft: 4, fontSize: 7.5, color: T.faint }}>▾</span>
+                  </>
+                }
+              />
             </div>
           )}
         </div>
 
-        {display.length > 0 && (
-          <span title={ss.pickDifferent} style={pickerShell}>
-            <span aria-hidden style={{ fontSize: 12, color: T.ink3, lineHeight: 1 }}>⇄</span>
-            {/* Invisible select stretched over the icon — tapping the button
-                opens the native full-catalog picker. value stays '' so it acts
-                as a menu, never a display. */}
-            <select
-              value=""
-              onChange={(e) => { if (e.target.value) onDecision(e.target.value); }}
-              aria-label={ss.pickDifferent}
-              style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }}
-            >
-              <option value="" disabled>
-                {ss.pickDifferent}
-              </option>
-              {CAT_ORDER.filter((c) => display.some((d) => d.cat === c)).map((cat) => (
-                <optgroup key={cat} label={catLabelFor(lang, cat)}>
-                  {display
-                    .filter((d) => d.cat === cat)
-                    .map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name}
-                      </option>
-                    ))}
-                </optgroup>
-              ))}
-            </select>
-          </span>
-        )}
         <input
           value={row.qtyInput}
           inputMode="decimal"
@@ -287,8 +260,44 @@ const captionStyle: React.CSSProperties = {
   textOverflow: 'ellipsis',
 };
 
+const nameTrigger: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  padding: 0,
+  margin: 0,
+  fontFamily: fonts.sans,
+  fontSize: 15,
+  fontWeight: 600,
+  color: T.ink,
+  cursor: 'pointer',
+  maxWidth: '100%',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  whiteSpace: 'nowrap',
+  textAlign: 'left',
+};
+
+const catTrigger: React.CSSProperties = {
+  border: 'none',
+  background: 'transparent',
+  padding: 0,
+  fontFamily: fonts.sans,
+  fontSize: 12,
+  fontWeight: 500,
+  color: T.ink2,
+  cursor: 'pointer',
+};
+
+const goesInLabel: React.CSSProperties = {
+  fontFamily: fonts.mono,
+  fontSize: 9.5,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  color: T.ink3,
+  fontWeight: 600,
+};
+
 const pickerShell: React.CSSProperties = {
-  position: 'relative',
   flex: 'none',
   width: 26,
   height: 26,
@@ -298,6 +307,8 @@ const pickerShell: React.CSSProperties = {
   border: `1px solid ${T.rule}`,
   borderRadius: 6,
   background: 'transparent',
+  padding: 0,
+  cursor: 'pointer',
 };
 
 const removeBtn: React.CSSProperties = {

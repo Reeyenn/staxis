@@ -63,6 +63,10 @@ const CSS = `
 /* Segmented control text swap. */
 .inv-seg-btn { transition: color .22s ease; }
 
+/* Staxis dropdown (menu-kit) option hover. */
+.inv-menu-opt { transition: background .12s ease; }
+.inv-menu-opt:hover { background: rgba(31,35,28,0.06); }
+
 /* Count tick — a value change gives the number a tiny settle-pop. */
 @keyframes inv-tick { 0% { transform: translateY(-6px) scale(1.12); opacity: .2; } 100% { transform: none; opacity: 1; } }
 .inv-tick { display: inline-block; animation: inv-tick .34s ${EASE.settle}; }
