@@ -20,7 +20,13 @@ import {
   type AppSection,
   type EnabledSections,
 } from '@/lib/sections/registry';
-import type { VoiceMode } from './voice-session';
+
+// VoiceMode used to live in the ElevenLabs voice-session module (removed
+// 2026-07-15 when the "Talk to Staxis" voice feature + ElevenLabs were torn
+// out). The dedicated voice surface no longer has a live entry point, but the
+// tool registry's generic surface/voiceMode plumbing is still referenced by
+// chat/walkthrough provenance logic, so the type stays here as its home.
+export type VoiceMode = 'general' | 'housekeeper_issue' | 'compliance';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 

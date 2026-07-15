@@ -15,7 +15,7 @@ import type { AppRole } from '@/lib/roles';
 import type { HotelSnapshot } from './context';
 import { formatSnapshotForPrompt } from './context';
 import { resolvePrompts } from './prompts-store';
-import type { VoiceMode } from './voice-session';
+import type { VoiceMode } from './tools';
 
 // Bump on any non-trivial edit to the constants below. The actual
 // version used at request time comes from the DB row's `version` field;

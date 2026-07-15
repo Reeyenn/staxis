@@ -100,12 +100,6 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
     if (l === 'es') return `Registrar una queja${room ? ` de la habitación ${room}` : ''}: ${quoted(a.description)}`;
     return `Log a guest complaint${room ? ` for room ${room}` : ''}: ${quoted(a.description)}`;
   },
-  createMaintenanceWorkOrder: (a, l) => {
-    const room = str(a.room_number);
-    const what = `${str(a.action)} ${str(a.item)}`.trim();
-    if (l === 'es') return `Crear orden de mantenimiento${room ? ` para la habitación ${room}` : ''}: ${what}`;
-    return `Create a maintenance ticket${room ? ` for room ${room}` : ''}: ${what}`;
-  },
   setup_compliance: (_a, l) =>
     l === 'es' ? 'Configurar el calendario de cumplimiento de la propiedad' : "Set up the property's compliance schedule",
 

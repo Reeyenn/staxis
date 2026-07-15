@@ -120,35 +120,13 @@ const ServerSchema = z.object({
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
   STRIPE_PRICE_ID: z.string().optional(),
 
-  // ── ElevenLabs ────────────────────────────────────────
-  ELEVENLABS_API_KEY: z.string().optional(),
-  ELEVENLABS_AGENT_ID: z.string().optional(),
-  ELEVENLABS_VOICE_ID: z.string().optional(),
-  ELEVENLABS_WEBHOOK_SECRET: z.string().optional(),
-
-  // ── Voice replay protection (Plan v2 M-1) ─────────────
-  // When 'true', /api/agent/voice-brain refuses any turn whose body lacks
-  // an ElevenLabs conversation_id. Default 'false' for rollout so the
-  // route keeps working if ElevenLabs ever changes which field carries
-  // the id; flip to 'true' after a week of green logs.
-  STAXIS_VOICE_REQUIRE_CONNECTION_BINDING: z.enum(['true', 'false']).optional(),
-  // Override for the voice-session idle-expiry window (ms). Optional;
-  // src/lib/agent/voice-session.ts falls back to 5 min when unset.
-  // Routed through here to satisfy scripts/check-env-access.mjs.
-  STAXIS_VOICE_SESSION_IDLE_MS: z.coerce.number().int().positive().optional(),
-  // USD per minute booked for ElevenLabs Conversational AI platform time by
-  // /api/cron/ingest-voice-costs (so the daily $ cap includes voice). Default
-  // 0.10 (src/app/api/cron/ingest-voice-costs) — a deterministic guardrail
-  // rate; tune per the actual ElevenLabs plan without a code change.
-  STAXIS_VOICE_USD_PER_MINUTE: z.coerce.number().positive().optional(),
-
   // ── AI data-retention posture stamp (Plan v2 F-AI-1) ───
   // Freeform stamp set by the operator after confirming Zero Data
-  // Retention (or equivalent data controls) in Anthropic / OpenAI /
-  // ElevenLabs dashboards. Doctor's ai_data_policy_documented check
-  // reads it and warns yellow when missing. See RUNBOOKS.md > "AI Data
-  // Retention Posture" for the confirmation steps. Typical value:
-  //   zdr-confirmed-2026-05-20-anthropic+openai+elevenlabs
+  // Retention (or equivalent data controls) in the Anthropic / OpenAI
+  // dashboards. Doctor's ai_data_policy_documented check reads it and
+  // warns yellow when missing. See RUNBOOKS.md > "AI Data Retention
+  // Posture" for the confirmation steps. Typical value:
+  //   zdr-confirmed-2026-05-20-anthropic+openai
   STAXIS_AI_DATA_POLICY: z.string().optional(),
 
   // ── CUA action policy enforce state (Plan v2.1 CR-3) ───
@@ -279,9 +257,6 @@ const ServerSchema = z.object({
     .string()
     .uuid()
     .optional(),
-
-  // ── Voice / wake word ─────────────────────────────────
-  PICOVOICE_ACCESS_KEY: z.string().optional(),
 
   // ── reCAPTCHA ─────────────────────────────────────────
   NEXT_PUBLIC_RECAPTCHA_SITE_KEY: z.string().optional(),

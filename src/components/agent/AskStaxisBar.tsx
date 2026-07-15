@@ -4,12 +4,11 @@
 // Replaces the legacy bottom-right FloatingChatButton. A calm spark pill at
 // rest (bottom-center) that wakes on hover/focus into a 540px "liquid glass"
 // bar. Conversations grow UPWARD out of the bar in place — no separate panel
-// or page. Type or use voice.
+// or page. Type, or use the mic to dictate.
 //
 // Wiring (the prototype's mock data is replaced with the real brain):
 //   • Text + streaming replies  → useAgentChat (/api/agent/command SSE)
 //   • Past chats sheet           → useAgentChat.conversations + loadConversation
-//   • Call Staxis (phone icon)   → existing VoiceModeOverlay via openVoiceMode()
 //   • Talk-to-type (mic icon)    → browser SpeechRecognition (graceful stub if
 //                                  unsupported — just shows the listening pulse)
 //
@@ -24,7 +23,6 @@ import remarkGfm from 'remark-gfm';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { useVoicePanel } from './VoicePanelContext';
 import { useAgentChat } from './useAgentChat';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { DisplayMessage } from './MessageList';
@@ -62,7 +60,6 @@ export function AskStaxisBar() {
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
   const pathname = usePathname();
-  const voicePanel = useVoicePanel();
 
   const [input, setInput] = useState('');
   const [chatState, setChatState] = useState<ChatState>('empty');
@@ -174,13 +171,6 @@ export function AskStaxisBar() {
     scrollBottomSoon();
   }, [loadConversation, clearCloseTimer, scrollBottomSoon]);
 
-  const startCall = useCallback(() => {
-    setHistoryOpen(false);
-    if (recognitionRef.current) stopDictation();
-    inputRef.current?.blur();
-    voicePanel?.openVoiceMode();   // reuse the real ElevenLabs voice surface
-  }, [voicePanel, stopDictation]);
-
   const toggleDictation = useCallback(() => {
     if (dictating) { stopDictation(); return; }
     setHistoryOpen(false);
@@ -267,13 +257,12 @@ export function AskStaxisBar() {
     historyOpen && 'asx-hist',
   ].filter(Boolean).join(' '), [idle, chatState, hasText, historyOpen]);
 
-  if (!user || !activePropertyId || !voicePanel) return null;
+  if (!user || !activePropertyId) return null;
 
-  // Keep mounted (chat state persists) but hide while the voice overlay is up,
-  // so the two bottom-center surfaces never stack. On the Concourse hub the
-  // hero Ask bar IS the idle surface — the docked capsule only appears there
-  // once a conversation is actually going.
-  const hidden = voicePanel.voiceModeOpen || (pathname === '/home' && idle && messages.length === 0);
+  // Keep mounted (chat state persists). On the Concourse hub the hero Ask bar
+  // IS the idle surface — the docked capsule only appears there once a
+  // conversation is actually going.
+  const hidden = pathname === '/home' && idle && messages.length === 0;
 
   // Typing dots show whenever we're streaming but the latest visible content
   // isn't the assistant's reply yet (initial latency or a tool call in flight).
@@ -417,14 +406,6 @@ export function AskStaxisBar() {
               <span className="asx-tip">Speak and it types for you</span>
               <Mic />
             </button>
-            <button type="button" className="asx-call" onClick={startCall} aria-label="Call Staxis">
-              <span className="asx-tip">
-                {lang === 'es' ? 'Habla con Staxis como una llamada' : 'Talk to Staxis like a phone call'}
-              </span>
-              <Phone />
-              {lang === 'es' ? 'Hablar' : 'Talk'}
-            </button>
-
             <button type="button" className="asx-send" onClick={() => submit(input)} aria-label="Send" title="Send">
               <ArrowUp />
             </button>
@@ -489,9 +470,6 @@ const ClockRewind = () => (
 );
 const Mic = () => (
   <svg viewBox="0 0 20 20" {...ICO}><rect x="7.5" y="2.5" width="5" height="9" rx="2.5" /><path d="M5 9a5 5 0 0 0 10 0M10 14v3.2M7.5 17.5h5" /></svg>
-);
-const Phone = () => (
-  <svg viewBox="0 0 20 20" {...ICO}><path d="M6.3 3.4 7.8 6 6.3 7.6a8 8 0 0 0 4.1 4.1L12 10.2l2.6 1.5c.5.3.7.9.5 1.4A3 3 0 0 1 12.2 15 9.2 9.2 0 0 1 3 5.8 3 3 0 0 1 4.9 3c.5-.2 1.1 0 1.4.4Z" /></svg>
 );
 const ArrowUp = () => (
   <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"><path d="M10 16V4.5M5 9l5-5 5 5" /></svg>
@@ -619,15 +597,6 @@ const ASX_CSS = `
   pointer-events:none;opacity:0;transition:opacity .12s;box-shadow:0 8px 20px -8px rgba(0,0,0,.4);z-index:6;font-family:inherit;}
 .asx-tip::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:#1A1F1B;}
 .asx-ico:hover .asx-tip{opacity:1;}
-/* Talk — the labeled voice pill from the Concourse handoff (push-to-talk
-   entry point → the real ElevenLabs voice surface). */
-.asx-call{position:relative;height:30px;padding:0 14px;border-radius:999px;border:none;background:var(--asx-accent);
-  color:#fff;cursor:pointer;flex-shrink:0;display:inline-flex;align-items:center;gap:6px;
-  font-size:12px;font-weight:600;font-family:inherit;transition:filter .15s;}
-.asx-call:hover{filter:brightness(1.08);}
-.asx-call:hover .asx-tip{opacity:1;}
-.asx-call svg{width:13px;height:13px;}
-.asx-dock.asx-has-text .asx-call{display:none;}
 .asx-ico.asx-dict.asx-listening{background:var(--asx-accent);color:#fff;animation:asx-micpulse 1.4s ease-in-out infinite;}
 @keyframes asx-micpulse{0%,100%{box-shadow:0 0 0 0 color-mix(in srgb,var(--asx-accent) 45%,transparent)}60%{box-shadow:0 0 0 8px transparent}}
 .asx-dock.asx-has-text .asx-ico{display:none;}

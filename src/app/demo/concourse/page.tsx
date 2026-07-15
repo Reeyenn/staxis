@@ -42,7 +42,6 @@ const SETTINGS_ROWS = [
   { en: 'Profile', es: 'Perfil', sub_en: 'Name, phone, sign-in', sub_es: 'Nombre, teléfono, acceso' },
   { en: 'Language', es: 'Idioma', sub_en: 'English, Español, Kreyòl Ayisyen, Tagalog, Tiếng Việt', sub_es: 'English, Español, Kreyòl Ayisyen, Tagalog, Tiếng Việt' },
   { en: 'Notifications & SMS', es: 'Notificaciones y SMS', sub_en: 'What Staxis texts you about', sub_es: 'Sobre qué te escribe Staxis' },
-  { en: 'Voice & wake word', es: 'Voz y palabra clave', sub_en: 'Talk settings', sub_es: 'Ajustes de voz' },
   { en: 'Sections on/off', es: 'Secciones sí/no', sub_en: 'Which departments this hotel uses', sub_es: 'Qué departamentos usa este hotel' },
 ];
 
@@ -112,9 +111,7 @@ export default function ConcourseDemoPage() {
           ask={
             <AskHeroView
               placeholder={es ? 'Pregunta o da una orden — “¿quién limpia la 204?”' : 'Ask or command — “who’s cleaning 204?”'}
-              talkLabel={es ? 'Hablar' : 'Talk'}
               onSubmit={() => { /* demo — the live app answers here */ }}
-              onTalk={() => { /* demo — the live app opens voice here */ }}
             />
           }
         />
@@ -141,7 +138,6 @@ export default function ConcourseDemoPage() {
           <div className="cx-capsule">
             <span className="cx-spark" aria-hidden>✦</span>
             <input placeholder={es ? 'Pregúntale a Staxis…' : 'Ask Staxis…'} aria-label="Ask Staxis" readOnly />
-            <button type="button" className="cx-talk"><CxIcon name="mic" size={12} />{es ? 'Hablar' : 'Talk'}</button>
           </div>
         </div>
       )}
