@@ -933,6 +933,8 @@ export function InventoryShell() {
         onClose={() => { closeOverlay(); void refreshData(); }}
         items={items}
         display={display}
+        customCategories={customCategories}
+        tabLayout={tabLayout}
       />
 
       <ReorderPanel
