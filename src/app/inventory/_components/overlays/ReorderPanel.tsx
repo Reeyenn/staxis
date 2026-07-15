@@ -4,9 +4,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import type { InventoryItem, InventoryBudget, InventoryCategory } from '@/types';
+import type {
+  InventoryItem,
+  InventoryBudget,
+  InventoryBudgetMode,
+  InventoryBudgetSection,
+} from '@/types';
 import type { DailyAverages } from '@/lib/inventory-predictions';
 import type { CartLineInput, OrderingMode } from '@/lib/ordering/types';
+import { sectionBudgetKey, type MonthSpendDetail } from '@/lib/db';
 import { apiCreateOrders, apiSendOrder } from '../ordering-api';
 
 import { T, fonts, statusColor, catColor, type InvCat } from '../tokens';
@@ -30,7 +36,12 @@ interface ReorderPanelProps {
   items: InventoryItem[];
   display: DisplayItem[];
   budgets: InventoryBudget[];
-  spendByCat: Record<string, number>;
+  /** Custom budget sections (0306) — each gets its own meter in sections mode. */
+  sections: InventoryBudgetSection[];
+  /** 'total' = one whole-inventory meter; 'sections' = per-category + custom. */
+  budgetMode: InventoryBudgetMode;
+  /** Month-to-date spend in DOLLARS (total, per category, per item). */
+  spendDetail: MonthSpendDetail;
   averages: DailyAverages | null;
   mlRateMap: Map<string, number>;
   /** Only management can place orders (owner/GM/admin). Non-managers see the
@@ -67,6 +78,7 @@ function reorderStrings(lang: Lang) {
       onboardingBanner: ' These suggestions are based on par levels, not real usage. Add a few counts so the AI can learn how fast each item moves — once it’s seen ~3 counts per item it’ll start predicting daily rates and pre-checking what’s actually low.',
       nothingToReorder: 'Nothing to reorder — every item is above par.',
       thisMonth: 'this month',
+      wholeInventory: 'Whole inventory',
       overBudget: 'over budget',
       headroom: 'headroom',
       noCap: 'no cap',
@@ -96,6 +108,7 @@ function reorderStrings(lang: Lang) {
       onboardingBanner: ' Estas sugerencias se basan en niveles par, no en uso real. Agrega algunos conteos para que la IA aprenda qué tan rápido se mueve cada artículo — tras ~3 conteos por artículo empezará a predecir tasas diarias y a preseleccionar lo que está bajo.',
       nothingToReorder: 'Nada que pedir — todos los artículos están sobre el par.',
       thisMonth: 'este mes',
+      wholeInventory: 'Todo el inventario',
       overBudget: 'sobre presupuesto',
       headroom: 'disponible',
       noCap: 'sin límite',
@@ -130,7 +143,9 @@ export function ReorderPanel({
   onClose,
   display,
   budgets,
-  spendByCat,
+  sections,
+  budgetMode,
+  spendDetail,
   averages,
   mlRateMap,
   canManage,
@@ -355,24 +370,64 @@ export function ReorderPanel({
         )}
 
         {/* Budget meters — budget vs spend dollars, money-capability only.
-            Line staff still see the reorder list below; just not the budget. */}
+            Line staff still see the reorder list below; just not the budget.
+            Follows the hotel's budget mode: one whole-inventory meter, or the
+            three categories plus each custom section (0306). */}
         {canViewFinancials && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-            {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((cat) => {
-              const monthly = budgetFor(budgets, cat as InventoryCategory);
-              const spentCents = spendByCat[cat] ?? 0;
-              return (
-                <BudgetMeter
-                  key={cat}
-                  lang={L}
-                  tt={TT}
-                  cat={cat}
-                  capDollars={monthly}
-                  spentDollars={spentCents / 100}
-                  projectedDollars={projectedByCat[cat]}
-                />
-              );
-            })}
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: budgetMode === 'total' ? '1fr' : 'repeat(3, 1fr)',
+              gap: 10,
+            }}
+          >
+            {budgetMode === 'total' ? (
+              <BudgetMeter
+                tt={TT}
+                icon={<SectionSquare />}
+                label={TT.wholeInventory}
+                color={T.ink2}
+                capDollars={budgetFor(budgets, 'total')}
+                spentDollars={spendDetail.total}
+                projectedDollars={cartTotal}
+              />
+            ) : (
+              <>
+                {(['housekeeping', 'maintenance', 'breakfast'] as InvCat[]).map((cat) => (
+                  <BudgetMeter
+                    key={cat}
+                    tt={TT}
+                    icon={<CatIcon cat={cat} size={22} />}
+                    label={catLabelFor(L, cat)}
+                    color={catColor[cat]}
+                    capDollars={budgetFor(budgets, cat)}
+                    spentDollars={spendDetail.byCat[cat] ?? 0}
+                    projectedDollars={projectedByCat[cat]}
+                  />
+                ))}
+                {sections.map((s) => {
+                  const ids = new Set(s.itemIds);
+                  const spent = s.itemIds.reduce((sum, id) => sum + (spendDetail.byItem[id] ?? 0), 0);
+                  const projected = cartItems.reduce(
+                    (sum, r) =>
+                      ids.has(r.itemId) ? sum + (state[r.itemId]?.qty || 0) * (r.display.unitCost || 0) : sum,
+                    0,
+                  );
+                  return (
+                    <BudgetMeter
+                      key={s.id}
+                      tt={TT}
+                      icon={<SectionSquare />}
+                      label={s.name}
+                      color={T.ink2}
+                      capDollars={budgetFor(budgets, sectionBudgetKey(s.id))}
+                      spentDollars={spent}
+                      projectedDollars={projected}
+                    />
+                  );
+                })}
+              </>
+            )}
           </div>
         )}
 
@@ -476,11 +531,12 @@ export function ReorderPanel({
   );
 }
 
-function budgetFor(budgets: InventoryBudget[], cat: InventoryCategory): number {
+function budgetFor(budgets: InventoryBudget[], key: string): number {
   // LOCAL month match — see month.ts for the end-of-month UTC-drift fix.
+  // `key` is a category, 'total', or 'section:<uuid>' (0306).
   const now = new Date();
   for (const b of budgets) {
-    if (b.category !== cat || !b.monthStart) continue;
+    if (b.category !== key || !b.monthStart) continue;
     if (isBudgetForLocalMonth(b.monthStart, now)) {
       return b.budgetCents / 100;
     }
@@ -488,17 +544,42 @@ function budgetFor(budgets: InventoryBudget[], cat: InventoryCategory): number {
   return 0;
 }
 
+// Neutral icon for the whole-inventory + custom-section meters (CatIcon only
+// knows the three app categories).
+function SectionSquare() {
+  return (
+    <span
+      style={{
+        width: 22,
+        height: 22,
+        borderRadius: 7,
+        background: T.ruleSoft,
+        border: `1px solid ${T.rule}`,
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flex: 'none',
+      }}
+    >
+      <span style={{ width: 7, height: 7, borderRadius: 999, background: T.ink3 }} />
+    </span>
+  );
+}
+
 function BudgetMeter({
-  lang,
   tt,
-  cat,
+  icon,
+  label,
+  color,
   capDollars,
   spentDollars,
   projectedDollars,
 }: {
-  lang: Lang;
   tt: { thisMonth: string; overBudget: string; headroom: string; noCap: string; spent: string; cap: string };
-  cat: InvCat;
+  icon: React.ReactNode;
+  label: string;
+  /** Meter fill color (category color, or a neutral for total/custom). */
+  color: string;
   capDollars: number;
   spentDollars: number;
   projectedDollars: number;
@@ -520,9 +601,9 @@ function BudgetMeter({
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        <CatIcon cat={cat} size={22} />
-        <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink, fontWeight: 600 }}>
-          {catLabelFor(lang, cat)}
+        {icon}
+        <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {label}
         </span>
         <span style={{ flex: 1 }} />
         <span
@@ -577,7 +658,7 @@ function BudgetMeter({
             top: 0,
             bottom: 0,
             width: `${spentPct * 100}%`,
-            background: catColor[cat],
+            background: color,
           }}
         />
         <span
@@ -587,7 +668,7 @@ function BudgetMeter({
             top: 0,
             bottom: 0,
             width: `${Math.max(0, projPct - spentPct) * 100}%`,
-            background: `repeating-linear-gradient(135deg, ${catColor[cat]} 0 4px, ${catColor[cat]}66 4px 8px)`,
+            background: `repeating-linear-gradient(135deg, ${color} 0 4px, ${color}66 4px 8px)`,
           }}
         />
       </span>

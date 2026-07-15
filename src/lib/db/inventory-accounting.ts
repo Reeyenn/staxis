@@ -153,10 +153,44 @@ export async function getInventoryAccountingSummary(
     .eq('month_start', monthStartISODate);
   if (budgetErr) { logErr('accounting/budgets', budgetErr); throw budgetErr; }
 
+  // 5b. The hotel's budget mode decides which rows count (0306). Switching
+  // modes deliberately preserves the other mode's rows, so reading rows
+  // without the mode would let a stale 'total' row override sections-mode
+  // caps (or vice versa) forever.
+  const { data: propRaw, error: propErr } = await client
+    .from('properties')
+    .select('inventory_budget_mode')
+    .eq('id', pid)
+    .maybeSingle();
+  if (propErr) { logErr('accounting/mode', propErr); throw propErr; }
+  const budgetMode = (propRaw as { inventory_budget_mode?: string } | null)?.inventory_budget_mode === 'total'
+    ? 'total'
+    : 'sections';
+
+  // Budget keys are open-ended since 0306: the three categories feed the
+  // per-category rows; 'total' is the whole-inventory cap; 'section:<uuid>'
+  // are custom sections. A 0-cent row means "no cap" everywhere in the app —
+  // map it to null here too so an untouched month never reports "over budget
+  // by $spend". Per-category rows only apply in sections mode.
   const budgetByCat: Partial<Record<InventoryCategory, number>> = {};
+  let totalModeCents: number | null = null;      // the 'total' row (total mode)
+  let sectionsSumCents: number | null = null;    // cats + custom sections (sections mode)
+  const catKeys: readonly string[] = ['housekeeping', 'maintenance', 'breakfast'];
   for (const b of budgetsRaw ?? []) {
-    budgetByCat[b.category as InventoryCategory] = Number(b.budget_cents ?? 0);
+    const key = String(b.category ?? '');
+    const cents = Number(b.budget_cents ?? 0);
+    if (cents <= 0) continue; // $0 = no cap, not a real budget
+    if (key === 'total') {
+      totalModeCents = cents;
+      continue;
+    }
+    // Category or custom-section row → counts toward the sections-mode sum.
+    sectionsSumCents = (sectionsSumCents ?? 0) + cents;
+    if (budgetMode === 'sections' && catKeys.includes(key)) {
+      budgetByCat[key as InventoryCategory] = cents;
+    }
   }
+  const monthBudgetCents = budgetMode === 'total' ? totalModeCents : sectionsSumCents;
 
   // 6. Aggregate by category.
   const empty = (): CategoryAccountingRow => ({
@@ -320,11 +354,9 @@ export async function getInventoryAccountingSummary(
     discardsValue: cats.reduce((s, c) => s + rows[c].discardsValue, 0),
     closingValue: cats.reduce((s, c) => s + rows[c].closingValue, 0),
     unaccountedShrinkageValue: cats.reduce((s, c) => s + rows[c].unaccountedShrinkageValue, 0),
-    budgetCents: cats.reduce<number | null>((s, c) => {
-      const b = rows[c].budgetCents;
-      if (b == null) return s;
-      return (s ?? 0) + b;
-    }, null),
+    // Mode-aware (0306): 'total' mode reads the whole-inventory row;
+    // 'sections' mode sums the categories + custom sections. Null = no budget.
+    budgetCents: monthBudgetCents,
     spendCents: cats.reduce((s, c) => s + rows[c].spendCents, 0),
     remainingCents: null as number | null,
   };

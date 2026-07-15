@@ -10,9 +10,12 @@ import {
   listInventoryCounts,
   listInventoryOrders,
   listInventoryBudgets,
-  monthToDateSpendByCategory,
+  listInventoryBudgetSections,
+  monthToDateSpendDetail,
+  sectionBudgetKey,
   addInventoryCount,
   updateInventoryItem,
+  type MonthSpendDetail,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { fetchOccupancyBundle, type OccupancyBundle } from '@/lib/inventory-estimate';
@@ -27,6 +30,8 @@ import type {
   InventoryCount,
   InventoryOrder,
   InventoryBudget,
+  InventoryBudgetMode,
+  InventoryBudgetSection,
 } from '@/types';
 
 import { T, fonts } from './tokens';
@@ -82,7 +87,7 @@ export function InventoryShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
-  const { activePropertyId } = useProperty();
+  const { activePropertyId, activeProperty } = useProperty();
   const { lang } = useLang();
   const L = invLang(lang);
   const tx = t(L);
@@ -115,7 +120,24 @@ export function InventoryShell() {
   const [counts, setCounts] = useState<InventoryCount[]>([]);
   const [orders, setOrders] = useState<InventoryOrder[]>([]);
   const [budgets, setBudgets] = useState<InventoryBudget[]>([]);
-  const [spendByCat, setSpendByCat] = useState<Record<string, number>>({});
+  const [budgetSections, setBudgetSections] = useState<InventoryBudgetSection[]>([]);
+  // How this hotel budgets (0306): one total number vs per-section. Seeded
+  // from the property record; BudgetsPanel reports changes back via onChanged.
+  const [budgetMode, setBudgetMode] = useState<InventoryBudgetMode>(
+    activeProperty?.inventoryBudgetMode ?? 'sections',
+  );
+  const [spendDetail, setSpendDetail] = useState<MonthSpendDetail>({
+    byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
+    byItem: {},
+    total: 0,
+  });
+  // The property record hydrates after mount — pick up its stored mode when it
+  // lands (and on property switch). Post-save the context stays quiet, so this
+  // never clobbers a mode the panel just wrote.
+  const storedMode = activeProperty?.inventoryBudgetMode;
+  useEffect(() => {
+    if (storedMode) setBudgetMode(storedMode);
+  }, [storedMode]);
   const [bucket, setBucket] = useState<StockBucket>('all');
   const [query, setQuery] = useState('');
   // In-flight quick counts from the ledger's −/+ steppers, keyed by item id.
@@ -160,7 +182,7 @@ export function InventoryShell() {
     // the UTC one (which flips hours early in US timezones).
     const monthStart = startOfLocalMonth(new Date());
     const monthEnd = addLocalMonths(new Date(), 1);
-    const [occ, avg, ct, od, bd, spend] = await Promise.all([
+    const [occ, avg, ct, od, bd, sec, spend] = await Promise.all([
       fetchOccupancyBundle(pid, daysAgo(14)),
       fetchDailyAverages(pid, 14),
       listInventoryCounts(uid, pid, 200),
@@ -171,10 +193,17 @@ export function InventoryShell() {
         ? listInventoryBudgets(uid, pid)
         : Promise.resolve([] as InventoryBudget[]),
       canViewFinancials
-        ? monthToDateSpendByCategory(uid, pid, monthStart, monthEnd)
-        : Promise.resolve({} as Record<string, number>),
+        ? listInventoryBudgetSections(uid, pid)
+        : Promise.resolve([] as InventoryBudgetSection[]),
+      canViewFinancials
+        ? monthToDateSpendDetail(uid, pid, monthStart, monthEnd)
+        : Promise.resolve({
+            byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
+            byItem: {},
+            total: 0,
+          } as MonthSpendDetail),
     ]);
-    return { occ, avg, ct, od, bd, spend };
+    return { occ, avg, ct, od, bd, sec, spend };
   }, [canViewFinancials]);
 
   const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
@@ -183,7 +212,8 @@ export function InventoryShell() {
     setCounts(d.ct);
     setOrders(d.od);
     setBudgets(d.bd);
-    setSpendByCat(d.spend as Record<string, number>);
+    setBudgetSections(d.sec);
+    setSpendDetail(d.spend);
   }, []);
 
   useEffect(() => {
@@ -298,24 +328,32 @@ export function InventoryShell() {
     return orders.length + countEvents.size;
   }, [counts, orders]);
 
-  const totalSpent = useMemo(
-    () => Object.values(spendByCat).reduce((s, n) => s + (n || 0), 0) / 100,
-    [spendByCat],
-  );
+  // Whole-inventory spend this month, in dollars. (inventory_orders costs are
+  // stored as dollars — the old sum here divided by 100 again and showed ~1%
+  // of true spend on the month strip. Fixed with the 0306 budgets rebuild.)
+  const totalSpent = spendDetail.total;
 
-  // Sum the active month's budget caps (use the cap relevant for today's
-  // LOCAL month — see month.ts for the UTC-drift fix).
+  // The active month's cap (today's LOCAL month — see month.ts for the
+  // UTC-drift fix), respecting the hotel's budget mode: 'total' reads the one
+  // whole-inventory row; 'sections' sums the three categories plus custom
+  // sections that still exist (stale section keys are ignored).
   const totalCap = useMemo(() => {
     const now = new Date();
+    const liveKeys = new Set<string>([
+      'housekeeping', 'maintenance', 'breakfast',
+      ...budgetSections.map((s) => sectionBudgetKey(s.id)),
+    ]);
     let sum = 0;
     for (const b of budgets) {
-      if (!b.monthStart) continue;
-      if (isBudgetForLocalMonth(b.monthStart, now)) {
+      if (!b.monthStart || !isBudgetForLocalMonth(b.monthStart, now)) continue;
+      if (budgetMode === 'total') {
+        if (b.category === 'total') sum += b.budgetCents / 100;
+      } else if (liveKeys.has(b.category)) {
         sum += b.budgetCents / 100;
       }
     }
     return sum;
-  }, [budgets]);
+  }, [budgets, budgetSections, budgetMode]);
 
   // ── Handlers ───────────────────────────────────────────────────────
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
@@ -728,7 +766,9 @@ export function InventoryShell() {
         items={items}
         display={display}
         budgets={budgets}
-        spendByCat={spendByCat}
+        sections={budgetSections}
+        budgetMode={budgetMode}
+        spendDetail={spendDetail}
         averages={averages}
         mlRateMap={EMPTY_ML_RATES}
         canManage={canManage}
@@ -774,6 +814,10 @@ export function InventoryShell() {
         open={overlay === 'budgets' && canViewFinancials}
         onClose={() => { closeOverlay(); void refreshData(); }}
         budgets={budgets}
+        sections={budgetSections}
+        mode={budgetMode}
+        display={display}
+        onChanged={(m) => { if (m) setBudgetMode(m); void refreshData(); }}
       />
 
       <AiReportSheet

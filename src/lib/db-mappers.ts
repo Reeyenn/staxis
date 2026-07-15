@@ -40,6 +40,7 @@ import type {
   InventoryDiscard,
   InventoryReconciliation,
   InventoryBudget,
+  InventoryBudgetSection,
   HandoffEntry,
   GuestRequest,
   ShiftConfirmation,
@@ -190,6 +191,7 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     pms_connected: p.pmsConnected,
     last_synced_at: toISO(p.lastSyncedAt),
     alert_phone: p.alertPhone,
+    inventory_budget_mode: p.inventoryBudgetMode,
   });
 }
 
@@ -240,6 +242,9 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     // existing hotels (no stored value) show all 8 sections. Parsed defensively
     // (object OR JSON-string) via the shared normalizer.
     enabledSections: normalizeSectionFlags(r.enabled_sections),
+    // How this hotel budgets inventory (0306). Missing/unknown ⇒ 'sections',
+    // the pre-0306 behavior.
+    inventoryBudgetMode: r.inventory_budget_mode === 'total' ? 'total' : 'sections',
     createdAt: toDate(r.created_at) ?? new Date(),
   };
 }
@@ -829,17 +834,41 @@ export function toInventoryReconciliationRow(r: Partial<InventoryReconciliation>
   });
 }
 
-// ─── Inventory budget (per-property × category × month) ─────────────────────
+// ─── Inventory budget (per-property × budget key × month) ────────────────────
 
 export function fromInventoryBudgetRow(r: Record<string, unknown>): InventoryBudget {
   return {
     propertyId: String(r.property_id ?? ''),
-    category: parseUnionField(r.category, INVENTORY_CATEGORIES, 'housekeeping'),
+    // Budget keys are open-ended since 0306 ('total', 'section:<uuid>') — do
+    // NOT union-coerce here or custom keys silently become 'housekeeping'.
+    category: String(r.category ?? 'housekeeping'),
     monthStart: toDate(r.month_start),
     budgetCents: Number(r.budget_cents ?? 0),
     notes: parseStringField(r.notes),
     updatedAt: toDate(r.updated_at),
   };
+}
+
+// ─── Inventory budget sections (custom hotel sections, 0306) ────────────────
+
+export function fromInventoryBudgetSectionRow(r: Record<string, unknown>): InventoryBudgetSection {
+  return {
+    id: String(r.id ?? ''),
+    propertyId: String(r.property_id ?? ''),
+    name: String(r.name ?? ''),
+    itemIds: Array.isArray(r.item_ids) ? r.item_ids.map(String) : [],
+    sort: Number(r.sort ?? 0),
+  };
+}
+
+export function toInventoryBudgetSectionRow(s: Partial<InventoryBudgetSection>): Record<string, unknown> {
+  return dropUndefined({
+    id: s.id,
+    property_id: s.propertyId,
+    name: s.name,
+    item_ids: s.itemIds,
+    sort: s.sort,
+  });
 }
 
 export function toInventoryBudgetRow(b: Partial<InventoryBudget>): Record<string, unknown> {

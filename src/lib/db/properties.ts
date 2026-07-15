@@ -18,7 +18,7 @@ export const PROPERTY_COLS =
   'prep_minutes_per_activity, shift_minutes, total_staff_on_roster, ' +
   'weekly_budget, morning_briefing_time, evening_forecast_time, ' +
   'pms_type, pms_url, pms_connected, last_synced_at, alert_phone, ' +
-  'room_inventory, onboarding_completed_at, onboarding_state, enabled_sections, is_test, created_at';
+  'room_inventory, onboarding_completed_at, onboarding_state, enabled_sections, inventory_budget_mode, is_test, created_at';
 
 export async function getProperties(_uid: string): Promise<Property[]> {
   const { data, error } = await supabase.from('properties').select(PROPERTY_COLS);

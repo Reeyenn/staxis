@@ -75,8 +75,17 @@ export interface Property {
    * @/lib/sections/registry.
    */
   enabledSections?: EnabledSections;
+  /**
+   * How this hotel budgets inventory (properties.inventory_budget_mode):
+   * 'total' = one whole-inventory number per month; 'sections' (default) =
+   * per-category rows plus custom section:<uuid> rows. Set from the
+   * inventory Budgets panel.
+   */
+  inventoryBudgetMode?: InventoryBudgetMode;
   createdAt: Date;
 }
+
+export type InventoryBudgetMode = 'total' | 'sections';
 
 // ─── Staff ─────────────────────────────────────────────────────────────────
 
@@ -323,15 +332,32 @@ export interface InventoryReconciliation {
   notes?: string;
 }
 
-// One row per (property, category, month). Drives the budget headroom badge
+// One row per (property, budget key, month). Drives the budget headroom badge
 // on the Smart Reorder List and the Budget vs Actual block in the accounting view.
 export interface InventoryBudget {
   propertyId: string;
-  category: InventoryCategory;
+  /**
+   * Budget key: one of the three InventoryCategory values, 'total' (the
+   * whole-inventory cap when the hotel budgets one number), or
+   * 'section:<uuid>' pointing at inventory_budget_sections (custom hotel
+   * sections). Migration 0306.
+   */
+  category: string;
   monthStart: Date | null;       // first day of the budget month (always normalised to UTC midnight)
   budgetCents: number;
   notes?: string;
   updatedAt: Date | null;
+}
+
+// A hotel-defined budget section ("Pool supplies"): a name plus the inventory
+// item ids whose orders count toward its spend. Budget dollars live in
+// inventory_budgets keyed 'section:<id>'.
+export interface InventoryBudgetSection {
+  id: string;
+  propertyId: string;
+  name: string;
+  itemIds: string[];
+  sort: number;
 }
 
 // ─── Shift Handoff Log ─────────────────────────────────────────────────────
