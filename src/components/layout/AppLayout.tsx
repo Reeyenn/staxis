@@ -60,10 +60,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <div style={{
+    <div className="staxis-app-shell" style={{
       minHeight: '100vh', display: 'flex', flexDirection: 'column',
       // Concourse shell — the soft top-lit page wash every screen sits on.
-      background: 'radial-gradient(ellipse 1000px 500px at 50% 0%, #FFFFFF 0%, #F5F7F4 100%)',
+      background: 'var(--staxis-app-background, radial-gradient(ellipse 1000px 500px at 50% 0%, #FFFFFF 0%, #F5F7F4 100%))',
     }}>
       <ConcourseBar />
       <ActivityTracker />
@@ -136,8 +136,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           children
         )}
       </main>
-      <FeedbackButton />
-      <AiActivityButton />
+      <div className="staxis-feedback-slot"><FeedbackButton /></div>
+      <div className="staxis-ai-activity-slot"><AiActivityButton /></div>
       <AskStaxisBar />
     </div>
   );
