@@ -42,7 +42,6 @@ const APP = join(REPO, 'src', 'app');
 const KNOWN_GUARDS = [
   // From src/lib/api-auth.ts
   'requireSession',
-  'requireSessionOrCron',
   'requireCronSecret',
   'requireHeartbeatSecret',
   'userHasPropertyAccess',

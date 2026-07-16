@@ -29,11 +29,6 @@ export function todayStr(tz: string = APP_TIMEZONE): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(new Date());
 }
 
-export function yesterdayStr(tz: string = APP_TIMEZONE): string {
-  const d = new Date(Date.now() - 24 * 60 * 60 * 1000);
-  return new Intl.DateTimeFormat('en-CA', { timeZone: tz }).format(d);
-}
-
 /**
  * Generate an ID for use as a primary key on a Supabase/Postgres `uuid`
  * column. Used by client-side seeding paths (PropertyContext default
@@ -54,57 +49,6 @@ export function generateId(): string {
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
     return v.toString(16);
   });
-}
-
-/**
- * Formats a number as USD. Single source of truth — every page used to
- * carry its own copy with slightly different conventions (some showed
- * cents, some didn't, some returned '—' for null, some returned '$0').
- *
- * Modes:
- *   - default:        $1,234       (whole-dollar, with thousands separator)
- *   - short=true:     $1.2k        (compact for chart axes / hero stats)
- *
- * Null-safety: returns '$0' rather than throwing or '—', so the hero
- * stat strings stay aligned. Pages that need a literal '—' for null
- * should test the input themselves before calling.
- */
-export function formatCurrency(n: number | null | undefined, short = false): string {
-  if (n == null || isNaN(n)) return '$0';
-  if (short && Math.abs(n) >= 1000) {
-    const sign = n < 0 ? '-' : '';
-    return `${sign}$${(Math.abs(n) / 1000).toFixed(1)}k`;
-  }
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(n);
-}
-
-export function formatPercent(n: number): string {
-  return `${Math.round(n)}%`;
-}
-
-export const FLOOR_LABELS: Record<string, string> = {
-  '1': 'Floor 1',
-  '2': 'Floor 2',
-  '3': 'Floor 3',
-  '4': 'Floor 4',
-  'exterior': 'Exterior',
-};
-
-export const FLOOR_LABELS_ES: Record<string, string> = {
-  '1': 'Piso 1',
-  '2': 'Piso 2',
-  '3': 'Piso 3',
-  '4': 'Piso 4',
-  'exterior': 'Exterior',
-};
-
-export function getFloorLabel(floor: string, lang: 'en' | 'es' = 'en'): string {
-  return lang === 'es' ? FLOOR_LABELS_ES[floor] ?? floor : FLOOR_LABELS[floor] ?? floor;
 }
 
 /**
