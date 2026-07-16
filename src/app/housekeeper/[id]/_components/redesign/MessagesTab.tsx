@@ -70,6 +70,15 @@ async function hkPost<T>(url: string, body: unknown): Promise<T | null> {
   }
 }
 
+function mapMessages(messages: MessageDTO[]): Msg[] {
+  return messages.map((m) => ({
+    from: m.senderName,
+    text: m.body,
+    time: fmtTime(m.createdAt),
+    mine: m.mine,
+  }));
+}
+
 function mapConv(c: ConversationDTO): Conv {
   const kind: ConvKind = c.kind === 'channel' ? 'group' : c.kind;
   return {
@@ -145,14 +154,7 @@ export function MessagesTab({
         { pid, staffId, conversationId: id },
       );
       if (data?.messages) {
-        setMessages(
-          data.messages.map((m) => ({
-            from: m.senderName,
-            text: m.body,
-            time: fmtTime(m.createdAt),
-            mine: m.mine,
-          })),
-        );
+        setMessages(mapMessages(data.messages));
       }
       // Clear unread locally + on the server.
       setInbox((prev) =>
@@ -186,14 +188,7 @@ export function MessagesTab({
           { pid, staffId, conversationId: activeId },
         );
         if (data?.messages) {
-          setMessages(
-            data.messages.map((m) => ({
-              from: m.senderName,
-              text: m.body,
-              time: fmtTime(m.createdAt),
-              mine: m.mine,
-            })),
-          );
+          setMessages(mapMessages(data.messages));
         }
       }
     },

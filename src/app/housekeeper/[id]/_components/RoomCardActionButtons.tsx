@@ -3,6 +3,14 @@
 import React, { useState } from 'react';
 import { Eye, NotebookPen, X } from 'lucide-react';
 import { t, type HousekeeperLocale } from '@/lib/translations';
+import {
+  smallBtnStyle,
+  smallBtnLabelStyle,
+  overlayStyle,
+  dialogStyle,
+  closeBtnStyle,
+  primaryBtnStyle,
+} from './dialog-styles';
 
 /**
  * Two small per-room action buttons that the housekeeper can tap from
@@ -188,67 +196,6 @@ export function MarkForInspectionButton(props: CommonProps & { markedAt: string 
     </button>
   );
 }
-
-const smallBtnStyle: React.CSSProperties = {
-  minHeight: 36,
-  padding: '6px 10px',
-  border: '1px solid #E5E7EB',
-  borderRadius: 8,
-  background: 'transparent',
-  cursor: 'pointer',
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 5,
-  WebkitTapHighlightColor: 'transparent',
-};
-
-const smallBtnLabelStyle: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 700,
-  color: '#4B5563',
-  whiteSpace: 'nowrap',
-};
-
-const overlayStyle: React.CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'rgba(15,23,42,0.55)',
-  zIndex: 200,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  padding: 16,
-};
-
-const dialogStyle: React.CSSProperties = {
-  width: '100%',
-  maxWidth: 420,
-  background: 'white',
-  borderRadius: 20,
-  padding: 22,
-};
-
-const closeBtnStyle: React.CSSProperties = {
-  minHeight: 36,
-  minWidth: 36,
-  border: 'none',
-  background: 'transparent',
-  cursor: 'pointer',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-};
-
-const primaryBtnStyle: React.CSSProperties = {
-  flex: 1,
-  height: 48,
-  border: 'none',
-  borderRadius: 10,
-  color: 'white',
-  fontSize: 15,
-  fontWeight: 700,
-  cursor: 'pointer',
-};
 
 const secondaryBtnStyle: React.CSSProperties = {
   flex: 1,
