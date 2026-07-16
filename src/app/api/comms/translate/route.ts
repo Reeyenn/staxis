@@ -8,10 +8,10 @@
  * rule — never a hashed pid:user composite (the fail-closed FK trap). Cached,
  * billing-impacting. Client degrades to source text on any failure/429.
  */
-import type { NextRequest } from 'next/server';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { ApiErrorCode } from '@/lib/api-response';
 import { validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
+import { defineRoute } from '@/lib/api-route';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { translateUiStrings } from '@/lib/comms/translate';
 import type { CommsLang } from '@/lib/comms/types';
@@ -22,36 +22,34 @@ export const maxDuration = 30;
 
 const LANGS = ['en', 'es', 'ht', 'tl', 'vi'] as const;
 
-export async function POST(req: NextRequest): Promise<Response> {
-  let body: { pid?: string; texts?: unknown; target?: string };
-  try { body = await req.json(); } catch { body = {}; }
+export const POST = defineRoute({
+  body: 'empty',
+  resolve: (req, body: { pid?: string; texts?: unknown; target?: string }) => commsContext(req, body.pid ?? null),
+  handler: async (ctx) => {
+    const targetV = validateEnum(ctx.body.target, LANGS, 'target');
+    if (targetV.error) {
+      return ctx.err(targetV.error, { status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    if (!Array.isArray(ctx.body.texts)) {
+      return ctx.err('texts must be an array', { status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    const texts = (ctx.body.texts as unknown[])
+      .filter((t): t is string => typeof t === 'string')
+      .map((t) => t.slice(0, 2000))
+      .slice(0, 300);
 
-  const ctx = await commsContext(req, body.pid ?? null);
-  if (!ctx.ok) return ctx.response;
+    if (targetV.value === 'en' || texts.length === 0) {
+      // No-op for English / empty — echo back.
+      const echo: Record<string, string> = {};
+      for (const t of texts) echo[t] = t;
+      return ctx.ok({ translations: echo });
+    }
 
-  const targetV = validateEnum(body.target, LANGS, 'target');
-  if (targetV.error) {
-    return err(targetV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
-  }
-  if (!Array.isArray(body.texts)) {
-    return err('texts must be an array', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
-  }
-  const texts = (body.texts as unknown[])
-    .filter((t): t is string => typeof t === 'string')
-    .map((t) => t.slice(0, 2000))
-    .slice(0, 300);
+    // RAW pid (AI-endpoint rule).
+    const rl = await checkAndIncrementRateLimit('comms-translate', ctx.pid);
+    if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  if (targetV.value === 'en' || texts.length === 0) {
-    // No-op for English / empty — echo back.
-    const echo: Record<string, string> = {};
-    for (const t of texts) echo[t] = t;
-    return ok({ translations: echo }, { requestId: ctx.requestId, headers: ctx.headers });
-  }
-
-  // RAW pid (AI-endpoint rule).
-  const rl = await checkAndIncrementRateLimit('comms-translate', ctx.pid);
-  if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
-
-  const translations = await translateUiStrings(texts, targetV.value as CommsLang);
-  return ok({ translations }, { requestId: ctx.requestId, headers: ctx.headers });
-}
+    const translations = await translateUiStrings(texts, targetV.value as CommsLang);
+    return ctx.ok({ translations });
+  },
+});

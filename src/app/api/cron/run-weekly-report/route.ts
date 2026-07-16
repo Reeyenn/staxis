@@ -19,11 +19,10 @@
  * Auth: CRON_SECRET bearer.
  */
 
-import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireCronSecret } from '@/lib/api-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId, log } from '@/lib/log';
+import { defineRoute, cronGate } from '@/lib/api-route';
+import { ApiErrorCode } from '@/lib/api-response';
+import { log } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { captureException } from '@/lib/sentry';
 import { buildWeeklyReport, resolveRecipients, sendWeeklyReportEmail } from '@/lib/reports';
@@ -312,59 +311,58 @@ async function processProperty(args: {
   };
 }
 
-export async function GET(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-  const cronGate = requireCronSecret(req);
-  if (cronGate) return cronGate;
+export const GET = defineRoute({
+  resolve: (req) => cronGate(req),
+  handler: async (ctx) => {
+    const url = new URL(ctx.req.url);
+    const forcePropertyId = url.searchParams.get('property_id');
+    const forceForReport = url.searchParams.get('date');
 
-  const url = new URL(req.url);
-  const forcePropertyId = url.searchParams.get('property_id');
-  const forceForReport = url.searchParams.get('date');
+    try {
+      const properties = await listProperties();
+      const now = new Date();
 
-  try {
-    const properties = await listProperties();
-    const now = new Date();
+      const filteredProps = forcePropertyId
+        ? properties.filter(p => p.id === forcePropertyId)
+        : properties;
 
-    const filteredProps = forcePropertyId
-      ? properties.filter(p => p.id === forcePropertyId)
-      : properties;
-
-    const results: PropertyResult[] = [];
-    for (const property of filteredProps) {
-      try {
-        const result = await processProperty({ property, now, forceForReport, forcePropertyId });
-        results.push(result);
-      } catch (e) {
-        log.error('[cron/run-weekly-report] property errored', { propertyId: property.id, err: e });
-        captureException(e, { subsystem: 'cron-run-weekly-report', propertyId: property.id });
-        results.push({
-          propertyId: property.id,
-          status: 'failed',
-          detail: e instanceof Error ? e.message : String(e),
-        });
+      const results: PropertyResult[] = [];
+      for (const property of filteredProps) {
+        try {
+          const result = await processProperty({ property, now, forceForReport, forcePropertyId });
+          results.push(result);
+        } catch (e) {
+          log.error('[cron/run-weekly-report] property errored', { propertyId: property.id, err: e });
+          captureException(e, { subsystem: 'cron-run-weekly-report', propertyId: property.id });
+          results.push({
+            propertyId: property.id,
+            status: 'failed',
+            detail: e instanceof Error ? e.message : String(e),
+          });
+        }
       }
+
+      const anyFailed = results.some(r => r.status === 'failed');
+      const anySent = results.some(r => r.status === 'sent');
+
+      await writeCronHeartbeat('run-weekly-report', {
+        requestId: ctx.requestId,
+        notes: {
+          propertiesChecked: filteredProps.length,
+          sentCount: results.filter(r => r.status === 'sent').reduce((a, r) => a + (r.sentCount ?? 0), 0),
+          failedCount: results.filter(r => r.status === 'sent').reduce((a, r) => a + (r.failedCount ?? 0), 0),
+          skippedNotSunday: results.filter(r => r.status === 'skipped_not_sunday').length,
+          skippedNotInWindow: results.filter(r => r.status === 'skipped_not_in_window').length,
+          skippedAlreadySent: results.filter(r => r.status === 'skipped_already_sent').length,
+        },
+        status: anyFailed ? 'degraded' : 'ok',
+      });
+
+      return ctx.ok({ results, anyFailed, anySent });
+    } catch (e) {
+      return ctx.err(`weekly report cron failed: ${e instanceof Error ? e.message : String(e)}`, {
+        status: 500, code: ApiErrorCode.InternalError,
+      });
     }
-
-    const anyFailed = results.some(r => r.status === 'failed');
-    const anySent = results.some(r => r.status === 'sent');
-
-    await writeCronHeartbeat('run-weekly-report', {
-      requestId,
-      notes: {
-        propertiesChecked: filteredProps.length,
-        sentCount: results.filter(r => r.status === 'sent').reduce((a, r) => a + (r.sentCount ?? 0), 0),
-        failedCount: results.filter(r => r.status === 'sent').reduce((a, r) => a + (r.failedCount ?? 0), 0),
-        skippedNotSunday: results.filter(r => r.status === 'skipped_not_sunday').length,
-        skippedNotInWindow: results.filter(r => r.status === 'skipped_not_in_window').length,
-        skippedAlreadySent: results.filter(r => r.status === 'skipped_already_sent').length,
-      },
-      status: anyFailed ? 'degraded' : 'ok',
-    });
-
-    return ok({ results, anyFailed, anySent }, { requestId });
-  } catch (e) {
-    return err(`weekly report cron failed: ${e instanceof Error ? e.message : String(e)}`, {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-}
+  },
+});
