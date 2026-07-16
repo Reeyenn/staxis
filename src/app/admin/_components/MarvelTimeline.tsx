@@ -512,66 +512,27 @@ export function MarvelTimeline({
     const sessionIdToBranch = new Map<string, string | null>();
     for (const s of activeSessions ?? []) sessionIdToBranch.set(s.session_id, s.branch);
 
+    // Local emitter — every toast shares the `t-<ts>-<suffix>` id shape,
+    // the same 10s lifetime, and the success/failure kinds. Factoring it
+    // keeps each transition below a single, readable line.
+    const emit = (suffix: string, kind: Toast['kind'], message: string, extra: Partial<Toast> = {}) =>
+      newToasts.push({ id: `t-${Date.now()}-${suffix}`, kind, message, expiresAt: Date.now() + 10000, ...extra });
+
     if (prev.initialized) {
       // Vercel deploy completed.
       if (prev.deployVercelInProgress && !vercelInProgress) {
-        if (vercelFailed) {
-          newToasts.push({
-            id: `t-${Date.now()}-vercel-fail`,
-            kind: 'failure',
-            message: 'VERCEL DEPLOY FAILED',
-            url: vercel?.url ?? null,
-            expiresAt: Date.now() + 10000,
-          });
-        } else {
-          newToasts.push({
-            id: `t-${Date.now()}-vercel-ok`,
-            kind: 'success',
-            message: 'VERCEL DEPLOYED',
-            url: vercel?.url ?? null,
-            expiresAt: Date.now() + 10000,
-          });
-        }
+        emit(vercelFailed ? 'vercel-fail' : 'vercel-ok', vercelFailed ? 'failure' : 'success',
+          vercelFailed ? 'VERCEL DEPLOY FAILED' : 'VERCEL DEPLOYED', { url: vercel?.url ?? null });
       }
       // Fly deploy completed.
       if (prev.deployFlyInProgress && !flyInProgress) {
-        if (flyFailed) {
-          newToasts.push({
-            id: `t-${Date.now()}-fly-fail`,
-            kind: 'failure',
-            message: 'CUA DEPLOY FAILED',
-            url: fly?.url ?? null,
-            expiresAt: Date.now() + 10000,
-          });
-        } else {
-          newToasts.push({
-            id: `t-${Date.now()}-fly-ok`,
-            kind: 'success',
-            message: 'CUA DEPLOYED',
-            url: fly?.url ?? null,
-            expiresAt: Date.now() + 10000,
-          });
-        }
+        emit(flyFailed ? 'fly-fail' : 'fly-ok', flyFailed ? 'failure' : 'success',
+          flyFailed ? 'CUA DEPLOY FAILED' : 'CUA DEPLOYED', { url: fly?.url ?? null });
       }
       // CI transitioned out of pending.
       if (prev.latestCheckStatus === 'pending' && latestCheck && latestCheck !== 'pending') {
-        if (latestCheck === 'failed') {
-          newToasts.push({
-            id: `t-${Date.now()}-ci-fail`,
-            kind: 'failure',
-            message: 'CI FAILED',
-            url: commits[0]?.url ?? null,
-            expiresAt: Date.now() + 10000,
-          });
-        } else if (latestCheck === 'passed') {
-          newToasts.push({
-            id: `t-${Date.now()}-ci-ok`,
-            kind: 'success',
-            message: 'CI PASSED',
-            url: commits[0]?.url ?? null,
-            expiresAt: Date.now() + 10000,
-          });
-        }
+        if (latestCheck === 'failed') emit('ci-fail', 'failure', 'CI FAILED', { url: commits[0]?.url ?? null });
+        else if (latestCheck === 'passed') emit('ci-ok', 'success', 'CI PASSED', { url: commits[0]?.url ?? null });
       }
       // New push events. Strip the "claude/" prefix from branch
       // labels so toasts read "PUSHED FOO" instead of the verbose
@@ -583,25 +544,15 @@ export function MarvelTimeline({
       for (const key of pushKeys) {
         if (!prev.pushKeys.has(key)) {
           const [branch] = key.split('@');
-          newToasts.push({
-            id: `t-${Date.now()}-push-${branch}`,
-            kind: 'success',
-            message: `PUSHED ${trimBranch(branch).toUpperCase()}`,
-            branch,
-            expiresAt: Date.now() + 10000,
-          });
+          emit(`push-${branch}`, 'success', `PUSHED ${trimBranch(branch).toUpperCase()}`, { branch });
         }
       }
       // Sessions that ended.
       for (const [sid, branch] of prev.sessionIdToBranch.entries()) {
         if (!sessionIdToBranch.has(sid)) {
-          newToasts.push({
-            id: `t-${Date.now()}-stop-${sid}`,
-            kind: 'success',
-            message: branch ? `SESSION DONE: ${trimBranch(branch).toUpperCase()}` : 'SESSION DONE',
-            branch: branch ?? null,
-            expiresAt: Date.now() + 10000,
-          });
+          emit(`stop-${sid}`, 'success',
+            branch ? `SESSION DONE: ${trimBranch(branch).toUpperCase()}` : 'SESSION DONE',
+            { branch: branch ?? null });
         }
       }
     }
@@ -693,14 +644,6 @@ export function MarvelTimeline({
   // tool indicator off-canvas. Cap at 22 chars + ellipsis.
   const fmtBranch = (name: string): string =>
     name.length > 22 ? `${name.slice(0, 20)}…` : name;
-
-  // Stable color per session_id so two Claudes on the same branch get
-  // different-colored indicator dots. djb2-style hash → palette index.
-  const sessionColor = (id: string): string => {
-    let h = 5381;
-    for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) | 0;
-    return ACTIVE_PALETTE[Math.abs(h) % ACTIVE_PALETTE.length];
-  };
 
   // Tooltip-friendly multi-line summary of the sessions on a branch.
   // Goes into an SVG <title> so the browser shows it on hover. Format:
@@ -957,26 +900,22 @@ export function MarvelTimeline({
         } else if (latestCheckStatus === 'pending') {
           specs.push({ key: 'ci-pending', label: 'CI RUNNING', bg: 'rgba(217, 119, 6, 0.78)', scope: 'main' });
         }
-        if (deployVercel?.failed) {
-          specs.push({
-            key: 'vercel-failed',
-            label: `VERCEL DEPLOY FAILED${deployVercel.startedAt ? ` · ${timeAgo(deployVercel.startedAt)}` : ''}`,
-            bg: 'rgba(220, 38, 38, 0.92)',
-            scope: 'global',
-          });
-        } else if (deployVercel?.inProgress) {
-          specs.push({ key: 'vercel-deploying', label: 'VERCEL DEPLOYING', bg: 'rgba(34, 211, 238, 0.78)', scope: 'global' });
-        }
-        if (deployFly?.failed) {
-          specs.push({
-            key: 'fly-failed',
-            label: `CUA DEPLOY FAILED${deployFly.startedAt ? ` · ${timeAgo(deployFly.startedAt)}` : ''}`,
-            bg: 'rgba(220, 38, 38, 0.92)',
-            scope: 'global',
-          });
-        } else if (deployFly?.inProgress) {
-          specs.push({ key: 'fly-deploying', label: 'CUA DEPLOYING', bg: 'rgba(196, 181, 253, 0.78)', scope: 'global' });
-        }
+        // Vercel + Fly deploys share the same failed/in-progress shape —
+        // only the key prefix, display name, and "deploying" color differ.
+        const pushDeploySpec = (d: Deploy | undefined, key: string, name: string, deployingBg: string) => {
+          if (d?.failed) {
+            specs.push({
+              key: `${key}-failed`,
+              label: `${name} DEPLOY FAILED${d.startedAt ? ` · ${timeAgo(d.startedAt)}` : ''}`,
+              bg: 'rgba(220, 38, 38, 0.92)',
+              scope: 'global',
+            });
+          } else if (d?.inProgress) {
+            specs.push({ key: `${key}-deploying`, label: `${name} DEPLOYING`, bg: deployingBg, scope: 'global' });
+          }
+        };
+        pushDeploySpec(deployVercel, 'vercel', 'VERCEL', 'rgba(34, 211, 238, 0.78)');
+        pushDeploySpec(deployFly, 'fly', 'CUA', 'rgba(196, 181, 253, 0.78)');
 
         // Quadrant lookup helpers. Branch → first session on that
         // branch → quadrant. Falls back to last-known on disappearance.
@@ -1229,10 +1168,7 @@ export function MarvelTimeline({
             "someone is working RIGHT HERE, RIGHT NOW" even if they
             haven't committed yet. */}
         {mainHasSession && (
-          <circle cx={latestX} cy={trunkY} r="9" fill="none" stroke="#34d399" strokeWidth="2" opacity="0">
-            <animate attributeName="r" values="9;28;9" dur="1.6s" repeatCount="indefinite" />
-            <animate attributeName="opacity" values="0.95;0;0" keyTimes="0;0.7;1" dur="1.6s" repeatCount="indefinite" />
-          </circle>
+          <Shockwave cx={latestX} cy={trunkY} from={9} to={28} dur="1.6s" stroke="#34d399" strokeWidth={2} />
         )}
 
         {/* Just-pushed-to-main flash. Distinct from the existing
@@ -1245,10 +1181,7 @@ export function MarvelTimeline({
           return (
             <g>
               <title>Pushed to main {timeAgo(mainPush.ts)}</title>
-              <circle cx={latestX} cy={trunkY} r="9" fill="#fff7ce" opacity="0">
-                <animate attributeName="r" values="9;26;9" dur="1.1s" repeatCount="indefinite" />
-                <animate attributeName="opacity" values="0.95;0;0" keyTimes="0;0.7;1" dur="1.1s" repeatCount="indefinite" />
-              </circle>
+              <Shockwave cx={latestX} cy={trunkY} from={9} to={26} dur="1.1s" fill="#fff7ce" />
             </g>
           );
         })()}
@@ -1261,23 +1194,13 @@ export function MarvelTimeline({
         {(sessionCountByBranch.get('main') ?? 0) > 1 && (
           <g>
             <title>{sessionsTitle('main') ?? ''}</title>
-            {(sessionsByBranch.get('main') ?? []).map((s, k, arr) => (
-              <circle
-                key={`main-sd-${k}-${s.session_id}`}
-                cx={latestX - (arr.length - 1) * 3 + k * 6}
-                cy={trunkY - 18}
-                r="2.5"
-                fill={sessionColor(s.session_id ?? `main-${k}`)}
-                stroke="rgba(255,255,255,0.7)"
-                strokeWidth="0.6"
-                opacity="0.95"
-              >
-                <animate attributeName="opacity"
-                  values="0.6;1;0.6"
-                  dur={`${1.2 + k * 0.2}s`}
-                  repeatCount="indefinite" />
-              </circle>
-            ))}
+            <SessionDots
+              sessions={sessionsByBranch.get('main') ?? []}
+              centerX={latestX}
+              cy={trunkY - 18}
+              stroke="rgba(255,255,255,0.7)"
+              keyPrefix="main"
+            />
           </g>
         )}
 
@@ -1381,10 +1304,7 @@ export function MarvelTimeline({
                   parked. */}
               {d.inProgress && (
                 <>
-                  <circle cx={d.x} cy={trunkY} r="11" fill="none" stroke={c} strokeWidth="2" opacity="0">
-                    <animate attributeName="r" values="11;22;11" dur="1.5s" repeatCount="indefinite" />
-                    <animate attributeName="opacity" values="0.9;0;0" keyTimes="0;0.7;1" dur="1.5s" repeatCount="indefinite" />
-                  </circle>
+                  <Shockwave cx={d.x} cy={trunkY} from={11} to={22} dur="1.5s" stroke={c} strokeWidth={2} peakOpacity="0.9" />
                   <circle cx={d.x} cy={trunkY} r="9" fill="none" stroke={c}
                     strokeWidth="2" strokeDasharray="14 30" strokeLinecap="round" opacity="0.85">
                     <animateTransform attributeName="transform" type="rotate"
@@ -1563,17 +1483,11 @@ export function MarvelTimeline({
                   window. Repeats a couple of times then quiets down
                   with the LIVE_WINDOW_MS expiry. */}
               {justPushed && !isEmpty && (
-                <circle cx={tipX} cy={yOffset} r="3" fill="#fffae0" opacity="0">
-                  <animate attributeName="r" values="3;15;3" dur="1s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.95;0;0" keyTimes="0;0.7;1" dur="1s" repeatCount="indefinite" />
-                </circle>
+                <Shockwave cx={tipX} cy={yOffset} from={3} to={15} dur="1s" fill="#fffae0" />
               )}
               {/* When live: extra outward shockwave ring */}
               {isLive && (
-                <circle cx={tipX} cy={yOffset} r="4" fill="none" stroke={c} strokeWidth="1.5" opacity="0">
-                  <animate attributeName="r" values="4;22;4" dur="1.6s" repeatCount="indefinite" />
-                  <animate attributeName="opacity" values="0.9;0;0" keyTimes="0;0.7;1" dur="1.6s" repeatCount="indefinite" />
-                </circle>
+                <Shockwave cx={tipX} cy={yOffset} from={4} to={22} dur="1.6s" stroke={c} strokeWidth={1.5} peakOpacity="0.9" />
               )}
               {/* Tip dot — pulses faster when live, smaller and static
                   on empty stubs. */}
@@ -1601,23 +1515,15 @@ export function MarvelTimeline({
                   vertical offset so the row sits ABOVE upward
                   tendrils and BELOW downward ones (away from the
                   trunk and away from the label on the right). */}
-              {sessionCount > 1 && sessionList.map((s, k) => (
-                <circle
-                  key={`sd-${b.name}-${k}-${s.session_id}`}
-                  cx={tipX - (sessionCount - 1) * 3 + k * 6}
+              {sessionCount > 1 && (
+                <SessionDots
+                  sessions={sessionList}
+                  centerX={tipX}
                   cy={yOffset + side * 11}
-                  r="2.5"
-                  fill={sessionColor(s.session_id ?? `${b.name}-${k}`)}
                   stroke="rgba(255,255,255,0.65)"
-                  strokeWidth="0.6"
-                  opacity="0.95"
-                >
-                  <animate attributeName="opacity"
-                    values="0.6;1;0.6"
-                    dur={`${1.2 + k * 0.2}s`}
-                    repeatCount="indefinite" />
-                </circle>
-              ))}
+                  keyPrefix={b.name}
+                />
+              )}
               {/* Branch label — anchored to the RIGHT of the dot so it
                   stays inside the viewBox regardless of side. Skipped
                   on empty stubs (hover still reveals the name via the
@@ -1788,25 +1694,25 @@ export function MarvelTimeline({
         fontSize: '11px',
         color: 'rgba(255,255,255,0.7)',
       }}>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+        <span style={LEGEND_ITEM}>
           <span style={{ width: '20px', height: '2px', borderRadius: '1px', background: 'linear-gradient(90deg, #5a3915, #fff1c5)' }} />
           main timeline
         </span>
         {branchList.length > 0 && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          <span style={LEGEND_ITEM}>
             <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#fb7185' }} />
             active branches ({branchList.length})
           </span>
         )}
         {/* "merged" arc legend removed alongside the arcs themselves. */}
         {deployMarkers.length > 0 && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          <span style={LEGEND_ITEM}>
             <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#7dd3fc', border: '1px solid white' }} />
             deploys
           </span>
         )}
         {worktrees.length > 0 && (
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+          <span style={LEGEND_ITEM}>
             <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#34d399' }} />
             local worktrees ({worktrees.length})
           </span>
@@ -1834,6 +1740,63 @@ function timeAgo(iso: string): string {
   return `${Math.floor(hr / 24)}d ago`;
 }
 
+// Stable color per session_id so two Claudes on the same branch get
+// different-colored indicator dots. djb2-style hash → palette index.
+function sessionColor(id: string): string {
+  let h = 5381;
+  for (let i = 0; i < id.length; i++) h = ((h << 5) + h + id.charCodeAt(i)) | 0;
+  return ACTIVE_PALETTE[Math.abs(h) % ACTIVE_PALETTE.length];
+}
+
+// Shared legend-row layout so each swatch+label pair reads identically.
+const LEGEND_ITEM: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: '6px' };
+
+// Expanding "shockwave" ring: a circle that grows from `from`→`to`→`from`
+// while fading out, on an infinite loop. Every pulse ring on the canvas
+// (main heartbeat, main-push flash, deploy-in-progress, tendril live +
+// just-pushed) is this same shape — only fill/stroke, radii, duration,
+// and peak opacity vary. Pass `stroke` for outline rings or `fill` for
+// solid ones (mirrors the original per-site markup exactly).
+function Shockwave({ cx, cy, from, to, dur, fill = 'none', stroke, strokeWidth, peakOpacity = '0.95' }: {
+  cx: number; cy: number; from: number; to: number; dur: string;
+  fill?: string; stroke?: string; strokeWidth?: number; peakOpacity?: string;
+}) {
+  return (
+    <circle cx={cx} cy={cy} r={from} fill={fill} stroke={stroke} strokeWidth={strokeWidth} opacity="0">
+      <animate attributeName="r" values={`${from};${to};${from}`} dur={dur} repeatCount="indefinite" />
+      <animate attributeName="opacity" values={`${peakOpacity};0;0`} keyTimes="0;0.7;1" dur={dur} repeatCount="indefinite" />
+    </circle>
+  );
+}
+
+// A horizontal row of one color-coded, softly-blinking dot per session,
+// centered on `centerX`. Used both above the NOW pulse (main) and beside
+// a tendril tip (side branches) — identical geometry, only the center,
+// vertical offset, stroke alpha, and key/color-fallback prefix differ.
+function SessionDots({ sessions, centerX, cy, stroke, keyPrefix }: {
+  sessions: ActiveSession[]; centerX: number; cy: number; stroke: string; keyPrefix: string;
+}) {
+  const n = sessions.length;
+  return (
+    <>
+      {sessions.map((s, k) => (
+        <circle
+          key={`${keyPrefix}-${k}-${s.session_id}`}
+          cx={centerX - (n - 1) * 3 + k * 6}
+          cy={cy}
+          r="2.5"
+          fill={sessionColor(s.session_id ?? `${keyPrefix}-${k}`)}
+          stroke={stroke}
+          strokeWidth="0.6"
+          opacity="0.95"
+        >
+          <animate attributeName="opacity" values="0.6;1;0.6" dur={`${1.2 + k * 0.2}s`} repeatCount="indefinite" />
+        </circle>
+      ))}
+    </>
+  );
+}
+
 // ── Pill components ─────────────────────────────────────────────────
 // Three flavors share the same rounded-pill geometry and styling so
 // the four quadrants + the consensus banner read as one visual family.
@@ -1841,33 +1804,34 @@ function timeAgo(iso: string): string {
 //   ToastPill    — one-shot completion message (10s lifecycle, fade-in)
 //   ConsensusPill — top-center summary banner
 
+// Shared rounded-pill chrome for the badge + toast flavors. Each spreads
+// this and overrides only `background` (+ a toast fade-in animation), so
+// the four quadrants read as one visual family.
+const PILL_BASE: React.CSSProperties = {
+  padding: '4px 10px',
+  fontSize: '10.5px',
+  fontWeight: 700,
+  letterSpacing: '0.1em',
+  color: '#fff',
+  borderRadius: '999px',
+  display: 'flex',
+  alignItems: 'center',
+  gap: '6px',
+  backdropFilter: 'blur(4px)',
+  maxWidth: '100%',
+  width: 'fit-content',
+};
+const PILL_LABEL: React.CSSProperties = { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' };
+
 function BadgePill({ spec }: { spec: BadgeSpec }) {
   return (
-    <div style={{
-      padding: '4px 10px',
-      fontSize: '10.5px',
-      fontWeight: 700,
-      letterSpacing: '0.1em',
-      color: '#fff',
-      background: spec.bg,
-      borderRadius: '999px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '6px',
-      backdropFilter: 'blur(4px)',
-      maxWidth: '100%',
-      width: 'fit-content',
-    }}>
+    <div style={{ ...PILL_BASE, background: spec.bg }}>
       <span style={{
         width: '6px', height: '6px', borderRadius: '50%', background: '#fff',
         animation: 'mtBlink 1s ease-in-out infinite',
         flexShrink: 0,
       }} />
-      <span style={{
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-      }}>{spec.label}</span>
+      <span style={PILL_LABEL}>{spec.label}</span>
     </div>
   );
 }
@@ -1878,28 +1842,9 @@ function ToastPill({ toast }: { toast: Toast }) {
     : 'rgba(220, 38, 38, 0.92)';  // red: failure
   const prefix = toast.kind === 'success' ? '✅' : '❌';
   const inner = (
-    <div style={{
-      padding: '4px 10px',
-      fontSize: '10.5px',
-      fontWeight: 700,
-      letterSpacing: '0.1em',
-      color: '#fff',
-      background: bg,
-      borderRadius: '999px',
-      display: 'flex',
-      alignItems: 'center',
-      gap: '6px',
-      backdropFilter: 'blur(4px)',
-      maxWidth: '100%',
-      width: 'fit-content',
-      animation: 'mtToastIn 220ms ease-out',
-    }}>
+    <div style={{ ...PILL_BASE, background: bg, animation: 'mtToastIn 220ms ease-out' }}>
       <span style={{ flexShrink: 0 }}>{prefix}</span>
-      <span style={{
-        overflow: 'hidden',
-        textOverflow: 'ellipsis',
-        whiteSpace: 'nowrap',
-      }}>{toast.message}</span>
+      <span style={PILL_LABEL}>{toast.message}</span>
     </div>
   );
   if (toast.url) {
