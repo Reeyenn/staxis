@@ -28,95 +28,26 @@ import { sendSms } from '@/lib/sms';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { safeBaseUrl, redactPhone } from '@/lib/api-validate';
-import { recordWebhookLog } from '@/lib/event-recorder';
 import { parseStringField, parseUnionField } from '@/lib/db-mappers';
 import {
   checkAndIncrementRateLimit,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
-import twilio from 'twilio';
 import { env } from '@/lib/env';
 import { captureException } from '@/lib/sentry';
+import {
+  twimlOk,
+  forbidden,
+  verifyTwilioSignature,
+  reconstructWebhookUrl,
+  toE164,
+  makeWebhookLogger,
+} from '@/lib/twilio-webhook';
 import {
   ES_SET,
   EN_SET,
   classifyReply,
 } from '@/lib/sms-reply-keywords';
-
-// Twilio expects TwiML (XML), not JSON. An empty <Response/> tells Twilio
-// "handled, send no auto-reply" — we've fired our own sendSms() already.
-function twimlOk(): NextResponse {
-  return new NextResponse(
-    '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-    { headers: { 'Content-Type': 'text/xml; charset=utf-8' } },
-  );
-}
-
-// 403 forbidden — used when the X-Twilio-Signature check fails. Returning
-// a non-2xx makes Twilio retry, which is what we want for a transient
-// signing-key drift, but the body is irrelevant for the rejection.
-function forbidden(reason: string): NextResponse {
-  return new NextResponse(reason, {
-    status: 403,
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  });
-}
-
-/**
- * Verify the X-Twilio-Signature header so anyone outside Twilio can't post
- * to this webhook and trigger SMS sends through our account or spoof a
- * housekeeper's reply. Twilio computes the signature as
- *   HMAC-SHA1( authToken, fullUrl + sortedParamsConcatenated )
- * and base64-encodes it. We delegate to the official `twilio` SDK's
- * `validateRequest` helper which handles the form-encoded path.
- *
- * For JSON bodies we fall back to comparing against the URL with no params
- * (Twilio's recommended form for non-form-encoded webhooks). In practice
- * Twilio always posts form-encoded for SMS replies, but we keep the JSON
- * path so a future migration doesn't break.
- *
- * Behind a Vercel proxy the request URL must be reconstructed from the
- * `X-Forwarded-*` headers — `req.url` is already correct for Next on Vercel,
- * but we read it explicitly to make the matching obvious.
- */
-function verifyTwilioSignature(
-  url: string,
-  signature: string | null,
-  params: Record<string, string>,
-): boolean {
-  if (!signature) return false;
-  const authToken = env.TWILIO_AUTH_TOKEN;
-  if (!authToken) return false;
-  try {
-    return twilio.validateRequest(authToken, signature, url, params);
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Reconstruct the public URL Twilio used when computing the signature.
- * On Vercel `req.nextUrl` is the deployed URL (https://hotelops-ai.vercel.app/...)
- * because Next normalises the proxy headers for us. But we strip out the
- * `_next/data` and locale prefixes that App Router can sometimes add — the
- * Twilio dashboard's webhook URL is the bare path.
- */
-function reconstructWebhookUrl(req: NextRequest): string {
-  // Prefer the X-Forwarded headers so we match exactly what Twilio saw.
-  const proto = req.headers.get('x-forwarded-proto') ?? 'https';
-  const host  = req.headers.get('x-forwarded-host')  ?? req.headers.get('host') ?? new URL(req.url).host;
-  const path  = new URL(req.url).pathname;
-  const search = new URL(req.url).search;
-  return `${proto}://${host}${path}${search}`;
-}
-
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
 
 function formatShiftDate(dateStr: string, lang: 'en' | 'es'): string {
   const [year, month, day] = dateStr.split('-').map(Number);
@@ -136,35 +67,10 @@ function normalise(text: string): string {
 // standing up the full webhook plumbing. Imported above.
 
 // Debug: write every webhook hit (and the final lookup outcome) to the
-// `webhook_log` table so we can diagnose failures end-to-end.
-//
-// PII redaction: any field that holds a phone number is redacted to
-// "+1***1234" before insertion. webhook_log is service-role only via
-// RLS, but we still don't want full E.164 phones in cleartext on disk.
-// If a future migration mistakenly opens read access to the table the
-// blast radius stays small.
-async function logHit(payload: Record<string, unknown>): Promise<void> {
-  try {
-    const PHONE_KEYS = new Set([
-      'fromNumber', 'fromHeader', 'phone', 'phone164',
-      'staffPhone', 'From',
-    ]);
-    const redacted: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(payload)) {
-      if (PHONE_KEYS.has(k) && typeof v === 'string') {
-        redacted[k] = redactPhone(v);
-      } else {
-        redacted[k] = v;
-      }
-    }
-    await recordWebhookLog({
-      source: 'twilio-sms-reply',
-      payload: redacted,
-    });
-  } catch (e) {
-    log.warn('sms-reply logHit failed', { err: e });
-  }
-}
+// `webhook_log` table so we can diagnose failures end-to-end. Phone-number
+// fields are redacted before insertion — see makeWebhookLogger in
+// src/lib/twilio-webhook.ts.
+const logHit = makeWebhookLogger('twilio-sms-reply');
 
 /**
  * Return the hotel's public base URL for links embedded in SMS replies.
