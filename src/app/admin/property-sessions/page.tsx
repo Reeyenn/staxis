@@ -36,7 +36,7 @@ import {
   FONT_SANS, FONT_MONO, FONT_SERIF, Btn, Pill, Caps, type PillTone,
 } from '@/app/admin/_components/studio/kit';
 import {
-  SurfaceShell, DarkCard, DarkEmpty, dimWhite,
+  SurfaceShell, DarkCard, DarkScope, DarkEmpty, dimWhite,
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import {
@@ -111,21 +111,6 @@ const STATUS_STYLE: Record<string, { tone: PillTone; icon: React.ReactNode; labe
   failed_restart:            { tone: 'terracotta', icon: <AlertCircle size={12} />,  label: 'Failed' },
   stopped:                   { tone: 'neutral',    icon: <StopCircle size={12} />,   label: 'Stopped' },
 };
-
-// Full-bleed dark admin canvas — mirrors StudioShell's `.admin-studio`
-// wrapper (same inline overrides) so this standalone page sits on the same
-// continuous dark ink as the studio surfaces.
-function DarkScope({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="admin-studio" style={{
-      background: 'var(--ink)', color: '#fff',
-      marginLeft: 'calc(50% - 50vw)', marginRight: 'calc(50% - 50vw)',
-      minHeight: 'calc(100vh - 64px)',
-    }}>
-      {children}
-    </div>
-  );
-}
 
 function Stat({ label, children }: { label: string; children: React.ReactNode }) {
   return (
