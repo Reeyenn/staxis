@@ -34,7 +34,7 @@ import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { toDisplayItem } from '../adapter';
 import { Overlay } from './Overlay';
-import { numGuard } from './form-kit';
+import { numGuard, warnBannerStyle } from './form-kit';
 import {
   clearInlineAddAttempt,
   createFrozenInlineAddAttempt,
@@ -783,16 +783,8 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
         </>
       }
     >
-      {retryLocked && (
-        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 9, background: T.warmDim, color: T.warm, fontFamily: fonts.sans, fontSize: 12.5 }}>
-          {cs.retryPending}
-        </div>
-      )}
-      {addRetryLocked && !addBusy && (
-        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 9, background: T.warmDim, color: T.warm, fontFamily: fonts.sans, fontSize: 12.5 }}>
-          {cs.addUnconfirmed}
-        </div>
-      )}
+      {retryLocked && <div style={warnBannerStyle}>{cs.retryPending}</div>}
+      {addRetryLocked && !addBusy && <div style={warnBannerStyle}>{cs.addUnconfirmed}</div>}
       {/* Top row: change scope · photo count */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
         <button

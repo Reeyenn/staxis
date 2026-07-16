@@ -22,7 +22,7 @@ import { Btn } from '../Btn';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { Overlay } from './Overlay';
-import { numGuard } from './form-kit';
+import { numGuard, warnBannerStyle } from './form-kit';
 import { ScanInvoiceSheet } from './ScanInvoiceSheet';
 import {
   clearDeliveryAttempt,
@@ -258,11 +258,7 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
         </>
       }
     >
-      {retryLocked && (
-        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 9, background: T.warmDim, color: T.warm, fontFamily: fonts.sans, fontSize: 12.5 }}>
-          {ds.retryPending}
-        </div>
-      )}
+      {retryLocked && <div style={warnBannerStyle}>{ds.retryPending}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {rows.map((r) => {
           // A row's dropdown offers items not picked in OTHER rows (+ its own).
