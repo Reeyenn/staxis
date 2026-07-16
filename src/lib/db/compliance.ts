@@ -54,8 +54,6 @@ async function postManager<T>(url: string, body: unknown): Promise<{ ok: boolean
   return parse<T>(res);
 }
 
-export const saveReadingType = (body: unknown) => postManager(`/api/compliance/reading-type`, body);
-export const savePmTask = (body: unknown) => postManager(`/api/compliance/pm-task`, body);
 export const logManagerReading = (body: unknown) => postManager<{ readingId: string; outOfRange: boolean; workOrderCreated: boolean }>(`/api/compliance/log-reading`, body);
 export const logManagerPmCheck = (body: unknown) => postManager<{ checkId: string; workOrderCreated: boolean }>(`/api/compliance/log-pm-check`, body);
 export const runComplianceSetup = (pid: string, text?: string) => postManager<{ detectedBrand: string; readingsCreated: number; pmCreated: number }>(`/api/compliance/setup`, { pid, text });

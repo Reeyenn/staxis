@@ -57,16 +57,6 @@ export function subscribeToShiftPresets(
   );
 }
 
-export async function getShiftPresets(_uid: string, pid: string): Promise<ShiftPreset[]> {
-  const { data, error } = await supabase
-    .from('property_shift_presets').select('*')
-    .eq('property_id', pid)
-    .order('department', { ascending: true })
-    .order('sort_order', { ascending: true });
-  if (error) { logErr('getShiftPresets', error); throw error; }
-  return (data ?? []).map(fromShiftPresetRow);
-}
-
 // ─── Scheduled shifts ──────────────────────────────────────────────────────
 
 /**
@@ -152,18 +142,4 @@ export function subscribeToWeekPublications(
     },
     callback,
   );
-}
-
-export async function getLatestPublicationForWeek(
-  _uid: string, pid: string, weekStart: string,
-): Promise<WeekPublication | null> {
-  const { data, error } = await supabase
-    .from('week_publications').select('*')
-    .eq('property_id', pid)
-    .eq('week_start', weekStart)
-    .order('published_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) { logErr('getLatestPublicationForWeek', error); throw error; }
-  return data ? fromWeekPublicationRow(data) : null;
 }

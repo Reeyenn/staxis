@@ -29,17 +29,3 @@ export function subscribeToComplaints(
   );
 }
 
-/** One-shot fetch (used where a subscription is overkill). */
-export async function fetchComplaints(pid: string): Promise<Complaint[]> {
-  try {
-    const { data, error } = await supabase
-      .from('complaints').select('*')
-      .eq('property_id', pid)
-      .order('created_at', { ascending: false });
-    if (error) throw error;
-    return (data ?? []).map((r) => fromComplaintRow(r as Record<string, unknown>));
-  } catch (err) {
-    logErr('fetchComplaints', err);
-    return [];
-  }
-}

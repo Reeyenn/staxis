@@ -41,8 +41,6 @@ import type {
   InventoryBudgetSection,
   InventoryCustomCategory,
   InventoryTabLayout,
-  HandoffEntry,
-  ShiftConfirmation,
   DeepCleanRecord,
   ShiftPreset,
   ScheduledShift,
@@ -158,8 +156,6 @@ const LANGUAGES = ['en', 'es'] as const;
 const STAFF_DEPARTMENTS = ['housekeeping', 'front_desk', 'maintenance', 'other'] as const;
 const SCHEDULE_PRIORITIES = ['priority', 'normal', 'excluded'] as const;
 const INVENTORY_CATEGORIES = ['housekeeping', 'maintenance', 'breakfast'] as const;
-const HANDOFF_SHIFT_TYPES = ['morning', 'afternoon', 'night'] as const;
-const CONFIRMATION_STATUSES = ['sent', 'pending', 'confirmed', 'declined'] as const;
 const DEEP_CLEAN_STATUSES = ['in_progress', 'completed'] as const;
 
 // ─── Property ───────────────────────────────────────────────────────────────
@@ -476,34 +472,6 @@ export function fromLaundryRow(r: Record<string, unknown>): LaundryCategory {
 
 // ─── Daily log ──────────────────────────────────────────────────────────────
 
-export function toDailyLogRow(l: Partial<DailyLog> & { propertyId?: string }): Record<string, unknown> {
-  return dropUndefined({
-    property_id: l.propertyId,
-    date: l.date,
-    occupied: l.occupied,
-    checkouts: l.checkouts,
-    two_bed_checkouts: l.twoBedCheckouts,
-    stayovers: l.stayovers,
-    vips: l.vips,
-    early_checkins: l.earlyCheckins,
-    room_minutes: l.roomMinutes,
-    public_area_minutes: l.publicAreaMinutes,
-    laundry_minutes: l.laundryMinutes,
-    total_minutes: l.totalMinutes,
-    recommended_staff: l.recommendedStaff,
-    actual_staff: l.actualStaff,
-    hourly_wage: l.hourlyWage,
-    labor_cost: l.laborCost,
-    labor_saved: l.laborSaved,
-    start_time: l.startTime,
-    completion_time: l.completionTime,
-    public_areas_due_today: l.publicAreasDueToday,
-    laundry_loads: l.laundryLoads,
-    rooms_completed: l.roomsCompleted,
-    avg_turnaround_minutes: l.avgTurnaroundMinutes,
-  });
-}
-
 export function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
   // Defensive parse for the JSONB laundry_loads column — accept the shape
   // we wrote, fall back to zeros for anything else.
@@ -779,22 +747,6 @@ export function fromInventoryOrderRow(r: Record<string, unknown>): InventoryOrde
   };
 }
 
-export function toInventoryOrderRow(o: Partial<InventoryOrder>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: o.propertyId,
-    item_id: o.itemId,
-    item_name: o.itemName,
-    quantity: o.quantity,
-    quantity_cases: o.quantityCases,
-    unit_cost: o.unitCost,
-    total_cost: o.totalCost,
-    vendor_name: o.vendorName,
-    ordered_at: toISO(o.orderedAt),
-    received_at: toISO(o.receivedAt),
-    notes: o.notes,
-  });
-}
-
 // ─── Inventory budget (per-property × budget key × month) ────────────────────
 
 export function fromInventoryBudgetRow(r: Record<string, unknown>): InventoryBudget {
@@ -864,42 +816,6 @@ export function toInventoryBudgetRow(b: Partial<InventoryBudget>): Record<string
     budget_cents: b.budgetCents,
     notes: b.notes,
   });
-}
-
-// ─── Handoff ────────────────────────────────────────────────────────────────
-
-export function fromHandoffRow(r: Record<string, unknown>): HandoffEntry {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    shiftType: parseUnionField(r.shift_type, HANDOFF_SHIFT_TYPES, 'morning'),
-    author: String(r.author ?? ''),
-    notes: String(r.notes ?? ''),
-    acknowledged: Boolean(r.acknowledged),
-    acknowledgedBy: parseStringField(r.acknowledged_by),
-    createdAt: toDate(r.created_at),
-    acknowledgedAt: toDate(r.acknowledged_at),
-  };
-}
-
-// ─── Shift confirmation ─────────────────────────────────────────────────────
-
-export function fromShiftConfirmationRow(r: Record<string, unknown>): ShiftConfirmation {
-  return {
-    id: String(r.token ?? r.id ?? ''),
-    uid: '',
-    pid: String(r.property_id ?? ''),
-    staffId: String(r.staff_id ?? ''),
-    staffName: String(r.staff_name ?? ''),
-    staffPhone: String(r.staff_phone ?? ''),
-    shiftDate: String(r.shift_date ?? ''),
-    status: parseUnionField(r.status, CONFIRMATION_STATUSES, 'sent'),
-    language: parseUnionField(r.language, LANGUAGES, 'en'),
-    sentAt: toDate(r.sent_at),
-    respondedAt: toDate(r.responded_at),
-    smsSent: Boolean(r.sms_sent),
-    smsError: parseStringField(r.sms_error),
-  };
 }
 
 // ─── Deep clean ─────────────────────────────────────────────────────────────
