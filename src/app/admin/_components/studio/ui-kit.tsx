@@ -13,6 +13,7 @@
    ─────────────────────────────────────────────────────────────────────── */
 
 import React from 'react';
+import { FONT_MONO } from './kit';
 import { dimWhite } from './surface-kit';
 
 /** Full-width, left-aligned list row rendered as a button on the dark
@@ -49,4 +50,11 @@ export function DividerRow({ children, style }: { children: React.ReactNode; sty
  *  `o`. Renders the same <span className="caps"> the surfaces hand-wrote. */
 export function DimCaps({ children, o = .5, style }: { children: React.ReactNode; o?: number; style?: React.CSSProperties }) {
   return <span className="caps" style={{ color: dimWhite(o), ...style }}>{children}</span>;
+}
+
+/** A mono micro-label in translucent white — the recurring small caption the
+ *  mapper stamps under rows/values. `size`/`o` carry each site's original
+ *  font-size and opacity so the inline style is byte-for-byte unchanged. */
+export function MonoDim({ children, size = 10.5, o = .5, style }: { children: React.ReactNode; size?: number; o?: number; style?: React.CSSProperties }) {
+  return <span style={{ fontFamily: FONT_MONO, fontSize: size, color: dimWhite(o), ...style }}>{children}</span>;
 }
