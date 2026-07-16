@@ -452,35 +452,6 @@ export interface ScheduleResult {
   }[];
 }
 
-// ─── Analytics ─────────────────────────────────────────────────────────────
-
-export interface WeeklySummary {
-  laborSaved: number;
-  avgStaff: number;
-  avgCompletionTime: string;
-  totalRoomsCleaned: number;
-  daysTracked: number;
-}
-
-export interface MonthlySummary {
-  laborSaved: number;
-  laborCost: number;
-  roomsCleaned: number;
-  avgStaff: number;
-}
-
-// ─── PMS Sync Log ──────────────────────────────────────────────────────────
-
-export interface PMSSyncLog {
-  id: string;
-  timestamp: Date;
-  success: boolean;
-  pmsType: string;
-  dataSnapshot?: Partial<DailyLog>;
-  error?: string;
-  changedFields?: string[];
-}
-
 // ─── Maintenance Work Orders ────────────────────────────────────────────────
 // New shape (Claude Design handoff, migration 0131): the tab is now a
 // physical-book replacement. Two statuses only — open and done — and a
@@ -565,17 +536,6 @@ export interface ShiftConfirmation {
   respondedAt: Date | null;
   smsSent: boolean;
   smsError?: string;
-}
-
-// ─── User ──────────────────────────────────────────────────────────────────
-
-export interface UserProfile {
-  uid: string;
-  email: string;
-  displayName: string;
-  photoURL?: string;
-  createdAt: Date;
-  activePropertyId?: string;
 }
 
 // ─── Morning Setup Form ────────────────────────────────────────────────────
