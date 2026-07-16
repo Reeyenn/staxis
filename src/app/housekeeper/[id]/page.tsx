@@ -542,6 +542,25 @@ export default function HousekeeperRoomPage({
     }
   }, [pid, housekeeperId, today, groupBy]);
 
+  // Single POST scaffold shared by every room-action write on this page:
+  // fold in the staff-link token, parse the standard envelope, and report
+  // whether the server accepted it. Callers own re-entrancy, saving flags,
+  // refetching, and error surfacing.
+  const postStaffAction = useCallback(
+    async (url: string, body: Record<string, unknown>): Promise<{ ok: boolean; data: unknown }> => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(withStaffLinkTokenBody(body)),
+      });
+      const json = (await res.json().catch(() => null)) as
+        | { ok?: boolean; data?: unknown }
+        | null;
+      return { ok: res.ok && !!json?.ok, data: json?.data ?? null };
+    },
+    [],
+  );
+
   // Generic POST wrapper with re-entrancy guard.
   const guardedPost = useCallback(
     async (lockKey: string, url: string, body: object) => {
@@ -550,22 +569,14 @@ export default function HousekeeperRoomPage({
       }
       inFlightRoomActionsRef.current.add(lockKey);
       try {
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(withStaffLinkTokenBody(body as Record<string, unknown>)),
-        });
-        const json = (await res.json().catch(() => null)) as
-          | { ok?: boolean; data?: unknown }
-          | null;
-        const ok = res.ok && !!json?.ok;
-        if (ok) void refetchRooms();
-        return { ok, data: json?.data ?? null };
+        const result = await postStaffAction(url, body as Record<string, unknown>);
+        if (result.ok) void refetchRooms();
+        return result;
       } finally {
         inFlightRoomActionsRef.current.delete(lockKey);
       }
     },
-    [refetchRooms],
+    [postStaffAction, refetchRooms],
   );
 
   // Checklist template loader.
@@ -659,17 +670,12 @@ export default function HousekeeperRoomPage({
       if (!pid) return;
       setSavingReset(room.id);
       try {
-        const res = await fetch('/api/housekeeper/reset-clean', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(withStaffLinkTokenBody({
-            pid,
-            staffId: housekeeperId,
-            roomId: room.id,
-          })),
+        const { ok } = await postStaffAction('/api/housekeeper/reset-clean', {
+          pid,
+          staffId: housekeeperId,
+          roomId: room.id,
         });
-        const json = await res.json().catch(() => ({}));
-        if (res.ok && json?.ok) {
+        if (ok) {
           await refetchRooms();
         } else {
           showActionError(t('hkErrCouldntResetRoom', lang));
@@ -678,27 +684,22 @@ export default function HousekeeperRoomPage({
         setSavingReset(null);
       }
     },
-    [pid, housekeeperId, refetchRooms, showActionError, lang],
+    [pid, housekeeperId, postStaffAction, refetchRooms, showActionError, lang],
   );
 
   const handleException = useCallback(
     async (roomId: string, next: { type: ExceptionType | null; note: string | null }) => {
       if (!pid) return;
       try {
-        const res = await fetch('/api/housekeeper/exception', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(withStaffLinkTokenBody({
-            pid,
-            staffId: housekeeperId,
-            roomId,
-            exceptionType: next.type,
-            note: next.note,
-            clear: next.type === null,
-          })),
+        const { ok } = await postStaffAction('/api/housekeeper/exception', {
+          pid,
+          staffId: housekeeperId,
+          roomId,
+          exceptionType: next.type,
+          note: next.note,
+          clear: next.type === null,
         });
-        const json = await res.json().catch(() => ({}));
-        if (res.ok && json?.ok) {
+        if (ok) {
           await refetchRooms();
         } else {
           showActionError(t('hkErrCouldntSaveException', lang));
@@ -707,7 +708,7 @@ export default function HousekeeperRoomPage({
         showActionError(t('hkErrCouldntSaveException', lang));
       }
     },
-    [pid, housekeeperId, refetchRooms, showActionError, lang],
+    [pid, housekeeperId, postStaffAction, refetchRooms, showActionError, lang],
   );
 
   // Issue reporting still uses the legacy route in piece A.
@@ -715,19 +716,14 @@ export default function HousekeeperRoomPage({
     if (!issueRoomId || !issueNote.trim() || !pid) return;
     setSavingIssue(true);
     try {
-      const res = await fetch('/api/housekeeper/room-action', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withStaffLinkTokenBody({
-          pid,
-          staffId: housekeeperId,
-          roomId: issueRoomId,
-          action: 'issue',
-          issueNote: issueNote.trim(),
-        })),
+      const { ok } = await postStaffAction('/api/housekeeper/room-action', {
+        pid,
+        staffId: housekeeperId,
+        roomId: issueRoomId,
+        action: 'issue',
+        issueNote: issueNote.trim(),
       });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || !json?.ok) throw new Error('save failed');
+      if (!ok) throw new Error('save failed');
       setIssueRoomId(null);
       setIssueNote('');
       await refetchRooms();
@@ -736,7 +732,7 @@ export default function HousekeeperRoomPage({
     } finally {
       setSavingIssue(false);
     }
-  }, [issueRoomId, issueNote, pid, housekeeperId, refetchRooms, showActionError, lang]);
+  }, [issueRoomId, issueNote, pid, housekeeperId, postStaffAction, refetchRooms, showActionError, lang]);
 
   // ── Derived state ──────────────────────────────────────────────────────
   const housekeeperName = rooms[0]?.assignedName ?? '';

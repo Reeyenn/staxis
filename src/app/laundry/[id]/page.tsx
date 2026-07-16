@@ -71,11 +71,17 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const seededRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Seed the page language from the staff row on mount. Goes through
+  // Seed BOTH the page language and this worker's name from the staff row on
+  // mount. These used to be two effects firing one identical getStaffSelfPublic
+  // round-trip each; folded into a single fetch. Goes through
   // /api/housekeeper/me (service-role) instead of getStaffMember(), because
   // this page has no auth session and the supabase browser client would
   // silently return null under RLS. Same RLS-blocks-anon trap as the
   // 2026-04-30 housekeeper rooms bug.
+  //
+  // Security audit 2026-06-26 #1: the roster endpoint /api/staff-list is
+  // retired (it leaked every staff UUID) — this reads just THIS worker's own
+  // row, gated by the per-staff link token (getStaffSelfPublic forwards it).
   useEffect(() => {
     if (!laundryPersonId || !pid) return;
     let cancelled = false;
@@ -83,36 +89,20 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     void (async () => {
       try {
         const s = await getStaffSelfPublic(pid, laundryPersonId);
+        if (cancelled || !s) return;
         // Full housekeeper locale set (en/es/ht/tl/vi) — the /api/housekeeper/me
         // read now round-trips ht/tl/vi instead of collapsing them to English.
-        if (!cancelled && s && s.language && (SUPPORTED_LOCALES as readonly string[]).includes(s.language)) {
+        if (s.language && (SUPPORTED_LOCALES as readonly string[]).includes(s.language)) {
           setLang(s.language);
         }
+        if (s.name) setLaundryPersonName(s.name);
       } catch (err) {
-        console.error('[laundry] staff row lang load failed:', err);
+        console.error('[laundry] staff row load failed:', err);
       }
     })();
 
     return () => { cancelled = true; };
   }, [laundryPersonId, pid]);
-
-  // Load this laundry worker's name. Security audit 2026-06-26 #1: the roster
-  // endpoint /api/staff-list is retired (it leaked every staff UUID). We now
-  // fetch just THIS worker's own name via /api/housekeeper/me, gated by the
-  // per-staff link token (getStaffSelfPublic forwards it).
-  useEffect(() => {
-    if (!pid || !laundryPersonId) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const self = await getStaffSelfPublic(pid, laundryPersonId);
-        if (!cancelled && self?.name) setLaundryPersonName(self.name);
-      } catch (err) {
-        console.error('[laundry] staff name load failed:', err);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [pid, laundryPersonId]);
 
   // Bootstrap fetch — public_areas + laundry_config + today's rooms in
   // one server-side round-trip. Goes through /api/laundry/bootstrap
