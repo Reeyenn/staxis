@@ -6,8 +6,19 @@ import { useProperty } from '@/contexts/PropertyContext';
 import {
   addInventoryItem,
   updateInventoryItem,
-  deleteInventoryItem,
+  archiveInventoryItem,
+  saveInventoryCountAtomic,
 } from '@/lib/db';
+import { generateId } from '@/lib/utils';
+import {
+  clearInventoryItemCreateAttempt,
+  createFrozenInventoryItemAttempt,
+  inventoryItemCreateMarker,
+  isDefinitiveInventoryItemCreateFailure,
+  loadInventoryItemCreateAttempt,
+  persistInventoryItemCreateAttempt,
+  type FrozenInventoryItemCreateAttempt,
+} from '@/lib/inventory-item-create-attempt';
 import type { InventoryItem, InventoryCategory, InventoryCustomCategory } from '@/types';
 import type { Vendor } from '@/lib/ordering/types';
 
@@ -24,6 +35,7 @@ interface AddItemSheetProps {
   open: boolean;
   onClose: () => void;
   item: InventoryItem | null;
+  canViewFinancials: boolean;
   /** Category a *new* item starts on. Defaults to 'housekeeping' (Inventory
    *  page). The Maintenance → Parts tab passes 'maintenance' so a part added
    *  there lands back in that filtered view. Ignored when editing. */
@@ -44,7 +56,7 @@ function aisStrings(lang: Lang) {
       newItem: 'New item',
       addToInventory: 'Add to inventory',
       other: '— Other (type below) —',
-      delete: 'Delete',
+      archive: 'Archive',
       cancel: 'Cancel',
       saving: 'Saving…',
       save: 'Save',
@@ -58,8 +70,12 @@ function aisStrings(lang: Lang) {
       vendor: 'Vendor',
       supplier: 'Supplier',
       saveFailed: 'Saving the item failed. Please try again.',
-      confirmRemove: (n: string) => `Remove "${n}" from inventory?`,
-      couldNotRemove: 'Could not remove the item.',
+      createPending: 'The result could not be confirmed. These exact item fields are locked to the same safe retry so another item cannot be created by mistake.',
+      retryCreate: 'Retry exact item',
+      createUnsafe: 'The item was not sent because a recovery copy could not be saved safely. Your fields are still here.',
+      detailsSavedCountConflict: 'The item details were saved, but on-hand stock changed elsewhere. Refresh the inventory and enter the count again; the newer stock was not overwritten.',
+      confirmArchive: (n: string) => `Archive "${n}"? It will be hidden from active inventory, but all count and delivery history will be kept.`,
+      couldNotArchive: 'Could not archive the item.',
       // Field tooltips (hover the ⓘ) — one plain line each.
       tipName: 'What you call this item.',
       tipCategory: 'Which team uses it — housekeeping, maintenance, or food & beverage.',
@@ -73,7 +89,7 @@ function aisStrings(lang: Lang) {
       newItem: 'Nuevo artículo',
       addToInventory: 'Agregar al inventario',
       other: '— Otro (escribe abajo) —',
-      delete: 'Eliminar',
+      archive: 'Archivar',
       cancel: 'Cancelar',
       saving: 'Guardando…',
       save: 'Guardar',
@@ -87,8 +103,12 @@ function aisStrings(lang: Lang) {
       vendor: 'Proveedor',
       supplier: 'Proveedor',
       saveFailed: 'No se pudo guardar el artículo. Inténtalo de nuevo.',
-      confirmRemove: (n: string) => `¿Quitar "${n}" del inventario?`,
-      couldNotRemove: 'No se pudo quitar el artículo.',
+      createPending: 'No se pudo confirmar el resultado. Estos datos exactos están bloqueados para el mismo reintento seguro y así no crear otro artículo por error.',
+      retryCreate: 'Reintentar el mismo artículo',
+      createUnsafe: 'El artículo no se envió porque no se pudo guardar una copia segura. Tus datos siguen aquí.',
+      detailsSavedCountConflict: 'Los detalles se guardaron, pero el inventario disponible cambió en otro lugar. Actualiza el inventario y vuelve a ingresar el conteo; no se sobrescribió el valor más reciente.',
+      confirmArchive: (n: string) => `¿Archivar "${n}"? Se ocultará del inventario activo, pero se conservará todo el historial de conteos y entregas.`,
+      couldNotArchive: 'No se pudo archivar el artículo.',
       // Tooltips de cada campo (pasa el cursor sobre la ⓘ) — una línea simple.
       tipName: 'Cómo llamas a este artículo.',
       tipCategory: 'Qué equipo lo usa — limpieza, mantenimiento o alimentos y bebidas.',
@@ -100,7 +120,7 @@ function aisStrings(lang: Lang) {
   }[lang];
 }
 
-export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'housekeeping', customCategories = [], defaultCustomCategoryId = null }: AddItemSheetProps) {
+export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, defaultCategory = 'housekeeping', customCategories = [], defaultCustomCategoryId = null }: AddItemSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ais = aisStrings(lang);
@@ -120,12 +140,23 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
   // occupancy drain estimate) and overwrite counts saved concurrently by
   // someone else while the sheet was open.
   const stockBaselineRef = useRef<number>(0);
+  // Reuse the request UUID if a stock correction times out and the manager
+  // retries without changing the value. Postgres then replays the result
+  // instead of appending a duplicate count-history row.
+  const stockCountAttemptRef = useRef<{
+    itemId: string;
+    value: number;
+    requestId: string;
+    countedAt: Date;
+  } | null>(null);
   const [parLevel, setParLevel] = useState<string>('0');
   const [unitCost, setUnitCost] = useState<string>('');
   const [vendor, setVendor] = useState('');
   const [vendorId, setVendorId] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
   const [saving, setSaving] = useState(false);
+  const [createRetryLocked, setCreateRetryLocked] = useState(false);
+  const createAttemptRef = useRef<FrozenInventoryItemCreateAttempt | null>(null);
 
   // Load real vendor records so an item can link to one (vendor_name stays as
   // the free-text fallback). Management-gated API → non-managers just get the
@@ -141,7 +172,10 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
 
   useEffect(() => {
     if (!open) return;
+    stockCountAttemptRef.current = null;
     if (item) {
+      createAttemptRef.current = null;
+      setCreateRetryLocked(false);
       setName(item.name);
       setCategory(item.category as InvCat);
       setCustomCategoryId(item.customCategoryId ?? null);
@@ -152,22 +186,29 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
       setVendor(item.vendorName || '');
       setVendorId(item.vendorId ?? null);
     } else {
-      setName('');
-      setCategory(defaultCategory);
-      setCustomCategoryId(defaultCustomCategoryId);
-      setCurrentStock('0');
+      const restored = activePropertyId
+        ? loadInventoryItemCreateAttempt(activePropertyId)
+        : null;
+      createAttemptRef.current = restored;
+      setCreateRetryLocked(!!restored);
+      setName(restored?.nameInput ?? '');
+      setCategory((restored?.category as InvCat | undefined) ?? defaultCategory);
+      setCustomCategoryId(restored ? restored.customCategoryId : defaultCustomCategoryId);
+      setCurrentStock(restored?.currentStockInput ?? '0');
       stockBaselineRef.current = 0;
-      setParLevel('0');
-      setUnitCost('');
-      setVendor('');
-      setVendorId(null);
+      setParLevel(restored?.parLevelInput ?? '0');
+      setUnitCost(restored?.unitCostInput ?? '');
+      setVendor(restored?.vendorInput ?? '');
+      setVendorId(restored?.vendorId ?? null);
     }
-  }, [open, item, defaultCategory, defaultCustomCategoryId]);
+  }, [open, item, activePropertyId, defaultCategory, defaultCustomCategoryId]);
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
     if (!name.trim()) return;
     setSaving(true);
+    let metadataSaved = false;
+    let createAttemptUsed: FrozenInventoryItemCreateAttempt | null = null;
     try {
       // Unit + lead days are no longer edited here. On EDIT we don't send them
       // (the stored values are preserved); on CREATE we seed sensible defaults
@@ -180,80 +221,196 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
         // back in its built-in category's bucket.
         customCategoryId: customCategoryId,
         parLevel: Number(parLevel) || 0,
-        unitCost: unitCost ? Number(unitCost) : undefined,
-        vendorName: vendor.trim() || undefined,
         vendorId: vendorId ?? null,
       };
       if (isEdit && item) {
-        // Metadata edit: only send currentStock if the user deliberately
-        // changed the on-hand field (an intentional stock correction — the db
-        // layer then rightly treats it as a count). An untouched or emptied
-        // field sends NO stock, so last_counted_at / the consumption-estimate
-        // window are left alone and a count saved on another device while
-        // this sheet was open can't be overwritten by a typo-fix Save.
+        // Metadata and stock have different provenance. Metadata stays a normal
+        // item update; a deliberately changed on-hand value goes through the
+        // atomic count RPC below so stock and count history always land
+        // together. An untouched/emptied field sends no stock at all.
         const stockNum = currentStock.trim() === '' ? NaN : Number(currentStock);
         const stockChanged =
           Number.isFinite(stockNum) && stockNum !== stockBaselineRef.current;
         await updateInventoryItem(user.uid, activePropertyId, item.id, {
           ...base,
-          ...(stockChanged ? { currentStock: stockNum } : {}),
+          ...(canViewFinancials
+            ? { unitCost: unitCost ? Number(unitCost) : null }
+            : {}),
+          vendorName: vendor.trim() || null,
         });
+        metadataSaved = true;
+        if (stockChanged) {
+          let attempt = stockCountAttemptRef.current;
+          if (!attempt || attempt.itemId !== item.id || attempt.value !== stockNum) {
+            attempt = {
+              itemId: item.id,
+              value: stockNum,
+              requestId: generateId(),
+              countedAt: new Date(),
+            };
+            stockCountAttemptRef.current = attempt;
+          }
+          await saveInventoryCountAtomic(
+            user.uid,
+            activePropertyId,
+            attempt.requestId,
+            attempt.countedAt,
+            user.displayName || user.username || 'team',
+            [{
+              itemId: item.id,
+              expectedStock: stockBaselineRef.current,
+              countedStock: stockNum,
+            }],
+          );
+        }
       } else {
-        await addInventoryItem(user.uid, activePropertyId, {
-          ...base,
+        let attempt = createAttemptRef.current;
+        if (!attempt) {
+          attempt = createFrozenInventoryItemAttempt({
+            propertyId: activePropertyId,
+            requestId: generateId(),
+            itemId: generateId(),
+            startedAt: new Date().toISOString(),
+            nameInput: name,
+            category: category as InventoryCategory,
+            customCategoryId,
+            currentStockInput: currentStock,
+            parLevelInput: parLevel,
+            unitCostInput: unitCost,
+            vendorInput: vendor,
+            vendorId,
+            includeUnitCost: canViewFinancials,
+          });
+        }
+        createAttemptUsed = attempt;
+        try {
+          // No insert starts until this exact UUID + payload survives a
+          // synchronous write/readback. Restricted storage therefore fails
+          // before the database can have an ambiguous outcome.
+          persistInventoryItemCreateAttempt(attempt);
+        } catch (err) {
+          console.error('[add-item] recovery persistence failed', err);
+          if (!createAttemptRef.current) setCreateRetryLocked(false);
+          alert(ais.createUnsafe);
+          return;
+        }
+        createAttemptRef.current = attempt;
+        setCreateRetryLocked(true);
+        await addInventoryItem(user.uid, attempt.propertyId, {
+          name: attempt.name,
+          category: attempt.category,
+          customCategoryId: attempt.customCategoryId,
+          parLevel: attempt.parLevel,
+          unitCost: attempt.unitCost ?? undefined,
+          vendorName: attempt.vendorName ?? undefined,
+          vendorId: attempt.vendorId,
           unit: 'each',
           reorderLeadDays: 3,
-          currentStock: Number(currentStock) || 0,
-          propertyId: activePropertyId,
-        });
+          currentStock: attempt.currentStock,
+          notes: inventoryItemCreateMarker(attempt.requestId),
+          lastCountedAt: attempt.currentStock > 0 ? new Date(attempt.startedAt) : null,
+          propertyId: attempt.propertyId,
+        }, attempt.itemId);
+        clearInventoryItemCreateAttempt(attempt.propertyId, attempt.requestId);
+        createAttemptRef.current = null;
+        setCreateRetryLocked(false);
+        // The marker exists only to prove an ambiguous retry belongs to this
+        // exact row. Cleanup is metadata-only and may safely finish later.
+        void updateInventoryItem(user.uid, attempt.propertyId, attempt.itemId, { notes: '' })
+          .catch((err) => console.error('[add-item] marker cleanup failed', err));
       }
       onClose();
     } catch (err) {
       console.error('[add-item] save failed', err);
-      alert(ais.saveFailed);
+      if (createAttemptUsed) {
+        if (isDefinitiveInventoryItemCreateFailure(err)) {
+          clearInventoryItemCreateAttempt(createAttemptUsed.propertyId, createAttemptUsed.requestId);
+          if (createAttemptRef.current?.requestId === createAttemptUsed.requestId) {
+            createAttemptRef.current = null;
+            setCreateRetryLocked(false);
+          }
+        } else {
+          // Unknown transport outcome: retain and lock the exact item UUID and
+          // fields. Retry can only resend this same insert.
+          createAttemptRef.current = createAttemptUsed;
+          setCreateRetryLocked(true);
+        }
+      }
+      alert(
+        createAttemptUsed && !isDefinitiveInventoryItemCreateFailure(err)
+          ? ais.createPending
+          : metadataSaved && (err as { code?: unknown })?.code === '40001'
+          ? ais.detailsSavedCountConflict
+          : ais.saveFailed,
+      );
     } finally {
       setSaving(false);
     }
   };
 
-  const handleDelete = async () => {
+  const handleArchive = async () => {
     if (!user || !activePropertyId || !item || saving) return;
-    if (!confirm(ais.confirmRemove(item.name))) return;
+    if (!confirm(ais.confirmArchive(item.name))) return;
     setSaving(true);
     try {
-      await deleteInventoryItem(user.uid, activePropertyId, item.id);
+      await archiveInventoryItem(user.uid, activePropertyId, item.id);
       onClose();
     } catch (err) {
-      console.error('[add-item] delete failed', err);
-      alert(ais.couldNotRemove);
+      console.error('[add-item] archive failed', err);
+      alert(ais.couldNotArchive);
     } finally {
       setSaving(false);
     }
+  };
+
+  const requestClose = () => {
+    if (saving || createRetryLocked) return;
+    onClose();
   };
 
   return (
     <Overlay
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       eyebrow={isEdit ? ais.editItem : ais.newItem}
       italic={isEdit ? item?.name : ais.addToInventory}
       width={640}
       footer={
         <>
           {isEdit && (
-            <Btn variant="ghost" size="md" onClick={handleDelete} disabled={saving} style={{ marginRight: 'auto', color: T.warm }}>
-              {ais.delete}
+            <Btn variant="ghost" size="md" onClick={handleArchive} disabled={saving} style={{ marginRight: 'auto', color: T.warm }}>
+              {ais.archive}
             </Btn>
           )}
-          <Btn variant="ghost" size="md" onClick={onClose} disabled={saving}>
+          <Btn variant="ghost" size="md" onClick={requestClose} disabled={saving || createRetryLocked}>
             {ais.cancel}
           </Btn>
           <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || !name.trim()}>
-            {saving ? ais.saving : isEdit ? ais.save : ais.addItem}
+            {saving ? ais.saving : isEdit ? ais.save : createRetryLocked ? ais.retryCreate : ais.addItem}
           </Btn>
         </>
       }
     >
+      {createRetryLocked && (
+        <div
+          role="status"
+          style={{
+            marginBottom: 12,
+            padding: '10px 12px',
+            borderRadius: 9,
+            background: T.warmDim,
+            color: T.warm,
+            fontFamily: fonts.sans,
+            fontSize: 12.5,
+          }}
+        >
+          {ais.createPending}
+        </div>
+      )}
+      <fieldset
+        disabled={saving || createRetryLocked}
+        style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}
+      >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <Field label={ais.name} tip={ais.tipName}>
           <input
@@ -310,19 +467,21 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
           </Field>
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
-          <Field label={ais.unitCost} tip={ais.tipUnitCost}>
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              inputMode="decimal"
-              value={unitCost}
-              onChange={(e) => { const v = e.target.value; if (numGuard(v)) setUnitCost(v); }}
-              placeholder="0.00"
-              style={inputStyle}
-            />
-          </Field>
+        <div style={{ display: 'grid', gridTemplateColumns: canViewFinancials ? '1fr 1fr' : '1fr', gap: 12 }}>
+          {canViewFinancials && (
+            <Field label={ais.unitCost} tip={ais.tipUnitCost}>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={unitCost}
+                onChange={(e) => { const v = e.target.value; if (numGuard(v)) setUnitCost(v); }}
+                placeholder="0.00"
+                style={inputStyle}
+              />
+            </Field>
+          )}
           <Field label={ais.vendor} tip={ais.tipVendor}>
             {vendors.length > 0 && (
               <select
@@ -353,6 +512,7 @@ export function AddItemSheet({ lang, open, onClose, item, defaultCategory = 'hou
           </Field>
         </div>
       </div>
+      </fieldset>
     </Overlay>
   );
 }

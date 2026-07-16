@@ -127,6 +127,14 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
     }
   };
 
+  const openCreatedHotel = () => {
+    if (!created) return;
+    // PropertyContext's fleet predates this create. Persist the selection and
+    // do a full navigation so the fresh property list includes the new hotel.
+    localStorage.setItem('hotelops-active-property', created.propertyId);
+    window.location.href = '/home';
+  };
+
   return (
     <Backdrop onClose={() => { if (!submitting) onClose(); }}>
       <div
@@ -166,7 +174,8 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
             )}
 
             <div style={{ display: 'flex', gap: 8 }}>
-              <Btn variant="primary" onClick={onClose}>Done</Btn>
+              <Btn variant="primary" onClick={openCreatedHotel}>Open hotel →</Btn>
+              <Btn variant="ghost" onClick={onClose}>Done</Btn>
             </div>
           </>
         ) : (

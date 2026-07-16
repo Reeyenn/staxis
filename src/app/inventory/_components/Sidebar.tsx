@@ -72,7 +72,7 @@ export function Sidebar({
     >
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.do}</Caps>
       <RailBtn label={tx.startCount} badge={totalItems} primary onClick={() => onAction('count')} />
-      <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('scan')} />
+      {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('scan')} />}
       <Divider />
       <RailBtn label={tx.reorderList} badge={reorderCount} accent onClick={() => onAction('reorder')} />
       {canManage && <RailBtn label={tx.orders} onClick={() => onAction('orders')} />}

@@ -18,12 +18,21 @@ import {
   monthToDateSpendDetail,
   monthlySpendHistory,
   sectionBudgetKey,
-  addInventoryCount,
-  updateInventoryItem,
+  saveInventoryCountAtomic,
   type MonthSpendDetail,
   type MonthlySpend,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { generateId } from '@/lib/utils';
+import { groupInventoryCountsByEvent } from '@/lib/inventory-history';
+import {
+  clearQuickCountAttempt,
+  isDefinitiveQuickCountFailure,
+  loadQuickCountAttempts,
+  persistQuickCountAttempt,
+  QuickCountStorageError,
+  type FrozenQuickCountAttempt,
+} from '@/lib/inventory-quick-count-attempt';
 import { fetchOccupancyBundle, type OccupancyBundle } from '@/lib/inventory-estimate';
 import {
   fetchDailyAverages,
@@ -192,6 +201,10 @@ export function InventoryShell() {
   // "everything reloads five times" bug.
   const [itemsLoaded, setItemsLoaded] = useState(false);
   const [bundleLoaded, setBundleLoaded] = useState(false);
+  const [itemsLoadError, setItemsLoadError] = useState(false);
+  const [inventoryReload, setInventoryReload] = useState(0);
+  const [quickCountError, setQuickCountError] = useState(false);
+  const [quickCountLockedIds, setQuickCountLockedIds] = useState<Set<string>>(() => new Set());
 
   // ── Subscribe + fetch when property loads ──────────────────────────
   // Both mount effects depend on the user's stable uid, NOT the user object —
@@ -200,16 +213,42 @@ export function InventoryShell() {
   // every rebuild, replaying the board's entrance each time (the "inventory
   // reloads five times" bug). Same identity-primitive rule PropertyContext uses.
   const uid = stableUser?.uid ?? null;
+  // Async quick-count responses may arrive after the operator switches hotels.
+  // Read the live property from a ref before touching visible draft/lock state,
+  // so an old hotel's response can never paint an item into the new hotel.
+  const activePropertyIdRef = React.useRef(activePropertyId);
+  activePropertyIdRef.current = activePropertyId;
   useEffect(() => {
     if (!uid || !activePropertyId) return;
+    setItems([]);
     setItemsLoaded(false);
     setBundleLoaded(false);
-    const unsub = subscribeToInventory(uid, activePropertyId, (snap) => {
-      setItems(snap);
+    setItemsLoadError(false);
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      setItemsLoadError(true);
       setItemsLoaded(true);
-    });
-    return () => unsub();
-  }, [uid, activePropertyId]);
+    }, 8000);
+    const unsub = subscribeToInventory(uid, activePropertyId, (snap) => {
+      settled = true;
+      window.clearTimeout(timeout);
+      setItems(snap);
+      setItemsLoadError(false);
+      setItemsLoaded(true);
+    }, () => {
+      settled = true;
+      window.clearTimeout(timeout);
+      setItemsLoadError(true);
+      setItemsLoaded(true);
+    }, canViewFinancials);
+    return () => {
+      settled = true;
+      window.clearTimeout(timeout);
+      unsub();
+    };
+  }, [uid, activePropertyId, inventoryReload, canViewFinancials]);
 
   // ONE assembly of the board's data fetch — shared by the initial-load effect
   // and refreshData so the two query sets can never drift apart.
@@ -226,8 +265,11 @@ export function InventoryShell() {
     const [occ, avg, ct, od, bd, sec, spend, hist, cats] = await Promise.all([
       fetchOccupancyBundle(pid, daysAgo(14)),
       fetchDailyAverages(pid, 14),
-      listInventoryCounts(uid, pid, 200),
-      listInventoryOrders(uid, pid, 200),
+      // A 40-item hotel counting daily generates 1,120 rows in four weeks.
+      // Keep enough local history for a full field-test month rather than
+      // silently truncating the reconciliation timeline after five saves.
+      listInventoryCounts(uid, pid, 2000, canViewFinancials),
+      listInventoryOrders(uid, pid, 200, canViewFinancials),
       // Budget + spend are money — only fetch them for the money capability
       // so the dollar figures never reach a line-staff browser.
       canViewFinancials
@@ -284,7 +326,7 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
+  }, [uid, activePropertyId, fetchBoardData, applyBoardData, inventoryReload]);
 
   // ── Honour ?action= deep links once on mount + when property switches ──
   useEffect(() => {
@@ -293,6 +335,7 @@ export function InventoryShell() {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
       if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
+      if ((action === 'scan' || action === 'orders' || action === 'ordersettings') && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
       if (action === 'add') setEditItem(null);
@@ -300,7 +343,7 @@ export function InventoryShell() {
     }
     // Run only on initial mount + param changes — we want sticky URLs.
 
-  }, [searchParams, canViewFinancials]);
+  }, [searchParams, canViewFinancials, canManage]);
 
   // ── Derived display items ──────────────────────────────────────────
   // Fully manual: no ML rates and no "ai-tracked" graduation marks. Empty
@@ -392,14 +435,10 @@ export function InventoryShell() {
     () => countedItems.filter((d) => d.status !== 'good').length,
     [countedItems],
   );
-  // Group count rows by countedAt timestamp so the sidebar shows distinct
-  // count events (one per session), not raw row count. Matches HistoryPanel.
+  // Show distinct count sessions, not raw per-item rows. New atomic saves use
+  // countSessionId; pre-0310 rows retain their exact-timestamp grouping.
   const historyCount = useMemo(() => {
-    const countEvents = new Set<string>();
-    for (const c of counts) {
-      if (c.countedAt) countEvents.add(c.countedAt.toISOString());
-    }
-    return orders.length + countEvents.size;
+    return orders.length + groupInventoryCountsByEvent(counts).length;
   }, [counts, orders]);
 
   // Whole-inventory spend this month, in dollars. (inventory_orders costs are
@@ -433,8 +472,10 @@ export function InventoryShell() {
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
+    if ((k === 'scan' || k === 'orders' || k === 'ordersettings') && !canManage) return;
+    if ((k === 'reports' || k === 'budgets') && !canViewFinancials) return;
     setOverlay(k as OverlayKey);
-  }, []);
+  }, [canManage, canViewFinancials]);
 
   const closeOverlay = useCallback(() => {
     setOverlay(null);
@@ -465,13 +506,19 @@ export function InventoryShell() {
   const draftCountsRef = React.useRef(draftCounts);
   draftCountsRef.current = draftCounts;
   const quickTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  // Value armed on each item's pending timer, so unmount can flush it.
-  const quickPending = React.useRef<Map<string, number>>(new Map());
+  // The latest debounced envelope per item. It is already in localStorage, so
+  // navigation during the debounce window cannot lose the employee's tap.
+  const quickPending = React.useRef<Map<string, FrozenQuickCountAttempt>>(new Map());
   // Values whose write has SUCCESSFULLY landed, awaiting the realtime snapshot.
   // The reconcile gates on THIS (not bare value-equality): a still-pending save
   // is never cancelled just because the draft happens to equal the already-
   // stored stock (the "recount confirms the same value" case).
   const savedCounts = React.useRef<Map<string, number>>(new Map());
+  // Full immutable RPC envelopes. Once an RPC begins, that item's stepper is
+  // locked until success or a definitive rollback; an ambiguous response can
+  // only replay this exact object.
+  const quickAttempts = React.useRef<Map<string, FrozenQuickCountAttempt>>(new Map());
+  const quickInFlight = React.useRef<Set<string>>(new Set());
   // Backstop timers: retire an optimistic draft a couple seconds after its write
   // lands, in case the realtime snapshot never clears it (a concurrent writer to
   // the same item, or a refetch that beat savedCounts) — so a row can't strand
@@ -506,93 +553,95 @@ export function InventoryShell() {
     }, 2500));
   }, []);
 
-  // Persist one quick count through the same write path Count Mode uses. The
-  // stock update (reorder-critical) goes first, then the count-history row,
-  // then fire-and-forget ML post-count. Deliberately NO auto stock-up order —
-  // that belongs to an authoritative full count; a ±1 correction must not
-  // inflate month spend. The two writes are not transactional; stock-first
-  // ordering keeps the reorder-critical value correct if the audit row alone
-  // fails. On a stock-write failure the optimistic draft is rolled back.
-  const saveQuickCount = useCallback(async (itemId: string, value: number) => {
-    if (!uid || !activePropertyId || !stableUser) return;
-    const d = displayRef.current.find((x) => x.id === itemId);
-    if (!d) return;
-    // Dedup: don't re-write a value that's already persisted (the net-return
-    // "wiggle" case) — it would add a duplicate count-history row.
-    // • savedCounts match → the original save owns the draft cleanup; just skip.
-    if (savedCounts.current.get(itemId) === value) return;
-    // • value already stored → skip AND retire the redundant draft so it can't
-    //   strand over a later external change to the same item.
-    if ((d.raw.currentStock ?? 0) === value && d.lastCountedAt != null) {
-      setDraftCounts((prev) => {
-        if (prev.get(itemId) !== value) return prev;
-        const next = new Map(prev);
-        next.delete(itemId);
-        return next;
-      });
-      return;
-    }
-    const now = new Date();
-    const variance = Number.isFinite(d.estimated) ? value - d.estimated : undefined;
+  const setQuickLocked = useCallback((itemId: string, locked: boolean) => {
+    setQuickCountLockedIds((prev) => {
+      if (prev.has(itemId) === locked) return prev;
+      const next = new Set(prev);
+      if (locked) next.add(itemId);
+      else next.delete(itemId);
+      return next;
+    });
+  }, []);
+
+  // Submit one already-persisted immutable envelope. This function never
+  // rebuilds expectedStock/actor/estimate on retry.
+  const submitQuickCountAttempt = useCallback(async (attempt: FrozenQuickCountAttempt) => {
+    const { itemId } = attempt;
+    if (quickInFlight.current.has(itemId)) return;
+    quickInFlight.current.add(itemId);
+    if (activePropertyIdRef.current === attempt.propertyId) setQuickLocked(itemId, true);
     try {
-      await updateInventoryItem(uid, activePropertyId, itemId, {
-        currentStock: value,
-        lastCountedAt: now,
-      });
-      // Stock has landed — record it so the reconcile clears the draft once the
-      // realtime snapshot catches up (no flicker back to the old value), even
-      // if the audit-row write below happens to fail.
-      savedCounts.current.set(itemId, value);
-      scheduleBackstop(itemId, value);
-      await addInventoryCount(uid, activePropertyId, {
-        propertyId: activePropertyId,
-        itemId,
-        itemName: d.name,
-        countedStock: value,
-        estimatedStock: Number.isFinite(d.estimated) ? d.estimated : undefined,
-        variance,
-        varianceValue: variance !== undefined && d.unitCost > 0 ? variance * d.unitCost : undefined,
-        unitCost: d.unitCost || undefined,
-        countedAt: now,
-        countedBy: stableUser.displayName || stableUser.username || tx.team,
-      });
+      // Re-verify the durable write immediately before every RPC. A storage
+      // quota/policy failure is pre-send and therefore cannot become an
+      // ambiguous additive/absolute database result.
+      persistQuickCountAttempt(attempt);
+      await saveInventoryCountAtomic(
+        attempt.userId,
+        attempt.propertyId,
+        attempt.requestId,
+        new Date(attempt.countedAt),
+        attempt.countedBy,
+        [attempt.row],
+      );
+      const value = attempt.row.countedStock;
+      clearQuickCountAttempt(attempt.propertyId, itemId, attempt.requestId);
+      if (quickAttempts.current.get(itemId)?.requestId === attempt.requestId) {
+        quickAttempts.current.delete(itemId);
+      }
+      if (activePropertyIdRef.current === attempt.propertyId) {
+        savedCounts.current.set(itemId, value);
+        scheduleBackstop(itemId, value);
+        setQuickLocked(itemId, false);
+        setQuickCountError([...quickAttempts.current.values()].some(
+          (pending) => pending.propertyId === attempt.propertyId,
+        ));
+      }
       void fetchWithAuth('/api/inventory/post-count-process', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: activePropertyId, itemIds: [itemId] }),
+        body: JSON.stringify({ propertyId: attempt.propertyId, itemIds: [itemId] }),
       }).catch(() => {});
     } catch (err) {
       console.error('[inventory] quick-count save failed', err);
-      // Roll back the optimistic draft ONLY if the STOCK write itself failed
-      // (nothing persisted). If stock landed and only the audit row failed, the
-      // count is already reflected in stock — leave the draft for the reconcile
-      // to clear. Never clobber a newer pending edit for the same item.
-      if (savedCounts.current.get(itemId) !== value) {
+      const isActiveProperty = activePropertyIdRef.current === attempt.propertyId;
+      if (isActiveProperty) setQuickCountError(true);
+      if (isDefinitiveQuickCountFailure(err)) {
+        // A coded database response proves rollback. Release the UUID but keep
+        // the employee's visible value so the error never erases their input.
+        clearQuickCountAttempt(attempt.propertyId, itemId, attempt.requestId);
+        if (quickAttempts.current.get(itemId)?.requestId === attempt.requestId) {
+          quickAttempts.current.delete(itemId);
+          if (isActiveProperty) setQuickLocked(itemId, false);
+        }
+      } else {
+        // Network or durable-storage uncertainty: retain the exact envelope and
+        // its visible value. Only the Retry action/reload may replay it.
+        quickAttempts.current.set(itemId, attempt);
+        if (isActiveProperty) setQuickLocked(itemId, true);
+      }
+      if (isActiveProperty) {
         setDraftCounts((prev) => {
-          if (prev.get(itemId) !== value) return prev;
           const next = new Map(prev);
-          next.delete(itemId);
+          next.set(itemId, attempt.row.countedStock);
           return next;
         });
       }
+    } finally {
+      quickInFlight.current.delete(itemId);
     }
-  }, [uid, activePropertyId, stableUser, tx.team, scheduleBackstop]);
+  }, [scheduleBackstop, setQuickLocked]);
 
-  const saveQuickCountRef = React.useRef(saveQuickCount);
-  saveQuickCountRef.current = saveQuickCount;
+  const submitQuickCountAttemptRef = React.useRef(submitQuickCountAttempt);
+  submitQuickCountAttemptRef.current = submitQuickCountAttempt;
 
-  // Flush any still-pending debounced counts on unmount — leaving /inventory
-  // within the debounce window must not silently drop the write.
+  // Attempts are synchronously persisted on every tap. Unmount only cancels
+  // timers; restoration will replay the exact envelopes on the next mount.
   useEffect(() => {
     const timers = quickTimers.current;
     const pending = quickPending.current;
     const backstops = quickBackstop.current;
     return () => {
-      for (const [id, tm] of timers) {
-        clearTimeout(tm);
-        const v = pending.get(id);
-        if (v != null) void saveQuickCountRef.current(id, v);
-      }
+      for (const tm of timers.values()) clearTimeout(tm);
       timers.clear();
       pending.clear();
       for (const tm of backstops.values()) clearTimeout(tm);
@@ -603,7 +652,14 @@ export function InventoryShell() {
   // Ledger row tapped −/+ : update the draft immediately, debounce the save so a
   // burst of taps writes once (~1.5s after the last tap).
   const onQuickCount = useCallback((itemId: string, nextValue: number) => {
+    if (!uid || !activePropertyId || !stableUser) return;
+    // Once an RPC begins (or its response is ambiguous), do not allow a new
+    // value to replace the frozen envelope. The row's controls are also
+    // disabled; this ref guard closes the one-render click race.
+    if (quickInFlight.current.has(itemId)
+      || (quickAttempts.current.has(itemId) && !quickPending.current.has(itemId))) return;
     const d = displayRef.current.find((x) => x.id === itemId);
+    if (!d) return;
     const curDraft = draftCountsRef.current.get(itemId);
     const have = curDraft != null ? curDraft : Math.max(0, Math.round(d?.estimated ?? 0));
     const v = Math.max(0, Math.round(nextValue));
@@ -618,25 +674,74 @@ export function InventoryShell() {
       const tm = quickTimers.current.get(itemId);
       if (tm) { clearTimeout(tm); quickTimers.current.delete(itemId); }
       quickPending.current.delete(itemId);
+      const pendingAttempt = quickAttempts.current.get(itemId);
+      if (pendingAttempt && !quickInFlight.current.has(itemId)) {
+        clearQuickCountAttempt(pendingAttempt.propertyId, itemId, pendingAttempt.requestId);
+        quickAttempts.current.delete(itemId);
+      }
       removeDraft(itemId);
       return;
     }
 
+    // Retire the prior debounce before replacing its envelope. If persistence
+    // for the new value fails, no older timer may wake up and save a value the
+    // employee has already changed.
+    const timers = quickTimers.current;
+    const existing = timers.get(itemId);
+    if (existing) {
+      clearTimeout(existing);
+      timers.delete(itemId);
+    }
+
+    const previousAttempt = quickAttempts.current.get(itemId);
+    const attempt: FrozenQuickCountAttempt = {
+      version: 1,
+      userId: uid,
+      propertyId: activePropertyId,
+      itemId,
+      requestId: generateId(),
+      countedAt: new Date().toISOString(),
+      countedBy: stableUser.displayName || stableUser.username || tx.team,
+      row: {
+        itemId,
+        expectedStock: savedCounts.current.get(itemId) ?? (d.raw.currentStock ?? 0),
+        countedStock: v,
+        estimatedStock: d.lastCountedAt != null && Number.isFinite(d.estimated) ? d.estimated : undefined,
+      },
+    };
     setDraftCounts((prev) => {
       const next = new Map(prev);
       next.set(itemId, v);
       return next;
     });
-    quickPending.current.set(itemId, v);
-    const timers = quickTimers.current;
-    const existing = timers.get(itemId);
-    if (existing) clearTimeout(existing);
+    quickAttempts.current.set(itemId, attempt);
+    quickPending.current.set(itemId, attempt);
+    try {
+      persistQuickCountAttempt(attempt);
+    } catch (err) {
+      console.error('[inventory] quick-count durable save failed', err);
+      quickPending.current.delete(itemId);
+      if (previousAttempt && err instanceof QuickCountStorageError && !err.supersededRetired) {
+        // Storage could not neutralize A, so B was never accepted. Keep A both
+        // visibly and in memory; a reload may replay A, but never an obsolete
+        // value hidden behind a visible B.
+        quickAttempts.current.set(itemId, previousAttempt);
+        setDraftCounts((prev) => {
+          const next = new Map(prev);
+          next.set(itemId, previousAttempt.row.countedStock);
+          return next;
+        });
+      }
+      setQuickLocked(itemId, true);
+      setQuickCountError(true);
+      return;
+    }
     timers.set(itemId, setTimeout(() => {
       timers.delete(itemId);
       quickPending.current.delete(itemId);
-      void saveQuickCount(itemId, v);
+      void submitQuickCountAttempt(attempt);
     }, 1500));
-  }, [saveQuickCount, removeDraft]);
+  }, [uid, activePropertyId, stableUser, tx.team, submitQuickCountAttempt, setQuickLocked, removeDraft]);
 
   // Reconcile: once a realtime snapshot reflects a SAVED quick count
   // (savedCounts[id] === currentStock) drop the draft, and cancel the now-
@@ -665,12 +770,10 @@ export function InventoryShell() {
     if (changed) setDraftCounts(next);
   }, [items]);
 
-  // Property switch: the shell is NOT remounted, so drop any in-flight
-  // quick-count state — its drafts/timers belong to the previous property and
-  // the debounced save (which reads the now-swapped display) can't reliably
-  // persist them across the switch. Clearing also stops a stale optimistic value
-  // from resurrecting when switching back.
-  const prevPidRef = React.useRef(activePropertyId);
+  // Property switch/remount: the old hotel's timers can stop because their
+  // envelopes are durable. Restore the new hotel's exact pending values and
+  // lock them before any fresh edit is possible.
+  const prevPidRef = React.useRef<string | null>(null);
   useEffect(() => {
     if (prevPidRef.current === activePropertyId) return;
     prevPidRef.current = activePropertyId;
@@ -680,8 +783,51 @@ export function InventoryShell() {
     quickBackstop.current.clear();
     quickPending.current.clear();
     savedCounts.current.clear();
-    setDraftCounts((prev) => (prev.size === 0 ? prev : new Map()));
+    if (!activePropertyId) {
+      setDraftCounts(new Map());
+      setQuickCountLockedIds(new Set());
+      return;
+    }
+    try {
+      const restored = loadQuickCountAttempts(activePropertyId);
+      for (const [itemId, attempt] of quickAttempts.current) {
+        if (attempt.propertyId === activePropertyId) quickAttempts.current.delete(itemId);
+      }
+      for (const attempt of restored) quickAttempts.current.set(attempt.itemId, attempt);
+      setDraftCounts(new Map(restored.map((attempt) => [attempt.itemId, attempt.row.countedStock])));
+      setQuickCountLockedIds(new Set(restored.map((attempt) => attempt.itemId)));
+      setQuickCountError(restored.length > 0);
+    } catch (err) {
+      console.error('[inventory] quick-count restore failed', err);
+      // If storage becomes temporarily unreadable during an in-app property
+      // switch, retain any exact envelopes already held in memory.
+      const cached = [...quickAttempts.current.values()].filter(
+        (attempt) => attempt.propertyId === activePropertyId,
+      );
+      setDraftCounts(new Map(cached.map((attempt) => [attempt.itemId, attempt.row.countedStock])));
+      setQuickCountLockedIds(new Set(cached.map((attempt) => attempt.itemId)));
+      setQuickCountError(true);
+    }
   }, [activePropertyId]);
+
+  // Once authentication is ready, resolve restored envelopes automatically.
+  useEffect(() => {
+    if (!uid || !activePropertyId) return;
+    for (const attempt of quickAttempts.current.values()) {
+      if (attempt.propertyId === activePropertyId && attempt.userId === uid) {
+        void submitQuickCountAttemptRef.current(attempt);
+      }
+    }
+  }, [uid, activePropertyId]);
+
+  const retryQuickCounts = useCallback(() => {
+    if (!activePropertyId) return;
+    for (const attempt of quickAttempts.current.values()) {
+      if (attempt.propertyId === activePropertyId && attempt.userId === uid) {
+        void submitQuickCountAttempt(attempt);
+      }
+    }
+  }, [activePropertyId, uid, submitQuickCountAttempt]);
 
   const refreshData = useCallback(async () => {
     if (!uid || !activePropertyId) return;
@@ -772,7 +918,39 @@ export function InventoryShell() {
   }, []);
   const pageRef = useRiseIn<HTMLDivElement>([revealed], { step: 75, dist: 16 });
 
-  if (!revealed) {
+  if (itemsLoadError) {
+    return (
+      <div
+        role="alert"
+        style={{
+          padding: '64px 24px',
+          textAlign: 'center',
+          fontFamily: fonts.sans,
+          color: T.ink2,
+        }}
+      >
+        <div style={{ marginBottom: 14 }}>{tx.loadFailed}</div>
+        <button
+          type="button"
+          onClick={() => setInventoryReload((n) => n + 1)}
+          style={{
+            minHeight: 44,
+            padding: '0 18px',
+            borderRadius: 10,
+            border: 0,
+            background: T.brand,
+            color: '#fff',
+            cursor: 'pointer',
+            fontWeight: 600,
+          }}
+        >
+          {tx.retry}
+        </button>
+      </div>
+    );
+  }
+
+  if (!revealed || !itemsLoaded) {
     return (
       <div
         style={{
@@ -800,6 +978,41 @@ export function InventoryShell() {
       }}
     >
       <InvFx />
+
+      {quickCountError && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          style={{
+            margin: '0 4px 14px',
+            padding: '10px 14px',
+            borderRadius: 10,
+            border: `1px solid ${T.terra}55`,
+            background: T.terraDim,
+            color: T.terra,
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <span>{tx.quickCountSaveFailed}</span>
+          {quickCountLockedIds.size > 0 && (
+            <button
+              type="button"
+              onClick={retryQuickCounts}
+              style={{
+                flex: 'none', border: `1px solid ${T.terra}66`, borderRadius: 8,
+                padding: '6px 10px', background: T.bg, color: T.terra,
+                fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+              }}
+            >
+              {L === 'es' ? 'Reintentar conteos pendientes' : 'Retry pending counts'}
+            </button>
+          )}
+        </div>
+      )}
 
       <MobileInventoryTriage
         lang={L}
@@ -909,6 +1122,7 @@ export function InventoryShell() {
               canViewFinancials={canViewFinancials}
               onEdit={onEditItem}
               onQuickCount={onQuickCount}
+              quickCountLockedIds={quickCountLockedIds}
               onCount={() => setOverlay('count')}
               onAdd={() => { setEditItem(null); setOverlay('add'); }}
             />
@@ -980,6 +1194,7 @@ export function InventoryShell() {
         onClose={closeOverlay}
         counts={counts}
         orders={orders}
+        canViewFinancials={canViewFinancials}
       />
 
       <BudgetsPanel
@@ -1005,7 +1220,7 @@ export function InventoryShell() {
           Keeps the 'scan' overlay key so ?action=scan deep links still work. */}
       <DeliverySheet
         lang={L}
-        open={overlay === 'scan'}
+        open={overlay === 'scan' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         display={display}
       />
@@ -1015,6 +1230,8 @@ export function InventoryShell() {
         open={overlay === 'add'}
         onClose={() => { closeOverlay(); }}
         item={editItem}
+        canViewFinancials={canViewFinancials}
+        defaultCategory={bucket === 'breakfast' ? 'breakfast' : 'housekeeping'}
         customCategories={customCategories}
         defaultCustomCategoryId={bucket.startsWith('custom:') ? bucket.slice(7) : null}
       />

@@ -7,9 +7,10 @@
 //
 //   • orders[]        one inventory_orders row per received line (ledger fidelity)
 //   • creates[]       one new inventory item per "create" line (stock = received)
-//   • stockUpdates[]  one stock write per MATCHED item — quantities are
-//                     COALESCED by itemId so two lines on the same item don't
-//                     race on an absolute current_stock write (Codex C1).
+//   • stockUpdates[]  legacy review projection of the resulting stock. The
+//                     atomic delivery executor intentionally DOES NOT write
+//                     these absolute values; Postgres adds each received
+//                     quantity to the latest row-locked stock instead.
 //
 // Stock semantics = re-baseline: finalStock = max(0, round(onHandEstimate)) +
 // receivedQty (the manager-visible "on hand → after"), overridable per item
@@ -58,6 +59,8 @@ export interface CommitOrder {
 }
 
 export interface CommitStockUpdate {
+  /** @deprecated Display/review projection only. Never persist this stale
+   * browser-derived absolute value; use additive delivery lines. */
   itemId: string;
   finalStock: number;
 }

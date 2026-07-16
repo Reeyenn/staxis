@@ -39,7 +39,7 @@ export function HomeHubView({ greeting, dateline, tiles, ask }: HomeHubViewProps
       <h1 className="cx-greet" style={{ margin: 0 }}>{greeting}</h1>
       <div className="cx-dateline">{dateline}</div>
       {ask}
-      <div className="cx-board">
+      <div className={`cx-board${tiles.length === 1 ? ' cx-board-single' : ''}`}>
         {tiles.map((tile) => {
           const toneCls = tile.tone === 'warn' ? ' cx-warn' : tile.tone === 'bad' ? ' cx-bad' : '';
           return (

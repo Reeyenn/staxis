@@ -143,6 +143,7 @@ const CX_CSS = `
 .cx-ask input::placeholder{color:#A6ABA6;}
 
 .cx-board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px;margin-top:30px;}
+.cx-board.cx-board-single{grid-template-columns:minmax(220px,360px);justify-content:center;}
 .cx-tile{background:#fff;border:1px solid rgba(31,35,28,.08);border-radius:18px;padding:15px 15px 13px;
   cursor:pointer;display:flex;flex-direction:column;align-items:flex-start;text-align:left;min-width:0;
   box-shadow:0 6px 16px -14px rgba(31,42,32,.35);transform:translateY(0);

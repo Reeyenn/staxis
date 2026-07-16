@@ -1829,8 +1829,13 @@ export type Database = {
       }
       inventory: {
         Row: {
+          archived_at: string | null
+          archived_by: string | null
           case_unit: string | null
           category: string
+          created_at: string | null
+          created_by: string | null
+          custom_category_id: string | null
           current_stock: number
           id: string
           last_alerted_at: string | null
@@ -1848,11 +1853,17 @@ export type Database = {
           updated_at: string
           usage_per_checkout: number | null
           usage_per_stayover: number | null
+          vendor_id: string | null
           vendor_name: string | null
         }
         Insert: {
+          archived_at?: string | null
+          archived_by?: string | null
           case_unit?: string | null
           category: string
+          created_at?: string | null
+          created_by?: string | null
+          custom_category_id?: string | null
           current_stock?: number
           id?: string
           last_alerted_at?: string | null
@@ -1870,11 +1881,17 @@ export type Database = {
           updated_at?: string
           usage_per_checkout?: number | null
           usage_per_stayover?: number | null
+          vendor_id?: string | null
           vendor_name?: string | null
         }
         Update: {
+          archived_at?: string | null
+          archived_by?: string | null
           case_unit?: string | null
           category?: string
+          created_at?: string | null
+          created_by?: string | null
+          custom_category_id?: string | null
           current_stock?: number
           id?: string
           last_alerted_at?: string | null
@@ -1892,6 +1909,7 @@ export type Database = {
           updated_at?: string
           usage_per_checkout?: number | null
           usage_per_stayover?: number | null
+          vendor_id?: string | null
           vendor_name?: string | null
         }
         Relationships: [
@@ -1944,6 +1962,7 @@ export type Database = {
       }
       inventory_counts: {
         Row: {
+          count_session_id: string | null
           counted_at: string
           counted_by: string | null
           counted_stock: number
@@ -1959,6 +1978,7 @@ export type Database = {
           variance_value: number | null
         }
         Insert: {
+          count_session_id?: string | null
           counted_at?: string
           counted_by?: string | null
           counted_stock: number
@@ -1974,6 +1994,7 @@ export type Database = {
           variance_value?: number | null
         }
         Update: {
+          count_session_id?: string | null
           counted_at?: string
           counted_by?: string | null
           counted_stock?: number
@@ -1990,18 +2011,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "inventory_counts_item_id_fkey"
-            columns: ["item_id"]
+            foreignKeyName: "inventory_counts_item_property_fkey"
+            columns: ["item_id", "property_id"]
             isOneToOne: false
             referencedRelation: "inventory"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "inventory_counts_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "item_canonical_name_view"
-            referencedColumns: ["item_id"]
+            referencedColumns: ["id", "property_id"]
           },
           {
             foreignKeyName: "inventory_counts_property_id_fkey"
@@ -2057,18 +2071,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "inventory_discards_item_id_fkey"
-            columns: ["item_id"]
+            foreignKeyName: "inventory_discards_item_property_fkey"
+            columns: ["item_id", "property_id"]
             isOneToOne: false
             referencedRelation: "inventory"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "inventory_discards_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "item_canonical_name_view"
-            referencedColumns: ["item_id"]
+            referencedColumns: ["id", "property_id"]
           },
           {
             foreignKeyName: "inventory_discards_property_id_fkey"
@@ -2127,21 +2134,78 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "inventory_orders_item_id_fkey"
-            columns: ["item_id"]
+            foreignKeyName: "inventory_orders_item_property_fkey"
+            columns: ["item_id", "property_id"]
             isOneToOne: false
             referencedRelation: "inventory"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "inventory_orders_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "item_canonical_name_view"
-            referencedColumns: ["item_id"]
+            referencedColumns: ["id", "property_id"]
           },
           {
             foreignKeyName: "inventory_orders_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      inventory_delivery_keys: {
+        Row: {
+          created_at: string
+          delivery_key: string
+          property_id: string
+          request_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          delivery_key: string
+          property_id: string
+          request_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          delivery_key?: string
+          property_id?: string
+          request_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_delivery_keys_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      inventory_write_receipts: {
+        Row: {
+          created_at: string
+          operation: string
+          payload: Json
+          property_id: string
+          request_id: string
+          result: Json | null
+        }
+        Insert: {
+          created_at?: string
+          operation: string
+          payload: Json
+          property_id: string
+          request_id: string
+          result?: Json | null
+        }
+        Update: {
+          created_at?: string
+          operation?: string
+          payload?: Json
+          property_id?: string
+          request_id?: string
+          result?: Json | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_write_receipts_property_id_fkey"
             columns: ["property_id"]
             isOneToOne: false
             referencedRelation: "properties"
@@ -2271,25 +2335,18 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "inventory_rate_predictions_item_id_fkey"
-            columns: ["item_id"]
+            foreignKeyName: "inventory_rate_predictions_item_property_fkey"
+            columns: ["item_id", "property_id"]
             isOneToOne: false
             referencedRelation: "inventory"
-            referencedColumns: ["id"]
+            referencedColumns: ["id", "property_id"]
           },
           {
-            foreignKeyName: "inventory_rate_predictions_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "item_canonical_name_view"
-            referencedColumns: ["item_id"]
-          },
-          {
-            foreignKeyName: "inventory_rate_predictions_model_run_id_fkey"
-            columns: ["model_run_id"]
+            foreignKeyName: "inventory_rate_predictions_model_property_item_fkey"
+            columns: ["model_run_id", "property_id", "item_id"]
             isOneToOne: false
             referencedRelation: "model_runs"
-            referencedColumns: ["id"]
+            referencedColumns: ["id", "property_id", "item_id"]
           },
           {
             foreignKeyName: "inventory_rate_predictions_property_id_fkey"
@@ -2384,18 +2441,11 @@ export type Database = {
         }
         Relationships: [
           {
-            foreignKeyName: "inventory_reconciliations_item_id_fkey"
-            columns: ["item_id"]
+            foreignKeyName: "inventory_reconciliations_item_property_fkey"
+            columns: ["item_id", "property_id"]
             isOneToOne: false
             referencedRelation: "inventory"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "inventory_reconciliations_item_id_fkey"
-            columns: ["item_id"]
-            isOneToOne: false
-            referencedRelation: "item_canonical_name_view"
-            referencedColumns: ["item_id"]
+            referencedColumns: ["id", "property_id"]
           },
           {
             foreignKeyName: "inventory_reconciliations_property_id_fkey"
@@ -2725,6 +2775,13 @@ export type Database = {
           validation_mae?: number | null
         }
         Relationships: [
+          {
+            foreignKeyName: "model_runs_item_property_fkey"
+            columns: ["item_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory"
+            referencedColumns: ["id", "property_id"]
+          },
           {
             foreignKeyName: "model_runs_property_id_fkey"
             columns: ["property_id"]
@@ -3135,18 +3192,11 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
-            foreignKeyName: "prediction_log_inventory_count_id_fkey"
-            columns: ["inventory_count_id"]
+            foreignKeyName: "prediction_log_inventory_count_property_fkey"
+            columns: ["inventory_count_id", "property_id"]
             isOneToOne: false
             referencedRelation: "inventory_counts"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "prediction_log_inventory_count_id_fkey"
-            columns: ["inventory_count_id"]
-            isOneToOne: false
-            referencedRelation: "inventory_observed_rate_v"
-            referencedColumns: ["newer_count_id"]
+            referencedColumns: ["id", "property_id"]
           },
           {
             foreignKeyName: "prediction_log_model_run_id_fkey"
@@ -5040,6 +5090,10 @@ export type Database = {
         Args: { p_patch: Json; p_property_id: string }
         Returns: Json
       }
+      staxis_parse_finite_numeric: {
+        Args: { p_label: string; p_value: string }
+        Returns: number
+      }
       staxis_purge_old_pull_jobs: { Args: never; Returns: number }
       staxis_realtime_columns: {
         Args: never
@@ -5068,6 +5122,25 @@ export type Database = {
           p_tokens_out: number
           p_tool_calls: Json
         }
+        Returns: undefined
+      }
+      staxis_receive_inventory_delivery: {
+        Args: {
+          p_lines: Json
+          p_notes: string | null
+          p_property_id: string
+          p_received_at: string
+          p_request_id: string
+          p_vendor_name: string | null
+        }
+        Returns: Json
+      }
+      staxis_receive_po_lines: {
+        Args: { p_lines: Json; p_po_id: string; p_property_id: string }
+        Returns: undefined
+      }
+      staxis_receive_po_lines_v2: {
+        Args: { p_lines: Json; p_po_id: string; p_property_id: string }
         Returns: undefined
       }
       staxis_reserve_phone_pairing_resend: {
@@ -5106,6 +5179,16 @@ export type Database = {
       staxis_restore_conversation: {
         Args: { p_conversation_id: string }
         Returns: number
+      }
+      staxis_save_inventory_count: {
+        Args: {
+          p_counted_at: string
+          p_counted_by: string
+          p_property_id: string
+          p_request_id: string
+          p_rows: Json
+        }
+        Returns: Json
       }
       staxis_schedule_auto_fill_if_absent: {
         Args: {

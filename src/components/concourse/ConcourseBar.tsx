@@ -39,7 +39,7 @@ let PREFETCHED_THIS_SESSION = false;
 
 export function ConcourseBar() {
   const { user, signOut } = useAuth();
-  const { properties, activeProperty, setActivePropertyId } = useProperty();
+  const { properties, activeProperty, loading: propertyLoading, setActivePropertyId } = useProperty();
   const can = useCan();
   const { lang, locale, setLocale } = useLang();
   const router = useRouter();
@@ -99,7 +99,7 @@ export function ConcourseBar() {
   // Same visibility rules as the old Header: per-hotel section toggles hide
   // pills entirely; Financials additionally needs the view_financials
   // capability (server routes enforce the same gate independently).
-  const items: BarItem[] = SECTION_LIST
+  const items: BarItem[] = (propertyLoading ? [] : SECTION_LIST)
     .filter((m) => {
       if (!enabled[m.key]) return false;
       if (m.key === 'financials') return !!user && can('view_financials');
