@@ -43,3 +43,10 @@ export function DividerRow({ children, style }: { children: React.ReactNode; sty
     </div>
   );
 }
+
+/** The dim caps eyebrow every dark surface stacks above a heading/stat — the
+ *  shared `.caps` class carrying only a translucent-white color at opacity
+ *  `o`. Renders the same <span className="caps"> the surfaces hand-wrote. */
+export function DimCaps({ children, o = .5, style }: { children: React.ReactNode; o?: number; style?: React.CSSProperties }) {
+  return <span className="caps" style={{ color: dimWhite(o), ...style }}>{children}</span>;
+}
