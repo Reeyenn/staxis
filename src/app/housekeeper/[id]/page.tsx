@@ -80,6 +80,65 @@ function sortRooms(rooms: RoomRow[], groupBy: GroupBy): RoomRow[] {
   });
 }
 
+/**
+ * Bucket a flat room list by date and pick the date to show: today if
+ * present, else the nearest upcoming shift, else the most recent past one.
+ * Returns the (unsorted) rooms for that date so the caller can sort by the
+ * current groupBy. Shared by the realtime subscription and the manual
+ * refetch path — they were byte-identical copies.
+ */
+function pickActiveDateRooms(all: RoomRow[], today: string): { chosenDate: string; dateRooms: RoomRow[] } {
+  const byDate = new Map<string, RoomRow[]>();
+  for (const r of all) {
+    if (!r.date) continue;
+    const list = byDate.get(r.date) ?? [];
+    list.push(r);
+    byDate.set(r.date, list);
+  }
+  let chosenDate = today;
+  if (!byDate.has(today)) {
+    const future = [...byDate.keys()].filter((d) => d > today).sort();
+    if (future.length > 0) {
+      chosenDate = future[0];
+    } else {
+      const past = [...byDate.keys()].filter((d) => d < today).sort().reverse();
+      if (past.length > 0) chosenDate = past[0];
+    }
+  }
+  return { chosenDate, dateRooms: byDate.get(chosenDate) ?? [] };
+}
+
+/**
+ * Full-screen centered notice used by the incomplete-link and bad-link
+ * guards — same markup, only the two strings differ.
+ */
+function GuardScreen({ title, help }: { title: string; help: string }) {
+  return (
+    <div
+      style={{
+        minHeight: '100dvh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexDirection: 'column',
+        gap: '12px',
+        padding: '24px',
+        background: 'var(--bg)',
+        fontFamily: 'var(--font-sans, system-ui, -apple-system, sans-serif)',
+        textAlign: 'center',
+      }}
+    >
+      <AlertTriangle size={32} color="var(--red, #EF4444)" />
+      <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
+        {title}
+      </p>
+      <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
+        {help}
+      </p>
+    </div>
+  );
+}
+
 export default function HousekeeperRoomPage({
   params,
 }: {
@@ -348,27 +407,9 @@ export default function HousekeeperRoomPage({
         );
       }
       if (Date.now() - lastRefetchAtRef.current < 1500) return;
-      const byDate = new Map<string, RoomRow[]>();
-      for (const r of all) {
-        if (!r.date) continue;
-        const list = byDate.get(r.date) ?? [];
-        list.push(r);
-        byDate.set(r.date, list);
-      }
-      let chosenDate = today;
-      if (byDate.has(today)) {
-        chosenDate = today;
-      } else {
-        const future = [...byDate.keys()].filter((d) => d > today).sort();
-        if (future.length > 0) {
-          chosenDate = future[0];
-        } else {
-          const past = [...byDate.keys()].filter((d) => d < today).sort().reverse();
-          if (past.length > 0) chosenDate = past[0];
-        }
-      }
+      const { chosenDate, dateRooms } = pickActiveDateRooms(all, today);
       setActiveDate(chosenDate);
-      setRooms(sortRooms(byDate.get(chosenDate) ?? [], groupBy));
+      setRooms(sortRooms(dateRooms, groupBy));
       setLoading(false);
     });
     return () => {
@@ -493,27 +534,9 @@ export default function HousekeeperRoomPage({
         | { ok?: boolean; data?: RoomRow[] }
         | null;
       if (!json?.ok || !Array.isArray(json.data)) return;
-      const all = json.data;
-      const byDate = new Map<string, RoomRow[]>();
-      for (const r of all) {
-        if (!r.date) continue;
-        const list = byDate.get(r.date) ?? [];
-        list.push(r);
-        byDate.set(r.date, list);
-      }
-      let chosenDate = today;
-      if (byDate.has(today)) {
-        chosenDate = today;
-      } else {
-        const future = [...byDate.keys()].filter((d) => d > today).sort();
-        if (future.length > 0) chosenDate = future[0];
-        else {
-          const past = [...byDate.keys()].filter((d) => d < today).sort().reverse();
-          if (past.length > 0) chosenDate = past[0];
-        }
-      }
+      const { chosenDate, dateRooms } = pickActiveDateRooms(json.data, today);
       setActiveDate(chosenDate);
-      setRooms(sortRooms(byDate.get(chosenDate) ?? [], groupBy));
+      setRooms(sortRooms(dateRooms, groupBy));
     } catch {
       // best-effort
     }
@@ -574,77 +597,59 @@ export default function HousekeeperRoomPage({
   );
 
   // ── Action handlers ────────────────────────────────────────────────────
+  // Shared plumbing for the four workflow POSTs (start / pause / resume /
+  // complete): flip the per-action saving flag, fire the guarded POST, and
+  // surface the localized error on failure. Each handler below only differs
+  // by its saving-state setter, lock/route prefix, and error string.
+  const runSavingAction = useCallback(
+    async (
+      setSaving: React.Dispatch<React.SetStateAction<string | null>>,
+      key: string,
+      url: string,
+      room: RoomRow,
+      errKey: Parameters<typeof t>[0],
+    ) => {
+      if (!pid) return;
+      setSaving(room.id);
+      try {
+        const res = await guardedPost(`${key}:${room.id}`, url, {
+          pid,
+          staffId: housekeeperId,
+          roomId: room.id,
+        });
+        if (!res.ok) showActionError(t(errKey, lang));
+      } finally {
+        setSaving(null);
+      }
+    },
+    [pid, housekeeperId, guardedPost, showActionError, lang],
+  );
+
   const handleStart = useCallback(
     async (room: RoomRow) => {
       if (!pid) return;
-      setSavingStart(room.id);
-      try {
-        void ensureChecklistLoaded(inferCleaningType(room.type));
-        const res = await guardedPost(`start:${room.id}`, '/api/housekeeper/start-clean', {
-          pid,
-          staffId: housekeeperId,
-          roomId: room.id,
-        });
-        if (!res.ok) showActionError(t('hkErrCouldntStart', lang));
-      } finally {
-        setSavingStart(null);
-      }
+      void ensureChecklistLoaded(inferCleaningType(room.type));
+      await runSavingAction(setSavingStart, 'start', '/api/housekeeper/start-clean', room, 'hkErrCouldntStart');
     },
-    [pid, housekeeperId, guardedPost, ensureChecklistLoaded, showActionError, lang],
+    [pid, ensureChecklistLoaded, runSavingAction],
   );
 
   const handlePause = useCallback(
-    async (room: RoomRow) => {
-      if (!pid) return;
-      setSavingPause(room.id);
-      try {
-        const res = await guardedPost(`pause:${room.id}`, '/api/housekeeper/pause-clean', {
-          pid,
-          staffId: housekeeperId,
-          roomId: room.id,
-        });
-        if (!res.ok) showActionError(t('hkErrCouldntPause', lang));
-      } finally {
-        setSavingPause(null);
-      }
-    },
-    [pid, housekeeperId, guardedPost, showActionError, lang],
+    (room: RoomRow) =>
+      runSavingAction(setSavingPause, 'pause', '/api/housekeeper/pause-clean', room, 'hkErrCouldntPause'),
+    [runSavingAction],
   );
 
   const handleResume = useCallback(
-    async (room: RoomRow) => {
-      if (!pid) return;
-      setSavingResume(room.id);
-      try {
-        const res = await guardedPost(`resume:${room.id}`, '/api/housekeeper/resume-clean', {
-          pid,
-          staffId: housekeeperId,
-          roomId: room.id,
-        });
-        if (!res.ok) showActionError(t('hkErrCouldntResume', lang));
-      } finally {
-        setSavingResume(null);
-      }
-    },
-    [pid, housekeeperId, guardedPost, showActionError, lang],
+    (room: RoomRow) =>
+      runSavingAction(setSavingResume, 'resume', '/api/housekeeper/resume-clean', room, 'hkErrCouldntResume'),
+    [runSavingAction],
   );
 
   const handleComplete = useCallback(
-    async (room: RoomRow) => {
-      if (!pid) return;
-      setSavingComplete(room.id);
-      try {
-        const res = await guardedPost(
-          `complete:${room.id}`,
-          '/api/housekeeper/complete-clean',
-          { pid, staffId: housekeeperId, roomId: room.id },
-        );
-        if (!res.ok) showActionError(t('hkErrCouldntComplete', lang));
-      } finally {
-        setSavingComplete(null);
-      }
-    },
-    [pid, housekeeperId, guardedPost, showActionError, lang],
+    (room: RoomRow) =>
+      runSavingAction(setSavingComplete, 'complete', '/api/housekeeper/complete-clean', room, 'hkErrCouldntComplete'),
+    [runSavingAction],
   );
 
   // Reset stays on the legacy room-action endpoint — same operation either
@@ -810,56 +815,10 @@ export default function HousekeeperRoomPage({
 
   // ── Guards ─────────────────────────────────────────────────────────────
   if (!pid || !housekeeperId) {
-    return (
-      <div
-        style={{
-          minHeight: '100dvh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexDirection: 'column',
-          gap: '12px',
-          padding: '24px',
-          background: 'var(--bg)',
-          fontFamily: 'var(--font-sans, system-ui, -apple-system, sans-serif)',
-          textAlign: 'center',
-        }}
-      >
-        <AlertTriangle size={32} color="var(--red, #EF4444)" />
-        <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-          {t('cxIncompleteLink', lang)}
-        </p>
-        <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
-          {t('cxIncompleteLinkHelp', lang)}
-        </p>
-      </div>
-    );
+    return <GuardScreen title={t('cxIncompleteLink', lang)} help={t('cxIncompleteLinkHelp', lang)} />;
   }
   if (linkError) {
-    return (
-      <div
-        style={{
-          minHeight: '100dvh',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexDirection: 'column',
-          gap: '12px',
-          padding: '24px',
-          background: 'var(--bg)',
-          fontFamily: 'var(--font-sans, system-ui, -apple-system, sans-serif)',
-          textAlign: 'center',
-        }}
-      >
-        <AlertTriangle size={32} color="var(--red, #EF4444)" />
-        <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
-          {t('somethingWentWrong', lang)}
-        </p>
-        <p style={{ fontSize: '14px', color: 'var(--text-muted)', maxWidth: '320px', margin: 0 }}>
-          {t('badLink', lang)}
-        </p>
-      </div>
-    );
+    return <GuardScreen title={t('somethingWentWrong', lang)} help={t('badLink', lang)} />;
   }
   if (loading) {
     return (
