@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
--- 0310 — Inventory data integrity and durable write transactions
+-- 0312 — Inventory data integrity and durable write transactions
 --
 -- Field-test hardening for hotels that depend on Inventory as their system of
 -- record. This migration makes four guarantees at the database boundary:
@@ -44,7 +44,7 @@ alter table public.inventory
     foreign key (archived_by) references auth.users(id) on delete set null;
 
 comment on column public.inventory.created_at is
-  'Immutable creation timestamp for rows created after migration 0310. NULL on legacy rows means creation time is genuinely unknown.';
+  'Immutable creation timestamp for rows created after migration 0312. NULL on legacy rows means creation time is genuinely unknown.';
 comment on column public.inventory.created_by is
   'auth.users id that created the item. NULL for legacy/service-created rows or after the user is removed.';
 comment on column public.inventory.archived_at is
@@ -158,75 +158,75 @@ begin
     select 1 from public.inventory_counts c
     join public.inventory i on i.id = c.item_id
     where c.property_id <> i.property_id
-  ) then raise exception '0310 blocked: inventory_counts contains cross-property item references'; end if;
+  ) then raise exception '0312 blocked: inventory_counts contains cross-property item references'; end if;
 
   if exists (
     select 1 from public.inventory_orders o
     join public.inventory i on i.id = o.item_id
     where o.property_id <> i.property_id
-  ) then raise exception '0310 blocked: inventory_orders contains cross-property item references'; end if;
+  ) then raise exception '0312 blocked: inventory_orders contains cross-property item references'; end if;
 
   if exists (
     select 1 from public.inventory_discards d
     join public.inventory i on i.id = d.item_id
     where d.property_id <> i.property_id
-  ) then raise exception '0310 blocked: inventory_discards contains cross-property item references'; end if;
+  ) then raise exception '0312 blocked: inventory_discards contains cross-property item references'; end if;
 
   if exists (
     select 1 from public.inventory_reconciliations r
     join public.inventory i on i.id = r.item_id
     where r.property_id <> i.property_id
-  ) then raise exception '0310 blocked: inventory_reconciliations contains cross-property item references'; end if;
+  ) then raise exception '0312 blocked: inventory_reconciliations contains cross-property item references'; end if;
 
   if exists (
     select 1 from public.inventory_rate_predictions p
     join public.inventory i on i.id = p.item_id
     where p.property_id <> i.property_id
-  ) then raise exception '0310 blocked: inventory_rate_predictions contains cross-property item references'; end if;
+  ) then raise exception '0312 blocked: inventory_rate_predictions contains cross-property item references'; end if;
 
   if exists (
     select 1 from public.model_runs m
     join public.inventory i on i.id = m.item_id
     where m.item_id is not null and m.property_id <> i.property_id
-  ) then raise exception '0310 blocked: model_runs contains cross-property item references'; end if;
+  ) then raise exception '0312 blocked: model_runs contains cross-property item references'; end if;
 
   if exists (
     select 1 from public.inventory_rate_predictions p
     join public.model_runs m on m.id = p.model_run_id
     where p.property_id is distinct from m.property_id
        or p.item_id is distinct from m.item_id
-  ) then raise exception '0310 blocked: inventory_rate_predictions contains cross-property model references'; end if;
+  ) then raise exception '0312 blocked: inventory_rate_predictions contains cross-property model references'; end if;
 
   if exists (
     select 1 from public.prediction_log p
     join public.inventory_counts c on c.id = p.inventory_count_id
     where p.inventory_count_id is not null and p.property_id <> c.property_id
-  ) then raise exception '0310 blocked: prediction_log contains cross-property inventory-count references'; end if;
+  ) then raise exception '0312 blocked: prediction_log contains cross-property inventory-count references'; end if;
 
   if exists (
     select 1 from public.purchase_order_lines l
     join public.purchase_orders p on p.id = l.purchase_order_id
     join public.inventory i on i.id = l.item_id
     where l.item_id is not null and p.property_id <> i.property_id
-  ) then raise exception '0310 blocked: purchase_order_lines contains cross-property item references'; end if;
+  ) then raise exception '0312 blocked: purchase_order_lines contains cross-property item references'; end if;
 
   if exists (
     select 1 from public.inventory i
     join public.vendors v on v.id = i.vendor_id
     where i.vendor_id is not null and i.property_id <> v.property_id
-  ) then raise exception '0310 blocked: inventory.vendor_id contains a cross-property reference'; end if;
+  ) then raise exception '0312 blocked: inventory.vendor_id contains a cross-property reference'; end if;
 
   if exists (
     select 1 from public.purchase_orders p
     join public.vendors v on v.id = p.vendor_id
     where p.vendor_id is not null and p.property_id <> v.property_id
-  ) then raise exception '0310 blocked: purchase_orders.vendor_id contains a cross-property reference'; end if;
+  ) then raise exception '0312 blocked: purchase_orders.vendor_id contains a cross-property reference'; end if;
 
   if exists (
     select 1 from public.inventory i
     join public.inventory_custom_categories c on c.id = i.custom_category_id
     where i.custom_category_id is not null and i.property_id <> c.property_id
-  ) then raise exception '0310 blocked: inventory.custom_category_id contains a cross-property reference'; end if;
+  ) then raise exception '0312 blocked: inventory.custom_category_id contains a cross-property reference'; end if;
 
   if exists (
     select 1
@@ -234,7 +234,7 @@ begin
     cross join lateral unnest(s.item_ids) as x(item_id)
     left join public.inventory i on i.id = x.item_id
     where i.id is null or i.property_id <> s.property_id
-  ) then raise exception '0310 blocked: inventory_budget_sections.item_ids contains missing/cross-property items'; end if;
+  ) then raise exception '0312 blocked: inventory_budget_sections.item_ids contains missing/cross-property items'; end if;
 end
 $$;
 
@@ -1109,7 +1109,7 @@ alter table public.properties
 
 insert into public.applied_migrations (version, description)
 values (
-  '0310',
+  '0312',
   'Inventory integrity: item provenance/soft archive, append-only ledgers, composite tenant FKs, idempotent atomic count+delivery RPCs, concurrency-safe PO receive, and owner-delete protection.'
 )
 on conflict (version) do nothing;

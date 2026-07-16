@@ -484,7 +484,7 @@ export async function markPurchaseOrderSent(
 }
 
 // Receive deliveries against a PO. qtyReceived per line is a CUMULATIVE TARGET
-// (the new total received), clamped to [0, qty_ordered]. Migration 0310 makes
+// (the new total received), clamped to [0, qty_ordered]. Migration 0312 makes
 // the database authoritative for the delta: it locks each line, computes
 // target - CURRENT qty_received, increments stock, appends the delivery ledger,
 // and updates the PO status in one transaction. The caller never supplies a
