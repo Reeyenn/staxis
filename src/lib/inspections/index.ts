@@ -1,6 +1,9 @@
 export { selectChecklist } from './checklist-selector';
 export type { SelectChecklistArgs } from './checklist-selector';
 
+export { startInspectionCore } from './start-core';
+export type { StartInspectionInput, StartInspectionResult } from './start-core';
+
 export {
   detectImageMime,
   declaredMimeMatchesBytes,
