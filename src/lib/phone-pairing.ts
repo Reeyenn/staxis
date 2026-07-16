@@ -64,6 +64,34 @@ export function derivePhonePairingCompletionToken(
 }
 
 /**
+ * Deterministic six-digit stand-in for the emailed code, used ONLY while the
+ * global human-2FA switch (migration 0310) is OFF. The claim route stores its
+ * digest through the normal store/finalize state machine (no email is sent)
+ * and returns the code in the claim response, so the phone client can drive
+ * the unchanged verify → session → complete sequence without human input.
+ *
+ * Determinism (HMAC over the challenge token, keyed by the service-role key)
+ * lets an exact claim replay after a lost HTTP response recover the same
+ * code. This code is NOT a proof-of-email-ownership factor in bypass mode —
+ * it rides the same TLS response as the challenge token — which is precisely
+ * the semantic of the switch being off. The verify endpoint still requires
+ * the 256-bit challenge token alongside it and still enforces the TTL and
+ * five-attempt caps.
+ */
+export function derivePhonePairingBypassCode(
+  challengeToken: string,
+  serverSecret: string,
+): string {
+  const digest = createHmac('sha256', serverSecret)
+    .update('staxis-phone-pairing-bypass-code-v1\0')
+    .update(challengeToken)
+    .digest('hex');
+  // 48 bits → mod 10^6: uniform enough for a non-secret bypass code.
+  const n = parseInt(digest.slice(0, 12), 16) % 1_000_000;
+  return String(n).padStart(6, '0');
+}
+
+/**
  * Stable cookie material for an idempotent completion retry. The existing
  * service-role key keeps this long-lived HttpOnly credential impossible to
  * derive from the short-lived completion token exposed to browser JS. It is

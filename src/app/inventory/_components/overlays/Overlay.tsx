@@ -5,6 +5,8 @@ import { T, fonts } from '../tokens';
 import { Caps } from '../Caps';
 import { Serif } from '../Serif';
 import { EASE } from '../motion';
+import { useLang } from '@/contexts/LanguageContext';
+import styles from './Overlay.module.css';
 
 // SSR-safe layout effect: the entrance animation must apply its hidden
 // start-state BEFORE the first paint (see the entrance effect below), which a
@@ -20,7 +22,7 @@ const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : use
 // Motion: spring-up entrance and a short settle-down exit. The card stays
 // mounted for ~200ms after `open` flips false so the exit can play (presence
 // management) — callers keep the exact same `open`/`onClose` contract.
-// WAAPI throughout, so it plays under prefers-reduced-motion.
+// WAAPI throughout, skipped when the user requests reduced motion.
 interface OverlayProps {
   open: boolean;
   onClose: () => void;
@@ -37,6 +39,28 @@ interface OverlayProps {
 }
 
 const EXIT_MS = 190;
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function matchesMedia(query: string) {
+  return typeof window !== 'undefined'
+    && typeof window.matchMedia === 'function'
+    && window.matchMedia(query).matches;
+}
+
+function prefersReducedMotion() {
+  return matchesMedia('(prefers-reduced-motion: reduce)');
+}
+
+function isMobileViewport() {
+  return matchesMedia('(max-width: 760px)');
+}
 
 export function Overlay({
   open,
@@ -51,8 +75,12 @@ export function Overlay({
   footer,
   children,
 }: OverlayProps) {
+  const { lang } = useLang();
   const scrimRef = useRef<HTMLDivElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const titleId = React.useId();
   // Presence: keep rendering during the exit animation, then unmount.
   const [render, setRender] = useState(open);
 
@@ -62,25 +90,53 @@ export function Overlay({
       return;
     }
     if (!render) return;
-    scrimRef.current?.animate(
-      [{ opacity: 1 }, { opacity: 0 }],
-      { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
-    );
-    cardRef.current?.animate(
-      [
-        { opacity: 1, transform: 'none' },
-        { opacity: 0, transform: full ? 'scale(.99)' : 'translateY(12px) scale(.985)' },
-      ],
-      { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
-    );
-    const timer = setTimeout(() => setRender(false), EXIT_MS + 30);
+    const reduceMotion = prefersReducedMotion();
+    const fullScreen = full || isMobileViewport();
+    if (!reduceMotion) {
+      scrimRef.current?.animate(
+        [{ opacity: 1 }, { opacity: 0 }],
+        { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
+      );
+      cardRef.current?.animate(
+        [
+          { opacity: 1, transform: 'none' },
+          { opacity: 0, transform: fullScreen ? 'scale(.99)' : 'translateY(12px) scale(.985)' },
+        ],
+        { duration: EXIT_MS, easing: 'ease-in', fill: 'forwards' },
+      );
+    }
+    const timer = setTimeout(() => setRender(false), reduceMotion ? 0 : EXIT_MS + 30);
     return () => clearTimeout(timer);
   }, [open, full, render]);
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+
+      const focusable = Array.from(
+        cardRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? [],
+      ).filter((element) => element.tabIndex >= 0 && !element.hasAttribute('disabled'));
+      if (focusable.length === 0) {
+        e.preventDefault();
+        cardRef.current?.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && (document.activeElement === first || !cardRef.current?.contains(document.activeElement))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (document.activeElement === last || !cardRef.current?.contains(document.activeElement))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
@@ -90,6 +146,22 @@ export function Overlay({
       document.body.style.overflow = prev;
     };
   }, [open, onClose]);
+
+  useIsoLayoutEffect(() => {
+    if (!open || !render) return;
+    if (!returnFocusRef.current && document.activeElement instanceof HTMLElement) {
+      returnFocusRef.current = document.activeElement;
+    }
+    const frame = requestAnimationFrame(() => closeRef.current?.focus({ preventScroll: true }));
+    return () => cancelAnimationFrame(frame);
+  }, [open, render]);
+
+  useEffect(() => {
+    if (open) return;
+    const returnTarget = returnFocusRef.current;
+    returnFocusRef.current = null;
+    if (returnTarget?.isConnected) returnTarget.focus({ preventScroll: true });
+  }, [open]);
 
   // WAAPI entrance. Runs as a LAYOUT effect so the from-keyframe (opacity 0)
   // takes effect BEFORE the first paint of the freshly-mounted card. With a
@@ -103,13 +175,15 @@ export function Overlay({
   // first open mounts the DOM one commit after `open` flips, when the refs exist.
   useIsoLayoutEffect(() => {
     if (!open || !render) return;
+    if (prefersReducedMotion()) return;
+    const fullScreen = full || isMobileViewport();
     scrimRef.current?.animate(
       [{ opacity: 0 }, { opacity: 1 }],
       { duration: 200, easing: 'ease-out', fill: 'none' },
     );
     cardRef.current?.animate(
       [
-        { opacity: 0, transform: full ? 'scale(.985)' : 'translateY(20px) scale(.97)' },
+        { opacity: 0, transform: fullScreen ? 'scale(.985)' : 'translateY(20px) scale(.97)' },
         { opacity: 1, transform: 'none' },
       ],
       { duration: 380, easing: EASE.spring, fill: 'none' },
@@ -121,6 +195,7 @@ export function Overlay({
   return (
     <div
       ref={scrimRef}
+      className={styles.scrim}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       style={{
         position: 'fixed',
@@ -139,6 +214,12 @@ export function Overlay({
     >
       <div
         ref={cardRef}
+        className={styles.sheet}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-hidden={!open}
+        tabIndex={-1}
         onMouseDown={(e) => e.stopPropagation()}
         style={{
           width: full ? '100%' : `min(100%, ${width}px)`,
@@ -153,6 +234,7 @@ export function Overlay({
         }}
       >
         <div
+          className={styles.header}
           style={{
             padding: '18px 26px',
             borderBottom: `1px solid ${T.rule}`,
@@ -168,7 +250,7 @@ export function Overlay({
               style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: accent }}
             />
           )}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+          <div id={titleId} style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
             {eyebrow && <Caps color={accent}>{eyebrow}</Caps>}
             <span>
               <Serif size={24}>
@@ -184,9 +266,11 @@ export function Overlay({
             </span>
           </div>
           <button
+            ref={closeRef}
             type="button"
+            className={styles.close}
             onClick={onClose}
-            aria-label="Close"
+            aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
             style={{
               width: 30,
               height: 30,
@@ -204,11 +288,15 @@ export function Overlay({
             ✕
           </button>
         </div>
-        <div style={{ padding: full ? '24px 48px 64px' : '22px 26px 26px', flex: 1, overflow: 'auto' }}>
+        <div
+          className={styles.body}
+          style={{ padding: full ? '24px 48px 64px' : '22px 26px 26px', flex: 1, overflow: 'auto' }}
+        >
           {children}
         </div>
         {footer && (
           <div
+            className={styles.footer}
             style={{
               padding: '14px 26px',
               borderTop: `1px solid ${T.rule}`,

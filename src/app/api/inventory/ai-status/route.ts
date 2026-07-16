@@ -49,6 +49,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
+import {
+  activeInventoryItemIds,
+  filterInventoryMlRowsToActiveItems,
+} from '@/lib/inventory-ml-active';
 import { err, ApiErrorCode } from '@/lib/api-response';
 
 export const runtime = 'nodejs';
@@ -99,8 +103,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         .maybeSingle(),
       supabaseAdmin
         .from('inventory')
-        .select('id', { count: 'exact', head: true })
-        .eq('property_id', propertyId),
+        .select('id')
+        .eq('property_id', propertyId)
+        .is('archived_at', null)
+        .limit(2000),
       supabaseAdmin
         .from('model_runs')
         // Honesty-audit Phase 2: also pull `hyperparameters` (JSONB) so we can
@@ -113,18 +119,18 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         .limit(2000),
       supabaseAdmin
         .from('inventory_rate_predictions')
-        .select('predicted_at')
+        .select('item_id,predicted_at')
         .eq('property_id', propertyId)
         .order('predicted_at', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      // Phase 2: 7-day prediction count — head:true so we don't pay the
-      // bandwidth for 50K-row payloads when we only need the count.
+        .limit(50000),
+      // Seven days is bounded by active item count × seven daily writes. Pull
+      // item ids so archived items can be excluded from the health signal.
       supabaseAdmin
         .from('inventory_rate_predictions')
-        .select('property_id', { count: 'exact', head: true })
+        .select('item_id')
         .eq('property_id', propertyId)
-        .gte('predicted_at', sevenDaysAgoIso),
+        .gte('predicted_at', sevenDaysAgoIso)
+        .limit(50000),
     ]);
 
     const aiMode = ((propRes.data?.inventory_ai_mode ?? 'auto') as string) as 'off' | 'auto' | 'always-on';
@@ -132,8 +138,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const daysSinceFirstCount = firstCountAt
       ? Math.max(0, Math.floor((Date.now() - firstCountAt) / 86400000))
       : 0;
-    const itemsTotal = itemsRes.count ?? 0;
-    const runs = runsRes.data ?? [];
+    const activeItemIds = activeInventoryItemIds(itemsRes.data ?? []);
+    const itemsTotal = activeItemIds.size;
+    const runs = filterInventoryMlRowsToActiveItems(runsRes.data ?? [], activeItemIds);
     const itemsWithModel = runs.length;
     const itemsGraduated = runs.filter((r) => r.auto_fill_enabled).length;
     const itemsExpectedToGraduate = runs.filter((r) => {
@@ -186,13 +193,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       currentMaeRatioVsMean = gateRatios.reduce((a, b) => a + b, 0) / gateRatios.length;
     }
 
-    const lastInferenceAt = predRes.data?.predicted_at ?? null;
+    const activePredictions = filterInventoryMlRowsToActiveItems(predRes.data ?? [], activeItemIds);
+    const lastInferenceAt = activePredictions[0]?.predicted_at ?? null;
     const lastInferenceStale = (() => {
       if (!lastInferenceAt) return true;
       const ageHours = (Date.now() - new Date(lastInferenceAt).getTime()) / 3600000;
       return ageHours > STALE_INFERENCE_HOURS;
     })();
-    const predictionsLast7Days = predsLast7Res.count ?? 0;
+    const predictionsLast7Days = filterInventoryMlRowsToActiveItems(
+      predsLast7Res.data ?? [],
+      activeItemIds,
+    ).length;
 
     return NextResponse.json({
       ok: true,

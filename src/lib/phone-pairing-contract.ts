@@ -23,6 +23,14 @@ export interface CreatePhonePairingResponse {
 export interface ClaimPhonePairingResponse {
   challengeToken: string;
   expiresAt: string;
+  /**
+   * Present ONLY while the global human-2FA switch (migration 0310) is off:
+   * the server-issued six-digit code that stands in for the emailed one, so
+   * the phone can run the verify → complete sequence without human input.
+   * Never present when 2FA is on. Treat like the other tokens here — never
+   * log or persist in browser storage.
+   */
+  bypassCode?: string;
 }
 
 export interface ResendPhonePairingResponse {

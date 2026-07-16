@@ -23,6 +23,7 @@ import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
 import { HomeHubView, type HubTile, type TileTone } from '@/components/concourse/HomeHubView';
 import { AskHero } from '@/components/concourse/AskHero';
+import { fetchWithAuth } from '@/lib/api-fetch';
 
 interface TileLine { en: string; es: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
@@ -36,27 +37,36 @@ function greetingFor(lang: 'en' | 'es', name: string | undefined, hour: number):
 
 function HomeHub() {
   const { user } = useAuth();
-  const { activeProperty, activePropertyId } = useProperty();
+  const { activeProperty, activePropertyId, loading: propertyLoading } = useProperty();
   const { lang } = useLang();
   const can = useCan();
   const enabled = useEnabledSections();
   const router = useRouter();
-  const [summary, setSummary] = React.useState<Summary>({});
+  const [summaryState, setSummaryState] = React.useState<{
+    propertyId: string | null;
+    tiles: Summary;
+  }>({ propertyId: null, tiles: {} });
+  const summary = summaryState.propertyId === activePropertyId
+    ? summaryState.tiles
+    : {};
 
   React.useEffect(() => {
-    if (!activePropertyId) return;
+    setSummaryState({ propertyId: activePropertyId, tiles: {} });
+    if (!activePropertyId || propertyLoading) return;
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch(`/api/home/summary?pid=${encodeURIComponent(activePropertyId)}`);
+        const res = await fetchWithAuth(`/api/home/summary?pid=${encodeURIComponent(activePropertyId)}`);
         const body = await res.json().catch(() => null);
-        if (!cancelled && body?.ok && body.data?.tiles) setSummary(body.data.tiles as Summary);
+        if (!cancelled && body?.ok && body.data?.tiles) {
+          setSummaryState({ propertyId: activePropertyId, tiles: body.data.tiles as Summary });
+        }
       } catch {
         // Tiles keep their quiet placeholder line — never block the hub on data.
       }
     })();
     return () => { cancelled = true; };
-  }, [activePropertyId]);
+  }, [activePropertyId, propertyLoading]);
 
   const firstName = user?.displayName?.trim().split(/\s+/)[0];
   const now = new Date();
@@ -65,7 +75,7 @@ function HomeHub() {
   });
   const dateline = activeProperty ? `${dateStr} · ${activeProperty.name}` : dateStr;
 
-  const tiles: HubTile[] = SECTION_LIST
+  const tiles: HubTile[] = (propertyLoading ? [] : SECTION_LIST)
     .filter((m) => {
       if (!enabled[m.key]) return false;
       if (m.key === 'financials') return !!user && can('view_financials');

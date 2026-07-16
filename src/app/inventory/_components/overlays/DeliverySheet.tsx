@@ -15,11 +15,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import {
-  addInventoryOrder,
-  fetchInventoryStockByIds,
-  updateInventoryItem,
-} from '@/lib/db';
+import type { InventoryDeliveryLine } from '@/lib/inventory-atomic';
 import type { InvCat } from '../tokens';
 import { T, fonts } from '../tokens';
 import { Btn } from '../Btn';
@@ -28,6 +24,15 @@ import { Motion } from '../motion';
 import { Overlay } from './Overlay';
 import { numGuard } from './form-kit';
 import { ScanInvoiceSheet } from './ScanInvoiceSheet';
+import {
+  clearDeliveryAttempt,
+  isDefinitiveDeliveryFailure,
+  loadDeliveryAttempt,
+  persistDeliveryAttempt,
+  retainOrCreateDeliveryAttempt,
+  submitFrozenDeliveryAttempt,
+  type FrozenDeliveryAttempt,
+} from './scan-commit';
 import type { DisplayItem } from '../types';
 import { catLabelFor, type Lang } from '../inv-i18n';
 
@@ -38,12 +43,9 @@ interface DeliverySheetProps {
   display: DisplayItem[];
 }
 
-// The save is idempotent for the whole time the sheet is open (a "session"):
-// each item's stock baseline is captured ONCE, its order row inserts at most
-// once, and its stock is rewritten only when the target (baseline + typed qty)
-// differs from what already landed. So retries after a partial failure — and
-// even edits between retries — can never duplicate an order row or compound
-// the added quantity onto already-updated stock.
+// Delivery rows and stock increments commit in one database transaction. A
+// retry of an unchanged draft reuses the same request UUID, so a response lost
+// after commit cannot add the delivery twice.
 
 function dsStrings(lang: Lang) {
   return {
@@ -60,6 +62,8 @@ function dsStrings(lang: Lang) {
       addBtn: '✓ Add to inventory',
       discardConfirm: 'You have an unsaved delivery. Close and discard it?',
       saveFailed: 'Saving the delivery failed. Please try again.',
+      retryPending: 'The result could not be confirmed. This exact delivery is locked until you retry it successfully.',
+      retryBtn: 'Retry exact delivery',
       note: 'Delivery — added manually',
     },
     es: {
@@ -75,6 +79,8 @@ function dsStrings(lang: Lang) {
       addBtn: '✓ Agregar al inventario',
       discardConfirm: 'Tienes una entrega sin guardar. ¿Cerrar y descartarla?',
       saveFailed: 'No se pudo guardar la entrega. Inténtalo de nuevo.',
+      retryPending: 'No se pudo confirmar el resultado. Esta entrega exacta está bloqueada hasta que la reintentes correctamente.',
+      retryBtn: 'Reintentar la misma entrega',
       note: 'Entrega — agregada a mano',
     },
   }[lang];
@@ -93,23 +99,31 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
   const [rows, setRows] = useState<Row[]>([{ key: 0, itemId: '', qty: '' }]);
   const rowSeq = useRef(1);
   const [saving, setSaving] = useState(false);
-  // Session-scoped write ledger (see the idempotence note above).
-  const sessionBaseline = useRef<Map<string, number>>(new Map());
-  const orderedEver = useRef<Set<string>>(new Set());
-  const writtenFinal = useRef<Map<string, number>>(new Map());
+  const saveAttempt = useRef<FrozenDeliveryAttempt | null>(null);
+  const [retryLocked, setRetryLocked] = useState(false);
 
   const resetRows = () => { setRows([{ key: 0, itemId: '', qty: '' }]); rowSeq.current = 1; };
 
   // Fresh chooser on every open.
   useEffect(() => {
-    if (open) {
+    if (!open) return;
+    const restored = activePropertyId
+      ? loadDeliveryAttempt('manual', activePropertyId)
+      : null;
+    saveAttempt.current = restored;
+    setRetryLocked(!!restored);
+    if (restored) {
+      const restoredRows = restored.lines.flatMap((line, index) =>
+        line.itemId ? [{ key: index, itemId: line.itemId, qty: String(line.quantity) }] : [],
+      );
+      setRows(restoredRows.length > 0 ? restoredRows : [{ key: 0, itemId: '', qty: '' }]);
+      rowSeq.current = Math.max(1, restoredRows.length);
+      setMode('manual');
+    } else {
       setMode(null);
       resetRows();
-      sessionBaseline.current = new Map();
-      orderedEver.current = new Set();
-      writtenFinal.current = new Map();
     }
-  }, [open]);
+  }, [open, activePropertyId]);
 
   if (!open) return null;
 
@@ -120,7 +134,7 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
 
   const dirty = rows.some((r) => r.itemId !== '' || r.qty !== '');
   const requestClose = () => {
-    if (saving) return;
+    if (saving || retryLocked) return;
     if (dirty && !confirm(ds.discardConfirm)) return;
     onClose();
   };
@@ -170,76 +184,52 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
   const canAddRow = selectedIds.size < display.length && rows.every((r) => r.itemId !== '');
 
   const handleSave = async () => {
-    if (!user || !activePropertyId || saving || entered.length === 0) return;
+    if (!user || !activePropertyId || saving || (!saveAttempt.current && entered.length === 0)) return;
     setSaving(true);
     try {
-      const now = new Date();
-
-      // Baselines: fetch fresh stock ONCE per item per session — final stock is
-      // always sessionBaseline + typed qty, so rewrites are idempotent and a
-      // retry (or an edited retry) can never compound the addition.
-      const missing = entered.filter(({ d }) => !sessionBaseline.current.has(d.id));
-      if (missing.length > 0) {
-        const fresh = await fetchInventoryStockByIds(
-          user.uid, activePropertyId, missing.map(({ d }) => d.id),
+      if (!saveAttempt.current) {
+        const lines: InventoryDeliveryLine[] = entered.map(({ d, n }, index) => ({
+          // The item id makes this deterministic even if row order changes; the
+          // suffix is a defensive guard if future UI allows duplicate item rows.
+          lineKey: `${d.id}:${index}`,
+          itemId: d.id,
+          quantity: n,
+          unitCost: d.unitCost || undefined,
+        }));
+        const vendorNames = new Set(
+          entered.map(({ d }) => d.vendor.trim()).filter(Boolean),
         );
-        for (const { d } of missing) {
-          sessionBaseline.current.set(
-            d.id,
-            Math.max(0, d.id in fresh ? fresh[d.id] : (d.raw.currentStock ?? 0)),
-          );
-        }
+        // Manual entry has no delivery-wide vendor field. Preserve the linked
+        // vendor when every selected item agrees; mixed-vendor deliveries stay
+        // intentionally unlabeled rather than recording the wrong supplier.
+        const vendorName = vendorNames.size === 1 ? [...vendorNames][0] : null;
+        saveAttempt.current = retainOrCreateDeliveryAttempt(null, {
+          kind: 'manual', propertyId: activePropertyId, receivedAt: new Date(),
+          vendorName, notes: ds.note, lines,
+        });
       }
-
-      // 1. One received order per item (the delivery ledger / spend record) —
-      // at most once per session, so a retry never duplicates the row.
-      // totalCost is deliberately omitted: addInventoryOrder computes it with
-      // cents rounding (the float-artefact fix).
-      const pendingOrders = entered.filter(({ d }) => !orderedEver.current.has(d.id));
-      const orderResults = await Promise.allSettled(
-        pendingOrders.map(({ d, n }) =>
-          addInventoryOrder(user.uid, activePropertyId, {
-            propertyId: activePropertyId,
-            itemId: d.id,
-            itemName: d.name,
-            quantity: n,
-            unitCost: d.unitCost || undefined,
-            vendorName: d.vendor || undefined,
-            orderedAt: null,
-            receivedAt: now,
-            notes: ds.note,
-          }),
-        ),
-      );
-      orderResults.forEach((r, i) => {
-        if (r.status === 'fulfilled') orderedEver.current.add(pendingOrders[i].d.id);
-      });
-      const orderFailure = orderResults.find((r) => r.status === 'rejected');
-      if (orderFailure) throw (orderFailure as PromiseRejectedResult).reason;
-
-      // 2. Re-baseline stock: baseline + received (same semantics as the
-      // invoice commit, incl. the lastCountedAt re-anchor). Skips items whose
-      // exact target already landed; rewrites when an edit changed the target.
-      const pendingStock = entered
-        .map(({ d, n }) => ({ d, final: (sessionBaseline.current.get(d.id) ?? 0) + n }))
-        .filter(({ d, final }) => writtenFinal.current.get(d.id) !== final);
-      const stockResults = await Promise.allSettled(
-        pendingStock.map(({ d, final }) =>
-          updateInventoryItem(user.uid, activePropertyId, d.id, {
-            currentStock: final,
-            lastCountedAt: now,
-          }),
-        ),
-      );
-      stockResults.forEach((r, i) => {
-        if (r.status === 'fulfilled') writtenFinal.current.set(pendingStock[i].d.id, pendingStock[i].final);
-      });
-      const stockFailure = stockResults.find((r) => r.status === 'rejected');
-      if (stockFailure) throw (stockFailure as PromiseRejectedResult).reason;
+      const attempt = saveAttempt.current;
+      persistDeliveryAttempt(attempt);
+      setRetryLocked(true);
+      await submitFrozenDeliveryAttempt(attempt, { uid: user.uid, pid: activePropertyId });
+      clearDeliveryAttempt('manual', activePropertyId);
+      saveAttempt.current = null;
+      setRetryLocked(false);
 
       onClose();
     } catch (err) {
       console.error('[delivery-sheet] save failed', err);
+      if (isDefinitiveDeliveryFailure(err, retryLocked)) {
+        clearDeliveryAttempt('manual', activePropertyId);
+        saveAttempt.current = null;
+        setRetryLocked(false);
+      } else if (saveAttempt.current) {
+        setRetryLocked(true);
+      } else {
+        // Local validation failed before a request was sent; the draft is safe
+        // to edit because there is no uncertain database result to replay.
+        setRetryLocked(false);
+      }
       alert(ds.saveFailed);
     } finally {
       setSaving(false);
@@ -255,15 +245,24 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
       footer={
         <>
           <span style={{ marginRight: 'auto' }} />
-          <Btn variant="ghost" size="md" onClick={() => setMode(null)} disabled={saving}>
+          <Btn variant="ghost" size="md" onClick={() => setMode(null)} disabled={saving || retryLocked}>
             {ds.back}
           </Btn>
-          <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || entered.length === 0}>
-            {saving ? ds.saving : `${ds.addBtn} · ${entered.length}`}
+          <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || (!retryLocked && entered.length === 0)}>
+            {saving
+              ? ds.saving
+              : retryLocked
+                ? ds.retryBtn
+                : `${ds.addBtn} · ${entered.length}`}
           </Btn>
         </>
       }
     >
+      {retryLocked && (
+        <div style={{ marginBottom: 12, padding: '10px 12px', borderRadius: 9, background: T.warmDim, color: T.warm, fontFamily: fonts.sans, fontSize: 12.5 }}>
+          {ds.retryPending}
+        </div>
+      )}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {rows.map((r) => {
           // A row's dropdown offers items not picked in OTHER rows (+ its own).
@@ -273,6 +272,7 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
             <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <select
                 value={r.itemId}
+                disabled={saving || retryLocked}
                 onChange={(e) => updateRow(r.key, { itemId: e.target.value })}
                 style={{
                   flex: 1, minWidth: 0, height: 40, padding: '0 12px', borderRadius: 9,
@@ -300,6 +300,7 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
                 min="0"
                 inputMode="decimal"
                 value={r.qty}
+                disabled={saving || retryLocked}
                 onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { qty: v }); }}
                 placeholder={ds.qtyPh}
                 aria-label={ds.qtyPh}
@@ -315,7 +316,7 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
                 type="button"
                 onClick={() => removeRow(r.key)}
                 aria-label={ds.remove}
-                disabled={rows.length === 1}
+                disabled={rows.length === 1 || saving || retryLocked}
                 style={{
                   width: 30, height: 30, flex: 'none', borderRadius: 8, padding: 0,
                   cursor: rows.length === 1 ? 'default' : 'pointer',
@@ -334,7 +335,7 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
       <button
         type="button"
         onClick={addRow}
-        disabled={!canAddRow}
+        disabled={!canAddRow || saving || retryLocked}
         style={{
           marginTop: 12,
           display: 'inline-flex', alignItems: 'center', gap: 6,

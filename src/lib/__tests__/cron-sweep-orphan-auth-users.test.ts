@@ -39,6 +39,8 @@ interface MockState {
   authUsers: MockUser[];
   /** data_user_ids that have a matching `accounts` row. */
   accountUserIds: string[];
+  /** auth user ids referenced by properties.owner_id. */
+  propertyOwnerUserIds: string[];
   /** Tracks calls to deleteUser. */
   deletedUserIds: string[];
   /** Tracks app_events inserted (for the orphan_swept event). */
@@ -75,6 +77,14 @@ function installStub(): void {
       return {
         select: () => Promise.resolve({
           data: state.accountUserIds.map(id => ({ data_user_id: id })),
+          error: null,
+        }),
+      };
+    }
+    if (table === 'properties') {
+      return {
+        select: () => Promise.resolve({
+          data: state.propertyOwnerUserIds.map(id => ({ owner_id: id })),
           error: null,
         }),
       };
@@ -129,6 +139,7 @@ beforeEach(() => {
   state = {
     authUsers: [],
     accountUserIds: [],
+    propertyOwnerUserIds: [],
     deletedUserIds: [],
     appEvents: [],
     deleteError: null,
@@ -171,6 +182,20 @@ describe('sweep-orphan-auth-users', () => {
 
     assert.equal(body.data.swept, 0);
     assert.equal(body.data.has_account, 1);
+    assert.deepEqual(state.deletedUserIds, []);
+  });
+
+  test('does NOT sweep a property owner without an accounts row', async () => {
+    state.authUsers = [
+      { id: 'hotel-owner', email: 'owner@x.com', created_at: isoMinusMinutes(30) },
+    ];
+    state.propertyOwnerUserIds = ['hotel-owner'];
+
+    const res = await GET(makeRequest());
+    const body = await res.json();
+
+    assert.equal(body.data.swept, 0);
+    assert.equal(body.data.owns_property, 1);
     assert.deepEqual(state.deletedUserIds, []);
   });
 

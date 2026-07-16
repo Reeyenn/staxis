@@ -19,6 +19,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { env } from '@/lib/env';
 import { logSecurityEvent } from '@/lib/audit';
+import { isTwoFactorEnabled } from '@/lib/two-factor';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,6 +44,16 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
   if (acctErr || !account) {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  }
+
+  // Global human-2FA switch (migration 0310, admin-toggleable). When OFF,
+  // every password sign-in is "trusted" — the sign-in page's existing
+  // trusted→straight-in path fires and the OTP step never appears. The
+  // JWT-validated account lookup above still ran, so this stays scoped to
+  // real authenticated callers. Fail-safe: isTwoFactorEnabled() returns
+  // true on any error, so this only fires when the flag is provably off.
+  if (!(await isTwoFactorEnabled())) {
+    return ok({ trusted: true }, { requestId });
   }
 
   // Role-demo bypass: shared investor accounts (test / testhk / testfd)

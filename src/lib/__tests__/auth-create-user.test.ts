@@ -29,6 +29,8 @@ interface MockState {
   authUsers: MockUser[];
   /** data_user_ids that have a matching `accounts` row. */
   accountUserIds: string[];
+  /** auth user ids referenced by properties.owner_id. */
+  propertyOwnerUserIds: string[];
   /** Every id passed to deleteUser, in order. */
   deletedUserIds: string[];
   /** How many times createUser was invoked. */
@@ -37,6 +39,8 @@ interface MockState {
   forceCreateError: { message: string; status?: number } | null;
   /** When true, the accounts lookup returns an error (can't confirm orphan). */
   accountsLookupError: boolean;
+  /** When true, the property-owner lookup returns an error. */
+  propertiesLookupError: boolean;
   /** Monotonic id source for freshly-created users. */
   nextId: number;
 }
@@ -95,6 +99,25 @@ function installStub(): void {
         }),
       };
     }
+    if (table === 'properties') {
+      return {
+        select: () => ({
+          eq: (_col: string, val: string) => ({
+            limit: () => ({
+              maybeSingle: async () => {
+                if (state.propertiesLookupError) {
+                  return { data: null, error: { message: 'properties db down' } };
+                }
+                return {
+                  data: state.propertyOwnerUserIds.includes(val) ? { id: `property-${val}` } : null,
+                  error: null,
+                };
+              },
+            }),
+          }),
+        }),
+      };
+    }
     throw new Error(`unexpected from('${table}') in createOrReclaimAuthUser test`);
   };
 }
@@ -108,10 +131,12 @@ beforeEach(() => {
   state = {
     authUsers: [],
     accountUserIds: [],
+    propertyOwnerUserIds: [],
     deletedUserIds: [],
     createUserCalls: 0,
     forceCreateError: null,
     accountsLookupError: false,
+    propertiesLookupError: false,
     nextId: 1,
   };
   installStub();
@@ -159,6 +184,18 @@ describe('createOrReclaimAuthUser', () => {
     assert.equal(state.createUserCalls, 1, 'no retry — we refused to reclaim');
   });
 
+  test('property owner without an accounts row is protected and NEVER deleted', async () => {
+    state.authUsers = [{ id: 'owner-1', email: 'owner@example.com' }];
+    state.propertyOwnerUserIds = ['owner-1'];
+
+    const res = await createOrReclaimAuthUser({ email: 'owner@example.com', password: 'hunter2pw' });
+
+    assert.equal(res.alreadyHasAccount, true);
+    assert.equal(res.user, undefined);
+    assert.deepEqual(state.deletedUserIds, [], 'deleteUser must NEVER be called for a property owner');
+    assert.equal(state.createUserCalls, 1);
+  });
+
   test('no existing login: original createUser error is surfaced, nothing deleted', async () => {
     state.authUsers = [];
     state.forceCreateError = { message: 'Password should be at least 6 characters', status: 422 };
@@ -181,5 +218,16 @@ describe('createOrReclaimAuthUser', () => {
     assert.equal(res.alreadyHasAccount, undefined);
     assert.ok(res.error, 'surfaces the original createUser error');
     assert.deepEqual(state.deletedUserIds, [], 'must not delete when orphan status is unconfirmed');
+  });
+
+  test('property-owner lookup error: fail safe — refuse to reclaim, never delete', async () => {
+    state.authUsers = [{ id: 'maybe-owner', email: 'taken@example.com' }];
+    state.propertiesLookupError = true;
+
+    const res = await createOrReclaimAuthUser({ email: 'taken@example.com', password: 'hunter2pw' });
+
+    assert.equal(res.user, undefined);
+    assert.ok(res.error, 'surfaces the original createUser error');
+    assert.deepEqual(state.deletedUserIds, [], 'must not delete when owner status is unconfirmed');
   });
 });

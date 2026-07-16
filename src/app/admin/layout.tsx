@@ -36,6 +36,7 @@ import { createSupabaseServerClient } from '@/lib/supabase-server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { hashDeviceToken, TRUST_COOKIE_NAME } from '@/lib/trusted-device';
+import { isTwoFactorEnabled } from '@/lib/two-factor';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -96,48 +97,58 @@ export default async function AdminLayout({
   // Close the shell-leak gap by enforcing the same device-trust check
   // here as requireSession does for API routes: the staxis_device cookie
   // must match a non-expired trusted_devices row for THIS account.
-  const cookieStore = await cookies();
-  const deviceCookieValue = cookieStore.get(TRUST_COOKIE_NAME)?.value ?? null;
-  let hasValidDeviceTrust = false;
+  //
+  // Global human-2FA switch (migration 0310): the device-trust block below
+  // is 2FA enforcement, so it runs only while the switch is ON. The
+  // getUser() session check and the role='admin' check above are
+  // authentication + authorization and ALWAYS run regardless of the
+  // switch. Fail-safe: isTwoFactorEnabled() returns true on any error, so
+  // a DB hiccup means the block runs — today's behavior, never an open
+  // gate.
+  if (await isTwoFactorEnabled()) {
+    const cookieStore = await cookies();
+    const deviceCookieValue = cookieStore.get(TRUST_COOKIE_NAME)?.value ?? null;
+    let hasValidDeviceTrust = false;
 
-  if (deviceCookieValue) {
-    const tokenHash = hashDeviceToken(deviceCookieValue);
-    const { data: deviceRow, error: deviceErr } = await supabaseAdmin
-      .from('trusted_devices')
-      .select('id, expires_at, absolute_expires_at')
-      .eq('account_id', account.id)
-      .eq('token_hash', tokenHash)
-      .maybeSingle();
-    if (deviceErr) {
-      log.error('[admin/layout] trusted_devices lookup failed — failing closed', {
+    if (deviceCookieValue) {
+      const tokenHash = hashDeviceToken(deviceCookieValue);
+      const { data: deviceRow, error: deviceErr } = await supabaseAdmin
+        .from('trusted_devices')
+        .select('id, expires_at, absolute_expires_at')
+        .eq('account_id', account.id)
+        .eq('token_hash', tokenHash)
+        .maybeSingle();
+      if (deviceErr) {
+        log.error('[admin/layout] trusted_devices lookup failed — failing closed', {
+          userId: user.id,
+          accountId: account.id,
+          err: deviceErr.message,
+        });
+        redirect('/signin?reason=2fa_required&redirect=%2Fadmin');
+      }
+      if (deviceRow) {
+        const now = Date.now();
+        const expires = new Date(deviceRow.expires_at).getTime();
+        const absExpRaw = (deviceRow as { absolute_expires_at?: string | null })
+          .absolute_expires_at;
+        const absExpires = absExpRaw ? new Date(absExpRaw).getTime() : 0;
+        if (expires > now && absExpires > now) {
+          hasValidDeviceTrust = true;
+        }
+      }
+    }
+
+    if (!hasValidDeviceTrust) {
+      // Admin signed in but device not trusted → could be a fresh stolen-
+      // password sign-in via curl. Bounce to /signin?reason=2fa_required
+      // so the user re-OTPs. Same posture as Phase 1's requires_2fa for
+      // /api/* routes.
+      log.warn('[admin/layout] admin without device trust — bouncing', {
         userId: user.id,
         accountId: account.id,
-        err: deviceErr.message,
       });
       redirect('/signin?reason=2fa_required&redirect=%2Fadmin');
     }
-    if (deviceRow) {
-      const now = Date.now();
-      const expires = new Date(deviceRow.expires_at).getTime();
-      const absExpRaw = (deviceRow as { absolute_expires_at?: string | null })
-        .absolute_expires_at;
-      const absExpires = absExpRaw ? new Date(absExpRaw).getTime() : 0;
-      if (expires > now && absExpires > now) {
-        hasValidDeviceTrust = true;
-      }
-    }
-  }
-
-  if (!hasValidDeviceTrust) {
-    // Admin signed in but device not trusted → could be a fresh stolen-
-    // password sign-in via curl. Bounce to /signin?reason=2fa_required
-    // so the user re-OTPs. Same posture as Phase 1's requires_2fa for
-    // /api/* routes.
-    log.warn('[admin/layout] admin without device trust — bouncing', {
-      userId: user.id,
-      accountId: account.id,
-    });
-    redirect('/signin?reason=2fa_required&redirect=%2Fadmin');
   }
 
   return <>{children}</>;

@@ -1,0 +1,79 @@
+@media (max-width: 760px) {
+  .scrim {
+    box-sizing: border-box;
+    align-items: stretch !important;
+    justify-content: stretch !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    overscroll-behavior: none;
+  }
+
+  .sheet {
+    box-sizing: border-box;
+    width: 100% !important;
+    max-width: none !important;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
+    max-height: none !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    overflow: hidden !important;
+  }
+
+  .header {
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    gap: 12px !important;
+    padding:
+      calc(12px + env(safe-area-inset-top, 0px))
+      calc(16px + env(safe-area-inset-right, 0px))
+      12px
+      calc(16px + env(safe-area-inset-left, 0px)) !important;
+  }
+
+  .close {
+    box-sizing: border-box;
+    width: 44px !important;
+    min-width: 44px;
+    height: 44px !important;
+    min-height: 44px;
+    padding: 0;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .body {
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 0;
+    padding:
+      16px
+      calc(16px + env(safe-area-inset-right, 0px))
+      16px
+      calc(16px + env(safe-area-inset-left, 0px)) !important;
+    overflow: auto !important;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .body:last-child {
+    padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important;
+  }
+
+  .footer {
+    box-sizing: border-box;
+    flex: 0 1 auto;
+    max-height: 40vh;
+    max-height: 40dvh;
+    padding:
+      12px
+      calc(16px + env(safe-area-inset-right, 0px))
+      calc(12px + env(safe-area-inset-bottom, 0px))
+      calc(16px + env(safe-area-inset-left, 0px)) !important;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+}

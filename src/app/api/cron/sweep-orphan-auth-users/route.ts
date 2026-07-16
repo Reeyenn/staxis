@@ -77,6 +77,7 @@ interface SweepResult {
   skipped_too_new: number;
   skipped_too_old: number;
   has_account: number;
+  owns_property: number;
 }
 
 export async function GET(req: NextRequest) {
@@ -98,6 +99,7 @@ export async function GET(req: NextRequest) {
     skipped_too_new: 0,
     skipped_too_old: 0,
     has_account: 0,
+    owns_property: 0,
   };
 
   try {
@@ -115,6 +117,26 @@ export async function GET(req: NextRequest) {
     const accountUserIds = new Set<string>(
       (accountsRows ?? [])
         .map(r => (r as { data_user_id: string | null }).data_user_id)
+        .filter((id): id is string => typeof id === 'string'),
+    );
+
+    // An owner login can exist without an accounts row during a rolling
+    // deploy or partial repair. Treat properties.owner_id as an independent,
+    // authoritative protection edge and fail closed if it cannot be read.
+    const { data: propertyRows, error: propertiesErr } = await supabaseAdmin
+      .from('properties')
+      .select('owner_id');
+    if (propertiesErr) {
+      log.error('[sweep-orphan-auth-users] failed to read property owners', {
+        requestId, propertiesErr,
+      });
+      return err(`Could not read property owners: ${propertiesErr.message}`, {
+        requestId, status: 500, code: ApiErrorCode.InternalError,
+      });
+    }
+    const propertyOwnerUserIds = new Set<string>(
+      (propertyRows ?? [])
+        .map(r => (r as { owner_id: string | null }).owner_id)
         .filter((id): id is string => typeof id === 'string'),
     );
 
@@ -139,6 +161,10 @@ export async function GET(req: NextRequest) {
         // Skip if there's a matching account — the common case.
         if (accountUserIds.has(user.id)) {
           result.has_account += 1;
+          continue;
+        }
+        if (propertyOwnerUserIds.has(user.id)) {
+          result.owns_property += 1;
           continue;
         }
 

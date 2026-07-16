@@ -8,7 +8,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { InventoryCount } from '@/types';
-import { supabase, logErr } from './_common';
+import { supabase, logErr, asRecordRows } from './_common';
 import { toInventoryCountRow, fromInventoryCountRow } from '../db-mappers';
 
 export async function addInventoryCount(
@@ -46,13 +46,17 @@ export async function listInventoryCounts(
   _uid: string,
   pid: string,
   limit = 200,
+  includeFinancials = true,
 ): Promise<InventoryCount[]> {
+  const columns = includeFinancials
+    ? '*'
+    : 'id,property_id,count_session_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes';
   const { data, error } = await supabase
     .from('inventory_counts')
-    .select('*')
+    .select(columns)
     .eq('property_id', pid)
     .order('counted_at', { ascending: false })
     .limit(limit);
   if (error) { logErr('listInventoryCounts', error); throw error; }
-  return (data ?? []).map(fromInventoryCountRow);
+  return asRecordRows(data).map(fromInventoryCountRow);
 }

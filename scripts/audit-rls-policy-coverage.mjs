@@ -107,6 +107,11 @@ const SERVICE_ROLE_ONLY = new Set([
   // trust-device reads via supabaseAdmin. Never user-readable — the
   // raw rows would leak that a password sign-in happened.
   'password_signin_proofs',
+  // 0310 — global app settings singleton (the master 2FA switch). RLS-on with
+  // an explicit deny-browser policy; anon/authenticated never read it. Admin
+  // writes via /api/admin/settings (service role); the auth hook reads it via
+  // the SECURITY DEFINER staxis_2fa_enabled() function.
+  'app_settings',
   // Phase 2B (2026-05-22 audit, Door B): hook writes mfa_verified_sessions
   // rows when a session is bound to a trusted device via trust-device.
   // Read-only by supabase_auth_admin (hook) + service-role. Never user-

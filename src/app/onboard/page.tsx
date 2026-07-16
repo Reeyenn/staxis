@@ -21,7 +21,7 @@ export const dynamic = 'force-dynamic';
  *      + /api/pms/onboard)
  *   6. Mapping — live progress bar of CUA job (polls /api/pms/job-status)
  *   7. Add team — optional 0-5 staff rows
- *   8. All set — celebration screen + "Go to Dashboard" finalize
+ *   8. All set — celebration screen + "Go to home" finalize
  *
  * (The former Step 5 "Which services?" toggle screen was removed — every
  * app now always appears in the nav and auto-lights based on real usage,
@@ -154,8 +154,8 @@ function OnboardWizard() {
       // dashboard mid-wizard correctly re-gates back here instead of escaping.
       if (typeof window !== 'undefined') sessionStorage.removeItem(RESUME_GUARD_KEY);
       if (data.completed) {
-        // Already done — bounce them to dashboard.
-        router.push('/dashboard');
+        // Home is always available; a hotel's Dashboard section may be off.
+        router.push('/home');
         return;
       }
       // The lean admin flow creates hotels with a placeholder name the
@@ -579,7 +579,11 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ code, email, displayName, password, phone, role: 'front_desk' /* ignored, baked-in role wins */ }),
       });
-      const json = await res.json();
+      const json = await res.json() as {
+        ok?: boolean;
+        error?: string;
+        data?: { twoFactorEnabled?: boolean };
+      };
       if (!res.ok || !json.ok) {
         const msg: string = json.error || `Sign-up failed (${res.status})`;
         // "already exists" / "used up" → the account is already created; route
@@ -593,7 +597,38 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
         setErr(msg);
         return;
       }
-      // Trigger the OTP email send.
+
+      // Global human-2FA switch OFF: the account was created ready to sign in
+      // (email already confirmed), so sign in with the password the user just
+      // typed and mark the email step done — the wizard derives its step from
+      // server state, so it skips straight to hotel details, no code screen.
+      // Fail-safe: ONLY an explicit `false` takes this path; a missing/odd
+      // value or a failed password sign-in falls through to the OTP flow.
+      if (json.data?.twoFactorEnabled === false) {
+        const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+          email: email.trim().toLowerCase(),
+          password,
+        });
+        if (!signInErr && signInData.session) {
+          await fetch('/api/onboard/wizard', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              code,
+              partialState: {
+                accountCreatedAt: new Date().toISOString(),
+                emailVerifiedAt: new Date().toISOString(),
+              },
+            }),
+          });
+          sessionStorage.removeItem('onboard:pendingEmail');
+          await onNext();
+          return;
+        }
+        console.warn('onboard: post-signup signInWithPassword failed — falling back to OTP', signInErr);
+      }
+
+      // Trigger the OTP email send. (2FA on, or the fast path above failed.)
       await supabase.auth.signInWithOtp({ email });
       // PATCH wizard state
       await fetch('/api/onboard/wizard', {
@@ -1728,9 +1763,9 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
       // Full navigation (not router.push) so PropertyContext re-fetches the
       // property FRESH — now with onboarding_completed_at set. A client-side
       // push would leave the cached (pre-completion) property in context, and
-      // the dashboard's onboarding gate would bounce the owner back through
+      // a cached onboarding gate could bounce the owner back through
       // the wizard once before settling. A reload lands them cleanly.
-      window.location.href = '/dashboard';
+      window.location.href = '/home';
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress
       setGoing(false);
@@ -1755,7 +1790,7 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
         </p>
       </div>
       <button className="btn btn-primary" onClick={finalize} disabled={going} style={{ width: '100%', justifyContent: 'center' }}>
-        {going ? 'Going…' : 'Go to dashboard →'}
+        {going ? 'Going…' : 'Go to home →'}
       </button>
     </div>
   );

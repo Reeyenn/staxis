@@ -192,7 +192,8 @@ registerTool<{ category?: 'housekeeping' | 'maintenance' | 'breakfast' | 'all' }
     let q = supabaseAdmin
       .from('inventory')
       .select('name, category, current_stock, reorder_at, unit')
-      .eq('property_id', ctx.propertyId);
+      .eq('property_id', ctx.propertyId)
+      .is('archived_at', null);
     if (category !== 'all') q = q.eq('category', category);
     const { data, error } = await q;
     if (error) {

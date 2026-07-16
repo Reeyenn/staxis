@@ -17,6 +17,8 @@ interface MobileConcourseNavProps {
   userMeta: string;
   userInitial: string;
   homeLabel: string;
+  /** Optional contextual title for section pages. Home keeps the Staxis mark. */
+  mobileTitle?: string;
   menuLabel: string;
   closeLabel: string;
   navigationLabel: string;
@@ -60,6 +62,7 @@ export function MobileConcourseNav({
   userMeta,
   userInitial,
   homeLabel,
+  mobileTitle,
   menuLabel,
   closeLabel,
   navigationLabel,
@@ -352,10 +355,14 @@ export function MobileConcourseNav({
           <Menu size={20} strokeWidth={1.9} aria-hidden="true" />
         </button>
 
-        <button type="button" className={styles.topBrand} onClick={onHome} aria-label={homeLabel}>
-          <CxLogo size={20} color="currentColor" />
-          <span>Staxis</span>
-        </button>
+        {mobileTitle ? (
+          <h1 className={styles.pageTitle}>{mobileTitle}</h1>
+        ) : (
+          <button type="button" className={styles.topBrand} onClick={onHome} aria-label={homeLabel}>
+            <CxLogo size={20} color="currentColor" />
+            <span>Staxis</span>
+          </button>
+        )}
 
         <button
           type="button"

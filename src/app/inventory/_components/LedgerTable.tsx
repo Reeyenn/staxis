@@ -45,6 +45,8 @@ interface LedgerTableProps {
   onEdit?: (item: DisplayItem) => void;
   /** Persist a single-item quick count (debounced save lives in the shell). */
   onQuickCount: (itemId: string, nextValue: number) => void;
+  /** Items whose exact request is in flight or has an ambiguous result. */
+  quickCountLockedIds?: ReadonlySet<string>;
   /** Open the full Count overlay (empty / not-counted CTAs). */
   onCount?: () => void;
   /** Open the Add-item sheet (empty-catalog CTA). */
@@ -83,6 +85,7 @@ export function LedgerTable({
   canViewFinancials,
   onEdit,
   onQuickCount,
+  quickCountLockedIds,
   onCount,
   onAdd,
 }: LedgerTableProps) {
@@ -144,7 +147,7 @@ export function LedgerTable({
     { key: 'days', label: tx.sortDays },
     { key: 'stock', label: tx.sortStock },
     { key: 'name', label: tx.sortAZ },
-    { key: 'value', label: tx.sortValue },
+    ...(canViewFinancials ? [{ key: 'value' as const, label: tx.sortValue }] : []),
   ];
 
   const clickSort = (key: SortKey) => {
@@ -269,6 +272,7 @@ export function LedgerTable({
                 canViewFinancials={canViewFinancials}
                 onEdit={onEdit}
                 onQuickCount={onQuickCount}
+                quickCountLocked={quickCountLockedIds?.has(d.id) ?? false}
               />
             ))
           )}
@@ -323,6 +327,7 @@ function LedgerRow({
   canViewFinancials,
   onEdit,
   onQuickCount,
+  quickCountLocked,
 }: {
   d: DisplayItem;
   grid: string;
@@ -331,6 +336,7 @@ function LedgerRow({
   canViewFinancials: boolean;
   onEdit?: (item: DisplayItem) => void;
   onQuickCount: (itemId: string, nextValue: number) => void;
+  quickCountLocked: boolean;
 }) {
   const uncounted = d.uncounted;
   const have = Math.max(0, Math.round(d.estimated));
@@ -446,6 +452,7 @@ function LedgerRow({
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
         <StepBtn
           kind="minus"
+          disabled={quickCountLocked}
           onClick={(e) => { stop(e); onQuickCount(d.id, have - 1); }}
         />
         <span
@@ -464,6 +471,7 @@ function LedgerRow({
         </span>
         <StepBtn
           kind="plus"
+          disabled={quickCountLocked}
           onClick={(e) => { stop(e); onQuickCount(d.id, have + 1); }}
         />
       </div>
@@ -509,9 +517,11 @@ function LedgerRow({
 function StepBtn({
   kind,
   onClick,
+  disabled = false,
 }: {
   kind: 'minus' | 'plus';
   onClick: (e: React.MouseEvent) => void;
+  disabled?: boolean;
 }) {
   const plus = kind === 'plus';
   const base: React.CSSProperties = {
@@ -522,7 +532,8 @@ function StepBtn({
     lineHeight: 1,
     fontSize: 14,
     fontFamily: fonts.sans,
-    cursor: 'pointer',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.45 : 1,
     display: 'inline-flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -537,12 +548,15 @@ function StepBtn({
       type="button"
       aria-label={plus ? '+1' : '-1'}
       onClick={onClick}
+      disabled={disabled}
       style={base}
       onMouseEnter={(e) => {
+        if (disabled) return;
         if (plus) { e.currentTarget.style.background = T.brand; e.currentTarget.style.color = '#fff'; }
         else e.currentTarget.style.background = T.inkWash;
       }}
       onMouseLeave={(e) => {
+        if (disabled) return;
         if (plus) { e.currentTarget.style.background = T.tealDim; e.currentTarget.style.color = T.tealText; }
         else e.currentTarget.style.background = T.bg;
       }}

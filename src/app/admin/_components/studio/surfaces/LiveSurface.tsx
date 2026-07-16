@@ -46,6 +46,7 @@ import {
 import { CoveragePickerModal } from '../CoveragePickerModal';
 import { SectionsModal } from '../SectionsModal';
 import { AddHotelModal } from '../AddHotelModal';
+import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 
 const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
@@ -452,6 +453,8 @@ function Controls({
   const bg = dimWhite(.06);
   return (
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      {/* Global 2FA master switch — left of the hotel search. */}
+      <TwoFactorSwitch />
       <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 200, maxWidth: 380 }}>
         <span style={{ position: 'absolute', left: 13, top: '50%', transform: 'translateY(-50%)', color: dimWhite(.5), fontSize: 13 }}>⌕</span>
         <input
@@ -739,6 +742,15 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onOpenSections, onDetached
         )}
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <Btn
+            variant="forest"
+            onClick={() => {
+              localStorage.setItem('hotelops-active-property', h.id);
+              window.location.href = '/home';
+            }}
+          >
+            Open hotel →
+          </Btn>
           <Btn variant="primary" href={`/admin/properties/${h.id}`}>Property page →</Btn>
           <Btn variant="ghost" onClick={onOpenSections}>
             Sections{APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length > 0 ? ` · ${APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length} off` : ''}

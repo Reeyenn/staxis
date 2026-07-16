@@ -48,8 +48,35 @@ function VerifyInner() {
   const [error, setError] = useState('');
 
   // No email → user landed here without going through /signin first.
+  // Also: if the global human-2FA switch is off, no code email was sent —
+  // bounce off this code screen so nobody is stranded waiting for a code
+  // that never comes (to the app if a session already exists, else back to
+  // /signin, which now goes straight in). Purely defensive: the check is
+  // best-effort and ONLY an explicit `enabled === false` bounces; any
+  // fetch failure or odd payload leaves the code screen as-is (fail-safe:
+  // behave like 2FA is on).
   useEffect(() => {
-    if (!email) router.replace('/signin');
+    if (!email) {
+      router.replace('/signin');
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/auth/2fa-status', { cache: 'no-store' });
+        const body = await res.json().catch(() => null) as {
+          ok?: boolean;
+          data?: { enabled?: boolean };
+        } | null;
+        if (cancelled || !body?.ok || body.data?.enabled !== false) return;
+        const { data } = await supabase.auth.getSession();
+        if (cancelled) return;
+        router.replace(data.session ? '/property-selector' : '/signin');
+      } catch {
+        // Fail-safe: stay on the code screen (2FA-on behavior).
+      }
+    })();
+    return () => { cancelled = true; };
   }, [email, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
