@@ -12,7 +12,8 @@ import {
   Send,
   Pin,
 } from 'lucide-react';
-import { format } from 'date-fns';
+import { fmtTimeOrDate as fmtTime } from '@/lib/format-date';
+import { initialsOf } from '@/app/_components/ui/Avatar';
 import type { HousekeeperLocale } from '@/lib/translations';
 import { t } from '@/lib/translations';
 import type { ConversationDTO, MessageDTO, StaffLite } from '@/lib/comms/types';
@@ -66,18 +67,6 @@ async function hkPost<T>(url: string, body: unknown): Promise<T | null> {
     return json.ok ? (json.data ?? null) : null;
   } catch {
     return null;
-  }
-}
-
-function fmtTime(iso: string | null): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameDay = d.toDateString() === now.toDateString();
-    return sameDay ? format(d, 'h:mm a') : format(d, 'MMM d');
-  } catch {
-    return '';
   }
 }
 
@@ -288,12 +277,6 @@ export function MessagesTab({
   );
 }
 
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
 function Avatar({ conv, size = 46 }: { conv: { kind?: ConvKind; name?: string; color?: string }; size?: number }) {
   const base: React.CSSProperties = {
     width: size,
@@ -319,7 +302,7 @@ function Avatar({ conv, size = 46 }: { conv: { kind?: ConvKind; name?: string; c
         <Users size={size * 0.5} color="#0E7C7B" />
       </span>
     );
-  return <span style={{ ...base, background: conv.color || '#3B5BA5' }}>{initials(conv.name || '?')}</span>;
+  return <span style={{ ...base, background: conv.color || '#3B5BA5' }}>{initialsOf(conv.name || '?', '')}</span>;
 }
 
 function ConvRow({ conv, onTap }: { conv: Conv; onTap: () => void }) {

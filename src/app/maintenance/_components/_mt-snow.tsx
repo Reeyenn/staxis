@@ -26,6 +26,7 @@ import {
   T, FONT_SANS, FONT_MONO, FONT_SERIF, Caps, Card,
 } from '@/app/housekeeping/_components/_snow';
 import { EmptyState } from '@/app/_components/ui/EmptyState';
+import { initialsOf } from '@/app/_components/ui/Avatar';
 
 // Re-export the shared Snow primitives so the maintenance tabs have a single
 // import source (tokens + Caps/Card live in housekeeping/_snow). Pill and Btn
@@ -156,12 +157,7 @@ export function Avatar({
 }: {
   name: string; tone?: string; size?: number; style?: React.CSSProperties;
 }) {
-  const initials = (() => {
-    const parts = (name || '').trim().split(/\s+/);
-    if (parts.length === 0) return '?';
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  })();
+  const initials = initialsOf(name, '');
   return (
     <span style={{
       width: size, height: size, borderRadius: '50%',

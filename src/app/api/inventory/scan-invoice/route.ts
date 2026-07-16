@@ -21,6 +21,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
 import { mergeInvoicePages, type ExtractedInvoice } from '@/lib/invoice-scan-merge';
 import { errToString } from '@/lib/utils';
@@ -34,9 +35,6 @@ import { captureException } from '@/lib/sentry';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
-
-const isUuid = (s: unknown): s is string =>
-  typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
 // Anthropic Vision only accepts these four. iPhone HEIC/HEIF must be
 // converted (or rejected at the picker) before reaching here.

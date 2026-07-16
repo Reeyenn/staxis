@@ -23,6 +23,7 @@
  */
 
 import { NextRequest } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
@@ -31,8 +32,6 @@ import { getOrMintRequestId } from '@/lib/log';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 15;
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // The 5 polled feeds → the pms_* table whose last_synced_at is the
 // freshness signal (mirrors TARGET_FEEDS in /api/admin/pms-coverage).
@@ -50,7 +49,7 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) return auth.response;
 
   const propertyId = new URL(req.url).searchParams.get('propertyId') ?? '';
-  if (!UUID_RE.test(propertyId)) {
+  if (!isUuid(propertyId)) {
     return err('propertyId must be a UUID', { requestId, status: 400 });
   }
 

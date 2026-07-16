@@ -28,6 +28,7 @@
  */
 
 import type { NextRequest } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
@@ -36,8 +37,6 @@ import { isPMSType } from '@/lib/pms/types';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface Body { pmsFamily?: unknown; propertyId?: unknown }
 
@@ -56,7 +55,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const pmsFamily = body.pmsFamily;
 
   const wantsSingle = body.propertyId !== undefined && body.propertyId !== null;
-  if (wantsSingle && (typeof body.propertyId !== 'string' || !UUID_RE.test(body.propertyId))) {
+  if (wantsSingle && (typeof body.propertyId !== 'string' || !isUuid(body.propertyId))) {
     return err('propertyId must be a UUID', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 

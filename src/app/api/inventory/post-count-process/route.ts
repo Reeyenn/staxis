@@ -25,6 +25,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -42,9 +43,6 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
-
-const isUuid = (s: unknown): s is string =>
-  typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
 interface CountRow {
   id: string;

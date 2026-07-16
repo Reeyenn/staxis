@@ -289,7 +289,7 @@ type TranslationKey =
   // Ops-wall
   | 'liveOpsWall' | 'requests' | 'activeRequests' | 'active' | 'requestsCompleted' | 'noRoomsForToday'
   // Requests page
-  | 'new' | 'all' | 'newGuestRequest' | 'requestType' | 'notesOptional' | 'selectStaff' | 'create' | 'noStaff'
+  | 'new' | 'all' | 'create'
   // Housekeeping page
   | 'housekeeping' | 'todaysProgress' | 'approved' | 'locked' | 'cleaning' | 'reset' | 'vacant'
   | 'noRoomsTodayHkp' | 'noRoomsFloor'
@@ -944,12 +944,7 @@ const translations: TranslationMaps = {
     // Requests page
     new: 'New',
     all: 'All',
-    newGuestRequest: 'New Guest Request',
-    requestType: 'Request Type',
-    notesOptional: 'Notes (optional)',
-    selectStaff: '-- Select staff --',
     create: 'Create',
-    noStaff: 'No staff',
     // Housekeeping page
     housekeeping: 'Housekeeping',
     todaysProgress: "Today's Progress",
@@ -1811,12 +1806,7 @@ const translations: TranslationMaps = {
     // Requests page
     new: 'Nueva',
     all: 'Todas',
-    newGuestRequest: 'Nueva Solicitud de Huésped',
-    requestType: 'Tipo de Solicitud',
-    notesOptional: 'Notas (opcional)',
-    selectStaff: '-- Seleccionar personal --',
     create: 'Crear',
-    noStaff: 'Sin personal',
     // Housekeeping page
     housekeeping: 'Limpieza',
     todaysProgress: 'Progreso de Hoy',

@@ -65,6 +65,17 @@ export function validateUuid(v: unknown, label = 'id'): { error?: string; value?
   return { value: v };
 }
 
+/**
+ * Loose UUID type-guard (any-version, any-variant — the `/i` regex above).
+ * Single source of truth for the byte-identical `const isUuid` / `UUID_RE`
+ * copies that had accreted across API routes and the finance/ordering gates.
+ * NOT the strict RFC-4122 check used by phone-pairing (that one intentionally
+ * validates version + variant nibbles and stays separate).
+ */
+export function isUuid(s: unknown): s is string {
+  return typeof s === 'string' && UUID_RX.test(s);
+}
+
 export function validateString(
   v: unknown,
   opts: { max: number; min?: number; label: string; allowEmpty?: boolean },

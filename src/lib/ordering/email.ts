@@ -13,19 +13,7 @@
 import { sendTransactionalEmail, type SendEmailResult } from '@/lib/email/resend';
 import type { Language } from '@/lib/translations';
 import type { PurchaseOrder } from './types';
-
-function esc(s: string | null | undefined): string {
-  return String(s ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function money(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
+import { escapeHtml as esc, moneyFromCents as money } from '@/lib/format';
 
 const COPY = {
   en: {
