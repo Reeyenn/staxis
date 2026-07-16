@@ -49,6 +49,9 @@ const STRINGS = {
   en: {
     // ── Shell ──
     loading: 'Loading…',
+    loadFailed: 'Inventory could not load. Check the connection and try again.',
+    retry: 'Try again',
+    quickCountSaveFailed: 'A quick count did not fully save. Refresh before trying that item again.',
     pageTitle: 'Inventory',
     stockHealth: 'Stock health',
     orderNow: 'Order now',
@@ -119,7 +122,7 @@ const STRINGS = {
     colValue: 'Value',
     notCountedPill: 'Not counted',
     nothingMatches: 'Nothing matches your search.',
-    ledgerHint: 'Quick counts save to history the moment you tap · full walk lives in Start count',
+    ledgerHint: 'Quick counts save after a short pause · full walk lives in Start count',
     // ── View toggle (Ledger table ↔ triage board) ──
     viewLedger: 'Ledger',
     viewBoard: 'Board',
@@ -140,6 +143,9 @@ const STRINGS = {
   es: {
     // ── Shell ──
     loading: 'Cargando…',
+    loadFailed: 'No se pudo cargar el inventario. Revisa la conexión e inténtalo de nuevo.',
+    retry: 'Intentar de nuevo',
+    quickCountSaveFailed: 'Un conteo rápido no se guardó por completo. Actualiza antes de intentar ese artículo otra vez.',
     pageTitle: 'Inventario',
     stockHealth: 'Salud del inventario',
     orderNow: 'Pedir ahora',
@@ -210,7 +216,7 @@ const STRINGS = {
     colValue: 'Valor',
     notCountedPill: 'Sin contar',
     nothingMatches: 'Nada coincide con tu búsqueda.',
-    ledgerHint: 'Los conteos rápidos se guardan en el historial al tocar · el recorrido completo está en Iniciar conteo',
+    ledgerHint: 'Los conteos rápidos se guardan tras una pausa breve · el recorrido completo está en Iniciar conteo',
     // ── View toggle (tabla Libro ↔ tablero) ──
     viewLedger: 'Tabla',
     viewBoard: 'Tablero',

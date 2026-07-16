@@ -204,13 +204,17 @@ def _train_inventory_inner(
     if item_id_filter:
         items = client.fetch_many(
             "inventory",
-            filters={"property_id": property_id, "id": item_id_filter},
+            filters={
+                "property_id": property_id,
+                "id": item_id_filter,
+                "archived_at": None,
+            },
             limit=1,
         )
     else:
         items = client.fetch_many(
             "inventory",
-            filters={"property_id": property_id},
+            filters={"property_id": property_id, "archived_at": None},
             limit=500,
         )
 

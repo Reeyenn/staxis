@@ -50,7 +50,7 @@ class SupabaseServiceClient:
         query = self._client.table(table).select("*")
         if filters:
             for key, value in filters.items():
-                query = query.eq(key, value)
+                query = query.is_(key, "null") if value is None else query.eq(key, value)
         response = query.limit(1).execute()
         return response.data[0] if response.data else None
 
@@ -77,7 +77,7 @@ class SupabaseServiceClient:
         query = self._client.table(table).select("*")
         if filters:
             for key, value in filters.items():
-                query = query.eq(key, value)
+                query = query.is_(key, "null") if value is None else query.eq(key, value)
         if order_by:
             # postgrest-py's .order() takes `desc=`, NOT `descending=`.
             # The wrapper was forwarding the wrong keyword and every

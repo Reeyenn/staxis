@@ -13,6 +13,10 @@
 
 import { supabase, logErr } from './_common';
 import { ML_PREDICTION_FRESHNESS_DAYS } from '../inventory-predictions';
+import {
+  activeInventoryItemIds,
+  filterInventoryMlRowsToActiveItems,
+} from '../inventory-ml-active';
 
 export interface InventoryDataFuelStats {
   totalCounts: number;
@@ -306,8 +310,10 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
       .maybeSingle(),
     supabase
       .from('inventory')
-      .select('id', { count: 'exact', head: true })
-      .eq('property_id', pid),
+      .select('id')
+      .eq('property_id', pid)
+      .is('archived_at', null)
+      .limit(2000),
     supabase
       .from('model_runs')
       // Honesty-audit Phase 2: pull `hyperparameters` so the gate-ratio
@@ -319,17 +325,17 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
       .limit(2000),
     supabase
       .from('inventory_rate_predictions')
-      .select('predicted_at')
+      .select('item_id,predicted_at')
       .eq('property_id', pid)
       .order('predicted_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    // Phase 2: 7-day prediction count (head:true avoids fetching 50K rows).
+      .limit(50000),
+    // Pull item ids so archived-item predictions can be excluded.
     supabase
       .from('inventory_rate_predictions')
-      .select('property_id', { count: 'exact', head: true })
+      .select('item_id')
       .eq('property_id', pid)
-      .gte('predicted_at', sevenDaysAgoIso),
+      .gte('predicted_at', sevenDaysAgoIso)
+      .limit(50000),
   ]);
 
   const aiMode = (propRes.data?.inventory_ai_mode ?? 'auto') as 'off' | 'auto' | 'always-on';
@@ -337,8 +343,9 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
   const daysSinceFirstCount = firstCountAt
     ? Math.max(0, Math.floor((Date.now() - firstCountAt) / 86400000))
     : 0;
-  const itemsTotal = itemsRes.count ?? 0;
-  const runs = runsRes.data ?? [];
+  const activeItemIds = activeInventoryItemIds(itemsRes.data ?? []);
+  const itemsTotal = activeItemIds.size;
+  const runs = filterInventoryMlRowsToActiveItems(runsRes.data ?? [], activeItemIds);
   const itemsWithModel = runs.length;
   const itemsGraduated = runs.filter((r) => r.auto_fill_enabled).length;
   const itemsExpectedToGraduate = runs.filter((r) => {
@@ -383,13 +390,17 @@ export async function getInventoryAiStatus(pid: string): Promise<InventoryAiStat
     currentMaeRatioVsMean = gateRatios.reduce((a, b) => a + b, 0) / gateRatios.length;
   }
 
-  const lastInferenceAt = predRes.data?.predicted_at ?? null;
+  const activePredictions = filterInventoryMlRowsToActiveItems(predRes.data ?? [], activeItemIds);
+  const lastInferenceAt = activePredictions[0]?.predicted_at ?? null;
   const lastInferenceStale = (() => {
     if (!lastInferenceAt) return true;
     const ageHours = (Date.now() - new Date(lastInferenceAt).getTime()) / 3600000;
     return ageHours > STALE_INFERENCE_HOURS;
   })();
-  const predictionsLast7Days = predsLast7Res.count ?? 0;
+  const predictionsLast7Days = filterInventoryMlRowsToActiveItems(
+    predsLast7Res.data ?? [],
+    activeItemIds,
+  ).length;
 
   return {
     aiMode,

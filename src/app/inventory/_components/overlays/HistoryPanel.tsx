@@ -3,6 +3,7 @@
 import React, { useMemo } from 'react';
 import type { InventoryCount, InventoryOrder } from '@/types';
 import { shortDateFromDate } from '@/lib/format-date';
+import { groupInventoryCountsByEvent } from '@/lib/inventory-history';
 import { T, fonts, statusColor } from '../tokens';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
@@ -14,6 +15,7 @@ interface HistoryPanelProps {
   onClose: () => void;
   counts: InventoryCount[];
   orders: InventoryOrder[];
+  canViewFinancials: boolean;
 }
 
 function hpStrings(lang: Lang) {
@@ -63,7 +65,7 @@ type Row = {
   varianceSign?: -1 | 0 | 1;
 };
 
-export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPanelProps) {
+export function HistoryPanel({ lang, open, onClose, counts, orders, canViewFinancials }: HistoryPanelProps) {
   const hp = useMemo(() => hpStrings(lang), [lang]);
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
@@ -75,23 +77,18 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
         label: o.itemName ? `${hp.order} · ${o.itemName}` : hp.order,
         who: o.vendorName || hp.vendor,
         meta: `${o.quantity} ${o.quantity === 1 ? hp.unit : hp.units}`,
-        amount: o.totalCost,
+        amount: canViewFinancials ? o.totalCost : undefined,
       });
     }
-    // Bucket counts by countedAt date — multiple items recorded at the same second
-    // logically belong to one "Physical count" event.
-    const byCountedAt = new Map<string, InventoryCount[]>();
-    for (const c of counts) {
-      const k = c.countedAt ? c.countedAt.toISOString() : 'unknown';
-      const list = byCountedAt.get(k) ?? [];
-      list.push(c);
-      byCountedAt.set(k, list);
-    }
-    for (const [k, group] of byCountedAt.entries()) {
-      if (k === 'unknown') continue;
-      const first = group[0];
-      const dt = first.countedAt!;
-      const who = first.countedBy || hp.team;
+    // Atomic saves share a countSessionId, so one full count stays one event
+    // even if individual rows do not receive byte-identical timestamps. Rows
+    // written before 0310 keep the legacy exact-timestamp fallback.
+    for (const group of groupInventoryCountsByEvent(counts)) {
+      const dt = group.reduce(
+        (latest, c) => c.countedAt && c.countedAt > latest ? c.countedAt : latest,
+        group[0].countedAt!,
+      );
+      const who = group.find((c) => c.countedBy)?.countedBy || hp.team;
       const variance = group.reduce(
         (s, c) => s + (typeof c.varianceValue === 'number' ? c.varianceValue : 0),
         0,
@@ -102,13 +99,13 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
         label: hp.physicalCount,
         who,
         meta: `${group.length} ${group.length === 1 ? hp.item : hp.items}`,
-        amount: variance,
-        varianceSign: variance < 0 ? -1 : variance > 0 ? 1 : 0,
+        amount: canViewFinancials ? variance : undefined,
+        varianceSign: canViewFinancials ? (variance < 0 ? -1 : variance > 0 ? 1 : 0) : undefined,
       });
     }
     out.sort((a, b) => b.date.getTime() - a.date.getTime());
     return out;
-  }, [counts, orders, hp]);
+  }, [counts, orders, hp, canViewFinancials]);
 
   const kindStyle = {
     order: {
@@ -157,7 +154,9 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
                 key={i}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '88px 80px 1fr 1fr 100px',
+                  gridTemplateColumns: canViewFinancials
+                    ? '88px 80px 1fr 1fr 100px'
+                    : '88px 80px 1fr 1fr',
                   gap: 14,
                   padding: '14px 0',
                   alignItems: 'center',
@@ -208,29 +207,31 @@ export function HistoryPanel({ lang, open, onClose, counts, orders }: HistoryPan
                 <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
                   {row.who} · {row.meta}
                 </span>
-                <span
-                  style={{
-                    fontFamily: fonts.sans,
-                    fontSize: 13,
-                    fontWeight: 600,
-                    textAlign: 'right',
-                  }}
-                >
-                  {row.kind === 'order' && typeof row.amount === 'number' && row.amount > 0 ? (
-                    <span style={{ color: T.ink }}>{fmtMoney(row.amount)}</span>
-                  ) : row.kind === 'count' && typeof row.amount === 'number' ? (
-                    <span
-                      style={{
-                        color: (row.varianceSign ?? 0) < 0 ? statusColor.critical : T.ink2,
-                        fontWeight: 500,
-                      }}
-                    >
-                      {fmtMoney(row.amount)}
-                    </span>
-                  ) : (
-                    <span style={{ color: T.ink3 }}>—</span>
-                  )}
-                </span>
+                {canViewFinancials && (
+                  <span
+                    style={{
+                      fontFamily: fonts.sans,
+                      fontSize: 13,
+                      fontWeight: 600,
+                      textAlign: 'right',
+                    }}
+                  >
+                    {row.kind === 'order' && typeof row.amount === 'number' && row.amount > 0 ? (
+                      <span style={{ color: T.ink }}>{fmtMoney(row.amount)}</span>
+                    ) : row.kind === 'count' && typeof row.amount === 'number' ? (
+                      <span
+                        style={{
+                          color: (row.varianceSign ?? 0) < 0 ? statusColor.critical : T.ink2,
+                          fontWeight: 500,
+                        }}
+                      >
+                        {fmtMoney(row.amount)}
+                      </span>
+                    ) : (
+                      <span style={{ color: T.ink3 }}>—</span>
+                    )}
+                  </span>
+                )}
               </div>
             );
           })

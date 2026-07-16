@@ -14,7 +14,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { subscribeToInventory, addInventoryItem, updateInventoryItem } from '@/lib/db';
+import { subscribeToInventory, addInventoryItem, saveInventoryCountAtomic } from '@/lib/db';
+import { generateId } from '@/lib/utils';
 import type { InventoryItem } from '@/types';
 import {
   T, FONT_SANS, FONT_MONO,
@@ -241,22 +242,59 @@ export function EquipmentTab() {
   // per item and always writes the latest tapped value next. The returned
   // promise resolves with the FINAL outcome of the tap burst (false = the
   // last write failed → caller rolls the draft back).
-  const qtyPumps = useRef<Map<string, { desired: number; promise: Promise<boolean> | null }>>(new Map());
+  const qtyPumps = useRef<Map<string, {
+    desired: number;
+    persisted: number;
+    promise: Promise<boolean> | null;
+    attempt: { value: number; requestId: string; countedAt: Date } | null;
+  }>>(new Map());
   const setQty = (id: string, qty: number): Promise<boolean> => {
     if (!user || !activePropertyId) return Promise.resolve(false);
     const uid = user.uid;
     const pid = activePropertyId;
+    const liveStock = items.find((item) => item.id === id)?.currentStock ?? 0;
+    const desired = Math.max(0, qty);
+    if (liveStock === desired && !qtyPumps.current.get(id)?.promise) return Promise.resolve(true);
     let pump = qtyPumps.current.get(id);
-    if (!pump) { pump = { desired: qty, promise: null }; qtyPumps.current.set(id, pump); }
-    pump.desired = Math.max(0, qty);
+    if (!pump) {
+      pump = { desired, persisted: liveStock, promise: null, attempt: null };
+      qtyPumps.current.set(id, pump);
+    } else if (!pump.promise) {
+      // Adopt the latest authoritative snapshot between tap bursts. If another
+      // employee counted or received stock, the expected-stock guard below
+      // will reject any stale modal value instead of overwriting their write.
+      pump.persisted = liveStock;
+    }
+    pump.desired = desired;
     if (pump.promise) return pump.promise; // running pump picks up `desired`
     const state = pump;
     state.promise = (async () => {
       let ok = true;
       for (;;) {
         const want = state.desired;
-        try { await updateInventoryItem(uid, pid, id, { currentStock: want }); ok = true; }
-        catch { ok = false; }
+        if (want === state.persisted) {
+          ok = true;
+        } else {
+          if (!state.attempt || state.attempt.value !== want) {
+            state.attempt = { value: want, requestId: generateId(), countedAt: new Date() };
+          }
+          const attempt = state.attempt;
+          try {
+            await saveInventoryCountAtomic(
+              uid,
+              pid,
+              attempt.requestId,
+              attempt.countedAt,
+              user.displayName || user.username || 'team',
+              [{ itemId: id, expectedStock: state.persisted, countedStock: want }],
+            );
+            state.persisted = want;
+            if (state.attempt === attempt) state.attempt = null;
+            ok = true;
+          } catch {
+            ok = false;
+          }
+        }
         if (state.desired === want) break; // no newer taps → settled
       }
       state.promise = null;

@@ -31,6 +31,10 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { getInventoryNextScheduled } from '@/lib/ml-cron-schedule';
+import {
+  activeInventoryItemIds,
+  filterInventoryMlRowsToActiveItems,
+} from '@/lib/inventory-ml-active';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -239,8 +243,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const { data: itemRows } = await supabaseAdmin
       .from('inventory')
       .select('id, property_id')
-      .in('property_id', scopeIds);
+      .in('property_id', scopeIds)
+      .is('archived_at', null);
     const items = itemRows ?? [];
+    const activeItemIds = activeInventoryItemIds(items);
 
     // 4. Active inventory_rate models — for itemsGraduated per property
     const { data: runRows } = await supabaseAdmin
@@ -249,7 +255,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .in('property_id', scopeIds)
       .eq('layer', 'inventory_rate')
       .eq('is_active', true);
-    const runs = runRows ?? [];
+    const runs = filterInventoryMlRowsToActiveItems(runRows ?? [], activeItemIds);
 
     // 4b. Honesty-audit Phase 2: ALL non-shadow inventory_rate runs ordered
     // newest-first, used downstream to compute xgboostBlockedCount via
@@ -268,16 +274,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       .eq('is_shadow', false)
       .order('trained_at', { ascending: false })
       .limit(50000);
-    const latestRuns = latestRunRows ?? [];
+    const latestRuns = filterInventoryMlRowsToActiveItems(latestRunRows ?? [], activeItemIds);
 
     // 5. Inventory rate predictions — for last prediction time + count last 24h
     const { data: predRows } = await supabaseAdmin
       .from('inventory_rate_predictions')
-      .select('property_id, predicted_at')
+      .select('property_id, item_id, predicted_at')
       .in('property_id', scopeIds)
       .order('predicted_at', { ascending: false })
       .limit(50000);
-    const preds = predRows ?? [];
+    const preds = filterInventoryMlRowsToActiveItems(predRows ?? [], activeItemIds);
 
     // 6. Anomalies (app_events with event_type='inventory_anomaly')
     const { data: anomalyRows } = await supabaseAdmin
@@ -419,16 +425,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           supabaseAdmin
             .from('inventory')
             .select('id, property_id')
-            .in('property_id', otherPids),
+            .in('property_id', otherPids)
+            .is('archived_at', null),
           supabaseAdmin
             .from('model_runs')
-            .select('property_id, auto_fill_enabled, trained_at')
+            .select('property_id, item_id, auto_fill_enabled, trained_at')
             .in('property_id', otherPids)
             .eq('layer', 'inventory_rate')
             .eq('is_active', true),
           supabaseAdmin
             .from('inventory_rate_predictions')
-            .select('property_id, predicted_at')
+            .select('property_id, item_id, predicted_at')
             .in('property_id', otherPids)
             .order('predicted_at', { ascending: false })
             .limit(10000),
@@ -450,20 +457,30 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           }
         }
         const otherItemsCount = new Map<string, number>();
-        for (const it of otherItemsRes.data ?? []) {
+        const otherItems = otherItemsRes.data ?? [];
+        const otherActiveItemIds = activeInventoryItemIds(otherItems);
+        for (const it of otherItems) {
           const pid = it.property_id as string;
           otherItemsCount.set(pid, (otherItemsCount.get(pid) ?? 0) + 1);
         }
         const otherGrad = new Map<string, number>();
         const otherLastTr = new Map<string, number>();
-        for (const r of otherRunsRes.data ?? []) {
+        const otherRuns = filterInventoryMlRowsToActiveItems(
+          otherRunsRes.data ?? [],
+          otherActiveItemIds,
+        );
+        for (const r of otherRuns) {
           const pid = r.property_id as string;
           if (r.auto_fill_enabled) otherGrad.set(pid, (otherGrad.get(pid) ?? 0) + 1);
           const t = r.trained_at ? new Date(r.trained_at).getTime() : 0;
           if (t > (otherLastTr.get(pid) ?? 0)) otherLastTr.set(pid, t);
         }
         const otherLastPr = new Map<string, number>();
-        for (const p of otherPredsRes.data ?? []) {
+        const otherPreds = filterInventoryMlRowsToActiveItems(
+          otherPredsRes.data ?? [],
+          otherActiveItemIds,
+        );
+        for (const p of otherPreds) {
           const pid = p.property_id as string;
           const t = p.predicted_at ? new Date(p.predicted_at).getTime() : 0;
           if (t > (otherLastPr.get(pid) ?? 0)) otherLastPr.set(pid, t);

@@ -20,7 +20,6 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { resizeImageForVision } from '@/lib/image-resize';
 import { listInventoryOrders } from '@/lib/db';
-import { matchInvoiceLine } from '@/lib/inventory-match';
 import {
   buildCommitPlan,
   buildNotesTag,
@@ -36,7 +35,16 @@ import { numGuard } from './form-kit';
 import { ssStrings, scanErrorFor } from './scan-i18n';
 import { StagingStep, foldFiles, fileToBase64, type Staged } from './scan-staging';
 import { buildRow, ReviewRowView, type RawInvoiceLine, type ReviewRow } from './scan-review';
-import { executeCommit, newCommitProgress, errMsg, type CommitFailure } from './scan-commit';
+import {
+  executeCommit,
+  retryCommit,
+  newCommitProgress,
+  releaseRejectedCommit,
+  loadDeliveryAttempt,
+  isDefinitiveDeliveryFailure,
+  numberedInvoiceSaveBlocked,
+  errMsg,
+} from './scan-commit';
 
 type ScanPhase = 'upload' | 'reading' | 'review' | 'committing' | 'done' | 'error';
 
@@ -83,11 +91,18 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
   const [invoiceNumber, setInvoiceNumber] = useState<string | null>(null);
   const [rows, setRows] = useState<ReviewRow[]>([]);
   const [dupWarn, setDupWarn] = useState(false);
+  const [dupChecking, setDupChecking] = useState(false);
+  const [dupCheckFailed, setDupCheckFailed] = useState(false);
   const [banner, setBanner] = useState('');
+  const [retryLocked, setRetryLocked] = useState(false);
+  const [recoveredLineCount, setRecoveredLineCount] = useState(0);
 
   // Per-line commit progress, so a retry after a partial failure resumes the
   // failed step and never double-inserts an order / re-creates an item.
   const progressRef = useRef(newCommitProgress());
+  // `buildCommitPlan` falls back to "now" when the invoice has no date. Freeze
+  // that fallback for this sheet session so retries send an identical payload.
+  const commitNowRef = useRef(new Date());
 
   const byId = useMemo(() => {
     const m = new Map<string, DisplayItem>();
@@ -106,17 +121,29 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
 
   useEffect(() => {
     if (!open) return;
-    setPhase('upload');
+    const restored = activePropertyId
+      ? loadDeliveryAttempt('scan', activePropertyId)
+      : null;
+    setPhase(restored ? 'review' : 'upload');
     setErrorText('');
     clearStaged();
-    setVendor('');
-    setInvoiceDate('');
+    setVendor(restored?.vendorName ?? '');
+    setInvoiceDate(restored?.receivedAt.slice(0, 10) ?? '');
     setInvoiceNumber(null);
     setRows([]);
     setDupWarn(false);
-    setBanner('');
-    progressRef.current = newCommitProgress();
-  }, [open]);
+    setDupChecking(false);
+    setDupCheckFailed(false);
+    setBanner(restored
+      ? (lang === 'es'
+          ? 'El resultado anterior no se pudo confirmar. Reintenta exactamente la misma entrega para resolverlo.'
+          : 'The previous result could not be confirmed. Retry the exact same delivery to resolve it.')
+      : '');
+    setRetryLocked(!!restored);
+    setRecoveredLineCount(restored?.lines.length ?? 0);
+    progressRef.current = newCommitProgress(restored);
+    commitNowRef.current = new Date();
+  }, [open, activePropertyId, lang]);
 
   // Belt-and-suspenders: revoke any staged thumbnails if the sheet unmounts
   // while pages are staged (open/close resets already handle the common path).
@@ -191,6 +218,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
   // pages and their thumbnails before delegating to the parent's onClose, so
   // closing mid-stage never leaks blob URLs or carries pages into a reopen.
   const handleClose = () => {
+    if (phase === 'committing' || retryLocked) return;
     clearStaged();
     onClose();
   };
@@ -205,6 +233,9 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     if (cur.kind === 'none') return;
     setPhase('reading');
     setErrorText('');
+    setDupWarn(false);
+    setDupChecking(false);
+    setDupCheckFailed(false);
     try {
       let body: string;
       if (cur.kind === 'images') {
@@ -256,13 +287,20 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       clearStaged();
       setPhase('review');
 
-      // Warning-only duplicate check (no invoice_number column to hard-guard on).
-      try {
-        const tag = buildNotesTag(num || null, json.vendor_name ?? null);
-        const orders = await listInventoryOrders(user.uid, activePropertyId, 200);
-        setDupWarn(invoiceAlreadyRecorded(orders.map((o) => o.notes), tag));
-      } catch {
-        /* non-blocking */
+      // A numbered invoice is fail-closed: search a field-test-sized history
+      // window and hard-block Save on a match OR if history could not be
+      // verified. There is deliberately no override during the field test.
+      if (num) {
+        setDupChecking(true);
+        try {
+          const tag = buildNotesTag(num, json.vendor_name ?? null);
+          const orders = await listInventoryOrders(user.uid, activePropertyId, 2000);
+          setDupWarn(invoiceAlreadyRecorded(orders.map((o) => o.notes), tag));
+        } catch {
+          setDupCheckFailed(true);
+        } finally {
+          setDupChecking(false);
+        }
       }
     } catch (err) {
       console.error('[scan-invoice] failed', err);
@@ -271,59 +309,62 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     }
   };
 
+  const duplicateBlocked = numberedInvoiceSaveBlocked({
+    invoiceNumber,
+    checking: dupChecking,
+    duplicate: dupWarn,
+    checkFailed: dupCheckFailed,
+  });
+
   const handleCommit = async () => {
-    if (!user || !activePropertyId || phase === 'committing') return;
+    if (!user || !activePropertyId || phase === 'committing' || (!retryLocked && duplicateBlocked)) return;
     setPhase('committing');
     setBanner('');
-    const plan = buildCommitPlan({
-      vendorName: vendor,
-      invoiceDate,
-      invoiceNumber,
-      lines: rows.map((r) => ({
-        key: r.key,
-        itemName: r.raw.item_name,
-        decision: r.decision,
-        matchedItemId: r.matchedItemId,
-        qty: r.qtyInput,
-        quantityCases: r.raw.quantity_cases,
-        unitCost: r.unitCostInput,
-        onHandEstimate: onHandFor(r.matchedItemId),
-        afterOverride: r.decision === 'match' && r.afterDirty ? r.afterInput : null,
-        newItem: r.decision === 'create' ? { category: r.newCategory, unit: r.newUnit, parLevel: r.newPar } : undefined,
-      })),
-    });
 
-    let failures: CommitFailure[] = [];
     try {
-      failures = await executeCommit(plan, progressRef.current, {
-        uid: user.uid,
-        pid: activePropertyId,
-        nameExists: ss.nameExists,
-      });
+      if (retryLocked) {
+        await retryCommit(progressRef.current, { uid: user.uid, pid: activePropertyId });
+      } else {
+        const plan = buildCommitPlan({
+          vendorName: vendor,
+          invoiceDate,
+          invoiceNumber,
+          lines: rows.map((r) => ({
+            key: r.key,
+            itemName: r.raw.item_name,
+            decision: r.decision,
+            matchedItemId: r.matchedItemId,
+            qty: r.qtyInput,
+            quantityCases: r.raw.quantity_cases,
+            unitCost: r.unitCostInput,
+            onHandEstimate: onHandFor(r.matchedItemId),
+            afterOverride: r.decision === 'match' && r.afterDirty ? r.afterInput : null,
+            newItem: r.decision === 'create' ? { category: r.newCategory, unit: r.newUnit, parLevel: r.newPar } : undefined,
+          })),
+        }, commitNowRef.current);
+        await executeCommit(plan, progressRef.current, {
+          uid: user.uid,
+          pid: activePropertyId,
+        });
+      }
     } catch (e) {
+      if (isDefinitiveDeliveryFailure(e, retryLocked)) {
+        releaseRejectedCommit(progressRef.current, activePropertyId);
+        setRetryLocked(false);
+      } else if (progressRef.current.attempt) {
+        setRecoveredLineCount(progressRef.current.attempt?.lines.length ?? rows.length);
+        setRetryLocked(true);
+      } else {
+        // A validation error happened before an RPC envelope existed, so no
+        // delivery outcome is ambiguous and the review can remain editable.
+        setRetryLocked(false);
+      }
       setBanner(ss.savingFailed(errMsg(e)));
       setPhase('review');
       return;
     }
-
-    const prog = progressRef.current;
-    if (failures.length === 0) {
-      setPhase('done');
-      return;
-    }
-    // Mark per-row outcomes; flip name-collisions back to a match decision.
-    setRows((prev) =>
-      prev.map((r) => {
-        const f = failures.find((x) => x.lineKey === r.key);
-        const committed = prog.orderedKeys.has(r.key) || prog.createdIds.has(r.key);
-        if (f?.collision) {
-          return { ...r, saved: committed, error: f.reason, decision: 'match', candidates: matchInvoiceLine(r.raw.item_name, display).candidates };
-        }
-        return { ...r, saved: committed, error: f?.reason };
-      }),
-    );
-    setBanner(ss.needAttention(prog.orderedKeys.size, failures.length));
-    setPhase('review');
+    setRetryLocked(false);
+    setPhase('done');
   };
 
   const reviewing = phase === 'review' || phase === 'committing';
@@ -346,8 +387,17 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
             <Btn variant="ghost" size="md" onClick={handleClose} disabled={phase === 'committing'}>
               {ss.cancel}
             </Btn>
-            <Btn variant="primary" size="md" onClick={handleCommit} disabled={phase === 'committing' || actionable === 0}>
-              {phase === 'committing' ? ss.adding : ss.addItems(actionable)}
+            <Btn
+              variant="primary"
+              size="md"
+              onClick={handleCommit}
+              disabled={phase === 'committing' || (!retryLocked && (actionable === 0 || duplicateBlocked))}
+            >
+              {phase === 'committing'
+                ? ss.adding
+                : retryLocked
+                  ? (lang === 'es' ? 'Reintentar la misma entrega' : 'Retry exact delivery')
+                  : ss.addItems(actionable)}
             </Btn>
           </>
         ) : undefined
@@ -404,7 +454,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
               lineHeight: 1.5,
             }}
           >
-            {ss.savedMsg(matchedCount + createCount)}
+            {ss.savedMsg(recoveredLineCount || matchedCount + createCount)}
           </div>
           <div>
             <Btn variant="primary" size="md" onClick={handleClose}>
@@ -416,7 +466,23 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
 
       {reviewing && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {dupWarn && <div style={warmStrip}>{ss.dupWarn}</div>}
+          {dupWarn && (
+            <div style={warmStrip}>
+              {ss.dupWarn} {lang === 'es' ? 'No se puede guardar esta factura otra vez.' : 'This invoice cannot be saved again.'}
+            </div>
+          )}
+          {dupChecking && (
+            <div style={warmStrip}>
+              {lang === 'es' ? 'Comprobando el historial de facturas…' : 'Checking invoice history…'}
+            </div>
+          )}
+          {dupCheckFailed && (
+            <div style={warmStrip}>
+              {lang === 'es'
+                ? 'No se pudo verificar el historial. Guardar está bloqueado para evitar una entrega duplicada.'
+                : 'History could not be verified. Saving is blocked to prevent a duplicate delivery.'}
+            </div>
+          )}
           {banner && <div style={warmStrip}>{banner}</div>}
 
           {/* Where it came from — read straight off the invoice, not a form. */}
@@ -426,7 +492,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
             </div>
           )}
 
-          <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {!retryLocked && <div style={{ display: 'flex', flexDirection: 'column' }}>
             {rows.map((row) => (
               <ReviewRowView
                 key={row.key}
@@ -444,7 +510,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
                 }
               />
             ))}
-          </div>
+          </div>}
         </div>
       )}
     </Overlay>

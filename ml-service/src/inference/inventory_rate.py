@@ -110,12 +110,30 @@ async def predict_inventory_rates(
         target_date = _tomorrow_in_property_tz(tz_name)
     target_date_iso = target_date.isoformat()
 
-    # Find every active inventory_rate model_runs row for this property
+    # Model rows are intentionally retained after an item is archived. Scope
+    # serving to the live inventory list so those audit rows cannot keep
+    # producing predictions for an item the hotel no longer tracks.
+    active_items = client.fetch_many(
+        "inventory",
+        filters={"property_id": property_id, "archived_at": None},
+        limit=1000,
+    )
+    active_item_ids = {
+        str(item["id"])
+        for item in active_items
+        if item.get("id")
+    }
+
+    # Find every active inventory_rate model_runs row for this property.
     active_runs = client.fetch_many(
         "model_runs",
         filters={"property_id": property_id, "layer": "inventory_rate", "is_active": True},
         limit=1000,
     )
+    active_runs = [
+        run for run in active_runs
+        if str(run.get("item_id") or "") in active_item_ids
+    ]
     if not active_runs:
         return {
             "predicted": 0,
@@ -473,8 +491,20 @@ def _predict_single_item(
     #   • exposure family: integrate day-by-day using each day's real
     #     checkouts/stayovers exposure (s·(CO+κ·SO)) since the last count.
     #   • occupancy family / cold-start: the flat-rate retroactive method.
-    item = client.fetch_one("inventory", filters={"id": item_id})
-    item_name = (item or {}).get("name", "")
+    # Re-check immediately before writing. An item can be archived after the
+    # run-level active-item census above; failing closed here prevents that
+    # race from creating one more prediction.
+    item = client.fetch_one(
+        "inventory",
+        filters={
+            "id": item_id,
+            "property_id": property_id,
+            "archived_at": None,
+        },
+    )
+    if not item:
+        return {"predicted": False, "reason": "item_archived_or_missing"}
+    item_name = item.get("name", "")
     if algorithm == INVENTORY_EXPOSURE_ALGORITHM:
         try:
             params = json.loads(posterior_params_json) if isinstance(posterior_params_json, str) else posterior_params_json

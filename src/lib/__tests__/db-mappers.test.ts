@@ -22,6 +22,9 @@ import {
   fromStaffRow,
   toRoomRow,
   fromRoomRow,
+  fromInventoryRow,
+  fromInventoryCountRow,
+  toInventoryCountRow,
 } from '../db-mappers';
 
 describe('toDate', () => {
@@ -155,5 +158,56 @@ describe('Room mapper round-trip', () => {
     assert.equal(reread.assignedName, 'Maria');
     assert.equal(reread.startedAt!.toISOString(), '2026-04-27T15:00:00.000Z');
     assert.equal(reread.completedAt, null);
+  });
+});
+
+describe('Inventory mapper — retention provenance', () => {
+  test('maps creation and archive provenance without losing timestamps', () => {
+    const item = fromInventoryRow({
+      id: 'item-1',
+      property_id: 'property-1',
+      name: 'Bath towels',
+      category: 'housekeeping',
+      unit: 'each',
+      created_at: '2026-07-15T14:00:00Z',
+      created_by: 'user-created',
+      archived_at: '2026-07-16T15:30:00Z',
+      archived_by: 'user-archived',
+    });
+
+    assert.equal(item.createdAt?.toISOString(), '2026-07-15T14:00:00.000Z');
+    assert.equal(item.createdBy, 'user-created');
+    assert.equal(item.archivedAt?.toISOString(), '2026-07-16T15:30:00.000Z');
+    assert.equal(item.archivedBy, 'user-archived');
+  });
+
+  test('maps legacy rows with no provenance to null', () => {
+    const item = fromInventoryRow({
+      id: 'legacy-item',
+      property_id: 'property-1',
+      name: 'Legacy towels',
+      category: 'housekeeping',
+      unit: 'each',
+    });
+
+    assert.equal(item.createdAt, null);
+    assert.equal(item.createdBy, null);
+    assert.equal(item.archivedAt, null);
+    assert.equal(item.archivedBy, null);
+  });
+});
+
+describe('Inventory count mapper — atomic session provenance', () => {
+  test('round-trips count_session_id', () => {
+    const row = toInventoryCountRow({
+      propertyId: 'property-1',
+      countSessionId: 'f7a70f69-232b-471b-8895-608ce88a421c',
+      itemId: 'item-1',
+      itemName: 'Bath towels',
+      countedStock: 24,
+    });
+    assert.equal(row.count_session_id, 'f7a70f69-232b-471b-8895-608ce88a421c');
+    const count = fromInventoryCountRow({ id: 'count-1', ...row });
+    assert.equal(count.countSessionId, 'f7a70f69-232b-471b-8895-608ce88a421c');
   });
 });

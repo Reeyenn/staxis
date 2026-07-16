@@ -198,6 +198,9 @@ export function subscribeTable<T>(
    * (initial load, visibility recovery, reducer-returns-null fallback).
    */
   applyPayload?: ApplyPayloadReducer<T>,
+  /** Optional visible-error hook for consumers that must distinguish a failed
+   *  snapshot from a legitimate empty result. */
+  onFetchError?: (error: unknown) => void,
 ): () => void {
   let active = true;
   // Unique channel id for this subscription (see __subscriptionSeq note above).
@@ -229,7 +232,10 @@ export function subscribeTable<T>(
         lastPublishedSeq = myReq;
         publish(rows);
       })
-      .catch(err => logErr(`Listener error in ${channelName}`, err));
+      .catch(err => {
+        logErr(`Listener error in ${channelName}`, err);
+        if (active) onFetchError?.(err);
+      });
   };
 
   // ── Burst-debounce for postgres_changes events ─────────────────────────
