@@ -29,9 +29,11 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { CreateHotelModal } from '@/app/admin/_components/CreateHotelModal';
 import { MapsManagerModal } from '@/app/admin/_components/MapsManager';
 import {
-  FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn, SerifNum,
+  FONT_SERIF, Caps, Pill, Dot, Btn,
   countUp, sweepWidth, riseIn, age, type DotTone,
 } from '../kit';
+import { SurfaceShell, DarkEmpty, Backdrop, MODAL_CARD, dimWhite as dim } from '../surface-kit';
+import { RowButton } from '../ui-kit';
 
 // ── Real API shapes (mirror the prior OnboardingTab interfaces) ─────────
 interface OnbState {
@@ -154,8 +156,6 @@ function pmsState(p: PMSCoverage): { tone: DotTone; label: string; note: string 
   return { tone: 'muted', label: 'New', note: 'Not learned. First hotel triggers ~$0.50, ~7 min mapping.' };
 }
 
-const card = { bg: 'rgba(255,255,255,.06)', br: 'rgba(255,255,255,.14)' };
-const dim = (a: number) => `rgba(255,255,255,${a})`;
 // Timeline row layout — header labels + each hotel row share these so the
 // step labels line up exactly above the node dots.
 const NAME_W = 150;   // left "hotel name" column (px)
@@ -225,9 +225,9 @@ export function OnboardingSurface() {
     }
   };
 
-  if (error) return <DarkShell><div style={{ color: 'var(--terracotta)', fontSize: 13 }}>{error}</div></DarkShell>;
+  if (error) return <SurfaceShell glow="forestTR"><div style={{ color: 'var(--terracotta)', fontSize: 13 }}>{error}</div></SurfaceShell>;
   if (!props || !liveJobs || !pms) {
-    return <DarkShell><div style={{ padding: '80px 0', textAlign: 'center' }}><span className="spinner" style={{ width: 22, height: 22, display: 'inline-block', borderTopColor: '#fff' }} /></div></DarkShell>;
+    return <SurfaceShell glow="forestTR"><div style={{ padding: '80px 0', textAlign: 'center' }}><span className="spinner" style={{ width: 22, height: 22, display: 'inline-block', borderTopColor: '#fff' }} /></div></SurfaceShell>;
   }
 
   // Hotels still on the timeline (not yet live), most-recently-active first
@@ -244,7 +244,7 @@ export function OnboardingSurface() {
   const activeProspects = (prospects ?? []).filter((p) => p.status !== 'onboarded' && p.status !== 'dropped');
 
   return (
-    <DarkShell>
+    <SurfaceShell glow="forestTR">
       <header style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 22, position: 'relative' }}>
         <div>
           <span className="caps" style={{ color: dim(.55) }}>Onboarding · Launch bay</span>
@@ -281,7 +281,7 @@ export function OnboardingSurface() {
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {journeyRows.length === 0
-          ? <Empty text="No hotels onboarding right now — “+ New hotel” to start one." />
+          ? <DarkEmpty text="No hotels onboarding right now — “+ New hotel” to start one." />
           : journeyRows.map(({ p, j }) => (
             <div
               key={p.id}
@@ -317,7 +317,7 @@ export function OnboardingSurface() {
           <span className="caps" style={{ color: dim(.5) }}>In-flight sessions</span>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
             {liveJobs.length === 0
-              ? <Empty text="Every hotel is alive and polling ✓" />
+              ? <DarkEmpty text="Every hotel is alive and polling ✓" />
               : liveJobs.map((j) => <BaySession key={j.id} job={j} />)}
           </div>
         </div>
@@ -333,7 +333,7 @@ export function OnboardingSurface() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
             {learnedPms.length === 0
-              ? <Empty text="No PMSes learned yet." />
+              ? <DarkEmpty text="No PMSes learned yet." />
               : learnedPms.map((p) => <BayPms key={p.pmsType} pms={p} onClick={() => setSelPms(p)} />)}
           </div>
         </div>
@@ -344,7 +344,7 @@ export function OnboardingSurface() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 10 }}>
             {activeProspects.length === 0
-              ? <Empty text="No prospects yet." />
+              ? <DarkEmpty text="No prospects yet." />
               : activeProspects.map((p) => <BayProspect key={p.id} p={p} onSaved={load} />)}
           </div>
         </div>
@@ -353,23 +353,8 @@ export function OnboardingSurface() {
       {selPms && <PmsDetail pms={selPms} onClose={() => setSelPms(null)} onRepaired={load} />}
       <MapsManagerModal open={mapsOpen} onClose={() => setMapsOpen(false)} />
       <CreateHotelModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={() => { void load(); }} />
-    </DarkShell>
+    </SurfaceShell>
   );
-}
-
-// ── Dark surface section with radial glow — seamless with the full-bleed
-//    dark admin canvas (no card chrome, just padding + glow). ────────────
-function DarkShell({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ background: 'transparent', padding: '24px 32px 8px', color: '#fff', position: 'relative' }}>
-      <div style={{ position: 'absolute', inset: 0, background: 'radial-gradient(120% 80% at 100% 0%, rgba(60,156,104,.14), transparent 60%)', pointerEvents: 'none' }} />
-      <div style={{ position: 'relative' }}>{children}</div>
-    </div>
-  );
-}
-
-function Empty({ text }: { text: string }) {
-  return <div style={{ padding: '16px 14px', textAlign: 'center', border: `1px dashed ${dim(.18)}`, borderRadius: 12, color: dim(.45), fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 13 }}>{text}</div>;
 }
 
 // One hotel = one row: name · a 9-node rail that fills to the live step · the
@@ -777,7 +762,7 @@ function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
   // The detail card now does more than repair (rename · view · use-for-all ·
   // detach), so any learned PMS row is clickable.
   return (
-    <button onClick={onClick} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 9, background: dim(.05), border: `1px solid ${dim(.12)}`, borderRadius: 10, padding: '9px 12px', cursor: 'pointer', color: '#fff', width: '100%' }}>
+    <RowButton onClick={onClick}>
       <Dot tone={st.tone} />
       <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pms.displayName ?? pms.label}</span>
       {/* A freshly-learned map is parked for the founder to review — surface it
@@ -796,7 +781,7 @@ function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
       )}
       <span style={{ fontSize: 11, color: st.tone === 'muted' ? dim(.5) : `var(--${st.tone})` }}>{st.label}</span>
       <span className="mono" style={{ fontSize: 9, color: dim(.35) }}>manage ›</span>
-    </button>
+    </RowButton>
   );
 }
 
@@ -805,11 +790,11 @@ function BayProspect({ p, onSaved }: { p: Prospect; onSaved: () => Promise<void>
   const tone: DotTone = p.status === 'committed' ? 'forest' : p.status === 'negotiating' ? 'gold' : 'teal';
   return (
     <>
-      <button onClick={() => setOpen(true)} style={{ textAlign: 'left', display: 'flex', alignItems: 'center', gap: 9, background: dim(.05), border: `1px solid ${dim(.12)}`, borderRadius: 10, padding: '9px 12px', cursor: 'pointer', color: '#fff', width: '100%' }}>
+      <RowButton onClick={() => setOpen(true)}>
         <span style={{ fontSize: 12, fontWeight: 600, color: '#fff', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.hotel_name}</span>
         <span style={{ fontSize: 10, color: `var(--${tone === 'teal' ? 'teal' : tone})`, textTransform: 'capitalize' }}>{p.status}</span>
         <span className="mono" style={{ fontSize: 9.5, color: dim(.4) }}>{age(p.created_at)}</span>
-      </button>
+      </RowButton>
       {open && <ProspectModal p={p} onClose={() => setOpen(false)} onSaved={onSaved} />}
     </>
   );
@@ -970,7 +955,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
 
   return (
     <Backdrop onClose={onClose}>
-      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...modalCard, width: 480 }}>
+      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 480 }}>
         <Caps>PMS coverage · {pms.tier ? `Tier ${pms.tier}` : ''}</Caps>
 
         {/* Editable display name — pencil to edit, Save to commit. */}
@@ -1165,7 +1150,7 @@ function ProspectModal({ p, onClose, onSaved }: { p: Prospect; onClose: () => vo
 
   return (
     <Backdrop onClose={onClose}>
-      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...modalCard, width: 460 }}>
+      <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 460 }}>
         <Caps>Prospect</Caps>
         <input value={d.hotel_name} onChange={(e) => setD({ ...d, hotel_name: e.target.value })} style={{ ...inp, fontFamily: 'var(--serif)', fontSize: 22, fontStyle: 'italic', border: 'none', padding: '4px 0', marginTop: 2 }} />
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 10 }}>
@@ -1204,15 +1189,5 @@ function ProspectModal({ p, onClose, onSaved }: { p: Prospect; onClose: () => vo
         </div>
       </div>
     </Backdrop>
-  );
-}
-
-// ── Shared modal bits ───────────────────────────────────────────────────
-const modalCard: React.CSSProperties = { background: '#fff', borderRadius: 18, padding: 26, width: 420, maxWidth: '100%', boxShadow: 'var(--shadow-lg)', color: 'var(--ink)' };
-function Backdrop({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(24,22,17,.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      {children}
-    </div>
   );
 }
