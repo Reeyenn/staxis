@@ -197,6 +197,8 @@ export async function buildWeeklyReport(args: {
   propertyId: string;
   /** ISO date of the Sunday at the end of the Mon–Sun window. YYYY-MM-DD. */
   reportDate: string;
+  /** Absolute route deadline shared with the optional AI insight. */
+  deadlineAt?: number;
 }): Promise<WeeklyReportPayload | null> {
   const { propertyId, reportDate } = args;
   const property = await loadProperty(propertyId);
@@ -466,7 +468,7 @@ export async function buildWeeklyReport(args: {
 
   // AI insight. Soft-fail — null if Claude is unreachable / key missing.
   try {
-    payload.insightText = await generateWeeklyInsight(payload);
+    payload.insightText = await generateWeeklyInsight(payload, { deadlineAt: args.deadlineAt });
   } catch (e) {
     captureException(e, { subsystem: 'weekly-report', failure_mode: 'insight_failed', propertyId });
   }

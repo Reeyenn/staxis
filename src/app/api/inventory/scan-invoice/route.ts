@@ -101,6 +101,7 @@ function validateInvoice(raw: unknown): ExtractedInvoice {
 }
 
 export async function POST(req: NextRequest) {
+  const visionDeadlineAt = Date.now() + 52_000;
   // Auth gate: this route hits the Anthropic Vision API on each request.
   // Without a session check, anyone with a guessed property UUID could
   // submit unlimited images and burn through ANTHROPIC_API_KEY budget.
@@ -249,6 +250,8 @@ export async function POST(req: NextRequest) {
         PROMPT,
         validateInvoice,
         captureUsage,
+        'inventory.invoice_scan',
+        { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
       );
       extracted = [one];
     } else {
@@ -259,6 +262,8 @@ export async function POST(req: NextRequest) {
             PROMPT,
             validateInvoice,
             captureUsage,
+            'inventory.invoice_scan',
+            { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
           ),
         ),
       );
@@ -372,6 +377,7 @@ export async function POST(req: NextRequest) {
     if (usages.length > 0 && accountId) {
       const tokensIn = usages.reduce((s, u) => s + u.inputTokens, 0);
       const tokensOut = usages.reduce((s, u) => s + u.outputTokens, 0);
+      const cachedInputTokens = usages.reduce((s, u) => s + u.cachedInputTokens, 0);
       const costUsd = usages.reduce((s, u) => s + u.costUsd, 0);
       const { model, modelId } = usages[0];
       try {
@@ -383,6 +389,7 @@ export async function POST(req: NextRequest) {
           modelId,
           tokensIn,
           tokensOut,
+          cachedInputTokens,
           costUsd,
           kind: 'vision',
         });

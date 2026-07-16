@@ -15,21 +15,20 @@ import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
 import { log } from '@/lib/log';
 import type { ComplianceTemplate, ReadingTypeSeed, PmTaskSeed } from './templates';
+import type { AiFeatureKey } from '@/lib/ai/types';
+import { executeAiFeature } from '@/lib/ai/runtime';
+import {
+  captureTokenUsage,
+  emitAiUsage,
+  type AiCallOptions,
+  type AiUsageAttempt,
+  type AiUsageReport,
+} from '@/lib/ai/usage';
 
-const MODEL = 'claude-sonnet-4-6';
 const TIMEOUT_MS = 20_000;
-// Sonnet pricing per Mtok (matches vision-extract).
-const PRICE_IN_PER_MTOK = 3.0;
-const PRICE_OUT_PER_MTOK = 15.0;
 
-/** Token usage for cost-ledger attribution. */
-export interface NlpUsage {
-  inputTokens: number;
-  outputTokens: number;
-  model: string;
-  modelId: string | null;
-  costUsd: number;
-}
+/** Token usage for cost-ledger attribution, including every fallback attempt. */
+export type NlpUsage = AiUsageReport;
 
 let _client: Anthropic | null = null;
 function client(): Anthropic {
@@ -42,49 +41,68 @@ function client(): Anthropic {
 
 /** One-shot Claude call that returns parsed JSON. Throws on non-JSON. */
 async function callClaudeJSON<T>(
+  featureKey: AiFeatureKey,
   system: string,
   userText: string,
+  validate: (raw: Record<string, unknown>) => T | null,
   maxTokens = 1024,
-  onUsage?: (u: NlpUsage) => void,
+  opts: AiCallOptions = {},
 ): Promise<T> {
-  const resp = await client().messages.create({
-    model: MODEL,
-    max_tokens: maxTokens,
-    system,
-    messages: [{ role: 'user', content: userText }],
-  });
-  if (onUsage) {
-    const i = resp.usage?.input_tokens ?? 0;
-    const o = resp.usage?.output_tokens ?? 0;
-    onUsage({
-      inputTokens: i,
-      outputTokens: o,
-      model: MODEL,
-      modelId: resp.model ?? null,
-      costUsd: (i / 1_000_000) * PRICE_IN_PER_MTOK + (o / 1_000_000) * PRICE_OUT_PER_MTOK,
-    });
+  const attempts: AiUsageAttempt[] = [];
+  try {
+    const { value } = await executeAiFeature(
+      featureKey,
+      'anthropic',
+      async (selected, context) => {
+        const resp = await client().messages.create({
+          model: selected.modelId,
+          max_tokens: maxTokens,
+          system,
+          messages: [{ role: 'user', content: userText }],
+        }, { signal: context.signal });
+        captureTokenUsage(attempts, selected, resp.model, resp.usage);
+        if (resp.stop_reason === 'max_tokens') throw new Error('model JSON response was truncated');
+
+        const text = resp.content
+          .filter((b) => b.type === 'text')
+          .map((b) => (b as { type: 'text'; text: string }).text)
+          .join('\n')
+          .trim();
+        const tryParse = (s: string): T | null => {
+          try {
+            const raw = JSON.parse(s) as unknown;
+            return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as T : null;
+          } catch {
+            return null;
+          }
+        };
+        let parsed = tryParse(text);
+        if (!parsed) {
+          const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+          if (fence) parsed = tryParse(fence[1]);
+        }
+        if (!parsed) {
+          const start = text.indexOf('{');
+          const end = text.lastIndexOf('}');
+          if (start !== -1 && end > start) parsed = tryParse(text.slice(start, end + 1));
+        }
+        if (!parsed) throw new Error('model did not return a JSON object');
+        const validated = validate(parsed as unknown as Record<string, unknown>);
+        if (validated === null) throw new Error('model returned an invalid JSON schema');
+        return validated;
+      },
+      {
+        requirePricing: true,
+        deadlineAt: opts.deadlineAt,
+        deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
+        fallbackReserveMs: 7_000,
+        abortSignal: opts.abortSignal,
+      },
+    );
+    return value;
+  } finally {
+    emitAiUsage(attempts, opts.onUsage);
   }
-  const text = resp.content
-    .filter((b) => b.type === 'text')
-    .map((b) => (b as { type: 'text'; text: string }).text)
-    .join('\n')
-    .trim();
-  // Direct parse, then fenced, then first balanced object.
-  const tryParse = (s: string): T | null => {
-    try { return JSON.parse(s) as T; } catch { return null; }
-  };
-  let parsed = tryParse(text);
-  if (!parsed) {
-    const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-    if (fence) parsed = tryParse(fence[1]);
-  }
-  if (!parsed) {
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start !== -1 && end > start) parsed = tryParse(text.slice(start, end + 1));
-  }
-  if (!parsed) throw new Error('model did not return JSON');
-  return parsed;
 }
 
 // ─── Voice / typed reading parsing ───────────────────────────────────────────
@@ -104,14 +122,29 @@ Rules:
 - Only include readings that have a clear numeric value. Skip anything ambiguous.
 - If there are no clear readings, return { "readings": [] }.`;
 
-export async function parseReadingsFromText(text: string, onUsage?: (u: NlpUsage) => void): Promise<ParsedReading[]> {
+export async function parseReadingsFromText(
+  text: string,
+  onUsage?: (u: NlpUsage) => void,
+  opts: Omit<AiCallOptions, 'onUsage'> = {},
+): Promise<ParsedReading[]> {
   const clean = text.slice(0, 600);
   try {
     const out = await callClaudeJSON<{ readings?: Array<{ metric?: unknown; value?: unknown }> }>(
+      'compliance.text_reading_parse',
       READINGS_SYSTEM,
       clean,
+      (raw) => {
+        if (!Array.isArray(raw.readings)) return null;
+        for (const row of raw.readings) {
+          if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+          const item = row as Record<string, unknown>;
+          if (typeof item.metric !== 'string' || !item.metric.trim()) return null;
+          if (typeof item.value !== 'number' || !Number.isFinite(item.value) || Math.abs(item.value) > 1e9) return null;
+        }
+        return raw as unknown as { readings: Array<{ metric: string; value: number }> };
+      },
       512,
-      onUsage,
+      { ...opts, onUsage },
     );
     const rows = Array.isArray(out.readings) ? out.readings : [];
     return rows
@@ -164,7 +197,11 @@ Rules:
 - Use false when the manager says they DON'T have something ("no pool" -> hasPool:false). Use true when they say they have it but give no count.
 - Map synonyms: "extinguishers"->fireExtinguishers, "emergency lights"->emergencyLights, "exit signs"->exitSigns, "AED"->aeds, "smoke detectors"/"CO detectors"->smokeCoDetectors, "fire doors"->fireDoors, "eye wash"/"first aid stations"->eyewashStations, "walk-in fridge"/"cooler"->walkInFridges, "walk-in freezer"->walkInFreezers.`;
 
-export async function parseSetupFromText(text: string): Promise<SetupSpec> {
+export async function parseSetupFromText(
+  text: string,
+  onUsage?: (u: NlpUsage) => void,
+  opts: Omit<AiCallOptions, 'onUsage'> = {},
+): Promise<SetupSpec> {
   const empty: SetupSpec = {
     hasPool: null, hasBoiler: null, hasGasMeter: null,
     walkInFridges: null, walkInFreezers: null,
@@ -173,7 +210,34 @@ export async function parseSetupFromText(text: string): Promise<SetupSpec> {
   };
   if (!text.trim()) return empty;
   try {
-    const out = await callClaudeJSON<Partial<Record<keyof SetupSpec, unknown>>>(SETUP_SYSTEM, text.slice(0, 1000), 512);
+    const out = await callClaudeJSON<Partial<Record<keyof SetupSpec, unknown>>>(
+      'compliance.setup_parse',
+      SETUP_SYSTEM,
+      text.slice(0, 1000),
+      (raw) => {
+        const boolKeys: Array<keyof SetupSpec> = ['hasPool', 'hasBoiler', 'hasGasMeter'];
+        const countKeys: Array<keyof SetupSpec> = [
+          'walkInFridges', 'walkInFreezers', 'fireExtinguishers', 'emergencyLights',
+          'exitSigns', 'aeds', 'smokeCoDetectors', 'fireDoors', 'eyewashStations',
+        ];
+        for (const key of boolKeys) {
+          if (!(key in raw) || (raw[key] !== null && raw[key] !== true && raw[key] !== false)) return null;
+        }
+        for (const key of countKeys) {
+          const value = raw[key];
+          if (!(key in raw)) return null;
+          if (value !== null && (
+            typeof value !== 'number'
+            || !Number.isInteger(value)
+            || value < 0
+            || value > 100000
+          )) return null;
+        }
+        return raw as Partial<Record<keyof SetupSpec, unknown>>;
+      },
+      512,
+      { ...opts, onUsage },
+    );
     const intOrNull = (v: unknown): number | null => {
       if (v === null || v === undefined) return null;
       const n = Math.round(Number(v));
@@ -278,6 +342,7 @@ Rules: keep EVERY id from the input. Preserve all numbers / percentages / multip
 export async function phraseAnomalies(
   items: AnomalyPhrasingItem[],
   onUsage?: (u: NlpUsage) => void,
+  opts: Omit<AiCallOptions, 'onUsage'> = {},
 ): Promise<PhrasedAnomaly[]> {
   if (items.length === 0) return [];
   const userText = JSON.stringify({
@@ -285,7 +350,34 @@ export async function phraseAnomalies(
   }).slice(0, 4000);
   try {
     const out = await callClaudeJSON<{ alerts?: Array<{ id?: unknown; en?: unknown; es?: unknown }> }>(
-      PHRASE_SYSTEM, userText, 1024, onUsage,
+      'compliance.anomaly_phrasing',
+      PHRASE_SYSTEM,
+      userText,
+      (raw) => {
+        if (!Array.isArray(raw.alerts)) return null;
+        const expected = new Set(items.slice(0, 8).map((item) => item.id));
+        const seen = new Set<string>();
+        for (const row of raw.alerts) {
+          if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+          const alert = row as Record<string, unknown>;
+          if (
+            typeof alert.id !== 'string'
+            || !expected.has(alert.id)
+            || seen.has(alert.id)
+            || typeof alert.en !== 'string'
+            || !alert.en.trim()
+            || alert.en.length > 140
+            || typeof alert.es !== 'string'
+            || !alert.es.trim()
+            || alert.es.length > 140
+          ) return null;
+          seen.add(alert.id);
+        }
+        if (seen.size !== expected.size) return null;
+        return raw as unknown as { alerts: Array<{ id: string; en: string; es: string }> };
+      },
+      1024,
+      { ...opts, onUsage },
     );
     const rows = Array.isArray(out.alerts) ? out.alerts : [];
     const valid = new Set(items.map((i) => i.id));

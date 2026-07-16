@@ -9,12 +9,15 @@ import { validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { detectAction } from '@/lib/comms/assistant';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 20;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 15_000;
   let body: { pid?: string; text?: string };
   try { body = await req.json(); } catch { body = {}; }
 
@@ -27,6 +30,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   const rl = await checkAndIncrementRateLimit('comms-detect-action', ctx.pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const action = await detectAction(tV.value!);
+  let usage: AiUsageReport | null = null;
+  const action = await detectAction(tV.value!, {
+    deadlineAt,
+    abortSignal: req.signal,
+    onUsage: (value) => { usage = value; },
+  });
+  await recordAiUsageBestEffort({
+    usage,
+    userId: ctx.accountId,
+    propertyId: ctx.pid,
+    kind: 'background',
+    requestId: ctx.requestId,
+    feature: 'communications.action_detection',
+  });
   return ok({ action }, { requestId: ctx.requestId, headers: ctx.headers });
 }

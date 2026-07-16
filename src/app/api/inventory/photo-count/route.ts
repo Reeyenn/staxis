@@ -152,6 +152,7 @@ If the image contains no recognizable inventory, return { "counts": [] }.`;
 }
 
 export async function POST(req: NextRequest) {
+  const visionDeadlineAt = Date.now() + 52_000;
   // Auth gate — same story as scan-invoice. Vision API has real $$ cost
   // and we don't want random callers spending the budget.
   const session = await requireSession(req);
@@ -248,6 +249,8 @@ export async function POST(req: NextRequest) {
         return { counts: obj.counts as PhotoCountResult['counts'] };
       },
       captureUsage,
+      'inventory.photo_count',
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
 
     // 2026-05-22 audit: build a canonical→original map so the post-call
@@ -337,6 +340,7 @@ export async function POST(req: NextRequest) {
           modelId: u.modelId,
           tokensIn: u.inputTokens,
           tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd,
           kind: 'vision',
         });

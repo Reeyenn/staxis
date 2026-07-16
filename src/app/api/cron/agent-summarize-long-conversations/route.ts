@@ -21,14 +21,19 @@ import { summarizeLongConversationsBatch } from '@/lib/agent/summarizer';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
+const CRON_EXECUTION_BUDGET_MS = 50_000;
 
 export async function GET(req: NextRequest) {
+  const executionDeadlineAt = Date.now() + CRON_EXECUTION_BUDGET_MS;
   const requestId = getOrMintRequestId(req);
   const cronGate = requireCronSecret(req);
   if (cronGate) return cronGate;
 
   try {
-    const result = await summarizeLongConversationsBatch();
+    const result = await summarizeLongConversationsBatch({
+      deadlineAt: executionDeadlineAt,
+      abortSignal: req.signal,
+    });
 
     await writeCronHeartbeat('agent-summarize-long-conversations', {
       requestId,

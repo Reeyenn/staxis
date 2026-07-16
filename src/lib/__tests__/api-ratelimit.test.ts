@@ -155,6 +155,17 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
     assert.equal(result.allowed, false);
   });
 
+  test('AI Control Center provider probes are capped and fail closed', async () => {
+    nextRpcResult = { data: 31, error: null };
+    const capped = await checkAndIncrementRateLimit('admin-ai-config-validate', NO_PROPERTY_RATE_LIMIT_KEY);
+    assert.equal(capped.allowed, false);
+    if (!capped.allowed) assert.equal(capped.cap, 30);
+
+    nextRpcResult = { data: null, error: { message: 'connection terminated' } };
+    const unavailable = await checkAndIncrementRateLimit('admin-ai-config-validate', NO_PROPERTY_RATE_LIMIT_KEY);
+    assert.equal(unavailable.allowed, false, 'billable validation probes must fail closed');
+  });
+
   test('RPC error → non-billing endpoint fails OPEN so read paths never brick', async () => {
     nextRpcResult = { data: null, error: { message: 'connection terminated' } };
     const result = await checkAndIncrementRateLimit('sync-room-assignments', NO_PROPERTY_RATE_LIMIT_KEY);

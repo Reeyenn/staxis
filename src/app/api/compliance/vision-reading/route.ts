@@ -32,6 +32,7 @@ const MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as co
 interface Body { pid?: unknown; readingTypeId?: unknown; imageBase64?: unknown; mediaType?: unknown }
 
 export async function POST(req: NextRequest) {
+  const visionDeadlineAt = Date.now() + 52_000;
   const requestId = getOrMintRequestId(req);
   const session = await requireSession(req);
   if (!session.ok) return session.response;
@@ -76,6 +77,7 @@ export async function POST(req: NextRequest) {
       { data: body.imageBase64, mediaType: body.mediaType as VisionMediaType },
       { name: String(typeRow.name), unit: String(typeRow.unit ?? ''), category: String(typeRow.category ?? 'other') },
       (u) => { usage = u; },
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
     return ok({ value: result.value, unit: result.unit, confidence: result.confidence, note: result.note }, { requestId });
   } catch (e) {
@@ -93,7 +95,8 @@ export async function POST(req: NextRequest) {
         await recordNonRequestCost({
           userId: accountId, propertyId: pid, conversationId: null,
           model: u.model, modelId: u.modelId,
-          tokensIn: u.inputTokens, tokensOut: u.outputTokens, costUsd: u.costUsd, kind: 'vision',
+          tokensIn: u.inputTokens, tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens, costUsd: u.costUsd, kind: 'vision',
         });
       } catch { /* best-effort */ }
     }

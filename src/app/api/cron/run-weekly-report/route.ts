@@ -186,9 +186,12 @@ async function processProperty(args: {
     return { propertyId: property.id, status: 'skipped_already_sent', detail: `report_runs row exists for ${reportDate}` };
   }
   const runId = inserted.id as string;
+  // Covers report construction, the AI insight, and delivery. Leave 15s for
+  // the final report_runs update before Vercel's 60s function ceiling.
+  const deadlineMs = Date.now() + 45_000;
 
   const [payload, recipients] = await Promise.all([
-    buildWeeklyReport({ propertyId: property.id, reportDate }),
+    buildWeeklyReport({ propertyId: property.id, reportDate, deadlineAt: deadlineMs }),
     resolveRecipients({ propertyId: property.id, reportType: 'weekly', now }),
   ]);
 
@@ -210,7 +213,6 @@ async function processProperty(args: {
   // Per-property deadline — see run-daily-report.ts for the rationale.
   // Vercel kills the function at 60s; we leave 15s slack for the
   // report_runs UPDATE at the end.
-  const deadlineMs = Date.now() + 45_000;
   for (const r of recipients) {
     if (Date.now() > deadlineMs) {
       outcomes.push({

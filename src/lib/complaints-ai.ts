@@ -16,9 +16,13 @@ import {
   COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES,
   type ComplaintCategory, type ComplaintSeverity,
 } from '@/lib/complaints-shared';
-
-// Haiku is fast + cheap; classification/short drafts don't need a bigger model.
-const MODEL = 'claude-haiku-4-5';
+import { executeAiFeature } from '@/lib/ai/runtime';
+import {
+  captureTokenUsage,
+  emitAiUsage,
+  type AiCallOptions,
+  type AiUsageAttempt,
+} from '@/lib/ai/usage';
 
 let cachedClient: Anthropic | null = null;
 function getClient(): Anthropic | null {
@@ -92,6 +96,7 @@ const CLASSIFY_SYSTEM =
 export async function classifyComplaint(
   description: string,
   roomNumber?: string | null,
+  opts: AiCallOptions = {},
 ): Promise<ComplaintClassification> {
   const fallback: ComplaintClassification = {
     category: 'other', severity: 'medium', summary: '', aiClassified: false,
@@ -99,27 +104,55 @@ export async function classifyComplaint(
   const client = getClient();
   if (!client || !description?.trim()) return fallback;
 
+  const attempts: AiUsageAttempt[] = [];
   try {
     const userMsg =
       (roomNumber ? `Room ${roomNumber}.\n` : '') +
       `<complaint>\n${description.trim()}\n</complaint>`;
-    const res = await client.messages.create({
-      model: MODEL,
-      max_tokens: 200,
-      system: CLASSIFY_SYSTEM,
-      messages: [{ role: 'user', content: userMsg }],
-    });
-    const parsed = extractJson(textOf(res));
-    if (!parsed) return fallback;
-    return {
-      category: coerceCategory(parsed.category),
-      severity: coerceSeverity(parsed.severity),
-      summary: typeof parsed.summary === 'string' ? parsed.summary.slice(0, 200) : '',
-      aiClassified: true,
-    };
+    const { value } = await executeAiFeature(
+      'complaints.classification',
+      'anthropic',
+      async (model, context) => {
+        const res = await client.messages.create({
+          model: model.modelId,
+          max_tokens: 200,
+          system: CLASSIFY_SYSTEM,
+          messages: [{ role: 'user', content: userMsg }],
+        }, { signal: context.signal });
+        captureTokenUsage(attempts, model, res.model, res.usage);
+        if (res.stop_reason === 'max_tokens') throw new Error('complaint classifier response was truncated');
+        const parsed = extractJson(textOf(res));
+        if (!parsed) throw new Error('complaint classifier returned invalid JSON');
+        if (!(COMPLAINT_CATEGORIES as readonly unknown[]).includes(parsed.category)) {
+          throw new Error('complaint classifier returned an invalid category');
+        }
+        if (!(COMPLAINT_SEVERITIES as readonly unknown[]).includes(parsed.severity)) {
+          throw new Error('complaint classifier returned an invalid severity');
+        }
+        if (typeof parsed.summary !== 'string' || !parsed.summary.trim() || parsed.summary.length > 200) {
+          throw new Error('complaint classifier returned an invalid summary');
+        }
+        return {
+          category: coerceCategory(parsed.category),
+          severity: coerceSeverity(parsed.severity),
+          summary: parsed.summary.trim(),
+          aiClassified: true,
+        } satisfies ComplaintClassification;
+      },
+      {
+        requirePricing: true,
+        deadlineAt: opts.deadlineAt,
+        deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
+        fallbackReserveMs: 7_000,
+        abortSignal: opts.abortSignal,
+      },
+    );
+    return value;
   } catch (err) {
     log.warn('[complaints-ai] classify failed', { err: err instanceof Error ? err.message : String(err) });
     return fallback;
+  } finally {
+    emitAiUsage(attempts, opts.onUsage);
   }
 }
 
@@ -149,7 +182,7 @@ export async function draftServiceRecovery(input: {
   severity: ComplaintSeverity;
   guestName?: string | null;
   roomNumber?: string | null;
-}): Promise<ServiceRecoveryDraft> {
+}, opts: AiCallOptions = {}): Promise<ServiceRecoveryDraft> {
   const greeting = input.guestName ? `Dear ${input.guestName},` : 'Dear Guest,';
   const fallback: ServiceRecoveryDraft = {
     guestMessage:
@@ -164,27 +197,56 @@ export async function draftServiceRecovery(input: {
   const client = getClient();
   if (!client) return fallback;
 
+  const attempts: AiUsageAttempt[] = [];
   try {
     const userMsg =
       `Category: ${input.category}. Severity: ${input.severity}. ` +
       (input.guestName ? `Guest: ${input.guestName}. ` : '') +
       (input.roomNumber ? `Room: ${input.roomNumber}. ` : '') +
       `\n<complaint>\n${input.description.trim()}\n</complaint>`;
-    const res = await client.messages.create({
-      model: MODEL,
-      max_tokens: 400,
-      system: DRAFT_SYSTEM,
-      messages: [{ role: 'user', content: userMsg }],
-    });
-    const parsed = extractJson(textOf(res));
-    if (!parsed || typeof parsed.guestMessage !== 'string') return fallback;
-    return {
-      guestMessage: parsed.guestMessage.slice(0, 1000),
-      makeGood: typeof parsed.makeGood === 'string' ? parsed.makeGood.slice(0, 500) : fallback.makeGood,
-      aiDrafted: true,
-    };
+    const { value } = await executeAiFeature(
+      'complaints.recovery_draft',
+      'anthropic',
+      async (model, context) => {
+        const res = await client.messages.create({
+          model: model.modelId,
+          max_tokens: 400,
+          system: DRAFT_SYSTEM,
+          messages: [{ role: 'user', content: userMsg }],
+        }, { signal: context.signal });
+        captureTokenUsage(attempts, model, res.model, res.usage);
+        if (res.stop_reason === 'max_tokens') throw new Error('service-recovery response was truncated');
+        const parsed = extractJson(textOf(res));
+        if (
+          !parsed
+          || typeof parsed.guestMessage !== 'string'
+          || !parsed.guestMessage.trim()
+          || parsed.guestMessage.length > 1000
+          || typeof parsed.makeGood !== 'string'
+          || !parsed.makeGood.trim()
+          || parsed.makeGood.length > 500
+        ) {
+          throw new Error('service-recovery model returned an invalid JSON schema');
+        }
+        return {
+          guestMessage: parsed.guestMessage.trim(),
+          makeGood: parsed.makeGood.trim(),
+          aiDrafted: true,
+        } satisfies ServiceRecoveryDraft;
+      },
+      {
+        requirePricing: true,
+        deadlineAt: opts.deadlineAt,
+        deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
+        fallbackReserveMs: 7_000,
+        abortSignal: opts.abortSignal,
+      },
+    );
+    return value;
   } catch (err) {
     log.warn('[complaints-ai] draft failed', { err: err instanceof Error ? err.message : String(err) });
     return fallback;
+  } finally {
+    emitAiUsage(attempts, opts.onUsage);
   }
 }

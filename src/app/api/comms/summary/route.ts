@@ -9,12 +9,15 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { commsContext } from '@/lib/comms/route-helpers';
 import { getUnreadDigest } from '@/lib/comms/core';
 import { summarizeUnread } from '@/lib/comms/assistant';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 24_000;
   let body: { pid?: string };
   try { body = await req.json(); } catch { body = {}; }
 
@@ -28,6 +31,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (digest.length === 0) {
     return ok({ summary: '', count: 0 }, { requestId: ctx.requestId, headers: ctx.headers });
   }
-  const summary = await summarizeUnread(digest, ctx.lang);
+  let usage: AiUsageReport | null = null;
+  const summary = await summarizeUnread(digest, ctx.lang, {
+    deadlineAt,
+    abortSignal: req.signal,
+    onUsage: (value) => { usage = value; },
+  });
+  await recordAiUsageBestEffort({
+    usage,
+    userId: ctx.accountId,
+    propertyId: ctx.pid,
+    kind: 'background',
+    requestId: ctx.requestId,
+    feature: 'communications.unread_summary',
+  });
   return ok({ summary, count: digest.length }, { requestId: ctx.requestId, headers: ctx.headers });
 }

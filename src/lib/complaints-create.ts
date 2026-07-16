@@ -13,6 +13,7 @@ import {
   type ComplaintSource, type ComplaintDept,
   fromComplaintRow,
 } from '@/lib/complaints-shared';
+import type { AiCallOptions } from '@/lib/ai/usage';
 
 export interface CreateComplaintInput {
   propertyId: string;
@@ -71,7 +72,10 @@ export async function getRepeatCount(
  * the saved complaint plus repeat-issue info. Throws only on the complaint
  * insert itself failing — auto-route/AI failures are swallowed (best-effort).
  */
-export async function createComplaint(input: CreateComplaintInput): Promise<CreateComplaintResult> {
+export async function createComplaint(
+  input: CreateComplaintInput,
+  ai: AiCallOptions = {},
+): Promise<CreateComplaintResult> {
   const description = input.description.trim();
 
   // 1. Classify if needed (best-effort).
@@ -79,7 +83,7 @@ export async function createComplaint(input: CreateComplaintInput): Promise<Crea
   let severity = input.severity ?? null;
   let aiClassified = false;
   if (!category || !severity) {
-    const c = await classifyComplaint(description, input.roomNumber);
+    const c = await classifyComplaint(description, input.roomNumber, ai);
     if (!category) category = c.category;
     if (!severity) severity = c.severity;
     aiClassified = c.aiClassified;

@@ -15,6 +15,8 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { commsContext } from '@/lib/comms/route-helpers';
 import { translateUiStrings } from '@/lib/comms/translate';
 import type { CommsLang } from '@/lib/comms/types';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,6 +25,7 @@ export const maxDuration = 30;
 const LANGS = ['en', 'es', 'ht', 'tl', 'vi'] as const;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 24_000;
   let body: { pid?: string; texts?: unknown; target?: string };
   try { body = await req.json(); } catch { body = {}; }
 
@@ -52,6 +55,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   const rl = await checkAndIncrementRateLimit('comms-translate', ctx.pid);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const translations = await translateUiStrings(texts, targetV.value as CommsLang);
+  let usage: AiUsageReport | null = null;
+  const translations = await translateUiStrings(texts, targetV.value as CommsLang, {
+    deadlineAt,
+    abortSignal: req.signal,
+    onUsage: (value) => { usage = value; },
+  });
+  await recordAiUsageBestEffort({
+    usage,
+    userId: ctx.accountId,
+    propertyId: ctx.pid,
+    kind: 'background',
+    requestId: ctx.requestId,
+    feature: 'communications.ui_translation',
+  });
   return ok({ translations }, { requestId: ctx.requestId, headers: ctx.headers });
 }

@@ -84,7 +84,10 @@ export async function GET(req: NextRequest) {
 
         const { from, to } = scheduleDateRange(s.rangeKind, parts.date);
         const result = await def.run({ propertyId: s.propertyId, from, to, timezone: meta.timezone });
-        const aiSummary = await generateReportSummary(def, result, 'en');
+        const aiSummary = await generateReportSummary(def, result, 'en', {
+          deadlineAt: startedAt + HARD_DEADLINE_MS,
+          abortSignal: req.signal,
+        });
 
         let sent = 0;
         let failed = 0;

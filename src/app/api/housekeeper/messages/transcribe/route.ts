@@ -21,6 +21,7 @@ export const maxDuration = 45;
 const BUCKET = 'housekeeping-issue-photos';
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 37_000;
   const requestId = getOrMintRequestId(req);
   const headers = { 'x-request-id': requestId };
   let body: { pid?: string; staffId?: string; path?: string };
@@ -47,6 +48,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const { data: blob, error: dlErr } = await supabaseAdmin.storage.from(BUCKET).download(pathV.value!);
   if (dlErr || !blob) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
   const buf = Buffer.from(await blob.arrayBuffer());
-  const text = await transcribeAudioBuffer(buf, blob.type || 'audio/webm', 'voice.webm');
+  const text = await transcribeAudioBuffer(buf, blob.type || 'audio/webm', 'voice.webm', {
+    deadlineAt,
+    abortSignal: req.signal,
+  });
   return ok({ text: text ?? '' }, { requestId, headers });
 }

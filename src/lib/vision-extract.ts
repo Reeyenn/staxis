@@ -12,6 +12,9 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
+import type { AiFeatureKey, AiModelRef } from '@/lib/ai/types';
+import { executeAiFeature, estimateAiCostUsd } from '@/lib/ai/runtime';
+import { normalizeAnthropicUsage } from '@/lib/ai/usage';
 import {
   ANTHROPIC_MAX_RETRIES,
   ANTHROPIC_VISION_TIMEOUT_MS,
@@ -301,11 +304,24 @@ const VISION_MAX_TOKENS = 8192;
  * budget pre-flight + record the actual spend post-call.
  */
 export interface VisionUsageReport {
+  /** Total input including uncached, cache creation, and cache reads. */
   inputTokens: number;
+  uncachedInputTokens: number;
   outputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheCreation5mInputTokens: number;
+  cacheCreation1hInputTokens: number;
   model: string;
   modelId: string | null;
   costUsd: number;
+}
+
+export interface VisionCallOptions {
+  /** Caller/request cancellation, composed with the existing whole-call limit. */
+  abortSignal?: AbortSignal;
+  /** Optional route-owned absolute deadline. */
+  deadlineAt?: number;
 }
 
 // Anthropic Sonnet 4.6 vision pricing (per 1M tokens, as of 2026-05).
@@ -315,18 +331,112 @@ export interface VisionUsageReport {
 const VISION_PRICE_INPUT_PER_MTOK_USD = 3.0;
 const VISION_PRICE_OUTPUT_PER_MTOK_USD = 15.0;
 
-function estimateVisionCostUsd(inputTokens: number, outputTokens: number): number {
-  return (
-    (inputTokens / 1_000_000) * VISION_PRICE_INPUT_PER_MTOK_USD +
-    (outputTokens / 1_000_000) * VISION_PRICE_OUTPUT_PER_MTOK_USD
-  );
+function estimateVisionCostUsd(usage: ReturnType<typeof normalizeAnthropicUsage>): number {
+  return estimateAiCostUsd({
+    inputUsdPerMillionTokens: VISION_PRICE_INPUT_PER_MTOK_USD,
+    outputUsdPerMillionTokens: VISION_PRICE_OUTPUT_PER_MTOK_USD,
+    cachedInputUsdPerMillionTokens: VISION_PRICE_INPUT_PER_MTOK_USD * 0.1,
+    cacheCreation5mInputUsdPerMillionTokens: VISION_PRICE_INPUT_PER_MTOK_USD * 1.25,
+    cacheCreation1hInputUsdPerMillionTokens: VISION_PRICE_INPUT_PER_MTOK_USD * 2,
+    source: 'vision-default',
+    asOf: '2026-07',
+  }, {
+    uncachedInputTokens: usage.uncachedInputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadInputTokens: usage.cachedInputTokens,
+    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens,
+    cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
+  });
 }
 
-export async function visionExtractText(
+async function executeVisionAttempt<T>(
+  client: Anthropic,
+  mediaBlock: Anthropic.ContentBlockParam,
+  prompt: string,
+  selectedModel: AiModelRef | null,
+  signal: AbortSignal,
+  attemptUsages: VisionUsageReport[],
+  transform: (text: string) => T,
+): Promise<T> {
+  const response = await client.messages.create(
+    {
+      model: selectedModel?.modelId ?? MODEL,
+      max_tokens: VISION_MAX_TOKENS,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            mediaBlock,
+            { type: 'text', text: prompt },
+          ],
+        },
+      ],
+    },
+    { signal },
+  );
+
+  // A provider can bill a syntactically successful response even when its
+  // text is truncated or fails the caller's schema. Preserve every attempt's
+  // spend before validation so fallback never erases primary usage.
+  const usage = normalizeAnthropicUsage(response.usage);
+  attemptUsages.push({
+    ...usage,
+    model: selectedModel?.modelId ?? MODEL,
+    modelId: response.model ?? null,
+    costUsd: selectedModel?.pricing
+      ? estimateAiCostUsd(selectedModel.pricing, {
+          uncachedInputTokens: usage.uncachedInputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadInputTokens: usage.cachedInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+          cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens,
+          cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
+        })
+      : estimateVisionCostUsd(usage),
+  });
+
+  if (response.stop_reason === 'max_tokens') {
+    throw new VisionTruncatedError(usage.outputTokens, VISION_MAX_TOKENS);
+  }
+
+  const text = response.content
+    .filter(block => block.type === 'text')
+    .map(block => (block as { type: 'text'; text: string }).text)
+    .join('\n')
+    .trim();
+  if (!text) throw new Error('Vision API returned no text. Try a clearer photo.');
+  return transform(text);
+}
+
+function reportVisionAttempts(
+  attempts: VisionUsageReport[],
+  onUsage?: (usage: VisionUsageReport) => void,
+): void {
+  if (!onUsage || attempts.length === 0) return;
+  const last = attempts[attempts.length - 1];
+  onUsage({
+    inputTokens: attempts.reduce((sum, usage) => sum + usage.inputTokens, 0),
+    uncachedInputTokens: attempts.reduce((sum, usage) => sum + usage.uncachedInputTokens, 0),
+    outputTokens: attempts.reduce((sum, usage) => sum + usage.outputTokens, 0),
+    cachedInputTokens: attempts.reduce((sum, usage) => sum + usage.cachedInputTokens, 0),
+    cacheCreationInputTokens: attempts.reduce((sum, usage) => sum + usage.cacheCreationInputTokens, 0),
+    cacheCreation5mInputTokens: attempts.reduce((sum, usage) => sum + usage.cacheCreation5mInputTokens, 0),
+    cacheCreation1hInputTokens: attempts.reduce((sum, usage) => sum + usage.cacheCreation1hInputTokens, 0),
+    costUsd: attempts.reduce((sum, usage) => sum + usage.costUsd, 0),
+    model: last.model,
+    modelId: last.modelId,
+  });
+}
+
+async function runVisionExtraction<T>(
   source: VisionSource,
   prompt: string,
+  transform: (text: string) => T,
   onUsage?: (usage: VisionUsageReport) => void,
-): Promise<string> {
+  featureKey?: AiFeatureKey,
+  opts: VisionCallOptions = {},
+): Promise<T> {
   // Validate BEFORE we burn an API call. Throws VisionImageInvalidError
   // which routes catch to return a structured 400. PDFs go through the
   // parallel PDF validator (magic bytes + tighter size cap); images keep
@@ -358,61 +468,57 @@ export async function visionExtractText(
         },
       };
   const client = getClient();
-  const response = await client.messages.create(
-    {
-      model: MODEL,
-      max_tokens: VISION_MAX_TOKENS,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            mediaBlock,
-            { type: 'text', text: prompt },
-          ],
-        },
-      ],
-    },
-    // Hard wire-level abort (audit/concurrency #16). Without this an
-    // Anthropic outage could leave the underlying fetch running past
-    // ANTHROPIC_VISION_TIMEOUT_MS, still billing tokens for a response
-    // nobody is waiting for.
-    { signal: AbortSignal.timeout(ANTHROPIC_VISION_ABORT_MS) },
-  );
-
-  // Capture usage for the optional callback BEFORE any error-throw — so
-  // a truncation/empty-text error path STILL bills the cost (we did pay
-  // Anthropic for the tokens). The callback runs synchronously so the
-  // caller's recordNonRequestCost happens before we throw.
-  const inputTokens = response.usage?.input_tokens ?? 0;
-  const outputTokens = response.usage?.output_tokens ?? 0;
-  if (onUsage) {
-    onUsage({
-      inputTokens,
-      outputTokens,
-      model: MODEL,
-      modelId: response.model ?? null,
-      costUsd: estimateVisionCostUsd(inputTokens, outputTokens),
-    });
+  const attempts: VisionUsageReport[] = [];
+  try {
+    if (!featureKey) {
+      const timeoutSignal = AbortSignal.timeout(ANTHROPIC_VISION_ABORT_MS);
+      const signal = opts.abortSignal
+        ? AbortSignal.any([opts.abortSignal, timeoutSignal])
+        : timeoutSignal;
+      return await executeVisionAttempt(
+        client,
+        mediaBlock,
+        prompt,
+        null,
+        signal,
+        attempts,
+        transform,
+      );
+    }
+    const configured = await executeAiFeature(
+      featureKey,
+      'anthropic',
+      (model, context) => executeVisionAttempt(
+        client,
+        mediaBlock,
+        prompt,
+        model,
+        context.signal!,
+        attempts,
+        transform,
+      ),
+      {
+        requirePricing: true,
+        deadlineAt: opts.deadlineAt,
+        deadlineMs: opts.deadlineAt === undefined ? ANTHROPIC_VISION_ABORT_MS : undefined,
+        fallbackReserveMs: 18_000,
+        abortSignal: opts.abortSignal,
+      },
+    );
+    return configured.value;
+  } finally {
+    reportVisionAttempts(attempts, onUsage);
   }
+}
 
-  // Detect truncation BEFORE returning partial text. The downstream JSON
-  // parsers would otherwise hit unclosed braces and report a generic
-  // "non-JSON output" error, hiding the real cause from the operator.
-  if (response.stop_reason === 'max_tokens') {
-    throw new VisionTruncatedError(outputTokens, VISION_MAX_TOKENS);
-  }
-
-  // Concatenate any text blocks in the response (usually one).
-  const text = response.content
-    .filter(block => block.type === 'text')
-    .map(block => (block as { type: 'text'; text: string }).text)
-    .join('\n')
-    .trim();
-
-  if (!text) {
-    throw new Error('Vision API returned no text. Try a clearer photo.');
-  }
-  return text;
+export async function visionExtractText(
+  source: VisionSource,
+  prompt: string,
+  onUsage?: (usage: VisionUsageReport) => void,
+  featureKey?: AiFeatureKey,
+  opts: VisionCallOptions = {},
+): Promise<string> {
+  return runVisionExtraction(source, prompt, (text) => text, onUsage, featureKey, opts);
 }
 
 /**
@@ -426,6 +532,43 @@ export class VisionSchemaError extends Error {
     super(`Vision JSON failed schema validation: ${reason}`);
     this.name = 'VisionSchemaError';
   }
+}
+
+function parseVisionJson<T>(text: string, validate?: (raw: unknown) => T): T {
+  const validated = (raw: unknown): T => {
+    if (validate) return validate(raw);
+    return raw as T;
+  };
+
+  try {
+    return validated(JSON.parse(text));
+  } catch (err) {
+    if (err instanceof VisionSchemaError) throw err;
+  }
+
+  const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fence) {
+    try {
+      return validated(JSON.parse(fence[1]));
+    } catch (err) {
+      if (err instanceof VisionSchemaError) throw err;
+    }
+  }
+
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start !== -1 && end !== -1 && end > start) {
+    try {
+      return validated(JSON.parse(text.slice(start, end + 1)));
+    } catch (err) {
+      if (err instanceof VisionSchemaError) throw err;
+    }
+  }
+
+  console.warn('[vision-extract] model returned non-JSON output', {
+    head: text.slice(0, 200),
+  });
+  throw new Error('Vision API returned non-JSON output (see server logs for diagnostic head).');
 }
 
 /**
@@ -449,52 +592,17 @@ export async function visionExtractJSON<T>(
   prompt: string,
   validate?: (raw: unknown) => T,
   onUsage?: (usage: VisionUsageReport) => void,
+  featureKey?: AiFeatureKey,
+  opts: VisionCallOptions = {},
 ): Promise<T> {
-  const text = await visionExtractText(source, prompt, onUsage);
-
-  const validated = (raw: unknown): T => {
-    if (validate) return validate(raw);
-    return raw as T;
-  };
-
-  // Try direct parse first — fastest path when the model behaves.
-  try {
-    return validated(JSON.parse(text));
-  } catch (err) {
-    if (err instanceof VisionSchemaError) throw err;
-    /* fall through to fence / brace recovery */
-  }
-
-  // Strip ```json ... ``` fences.
-  const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-  if (fence) {
-    try {
-      return validated(JSON.parse(fence[1]));
-    } catch (err) {
-      if (err instanceof VisionSchemaError) throw err;
-      /* fall through */
-    }
-  }
-
-  // Extract first balanced { ... } block.
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start !== -1 && end !== -1 && end > start) {
-    try {
-      return validated(JSON.parse(text.slice(start, end + 1)));
-    } catch (err) {
-      if (err instanceof VisionSchemaError) throw err;
-      /* fall through */
-    }
-  }
-
-  // Don't echo model output to the caller — routes that surface
-  // `error.message` to the browser would otherwise leak whatever the
-  // model produced (potentially OCR text from a customer's invoice or
-  // injected commentary). Log the head server-side for diagnostics
-  // and throw a stable, content-free message.
-  console.warn('[vision-extract] model returned non-JSON output', {
-    head: text.slice(0, 200),
-  });
-  throw new Error('Vision API returned non-JSON output (see server logs for diagnostic head).');
+  // Parsing and caller schema validation happen inside each model attempt.
+  // A malformed 200 response therefore fails over just like a provider 5xx.
+  return runVisionExtraction(
+    source,
+    prompt,
+    (text) => parseVisionJson(text, validate),
+    onUsage,
+    featureKey,
+    opts,
+  );
 }

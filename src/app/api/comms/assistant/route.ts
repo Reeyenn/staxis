@@ -15,12 +15,15 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { commsContext } from '@/lib/comms/route-helpers';
 import { getConversation, canAccessConversation, getThreadForAssistant, postMessage } from '@/lib/comms/core';
 import { runStaxisAssistant } from '@/lib/comms/assistant';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 45;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 37_000;
   let body: { pid?: string; conversationId?: string; question?: string };
   try { body = await req.json(); } catch { body = {}; }
 
@@ -42,6 +45,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   const thread = await getThreadForAssistant(ctx.pid, convo.id, 25);
+  let usage: AiUsageReport | null = null;
   const result = await runStaxisAssistant({
     pid: ctx.pid,
     question: qV.value!,
@@ -54,6 +58,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     dept: ctx.dept,
     accountId: ctx.accountId,
     lang: ctx.lang,
+    ai: {
+      deadlineAt,
+      abortSignal: req.signal,
+      onUsage: (value) => { usage = value; },
+    },
+  });
+  await recordAiUsageBestEffort({
+    usage,
+    userId: ctx.accountId,
+    propertyId: ctx.pid,
+    kind: 'background',
+    requestId: ctx.requestId,
+    feature: 'communications.staxis_assistant',
   });
 
   // Post the assistant's reply into the conversation (auto-translated per reader).

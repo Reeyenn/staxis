@@ -154,7 +154,7 @@ function OnboardWizard() {
       // dashboard mid-wizard correctly re-gates back here instead of escaping.
       if (typeof window !== 'undefined') sessionStorage.removeItem(RESUME_GUARD_KEY);
       if (data.completed) {
-        // Home is always available; a hotel's Dashboard section may be off.
+        // Already done — Home is always available even when Dashboard is off.
         router.push('/home');
         return;
       }
@@ -1763,8 +1763,8 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
       // Full navigation (not router.push) so PropertyContext re-fetches the
       // property FRESH — now with onboarding_completed_at set. A client-side
       // push would leave the cached (pre-completion) property in context, and
-      // a cached onboarding gate could bounce the owner back through
-      // the wizard once before settling. A reload lands them cleanly.
+      // a cached onboarding gate could bounce the owner back through the wizard
+      // once before settling. A reload lands them cleanly on the Home hub.
       window.location.href = '/home';
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress

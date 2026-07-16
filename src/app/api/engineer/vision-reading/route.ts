@@ -38,6 +38,7 @@ interface Body {
 }
 
 export async function POST(req: NextRequest) {
+  const visionDeadlineAt = Date.now() + 52_000;
   const requestId = getOrMintRequestId(req);
   const body = (await req.json().catch(() => null)) as Body | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
@@ -87,6 +88,7 @@ export async function POST(req: NextRequest) {
       { data: body.imageBase64, mediaType: body.mediaType as VisionMediaType },
       { name: String(typeRow.name), unit: String(typeRow.unit ?? ''), category: String(typeRow.category ?? 'other') },
       (u) => { usage = u; },
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
     return ok({ value: result.value, unit: result.unit, confidence: result.confidence, note: result.note }, { requestId });
   } catch (e) {
@@ -106,6 +108,7 @@ export async function POST(req: NextRequest) {
           userId: accountId, propertyId: pid, conversationId: null,
           model: u.model, modelId: u.modelId,
           tokensIn: u.inputTokens, tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd, kind: 'vision',
         });
       } catch { /* cost ledger best-effort */ }

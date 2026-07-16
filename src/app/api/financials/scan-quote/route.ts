@@ -58,6 +58,7 @@ Rules:
 - If the image is not a quote/estimate, return nulls and an empty line_items array.`;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const visionDeadlineAt = Date.now() + 52_000;
   const body = (await req.json().catch(() => null)) as
     | { pid?: string; imageBase64?: string; mediaType?: string }
     | null;
@@ -118,6 +119,8 @@ export async function POST(req: NextRequest): Promise<Response> {
         };
       },
       captureUsage,
+      'financials.quote_scan',
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
 
     const ymd = /^\d{4}-\d{2}-\d{2}$/;
@@ -170,6 +173,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           modelId: u.modelId,
           tokensIn: u.inputTokens,
           tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd,
           kind: 'vision',
         });

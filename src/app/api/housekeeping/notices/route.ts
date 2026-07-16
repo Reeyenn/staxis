@@ -27,6 +27,8 @@ import {
   rateLimitedResponse,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -124,6 +126,7 @@ interface PostBody {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 12_000;
   const requestId = getOrMintRequestId(req);
   const headers = { 'x-request-id': requestId };
 
@@ -192,7 +195,28 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Auto-translate the English body into Spanish before storing. Best-effort:
   // returns null on timeout / API failure / missing key, in which case the
   // notice posts English-only and the housekeeper banner falls back to EN.
-  const bodyEs = await translateNoticeToSpanish(bodyEn);
+  const { data: account } = await supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('data_user_id', session.userId)
+    .maybeSingle();
+  const accountId = typeof account?.id === 'string' ? account.id : null;
+  let usage: AiUsageReport | null = null;
+  const bodyEs = await translateNoticeToSpanish(bodyEn, 'housekeeping.notice_translation', {
+    deadlineAt,
+    abortSignal: req.signal,
+    onUsage: (value) => { usage = value; },
+  });
+  if (accountId) {
+    await recordAiUsageBestEffort({
+      usage,
+      userId: accountId,
+      propertyId: pid,
+      kind: 'background',
+      requestId,
+      feature: 'housekeeping.notice_translation',
+    });
+  }
 
   try {
     const { data, error: rpcErr } = await supabaseAdmin.rpc('staxis_post_notice', {

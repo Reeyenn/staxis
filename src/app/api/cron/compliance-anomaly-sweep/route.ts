@@ -25,14 +25,18 @@ import {
 } from '@/lib/compliance/anomaly-engine';
 import { phraseAnomalies, type NlpUsage } from '@/lib/compliance/nlp';
 import { resolveCostAccount } from '@/lib/compliance/api-helpers';
-import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { assertAudioBudget } from '@/lib/agent/cost-controls';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-async function aiPhraseForProperty(pid: string): Promise<number> {
+async function aiPhraseForProperty(
+  pid: string,
+  opts: { deadlineAt: number; abortSignal: AbortSignal; requestId: string },
+): Promise<number> {
   const alerts = await getUnphrasedActiveAlerts(pid, 8);
   if (alerts.length === 0) return 0;
 
@@ -57,25 +61,27 @@ async function aiPhraseForProperty(pid: string): Promise<number> {
   const phrased = await phraseAnomalies(
     alerts.map((a) => ({ id: a.id, kind: a.kind, typeName: nameById.get(a.readingTypeId) ?? 'reading', reason: a.reason })),
     (u) => { usage = u; },
+    { deadlineAt: opts.deadlineAt, abortSignal: opts.abortSignal },
   );
   for (const p of phrased) {
     await applyAiPhrasing(pid, p.id, p.en, p.es || null);
   }
   if (usage && accountId) {
-    const u = usage as NlpUsage;
-    try {
-      await recordNonRequestCost({
-        userId: accountId, propertyId: pid, conversationId: null,
-        model: u.model, modelId: u.modelId,
-        tokensIn: u.inputTokens, tokensOut: u.outputTokens, costUsd: u.costUsd, kind: 'audio',
-      });
-    } catch { /* ledger best-effort */ }
+    await recordAiUsageBestEffort({
+      usage: usage as NlpUsage,
+      userId: accountId,
+      propertyId: pid,
+      kind: 'audio',
+      requestId: opts.requestId,
+      feature: 'compliance.anomaly_phrasing',
+    });
   }
   return phrased.length;
 }
 
 async function handle(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+  const deadlineAt = Date.now() + 52_000;
   const authErr = requireCronSecret(req);
   if (authErr) return authErr;
 
@@ -120,7 +126,11 @@ async function handle(req: NextRequest) {
     try {
       const { recorded } = await sweepPropertyForAnomalies(pid);
       detected += recorded;
-      phrased += await aiPhraseForProperty(pid);
+      phrased += await aiPhraseForProperty(pid, {
+        deadlineAt,
+        abortSignal: req.signal,
+        requestId,
+      });
     } catch (e) {
       failed += 1;
       log.error('[cron/compliance-anomaly-sweep] property failed', { requestId, pid, msg: errToString(e) });

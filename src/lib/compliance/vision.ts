@@ -10,6 +10,7 @@ import {
   VisionSchemaError,
   type VisionImage,
   type VisionUsageReport,
+  type VisionCallOptions,
 } from '@/lib/vision-extract';
 
 export interface ExtractedReading {
@@ -49,6 +50,7 @@ export async function extractReadingFromImage(
   image: VisionImage,
   hint: { name: string; unit: string; category: string },
   onUsage?: (u: VisionUsageReport) => void,
+  opts: VisionCallOptions = {},
 ): Promise<ExtractedReading> {
   return visionExtractJSON<ExtractedReading>(
     image,
@@ -58,21 +60,28 @@ export async function extractReadingFromImage(
         throw new VisionSchemaError('expected an object at top level');
       }
       const obj = raw as Record<string, unknown>;
-      const value =
-        typeof obj.value === 'number' && Number.isFinite(obj.value)
-          ? obj.value
-          : null;
-      const confidence =
-        obj.confidence === 'high' || obj.confidence === 'medium' || obj.confidence === 'low'
-          ? obj.confidence
-          : 'low';
+      if (
+        obj.value !== null
+        && (typeof obj.value !== 'number' || !Number.isFinite(obj.value) || Math.abs(obj.value) > 1e9)
+      ) throw new VisionSchemaError('value must be a finite bounded number or null');
+      if (obj.unit !== null && (typeof obj.unit !== 'string' || obj.unit.length > 50)) {
+        throw new VisionSchemaError('unit must be a string or null');
+      }
+      if (obj.confidence !== 'high' && obj.confidence !== 'medium' && obj.confidence !== 'low') {
+        throw new VisionSchemaError('confidence must be high, medium, or low');
+      }
+      if (obj.note !== null && (typeof obj.note !== 'string' || obj.note.length > 500)) {
+        throw new VisionSchemaError('note must be a string or null');
+      }
       return {
-        value,
-        unit: typeof obj.unit === 'string' ? obj.unit : null,
-        confidence,
-        note: typeof obj.note === 'string' ? obj.note : null,
+        value: obj.value as number | null,
+        unit: obj.unit as string | null,
+        confidence: obj.confidence,
+        note: obj.note as string | null,
       };
     },
     onUsage,
+    'compliance.photo_reading',
+    opts,
   );
 }

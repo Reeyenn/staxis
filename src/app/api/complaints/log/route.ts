@@ -18,6 +18,9 @@ import { canForUserId } from '@/lib/capabilities/server';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { createComplaint } from '@/lib/complaints-create';
 import { COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES } from '@/lib/complaints-shared';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,6 +39,7 @@ interface Body {
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  const deadlineAt = Date.now() + 22_000;
   const headers = { 'x-request-id': requestId };
 
   const session = await requireSession(req, { requestId });
@@ -92,18 +96,42 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
   try {
-    const result = await createComplaint({
-      propertyId: pid,
-      description: descV.value!,
-      roomNumber: body.roomNumber?.trim() || null,
-      guestName: body.guestName?.trim() || null,
-      guestContact: body.guestContact?.trim() || null,
-      category: category ?? null,
-      severity: severity ?? null,
-      source: 'front_desk',
-      createdBy: session.userId,
-      createdByName: body.createdByName?.trim() || null,
-    });
+    const { data: account } = await supabaseAdmin
+      .from('accounts')
+      .select('id')
+      .eq('data_user_id', session.userId)
+      .maybeSingle();
+    let usage: AiUsageReport | null = null;
+    let result;
+    try {
+      result = await createComplaint({
+        propertyId: pid,
+        description: descV.value!,
+        roomNumber: body.roomNumber?.trim() || null,
+        guestName: body.guestName?.trim() || null,
+        guestContact: body.guestContact?.trim() || null,
+        category: category ?? null,
+        severity: severity ?? null,
+        source: 'front_desk',
+        createdBy: session.userId,
+        createdByName: body.createdByName?.trim() || null,
+      }, {
+        deadlineAt,
+        abortSignal: req.signal,
+        onUsage: (value) => { usage = value; },
+      });
+    } finally {
+      if (typeof account?.id === 'string') {
+        await recordAiUsageBestEffort({
+          usage,
+          userId: account.id,
+          propertyId: pid,
+          kind: 'background',
+          requestId,
+          feature: 'complaints.classification',
+        });
+      }
+    }
     return ok(
       {
         complaint: result.complaint,

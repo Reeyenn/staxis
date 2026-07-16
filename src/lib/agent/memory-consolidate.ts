@@ -18,7 +18,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { captureException } from '@/lib/sentry';
 import { recordNonRequestCost } from './cost-controls';
-import { runAgent, escapeTrustMarkerContent } from './llm';
+import { runAgent, escapeTrustMarkerContent, type UsageReport } from './llm';
 import { storeMemory } from '@/lib/db/agent-memory';
 import { redactMemoryContent } from './memory-redact';
 import { gatherOperationalSignals, templateContent, MAX_SIGNALS } from './operational-signals';
@@ -33,6 +33,30 @@ const MAX_PROPERTIES_PER_RUN = 500; // per-invocation safety backstop (sharding 
 const CONSOLIDATE_CONCURRENCY = 6; // parallel per-property fan-out (mostly cheap SQL + the odd Sonnet call)
 const PER_HOTEL_BUDGET_USD = 0.05; // budget allotted per hotel processed this run
 const RUN_BUDGET_FLOOR_USD = 2.0; // minimum per-run spend ceiling, even for a tiny fleet
+
+/** Each LLM call is one small part of a 300s fleet cron. Keep primary and
+ * fallback inside a shared 45s budget so per-property persistence and cost
+ * reconciliation retain ample time after a provider timeout. */
+export const MEMORY_AI_EXECUTION_BUDGET_MS = 45_000;
+
+export interface MemoryConsolidationExecutionOptions {
+  /** Route-owned absolute deadline; individual AI calls also keep the smaller
+   * per-call limit above. */
+  deadlineAt?: number;
+  abortSignal?: AbortSignal;
+}
+
+function memoryCallDeadlineAt(opts: MemoryConsolidationExecutionOptions): number {
+  return Math.min(
+    Date.now() + MEMORY_AI_EXECUTION_BUDGET_MS,
+    opts.deadlineAt ?? Number.POSITIVE_INFINITY,
+  );
+}
+
+function memoryExecutionStopped(opts: MemoryConsolidationExecutionOptions): boolean {
+  return opts.abortSignal?.aborted === true ||
+    (opts.deadlineAt !== undefined && Date.now() >= opts.deadlineAt);
+}
 
 // Only MANAGER-authored conversations feed shared property memory — mirrors the
 // remember-tool's management-only hotel-scope gate so a floor-staffer's chat
@@ -102,10 +126,10 @@ export function parseExtraction(
     const facts = Array.isArray(obj.facts)
       ? (obj.facts as unknown[])
           .filter(
-            (f): f is ExtractedFact =>
-              !!f &&
-              typeof (f as ExtractedFact).topic === 'string' &&
-              typeof (f as ExtractedFact).content === 'string',
+            (fact): fact is ExtractedFact =>
+              !!fact
+              && typeof (fact as ExtractedFact).topic === 'string'
+              && typeof (fact as ExtractedFact).content === 'string',
           )
           .slice(0, maxFacts)
       : [];
@@ -113,6 +137,49 @@ export function parseExtraction(
   } catch {
     return { recap: '', facts: [] };
   }
+}
+
+/** Strict attempt-level contract. runAgent invokes this before accepting a
+ * provider response so malformed/empty primary JSON can use the configured
+ * fallback instead of silently becoming an empty consolidation. */
+export function parseExtractionStrict(
+  text: string,
+  maxFacts: number = MAX_FACTS_PER_RUN,
+): { recap: string; facts: ExtractedFact[] } {
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('memory consolidation returned no JSON object');
+  }
+  const raw = JSON.parse(text.slice(start, end + 1)) as unknown;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('memory consolidation JSON must be an object');
+  }
+  const obj = raw as { recap?: unknown; facts?: unknown };
+  if (typeof obj.recap !== 'string' || obj.recap.trim().length === 0) {
+    throw new Error('memory consolidation recap must be non-empty');
+  }
+  if (!Array.isArray(obj.facts)) {
+    throw new Error('memory consolidation facts must be an array');
+  }
+  const facts = obj.facts.map((fact): ExtractedFact => {
+    if (
+      !fact
+      || typeof fact !== 'object'
+      || Array.isArray(fact)
+      || typeof (fact as ExtractedFact).topic !== 'string'
+      || typeof (fact as ExtractedFact).content !== 'string'
+      || !(fact as ExtractedFact).topic.trim()
+      || !(fact as ExtractedFact).content.trim()
+    ) {
+      throw new Error('memory consolidation fact has an invalid shape');
+    }
+    return {
+      topic: (fact as ExtractedFact).topic,
+      content: (fact as ExtractedFact).content,
+    };
+  }).slice(0, maxFacts);
+  return { recap: obj.recap, facts };
 }
 
 /** A representative accounts.id for the property (for the background cost row's
@@ -143,11 +210,42 @@ export interface ConsolidateResult {
   skipped?: string;
 }
 
+async function recordConsolidationUsageBestEffort(args: {
+  accountId: string | null;
+  propertyId: string;
+  usage: UsageReport;
+  failureMode: string;
+}): Promise<void> {
+  if (!args.accountId || args.usage.costUsd <= 0) return;
+  await recordNonRequestCost({
+    userId: args.accountId,
+    propertyId: args.propertyId,
+    conversationId: null,
+    model: args.usage.model,
+    modelId: args.usage.modelId,
+    tokensIn: args.usage.inputTokens,
+    tokensOut: args.usage.outputTokens,
+    cachedInputTokens: args.usage.cachedInputTokens,
+    costUsd: args.usage.costUsd,
+    kind: 'background',
+  }).catch((err) => {
+    console.error('[consolidate] recordNonRequestCost failed; provider spend is untracked', err);
+    captureException(err, {
+      subsystem: 'memory-consolidate',
+      failure_mode: args.failureMode,
+      propertyId: args.propertyId,
+    });
+  });
+}
+
 /**
  * Consolidate one property's recent conversations into long-term memory.
  * Returns null when there was nothing worth reviewing (empty/quiet day).
  */
-export async function consolidateOneProperty(propertyId: string): Promise<ConsolidateResult | null> {
+export async function consolidateOneProperty(
+  propertyId: string,
+  opts: MemoryConsolidationExecutionOptions = {},
+): Promise<ConsolidateResult | null> {
   const since = new Date(Date.now() - LOOKBACK_HOURS * 3600_000).toISOString();
 
   // 1) Recent conversations for this property.
@@ -230,26 +328,57 @@ export async function consolidateOneProperty(propertyId: string): Promise<Consol
 
   // 4) Extract via Sonnet (background, no tools).
   const acctId = await representativeAccountId(propertyId);
-  const run = await runAgent({
-    systemPrompt: { stable: EXTRACTION_PROMPT, dynamic: '' },
-    history: [],
-    newUserMessage: userMessage,
-    tools: [],
-    toolContext: {
-      user: {
-        uid: acctId ?? 'consolidator',
-        accountId: acctId ?? 'consolidator',
-        username: 'consolidator',
-        displayName: 'Staxis',
-        role: 'admin',
-        propertyAccess: [propertyId],
+  let observedUsage: UsageReport | null = null;
+  let run: Awaited<ReturnType<typeof runAgent>>;
+  try {
+    run = await runAgent({
+      systemPrompt: { stable: EXTRACTION_PROMPT, dynamic: '' },
+      history: [],
+      newUserMessage: userMessage,
+      tools: [],
+      toolContext: {
+        user: {
+          uid: acctId ?? 'consolidator',
+          accountId: acctId ?? 'consolidator',
+          username: 'consolidator',
+          displayName: 'Staxis',
+          role: 'admin',
+          propertyAccess: [propertyId],
+        },
+        propertyId,
+        staffId: null,
+        requestId: `consolidate-${propertyId}-${Date.now()}`,
+        surface: 'chat',
       },
-      propertyId,
-      staffId: null,
-      requestId: `consolidate-${propertyId}-${Date.now()}`,
-      surface: 'chat',
-    },
-    model: 'sonnet',
+      model: 'sonnet',
+      featureKey: 'agent.memory_consolidation',
+      deadlineAt: memoryCallDeadlineAt(opts),
+      abortSignal: opts.abortSignal,
+      onUsage: (usage) => { observedUsage = usage; },
+      validateAssistantResponse: ({ text, stopReason, toolCallCount }) => {
+        if (stopReason === 'max_tokens') throw new Error('memory consolidation JSON was truncated');
+        if (toolCallCount > 0) throw new Error('memory consolidation unexpectedly called a tool');
+        parseExtractionStrict(text);
+      },
+    });
+  } catch (error) {
+    if (observedUsage) {
+      await recordConsolidationUsageBestEffort({
+        accountId: acctId,
+        propertyId,
+        usage: observedUsage,
+        failureMode: 'failed_conversation_attempt_cost_record_lost',
+      });
+    }
+    throw error;
+  }
+
+  // Provider spend exists independently of downstream fact/run persistence.
+  await recordConsolidationUsageBestEffort({
+    accountId: acctId,
+    propertyId,
+    usage: run.usage,
+    failureMode: 'cost_record_lost',
   });
 
   const { recap, facts } = parseExtraction(run.text);
@@ -298,25 +427,6 @@ export async function consolidateOneProperty(propertyId: string): Promise<Consol
       { onConflict: 'property_id,run_date' },
     );
 
-  // 7) Cost tracking (best-effort; needs a real account for the FK).
-  if (acctId) {
-    await recordNonRequestCost({
-      userId: acctId,
-      propertyId,
-      conversationId: null,
-      model: run.usage.model,
-      modelId: run.usage.modelId,
-      tokensIn: run.usage.inputTokens,
-      tokensOut: run.usage.outputTokens,
-      cachedInputTokens: run.usage.cachedInputTokens,
-      costUsd: run.usage.costUsd,
-      kind: 'background',
-    }).catch((err) => {
-      console.error('[consolidate] recordNonRequestCost failed; run persisted but cost untracked', err);
-      captureException(err, { subsystem: 'memory-consolidate', failure_mode: 'cost_record_lost', propertyId });
-    });
-  }
-
   return {
     propertyId,
     conversationsReviewed: convoIds.length,
@@ -347,6 +457,7 @@ export interface OperationalConsolidateResult {
  */
 export async function consolidateOperationalSignals(
   propertyId: string,
+  opts: MemoryConsolidationExecutionOptions = {},
 ): Promise<OperationalConsolidateResult | null> {
   // 1) Deterministic detection (cheap SQL). Common case: nothing → no LLM spend.
   const allSignals = await gatherOperationalSignals(propertyId);
@@ -385,7 +496,8 @@ export async function consolidateOperationalSignals(
   let recap = '';
   let usedLlm = false;
   let costUsd = 0;
-  let usage: Awaited<ReturnType<typeof runAgent>>['usage'] | null = null;
+  let observedUsage: UsageReport | null = null;
+  let usageBooked = false;
 
   try {
     const run = await runAgent({
@@ -408,7 +520,23 @@ export async function consolidateOperationalSignals(
         surface: 'chat',
       },
       model: 'sonnet',
+      featureKey: 'agent.memory_consolidation',
+      deadlineAt: memoryCallDeadlineAt(opts),
+      abortSignal: opts.abortSignal,
+      onUsage: (value) => { observedUsage = value; },
+      validateAssistantResponse: ({ text, stopReason, toolCallCount }) => {
+        if (stopReason === 'max_tokens') throw new Error('operational consolidation JSON was truncated');
+        if (toolCallCount > 0) throw new Error('operational consolidation unexpectedly called a tool');
+        parseExtractionStrict(text, MAX_SIGNALS);
+      },
     });
+    await recordConsolidationUsageBestEffort({
+      accountId: acctId,
+      propertyId,
+      usage: run.usage,
+      failureMode: 'operational_cost_record_lost',
+    });
+    usageBooked = true;
     const parsed = parseExtraction(run.text, MAX_SIGNALS);
     recap = parsed.recap;
     for (const f of parsed.facts) {
@@ -417,8 +545,16 @@ export async function consolidateOperationalSignals(
     }
     usedLlm = true;
     costUsd = run.usage.costUsd;
-    usage = run.usage;
   } catch (err) {
+    if (observedUsage && !usageBooked) {
+      await recordConsolidationUsageBestEffort({
+        accountId: acctId,
+        propertyId,
+        usage: observedUsage,
+        failureMode: 'failed_operational_attempt_cost_record_lost',
+      });
+    }
+    if (memoryExecutionStopped(opts)) throw err;
     console.error('[consolidate] operational LLM phrasing failed; using templates', { propertyId, err });
     captureException(err, { subsystem: 'memory-consolidate', failure_mode: 'operational_llm_failed', propertyId });
   }
@@ -477,25 +613,6 @@ export async function consolidateOperationalSignals(
       { onConflict: 'property_id,run_date' },
     );
 
-  // 6) Cost (best-effort; needs a real account for the FK).
-  if (usedLlm && acctId && usage) {
-    await recordNonRequestCost({
-      userId: acctId,
-      propertyId,
-      conversationId: null,
-      model: usage.model,
-      modelId: usage.modelId,
-      tokensIn: usage.inputTokens,
-      tokensOut: usage.outputTokens,
-      cachedInputTokens: usage.cachedInputTokens,
-      costUsd: usage.costUsd,
-      kind: 'background',
-    }).catch((err) => {
-      console.error('[consolidate] operational recordNonRequestCost failed', err);
-      captureException(err, { subsystem: 'memory-consolidate', failure_mode: 'operational_cost_record_lost', propertyId });
-    });
-  }
-
   return {
     propertyId,
     signalsFound: signals.length,
@@ -522,7 +639,11 @@ export interface ConsolidateBatchResult {
  * last 24h. Per-property failures are isolated.
  */
 export async function consolidateAllProperties(
-  opts: { shardOffset?: number; shardCount?: number; concurrency?: number } = {},
+  opts: {
+    shardOffset?: number;
+    shardCount?: number;
+    concurrency?: number;
+  } & MemoryConsolidationExecutionOptions = {},
 ): Promise<ConsolidateBatchResult> {
   const shardCount =
     opts.shardCount && opts.shardCount >= 1 && opts.shardCount <= 64 ? Math.floor(opts.shardCount) : 1;
@@ -577,10 +698,10 @@ export async function consolidateAllProperties(
   // Per-property work: both passes, failure-isolated. Counters are mutated from
   // concurrent workers — safe under JS's single-threaded model (no torn writes).
   const consolidateOne = async (pid: string): Promise<void> => {
-    if (totalCostUsd >= runBudget) return; // soft global ceiling
+    if (totalCostUsd >= runBudget || memoryExecutionStopped(opts)) return; // soft global ceiling
 
     try {
-      const res = await consolidateOneProperty(pid);
+      const res = await consolidateOneProperty(pid, opts);
       if (res && !res.skipped) {
         processed += 1;
         totalLearned += res.learnedCount;
@@ -592,10 +713,10 @@ export async function consolidateAllProperties(
       console.error('[consolidate] conversation pass failed', { propertyId: pid, err });
     }
 
-    if (totalCostUsd >= runBudget) return;
+    if (totalCostUsd >= runBudget || memoryExecutionStopped(opts)) return;
 
     try {
-      const op = await consolidateOperationalSignals(pid);
+      const op = await consolidateOperationalSignals(pid, opts);
       if (op) {
         operationalLearned += op.learnedCount;
         operationalUpdated += op.updatedCount;

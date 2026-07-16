@@ -12,7 +12,12 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { captureException } from '@/lib/sentry';
 import { recordNonRequestCost } from './cost-controls';
-import { runAgent, escapeTrustMarkerContent, MAX_TOOL_RESULT_CHARS } from './llm';
+import {
+  runAgent,
+  escapeTrustMarkerContent,
+  MAX_TOOL_RESULT_CHARS,
+  type UsageReport,
+} from './llm';
 import { getActivePrompt } from './prompts-store';
 
 /** Minimum unsummarized messages before a conversation is summarized. */
@@ -21,6 +26,30 @@ export const SUMMARIZATION_THRESHOLD = 50;
 /** Per-cron-run cap. Each summarization is one Haiku call + one DB
  *  transaction; 20 fits well inside Vercel's maxDuration ceiling. */
 export const SUMMARIZATION_BATCH_SIZE = 20;
+
+/** A summary call shares a 60s cron route with DB/RPC/ledger work. Bound the
+ * primary + configured fallback to one 40s wall-clock budget so cleanup and
+ * the cron heartbeat are not killed at the platform ceiling. */
+export const SUMMARY_AI_EXECUTION_BUDGET_MS = 40_000;
+
+export interface SummaryExecutionOptions {
+  /** Route-owned absolute deadline. Each provider call is also capped by the
+   * per-call budget above, whichever expires first. */
+  deadlineAt?: number;
+  abortSignal?: AbortSignal;
+}
+
+function summaryCallDeadlineAt(opts: SummaryExecutionOptions): number {
+  return Math.min(
+    Date.now() + SUMMARY_AI_EXECUTION_BUDGET_MS,
+    opts.deadlineAt ?? Number.POSITIVE_INFINITY,
+  );
+}
+
+function summaryExecutionStopped(opts: SummaryExecutionOptions): boolean {
+  return opts.abortSignal?.aborted === true ||
+    (opts.deadlineAt !== undefined && Date.now() >= opts.deadlineAt);
+}
 
 /** Fail-soft fallback prompt. Used only if the agent_prompts DB row
  *  is unreachable. Matches the seed in migration 0109 verbatim — the
@@ -145,12 +174,57 @@ export interface SummarizeResult {
   costUsd: number;
 }
 
+async function recordSummaryUsageBestEffort(args: {
+  usage: UsageReport;
+  userId: string;
+  propertyId: string;
+  conversationId: string;
+  failureMode: 'cost_record_lost' | 'failed_attempt_cost_record_lost';
+}): Promise<void> {
+  if (args.usage.costUsd <= 0) return;
+  await recordNonRequestCost({
+    userId: args.userId,
+    propertyId: args.propertyId,
+    conversationId: args.conversationId,
+    model: args.usage.model,
+    modelId: args.usage.modelId,
+    tokensIn: args.usage.inputTokens,
+    tokensOut: args.usage.outputTokens,
+    cachedInputTokens: args.usage.cachedInputTokens,
+    costUsd: args.usage.costUsd,
+    kind: 'background',
+  }).catch(err => {
+    console.error('[summarizer] recordNonRequestCost failed; provider spend is untracked', err);
+    captureException(err, {
+      subsystem: 'summarizer',
+      failure_mode: args.failureMode,
+      conversationId: args.conversationId,
+      costUsd: args.usage.costUsd,
+      model: args.usage.model,
+      modelId: args.usage.modelId,
+    });
+  });
+}
+
+export function assertValidSummaryResponse(candidate: {
+  text: string;
+  stopReason: string | null;
+  toolCallCount: number;
+}): void {
+  if (candidate.stopReason === 'max_tokens') throw new Error('conversation summary was truncated');
+  if (candidate.toolCallCount > 0) throw new Error('conversation summary unexpectedly called a tool');
+  if (candidate.text.trim().length === 0) throw new Error('conversation summary was empty');
+}
+
 /**
  * Summarize the oldest unsummarized non-summary messages of one
  * conversation. Atomic — RPC takes a per-conversation advisory lock
  * (same key the route + archival use), so concurrent work serializes.
  */
-export async function summarizeOneConversation(conversationId: string): Promise<SummarizeResult | null> {
+export async function summarizeOneConversation(
+  conversationId: string,
+  opts: SummaryExecutionOptions = {},
+): Promise<SummarizeResult | null> {
   // Load conversation + a slice of unsummarized messages, ordered oldest first.
   const { data: convoRow, error: convoErr } = await supabaseAdmin
     .from('agent_conversations')
@@ -228,38 +302,64 @@ export async function summarizeOneConversation(conversationId: string): Promise<
   // We use a dedicated summary prompt (DB-backed via getActivePrompt,
   // see above) and an empty conversation history — the transcript is
   // passed as the user message instead.
-  const summaryRun = await runAgent({
-    systemPrompt: {
-      stable: summaryPromptContent,
-      dynamic: '',
-    },
-    history: [],
-    newUserMessage: `Summarize this conversation:\n\n${transcript}`,
-    tools: [],
-    toolContext: {
-      user: {
-        uid: convoRow.user_id as string,
-        accountId: convoRow.user_id as string,
-        username: 'summarizer',
-        displayName: 'Summarizer',
-        role: (convoRow.role as 'admin' | 'general_manager' | 'housekeeping' | 'maintenance' | 'front_desk' | 'owner') ?? 'admin',
-        propertyAccess: [convoRow.property_id as string],
+  let observedUsage: UsageReport | null = null;
+  let summaryRun: Awaited<ReturnType<typeof runAgent>>;
+  try {
+    summaryRun = await runAgent({
+      systemPrompt: {
+        stable: summaryPromptContent,
+        dynamic: '',
       },
-      propertyId: convoRow.property_id as string,
-      staffId: null,
-      requestId: `summarizer-${conversationId}-${Date.now()}`,
-      // Summarizer runs with tools: [] so surface is moot for tool gating,
-      // but ToolContext now requires it. Tag as 'chat' since this is a
-      // chat-conversation background task.
-      surface: 'chat',
-    },
-    // Round 11 T5 (2026-05-13): the 'haiku' alias flows through
-    // MODELS[model] in llm.ts and picks up MODEL_OVERRIDE.haiku if set.
-    // Setting MODEL_OVERRIDE=haiku=claude-haiku-4-5-<snapshot> in env
-    // pins summarization to a specific snapshot without a redeploy.
-    // Use this to roll back if Anthropic ships a Haiku update that
-    // regresses summary quality (caught by the eval suite — T4).
-    model: 'haiku',
+      history: [],
+      newUserMessage: `Summarize this conversation:\n\n${transcript}`,
+      tools: [],
+      toolContext: {
+        user: {
+          uid: convoRow.user_id as string,
+          accountId: convoRow.user_id as string,
+          username: 'summarizer',
+          displayName: 'Summarizer',
+          role: (convoRow.role as 'admin' | 'general_manager' | 'housekeeping' | 'maintenance' | 'front_desk' | 'owner') ?? 'admin',
+          propertyAccess: [convoRow.property_id as string],
+        },
+        propertyId: convoRow.property_id as string,
+        staffId: null,
+        requestId: `summarizer-${conversationId}-${Date.now()}`,
+        // Summarizer runs with tools: [] so surface is moot for tool gating,
+        // but ToolContext now requires it. Tag as 'chat' since this is a
+        // chat-conversation background task.
+        surface: 'chat',
+      },
+      // Round 11 T5 (2026-05-13): the 'haiku' alias flows through
+      // MODELS[model] in llm.ts and picks up MODEL_OVERRIDE.haiku if set.
+      model: 'haiku',
+      featureKey: 'agent.conversation_summary',
+      deadlineAt: summaryCallDeadlineAt(opts),
+      abortSignal: opts.abortSignal,
+      onUsage: (usage) => { observedUsage = usage; },
+      validateAssistantResponse: assertValidSummaryResponse,
+    });
+  } catch (error) {
+    if (observedUsage) {
+      await recordSummaryUsageBestEffort({
+        usage: observedUsage,
+        userId: convoRow.user_id as string,
+        propertyId: convoRow.property_id as string,
+        conversationId,
+        failureMode: 'failed_attempt_cost_record_lost',
+      });
+    }
+    throw error;
+  }
+
+  // Book provider spend before the summary RPC. If persistence fails, the
+  // completed primary/fallback call was still billed and must remain visible.
+  await recordSummaryUsageBestEffort({
+    usage: summaryRun.usage,
+    userId: convoRow.user_id as string,
+    propertyId: convoRow.property_id as string,
+    conversationId,
+    failureMode: 'cost_record_lost',
   });
 
   const summaryText = summaryRun.text.trim();
@@ -287,37 +387,6 @@ export async function summarizeOneConversation(conversationId: string): Promise<
     throw new Error(`staxis_apply_conversation_summary failed: ${applyErr.message}`);
   }
 
-  // Record cost so /admin/agent reflects summarizer spend separately
-  // from user-driven request spend (kind='background').
-  await recordNonRequestCost({
-    userId: convoRow.user_id as string,
-    propertyId: convoRow.property_id as string,
-    conversationId,
-    model: summaryRun.usage.model,
-    modelId: summaryRun.usage.modelId,
-    tokensIn: summaryRun.usage.inputTokens,
-    tokensOut: summaryRun.usage.outputTokens,
-    cachedInputTokens: summaryRun.usage.cachedInputTokens,
-    costUsd: summaryRun.usage.costUsd,
-    kind: 'background',
-  }).catch(err => {
-    // Round 12 T12.3 (2026-05-13): a failed cost-record used to be
-    // logged + swallowed silently. The summary persists, but the
-    // Haiku spend never reaches agent_costs → /admin/agent KPI
-    // underreports, global cap math doesn't see it. Surface to
-    // Sentry so an operator can investigate, AND keep the log so
-    // local debugging still works.
-    console.error('[summarizer] recordNonRequestCost failed; summary persisted but cost untracked', err);
-    captureException(err, {
-      subsystem: 'summarizer',
-      failure_mode: 'cost_record_lost',
-      conversationId,
-      costUsd: summaryRun.usage.costUsd,
-      model: summaryRun.usage.model,
-      modelId: summaryRun.usage.modelId,
-    });
-  });
-
   return {
     summaryId: summaryId as unknown as string,
     summarizedCount: rows.length,
@@ -339,7 +408,9 @@ export interface SummarizeBatchResult {
  * Scan for conversations that need summarization and process a batch.
  * Cron entry point.
  */
-export async function summarizeLongConversationsBatch(): Promise<SummarizeBatchResult> {
+export async function summarizeLongConversationsBatch(
+  opts: SummaryExecutionOptions = {},
+): Promise<SummarizeBatchResult> {
   const { data: candidates, error: scanErr } = await supabaseAdmin
     .from('agent_conversations')
     .select('id')
@@ -357,8 +428,9 @@ export async function summarizeLongConversationsBatch(): Promise<SummarizeBatchR
   let totalCostUsd = 0;
 
   for (const row of rows) {
+    if (summaryExecutionStopped(opts)) break;
     try {
-      const result = await summarizeOneConversation(row.id as string);
+      const result = await summarizeOneConversation(row.id as string, opts);
       if (result === null) {
         skipped += 1;
       } else {

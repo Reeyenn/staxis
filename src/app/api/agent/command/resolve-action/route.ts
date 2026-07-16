@@ -24,7 +24,15 @@ import type { NextRequest } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 
-import { streamAgent, type AgentMessage } from '@/lib/agent/llm';
+import {
+  ASK_STAXIS_EXECUTION_BUDGET_MS,
+  ASK_STAXIS_FALLBACK_RESERVE_MS,
+  PRICING,
+  resolveAskStaxisExecutionPlan,
+  streamAgent,
+  type AgentMessage,
+} from '@/lib/agent/llm';
+import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { executeTool, getTool, getToolsForRole, type ToolContext } from '@/lib/agent/tools';
 import { getEnabledSections } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
@@ -34,6 +42,7 @@ import { loadConversation, recordToolResult } from '@/lib/agent/memory';
 import {
   reserveCostBudget,
   cancelCostReservation,
+  COST_LIMITS,
 } from '@/lib/agent/cost-controls';
 import {
   getPendingAction,
@@ -76,6 +85,7 @@ interface RequestBody {
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  const executionDeadlineAt = Date.now() + ASK_STAXIS_EXECUTION_BUDGET_MS;
 
   const auth = await requireSession(req);
   if (!auth.ok) return auth.response;
@@ -172,7 +182,32 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // ── Reserve cost budget for the possible model resume ─────────────────
-  const reservation = await reserveCostBudget({ userId: userCtx.accountId, propertyId: body.pid });
+  let estimatedUsd: number;
+  let executionPlan: AiExecutionPlan;
+  try {
+    executionPlan = await resolveAskStaxisExecutionPlan();
+    estimatedUsd = scaleAiReservationUsd(
+      [executionPlan.primary, executionPlan.fallback].filter(
+        (model): model is NonNullable<typeof model> => model !== null,
+      ),
+      {
+        usd: COST_LIMITS.estimatedRequestUsd,
+        inputUsdPerMillionTokens: PRICING.sonnet.input,
+        outputUsdPerMillionTokens: PRICING.sonnet.output,
+      },
+    );
+  } catch (error) {
+    return Response.json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Ask Staxis is unavailable',
+      requestId,
+    }, { status: 503 });
+  }
+  const reservation = await reserveCostBudget({
+    userId: userCtx.accountId,
+    propertyId: body.pid,
+    estimatedUsd,
+  });
   if (!reservation.ok) {
     return Response.json({ ok: false, error: reservation.message, code: reservation.reason, requestId }, { status: 429 });
   }
@@ -404,6 +439,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           newUserMessage: null, // RESUME — no new user turn; history ends with tool_results
           tools,
           approvalMode: true,
+          featureKey: 'agent.ask_staxis',
+          executionPlan,
+          deadlineAt: executionDeadlineAt,
+          fallbackReserveMs: ASK_STAXIS_FALLBACK_RESERVE_MS,
           abortSignal: req.signal,
           toolContext: toolCtx,
         });

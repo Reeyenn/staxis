@@ -62,6 +62,7 @@ Rules:
 - If the image is not an invoice or receipt, return all nulls and "other".`;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const visionDeadlineAt = Date.now() + 52_000;
   const body = (await req.json().catch(() => null)) as
     | { pid?: string; imageBase64?: string; mediaType?: string }
     | null;
@@ -113,6 +114,8 @@ export async function POST(req: NextRequest): Promise<Response> {
         };
       },
       captureUsage,
+      'financials.invoice_scan',
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
 
     const amountCents = result.total_amount != null ? Math.max(0, parseDollarsToCents(result.total_amount) ?? 0) : null;
@@ -176,6 +179,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           modelId: u.modelId,
           tokensIn: u.inputTokens,
           tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd,
           kind: 'vision',
         });

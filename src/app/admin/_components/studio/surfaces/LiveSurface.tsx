@@ -46,6 +46,7 @@ import {
 import { CoveragePickerModal } from '../CoveragePickerModal';
 import { SectionsModal } from '../SectionsModal';
 import { AddHotelModal } from '../AddHotelModal';
+import { AIControlCenter } from '../../AIControlCenter';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 
@@ -453,6 +454,8 @@ function Controls({
   const bg = dimWhite(.06);
   return (
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      {/* Fleet-wide, non-CUA AI settings — intentionally left of 2FA. */}
+      <AIControlCenter />
       {/* Global 2FA master switch — left of the hotel search. */}
       <TwoFactorSwitch />
       <div style={{ position: 'relative', flex: '1 1 240px', minWidth: 200, maxWidth: 380 }}>

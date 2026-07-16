@@ -40,6 +40,7 @@ interface Body {
 }
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const visionDeadlineAt = Date.now() + 52_000;
   const gate = await gatePackagesWrite<Body>(req, 'packages-scan-label');
   if (!gate.ok) return gate.response;
   const { body, pid, requestId, accountId } = gate;
@@ -75,6 +76,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       (u) => {
         usage = u;
       },
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
     return ok(result, { requestId });
   } catch (e) {
@@ -124,6 +126,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           modelId: u.modelId,
           tokensIn: u.inputTokens,
           tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd,
           kind: 'vision',
         });

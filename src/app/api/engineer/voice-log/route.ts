@@ -18,7 +18,8 @@ import {
 import { requireEngineerStaff, resolveCostAccount } from '@/lib/compliance/api-helpers';
 import { parseReadingsFromText, type NlpUsage } from '@/lib/compliance/nlp';
 import { findReadingTypeByName, logReading } from '@/lib/compliance/store';
-import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { assertAudioBudget } from '@/lib/agent/cost-controls';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,6 +29,7 @@ interface Body { pid?: unknown; staffId?: unknown; text?: unknown; idempotencyKe
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+  const deadlineAt = Date.now() + 24_000;
   const body = (await req.json().catch(() => null)) as Body | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
@@ -60,7 +62,11 @@ export async function POST(req: NextRequest) {
 
   let usage: NlpUsage | null = null;
   try {
-    const parsed = await parseReadingsFromText(text, (u) => { usage = u; });
+    const parsed = await parseReadingsFromText(
+      text,
+      (u) => { usage = u; },
+      { deadlineAt, abortSignal: req.signal },
+    );
     const logged: Array<{ name: string; value: number; outOfRange: boolean }> = [];
     const unmatched: string[] = [];
     for (const p of parsed) {
@@ -80,15 +86,14 @@ export async function POST(req: NextRequest) {
   } finally {
     // Record the Claude parse cost against the resolved account.
     if (usage && accountId) {
-      const u = usage as NlpUsage;
-      try {
-        await recordNonRequestCost({
-          userId: accountId, propertyId: pid, conversationId: null,
-          model: u.model, modelId: u.modelId,
-          tokensIn: u.inputTokens, tokensOut: u.outputTokens,
-          costUsd: u.costUsd, kind: 'audio',
-        });
-      } catch { /* cost ledger best-effort */ }
+      await recordAiUsageBestEffort({
+        usage: usage as NlpUsage,
+        userId: accountId,
+        propertyId: pid,
+        kind: 'audio',
+        requestId,
+        feature: 'compliance.text_reading_parse',
+      });
     }
   }
 }

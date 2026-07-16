@@ -8,7 +8,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { parseExtraction } from '@/lib/agent/memory-consolidate';
+import { parseExtraction, parseExtractionStrict } from '@/lib/agent/memory-consolidate';
 
 describe('parseExtraction', () => {
   test('parses a clean JSON object', () => {
@@ -52,5 +52,23 @@ describe('parseExtraction', () => {
   test('non-array facts → empty', () => {
     const r = parseExtraction('{"recap":"x","facts":"nope"}');
     assert.deepEqual(r.facts, []);
+  });
+});
+
+describe('parseExtractionStrict attempt validation', () => {
+  test('accepts valid empty-facts JSON with a non-empty recap', () => {
+    assert.deepEqual(
+      parseExtractionStrict('{"recap":"Nothing notable today.","facts":[]}'),
+      { recap: 'Nothing notable today.', facts: [] },
+    );
+  });
+
+  test('rejects empty, malformed, and partially malformed model output', () => {
+    assert.throws(() => parseExtractionStrict(''), /no JSON/i);
+    assert.throws(() => parseExtractionStrict('{"recap":"","facts":[]}'), /recap/i);
+    assert.throws(
+      () => parseExtractionStrict('{"recap":"ok","facts":[{"topic":4,"content":"x"}]}'),
+      /invalid shape/i,
+    );
   });
 });

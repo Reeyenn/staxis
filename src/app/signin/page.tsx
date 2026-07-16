@@ -10,7 +10,6 @@ import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 import { parseCheckTrustResponse } from '@/lib/api-validate';
-import { safeRedirect } from '@/lib/url-redirect';
 import AuthShell, { AuthLabel, AuthError, authLinkStyle, AUTH_LINK } from '@/components/AuthShell';
 
 /**
@@ -53,13 +52,6 @@ function SignInInner() {
   const { user, loading, signIn } = useAuth();
   const { lang } = useLang();
   const router = useRouter();
-  const params = useSearchParams();
-
-  // F-04: honor the middleware's `?redirect=<original>` param so deep links
-  // through the edge gate land the user back on the page they actually asked
-  // for after sign-in. safeRedirect rejects open-redirect attempts and auth-
-  // page loops; fallback is /property-selector (the historical destination).
-  const redirectTarget = safeRedirect(params.get('redirect'), '/property-selector');
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -69,13 +61,13 @@ function SignInInner() {
   // Auto-redirect users with an existing session AWAY from /signin — but
   // skip the redirect while a sign-in is in flight. Without that guard,
   // signIn()'s setUser() fires this useEffect and lands the user on
-  // /property-selector BEFORE handleSubmit can run the trust check + OTP
+  // /home BEFORE handleSubmit can run the trust check + OTP
   // step (which itself signs the user out again and redirects to
   // /signin/verify). That race produced the "flash dashboard then bounce
   // back to signin" loop reported on 2026-05-10.
   useEffect(() => {
-    if (!loading && user && !signing) router.replace(redirectTarget);
-  }, [user, loading, router, signing, redirectTarget]);
+    if (!loading && user && !signing) router.replace('/home');
+  }, [user, loading, router, signing]);
 
   // Sign-in flow (Phase 2 + Resend email):
   //   1. signInWithPassword — verifies the password, issues a session.
@@ -153,16 +145,8 @@ function SignInInner() {
         setSigning(false);
         return;
       }
-      // Preserve the redirect target through the OTP step so the verify
-      // page can land the user on the originally-requested URL on success.
-      // We pass the raw `params.get('redirect')` (not the validated
-      // redirectTarget) so the verify page re-validates; that keeps the
-      // safety check at the actual navigation site.
-      const rawRedirect = params.get('redirect');
-      const verifyUrl = `/signin/verify?email=${encodeURIComponent(normalizedEmail)}${
-        rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
-      }`;
-      router.replace(verifyUrl);
+      // Every ordinary hotel sign-in enters through Home after verification.
+      router.replace(`/signin/verify?email=${encodeURIComponent(normalizedEmail)}`);
     } catch {
       setError(t('invalidCredentials', lang));
       setSigning(false);

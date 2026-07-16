@@ -21,6 +21,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
+import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { HomeHubView, type HubTile, type TileTone } from '@/components/concourse/HomeHubView';
 import { AskHero } from '@/components/concourse/AskHero';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -36,7 +37,7 @@ function greetingFor(lang: 'en' | 'es', name: string | undefined, hour: number):
 }
 
 function HomeHub() {
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propertyLoading } = useProperty();
   const { lang } = useLang();
   const can = useCan();
@@ -49,6 +50,23 @@ function HomeHub() {
   const summary = summaryState.propertyId === activePropertyId
     ? summaryState.tiles
     : {};
+
+  // Home is the universal post-login destination. Preserve the onboarding
+  // safety net from the old property-selector/dashboard funnel so a returning
+  // owner with a half-finished hotel resumes setup instead of seeing an empty
+  // Home hub. Admins are never routed into a hotel's owner wizard.
+  React.useEffect(() => {
+    if (authLoading || propertyLoading || !user || !activeProperty) return;
+    if (
+      user.role !== 'admin' &&
+      isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState) &&
+      typeof window !== 'undefined' &&
+      !sessionStorage.getItem(RESUME_GUARD_KEY)
+    ) {
+      sessionStorage.setItem(RESUME_GUARD_KEY, '1');
+      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`;
+    }
+  }, [user, authLoading, propertyLoading, activeProperty]);
 
   React.useEffect(() => {
     setSummaryState({ propertyId: activePropertyId, tiles: {} });
