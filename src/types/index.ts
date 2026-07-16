@@ -346,25 +346,6 @@ export interface InventoryDiscard {
   notes?: string;
 }
 
-// One row per reconciliation event. The user enters a physical count, the system
-// snapshots its estimate, and we compute unaccounted variance in $-terms. This
-// is the trust layer the regional director asked for.
-export interface InventoryReconciliation {
-  id: string;
-  propertyId: string;
-  itemId: string;
-  itemName: string;
-  reconciledAt: Date | null;
-  physicalCount: number;
-  systemEstimate: number;
-  discardsSinceLast: number;
-  unaccountedVariance: number;          // physical - (estimate - discardsSinceLast); negative = unexplained loss
-  unaccountedVarianceValue?: number;    // variance * unitCost
-  unitCost?: number;
-  reconciledBy?: string;
-  notes?: string;
-}
-
 // One row per (property, budget key, month). Drives the budget headroom badge
 // on the Smart Reorder List and the Budget vs Actual block in the accounting view.
 export interface InventoryBudget {
@@ -415,24 +396,6 @@ export interface HandoffEntry {
   acknowledgedBy?: string;
   createdAt: Date | null;
   acknowledgedAt?: Date | null;
-}
-
-// ─── Guest Requests ────────────────────────────────────────────────────────
-
-export type GuestRequestStatus = 'pending' | 'in_progress' | 'done';
-export type GuestRequestType = 'towels' | 'pillows' | 'blanket' | 'iron' | 'crib' | 'toothbrush' | 'amenities' | 'maintenance' | 'other';
-
-export interface GuestRequest {
-  id: string;
-  propertyId: string;
-  roomNumber: string;
-  type: GuestRequestType;
-  notes?: string;
-  status: GuestRequestStatus;
-  assignedTo?: string;
-  assignedName?: string;
-  createdAt: Date | null;
-  completedAt?: Date | null;
 }
 
 // ─── Daily Log ─────────────────────────────────────────────────────────────
@@ -602,21 +565,6 @@ export interface ShiftConfirmation {
   respondedAt: Date | null;
   smsSent: boolean;
   smsError?: string;
-}
-
-export type NotificationType = 'decline' | 'no_response' | 'all_confirmed' | 'replacement_found' | 'no_replacement';
-
-export interface ManagerNotification {
-  id: string;
-  uid: string;
-  pid: string;
-  type: NotificationType;
-  message: string;
-  staffName?: string;
-  replacementName?: string;
-  shiftDate: string;
-  read: boolean;
-  createdAt: Date | null;
 }
 
 // ─── User ──────────────────────────────────────────────────────────────────
