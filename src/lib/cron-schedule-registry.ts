@@ -48,9 +48,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-consolidate-memory',          source: { kind: 'vercel', cronPath: '/api/cron/agent-consolidate-memory' },          cronExpr: '0 5 * * *' },
-  { heartbeatName: 'doctor-check',                      source: { kind: 'vercel', cronPath: '/api/cron/doctor-check' },                       cronExpr: '0 * * * *' },
   { heartbeatName: 'walkthrough-heal-stale',            source: { kind: 'vercel', cronPath: '/api/cron/walkthrough-heal-stale' },             cronExpr: '*/30 * * * *' },
-  { heartbeatName: 'walkthrough-health-alert',          source: { kind: 'vercel', cronPath: '/api/cron/walkthrough-health-alert' },           cronExpr: '*/10 * * * *' },
   // Plan v4 (2026-05-24): removed `seed-rooms-daily` — depended on the
   // legacy `rooms` table (dropped in v4).
   { heartbeatName: 'sweep-orphan-auth-users',           source: { kind: 'vercel', cronPath: '/api/cron/sweep-orphan-auth-users' },             cronExpr: '*/30 * * * *' },
@@ -67,7 +65,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // 2026-05-24: removed `ml-aggregate-priors` — cross-fleet cohort
   // aggregation is a no-op at N<5 hotels per cohort. Cron still fires
   // (ml-cron.yml schedule) but its heartbeat isn't tracked.
-  { heartbeatName: 'ml-shadow-evaluate',    source: { kind: 'github', workflowFile: 'ml-shadow-evaluate-cron.yml' }, cronExpr: '30 11 * * *' },
   { heartbeatName: 'purge-old-error-logs',  source: { kind: 'github', workflowFile: 'purge-old-error-logs-cron.yml' }, cronExpr: '30 9 * * *' },
   // Daily schedule auto-build. Reads today_room_work_v1 (Plan v4
   // bridge → pms_room_status_log + pms_reservations) for the per-room
