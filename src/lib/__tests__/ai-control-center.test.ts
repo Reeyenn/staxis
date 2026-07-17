@@ -18,8 +18,10 @@ afterEach(() => {
 });
 
 describe('AI Control Center feature registry', () => {
-  test('covers 28 controllable hosted features and 8 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 36);
+  // 2026-07-17: the front-desk surface retirement removed lost-found photo
+  // description, lost-found match rerank, and package label scan (28→25).
+  test('covers 25 controllable hosted features and 8 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 33);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
