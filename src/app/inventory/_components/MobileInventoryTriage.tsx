@@ -6,6 +6,7 @@ import { t, type Lang } from './inv-i18n';
 import type { InvTab } from './InventoryTabs';
 import type { SidebarAction } from './Sidebar';
 import {
+  inBucket,
   monogram,
   type InvCat,
   type StockBucket,
@@ -72,6 +73,11 @@ export function MobileInventoryTriage({
   const countedItems = items.filter((item) => !item.uncounted);
   const orderNowCount = countedItems.filter((item) => item.status === 'critical').length;
   const reorderCount = countedItems.filter((item) => item.status !== 'good').length;
+  // Selected tab's valuation for the masthead (same basis as shelfValue).
+  const activeTab = bucket !== 'all' ? tabs.find((tb) => tb.key === bucket) ?? null : null;
+  const activeTabValue = activeTab
+    ? items.filter((d) => inBucket(d, bucket)).reduce((s, d) => s + d.value, 0)
+    : 0;
 
   const actions = useMemo<MobileAction[]>(() => {
     const next: MobileAction[] = [
@@ -123,6 +129,13 @@ export function MobileInventoryTriage({
       <div className={styles.masthead}>
         <div className={styles.stats} aria-live="polite">
           <MobileStat label={tx.orderNow} value={String(orderNowCount)} critical />
+          {/* Selected tab's total value, mirroring the desktop masthead stat. */}
+          {canViewFinancials && activeTab ? (
+            <MobileStat
+              label={compactTabLabel(activeTab, lang)}
+              value={fmtMoney(activeTabValue, { digits: 0 })}
+            />
+          ) : null}
           {canViewFinancials ? (
             <MobileStat label={tx.onTheShelf} value={fmtMoney(shelfValue, { digits: 0 })} />
           ) : null}
