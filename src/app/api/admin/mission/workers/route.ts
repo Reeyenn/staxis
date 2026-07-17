@@ -36,6 +36,9 @@ interface WorkerRow {
   /** Plain-English "what it does", read directly by the owner. */
   description: string;
   group: WorkerGroup;
+  /** Owner's metric: 'ai' calls a thinking model; 'prediction' is classic ML
+   *  math; 'timer' is a plain scheduled chore. */
+  tier: 'ai' | 'prediction' | 'timer';
   /** Expected time between runs, in hours (derived from the cron string). */
   cadenceHours: number;
   /** ISO timestamp of the last successful run, or null if it never has. */
@@ -52,6 +55,34 @@ interface WorkerRow {
  * owner can read. Names not listed fall back to a humanized name + 'Other'
  * (a newly-wired cron shows up sensibly before it gets a line here).
  */
+
+// ── Tier — the owner's metric: could this job have existed before thinking
+// models were usable? 'ai' = its code path calls Claude/GPT (verified by
+// import-tracing each cron on 2026-07-17); 'prediction' = classic ML math
+// (learns from numbers, no language model); 'timer' = plain scheduled chore.
+export type WorkerTier = 'ai' | 'prediction' | 'timer';
+const AI_TIER = new Set([
+  'agent-consolidate-memory',
+  'agent-summarize-long-conversations',
+  'compliance-anomaly-sweep',
+  'run-daily-report',
+  'run-weekly-report',
+  'run-scheduled-reports',
+]);
+const PREDICTION_TIER = new Set([
+  'ml-aggregate-priors',
+  'ml-predict-inventory',
+  'ml-run-inference',
+  'ml-train-demand',
+  'ml-train-inventory',
+  'ml-train-supply',
+]);
+function tierOf(name: string): WorkerTier {
+  if (AI_TIER.has(name)) return 'ai';
+  if (PREDICTION_TIER.has(name)) return 'prediction';
+  return 'timer';
+}
+
 const WORKER_META: Record<string, { description: string; group: WorkerGroup }> = {
   'run-scheduled-reports':               { description: 'Sends the reports you scheduled to their recipients.',       group: 'Reports' },
   'run-daily-report':                    { description: 'Emails the daily housekeeping report.',                     group: 'Reports' },
@@ -163,6 +194,7 @@ export async function GET(req: NextRequest) {
       name,
       description: meta.description,
       group: meta.group,
+      tier: tierOf(name),
       cadenceHours: Math.round(cadenceHours * 1000) / 1000,
       lastBeatAt,
       ageHours,

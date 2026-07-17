@@ -78,12 +78,14 @@ interface AgentMetrics {
   topTools?: Array<{ tool: string; calls: number; errors: number; incomplete: number; errorRatePct: number }>;
 }
 
-// mission/workers row. The endpoint assigns `group` server-side; we honour it
-// and only fall back to client grouping when a row omits it.
+// mission/workers row. The endpoint assigns `tier` server-side ('ai' |
+// 'prediction' | 'timer') so the roster can split the workforce into AI staff,
+// the prediction engine, and plain scheduled chores. A row from an older
+// cached response may omit `tier`; tierOf() treats that as 'timer'.
 interface WorkerRow {
   name: string;
   description?: string | null;
-  group?: string;
+  tier?: string; // 'ai' | 'prediction' | 'timer' (defensive: anything)
   cadenceHours?: number | null;
   lastBeatAt?: string | null;
   ageHours?: number | null;
@@ -163,31 +165,27 @@ function robotSeverity(tone: DotTone): number {
   return tone === 'terracotta' ? 3 : tone === 'gold' ? 2 : tone === 'muted' ? 1 : 0;
 }
 
-// Worker heartbeat state → label + tone. 'late' = amber, never an alarm.
+// Worker heartbeat state → label + tone. The workers feed only emits
+// 'ok' | 'late' | 'never', so a worker row stays calm — green when on time,
+// amber when running late, gray when it hasn't run yet. Never red.
 function workerView(state: string | undefined): { tone: DotTone; label: string } {
   const s = (state || '').toLowerCase();
   if (s === 'ok') return { tone: 'forest', label: 'On time' };
   if (s === 'late') return { tone: 'gold', label: 'Running late' };
-  if (s === 'never') return { tone: 'muted', label: 'No runs yet' };
-  if (s.includes('fail')) return { tone: 'terracotta', label: 'Failing' };
+  if (s === 'never') return { tone: 'muted', label: "Hasn't run yet" };
   return { tone: 'muted', label: state ? humanize(state) : 'Unknown' };
 }
-function workerSeverity(tone: DotTone): number {
-  return tone === 'terracotta' ? 3 : tone === 'gold' ? 2 : tone === 'muted' ? 1 : 0;
-}
 
-// Display order for the job-family buckets. The endpoint sends each row's
-// group; groupOf() is only a fallback for a row that arrives without one.
-const WORKER_GROUPS = ['Reports', 'Cleanup', 'ML', 'Inventory', 'Agent', 'Other'] as const;
-type WorkerGroup = typeof WORKER_GROUPS[number];
-function groupOf(name: string): WorkerGroup {
-  const n = (name || '').toLowerCase();
-  if (n.startsWith('ml-')) return 'ML';
-  if (n.includes('report')) return 'Reports';
-  if (n.startsWith('agent-')) return 'Agent';
-  if (n.includes('inventory')) return 'Inventory';
-  if (/(purge|sweep|expire|dedup|heal|cleanup|disposal|orphan)/.test(n)) return 'Cleanup';
-  return 'Other';
+// The owner's three-way mental model for a background worker: 'ai' thinks with
+// a language model, 'prediction' is classic forecasting math, 'timer' is a
+// plain scheduled chore. A row from an older cached response with no tier
+// falls back to 'timer' (the quietest bucket).
+type WorkerTier = 'ai' | 'prediction' | 'timer';
+function tierOf(w: WorkerRow): WorkerTier {
+  const t = (w.tier || '').toLowerCase();
+  if (t === 'ai') return 'ai';
+  if (t === 'prediction') return 'prediction';
+  return 'timer';
 }
 
 // Read one settled fetch as JSON without ever throwing (404 → null).
@@ -307,7 +305,15 @@ export function MissionControlSurface() {
 
   // ── Derivations ──────────────────────────────────────────────────────
   const enabledSessions = sessions.filter((s) => (s.status || '').toLowerCase() !== 'stopped');
-  const rosterCount = 1 /* copilot */ + sessions.length + (workers?.length ?? 0);
+
+  // Split the worker roster by the owner's three-way mental model. A missing
+  // tier (old cached response) falls back to 'timer' inside tierOf().
+  const aiWorkers = (workers ?? []).filter((w) => tierOf(w) === 'ai');
+  const predictionWorkers = (workers ?? []).filter((w) => tierOf(w) === 'prediction');
+  const timerWorkers = (workers ?? []).filter((w) => tierOf(w) === 'timer');
+  // Headline counts ONLY the AI staff — the copilot, the hotel robots, and the
+  // thinking-model background jobs. Prediction + chores are not "AI staff".
+  const aiStaffCount = 1 /* copilot */ + sessions.length + aiWorkers.length;
 
   // App light — website + database drive the colour; expanded shows all four.
   const appLight = (() => {
@@ -374,7 +380,7 @@ export function MissionControlSurface() {
         <div style={{ minWidth: 0 }}>
           <span className="caps" style={{ color: dimWhite(.55) }}>Mission Control</span>
           <h1 style={{ fontFamily: FONT_SERIF, fontSize: 30, fontWeight: 400, letterSpacing: '-0.02em', margin: '4px 0 0', color: '#fff', whiteSpace: 'nowrap' }}>
-            <HeroCount n={rosterCount} /> <span style={{ fontStyle: 'italic' }}>AI workers on watch</span>
+            <HeroCount n={aiStaffCount} /> <span style={{ fontStyle: 'italic' }}>AI staff on watch</span>
           </h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -392,46 +398,81 @@ export function MissionControlSurface() {
         <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} globalCap={globalCap} robotWorst={robotWorst} />} />
       </div>
 
-      {/* ── Block 2 — AI employees roster ─────────────────────────────── */}
+      {/* ── Block 2 — the roster, split three ways by the owner's model ─
+          1. AI staff (richest, cards) · 2. Prediction engine (quiet rows) ·
+          3. Scheduled chores (quietest, one collapsed row). */}
       <div style={{ marginBottom: 26 }}>
-        <span className="caps" style={{ color: dimWhite(.5) }}>AI employees</span>
+        {/* 1 — AI staff: the thinking-model workforce. Visually richest. */}
+        <RosterSection
+          eyebrow="AI staff"
+          count={aiStaffCount}
+          eyebrowColor={dimWhite(.62)}
+          subtitle="Thinks with a language model — this is the workforce that couldn't exist before AI."
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {/* Copilot */}
+            <CopilotRow metrics={metrics} />
 
-        {/* Copilot */}
-        <div style={{ marginTop: 12 }}>
-          <CopilotRow metrics={metrics} />
-        </div>
-
-        {/* Hotel robots */}
-        <div style={{ marginTop: 18 }}>
-          <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {sessions.length}</span>
-          {sessions.length === 0 ? (
-            <div style={{ marginTop: 10 }}><DarkEmpty text="No hotel robots yet — they appear once a hotel's system is connected." /></div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-              {sessions.map((s) => (
-                <RobotRow key={s.property_id} s={s} busyKey={busyKey} onAction={runAction} />
-              ))}
+            {/* Hotel robots */}
+            <div>
+              <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {sessions.length}</span>
+              {sessions.length === 0 ? (
+                <div style={{ marginTop: 9 }}><DarkEmpty text="No hotel robots yet — they appear once a hotel's system is connected." /></div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 9 }}>
+                  {sessions.map((s) => (
+                    <RobotRow key={s.property_id} s={s} busyKey={busyKey} onAction={runAction} />
+                  ))}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Background workers */}
-        <div style={{ marginTop: 18 }}>
-          <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Background workers</span>
+            {/* Thinking-model background jobs */}
+            {aiWorkers.length > 0 && (
+              <div>
+                <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Automatic AI jobs · {aiWorkers.length}</span>
+                <DarkCard style={{ marginTop: 9, display: 'flex', flexDirection: 'column', gap: 11 }}>
+                  {aiWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
+                </DarkCard>
+              </div>
+            )}
+          </div>
+        </RosterSection>
+
+        {/* 2 — Prediction engine: classic forecasting math. Quieter. */}
+        <RosterSection
+          eyebrow="Prediction engine"
+          count={predictionWorkers.length}
+          eyebrowColor={dimWhite(.46)}
+          subtitle="Classic forecasting math — learns from numbers, doesn't think."
+        >
           {workers === null ? (
-            <div style={{ marginTop: 10 }}><DarkEmpty text="Background worker health will appear here." /></div>
-          ) : workers.length === 0 ? (
-            <div style={{ marginTop: 10 }}><DarkEmpty text="No background workers registered." /></div>
+            <DarkEmpty text="Prediction jobs will appear here." />
+          ) : predictionWorkers.length === 0 ? (
+            <DarkEmpty text="No prediction jobs yet." />
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-              {WORKER_GROUPS.map((g) => {
-                const rows = workers.filter((w) => (w.group ?? groupOf(w.name)) === g);
-                if (rows.length === 0) return null;
-                return <WorkerGroupRow key={g} group={g} rows={rows} />;
-              })}
+            <div style={{ background: dimWhite(.04), border: `1px solid ${dimWhite(.1)}`, borderRadius: 12, padding: '13px 14px', display: 'flex', flexDirection: 'column', gap: 11 }}>
+              {predictionWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
             </div>
           )}
-        </div>
+        </RosterSection>
+
+        {/* 3 — Scheduled chores: plain timers. Quietest, collapsed by default. */}
+        <RosterSection
+          eyebrow="Scheduled chores"
+          count={timerWorkers.length}
+          eyebrowColor={dimWhite(.42)}
+          subtitle="Plain timers doing janitor work."
+          last
+        >
+          {workers === null ? (
+            <DarkEmpty text="Scheduled chores will appear here." />
+          ) : timerWorkers.length === 0 ? (
+            <DarkEmpty text="No scheduled chores yet." />
+          ) : (
+            <ChoresRow rows={timerWorkers} />
+          )}
+        </RosterSection>
       </div>
 
       {/* ── Block 3 — inbox + errors ──────────────────────────────────── */}
@@ -703,48 +744,74 @@ function RobotRow({ s, busyKey, onAction }: {
   );
 }
 
-// ── Background-worker group (expandable) ──────────────────────────────────
-function WorkerGroupRow({ group, rows }: { group: WorkerGroup; rows: WorkerRow[] }) {
+// ── Roster section header — caps eyebrow + serif count + one dim subtitle.
+// The three roster sections share this so they read as a set; each dials its
+// eyebrow brightness so the eye lands on AI staff first.
+function RosterSection({ eyebrow, count, subtitle, eyebrowColor, last, children }: {
+  eyebrow: string; count: number; subtitle: string; eyebrowColor: string;
+  last?: boolean; children: React.ReactNode;
+}) {
+  return (
+    <section style={{ marginBottom: last ? 0 : 24 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
+        <span className="caps" style={{ color: eyebrowColor }}>{eyebrow}</span>
+        <SerifNum size={17} c="#fff">{count}</SerifNum>
+      </div>
+      <div style={{ fontSize: 12, color: dimWhite(.42), marginTop: 4, lineHeight: 1.45, maxWidth: 640 }}>{subtitle}</div>
+      <div style={{ marginTop: 13 }}>{children}</div>
+    </section>
+  );
+}
+
+// ── One worker as a calm flat row: plain-English description, when it last
+// ran, and a state pill. Reused by AI jobs, prediction, and chores. ────────
+function SimpleWorkerRow({ w }: { w: WorkerRow }) {
+  const v = workerView(w.state);
+  const last = w.lastBeatAt ? `last ran ${age(w.lastBeatAt)} ago` : 'no runs yet';
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
+      <Dot tone={v.tone} size={7} style={{ marginTop: 4 }} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {w.description || humanize(w.name)}
+        </div>
+        <div className="mono" style={{ fontSize: 9.5, color: dimWhite(.45), marginTop: 1 }}>{last}</div>
+      </div>
+      <Pill tone={pillOf(v.tone)} style={{ fontSize: 8.5, padding: '2px 6px', flexShrink: 0 }}>{v.label}</Pill>
+    </div>
+  );
+}
+
+// ── Scheduled chores — one collapsed summary row ("22 chores · all on time"),
+// click to expand the full list. The quietest tier: flat panel, calm tones. ─
+function ChoresRow({ rows }: { rows: WorkerRow[] }) {
   const [open, setOpen] = useState(false);
   const views = rows.map((w) => workerView(w.state));
-  const worstSev = Math.max(...views.map((v) => workerSeverity(v.tone)));
-  const tone: DotTone = worstSev === 3 ? 'terracotta' : worstSev === 2 ? 'gold' : worstSev === 1 ? 'muted' : 'forest';
   const okCount = views.filter((v) => v.tone === 'forest').length;
   const lateCount = views.filter((v) => v.tone === 'gold').length;
-  const summary = worstSev === 0
-    ? `${rows.length} on time`
-    : [`${okCount} on time`, lateCount > 0 ? `${lateCount} running late` : null].filter(Boolean).join(' · ');
+  const neverCount = views.filter((v) => v.tone === 'muted').length;
 
+  let tone: DotTone = 'forest';
+  let summary = 'all on time';
+  if (lateCount > 0) { tone = 'gold'; summary = `${lateCount} running late`; }
+  else if (okCount === 0 && neverCount > 0) { tone = 'muted'; summary = 'none have run yet'; }
+  else if (neverCount > 0) { summary = `${okCount} on time · ${neverCount} waiting to start`; }
+
+  const noun = rows.length === 1 ? 'chore' : 'chores';
   return (
-    <DarkCard onClick={() => setOpen((o) => !o)} style={{ cursor: 'pointer', padding: '11px 13px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div style={{ background: dimWhite(.04), border: `1px solid ${dimWhite(.1)}`, borderRadius: 12 }}>
+      <div onClick={() => setOpen((o) => !o)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 13px', cursor: 'pointer' }}>
         <Dot tone={tone} size={8} />
-        <span style={{ fontSize: 12.5, fontWeight: 600, color: '#fff' }}>{group}</span>
-        <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.4) }}>{rows.length}</span>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: '#fff' }}>{rows.length} {noun}</span>
         <span style={{ marginLeft: 'auto', fontSize: 11, color: dimWhite(.55) }}>{summary}</span>
         <span className="mono" style={{ fontSize: 12, color: dimWhite(.4) }}>{open ? '▾' : '▸'}</span>
       </div>
       {open && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 11, paddingTop: 11, borderTop: `1px solid ${dimWhite(.1)}` }}>
-          {rows.map((w) => {
-            const v = workerView(w.state);
-            const last = w.lastBeatAt ? `last ran ${age(w.lastBeatAt)} ago` : 'no runs yet';
-            return (
-              <div key={w.name} style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-                <Dot tone={v.tone} size={7} style={{ marginTop: 4 }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {w.description || humanize(w.name)}
-                  </div>
-                  <div className="mono" style={{ fontSize: 9.5, color: dimWhite(.45), marginTop: 1 }}>{last}</div>
-                </div>
-                <Pill tone={pillOf(v.tone)} style={{ fontSize: 8.5, padding: '2px 6px', flexShrink: 0 }}>{v.label}</Pill>
-              </div>
-            );
-          })}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 11, padding: '12px 13px', borderTop: `1px solid ${dimWhite(.08)}` }}>
+          {rows.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
         </div>
       )}
-    </DarkCard>
+    </div>
   );
 }
 
