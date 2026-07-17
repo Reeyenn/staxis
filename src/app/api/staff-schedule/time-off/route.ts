@@ -21,6 +21,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
 import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import { fromTimeOffRequestRow } from '@/lib/db-mappers';
 import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
@@ -99,6 +100,11 @@ export async function PUT(req: NextRequest) {
   if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+
+  // Section gate: if Staff is turned off for this hotel, block the write.
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
+
   const idCheck = validateUuid(body.id, 'id');
   if (idCheck.error) return err(idCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   if (body.decision !== 'approve' && body.decision !== 'deny') {

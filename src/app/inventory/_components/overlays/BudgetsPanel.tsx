@@ -417,6 +417,20 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     try {
       await deleteInventoryBudgetSection(user.uid, activePropertyId, id);
       setLocalSections((p) => p.filter((s) => s.id !== id));
+      // Purge the removed section's pending edits too. If a cap was typed and
+      // THEN the section removed, Save would otherwise re-insert 12 orphan
+      // `section:<deletedId>` budget rows — invisible in this panel but summed
+      // into the Accounting page's monthly budget forever.
+      const key = sectionBudgetKey(id);
+      setVals((p) => {
+        const next: Record<string, string[]> = {};
+        for (const [k, v] of Object.entries(p)) if (!k.startsWith(`${key}|`)) next[k] = v;
+        return next;
+      });
+      setDirty((p) => {
+        const next = new Set([...p].filter((k) => !k.startsWith(`${key}|`)));
+        return next;
+      });
       setConfirmingRemove(null);
       onChanged();
     } catch (err) {
@@ -434,6 +448,13 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
       for (const composite of dirty) {
         const sep = composite.lastIndexOf('|');
         const budgetKey = composite.slice(0, sep);
+        // Never write budget rows for a section that no longer exists (e.g.
+        // edited, then removed in the same sitting) — orphan `section:` rows
+        // inflate the accounting budget total with no UI to ever remove them.
+        if (
+          budgetKey.startsWith('section:') &&
+          !localSections.some((s) => sectionBudgetKey(s.id) === budgetKey)
+        ) continue;
         const y = Number(composite.slice(sep + 1));
         const arr = vals[composite] ?? EMPTY12();
         for (let m = 0; m < 12; m++) {

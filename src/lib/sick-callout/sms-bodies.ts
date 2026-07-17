@@ -32,25 +32,6 @@ export function buildPickupSms(
   return sanitizeForSms(body);
 }
 
-export function buildManagerSummarySms(
-  sickStaffName: string,
-  totalRedistributed: number,
-  pickups: Array<{ staff_name: string; count: number }>,
-): string {
-  if (totalRedistributed === 0) {
-    return sanitizeForSms(
-      `${sickStaffName} called out today. No rooms to redistribute (none assigned yet).`,
-    );
-  }
-  const breakdown = pickups
-    .filter((p) => p.count > 0)
-    .map((p) => `${p.staff_name} +${p.count}`)
-    .join(', ');
-  return sanitizeForSms(
-    `${sickStaffName} called out — ${totalRedistributed} room${totalRedistributed === 1 ? '' : 's'} redistributed. ${breakdown}.`,
-  );
-}
-
 export function buildRevertSms(sickStaffName: string, language: Language): string {
   const body =
     language === 'es'

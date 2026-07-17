@@ -51,6 +51,5 @@ export {
   sendCalloutNotifications,
   sendRevertNotifications,
   buildPickupSms,
-  buildManagerSummarySms,
   buildRevertSms,
 } from './notify';

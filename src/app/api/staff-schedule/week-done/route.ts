@@ -14,6 +14,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
@@ -57,6 +58,11 @@ export async function POST(req: NextRequest) {
   if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+
+  // Section gate: if Staff is turned off for this hotel, block the write.
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
+
   if (!body.weekStart || !DATE_RE.test(body.weekStart)) {
     return err('weekStart YYYY-MM-DD required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import type { OrderStatus, PurchaseOrder, SpendRollup } from '@/lib/ordering/types';
@@ -186,9 +186,16 @@ export function OrdersPanel({ open, onClose, canManage, onChanged }: OrdersPanel
     onChanged?.();
   }, [load, onChanged]);
 
+  // Synchronous in-flight lock: `busyId` state lags one render behind, so a
+  // fast double-click on Send could email the vendor twice. (Receive doesn't
+  // need this — its RPC is an idempotent cumulative target — but sending is
+  // one email per call.)
+  const sendLockRef = useRef<string | null>(null);
   const doSend = useCallback(
     async (po: PurchaseOrder, overrideEmail?: string) => {
       if (!activePropertyId) return;
+      if (sendLockRef.current === po.id) return;
+      sendLockRef.current = po.id;
       setBusyId(po.id);
       setError(null);
       try {
@@ -200,6 +207,7 @@ export function OrdersPanel({ open, onClose, canManage, onChanged }: OrdersPanel
       } catch (e) {
         setError(e instanceof Error ? e.message : 'Send failed');
       } finally {
+        sendLockRef.current = null;
         setBusyId(null);
       }
     },

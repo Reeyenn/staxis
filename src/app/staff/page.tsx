@@ -25,7 +25,6 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { SubTabBar, type StaffTab } from './_components/SubTabBar';
 import { UnifiedSchedule } from './_components/schedule';
 import { ManagerDirectory } from './_components/ManagerDirectory';
-import { ManagerRecognition } from './_components/ManagerRecognition';
 import { MyShifts } from './_components/MyShifts';
 import { asDeptKey, deptMeta, T, fonts } from './_components/_tokens';
 
@@ -133,9 +132,13 @@ function DemoViewSwitch({
       });
   }, [staff]);
 
-  // Default the preview to the first roster member once it loads.
+  // Default the preview to the first roster member once it loads. Also
+  // recover when a stored previewStaffId points at a since-deactivated or
+  // deleted staffer (no longer in the roster) — otherwise the preview shows
+  // "not linked" forever while the picker displays someone else.
   useEffect(() => {
-    if (mode === 'staff' && !previewStaffId && roster.length > 0) {
+    if (mode !== 'staff' || roster.length === 0) return;
+    if (!previewStaffId || !roster.some(s => s.id === previewStaffId)) {
       onPreviewStaff(roster[0].id);
     }
   }, [mode, previewStaffId, roster, onPreviewStaff]);
@@ -211,7 +214,7 @@ function ManagerView() {
     if (typeof window === 'undefined') return 'schedule';
     try {
       const raw = window.localStorage.getItem(TAB_STORAGE_KEY);
-      return raw === 'directory' || raw === 'recognition' ? raw : 'schedule';
+      return raw === 'directory' ? raw : 'schedule';
     } catch { return 'schedule'; }
   });
   useEffect(() => {
@@ -221,9 +224,8 @@ function ManagerView() {
   return (
     <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
       <SubTabBar tab={tab} onTab={setTab}/>
-      {tab === 'schedule'    && <UnifiedSchedule onOpenDirectory={() => setTab('directory')}/>}
-      {tab === 'directory'   && <ManagerDirectory/>}
-      {tab === 'recognition' && <ManagerRecognition/>}
+      {tab === 'schedule'  && <UnifiedSchedule onOpenDirectory={() => setTab('directory')}/>}
+      {tab === 'directory' && <ManagerDirectory/>}
     </div>
   );
 }

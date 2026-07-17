@@ -124,6 +124,7 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
         'inv-rail-btn',
         plain ? 'inv-rail-plain' : '',
       ].join(' ').trim()}
+      aria-label={badge != null ? `${label}, ${badge}` : undefined}
       onClick={() => { Motion.pop(ref.current, 0.96); onClick(); }}
       style={{
         padding: '9px 12px',
@@ -144,12 +145,15 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
       }}
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
-        {accent && <StatusDot s="critical" size={6} />}
-        {(primary || teal) && <Serif size={14}><span className="inv-arrow">→</span></Serif>}
+        {accent && <span aria-hidden="true"><StatusDot s="critical" size={6} /></span>}
+        {(primary || teal) && (
+          <span aria-hidden="true"><Serif size={14}><span className="inv-arrow">→</span></Serif></span>
+        )}
         {label}
       </span>
       {badge != null && (
         <span
+          aria-hidden="true"
           style={{
             padding: '1px 7px',
             borderRadius: 999,

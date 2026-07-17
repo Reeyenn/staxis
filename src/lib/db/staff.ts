@@ -37,7 +37,7 @@ export const STAFF_COLS =
   'id, name, phone, language, is_senior, department, ' +
   'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
   'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
-  'is_scheduling_manager, last_paired_at';
+  'last_paired_at';
 
 // Defense for the WRITE side of the same leak. `toStaffRow` faithfully maps
 // hourlyWage → hourly_wage (the mapper is a pure translator), but the anon

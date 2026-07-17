@@ -1,6 +1,5 @@
 /**
- * Sick-callout notifications — SMS fanout to affected housekeepers and a
- * manager summary.
+ * Sick-callout notifications — SMS fanout to affected housekeepers.
  *
  * Why not push notifications: the existing rollout uses Twilio SMS as the
  * notification channel for housekeepers (the housekeeper page itself is
@@ -12,7 +11,6 @@
  * Cost considerations:
  *   - SMS fans out to ALL receivers — every HK who picked up at least one
  *     room from the sick HK gets ONE message (not one per room).
- *   - The manager gets ONE SMS regardless of how many HKs were impacted.
  *   - Failures are non-fatal — the callout + redistribution succeed even
  *     if every SMS fails. The notification log table will surface this.
  */
@@ -28,13 +26,11 @@ import type { CalloutEvent, ImpactedAssignment } from './types';
 // that @/lib/sms drags in.
 import {
   buildPickupSms,
-  buildManagerSummarySms,
   buildRevertSms,
 } from './sms-bodies';
 
 export {
   buildPickupSms,
-  buildManagerSummarySms,
   buildRevertSms,
 } from './sms-bodies';
 
@@ -50,9 +46,8 @@ interface StaffContact {
 // ───────────────────────────────────────────────────────────────────────
 
 /**
- * Send pickup-notification SMS to each affected housekeeper plus a
- * summary SMS to the manager. Returns a counter for observability;
- * never throws.
+ * Send pickup-notification SMS to each affected housekeeper. Returns a
+ * counter for observability; never throws.
  */
 export async function sendCalloutNotifications(
   supabase: SupabaseClient,
@@ -84,8 +79,8 @@ export async function sendCalloutNotifications(
     byReceiver.set(a.redistributed_to, list);
   }
 
-  // Fetch each receiver's contact info. Names are needed for the manager
-  // summary; phone + language for the receiver-side SMS.
+  // Fetch each receiver's contact info — phone + language for the
+  // receiver-side SMS.
   const receiverIds = Array.from(byReceiver.keys());
   const receivers = await fetchStaffContacts(supabase, receiverIds);
 
@@ -116,34 +111,6 @@ export async function sendCalloutNotifications(
       smsFailed += 1;
       log.warn('[sick-callout/notify] pickup SMS failed', {
         calloutId: callout.id, receiverId: receiver.id,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // Manager summary — pick the property's primary manager phone via
-  // accounts.role='general_manager'. If we can't find one, skip
-  // gracefully rather than spamming.
-  const managerPhone = await fetchPrimaryManagerPhone(supabase, callout.property_id);
-  if (managerPhone) {
-    const pickups = receivers
-      .map((r) => ({
-        staff_name: r.name,
-        count: (byReceiver.get(r.id) ?? []).length,
-      }))
-      .filter((p) => p.count > 0);
-    const body = buildManagerSummarySms(
-      sickStaff.name,
-      callout.impacted_assignments?.length ?? 0,
-      pickups,
-    );
-    try {
-      await sendSms(managerPhone, body);
-      smsSent += 1;
-    } catch (err) {
-      smsFailed += 1;
-      log.warn('[sick-callout/notify] manager summary SMS failed', {
-        calloutId: callout.id,
         err: err instanceof Error ? err.message : String(err),
       });
     }
@@ -258,27 +225,4 @@ async function fetchRoomTotalsByStaff(
     totals.set(row.assignee_id, (totals.get(row.assignee_id) ?? 0) + 1);
   }
   return totals;
-}
-
-async function fetchPrimaryManagerPhone(
-  supabase: SupabaseClient,
-  propertyId: string,
-): Promise<string | null> {
-  // Best-effort lookup. Prefer general_manager over head_housekeeper.
-  // The accounts table holds the auth-tied role; staff holds the SMS phone.
-  // Map by accounts.data_user_id → staff.user_id (when wired) OR by
-  // matching on accounts.email → staff.name as a last resort. For now we
-  // simply pick the first staff row with department='management' and a
-  // phone — sufficient for the pilot, easy to swap for a richer lookup
-  // when role data settles down.
-  const lookup = await supabase
-    .from('staff')
-    .select('phone')
-    .eq('property_id', propertyId)
-    .eq('is_scheduling_manager', true)
-    .not('phone', 'is', null)
-    .limit(1)
-    .maybeSingle();
-  if (lookup.error || !lookup.data) return null;
-  return (lookup.data as { phone: string | null }).phone ?? null;
 }

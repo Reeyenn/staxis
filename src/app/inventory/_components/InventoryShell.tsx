@@ -50,7 +50,7 @@ import type {
   InventoryTabLayout,
 } from '@/types';
 
-import { T, fonts } from './tokens';
+import { T, fonts, inBucket } from './tokens';
 import { startOfLocalMonth, addLocalMonths, isBudgetForLocalMonth } from './month';
 import { Caps } from './Caps';
 import { Serif } from './Serif';
@@ -439,6 +439,23 @@ export function InventoryShell() {
   // counts; it doesn't drift with occupancy). Live-updates as quick counts land,
   // since applyDraft rewrites `value` for drafted items.
   const shelfValue = useMemo(() => effectiveDisplay.reduce((s, d) => s + d.value, 0), [effectiveDisplay]);
+  // Per-tab valuation for the masthead: selecting a tab (General / Breakfast /
+  // a custom tab) slides that tab's total value in to the left of "On the
+  // shelf"; selecting All slides it back out. Same valuation basis as
+  // shelfValue, so the tab numbers always sum to the total.
+  const activeTab = bucket !== 'all' ? visibleTabs.find((tb) => tb.key === bucket) ?? null : null;
+  const activeTabValue = useMemo(
+    () =>
+      activeTab
+        ? effectiveDisplay.filter((d) => inBucket(d, bucket)).reduce((s, d) => s + d.value, 0)
+        : 0,
+    [activeTab, bucket, effectiveDisplay],
+  );
+  // Keep the last shown label/value while the stat animates out, so the text
+  // doesn't blank mid-collapse when the user taps All.
+  const lastTabStatRef = React.useRef<{ label: string; value: number } | null>(null);
+  if (activeTab) lastTabStatRef.current = { label: activeTab.label, value: activeTabValue };
+  const tabStat = activeTab ? { label: activeTab.label, value: activeTabValue } : lastTabStatRef.current;
 
   const reorderCount = useMemo(
     () => countedItems.filter((d) => d.status !== 'good').length,
@@ -670,7 +687,9 @@ export function InventoryShell() {
     const d = displayRef.current.find((x) => x.id === itemId);
     if (!d) return;
     const curDraft = draftCountsRef.current.get(itemId);
-    const have = curDraft != null ? curDraft : Math.max(0, Math.round(d?.estimated ?? 0));
+    // Baseline for the "no change" guard is the real count (what the row's
+    // stepper edits), never the occupancy estimate — see LedgerRow.onHand.
+    const have = curDraft != null ? curDraft : Math.max(0, Math.round(d?.counted ?? 0));
     const v = Math.max(0, Math.round(nextValue));
     if (v === have) return; // no change (e.g. − at floor 0) → never write
 
@@ -952,7 +971,14 @@ export function InventoryShell() {
   }
 
   if (!revealed || !itemsLoaded) {
-    return <div style={NOTICE_STYLE}>{tx.loading}</div>;
+    // Byte-identical to InventoryLoading in ../page.tsx (the SSR Suspense
+    // fallback); any drift between the two makes React hydration re-render
+    // the whole tree and the loading text visibly flash mid-load.
+    return (
+      <div style={{ padding: '64px 24px', textAlign: 'center', color: '#5C625C' }}>
+        Loading inventory…
+      </div>
+    );
   }
 
   return (
@@ -1058,6 +1084,33 @@ export function InventoryShell() {
           >
             <CountUp value={statusCounts.critical} />
           </HStat>
+          {/* Active-tab valuation — money-capability only. Collapses to zero
+              width on All; the -34px margin cancels the flex gap so the
+              neighbors (ring / Order now) glide left into the freed space. */}
+          {canViewFinancials && tabStat && (
+            <div
+              aria-hidden={!activeTab}
+              style={{
+                display: 'flex',
+                overflow: 'hidden',
+                maxWidth: activeTab ? 240 : 0,
+                opacity: activeTab ? 1 : 0,
+                marginRight: activeTab ? 0 : -34,
+                transform: activeTab ? 'translateX(0)' : 'translateX(16px)',
+                transition:
+                  'max-width .45s cubic-bezier(.22,.8,.28,1), opacity .3s ease, ' +
+                  'margin-right .45s cubic-bezier(.22,.8,.28,1), transform .45s cubic-bezier(.22,.8,.28,1)',
+              }}
+            >
+              {/* max-content keeps the stat at natural width while the outer
+                  wrapper clips it, so text never rewraps mid-animation. */}
+              <div style={{ minWidth: 'max-content' }}>
+                <HStat eyebrow={tabStat.label}>
+                  <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
+                </HStat>
+              </div>
+            </div>
+          )}
           {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
           {canViewFinancials && (
             <HStat eyebrow={tx.onTheShelf}>

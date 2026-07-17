@@ -6,6 +6,7 @@ import { t, type Lang } from './inv-i18n';
 import type { InvTab } from './InventoryTabs';
 import type { SidebarAction } from './Sidebar';
 import {
+  inBucket,
   monogram,
   type InvCat,
   type StockBucket,
@@ -72,6 +73,11 @@ export function MobileInventoryTriage({
   const countedItems = items.filter((item) => !item.uncounted);
   const orderNowCount = countedItems.filter((item) => item.status === 'critical').length;
   const reorderCount = countedItems.filter((item) => item.status !== 'good').length;
+  // Selected tab's valuation for the masthead (same basis as shelfValue).
+  const activeTab = bucket !== 'all' ? tabs.find((tb) => tb.key === bucket) ?? null : null;
+  const activeTabValue = activeTab
+    ? items.filter((d) => inBucket(d, bucket)).reduce((s, d) => s + d.value, 0)
+    : 0;
 
   const actions = useMemo<MobileAction[]>(() => {
     const next: MobileAction[] = [
@@ -123,6 +129,13 @@ export function MobileInventoryTriage({
       <div className={styles.masthead}>
         <div className={styles.stats} aria-live="polite">
           <MobileStat label={tx.orderNow} value={String(orderNowCount)} critical />
+          {/* Selected tab's total value, mirroring the desktop masthead stat. */}
+          {canViewFinancials && activeTab ? (
+            <MobileStat
+              label={compactTabLabel(activeTab, lang)}
+              value={fmtMoney(activeTabValue, { digits: 0 })}
+            />
+          ) : null}
           {canViewFinancials ? (
             <MobileStat label={tx.onTheShelf} value={fmtMoney(shelfValue, { digits: 0 })} />
           ) : null}
@@ -152,6 +165,19 @@ export function MobileInventoryTriage({
             ) : null}
           </button>
         ))}
+        {onAdd ? (
+          // Desktop always shows "+ Add item" in the filter bar; without this
+          // a phone user with a non-empty catalog had NO direct add path
+          // (only the empty-catalog panel wired onAdd).
+          <button
+            type="button"
+            className={actionClassName(undefined)}
+            onClick={onAdd}
+            aria-label={tx.addItem}
+          >
+            <span className={styles.actionLabel}>{tx.addItem}</span>
+          </button>
+        ) : null}
       </div>
 
       <div className={styles.filterRail} role="group" aria-label={tx.pageTitle}>
@@ -342,7 +368,10 @@ function InventoryCard({
   lang: Lang;
   onQuickCount: (itemId: string, nextValue: number) => void;
 }) {
-  const onHand = Math.max(0, Math.round(item.estimated));
+  // Real last count, not the occupancy estimate — the +/− steppers save a new
+  // physical count, so stepping off the estimate would silently rewrite the
+  // count with a projection (same fix as LedgerRow.onHand on desktop).
+  const onHand = Math.max(0, Math.round(item.counted));
   const par = Math.max(0, Math.round(item.par));
   const fill = par > 0 ? Math.max(0, Math.min(100, (100 * onHand) / par)) : 100;
   const statusClass = item.uncounted ? styles.statusNeutral : STATUS_CLASS[item.status];
