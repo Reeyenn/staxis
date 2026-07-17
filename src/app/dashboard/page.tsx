@@ -173,9 +173,9 @@ export default function DashboardPage() {
       activeProperty &&
       isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState) &&
       typeof window !== 'undefined' &&
-      !sessionStorage.getItem(RESUME_GUARD_KEY)
+      sessionStorage.getItem(RESUME_GUARD_KEY) !== activeProperty.id
     ) {
-      sessionStorage.setItem(RESUME_GUARD_KEY, '1');
+      sessionStorage.setItem(RESUME_GUARD_KEY, activeProperty.id);
       window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`;
     }
   }, [user, authLoading, propLoading, activePropertyId, activeProperty, router]);

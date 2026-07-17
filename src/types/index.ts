@@ -54,9 +54,9 @@ export interface Property {
   /**
    * Onboarding tracking (M1.5 wizard). `onboardingCompletedAt` is set only
    * when the 8-step wizard finishes; `onboardingState` carries the in-progress
-   * step markers. The login funnel (property-selector + dashboard) reads these
+   * step markers. The login funnel (Home, property-selector, dashboard) reads these
    * via `isOnboardingInProgress` to keep a mid-onboarding owner inside the
-   * wizard instead of dropping them on an empty dashboard. Legacy / imported
+   * wizard instead of dropping them into an empty app. Legacy / imported
    * hotels have BOTH null → treated as fully live (never gated).
    */
   onboardingCompletedAt?: string | null;

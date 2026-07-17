@@ -9,6 +9,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
+import { safeRedirect } from '@/lib/url-redirect';
 import type { Property } from '@/types';
 import { Building2, LogOut } from 'lucide-react';
 
@@ -31,8 +32,8 @@ export default function PropertySelectorPage() {
   // navigation (not router.replace) so the API route's 302 is followed.
   const enter = (p: Property) => {
     // Mid-onboarding owner → resume the wizard, but only ONCE: if a prior
-    // resume attempt already bounced us back here (guard set), fall through to
-    // the dashboard instead of looping forever (see RESUME_GUARD_KEY).
+    // resume attempt already bounced us back here (this hotel id is guarded),
+    // fall through to Home instead of looping forever (see RESUME_GUARD_KEY).
     // Admins are NEVER pulled into onboarding — they manage hotels, they don't
     // own the signup, and routing them in would trap them in (and mutate)
     // someone else's wizard.
@@ -40,16 +41,20 @@ export default function PropertySelectorPage() {
       user?.role !== 'admin' &&
       isOnboardingInProgress(p.onboardingCompletedAt, p.onboardingState) &&
       typeof window !== 'undefined' &&
-      !sessionStorage.getItem(RESUME_GUARD_KEY)
+      sessionStorage.getItem(RESUME_GUARD_KEY) !== p.id
     ) {
-      sessionStorage.setItem(RESUME_GUARD_KEY, '1');
+      sessionStorage.setItem(RESUME_GUARD_KEY, p.id);
       window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(p.id)}`;
       return;
     }
     setActivePropertyId(p.id);
     sessionStorage.setItem('hotelops-session-selected', '1');
-    // Concourse shell: land on the hub, not a specific section.
-    router.replace('/home');
+    // Ordinary login lands on Home. A protected deep link is honored only
+    // after the user has explicitly selected which hotel it belongs to.
+    const requestedTarget = typeof window === 'undefined'
+      ? '/home'
+      : safeRedirect(new URLSearchParams(window.location.search).get('redirect'), '/home');
+    router.replace(requestedTarget);
   };
 
   // Auto-select when exactly 1 property

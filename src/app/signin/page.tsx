@@ -55,11 +55,21 @@ function SignInInner() {
   const router = useRouter();
   const params = useSearchParams();
 
-  // F-04: honor the middleware's `?redirect=<original>` param so deep links
-  // through the edge gate land the user back on the page they actually asked
-  // for after sign-in. safeRedirect rejects open-redirect attempts and auth-
-  // page loops; fallback is /property-selector (the historical destination).
-  const redirectTarget = safeRedirect(params.get('redirect'), '/property-selector');
+  const requestedTarget = safeRedirect(params.get('redirect'), '/home');
+  const needsPropertySelection = Boolean(
+    user && (
+      user.role === 'admin' ||
+      user.propertyAccess.includes('*') ||
+      user.propertyAccess.length !== 1
+    )
+  );
+  const redirectTarget = needsPropertySelection
+    ? `/property-selector${
+        requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
+          ? ''
+          : `?redirect=${encodeURIComponent(requestedTarget)}`
+      }`
+    : requestedTarget;
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -69,7 +79,7 @@ function SignInInner() {
   // Auto-redirect users with an existing session AWAY from /signin — but
   // skip the redirect while a sign-in is in flight. Without that guard,
   // signIn()'s setUser() fires this useEffect and lands the user on
-  // /property-selector BEFORE handleSubmit can run the trust check + OTP
+  // /home BEFORE handleSubmit can run the trust check + OTP
   // step (which itself signs the user out again and redirects to
   // /signin/verify). That race produced the "flash dashboard then bounce
   // back to signin" loop reported on 2026-05-10.
@@ -153,11 +163,9 @@ function SignInInner() {
         setSigning(false);
         return;
       }
-      // Preserve the redirect target through the OTP step so the verify
-      // page can land the user on the originally-requested URL on success.
-      // We pass the raw `params.get('redirect')` (not the validated
-      // redirectTarget) so the verify page re-validates; that keeps the
-      // safety check at the actual navigation site.
+      // Preserve a protected deep link through OTP. The verify page routes via
+      // the property selector, so multi-hotel users choose the hotel before the
+      // target opens; an ordinary login still falls through to Home.
       const rawRedirect = params.get('redirect');
       const verifyUrl = `/signin/verify?email=${encodeURIComponent(normalizedEmail)}${
         rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
