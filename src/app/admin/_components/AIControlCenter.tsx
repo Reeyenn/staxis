@@ -1226,7 +1226,6 @@ function FeaturesPanel({
   onGroupModels: (groupName: string, groupFeatures: AiFeatureSummary[], primaryKey: string, fallbackKey: string) => void;
 }) {
   const groups = useMemo(() => groupAiFeatures(features, query), [features, query]);
-  const [modelEditorGroup, setModelEditorGroup] = useState<string | null>(null);
   return (
     <section
       id="ai-control-panel-features"
@@ -1280,29 +1279,16 @@ function FeaturesPanel({
                         >
                           All off
                         </button>
-                        <button
-                          type="button"
-                          className={styles.textButton}
+                        <GroupModelControls
+                          models={models}
                           disabled={Boolean(groupBulkBusy) || rollbackInFlight}
-                          onClick={() => setModelEditorGroup((current) => (current === group.group ? null : group.group))}
-                        >
-                          {modelEditorGroup === group.group ? 'Close' : 'Change models…'}
-                        </button>
+                          onApply={(primaryKey, fallbackKey) => onGroupModels(group.group, group.features, primaryKey, fallbackKey)}
+                        />
                       </>
                     )}
                   </span>
                 )}
               </div>
-              {modelEditorGroup === group.group && groupBulkBusy !== group.group && (
-                <GroupModelEditor
-                  models={models}
-                  disabled={Boolean(groupBulkBusy) || rollbackInFlight}
-                  onApply={(primaryKey, fallbackKey) => {
-                    setModelEditorGroup(null);
-                    onGroupModels(group.group, group.features, primaryKey, fallbackKey);
-                  }}
-                />
-              )}
               <div className={styles.featureList}>
                 {group.features.map((feature) => (
                   <FeatureEditor
@@ -1571,11 +1557,13 @@ function ActivationRecap({
 }
 
 /**
- * Inline category-wide model picker. The chosen models are applied to every
- * feature in the group that can run them (others are skipped and reported);
- * each application goes through the normal test-then-activate cycle.
+ * Compact category-wide model controls, inline with All on / All off:
+ * [Primary model ▾] [Fallback model ▾] [Test & apply my change]. The chosen
+ * models are applied to every feature in the group that can run them (others
+ * are skipped and reported); each application goes through the normal
+ * test-then-activate cycle. Selections clear after applying.
  */
-function GroupModelEditor({
+function GroupModelControls({
   models,
   disabled,
   onApply,
@@ -1588,47 +1576,45 @@ function GroupModelEditor({
   const [primaryKey, setPrimaryKey] = useState('');
   const [fallbackKey, setFallbackKey] = useState(NO_FALLBACK);
   return (
-    <div className={styles.groupModelEditor}>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>New main model for this whole category</span>
-        <ModelSelect
-          value={primaryKey}
-          models={available}
-          preserve={[]}
-          allowNone={false}
-          placeholder="Choose a model…"
-          ariaLabel="Category-wide primary model"
-          disabled={disabled}
-          onChange={(value) => {
-            setPrimaryKey(value);
-            if (value === fallbackKey) setFallbackKey(NO_FALLBACK);
-          }}
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Backup model · optional</span>
-        <ModelSelect
-          value={fallbackKey}
-          models={available.filter((model) => modelRefKey(model) !== primaryKey)}
-          preserve={[]}
-          allowNone
-          ariaLabel="Category-wide fallback model"
-          disabled={disabled}
-          onChange={setFallbackKey}
-        />
-      </label>
-      <div className={styles.featureActions}>
-        <button
-          type="button"
-          className={styles.primaryButton}
-          disabled={disabled || !primaryKey}
-          onClick={() => onApply(primaryKey, fallbackKey)}
-        >
-          <CheckCircle2 size={14} />
-          Test & apply to whole category
-        </button>
-      </div>
-    </div>
+    <>
+      <ModelSelect
+        value={primaryKey}
+        models={available}
+        preserve={[]}
+        allowNone={false}
+        placeholder="Primary model"
+        compact
+        ariaLabel="Category-wide primary model"
+        disabled={disabled}
+        onChange={(value) => {
+          setPrimaryKey(value);
+          if (value === fallbackKey) setFallbackKey(NO_FALLBACK);
+        }}
+      />
+      <ModelSelect
+        value={fallbackKey}
+        models={available.filter((model) => modelRefKey(model) !== primaryKey)}
+        preserve={[]}
+        allowNone
+        noneLabel="Fallback model"
+        compact
+        ariaLabel="Category-wide fallback model"
+        disabled={disabled}
+        onChange={setFallbackKey}
+      />
+      <button
+        type="button"
+        className={styles.textButton}
+        disabled={disabled || !primaryKey}
+        onClick={() => {
+          onApply(primaryKey, fallbackKey);
+          setPrimaryKey('');
+          setFallbackKey(NO_FALLBACK);
+        }}
+      >
+        Test & apply my change
+      </button>
+    </>
   );
 }
 
@@ -1638,6 +1624,8 @@ function ModelSelect({
   preserve,
   allowNone = false,
   placeholder,
+  noneLabel = 'No fallback',
+  compact = false,
   ariaLabel,
   disabled,
   onChange,
@@ -1647,6 +1635,8 @@ function ModelSelect({
   preserve: AiModelRef[];
   allowNone?: boolean;
   placeholder?: string;
+  noneLabel?: string;
+  compact?: boolean;
   ariaLabel: string;
   disabled: boolean;
   onChange: (value: string) => void;
@@ -1685,14 +1675,14 @@ function ModelSelect({
 
   return (
     <select
-      className={styles.select}
+      className={compact ? styles.selectCompact : styles.select}
       value={value}
       aria-label={ariaLabel}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
     >
       {placeholder !== undefined && <option value="" disabled>{placeholder}</option>}
-      {allowNone && <option value={NO_FALLBACK}>No fallback</option>}
+      {allowNone && <option value={NO_FALLBACK}>{noneLabel}</option>}
       {grouped.map((group) => (
         <optgroup key={group.provider} label={providerLabel(group.provider)}>
           {group.models.map((model) => (
