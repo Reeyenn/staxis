@@ -55,3 +55,10 @@ export {
   ASSIGNMENT_PRIORITY_RANK,
   makeAssignmentConfig,
 } from '@/types/assignments';
+
+export {
+  toShadowAssignmentTask,
+  buildDurationConfig,
+  computeWorkloadByHk,
+} from './board-helpers';
+export type { ShadowTaskInput, WorkloadTask } from './board-helpers';

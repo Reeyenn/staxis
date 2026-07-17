@@ -234,11 +234,17 @@ export function InventoryTabs({
   }, [canManage]);
 
   // ── Add-tab inline input ──────────────────────────────────────────────
+  // No preset suggestions: a removed built-in is simply gone. But if someone
+  // types a removed built-in's exact name ("General inventory"), restore THAT
+  // tab (its items reattach) instead of creating an empty custom duplicate.
   const commitNew = () => {
     const name = newName.trim();
     setNewName('');
     setAdding(false);
-    if (name) onAdd(name);
+    if (!name) return;
+    const hidden = hiddenBuiltins.find((h) => h.label.trim().toLowerCase() === name.toLowerCase());
+    if (hidden) onRestore(hidden.key);
+    else onAdd(name);
   };
   const cancelNew = () => { setNewName(''); setAdding(false); };
 
@@ -248,121 +254,132 @@ export function InventoryTabs({
   };
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-      {/* All — pinned first, always selectable, never draggable/removable. */}
-      <SelectChip
-        active={bucket === 'all'}
-        label={tx.all}
-        count={allCount}
-        dim={editing}
-        onClick={() => onBucket('all')}
-      />
-
-      {rendered.map((tab) =>
-        editing ? (
-          <EditChip
-            key={tab.key}
-            ref={setChipRef(tab.key)}
-            tab={tab}
-            active={bucket === tab.key}
-            dragging={dragKey === tab.key}
-            removeLabel={tx.removeTab}
-            onPointerDown={(e) => beginDrag(e, tab.key)}
-            onPointerMove={moveDrag}
-            onPointerUp={endDrag}
-            onPointerCancel={endDrag}
-            onRemove={() => setPending(tab)}
-          />
-        ) : (
-          <SelectChip
-            key={tab.key}
-            active={bucket === tab.key}
-            label={tab.label}
-            count={tab.count}
-            onClick={() => onBucket(tab.key as StockBucket)}
-          />
-        ),
-      )}
-
-      {/* Editing extras: add-a-tab input + restore hidden built-ins. */}
+    <>
+      {/* Focused edit mode: dim the rest of the page and float the tab bar, so
+          it's obvious you're editing — and tapping anywhere off the bar finishes
+          (in case the Done button isn't spotted). */}
       {editing && (
-        adding ? (
-          <input
-            autoFocus
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); commitNew(); }
-              else if (e.key === 'Escape') { e.preventDefault(); cancelNew(); }
-            }}
-            onBlur={cancelNew}
-            placeholder={tx.newTabPh}
-            maxLength={40}
-            style={{
-              height: 34, width: 150, padding: '0 12px', borderRadius: 999,
-              background: T.bg, border: `1px solid ${T.ink}`, fontFamily: fonts.sans,
-              fontSize: 12.5, color: T.ink, outline: 'none',
-            }}
-          />
-        ) : (
+        <div
+          onPointerDown={() => { setEditing(false); setAdding(false); }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 40,
+            background: 'rgba(31,35,28,0.30)',
+            backdropFilter: 'blur(2px)', WebkitBackdropFilter: 'blur(2px)',
+          }}
+        />
+      )}
+      <div
+        style={{
+          display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap',
+          ...(editing
+            ? {
+                position: 'relative', zIndex: 41,
+                background: T.bg, border: `1px solid ${T.rule}`, borderRadius: 14,
+                padding: '9px 11px', boxShadow: '0 24px 60px -22px rgba(31,42,32,0.5)',
+              }
+            : {}),
+        }}
+      >
+        {/* All — pinned first, always selectable, never draggable/removable. */}
+        <SelectChip
+          active={bucket === 'all'}
+          label={tx.all}
+          count={allCount}
+          dim={editing}
+          onClick={() => onBucket('all')}
+        />
+
+        {rendered.map((tab) =>
+          editing ? (
+            <EditChip
+              key={tab.key}
+              ref={setChipRef(tab.key)}
+              tab={tab}
+              active={bucket === tab.key}
+              dragging={dragKey === tab.key}
+              removeLabel={tx.removeTab}
+              onPointerDown={(e) => beginDrag(e, tab.key)}
+              onPointerMove={moveDrag}
+              onPointerUp={endDrag}
+              onPointerCancel={endDrag}
+              onRemove={() => setPending(tab)}
+            />
+          ) : (
+            <SelectChip
+              key={tab.key}
+              active={bucket === tab.key}
+              label={tab.label}
+              count={tab.count}
+              onClick={() => onBucket(tab.key as StockBucket)}
+            />
+          ),
+        )}
+
+        {/* Add a tab — a plain name input, no preset suggestions. (Typing a
+            removed built-in's name restores it — see commitNew.) */}
+        {editing && (
+          adding ? (
+            <input
+              autoFocus
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commitNew(); }
+                else if (e.key === 'Escape') { e.preventDefault(); cancelNew(); }
+              }}
+              onBlur={cancelNew}
+              placeholder={tx.newTabPh}
+              maxLength={40}
+              style={{
+                height: 34, width: 150, padding: '0 12px', borderRadius: 999,
+                background: T.bg, border: `1px solid ${T.ink}`, fontFamily: fonts.sans,
+                fontSize: 12.5, color: T.ink, outline: 'none',
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setAdding(true)}
+              style={{
+                height: 34, padding: '0 14px', borderRadius: 999, cursor: 'pointer',
+                background: 'transparent', color: T.ink2, border: `1px dashed ${T.rule}`,
+                fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 500,
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span>{tx.addTab}
+            </button>
+          )
+        )}
+
+        {/* Edit / Done toggle — a bright, prominent Done while editing. */}
+        {canManage && (
           <button
             type="button"
-            onClick={() => setAdding(true)}
-            style={{
-              height: 34, padding: '0 14px', borderRadius: 999, cursor: 'pointer',
-              background: 'transparent', color: T.ink2, border: `1px dashed ${T.rule}`,
+            onClick={() => { setEditing((v) => !v); setAdding(false); }}
+            style={editing ? {
+              height: 36, padding: '0 18px', borderRadius: 999, cursor: 'pointer', marginLeft: 4,
+              background: T.brand, color: '#fff', border: `1px solid ${T.brand}`,
+              fontFamily: fonts.sans, fontSize: 13, fontWeight: 700,
+              display: 'inline-flex', alignItems: 'center', gap: 6,
+              boxShadow: '0 8px 18px -6px rgba(62,92,72,0.55)',
+            } : {
+              height: 34, padding: '0 14px', borderRadius: 999, cursor: 'pointer', marginLeft: 2,
+              background: 'transparent', color: T.ink2, border: `1px solid ${T.rule}`,
               fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 500,
               display: 'inline-flex', alignItems: 'center', gap: 6,
             }}
           >
-            <span style={{ fontSize: 16, lineHeight: 1 }}>＋</span>{tx.addTab}
+            {editing ? `✓ ${tx.doneEditing}` : `✎ ${tx.editTabs}`}
           </button>
-        )
-      )}
+        )}
 
-      {editing && hiddenBuiltins.map((tab) => (
-        <button
-          key={tab.key}
-          type="button"
-          onClick={() => onRestore(tab.key)}
-          style={{
-            height: 34, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
-            background: T.inkWash, color: T.ink2, border: `1px dashed ${T.rule}`,
-            fontFamily: fonts.sans, fontSize: 12, fontWeight: 500,
-            display: 'inline-flex', alignItems: 'center', gap: 6, opacity: 0.85,
-          }}
-        >
-          <span style={{ fontSize: 13, lineHeight: 1, color: T.forest }}>＋</span>
-          {tab.label}
-          <span style={{ fontSize: 10.5, color: T.dim }}>· {tx.restoreTab}</span>
-        </button>
-      ))}
-
-      {/* Edit / Done toggle — only for managers. */}
-      {canManage && (
-        <button
-          type="button"
-          onClick={() => { setEditing((v) => !v); setAdding(false); }}
-          style={{
-            height: 34, padding: '0 14px', borderRadius: 999, cursor: 'pointer',
-            marginLeft: 2,
-            background: editing ? T.ink : 'transparent',
-            color: editing ? T.bg : T.ink2,
-            border: `1px solid ${editing ? T.ink : T.rule}`,
-            fontFamily: fonts.sans, fontSize: 12.5, fontWeight: editing ? 600 : 500,
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            transition: 'background .16s ease, color .16s ease',
-          }}
-        >
-          {editing ? '✓' : '✎'} {editing ? tx.doneEditing : tx.editTabs}
-        </button>
-      )}
-
-      {editing && (
-        <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.faint, marginLeft: 2 }}>
-          {tx.dragHint}
-        </span>
-      )}
+        {editing && (
+          <span style={{ width: '100%', fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3, paddingTop: 3 }}>
+            {tx.dragHint}
+          </span>
+        )}
+      </div>
 
       <ConfirmDialog
         open={!!pending}
@@ -374,7 +391,7 @@ export function InventoryTabs({
         onConfirm={confirmRemove}
         onCancel={() => setPending(null)}
       />
-    </div>
+    </>
   );
 }
 

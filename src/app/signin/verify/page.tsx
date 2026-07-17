@@ -23,6 +23,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { useLang } from '@/contexts/LanguageContext';
+import { safeRedirect } from '@/lib/url-redirect';
 import AuthShell, { AuthLabel, AuthError, authBackLinkStyle } from '@/components/AuthShell';
 
 function VerifyInner() {
@@ -35,9 +36,13 @@ function VerifyInner() {
   // so we auto-trust the device and hide the checkbox entirely — Reeyen
   // wants signups to skip the extra "remember this device?" prompt.
   const postSignup = params.get('postSignup') === '1';
-  // Every ordinary hotel sign-in enters through Home. A brand-new signup still
-  // passes through the property selector so unfinished setup can resume first.
-  const redirectTarget = postSignup ? '/property-selector' : '/home';
+  // OTP completion resolves through the property selector. A single-hotel
+  // account auto-selects and lands on Home; multi-hotel/admin accounts choose
+  // first. Explicit protected deep links are opened only after that selection.
+  const requestedTarget = safeRedirect(params.get('redirect'), '/home');
+  const redirectTarget = postSignup || requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
+    ? '/property-selector'
+    : `/property-selector?redirect=${encodeURIComponent(requestedTarget)}`;
 
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);

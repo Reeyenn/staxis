@@ -37,6 +37,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite } from '../surface-kit';
+import { DividerRow } from '../ui-kit';
 import {
   FONT_SERIF, FONT_SANS, FONT_MONO, Caps, Pill, Dot, Btn,
   countUp, sweepWidth, riseIn, age, ageIn, prefersReducedMotion,
@@ -166,6 +167,15 @@ function phaseIndexFor(day: number, sub: Sub): number {
   return idx;
 }
 
+// Centered dark spinner block — the cockpit's loading placeholder.
+function Loading() {
+  return <div style={{ padding: '70px 0', textAlign: 'center' }}><DarkSpinner /></div>;
+}
+// Shown when a single-hotel scope points at a property that isn't in the set.
+function NotFound() {
+  return <DarkCard><span style={{ color: dimWhite(.6), fontSize: 13 }}>Selected hotel not found.</span></DarkCard>;
+}
+
 // ─── Surface root ────────────────────────────────────────────────────────
 
 export function MlSurface() {
@@ -232,7 +242,7 @@ export function MlSurface() {
         {/* keyed on sub+scope so the column re-mounts and re-animates on change */}
         <div key={`${sub}-${selectedId ?? 'fleet'}`} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
           {loading && !hk && !inv ? (
-            <div style={{ padding: '70px 0', textAlign: 'center' }}><DarkSpinner /></div>
+            <Loading />
           ) : err ? (
             <DarkCard style={{ borderColor: 'rgba(194,86,46,.35)' }}>
               <span style={{ color: 'var(--terracotta)', fontSize: 13 }}>Failed to load cockpit: {err}</span>
@@ -242,7 +252,7 @@ export function MlSurface() {
           ) : sub === 'housekeeping' && hk ? (
             <HousekeepingPanels cockpit={hk} onSelect={setSelectedId} />
           ) : (
-            <div style={{ padding: '70px 0', textAlign: 'center' }}><DarkSpinner /></div>
+            <Loading />
           )}
         </div>
 
@@ -788,7 +798,7 @@ function OverridesTable({ rows }: { rows: HKCockpitData['recentOverrides'] }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {rows.map((o) => (
-            <div key={o.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${dimWhite(.08)}` }}>
+            <DividerRow key={o.id}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600, color: '#fff' }}>{o.propertyName}</div>
                 <div style={{ fontSize: 11, color: dimWhite(.55) }}>{o.overrideReason || 'No reason given'} · {o.date}</div>
@@ -797,7 +807,7 @@ function OverridesTable({ rows }: { rows: HKCockpitData['recentOverrides'] }) {
                 {o.optimizerRecommendation}→
                 <b style={{ color: o.manualHeadcount > o.optimizerRecommendation ? 'var(--terracotta)' : 'var(--forest-deep)' }}>{o.manualHeadcount}</b>
               </span>
-            </div>
+            </DividerRow>
           ))}
         </div>
       )}
@@ -813,14 +823,14 @@ function AnomaliesTable({ rows }: { rows: InventoryCockpitData['recentAnomalies'
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {rows.map((a) => (
-            <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${dimWhite(.08)}` }}>
+            <DividerRow key={a.id}>
               <Dot tone={a.severity === 'critical' ? 'terracotta' : a.severity === 'warn' ? 'gold' : 'teal'} size={7} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, fontWeight: 600, color: '#fff' }}>{a.itemName}</div>
                 <div style={{ fontSize: 11, color: dimWhite(.55) }}>{a.reason} · {a.propertyName}</div>
               </div>
               <span className="mono" style={{ fontSize: 10, color: dimWhite(.4) }}>{age(a.ts)} ago</span>
-            </div>
+            </DividerRow>
           ))}
         </div>
       )}
@@ -871,7 +881,7 @@ function HousekeepingPanels({ cockpit, onSelect }: { cockpit: HKCockpitData; onS
   const single = mode === 'single';
   const me = single && selectedProperty ? properties.find((p) => p.id === selectedProperty.id) ?? null : null;
   if (single && (!selectedProperty || !me)) {
-    return <DarkCard><span style={{ color: dimWhite(.6), fontSize: 13 }}>Selected hotel not found.</span></DarkCard>;
+    return <NotFound />;
   }
 
   const day = me ? me.daysSinceFirstEvent : aggregate.fleetMedianDay;
@@ -946,7 +956,7 @@ function InventoryPanels({ cockpit, onSelect }: { cockpit: InventoryCockpitData;
   const single = mode === 'single';
   const me = single && selectedProperty ? properties.find((p) => p.id === selectedProperty.id) ?? null : null;
   if (single && (!selectedProperty || !me)) {
-    return <DarkCard><span style={{ color: dimWhite(.6), fontSize: 13 }}>Selected hotel not found.</span></DarkCard>;
+    return <NotFound />;
   }
 
   const day = me ? me.daysSinceFirstCount : aggregate.fleetMedianDay;

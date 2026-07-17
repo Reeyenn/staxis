@@ -157,7 +157,6 @@ export function buildWeeks(
 
 // ─── Departments / board geometry ──────────────────────────────────────────
 
-export const BOARD_DEPTS: StaffDepartment[] = ['housekeeping', 'front_desk', 'maintenance'];
 export const BOARD_START_MIN = 6 * 60;   // 6:00
 export const BOARD_END_MIN = 22 * 60;    // 22:00
 

@@ -13,6 +13,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
@@ -41,9 +42,6 @@ interface PhotoCountResult {
     confidence: 'high' | 'medium' | 'low';
   }>;
 }
-
-const isUuid = (s: unknown): s is string =>
-  typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
 const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';

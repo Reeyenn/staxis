@@ -31,7 +31,7 @@
 //   - Major (this followup): visibility debounce, 403/404 terminate polling
 //     so a permission-revoked session stops hammering the API.
 //
-// Writes (addRoom / updateRoom / deleteRoom / bulkAddRooms) go through
+// Writes (addRoom / updateRoom) go through
 // POST /api/housekeeping/room-action → applyRoom* helpers in
 // src/lib/pms-rooms-writes.ts, which upsert pms_housekeeping_assignments
 // AND append pms_room_status_log (source='manual') for the audit trail.
@@ -246,31 +246,6 @@ export function subscribeToRooms(
   );
 }
 
-export function subscribeToAllRooms(
-  _uid: string, pid: string,
-  callback: (rooms: Room[], feedStatus?: PropertyFeedStatus) => void,
-): () => void {
-  // Compute today INSIDE the doFetch closure so a long-running page that
-  // crosses midnight starts asking the API for the new day automatically.
-  // (Pre-followup version captured today at subscribe time — locked to
-  // yesterday after midnight forever. No callers in the tree today, but
-  // the bug was real.)
-  return subscribeViaPolling(
-    `rooms-all:${pid}`,
-    () => fetchRoomsForDate(pid, new Date().toISOString().slice(0, 10)),
-    callback,
-  );
-}
-
-export async function getRoomsForDate(_uid: string, pid: string, date: string): Promise<Room[]> {
-  try {
-    return (await fetchRoomsForDate(pid, date)).rooms;
-  } catch (err) {
-    logErr('getRoomsForDate', err);
-    throw err;
-  }
-}
-
 // ═══════════════════════════════════════════════════════════════════════════
 // Write functions — wired into /api/housekeeping/room-action.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -291,7 +266,7 @@ export async function getRoomsForDate(_uid: string, pid: string, date: string): 
 // for the failure case ships in the UI branch.
 
 async function postRoomAction<T>(
-  action: 'update' | 'add' | 'delete' | 'bulk-add',
+  action: 'update' | 'add',
   body: Record<string, unknown>,
 ): Promise<T> {
   const res = await fetchWithAuth('/api/housekeeping/room-action', {
@@ -333,35 +308,3 @@ export async function updateRoom(
   }
 }
 
-export async function deleteRoom(_uid: string, pid: string, rid: string): Promise<void> {
-  try {
-    await postRoomAction('delete', { pid, rid });
-  } catch (err) {
-    logErr('deleteRoom', err);
-    throw err;
-  }
-}
-
-// Result from a bulk-add — exposed so callers can surface partial failure
-// rather than treating 207 (partial success) as full success. Codex
-// Major #6 — the legacy void return type hid per-row outcomes.
-export interface BulkAddRoomsResult {
-  requested: number;
-  inventoryInserted: number;
-  /** Room numbers whose assignment write failed. Empty on full success. */
-  assignmentsFailed: string[];
-}
-
-export async function bulkAddRooms(
-  _uid: string, pid: string, rooms: Omit<Room, 'id'>[],
-): Promise<BulkAddRoomsResult> {
-  if (rooms.length === 0) {
-    return { requested: 0, inventoryInserted: 0, assignmentsFailed: [] };
-  }
-  try {
-    return await postRoomAction<BulkAddRoomsResult>('bulk-add', { pid, rooms });
-  } catch (err) {
-    logErr('bulkAddRooms', err);
-    throw err;
-  }
-}

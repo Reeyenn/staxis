@@ -36,73 +36,7 @@ export interface DashboardNumbers {
   error: string | null;
 }
 
-export const DASHBOARD_STALE_MINUTES = 25;
-
-export type DashboardFreshness = 'fresh' | 'stale' | 'error' | 'unknown';
-
-/**
- * Per-property scraper window options. Defaults match Comfort Suites
- * (Central Time, 5am–11pm). Callers with a property in scope should
- * fetch these from `properties` (via `getPropertyOpsConfig(pid)`) so a
- * Florida hotel's "fresh"/"stale" decision uses Eastern hours.
- */
-export interface DashboardFreshnessOptions {
-  nowMs?: number;
-  timezone?: string;
-  windowStartHour?: number;
-  windowEndHour?: number;
-  staleMinutes?: number;
-}
-
-export function dashboardFreshness(
-  d: DashboardNumbers | null,
-  optsOrNowMs: number | DashboardFreshnessOptions = Date.now(),
-): DashboardFreshness {
-  // Back-compat: old signature was (d, nowMs). New signature is (d, options).
-  const opts: DashboardFreshnessOptions =
-    typeof optsOrNowMs === 'number' ? { nowMs: optsOrNowMs } : optsOrNowMs;
-  const nowMs = opts.nowMs ?? Date.now();
-  const timezone = opts.timezone ?? 'America/Chicago';
-  const startHour = opts.windowStartHour ?? 5;
-  const endHour = opts.windowEndHour ?? 23;
-  const staleMinutes = opts.staleMinutes ?? DASHBOARD_STALE_MINUTES;
-
-  if (!d) return 'unknown';
-  if (d.errorCode) return 'error';
-  if (!d.pulledAt) return 'unknown';
-  // Off-hours suppression: scraper only pulls dashboard numbers between
-  // `windowStartHour` and `windowEndHour` in the property's local timezone.
-  // Outside that window the data is naturally stale, but Maria shouldn't
-  // see a red "PMS stale" banner at midnight when nothing's broken.
-  const localHour = parseInt(
-    new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: timezone }).format(new Date(nowMs)),
-    10,
-  );
-  const inScraperWindow = localHour >= startHour && localHour < endHour;
-  if (!inScraperWindow) return 'fresh';
-  const ageMs = nowMs - d.pulledAt.getTime();
-  return ageMs > staleMinutes * 60_000 ? 'stale' : 'fresh';
-}
-
-function dashboardFromJson(d: Record<string, unknown> | null): DashboardNumbers | null {
-  if (!d) return null;
-  return {
-    inHouse:    typeof d.inHouse    === 'number' ? d.inHouse    : null,
-    arrivals:   typeof d.arrivals   === 'number' ? d.arrivals   : null,
-    departures: typeof d.departures === 'number' ? d.departures : null,
-    inHouseGuests:    typeof d.inHouseGuests    === 'number' ? d.inHouseGuests    : null,
-    arrivalsGuests:   typeof d.arrivalsGuests   === 'number' ? d.arrivalsGuests   : null,
-    departuresGuests: typeof d.departuresGuests === 'number' ? d.departuresGuests : null,
-    pulledAt:     toDate(d.pulledAt),
-    errorCode:    typeof d.errorCode    === 'string' ? d.errorCode as DashboardErrorCode : null,
-    errorMessage: typeof d.errorMessage === 'string' ? d.errorMessage : null,
-    errorPage:    typeof d.errorPage    === 'string' ? d.errorPage    : null,
-    erroredAt:    toDate(d.erroredAt),
-    error:        typeof d.error === 'string' ? d.error : null,
-  };
-}
-
-export async function getDashboardForDate(
+async function getDashboardForDate(
   dateStr: string,
   propertyId: string,
 ): Promise<DashboardNumbers | null> {

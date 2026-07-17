@@ -20,6 +20,7 @@
  */
 
 import { NextRequest } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
@@ -30,8 +31,6 @@ import { classifyAccountsForPropertyDelete, type LinkedAccount } from '@/lib/pro
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -45,7 +44,7 @@ export async function POST(req: NextRequest) {
     return err('Invalid JSON body', { requestId, status: 400 });
   }
   const propertyId = typeof body.propertyId === 'string' ? body.propertyId : '';
-  if (!UUID_RE.test(propertyId)) {
+  if (!isUuid(propertyId)) {
     return err('propertyId must be a UUID', { requestId, status: 400 });
   }
 

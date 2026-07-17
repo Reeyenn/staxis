@@ -12,7 +12,8 @@ import {
   Send,
   Pin,
 } from 'lucide-react';
-import { format } from 'date-fns';
+import { fmtTimeOrDate as fmtTime } from '@/lib/format-date';
+import { initialsOf } from '@/app/_components/ui/Avatar';
 import type { HousekeeperLocale } from '@/lib/translations';
 import { t } from '@/lib/translations';
 import type { ConversationDTO, MessageDTO, StaffLite } from '@/lib/comms/types';
@@ -69,16 +70,13 @@ async function hkPost<T>(url: string, body: unknown): Promise<T | null> {
   }
 }
 
-function fmtTime(iso: string | null): string {
-  if (!iso) return '';
-  try {
-    const d = new Date(iso);
-    const now = new Date();
-    const sameDay = d.toDateString() === now.toDateString();
-    return sameDay ? format(d, 'h:mm a') : format(d, 'MMM d');
-  } catch {
-    return '';
-  }
+function mapMessages(messages: MessageDTO[]): Msg[] {
+  return messages.map((m) => ({
+    from: m.senderName,
+    text: m.body,
+    time: fmtTime(m.createdAt),
+    mine: m.mine,
+  }));
 }
 
 function mapConv(c: ConversationDTO): Conv {
@@ -156,14 +154,7 @@ export function MessagesTab({
         { pid, staffId, conversationId: id },
       );
       if (data?.messages) {
-        setMessages(
-          data.messages.map((m) => ({
-            from: m.senderName,
-            text: m.body,
-            time: fmtTime(m.createdAt),
-            mine: m.mine,
-          })),
-        );
+        setMessages(mapMessages(data.messages));
       }
       // Clear unread locally + on the server.
       setInbox((prev) =>
@@ -197,14 +188,7 @@ export function MessagesTab({
           { pid, staffId, conversationId: activeId },
         );
         if (data?.messages) {
-          setMessages(
-            data.messages.map((m) => ({
-              from: m.senderName,
-              text: m.body,
-              time: fmtTime(m.createdAt),
-              mine: m.mine,
-            })),
-          );
+          setMessages(mapMessages(data.messages));
         }
       }
     },
@@ -288,12 +272,6 @@ export function MessagesTab({
   );
 }
 
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
 function Avatar({ conv, size = 46 }: { conv: { kind?: ConvKind; name?: string; color?: string }; size?: number }) {
   const base: React.CSSProperties = {
     width: size,
@@ -319,7 +297,7 @@ function Avatar({ conv, size = 46 }: { conv: { kind?: ConvKind; name?: string; c
         <Users size={size * 0.5} color="#0E7C7B" />
       </span>
     );
-  return <span style={{ ...base, background: conv.color || '#3B5BA5' }}>{initials(conv.name || '?')}</span>;
+  return <span style={{ ...base, background: conv.color || '#3B5BA5' }}>{initialsOf(conv.name || '?', '')}</span>;
 }
 
 function ConvRow({ conv, onTap }: { conv: Conv; onTap: () => void }) {

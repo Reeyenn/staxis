@@ -37,7 +37,7 @@ function greetingFor(lang: 'en' | 'es', name: string | undefined, hour: number):
 }
 
 function HomeHub() {
-  const { user, loading: authLoading } = useAuth();
+  const { user } = useAuth();
   const { activeProperty, activePropertyId, loading: propertyLoading } = useProperty();
   const { lang } = useLang();
   const can = useCan();
@@ -56,21 +56,21 @@ function HomeHub() {
   // owner with a half-finished hotel resumes setup instead of seeing an empty
   // Home hub. Admins are never routed into a hotel's owner wizard.
   React.useEffect(() => {
-    if (authLoading || propertyLoading || !user || !activeProperty) return;
+    if (propertyLoading || !user || !activeProperty) return;
     if (
       user.role !== 'admin' &&
       isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState) &&
       typeof window !== 'undefined' &&
-      !sessionStorage.getItem(RESUME_GUARD_KEY)
+      sessionStorage.getItem(RESUME_GUARD_KEY) !== activeProperty.id
     ) {
-      sessionStorage.setItem(RESUME_GUARD_KEY, '1');
+      sessionStorage.setItem(RESUME_GUARD_KEY, activeProperty.id);
       window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`;
     }
-  }, [user, authLoading, propertyLoading, activeProperty]);
+  }, [user, propertyLoading, activeProperty]);
 
   React.useEffect(() => {
     setSummaryState({ propertyId: activePropertyId, tiles: {} });
-    if (!activePropertyId || propertyLoading) return;
+    if (!user || !activePropertyId || propertyLoading) return;
     let cancelled = false;
     void (async () => {
       try {
@@ -84,7 +84,7 @@ function HomeHub() {
       }
     })();
     return () => { cancelled = true; };
-  }, [activePropertyId, propertyLoading]);
+  }, [user, activePropertyId, propertyLoading]);
 
   const firstName = user?.displayName?.trim().split(/\s+/)[0];
   const now = new Date();
@@ -122,6 +122,22 @@ function HomeHub() {
 }
 
 export default function HomePage() {
+  const { user, loading: authLoading } = useAuth();
+  const { activeProperty, loading: propertyLoading } = useProperty();
+  const router = useRouter();
+
+  // Middleware protects full-page requests, but sign-out happens client-side.
+  // Unmount the entire app shell immediately so cached hotel details are never
+  // left visible, then navigate to Sign In. Zero-access accounts return to the
+  // selector's explicit empty state instead of an inert Home shell.
+  React.useEffect(() => {
+    if (authLoading || propertyLoading) return;
+    if (!user) router.replace('/signin');
+    else if (!activeProperty) router.replace('/property-selector');
+  }, [user, authLoading, activeProperty, propertyLoading, router]);
+
+  if (authLoading || propertyLoading || !user || !activeProperty) return null;
+
   return (
     <AppLayout>
       <HomeHub />

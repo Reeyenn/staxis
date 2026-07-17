@@ -356,4 +356,3 @@ export const env = new Proxy({} as Env, {
 export const isStripeConfigured = () => !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET);
 export const isSmsConfigured = () =>
   !!(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER);
-export const isEmailConfigured = () => !!env.RESEND_API_KEY;

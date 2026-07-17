@@ -1,13 +1,8 @@
-import { format, differenceInDays, parseISO, addMinutes } from 'date-fns';
+import { differenceInDays, parseISO } from 'date-fns';
 import type {
   PublicArea,
   LaundryCategory,
-  Property,
-  ScheduleResult,
-  MorningSetupForm,
   StaffMember,
-  DeepCleanConfig,
-  DeepCleanRecord,
   Room,
 } from '@/types';
 
@@ -63,80 +58,6 @@ export function calcLaundryMinutes(
   return { total, breakdown };
 }
 
-// ─── Schedule calculation ──────────────────────────────────────────────────
-
-export function calcSchedule(
-  form: MorningSetupForm,
-  property: Property,
-  areas: PublicArea[],
-  laundryCategories: LaundryCategory[],
-  availableStaff: StaffMember[],
-  today: Date = new Date()
-): ScheduleResult {
-  const { occupied, checkouts, twoBedCheckouts, stayovers, vips, startTime } = form;
-  const oneBedCheckouts = Math.max(0, checkouts - twoBedCheckouts);
-
-  // A. Room minutes
-  const roomMinutes =
-    checkouts * property.checkoutMinutes +
-    stayovers * property.stayoverMinutes;
-
-  // B. Public area minutes
-  const dueAreas = getPublicAreasDueToday(areas, today);
-  const publicAreaMinutes = calcPublicAreaMinutes(dueAreas);
-
-  // C. Laundry minutes
-  const { total: laundryMinutes, breakdown: laundryBreakdown } = calcLaundryMinutes(
-    laundryCategories,
-    oneBedCheckouts,
-    twoBedCheckouts,
-    stayovers
-  );
-
-  const totalMinutes = roomMinutes + publicAreaMinutes + laundryMinutes;
-  const shiftMinutes = property.shiftMinutes || 480;
-
-  // Factor in available staff (not over 40 hrs)
-  const availableCount = availableStaff.filter(
-    s => s.scheduledToday && s.weeklyHours + shiftMinutes / 60 <= s.maxWeeklyHours
-  ).length;
-
-  const recommendedStaff = Math.ceil(totalMinutes / shiftMinutes);
-
-  // Estimated completion time
-  const [startHour, startMin] = startTime.split(':').map(Number);
-  const startDate = new Date(today);
-  startDate.setHours(startHour, startMin, 0, 0);
-  const minutesPerHK = totalMinutes / Math.max(recommendedStaff, 1);
-  const completionDate = addMinutes(startDate, minutesPerHK);
-  const estimatedCompletionTime = format(completionDate, 'h:mm a');
-
-  // Labor cost (form wage overrides property default)
-  const hourlyWage = form.hourlyWage ?? property.hourlyWage ?? 12;
-  const estimatedLaborCost =
-    recommendedStaff * hourlyWage * (minutesPerHK / 60);
-
-  // Labor saved vs full roster - always compare against the total roster size,
-  // not against however many the manager happened to schedule today.
-  // This represents "what you would have spent sending your full crew."
-  const fullRoster = property.totalStaffOnRoster || form.scheduledStaff || recommendedStaff;
-  const staffSaved = Math.max(0, fullRoster - recommendedStaff);
-  const laborSaved = staffSaved * hourlyWage * (shiftMinutes / 60);
-
-  return {
-    roomMinutes,
-    publicAreaMinutes,
-    laundryMinutes,
-    totalMinutes,
-    recommendedStaff,
-    estimatedCompletionTime,
-    estimatedLaborCost,
-    laborSaved,
-    publicAreasDueToday: dueAreas,
-    laundryBreakdown,
-  };
-}
-
 // ─── Room sort priority ────────────────────────────────────────────────────
 
 const SORT_ORDER: Record<string, number> = {
@@ -150,39 +71,6 @@ const SORT_ORDER: Record<string, number> = {
 export function getRoomSortKey(type: string, priority: string): number {
   const key = `${priority}_${type}`;
   return SORT_ORDER[key] ?? 5;
-}
-
-// ─── Smart scheduling - predict from history ───────────────────────────────
-
-export function predictTodayFromHistory(
-  logs: Array<{ date: string; occupied: number; checkouts: number }>,
-  today: Date
-): { occupied: number; checkouts: number; label: string } | null {
-  if (logs.length < 7) return null;
-
-  const dayOfWeek = today.getDay(); // 0 = Sunday
-
-  const sameDayLogs = logs.filter(l => {
-    const d = parseISO(l.date);
-    return d.getDay() === dayOfWeek;
-  });
-
-  if (sameDayLogs.length < 2) return null;
-
-  const avgOccupied = Math.round(
-    sameDayLogs.reduce((s, l) => s + l.occupied, 0) / sameDayLogs.length
-  );
-  const avgCheckouts = Math.round(
-    sameDayLogs.reduce((s, l) => s + l.checkouts, 0) / sameDayLogs.length
-  );
-
-  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-  return {
-    occupied: avgOccupied,
-    checkouts: avgCheckouts,
-    label: `Based on your last ${sameDayLogs.length} ${days[dayOfWeek]}s`,
-  };
 }
 
 // ─── Room time estimates ───────────────────────────────────────────────────
@@ -402,67 +290,3 @@ export function autoAssignRooms(
   return assignments;
 }
 
-// ─── Format helpers ────────────────────────────────────────────────────────
-
-export function formatCurrency(n: number): string {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0, maximumFractionDigits: 0 }).format(n);
-}
-
-export function formatMinutes(min: number): string {
-  const h = Math.floor(min / 60);
-  const m = min % 60;
-  if (h === 0) return `${m}m`;
-  if (m === 0) return `${h}h`;
-  return `${h}h ${m}m`;
-}
-
-export function calcROI(totalSaved: number, monthlyPrice: number, monthsUsed: number): number {
-  const totalPaid = monthlyPrice * monthsUsed;
-  if (totalPaid === 0) return 0;
-  return totalSaved / totalPaid;
-}
-
-// ─── Deep Cleaning helpers ────────────────────────────────────────────────
-
-/** Returns how many days since a room's last deep clean (Infinity if never) */
-export function daysSinceDeepClean(roomNumber: string, records: DeepCleanRecord[], today: Date = new Date()): number {
-  const rec = records.find(r => r.roomNumber === roomNumber);
-  // No record, or a scheduled-but-never-cleaned record (last_deep_clean NULL →
-  // mapped to '') → treat as never deep-cleaned. Without the empty guard,
-  // parseISO('') yields an Invalid Date and differenceInDays returns NaN.
-  if (!rec || !rec.lastDeepClean) return Infinity;
-  return differenceInDays(today, parseISO(rec.lastDeepClean));
-}
-
-/** Calculate freed minutes from DND rooms that can be used for deep cleaning */
-export function calcDndFreedMinutes(
-  rooms: Array<{ isDnd?: boolean; type: string; stayoverDay?: number; priority?: string }>,
-  property: Property
-): number {
-  return rooms
-    .filter(r => r.isDnd)
-    .reduce((sum, r) => {
-      const mins = getRoomMinutes(
-        { type: r.type, priority: r.priority ?? 'standard', stayoverDay: r.stayoverDay },
-        property
-      );
-      return sum + mins;
-    }, 0);
-}
-
-/** Suggest how many deep cleans can fit into available free time */
-export function suggestDeepCleans(
-  freedMinutes: number,
-  slackMinutes: number,
-  config: DeepCleanConfig,
-  overdueCount: number
-): { count: number; source: string; minutes: number } {
-  const availableMinutes = freedMinutes + Math.max(0, slackMinutes);
-  const possibleRooms = Math.floor(availableMinutes / config.minutesPerRoom);
-  const count = Math.min(possibleRooms, overdueCount); // don't suggest more than overdue
-  return {
-    count,
-    source: freedMinutes > 0 ? 'dnd' : 'slack',
-    minutes: count * config.minutesPerRoom,
-  };
-}

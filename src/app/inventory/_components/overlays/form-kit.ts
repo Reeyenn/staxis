@@ -36,6 +36,18 @@ const input = (
   outline: 'none',
 });
 
+/** Amber "this exact action is locked until retried" notice used by the count
+ *  and delivery sheets (three previously byte-identical inline copies). */
+export const warnBannerStyle: React.CSSProperties = {
+  marginBottom: 12,
+  padding: '10px 12px',
+  borderRadius: 9,
+  background: T.warmDim,
+  color: T.warm,
+  fontFamily: fonts.sans,
+  fontSize: 12.5,
+};
+
 /** ScanInvoiceSheet's `inputSm`. */
 export const inputSm = input(36, 12, 9, 13.5);
 /** OrderingSettingsPanel's `inputStyle`. */

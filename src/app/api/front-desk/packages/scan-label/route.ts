@@ -6,21 +6,15 @@
  * the log form (the clerk confirms/edits before saving — nothing is stored
  * here). Mirrors lost-and-found/describe-photo: pre-flight $ budget, record
  * actual spend on every path, structured error codes, never leaks model output.
+ *
+ * The gate → image checks → budget → error mapping → cost-ledger `finally` are
+ * shared with lost-and-found/describe-photo via runFrontDeskVisionRoute; this
+ * file supplies only the five things that differ (gate, endpoint, extractor,
+ * schema-error code, log label).
  */
 
 import type { NextRequest } from 'next/server';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { log } from '@/lib/log';
-import { errToString } from '@/lib/utils';
-import { captureException } from '@/lib/sentry';
-import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
-import {
-  VisionTruncatedError,
-  VisionImageInvalidError,
-  VisionSchemaError,
-  type VisionUsageReport,
-  type VisionMediaType,
-} from '@/lib/vision-extract';
+import { runFrontDeskVisionRoute, type FrontDeskVisionBody } from '@/lib/front-desk/vision-route';
 import { scanShippingLabel } from '@/lib/packages/scan-label';
 import { gatePackagesWrite } from '@/lib/packages/api-gate';
 
@@ -28,123 +22,12 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-// Camera stills only (no gif). scan-label uses inline base64 — nothing stored —
-// but keeping the list aligned with the presign allow-list avoids a latent
-// "scan accepts it, upload rejects it" trap.
-const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp'] as const;
-
-interface Body {
-  pid?: string;
-  imageBase64?: string;
-  mediaType?: string;
-}
-
 export async function POST(req: NextRequest): Promise<Response> {
-  const visionDeadlineAt = Date.now() + 52_000;
-  const gate = await gatePackagesWrite<Body>(req, 'packages-scan-label');
-  if (!gate.ok) return gate.response;
-  const { body, pid, requestId, accountId } = gate;
-
-  if (typeof body.imageBase64 !== 'string' || body.imageBase64.length < 100) {
-    return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
-  if (!(SUPPORTED_MEDIA_TYPES as readonly string[]).includes(body.mediaType ?? '')) {
-    return err('unsupported_media_type', {
-      requestId,
-      status: 400,
-      code: ApiErrorCode.ValidationFailed,
-    });
-  }
-
-  // Pre-flight daily $ budget (same pattern as describe-photo / photo-count).
-  if (accountId) {
-    const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
-    if (!budget.ok) {
-      return err(budget.message, {
-        requestId,
-        status: 429,
-        code: ApiErrorCode.RateLimited,
-      });
-    }
-  }
-
-  let usage: VisionUsageReport | null = null;
-
-  try {
-    const result = await scanShippingLabel(
-      { data: body.imageBase64, mediaType: body.mediaType as VisionMediaType },
-      (u) => {
-        usage = u;
-      },
-      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
-    );
-    return ok(result, { requestId });
-  } catch (e) {
-    if (e instanceof VisionTruncatedError) {
-      return err('image_too_complex', {
-        requestId,
-        status: 422,
-        code: ApiErrorCode.ValidationFailed,
-      });
-    }
-    if (e instanceof VisionImageInvalidError) {
-      return err('invalid_image', {
-        requestId,
-        status: 400,
-        code: ApiErrorCode.ValidationFailed,
-        details: e.message,
-      });
-    }
-    if (e instanceof VisionSchemaError) {
-      return err('scan_invalid_shape', {
-        requestId,
-        status: 422,
-        code: ApiErrorCode.UpstreamFailure,
-      });
-    }
-    const msg = errToString(e);
-    const status = /api[_ ]?key|ANTHROPIC_API_KEY/i.test(msg) ? 503 : 500;
-    log.error('packages scan-label failed', {
-      requestId,
-      pid,
-      err: e instanceof Error ? e : new Error(msg),
-    });
-    return err(status === 503 ? 'vision_unavailable' : 'vision_failed', {
-      requestId,
-      status,
-      code: status === 503 ? ApiErrorCode.UpstreamFailure : ApiErrorCode.InternalError,
-    });
-  } finally {
-    if (usage && accountId) {
-      const u = usage as VisionUsageReport;
-      try {
-        await recordNonRequestCost({
-          userId: accountId,
-          propertyId: pid,
-          conversationId: null,
-          model: u.model,
-          modelId: u.modelId,
-          tokensIn: u.inputTokens,
-          tokensOut: u.outputTokens,
-          cachedInputTokens: u.cachedInputTokens,
-          costUsd: u.costUsd,
-          kind: 'vision',
-        });
-      } catch (costErr) {
-        const errObj = costErr instanceof Error ? costErr : new Error(String(costErr));
-        log.error('packages scan-label cost-ledger write failed', {
-          requestId,
-          pid,
-          accountId,
-          err: errObj,
-        });
-        captureException(errObj, {
-          subsystem: 'cost-ledger',
-          route: 'packages-scan-label',
-          severity: 'high',
-          pid,
-        });
-      }
-    }
-  }
+  return runFrontDeskVisionRoute<FrontDeskVisionBody, Awaited<ReturnType<typeof scanShippingLabel>>>(req, {
+    gate: (r, endpoint) => gatePackagesWrite<FrontDeskVisionBody>(r, endpoint),
+    endpoint: 'packages-scan-label',
+    extract: scanShippingLabel,
+    schemaErrCode: 'scan_invalid_shape',
+    label: 'packages scan-label',
+  });
 }

@@ -6,7 +6,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import {
-  toDate, toISO, dropUndefined, parseStringField, parseUnionField, parseOptionalUnionField,
+  toDate, parseStringField, parseUnionField, parseOptionalUnionField,
 } from '@/lib/db-mappers';
 
 export const COMPLAINT_CATEGORIES = [
@@ -81,32 +81,6 @@ export function fromComplaintRow(r: Record<string, unknown>): Complaint {
     createdAt: toDate(r.created_at),
     updatedAt: toDate(r.updated_at),
   };
-}
-
-/** Map a partial app-facing patch → snake_case row (dropUndefined: untouched cols stay untouched). */
-export function toComplaintRow(c: Partial<Complaint>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: c.propertyId,
-    guest_name: c.guestName,
-    guest_contact: c.guestContact,
-    room_number: c.roomNumber,
-    category: c.category,
-    severity: c.severity,
-    description: c.description,
-    status: c.status,
-    assigned_to: c.assignedTo,
-    assigned_name: c.assignedName,
-    assigned_dept: c.assignedDept,
-    linked_work_order_id: c.linkedWorkOrderId,
-    resolution_notes: c.resolutionNotes,
-    resolved_at: c.resolvedAt === undefined ? undefined : toISO(c.resolvedAt),
-    callback_at: c.callbackAt === undefined ? undefined : toISO(c.callbackAt),
-    callback_done: c.callbackDone,
-    callback_notes: c.callbackNotes,
-    source: c.source,
-    created_by: c.createdBy,
-    created_by_name: c.createdByName,
-  });
 }
 
 // ── derived helpers used by tab + tile + cron ────────────────────────────────

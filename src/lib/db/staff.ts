@@ -78,24 +78,6 @@ export async function getStaff(
   return asRecordRows(data).map(fromStaffRow);
 }
 
-/**
- * Fetch the next page of staff plus the exact total count. Use this when
- * the UI needs "Showing X of Y" — `count: 'exact'` is more expensive than
- * a plain select, so plain `getStaff` skips it.
- */
-export async function getStaffPage(
-  _uid: string, pid: string, opts?: StaffListOpts,
-): Promise<{ rows: StaffMember[]; total: number }> {
-  const { from, to } = clampedRange(opts);
-  const { data, error, count } = await supabase
-    .from('staff').select(STAFF_COLS, { count: 'exact' })
-    .eq('property_id', pid)
-    .order('name', { ascending: true })
-    .range(from, to);
-  if (error) { logErr('getStaffPage', error); throw error; }
-  return { rows: asRecordRows(data).map(fromStaffRow), total: count ?? 0 };
-}
-
 export function subscribeToStaff(
   _uid: string, pid: string,
   callback: (staff: StaffMember[]) => void,

@@ -20,11 +20,9 @@
  * Auth: requireAdmin (a recognized tenant guard) + supabaseAdmin (service-role).
  */
 
-import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdmin } from '@/lib/admin-auth';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { defineRoute, adminGate } from '@/lib/api-route';
+import { ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
 import { getEnabledSections } from '@/lib/sections/server';
 import { parseSectionFlags, resolveSections } from '@/lib/sections/registry';
@@ -34,51 +32,46 @@ export const dynamic = 'force-dynamic';
 
 interface Body { propertyId?: unknown; sections?: unknown }
 
-export async function GET(req: NextRequest): Promise<Response> {
-  const requestId = getOrMintRequestId(req);
+export const GET = defineRoute({
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
+    const propertyId = new URL(ctx.req.url).searchParams.get('propertyId');
+    const idCheck = validateUuid(propertyId, 'propertyId');
+    if (idCheck.error || !idCheck.value) {
+      return ctx.err(idCheck.error ?? 'propertyId is required', { status: 400, code: ApiErrorCode.ValidationFailed });
+    }
 
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
+    // Coalesce the stored map (null ⇒ all-on) into a full 8-key boolean map so
+    // the modal always renders 8 toggles, never {}.
+    const sections = resolveSections(await getEnabledSections(idCheck.value));
+    return ctx.ok({ sections });
+  },
+});
 
-  const propertyId = new URL(req.url).searchParams.get('propertyId');
-  const idCheck = validateUuid(propertyId, 'propertyId');
-  if (idCheck.error || !idCheck.value) {
-    return err(idCheck.error ?? 'propertyId is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
+export const POST = defineRoute({
+  body: 'empty',
+  resolve: (req) => adminGate(req),
+  handler: async (ctx) => {
+    const body = ctx.body as Body;
+    const idCheck = validateUuid(body.propertyId, 'propertyId');
+    if (idCheck.error || !idCheck.value) {
+      return ctx.err(idCheck.error ?? 'propertyId is required', { status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    const propertyId = idCheck.value;
 
-  // Coalesce the stored map (null ⇒ all-on) into a full 8-key boolean map so
-  // the modal always renders 8 toggles, never {}.
-  const sections = resolveSections(await getEnabledSections(idCheck.value));
-  return ok({ sections }, { requestId });
-}
+    const parsed = parseSectionFlags(body.sections);
+    if (!parsed.ok) {
+      return ctx.err(parsed.error, { status: 400, code: ApiErrorCode.ValidationFailed });
+    }
 
-export async function POST(req: NextRequest): Promise<Response> {
-  const requestId = getOrMintRequestId(req);
+    const { error: updErr } = await supabaseAdmin
+      .from('properties')
+      .update({ enabled_sections: parsed.value })
+      .eq('id', propertyId);
+    if (updErr) {
+      return ctx.err(`could not save sections: ${updErr.message}`, { status: 500, code: ApiErrorCode.UpstreamFailure });
+    }
 
-  const auth = await requireAdmin(req);
-  if (!auth.ok) return auth.response;
-
-  let body: Body;
-  try { body = (await req.json()) as Body; } catch { body = {}; }
-
-  const idCheck = validateUuid(body.propertyId, 'propertyId');
-  if (idCheck.error || !idCheck.value) {
-    return err(idCheck.error ?? 'propertyId is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
-  const propertyId = idCheck.value;
-
-  const parsed = parseSectionFlags(body.sections);
-  if (!parsed.ok) {
-    return err(parsed.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  }
-
-  const { error: updErr } = await supabaseAdmin
-    .from('properties')
-    .update({ enabled_sections: parsed.value })
-    .eq('id', propertyId);
-  if (updErr) {
-    return err(`could not save sections: ${updErr.message}`, { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
-  }
-
-  return ok({ sections: parsed.value }, { requestId });
-}
+    return ctx.ok({ sections: parsed.value });
+  },
+});

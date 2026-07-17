@@ -1,20 +1,20 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React from 'react';
 import {
   T,
   fonts,
   statusColor,
   statusText,
   statusTint,
-  inBucket,
   type StockStatus,
   type StockBucket,
 } from './tokens';
 import { StatusDot } from './StatusPill';
 import { Serif } from './Serif';
 import { Caps } from './Caps';
-import { Btn } from './Btn';
+import { NoItemsPanel } from './NoItemsPanel';
+import { useBucketFilter, daysSortValue } from './list-helpers';
 import { useFlipList } from './motion';
 import { AllClear, PingDot, TickNum } from './fx';
 import { BoardCard } from './BoardCard';
@@ -40,31 +40,13 @@ function columnsFor(lang: Lang): Array<{ status: StockStatus; label: string; sub
   ];
 }
 
-// Items with no real forecast (par/60 fallback or no data) sort to the bottom
-// of their column — soonest-to-run-out first otherwise.
-function sortKey(it: DisplayItem): number {
-  if (it.burnSource === 'fallback-60d' || it.burnSource === 'no-data') return Infinity;
-  return it.daysLeft;
-}
-
 export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }: StockListProps) {
   const tx = t(lang);
   const COLUMNS = columnsFor(lang);
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return items
-      .filter((it) => inBucket(it, bucket))
-      .filter((it) => {
-        if (!q) return true;
-        return `${it.name} ${it.vendor} ${it.id}`.toLowerCase().includes(q);
-      });
-  }, [items, bucket, query]);
-
   // Never-counted items are pulled OUT of the triage columns (where a 0-stock
   // seeded item would otherwise read as red "Order now") into a neutral
   // "not counted yet" section. Counted items keep the normal triage.
-  const counted = useMemo(() => filtered.filter((it) => !it.uncounted), [filtered]);
-  const uncounted = useMemo(() => filtered.filter((it) => it.uncounted), [filtered]);
+  const { counted, uncounted } = useBucketFilter(items, bucket, query);
 
   // FLIP over every card on the board: filtering/searching glides the
   // survivors into place, new cards rise in with a cascade, and an item that
@@ -96,7 +78,7 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }
             const colItems = counted
               .filter((it) => it.status === col.status)
               .slice()
-              .sort((a, b) => sortKey(a) - sortKey(b));
+              .sort((a, b) => daysSortValue(a) - daysSortValue(b));
             const urgent = col.status === 'critical' && colItems.length > 0;
             return (
               <div
@@ -159,48 +141,6 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }
           onEdit={onEdit}
           onCount={onCount}
         />
-      )}
-    </div>
-  );
-}
-
-// Empty-catalog panel — a brand-new hotel with zero inventory items. Quiet
-// paper card inviting the first item, mirroring AiReportSheet's EmptyState
-// idiom (serif headline + sans body). The button reuses the FilterBar "+ Add
-// item" flow via the threaded onAdd callback, opening the AddItemSheet.
-function NoItemsPanel({ lang, onAdd }: { lang: Lang; onAdd?: () => void }) {
-  const tx = t(lang);
-  return (
-    <div
-      style={{
-        background: T.paper,
-        border: `1px solid ${T.rule}`,
-        borderRadius: 16,
-        padding: '48px 32px',
-        textAlign: 'center',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 12,
-      }}
-    >
-      <Serif size={24}>{tx.noItemsYet}</Serif>
-      <p
-        style={{
-          margin: 0,
-          maxWidth: 420,
-          fontFamily: fonts.sans,
-          fontSize: 13.5,
-          lineHeight: 1.55,
-          color: T.ink2,
-        }}
-      >
-        {tx.noItemsBody}
-      </p>
-      {onAdd && (
-        <Btn variant="primary" size="md" onClick={onAdd} style={{ marginTop: 4 }}>
-          {tx.addItem}
-        </Btn>
       )}
     </div>
   );

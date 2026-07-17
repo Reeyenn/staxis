@@ -211,28 +211,3 @@ export function calculateEstimatedStock(
   const estimated = Math.max(0, item.currentStock - deducted);
   return { estimated, hasEstimate: true, deducted };
 }
-
-// ─── Backward-compatible single-item helper ────────────────────────────────
-//
-// Kept so callers that only need one item (server routes, future cron) don't
-// have to deal with the bundle dance. Just calls the bundle path under the
-// hood.
-
-export async function fetchOccupancySinceLastCount(
-  pid: string,
-  since: Date | null,
-): Promise<OccupancySinceLastCount> {
-  const bundle = await fetchOccupancyBundle(pid, since);
-  if (bundle.source === 'none' || !since) {
-    return { checkouts: 0, stayovers: 0, windowStart: bundle.windowStart, source: 'none' };
-  }
-  // Treat the entire bundle as one item's worth of events (caller passed `since`
-  // = that item's last count timestamp).
-  let checkouts = 0;
-  let stayovers = 0;
-  for (const e of bundle.events) {
-    if (e.roomType === 'checkout') checkouts++;
-    else stayovers++;
-  }
-  return { checkouts, stayovers, windowStart: since.toISOString(), source: bundle.source };
-}

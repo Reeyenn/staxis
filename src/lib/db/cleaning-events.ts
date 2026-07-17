@@ -11,7 +11,7 @@
 // re-pull, but this audit log persists forever. That's the whole point.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import { supabase, logErr, subscribeTable, makeUpsertByIdReducer, asRecordRow, asRecordRows } from './_common';
+import { supabase, logErr, subscribeTable, makeUpsertByIdReducer, asRecordRows } from './_common';
 
 export type CleaningEventStatus = 'recorded' | 'discarded' | 'flagged' | 'approved' | 'rejected';
 
@@ -99,92 +99,6 @@ function fromCleaningEventRow(r: Record<string, unknown>): CleaningEvent {
 }
 
 /**
- * Insert one cleaning event. Called by the housekeeper page when "Done" is
- * tapped. Computes duration, status, and flag_reason from the inputs.
- *
- * Optional ML features: when populating features (on Done tap), pass them
- * via the features parameter. All features are nullable — if absent, columns
- * stay NULL. See migration 0021 for the spec of each feature.
- *
- * Idempotent: re-clicking "Done" with the same started_at/completed_at hits
- * the unique constraint and is silently ignored. Returns null on any error
- * — the caller should NOT block the room update on this insert.
- */
-export async function insertCleaningEvent(input: {
-  propertyId: string;
-  date: string;
-  roomNumber: string;
-  roomType: 'checkout' | 'stayover';
-  stayoverDay: 1 | 2 | null;
-  staffId: string | null;
-  staffName: string;
-  startedAt: Date;
-  completedAt: Date;
-  // ML feature snapshot (all optional, all nullable)
-  features?: {
-    dayOfWeek?: number | null;
-    dayOfStayRaw?: number | null;
-    roomFloor?: number | null;
-    occupancyAtStart?: number | null;
-    totalCheckoutsToday?: number | null;
-    totalRoomsAssignedToHk?: number | null;
-    routePosition?: number | null;
-    minutesSinceShiftStart?: number | null;
-    wasDndDuringClean?: boolean | null;
-    weatherClass?: string | null;
-  };
-}): Promise<CleaningEvent | null> {
-  const durationMs = input.completedAt.getTime() - input.startedAt.getTime();
-  const durationMinutes = Math.max(0, durationMs / 60_000);
-  const { status, flagReason } = classifyCleaningEvent(durationMinutes);
-
-  const row: Record<string, unknown> = {
-    property_id: input.propertyId,
-    date: input.date,
-    room_number: input.roomNumber,
-    room_type: input.roomType,
-    stayover_day: input.stayoverDay,
-    staff_id: input.staffId,
-    staff_name: input.staffName || 'Unknown',
-    started_at: input.startedAt.toISOString(),
-    completed_at: input.completedAt.toISOString(),
-    duration_minutes: Number(durationMinutes.toFixed(2)),
-    status,
-    flag_reason: flagReason,
-  };
-
-  // Populate ML features if provided. All are optional and nullable.
-  if (input.features) {
-    if (input.features.dayOfWeek !== undefined) row.day_of_week = input.features.dayOfWeek;
-    if (input.features.dayOfStayRaw !== undefined) row.day_of_stay_raw = input.features.dayOfStayRaw;
-    if (input.features.roomFloor !== undefined) row.room_floor = input.features.roomFloor;
-    if (input.features.occupancyAtStart !== undefined) row.occupancy_at_start = input.features.occupancyAtStart;
-    if (input.features.totalCheckoutsToday !== undefined) row.total_checkouts_today = input.features.totalCheckoutsToday;
-    if (input.features.totalRoomsAssignedToHk !== undefined) row.total_rooms_assigned_to_hk = input.features.totalRoomsAssignedToHk;
-    if (input.features.routePosition !== undefined) row.route_position = input.features.routePosition;
-    if (input.features.minutesSinceShiftStart !== undefined) row.minutes_since_shift_start = input.features.minutesSinceShiftStart;
-    if (input.features.wasDndDuringClean !== undefined) row.was_dnd_during_clean = input.features.wasDndDuringClean;
-    if (input.features.weatherClass !== undefined) row.weather_class = input.features.weatherClass;
-  }
-
-  const { data, error } = await supabase
-    .from('cleaning_events')
-    .upsert(row, {
-      onConflict: 'property_id,date,room_number,started_at,completed_at',
-      ignoreDuplicates: true,
-    })
-    .select(CLEANING_EVENT_COLS)
-    .maybeSingle();
-
-  if (error) {
-    logErr('insertCleaningEvent', error);
-    return null;
-  }
-  const inserted = asRecordRow(data);
-  return inserted ? fromCleaningEventRow(inserted) : null;
-}
-
-/**
  * Fetch cleaning events for a property in a date range. Used by the
  * Performance API endpoints. Discarded entries are excluded by default
  * (they're not useful for analytics) — pass includeDiscarded=true for the
@@ -235,49 +149,6 @@ export async function getFlaggedCleaningEvents(pid: string): Promise<CleaningEve
     .order('created_at', { ascending: true });
   if (error) { logErr('getFlaggedCleaningEvents', error); throw error; }
   return asRecordRows(data).map(fromCleaningEventRow);
-}
-
-/**
- * Mark recent cleaning_events for a (property, date, room, staff) tuple as
- * 'discarded' if they were created within the last N seconds. This is the
- * "oops, wrong room — Done then Reset" undo path.
- *
- * Reeyen's spec: when a housekeeper accidentally hits Done and immediately
- * hits Reset, throw out the audit entry. We use a 60-second window — wide
- * enough to absorb a "walk away, realize mistake, walk back, reset" but
- * narrow enough that a 5-minute-later legit reset (e.g., guest came back
- * mid-clean) doesn't retroactively erase real work.
- *
- * Multiple matches are all marked discarded — covers Done/Reset/Done/Reset
- * thrash. Already-decided entries (approved/rejected) are NOT touched —
- * Mario's call is permanent.
- */
-export async function discardRecentCleaningEvent(input: {
-  propertyId: string;
-  date: string;
-  roomNumber: string;
-  staffId: string | null;
-  withinSeconds?: number;
-}): Promise<void> {
-  const cutoff = new Date(Date.now() - (input.withinSeconds ?? 60) * 1000).toISOString();
-  let q = supabase
-    .from('cleaning_events')
-    .update({
-      status: 'discarded' as CleaningEventStatus,
-      flag_reason: 'reset_within_window',
-    })
-    .eq('property_id', input.propertyId)
-    .eq('date', input.date)
-    .eq('room_number', input.roomNumber)
-    .gte('created_at', cutoff)
-    .in('status', ['recorded', 'flagged']);
-  if (input.staffId) {
-    q = q.eq('staff_id', input.staffId);
-  } else {
-    q = q.is('staff_id', null);
-  }
-  const { error } = await q;
-  if (error) logErr('discardRecentCleaningEvent', error);
 }
 
 /**

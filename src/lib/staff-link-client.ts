@@ -10,8 +10,6 @@
 // On top of the original token helpers this module now also exports the
 // shared client kit for the public no-login pages:
 //
-//   - useStaffLink()  — resolve { pid, staffId, token, ready } once from the
-//                       page URL (React hook, browser only)
 //   - staffGet()      — GET a /api/* route with pid+staffId+tok injected
 //   - staffPost()     — POST a /api/* route with pid+staffId+tok folded into
 //                       the body; opts.offline routes through the existing
@@ -23,7 +21,6 @@
 // path at all. It also never decides WHICH actions are offline-queued — the
 // caller opts in per action, exactly like today's per-component wiring.
 
-import * as React from 'react';
 
 /** Read the raw `tok` from the current page URL, or '' if absent. */
 export function getStaffLinkTokenFromUrl(): string {
@@ -108,39 +105,6 @@ export function staffIdFromPathname(pathname: string): string | null {
   } catch {
     return last;
   }
-}
-
-const UNRESOLVED_LINK: StaffLink = { pid: null, staffId: null, token: '', ready: false };
-
-/**
- * Resolve the staff-link identity once from the page URL.
- *
- * Browser-only React hook. Returns `{ pid: null, staffId: null, token: '',
- * ready: false }` on the server render and the first client render, then
- * resolves once on mount and never re-reads (the identity of a link never
- * changes mid-session; the housekeeper page's magic-link cleanup only strips
- * `token`/`code`, never `tok`/`pid`).
- *
- * Callers keep the same guards the pages use today: render the "incomplete
- * link" screen when `ready && (!pid || !staffId)`, and hold the spinner
- * while `!ready`.
- */
-export function useStaffLink(): StaffLink {
-  const [link, setLink] = React.useState<StaffLink>(UNRESOLVED_LINK);
-  React.useEffect(() => {
-    setLink((cur) => {
-      if (cur.ready) return cur;
-      if (typeof window === 'undefined') return cur;
-      return {
-        pid: getStaffLinkPidFromUrl(),
-        staffId: staffIdFromPathname(window.location.pathname),
-        token: getStaffLinkTokenFromUrl(),
-        ready: true,
-      };
-    });
-    // Resolve-once by design — no deps.
-  }, []);
-  return link;
 }
 
 // ─── /api/* fetch kit ──────────────────────────────────────────────────────

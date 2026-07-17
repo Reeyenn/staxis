@@ -107,7 +107,6 @@ describe('middleware — known PROTECTED paths redirect to /signin without auth 
     '/admin',
     '/admin/agent',
     '/admin/properties',
-    '/admin/ml',
     '/settings',
     '/inventory',
     '/maintenance',

@@ -136,28 +136,3 @@ export async function getPropertyOpsConfig(pid: string): Promise<PropertyOpsConf
   return pending;
 }
 
-/**
- * Returns true if the local time at the given timezone is within the
- * scraper's daily operating window. Used by:
- *   - dashboardFreshness() — to suppress "PMS stale" banners overnight.
- *   - the doctor's pull-latency check — to skip false-alarms outside hours.
- *   - the scraper itself — same gate, but on Railway side.
- *
- * Mirrors the scraper's localHour() exactly: same Intl.DateTimeFormat,
- * same hour parsing, same window semantics ([start, end) — start
- * inclusive, end exclusive).
- */
-export function isWithinScraperWindow(
-  config: Pick<PropertyOpsConfig, 'timezone' | 'scraperWindowStartHour' | 'scraperWindowEndHour'>,
-  nowMs: number = Date.now(),
-): boolean {
-  const localHour = parseInt(
-    new Intl.DateTimeFormat('en-US', {
-      hour: 'numeric',
-      hour12: false,
-      timeZone: config.timezone,
-    }).format(new Date(nowMs)),
-    10,
-  );
-  return localHour >= config.scraperWindowStartHour && localHour < config.scraperWindowEndHour;
-}

@@ -7,7 +7,6 @@ import {
   statusColor,
   statusText,
   statusTint,
-  inBucket,
   catGlyph,
   type StockStatus,
   type StockBucket,
@@ -15,9 +14,10 @@ import {
 import { Thumb } from './ItemThumb';
 import { StockBar } from './StockBar';
 import { Caps } from './Caps';
-import { Serif } from './Serif';
 import { Btn } from './Btn';
 import { StatusDot } from './StatusPill';
+import { NoItemsPanel } from './NoItemsPanel';
+import { useBucketFilter, daysSortValue } from './list-helpers';
 import { fmtMoney, fmtInt } from './format';
 import { useFlipList } from './motion';
 import type { DisplayItem } from './types';
@@ -57,6 +57,24 @@ interface LedgerTableProps {
 const GRID_WITH_VALUE = 'minmax(230px,1.5fr) 92px minmax(150px,1fr) 148px 86px 64px 80px';
 const GRID_NO_VALUE = 'minmax(230px,1.5fr) 92px minmax(150px,1fr) 148px 86px 64px';
 
+// Shared base for the status pill in a row — the counted and not-counted
+// variants differ only in colours (and the counted one adds a colour
+// transition), so the layout/type styling lives here once.
+const STATUS_PILL: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '2px 9px 2px 7px',
+  borderRadius: 999,
+  fontFamily: fonts.mono,
+  fontSize: 9,
+  fontWeight: 600,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  whiteSpace: 'nowrap',
+  justifySelf: 'start',
+};
+
 // Honesty rule (mirrors BoardCard.daysLeftLabel): only ml / rule-occupancy
 // items show a real number; a par/60 fallback or no-data item is not a
 // forecast, so its Days cell is an em-dash. Compact form for the Days column.
@@ -67,12 +85,6 @@ function daysLabel(d: DisplayItem): string {
   return `${d.daysLeft}d`;
 }
 
-// Days sort key: no-forecast items (fallback/no-data) sort to the bottom, same
-// rule the triage board used.
-function daysSortKey(d: DisplayItem): number {
-  if (d.burnSource === 'fallback-60d' || d.burnSource === 'no-data') return Infinity;
-  return d.daysLeft;
-}
 function stockRatio(d: DisplayItem): number {
   return d.par > 0 ? Math.round(d.estimated) / d.par : Infinity;
 }
@@ -97,23 +109,15 @@ export function LedgerTable({
   // you can see what landed where. See useFlipList.
   const rowsRef = useFlipList<HTMLDivElement>({ revealNew: true });
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return items
-      .filter((it) => inBucket(it, bucket))
-      .filter((it) => (q ? `${it.name} ${it.vendor} ${it.id}`.toLowerCase().includes(q) : true));
-  }, [items, bucket, query]);
-
   // Never-counted items are pulled out of triage (a 0-stock seeded item would
   // otherwise read as red "Order now"), parked at the bottom with a neutral
   // pill, and excluded from the live summary counts.
-  const counted = useMemo(() => filtered.filter((it) => !it.uncounted), [filtered]);
-  const uncounted = useMemo(() => filtered.filter((it) => it.uncounted), [filtered]);
+  const { counted, uncounted } = useBucketFilter(items, bucket, query);
 
   const rows = useMemo(() => {
     const cmp = (a: DisplayItem, b: DisplayItem): number => {
       switch (sortKey) {
-        case 'days': return daysSortKey(a) - daysSortKey(b);
+        case 'days': return daysSortValue(a) - daysSortValue(b);
         case 'stock': return stockRatio(a) - stockRatio(b);
         case 'name': return a.name.localeCompare(b.name);
         case 'value': return a.estimated * a.unitCost - b.estimated * b.unitCost;
@@ -135,7 +139,7 @@ export function LedgerTable({
   // panel, short-circuiting ahead of any filtering so switching buckets on an
   // empty catalog can't surface a bare header.
   if (items.length === 0) {
-    return <NoItemsPanel tx={tx} onAdd={onAdd} />;
+    return <NoItemsPanel lang={lang} onAdd={onAdd} />;
   }
 
   const grid = canViewFinancials ? GRID_WITH_VALUE : GRID_NO_VALUE;
@@ -392,21 +396,10 @@ function LedgerRow({
       {uncounted ? (
         <span
           style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '2px 9px 2px 7px',
-            borderRadius: 999,
+            ...STATUS_PILL,
             background: T.inkWash,
             color: T.dim,
             border: `1px solid ${T.rule}`,
-            fontFamily: fonts.mono,
-            fontSize: 9,
-            fontWeight: 600,
-            letterSpacing: '0.06em',
-            textTransform: 'uppercase',
-            whiteSpace: 'nowrap',
-            justifySelf: 'start',
           }}
         >
           <span style={{ width: 6, height: 6, borderRadius: '50%', background: T.dim }} />
@@ -415,21 +408,10 @@ function LedgerRow({
       ) : (
         <span
           style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            padding: '2px 9px 2px 7px',
-            borderRadius: 999,
+            ...STATUS_PILL,
             background: statusTint[d.status],
             color: statusText[d.status],
             border: `1px solid ${statusColor[d.status]}33`,
-            fontFamily: fonts.mono,
-            fontSize: 9,
-            fontWeight: 600,
-            letterSpacing: '0.06em',
-            textTransform: 'uppercase',
-            whiteSpace: 'nowrap',
-            justifySelf: 'start',
             transition: 'background .3s ease, color .3s ease',
           }}
         >
@@ -563,44 +545,5 @@ function StepBtn({
     >
       {plus ? '+' : '−'}
     </button>
-  );
-}
-
-// Empty-catalog panel — a brand-new hotel with zero inventory items (ported
-// from StockList's NoItemsPanel so the Ledger is self-contained).
-function NoItemsPanel({ tx, onAdd }: { tx: InvStrings; onAdd?: () => void }) {
-  return (
-    <div
-      style={{
-        background: T.paper,
-        border: `1px solid ${T.rule}`,
-        borderRadius: 16,
-        padding: '48px 32px',
-        textAlign: 'center',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: 12,
-      }}
-    >
-      <Serif size={24}>{tx.noItemsYet}</Serif>
-      <p
-        style={{
-          margin: 0,
-          maxWidth: 420,
-          fontFamily: fonts.sans,
-          fontSize: 13.5,
-          lineHeight: 1.55,
-          color: T.ink2,
-        }}
-      >
-        {tx.noItemsBody}
-      </p>
-      {onAdd && (
-        <Btn variant="primary" size="md" onClick={onAdd} style={{ marginTop: 4 }}>
-          {tx.addItem}
-        </Btn>
-      )}
-    </div>
   );
 }

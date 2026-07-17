@@ -4,6 +4,7 @@ import React, { useCallback, useRef, useState } from 'react';
 import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import { X, Camera, AlertTriangle, Trash2, CheckCircle } from 'lucide-react';
 import { t, type HousekeeperLocale } from '@/lib/translations';
+import { sheetOverlayStyle, sheetCloseBtnStyle } from './dialog-styles';
 
 /**
  * StructuredIssueReporter — replaces the freeform issue textarea.
@@ -179,14 +180,7 @@ export function StructuredIssueReporter(props: Props) {
     <div
       role="dialog"
       aria-modal="true"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.55)',
-        zIndex: 220,
-        display: 'flex',
-        alignItems: 'flex-end',
-      }}
+      style={{ ...sheetOverlayStyle, zIndex: 220 }}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -221,21 +215,7 @@ export function StructuredIssueReporter(props: Props) {
               {t('hkRoomShort', lang)} {roomNumber}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label={t('hkClose', lang)}
-            style={{
-              minHeight: 44,
-              minWidth: 44,
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-              padding: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
+          <button onClick={onClose} aria-label={t('hkClose', lang)} style={sheetCloseBtnStyle}>
             <X size={22} color="#374151" />
           </button>
         </div>

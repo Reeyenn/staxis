@@ -10,6 +10,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 import { parseCheckTrustResponse } from '@/lib/api-validate';
+import { safeRedirect } from '@/lib/url-redirect';
 import AuthShell, { AuthLabel, AuthError, authLinkStyle, AUTH_LINK } from '@/components/AuthShell';
 
 /**
@@ -52,6 +53,23 @@ function SignInInner() {
   const { user, loading, signIn } = useAuth();
   const { lang } = useLang();
   const router = useRouter();
+  const params = useSearchParams();
+
+  const requestedTarget = safeRedirect(params.get('redirect'), '/home');
+  const needsPropertySelection = Boolean(
+    user && (
+      user.role === 'admin' ||
+      user.propertyAccess.includes('*') ||
+      user.propertyAccess.length !== 1
+    )
+  );
+  const redirectTarget = needsPropertySelection
+    ? `/property-selector${
+        requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
+          ? ''
+          : `?redirect=${encodeURIComponent(requestedTarget)}`
+      }`
+    : requestedTarget;
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -66,8 +84,8 @@ function SignInInner() {
   // /signin/verify). That race produced the "flash dashboard then bounce
   // back to signin" loop reported on 2026-05-10.
   useEffect(() => {
-    if (!loading && user && !signing) router.replace('/home');
-  }, [user, loading, router, signing]);
+    if (!loading && user && !signing) router.replace(redirectTarget);
+  }, [user, loading, router, signing, redirectTarget]);
 
   // Sign-in flow (Phase 2 + Resend email):
   //   1. signInWithPassword — verifies the password, issues a session.
@@ -145,8 +163,14 @@ function SignInInner() {
         setSigning(false);
         return;
       }
-      // Every ordinary hotel sign-in enters through Home after verification.
-      router.replace(`/signin/verify?email=${encodeURIComponent(normalizedEmail)}`);
+      // Preserve a protected deep link through OTP. The verify page routes via
+      // the property selector, so multi-hotel users choose the hotel before the
+      // target opens; an ordinary login still falls through to Home.
+      const rawRedirect = params.get('redirect');
+      const verifyUrl = `/signin/verify?email=${encodeURIComponent(normalizedEmail)}${
+        rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
+      }`;
+      router.replace(verifyUrl);
     } catch {
       setError(t('invalidCredentials', lang));
       setSigning(false);

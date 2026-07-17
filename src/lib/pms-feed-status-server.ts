@@ -33,13 +33,6 @@ import {
 const CACHE_TTL_MS = 30_000;
 const cache = new Map<string, { at: number; value: PropertyFeedStatus }>();
 
-/** Test hook (no production callers yet — wire into admin actions that
- *  change feed state if the 30s TTL ever feels slow there). */
-export function invalidateFeedStatusCache(propertyId?: string): void {
-  if (propertyId) cache.delete(propertyId);
-  else cache.clear();
-}
-
 export async function getPropertyFeedStatus(propertyId: string): Promise<PropertyFeedStatus> {
   const hit = cache.get(propertyId);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value;

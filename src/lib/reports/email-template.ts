@@ -20,6 +20,7 @@ import type {
   WeeklyReportPayload,
   Anomaly,
 } from './types';
+import { escapeHtml, moneyFromCents as fmtMoney } from '@/lib/format';
 
 export type Lang = 'en' | 'es';
 
@@ -30,19 +31,6 @@ interface RenderResult {
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────────
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-function fmtMoney(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
 
 function fmtMaybe<T>(value: T | null | undefined, fmt: (v: T) => string): string {
   if (value === null || value === undefined) return '—';
