@@ -10,8 +10,6 @@ import { validateUuid } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { getConversation, canAccessConversation, getMessages, markConversationRead } from '@/lib/comms/core';
-import { mergeAiUsage, type AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,22 +38,18 @@ export async function GET(req: NextRequest): Promise<Response> {
     return err('Forbidden', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
 
-  let usage: AiUsageReport | null = null;
   const messages = await getMessages(ctx.pid, convo.id, ctx.staffId, ctx.lang, {
     withReceipts: true,
     ai: {
       deadlineAt,
       abortSignal: req.signal,
-      onUsage: (value) => { usage = mergeAiUsage(usage, value); },
+      ledger: {
+        userId: ctx.accountId,
+        propertyId: ctx.pid,
+        requestId: ctx.requestId,
+        feature: 'communications.message_translation',
+      },
     },
-  });
-  await recordAiUsageBestEffort({
-    usage,
-    userId: ctx.accountId,
-    propertyId: ctx.pid,
-    kind: 'background',
-    requestId: ctx.requestId,
-    feature: 'communications.message_translation',
   });
   await markConversationRead(ctx.pid, convo.id, ctx.staffId);
 

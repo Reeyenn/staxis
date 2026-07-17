@@ -281,6 +281,8 @@ export function AIControlCenter() {
   const rollbackIdRef = useRef<string | null>(null);
   const rollingBackIdRef = useRef<string | null>(null);
   const featureActionsRef = useRef<Record<string, FeatureActionPhase | undefined>>({});
+  const [groupBulkBusy, setGroupBulkBusy] = useState<string | null>(null);
+  const groupBulkBusyRef = useRef<string | null>(null);
   const draftsRef = useRef<Record<string, AiFeatureDraft>>({});
   const draftReviewRequiredRef = useRef<Record<string, boolean | undefined>>({});
   const toastIdRef = useRef(0);
@@ -675,6 +677,85 @@ export function AIControlCenter() {
     }
   }, [loadAll, pendingActivations, setFeatureAction, toast]);
 
+  /**
+   * Category-wide on/off. For every switchable feature in the group whose
+   * live state differs, runs the full create → test → activate cycle with the
+   * models it already uses. Turning OFF skips the paid probe entirely (the
+   * store only probes enabled configs); turning ON costs one tiny probe per
+   * feature. Sequential on purpose — the config store allocates versions per
+   * feature under an advisory lock, and a slow trickle of admin writes is
+   * kinder than a burst.
+   */
+  const bulkToggleGroup = useCallback(async (groupName: string, groupFeatures: AiFeatureSummary[], enable: boolean) => {
+    if (groupBulkBusyRef.current || rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
+    const targets = groupFeatures.filter((feature) =>
+      feature.editable
+      && feature.switchable
+      && feature.availability !== 'unavailable'
+      && isHostedProvider(feature.activeConfig.primary.provider)
+      && feature.activeConfig.enabled !== enable);
+    if (targets.length === 0) {
+      toast('success', `${groupName}: everything here is already ${enable ? 'on' : 'off'}.`);
+      return;
+    }
+    groupBulkBusyRef.current = groupName;
+    setGroupBulkBusy(groupName);
+    const failures: string[] = [];
+    try {
+      for (const feature of targets) {
+        setFeatureAction(feature.key, enable ? 'validating' : 'activating');
+        try {
+          const reason = `Turned ${enable ? 'on' : 'off'} with the whole ${groupName} category`;
+          const primary = feature.activeConfig.primary;
+          const fallback = feature.activeConfig.fallback;
+          const createBody: CreateAiConfigRequest = {
+            featureKey: feature.key,
+            enabled: enable,
+            primary: { provider: primary.provider as AiHostedProvider, modelId: primary.modelId },
+            fallback: fallback && isHostedProvider(fallback.provider)
+              ? { provider: fallback.provider, modelId: fallback.modelId }
+              : null,
+            parameters: feature.activeConfig.parameters,
+            parentId: feature.activeConfig.versionId,
+            changeReason: reason,
+          };
+          const created = await apiRequest<CreateAiConfigResponse>('/configs', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(createBody),
+          });
+          const validated = await apiRequest<ValidateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/validate`, {
+            method: 'POST',
+          });
+          const validationError = validationFailed(validated);
+          if (validationError) throw new Error(validationError);
+          const activateBody: ActivateAiConfigRequest = {
+            expectedActiveId: feature.activeConfig.versionId,
+            reason,
+          };
+          await apiRequest<ActivateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/activate`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(activateBody),
+          });
+        } catch (error) {
+          failures.push(`${feature.label}: ${error instanceof Error ? error.message : 'failed'}`);
+        } finally {
+          setFeatureAction(feature.key, undefined);
+        }
+      }
+    } finally {
+      groupBulkBusyRef.current = null;
+      setGroupBulkBusy(null);
+      await loadAll(true, true);
+    }
+    if (failures.length === 0) {
+      toast('success', `${groupName}: turned ${enable ? 'on' : 'off'} ${targets.length} feature${targets.length === 1 ? '' : 's'}.`);
+    } else {
+      toast('error', `${groupName}: ${failures.length} of ${targets.length} didn't switch — ${failures[0]}`);
+    }
+  }, [loadAll, setFeatureAction, toast]);
+
   const refreshModels = useCallback(async () => {
     if (catalogRefreshInFlightRef.current) return;
     catalogRefreshInFlightRef.current = true;
@@ -856,6 +937,8 @@ export function AIControlCenter() {
                 onReset={resetDraft}
                 onTest={testConfiguration}
                 onActivate={activateTested}
+                groupBulkBusy={groupBulkBusy}
+                onGroupToggle={bulkToggleGroup}
               />
             ) : tab === 'models' ? (
               <ModelsPanel
@@ -922,6 +1005,8 @@ function FeaturesPanel({
   onReset,
   onTest,
   onActivate,
+  groupBulkBusy,
+  onGroupToggle,
 }: {
   features: AiFeatureSummary[];
   models: AiModelCatalogEntry[];
@@ -937,6 +1022,8 @@ function FeaturesPanel({
   onReset: (feature: AiFeatureSummary) => void;
   onTest: (feature: AiFeatureSummary) => void;
   onActivate: (feature: AiFeatureSummary) => void;
+  groupBulkBusy: string | null;
+  onGroupToggle: (groupName: string, groupFeatures: AiFeatureSummary[], enable: boolean) => void;
 }) {
   const groups = useMemo(() => groupAiFeatures(features, query), [features, query]);
   return (
@@ -958,7 +1045,7 @@ function FeaturesPanel({
             placeholder="Find a feature, department, or model use…"
           />
         </label>
-        <span className={styles.summaryText}>{groups.reduce((total, group) => total + group.features.length, 0)} shown · changes stay draft until tested</span>
+        <span className={styles.summaryText}>{groups.reduce((total, group) => total + group.features.length, 0)} shown · nothing changes until you test and make it live</span>
       </div>
 
       {groups.length === 0 ? (
@@ -970,6 +1057,32 @@ function FeaturesPanel({
               <div className={styles.groupHeader}>
                 <h3 id={`ai-group-${group.group.replaceAll(' ', '-').toLowerCase()}`} className={styles.groupTitle}>{group.group}</h3>
                 <span className={styles.groupCount}>{group.features.length}</span>
+                {group.features.some((feature) => feature.editable && feature.switchable) && (
+                  <span className={styles.groupBulkActions}>
+                    {groupBulkBusy === group.group ? (
+                      <span className={styles.groupBulkBusy}><span className={styles.spinner} aria-hidden="true" /> Switching…</span>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className={styles.textButton}
+                          disabled={Boolean(groupBulkBusy) || rollbackInFlight}
+                          onClick={() => onGroupToggle(group.group, group.features, true)}
+                        >
+                          All on
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.textButton}
+                          disabled={Boolean(groupBulkBusy) || rollbackInFlight}
+                          onClick={() => onGroupToggle(group.group, group.features, false)}
+                        >
+                          All off
+                        </button>
+                      </>
+                    )}
+                  </span>
+                )}
               </div>
               <div className={styles.featureList}>
                 {group.features.map((feature) => (
@@ -1040,11 +1153,11 @@ function FeatureEditor({
     [feature, models],
   );
   const busyLabel = action === 'creating'
-    ? 'Saving draft…'
+    ? 'Saving…'
     : action === 'validating'
-      ? 'Testing model…'
+      ? 'Testing…'
       : action === 'activating'
-        ? 'Activating…'
+        ? 'Going live…'
         : null;
 
   return (
@@ -1067,7 +1180,6 @@ function FeatureEditor({
             {!feature.editable && <StatusChip>Read only</StatusChip>}
           </div>
           <p className={styles.featureDescription}>{feature.description}</p>
-          <span className={styles.featureKey}>{feature.key}</span>
         </div>
         <div className={styles.switchWrap}>
           <span className={styles.switchLabel}>{draft.enabled ? 'Enabled' : 'Disabled'}</span>
@@ -1113,14 +1225,6 @@ function FeatureEditor({
               onChange={(value) => onDraft({ fallbackKey: value })}
             />
           </label>
-          <label className={styles.field}>
-            <span className={styles.fieldLabel}>Change note · optional</span>
-            <ChangeNoteInput
-              value={draft.changeReason}
-              disabled={Boolean(action) || mutationBlocked}
-              onCommit={(value) => onDraft({ changeReason: value })}
-            />
-          </label>
           <div className={styles.featureActions}>
             {dirty && <button type="button" className={styles.textButton} disabled={Boolean(action) || mutationBlocked} onClick={onReset}>Reset</button>}
             <button
@@ -1131,7 +1235,7 @@ function FeatureEditor({
               title={mutationBlocked ? 'Wait for the rollback to finish' : undefined}
             >
               {action ? <span className={styles.spinner} aria-hidden="true" /> : <CheckCircle2 size={14} />}
-              {busyLabel ?? (pendingActivation ? 'Activate tested setup' : reviewRequired ? 'Review & test setup' : 'Test setup')}
+              {busyLabel ?? (pendingActivation ? 'Make it live' : reviewRequired ? 'Re-test my change' : 'Test my change')}
             </button>
           </div>
           {reviewRequired && (
@@ -1146,12 +1250,12 @@ function FeatureEditor({
                 <CheckCircle2 size={15} aria-hidden="true" />
                 <span>
                   {pendingActivation.probeCount > 0 ? (
-                    <><strong>Provider test passed.</strong> {pendingActivation.probeCount} synthetic health {pendingActivation.probeCount === 1 ? 'check' : 'checks'} confirmed access and required capabilities; this does not measure real hotel-task accuracy.</>
+                    <><strong>Test passed.</strong> The model answered correctly. This proves it responds — not how smart it is. Click “Make it live” to switch.</>
                   ) : (
-                    <><strong>Safety check passed.</strong> Provider access tests were skipped because this change turns the feature off.</>
+                    <><strong>Ready.</strong> No test needed — this change turns the feature off. Click “Make it live” to switch.</>
                   )}
                   {pendingActivation.warnings.length > 0 && (
-                    <span className={styles.validationWarnings}> Review before activating: {pendingActivation.warnings.join(' ')}</span>
+                    <span className={styles.validationWarnings}> Worth knowing first: {pendingActivation.warnings.join(' ')}</span>
                   )}
                 </span>
               </div>
@@ -1247,38 +1351,6 @@ function ActivationRecap({
   );
 }
 
-/**
- * Local-state text input committed on blur. Typing must not call onDraft per
- * keystroke: every draft patch re-renders all ~30 feature cards (and their
- * catalog-sorting ModelSelects), which made the note field visibly lag.
- * Blur always fires before any button's click, so Test/Activate still read
- * the committed value.
- */
-function ChangeNoteInput({
-  value,
-  disabled,
-  onCommit,
-}: {
-  value: string;
-  disabled: boolean;
-  onCommit: (value: string) => void;
-}) {
-  const [text, setText] = useState(value);
-  // Re-sync when the draft is reset/replaced externally.
-  useEffect(() => { setText(value); }, [value]);
-  return (
-    <input
-      className={styles.reasonInput}
-      value={text}
-      onChange={(event) => setText(event.target.value)}
-      onBlur={() => { if (text !== value) onCommit(text); }}
-      placeholder="Why are you changing this?"
-      maxLength={240}
-      disabled={disabled}
-    />
-  );
-}
-
 function ModelSelect({
   value,
   models,
@@ -1341,7 +1413,7 @@ function ModelSelect({
         <optgroup key={group.provider} label={providerLabel(group.provider)}>
           {group.models.map((model) => (
             <option key={modelRefKey(model)} value={modelRefKey(model)} disabled={!model.available}>
-              {model.displayName}{model.available ? '' : ' · currently unavailable'}
+              {model.displayName}{model.available ? '' : ' · not available right now'}
             </option>
           ))}
         </optgroup>
@@ -1423,7 +1495,7 @@ function ModelsPanel({
         </label>
         <button type="button" className={styles.secondaryButton} disabled={refreshing} onClick={onRefresh}>
           {refreshing ? <span className={styles.spinner} aria-hidden="true" /> : <RefreshCw size={14} />}
-          {refreshing ? 'Refreshing…' : provider === 'all' ? 'Refresh model catalogs' : `Refresh ${providerLabel(provider)}`}
+          {refreshing ? 'Checking…' : provider === 'all' ? 'Check for new models' : `Check ${providerLabel(provider)} for new models`}
         </button>
       </div>
 
@@ -1434,7 +1506,7 @@ function ModelsPanel({
             <button key={item} type="button" className={`${styles.providerButton} ${provider === item ? styles.providerButtonActive : ''}`} aria-pressed={provider === item} onClick={() => onProvider(item)}>{providerLabel(item)}</button>
           ))}
         </div>
-        <span className={styles.summaryText}>{visible.length} shown · discovery never switches a feature automatically</span>
+        <span className={styles.summaryText}>{visible.length} shown · finding new models never switches anything automatically</span>
       </div>
 
       {groups.length === 0 ? (
@@ -1480,16 +1552,16 @@ function ModelCard({
   const unverified = model.source === 'provider' || model.pricing === null || conservativePricing;
   const notices: string[] = [];
   if (providerListedNotSelectable) {
-    notices.push('The provider lists this model, but no capabilities are verified, so it is not eligible or selectable for controlled app features yet.');
+    notices.push('The provider lists this model, but we haven\'t verified what it can do yet, so it can\'t be picked for features.');
   } else if (notEligibleHere) {
-    notices.push('This model is available, but no editable feature here matches its runtime provider and required capabilities, so it is not selectable on this page.');
+    notices.push('This model works, but none of the features on this page can use its type, so there\'s nothing to pick it for.');
   }
   if (conservativePricing) {
-    notices.push('Pricing is a conservative safety estimate, not a verified provider rate.');
+    notices.push('The price shown is a safe overestimate, not the confirmed rate.');
   } else if (model.pricing === null) {
-    notices.push('No verified pricing source or as-of date is stored. Check the provider before considering activation.');
+    notices.push('No confirmed price on file — check the provider\'s price list before switching anything to it.');
   } else if (model.source === 'provider') {
-    notices.push('This provider listing has not yet been matched to the application registry; metadata may be incomplete.');
+    notices.push('Newly discovered — some details may still be missing.');
   }
 
   const prices: Array<{ label: string; value: string }> = [];
@@ -1500,26 +1572,26 @@ function ModelCard({
     prices.push({ label: 'Output', value: `${formatUsd(model.pricing.outputUsdPerMillionTokens)} / 1M tokens` });
   }
   if (model.pricing?.cachedInputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: 'Cache read', value: `${formatUsd(model.pricing.cachedInputUsdPerMillionTokens)} / 1M tokens` });
+    prices.push({ label: 'Re-used input (cheaper)', value: `${formatUsd(model.pricing.cachedInputUsdPerMillionTokens)} / 1M tokens` });
   }
   if (model.pricing?.cacheCreation5mInputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: '5m cache write', value: `${formatUsd(model.pricing.cacheCreation5mInputUsdPerMillionTokens)} / 1M tokens` });
+    prices.push({ label: 'Cache write · 5 min', value: `${formatUsd(model.pricing.cacheCreation5mInputUsdPerMillionTokens)} / 1M tokens` });
   }
   if (model.pricing?.cacheCreation1hInputUsdPerMillionTokens !== undefined) {
-    prices.push({ label: '1h cache write', value: `${formatUsd(model.pricing.cacheCreation1hInputUsdPerMillionTokens)} / 1M tokens` });
+    prices.push({ label: 'Cache write · 1 hour', value: `${formatUsd(model.pricing.cacheCreation1hInputUsdPerMillionTokens)} / 1M tokens` });
   }
   if (model.pricing?.usdPerAudioMinute !== undefined) {
     prices.push({ label: 'Audio', value: `${formatUsd(model.pricing.usdPerAudioMinute)} / minute` });
   }
 
   const catalogSource = model.source === 'provider+registry'
-    ? 'Provider + app registry'
+    ? 'From the provider + built into the app'
       : model.source === 'provider'
-      ? 'Provider listing only'
-      : 'App registry';
+      ? 'From the provider\'s list'
+      : 'Built into the app';
   const shownUsage = usageLabels.slice(0, 3);
   const usageCopy = shownUsage.length === 0
-    ? 'Not used by a current app configuration.'
+    ? 'Not used by any feature right now.'
     : `${shownUsage.join(' · ')}${usageLabels.length > shownUsage.length ? ` · +${usageLabels.length - shownUsage.length} more` : ''}`;
   return (
     <article className={styles.modelCard}>
@@ -1530,12 +1602,12 @@ function ModelCard({
         </div>
         <StatusChip tone={!model.available ? 'danger' : notEligibleHere ? 'warn' : 'good'}>
           {!model.available
-            ? 'Unavailable'
+            ? 'Not available'
             : providerListedNotSelectable
-              ? 'Provider listed · not eligible'
+              ? 'Listed, not usable yet'
               : notEligibleHere
-                ? 'Not eligible here'
-                : `Test-eligible for ${eligibleLabels.length}`}
+                ? 'No feature can use it'
+                : `Usable by ${eligibleLabels.length} feature${eligibleLabels.length === 1 ? '' : 's'}`}
         </StatusChip>
         {unverified && <StatusChip tone="warn">Unverified metadata</StatusChip>}
       </div>

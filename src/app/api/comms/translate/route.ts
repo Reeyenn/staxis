@@ -15,8 +15,6 @@ import { defineRoute } from '@/lib/api-route';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { translateUiStrings } from '@/lib/comms/translate';
 import type { CommsLang } from '@/lib/comms/types';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -52,19 +50,15 @@ export const POST = defineRoute({
     const rl = await checkAndIncrementRateLimit('comms-translate', ctx.pid);
     if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-    let usage: AiUsageReport | null = null;
     const translations = await translateUiStrings(texts, targetV.value as CommsLang, {
       deadlineAt,
       abortSignal: ctx.req.signal,
-      onUsage: (value) => { usage = value; },
-    });
-    await recordAiUsageBestEffort({
-      usage,
-      userId: ctx.accountId,
-      propertyId: ctx.pid,
-      kind: 'background',
-      requestId: ctx.requestId,
-      feature: 'communications.ui_translation',
+      ledger: {
+        userId: ctx.accountId,
+        propertyId: ctx.pid,
+        requestId: ctx.requestId,
+        feature: 'communications.ui_translation',
+      },
     });
     return ctx.ok({ translations });
   },

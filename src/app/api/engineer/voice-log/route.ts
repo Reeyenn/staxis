@@ -16,10 +16,9 @@ import {
   rateLimitedResponse,
 } from '@/lib/api-ratelimit';
 import { requireEngineerStaff, resolveCostAccount } from '@/lib/compliance/api-helpers';
-import { parseReadingsFromText, type NlpUsage } from '@/lib/compliance/nlp';
+import { parseReadingsFromText } from '@/lib/compliance/nlp';
 import { findReadingTypeByName, logReading } from '@/lib/compliance/store';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,12 +59,18 @@ export async function POST(req: NextRequest) {
     if (!budget.ok) return err(budget.message, { requestId, status: 429, code: budget.reason });
   }
 
-  let usage: NlpUsage | null = null;
   try {
     const parsed = await parseReadingsFromText(
       text,
-      (u) => { usage = u; },
-      { deadlineAt, abortSignal: req.signal },
+      undefined,
+      {
+        deadlineAt,
+        abortSignal: req.signal,
+        // The AI runtime records the parse cost against the resolved account.
+        ledger: accountId
+          ? { userId: accountId, propertyId: pid, kind: 'audio', requestId, feature: 'compliance.text_reading_parse' }
+          : undefined,
+      },
     );
     const logged: Array<{ name: string; value: number; outOfRange: boolean }> = [];
     const unmatched: string[] = [];
@@ -83,17 +88,5 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     log.error('[engineer/voice-log] failed', { requestId, pid, staffId, msg: errToString(e) });
     return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  } finally {
-    // Record the Claude parse cost against the resolved account.
-    if (usage && accountId) {
-      await recordAiUsageBestEffort({
-        usage: usage as NlpUsage,
-        userId: accountId,
-        propertyId: pid,
-        kind: 'audio',
-        requestId,
-        feature: 'compliance.text_reading_parse',
-      });
-    }
   }
 }

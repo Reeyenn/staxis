@@ -9,8 +9,6 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { defineRoute } from '@/lib/api-route';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { polishAnnouncement } from '@/lib/comms/assistant';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,19 +29,15 @@ export const POST = defineRoute({
     const rl = await checkAndIncrementRateLimit('comms-polish', ctx.pid);
     if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-    let usage: AiUsageReport | null = null;
     const text = await polishAnnouncement(tV.value!, ctx.lang, {
       deadlineAt,
       abortSignal: ctx.req.signal,
-      onUsage: (value) => { usage = value; },
-    });
-    await recordAiUsageBestEffort({
-      usage,
-      userId: ctx.accountId,
-      propertyId: ctx.pid,
-      kind: 'background',
-      requestId: ctx.requestId,
-      feature: 'communications.announcement_polish',
+      ledger: {
+        userId: ctx.accountId,
+        propertyId: ctx.pid,
+        requestId: ctx.requestId,
+        feature: 'communications.announcement_polish',
+      },
     });
     return ctx.ok({ text });
   },

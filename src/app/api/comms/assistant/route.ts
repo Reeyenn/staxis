@@ -15,8 +15,6 @@ import { defineRoute } from '@/lib/api-route';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { getConversation, canAccessConversation, getThreadForAssistant, postMessage } from '@/lib/comms/core';
 import { runStaxisAssistant } from '@/lib/comms/assistant';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,7 +40,6 @@ export const POST = defineRoute({
     if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
     const thread = await getThreadForAssistant(ctx.pid, convo.id, 25);
-    let usage: AiUsageReport | null = null;
     const result = await runStaxisAssistant({
       pid: ctx.pid,
       question: qV.value!,
@@ -58,16 +55,14 @@ export const POST = defineRoute({
       ai: {
         deadlineAt,
         abortSignal: ctx.req.signal,
-        onUsage: (value) => { usage = value; },
+        // The AI runtime records each tool-loop iteration's spend itself.
+        ledger: {
+          userId: ctx.accountId,
+          propertyId: ctx.pid,
+          requestId: ctx.requestId,
+          feature: 'communications.staxis_assistant',
+        },
       },
-    });
-    await recordAiUsageBestEffort({
-      usage,
-      userId: ctx.accountId,
-      propertyId: ctx.pid,
-      kind: 'background',
-      requestId: ctx.requestId,
-      feature: 'communications.staxis_assistant',
     });
 
     // Post the assistant's reply into the conversation (auto-translated per reader).

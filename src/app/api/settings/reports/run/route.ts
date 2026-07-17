@@ -17,8 +17,6 @@ import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { generateReportSummary } from '@/lib/reports/catalog/ai-summary';
 import { resolveRunContext } from '@/lib/reports/catalog/route-helpers';
 import { getOrMintRequestId, log } from '@/lib/log';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,22 +45,13 @@ export async function GET(req: NextRequest) {
     const result = await def.run(ctx);
 
     const wantSummary = req.nextUrl.searchParams.get('summary') === '1';
-    let usage: AiUsageReport | null = null;
     const aiSummary = wantSummary
       ? await generateReportSummary(def, result, lang, {
           deadlineAt,
           abortSignal: req.signal,
-          onUsage: (value) => { usage = value; },
+          ledger: { userId: accountId, propertyId, requestId, feature: 'reports.run_summary' },
         })
       : null;
-    await recordAiUsageBestEffort({
-      usage,
-      userId: accountId,
-      propertyId,
-      kind: 'background',
-      requestId,
-      feature: 'reports.run_summary',
-    });
 
     return ok(
       {

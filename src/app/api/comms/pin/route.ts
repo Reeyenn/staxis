@@ -10,8 +10,6 @@ import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } f
 import { defineRoute } from '@/lib/api-route';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { getConversation, canAccessConversation, getMessageScope, setPinned, listPinned } from '@/lib/comms/core';
-import { mergeAiUsage, type AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,21 +30,17 @@ export const GET = defineRoute({
     const allowed = await canAccessConversation(ctx.pid, ctx.staffId, convo, { isManager: ctx.isManager, dept: ctx.dept });
     if (!allowed) return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
 
-    let usage: AiUsageReport | null = null;
     const pinned = await listPinned(ctx.pid, convo.id, ctx.staffId, ctx.lang, {
       ai: {
         deadlineAt,
         abortSignal: ctx.req.signal,
-        onUsage: (value) => { usage = mergeAiUsage(usage, value); },
+        ledger: {
+          userId: ctx.accountId,
+          propertyId: ctx.pid,
+          requestId: ctx.requestId,
+          feature: 'communications.message_translation',
+        },
       },
-    });
-    await recordAiUsageBestEffort({
-      usage,
-      userId: ctx.accountId,
-      propertyId: ctx.pid,
-      kind: 'background',
-      requestId: ctx.requestId,
-      feature: 'communications.message_translation',
     });
     return ctx.ok({ pinned });
   },

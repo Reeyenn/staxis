@@ -12,8 +12,6 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { transcribeAudioBuffer } from '@/lib/comms/assistant';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
@@ -54,19 +52,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('Not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });
   }
   const buf = Buffer.from(await blob.arrayBuffer());
-  let usage: AiUsageReport | null = null;
   const text = await transcribeAudioBuffer(buf, blob.type || 'audio/webm', 'voice.webm', {
     deadlineAt,
     abortSignal: req.signal,
-    onUsage: (value) => { usage = value; },
-  });
-  await recordAiUsageBestEffort({
-    usage,
-    userId: ctx.accountId,
-    propertyId: ctx.pid,
-    kind: 'audio',
-    requestId: ctx.requestId,
-    feature: 'communications.voice_transcription',
+    // The AI runtime records the spend itself (agent_costs, kind=audio).
+    ledger: {
+      userId: ctx.accountId,
+      propertyId: ctx.pid,
+      kind: 'audio',
+      requestId: ctx.requestId,
+      feature: 'communications.voice_transcription',
+    },
   });
   return ok({ text: text ?? '' }, { requestId: ctx.requestId, headers: ctx.headers });
 }

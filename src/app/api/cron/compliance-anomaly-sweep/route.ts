@@ -23,10 +23,9 @@ import {
   getUnphrasedActiveAlerts,
   applyAiPhrasing,
 } from '@/lib/compliance/anomaly-engine';
-import { phraseAnomalies, type NlpUsage } from '@/lib/compliance/nlp';
+import { phraseAnomalies } from '@/lib/compliance/nlp';
 import { resolveCostAccount } from '@/lib/compliance/api-helpers';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
@@ -57,24 +56,20 @@ async function aiPhraseForProperty(
     .in('id', typeIds);
   const nameById = new Map((typeRows ?? []).map((t) => [String(t.id), String(t.name)]));
 
-  let usage: NlpUsage | null = null;
   const phrased = await phraseAnomalies(
     alerts.map((a) => ({ id: a.id, kind: a.kind, typeName: nameById.get(a.readingTypeId) ?? 'reading', reason: a.reason })),
-    (u) => { usage = u; },
-    { deadlineAt: opts.deadlineAt, abortSignal: opts.abortSignal },
+    undefined,
+    {
+      deadlineAt: opts.deadlineAt,
+      abortSignal: opts.abortSignal,
+      // The AI runtime records the phrasing cost against the resolved account.
+      ledger: accountId
+        ? { userId: accountId, propertyId: pid, kind: 'audio', requestId: opts.requestId, feature: 'compliance.anomaly_phrasing' }
+        : undefined,
+    },
   );
   for (const p of phrased) {
     await applyAiPhrasing(pid, p.id, p.en, p.es || null);
-  }
-  if (usage && accountId) {
-    await recordAiUsageBestEffort({
-      usage: usage as NlpUsage,
-      userId: accountId,
-      propertyId: pid,
-      kind: 'audio',
-      requestId: opts.requestId,
-      feature: 'compliance.anomaly_phrasing',
-    });
   }
   return phrased.length;
 }

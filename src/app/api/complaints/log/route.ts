@@ -19,8 +19,6 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { createComplaint } from '@/lib/complaints-create';
 import { COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES } from '@/lib/complaints-shared';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -101,37 +99,25 @@ export async function POST(req: NextRequest): Promise<Response> {
       .select('id')
       .eq('data_user_id', session.userId)
       .maybeSingle();
-    let usage: AiUsageReport | null = null;
-    let result;
-    try {
-      result = await createComplaint({
-        propertyId: pid,
-        description: descV.value!,
-        roomNumber: body.roomNumber?.trim() || null,
-        guestName: body.guestName?.trim() || null,
-        guestContact: body.guestContact?.trim() || null,
-        category: category ?? null,
-        severity: severity ?? null,
-        source: 'front_desk',
-        createdBy: session.userId,
-        createdByName: body.createdByName?.trim() || null,
-      }, {
-        deadlineAt,
-        abortSignal: req.signal,
-        onUsage: (value) => { usage = value; },
-      });
-    } finally {
-      if (typeof account?.id === 'string') {
-        await recordAiUsageBestEffort({
-          usage,
-          userId: account.id,
-          propertyId: pid,
-          kind: 'background',
-          requestId,
-          feature: 'complaints.classification',
-        });
-      }
-    }
+    const accountId = typeof account?.id === 'string' ? account.id : null;
+    const result = await createComplaint({
+      propertyId: pid,
+      description: descV.value!,
+      roomNumber: body.roomNumber?.trim() || null,
+      guestName: body.guestName?.trim() || null,
+      guestContact: body.guestContact?.trim() || null,
+      category: category ?? null,
+      severity: severity ?? null,
+      source: 'front_desk',
+      createdBy: session.userId,
+      createdByName: body.createdByName?.trim() || null,
+    }, {
+      deadlineAt,
+      abortSignal: req.signal,
+      ledger: accountId
+        ? { userId: accountId, propertyId: pid, requestId, feature: 'complaints.classification' }
+        : undefined,
+    });
     return ok(
       {
         complaint: result.complaint,
