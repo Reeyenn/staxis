@@ -1,6 +1,6 @@
 # FAILSAFES.md
 
-The guardrails that catch silent failures. Each exists because of a specific past incident; weakening any of them costs Twilio credits or missed shift confirmations.
+The guardrails that catch silent failures. Each exists because of a specific past incident; weakening any of them costs real money or a broken customer-facing feature. (2026-07-17: all Twilio texting was retired on the owner's order, so SMS-related failsafes below are historical.)
 
 **Do not delete, weaken, or "simplify" any of these without understanding what they protect against.** `CLAUDE.md` lists the names as a deterrent; this file has the why and the editing rules.
 
@@ -8,19 +8,20 @@ The guardrails that catch silent failures. Each exists because of a specific pas
 
 ## 1. `/api/admin/doctor` (`src/app/api/admin/doctor/route.ts`)
 
-Single URL that tests every critical dependency — env vars, Supabase Admin auth, Postgres reads, Twilio credentials, CRON_SECRET shape. Returns structured JSON with per-check status. Called by:
+Single URL that tests the critical dependencies. Returns structured JSON with per-check status. Called by the every-5-min vercel-watchdog cron and by Reeyen manually.
 
-- Post-deploy smoke test (every push to main)
-- Daily drift check (once per day, 8am Central)
-- Railway-hosted Vercel watchdog (every 5 min)
-- Reeyen, manually, whenever anything smells off
+**2026-07-17 — owner-ordered slim-down.** Reeyen explicitly ordered the check battery cut from ~45 checks to the three signals he actually acts on, after weeks of alert noise from checks watching retired systems (Twilio texting, dead ML schedulers). The battery is now exactly:
+
+1. **Site works** — `env_vars`, `supabase_admin_auth`, `supabase_migrations_applied` (the manual-migration net).
+2. **Robot OK** — `cua_sessions_alive`, `cua_cost_cap_paused`, `cua_mfa_pending`.
+
+Deleted checks (2FA/RLS/storage/Sentry/Stripe/ML/HSTS/cron-heartbeats/etc.) are in git history at commit `8b18232d^..` if a signal ever earns its place back. The underlying protections (RLS itself, 2FA enforcement, cost caps) are all still active — only their *monitoring* was removed.
 
 ### Rules for editing
 
 - New required env var anywhere in the app → **add it to `REQUIRED_ENV_VARS`** in the doctor route.
-- New external dependency (new API, new platform) → **add a check function** for it.
 - Every check must return a `fix` string with an exact, actionable remediation — no "check the logs" vagueness.
-- Don't remove checks. If a check is consistently green and you think it's redundant, leave it — the cost is microseconds, the deterrent is permanent.
+- Adding a check now requires it to map to one of the owner's three signals (site up / robot OK / AI spend runaway) — anything else is the noise he ordered removed.
 
 ---
 
@@ -128,7 +129,7 @@ Symptom → diagnosis → fix → verify → prevention, per failure type. When 
 
 ## 7. Cron heartbeats (`src/lib/cron-heartbeat.ts` + migration 0074)
 
-**What it does:** Every cron route's LAST step is a write to `cron_heartbeats` with its name + timestamp. The doctor's `cron_heartbeats_fresh` check reads back and fails if any expected cron is older than 2× its cadence. Independent of GitHub Actions' "workflow succeeded" signal (which silent-passed for weeks while inner ML calls all failed).
+**What it does:** Every cron route's LAST step is a write to `cron_heartbeats` with its name + timestamp. (2026-07-17: the doctor's `cron_heartbeats_fresh` check was deleted in the owner-ordered slim-down — heartbeats are still WRITTEN and queryable, and the `EXPECTED_CRONS` list is still cross-checked against the schedule registry by the `cron-cadences` test at build time; nothing alerts on stale heartbeats at runtime anymore.)
 
 **Why it exists:** The May 2026 audit found that the previous health signal — "GitHub Actions workflow returned 200" — could be green while the route silently aggregated 100% per-item errors. A heartbeat written AFTER all the real work means "the route actually finished, not just returned." Pairs with the tightened jq checks in `ml-cron.yml`.
 

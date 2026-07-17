@@ -98,8 +98,10 @@ type OverlayKey =
   | 'add'
   | null;
 
+// 'ordersettings' is parked (coming soon — see Sidebar): the overlay wiring
+// stays, but neither the rail nor a ?action= deep link can open it.
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'budgets', 'ai', 'add',
+  'count', 'scan', 'reorder', 'orders', 'reports', 'history', 'budgets', 'ai', 'add',
 ];
 
 // Shared container for the full-page loading / load-error notices (identical
