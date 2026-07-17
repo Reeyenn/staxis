@@ -12,8 +12,8 @@
 // max-height / inner scroll), and closes on scrim *click* (mouseup) rather
 // than mousedown (guarded: the interaction must both start AND end on the
 // scrim, so a text-selection drag out of the card can't close it) — none of
-// which F6's fixed 'center' geometry can reproduce today. It is also imported by financials + front-desk + the parked
-// ComplianceTab, so its behavior must not move. If F6 ever grows scrim
+// which F6's fixed 'center' geometry can reproduce today. It is also imported
+// by financials + front-desk, so its behavior must not move. If F6 ever grows scrim
 // align/padding + card max-height overrides, this shell can become a themed
 // wrapper. (Wave-1 precedent: keep the hand-roll when the foundation can't
 // hit byte-identical.)

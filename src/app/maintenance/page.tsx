@@ -12,9 +12,9 @@ export const dynamic = 'force-dynamic';
 // The Compliance tab was removed from the Maintenance nav in this redesign. The
 // engineering-compliance feature itself is untouched — its anomaly crons, the
 // engineer SMS links (/engineer/[id]) and the dashboard summary all keep
-// running; ComplianceTab.tsx is parked (unlinked) in _components/ so it can be
-// re-linked if a new home is wanted. Pattern mirrors housekeeping/page.tsx —
-// orchestrator only.
+// running. (The parked ComplianceTab.tsx UI was deleted 2026-07-16 on Reeyen's
+// call; rebuild from git history if a new home is ever wanted.) Pattern mirrors
+// housekeeping/page.tsx — orchestrator only.
 
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
