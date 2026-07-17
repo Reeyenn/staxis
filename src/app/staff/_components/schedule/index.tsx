@@ -74,7 +74,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
   const [fillOpen, setFillOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [torHistoryOpen, setTorHistoryOpen] = useState(false);
-  const [editorId, setEditorId] = useState<string | null>(null);
+  const [editorStaffId, setEditorStaffId] = useState<string | null>(null);
   const [weekAnim, setWeekAnim] = useState(0);
 
   // ── toast ──────────────────────────────────────────────────────────────
@@ -166,6 +166,13 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
           : `${skipped} ${skipped === 1 ? 'shift' : 'shifts'} skipped (approved time off / no longer on staff)`);
       }
     }).catch(e => {
+      const partial = (e as { partialSaved?: number })?.partialSaved ?? 0;
+      if (partial > 0) {
+        flash(es
+          ? 'Se guardaron algunas semanas, pero las demás fallaron. Revisa el tablero e intenta de nuevo.'
+          : 'Some weeks saved, but the rest failed. Check the board and try again.');
+        return;
+      }
       flash(es
         ? `No se pudo guardar — ${e instanceof Error ? e.message : 'intenta de nuevo'}`
         : `Couldn’t save — ${e instanceof Error ? e.message : 'try again'}`);
@@ -210,20 +217,23 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
   };
 
   // ── tap-to-edit (exact times + note) ───────────────────────────────────
-  const editorShift = editorId ? dayShifts.find(s => s.id === editorId) ?? null : null;
+  // Keyed by staffId, not row id: the tmpId→realId swap on a background save's
+  // refetch changes the row id but never the (day, staffId) pair, so the open
+  // editor survives the swap instead of unmounting mid-edit.
+  const editorShift = editorStaffId ? dayShifts.find(s => s.staffId === editorStaffId) ?? null : null;
   const onEditorSave = (patch: { startMin: number; endMin: number; note: string | null }) => {
     if (!editorShift) return;
     data.pushUndo([selDate]);
-    data.setDayLocal(selDate, list => list.map(x => (x.id === editorShift.id ? { ...x, ...patch } : x)));
+    data.setDayLocal(selDate, list => list.map(x => (x.staffId === editorShift.staffId ? { ...x, ...patch } : x)));
     reportSave(data.commitDay(selDate));
-    setEditorId(null);
+    setEditorStaffId(null);
   };
   const onEditorRemove = () => {
     if (!editorShift) return;
     data.pushUndo([selDate]);
-    data.setDayLocal(selDate, list => list.filter(x => x.id !== editorShift.id));
+    data.setDayLocal(selDate, list => list.filter(x => x.staffId !== editorShift.staffId));
     reportSave(data.commitDay(selDate));
-    setEditorId(null);
+    setEditorStaffId(null);
   };
 
   // ── undo ───────────────────────────────────────────────────────────────
@@ -624,7 +634,10 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
               onGestureStart={onGestureStart}
               onGestureEnd={onGestureEnd}
               onRemove={onRemoveShift}
-              onTapShift={setEditorId}
+              onTapShift={(id) => {
+                const sh = dayShifts.find(s => s.id === id);
+                if (sh) setEditorStaffId(sh.staffId);
+              }}
             />
           </Card>
 
@@ -768,7 +781,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
           lang={lang}
           onSave={onEditorSave}
           onRemove={onEditorRemove}
-          onClose={() => setEditorId(null)}
+          onClose={() => setEditorStaffId(null)}
         />
       )}
     </div>

@@ -9,7 +9,7 @@
 
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -18,7 +18,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { canManageTeam } from '@/lib/roles';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import type { StaffMember, StaffDepartment } from '@/types';
-import { T, fonts, deptMeta, asDeptKey, Caps, Btn } from './_tokens';
+import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from './_tokens';
 import { StaffAvatar, SeniorTag, HoursBar, PageHeader } from './_people';
 
 // ── Form types ────────────────────────────────────────────────────────────
@@ -71,6 +71,7 @@ export function ManagerDirectory() {
   /* ── Modal state ── */
   const [showModal, setShowModal] = useState(false);
   const [editMember, setEditMember] = useState<StaffMember | null>(null);
+  const createdIdRef = useRef<string | null>(null);
   const [form, setForm] = useState<StaffFormData>(EMPTY_FORM);
   const [linkedAccountId, setLinkedAccountId] = useState<string | null>(null);
   const [originalLinkedAccountId, setOriginalLinkedAccountId] = useState<string | null>(null);
@@ -137,11 +138,13 @@ export function ManagerDirectory() {
     setSaveError(null);
     setLinkedAccountId(null);
     setOriginalLinkedAccountId(null);
+    createdIdRef.current = null;
   };
 
   /* ── Open handlers ── */
   const openAdd = (dept: StaffDepartment = 'housekeeping') => {
     setEditMember(null);
+    createdIdRef.current = null;
     setForm({ ...EMPTY_FORM, department: dept });
     setWageTouched(false);
     setLinkedAccountId(null);
@@ -153,6 +156,7 @@ export function ManagerDirectory() {
 
   const openEdit = (member: StaffMember) => {
     setEditMember(member);
+    createdIdRef.current = null;
     setForm({
       name: member.name,
       phone: member.phone,
@@ -213,11 +217,14 @@ export function ManagerDirectory() {
 
       // Hard 15s timeout on the staff write — see notes in the legacy
       // /staff/page.tsx about why this matters (Supabase auth-lock wedge).
-      let savedStaffId: string | null = editMember?.id ?? null;
-      const writePromise: Promise<unknown> = editMember
-        ? updateStaffMember(uid, pid, editMember.id, data)
+      const existingId = editMember?.id ?? createdIdRef.current;
+      let savedStaffId: string | null = existingId;
+      const writePromise: Promise<unknown> = existingId
+        ? updateStaffMember(uid, pid, existingId, data)
         : addStaffMember(uid, pid, { ...data, scheduledToday: false, weeklyHours: 0 })
-            .then((newId: string | void) => { if (typeof newId === 'string') savedStaffId = newId; });
+            .then((newId: string | void) => {
+              if (typeof newId === 'string') { savedStaffId = newId; createdIdRef.current = newId; }
+            });
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(
@@ -239,13 +246,18 @@ export function ManagerDirectory() {
       if (savedStaffId && originalLinkedAccountId !== linkedAccountId) {
         // Detach old account if it was set.
         if (originalLinkedAccountId && originalLinkedAccountId !== linkedAccountId) {
-          await fetchWithAuth('/api/auth/team', {
+          const detachRes = await fetchWithAuth('/api/auth/team', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               hotelId: pid, accountId: originalLinkedAccountId, staffId: null,
             }),
-          }).catch(err => console.warn('[ManagerDirectory] unlink old account failed', err));
+          });
+          if (!detachRes.ok) {
+            throw new Error(lang === 'es'
+              ? 'Detalles guardados, pero no se pudo desvincular el inicio de sesión. Inténtalo de nuevo.'
+              : "Details saved, but the login couldn't be unlinked. Try again.");
+          }
         }
         // Attach new account.
         if (linkedAccountId) {
@@ -257,8 +269,9 @@ export function ManagerDirectory() {
             }),
           });
           if (!linkRes.ok) {
-            const body = await linkRes.json().catch(() => ({}));
-            throw new Error(body?.error || 'Failed to link login to staff record');
+            throw new Error(lang === 'es'
+              ? 'Detalles guardados, pero no se pudo vincular el inicio de sesión. Inténtalo de nuevo.'
+              : "Details saved, but the login couldn't be linked. Try again.");
           }
         }
       }
@@ -279,8 +292,9 @@ export function ManagerDirectory() {
           body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, hourlyWage: desiredWage }),
         });
         if (!wageRes.ok) {
-          const body = await wageRes.json().catch(() => ({}));
-          throw new Error(body?.error || 'Failed to save wage');
+          throw new Error(lang === 'es'
+            ? 'Detalles guardados, pero no se pudo actualizar el salario. Inténtalo de nuevo.'
+            : "Details saved, but the wage couldn't be updated. Try again.");
         }
         const sid = savedStaffId;
         setWages(w => ({ ...w, [sid]: desiredWage }));
@@ -297,12 +311,25 @@ export function ManagerDirectory() {
     }
   };
 
-  const handleDelete = (member: StaffMember) => {
-    const msg = lang === 'es' ? `¿Eliminar a ${member.name}?` : `Delete ${member.name}?`;
+  const handleDelete = async (member: StaffMember) => {
+    const msg = lang === 'es'
+      ? `¿Eliminar a ${member.name}? También se eliminará su historial de horarios.`
+      : `Delete ${member.name}? Their schedule history will be deleted too.`;
     if (!window.confirm(msg)) return;
-    if (uid && pid) {
-      deleteStaffMember(uid, pid, member.id)
-        .catch(err => console.error('[ManagerDirectory] delete failed:', err));
+    if (!uid || !pid) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await deleteStaffMember(uid, pid, member.id);
+      await refreshStaff();
+      closeModal();
+    } catch (err) {
+      console.error('[ManagerDirectory] delete failed:', err);
+      setSaveError(lang === 'es'
+        ? 'No se pudo eliminar. Inténtalo de nuevo.'
+        : "Couldn't delete. Please try again.");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -311,15 +338,19 @@ export function ManagerDirectory() {
   const onShift = staff.filter(s => s.scheduledToday).length;
   const nearOT  = staff.filter(s => s.weeklyHours >= s.maxWeeklyHours - 4).length;
 
-  const groups = useMemo(() => DEPT_ORDER.map(dept => {
-    const list = staff
+  const groups = useMemo(() => {
+    const byDept = (dept: DeptKey) => staff
       .filter(s => asDeptKey(s.department) === dept)
       .sort((a, b) => {
         if (a.scheduledToday !== b.scheduledToday) return a.scheduledToday ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
-    return { dept, list };
-  }), [staff]);
+    const base: { dept: DeptKey; list: StaffMember[] }[] =
+      DEPT_ORDER.map(dept => ({ dept, list: byDept(dept) }));
+    const otherList = byDept('other');
+    if (otherList.length > 0) base.push({ dept: 'other', list: otherList });
+    return base;
+  }, [staff]);
 
   // Accounts available to link: those without a staff_id, plus whichever
   // account is currently linked to this staff member (so the picker still
@@ -443,7 +474,7 @@ export function ManagerDirectory() {
           saveError={saveError}
           onClose={closeModal}
           onSave={performSave}
-          onDelete={editMember ? () => { closeModal(); handleDelete(editMember); } : undefined}
+          onDelete={editMember ? () => handleDelete(editMember) : undefined}
           linkableAccounts={linkableAccounts}
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}

@@ -13,6 +13,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { ScheduledShift, TimeOffRequest } from '@/types';
@@ -33,7 +34,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
   const me = useMemo(() => staff.find(s => s.id === staffId) ?? null, [staff, staffId]);
   const {
     days, byStaff, openShifts, torByStaff, publishedDates, presets,
-  } = useWeekShifts(activePropertyId, weekStart);
+  } = useWeekShifts(activePropertyId, weekStart, staffId);
 
   const propName = activeProperty?.name ?? 'Your property';
 
@@ -46,6 +47,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
     );
   }
 
+  const es = me.language === 'es';
   const meDept = deptMeta[asDeptKey(me.department)];
   // Only show *published* shifts (drafts are manager-side). Past dates
   // still render even if not in a published week — they ran historically.
@@ -64,11 +66,15 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
   }, 0);
   const cap = me.maxWeeklyHours || 40;
   const firstName = me.name.split(/\s+/)[0] || me.name;
-  const greeting = me.language === 'es' ? `Hola, ${firstName}.` : `Hi, ${firstName}.`;
+  const greeting = es ? `Hola, ${firstName}.` : `Hi, ${firstName}.`;
 
   // Open shifts in my dept, in the visible week, that are published (i.e.
   // visible to staff) and in the future.
   const myDept = asDeptKey(me.department);
+  const deptNameEs: Record<string, string> = {
+    housekeeping: 'limpieza', front_desk: 'recepción', maintenance: 'mantenimiento', other: 'otros',
+  };
+  const myDeptLabel = es ? (deptNameEs[myDept] ?? 'tu área') : meDept.label.toLowerCase();
   const myOpenShifts = openShifts.filter(o =>
     o.department === myDept
     && o.status !== 'draft'
@@ -111,7 +117,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
               <span>{greeting}</span>
             </h1>
           </div>
-          <HoursCard hrs={myHrs} cap={cap} shifts={myShiftCount} tone={meDept.tone}/>
+          <HoursCard hrs={myHrs} cap={cap} shifts={myShiftCount} tone={meDept.tone} es={es}/>
         </div>
 
         <div style={{
@@ -119,11 +125,11 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
           gap: 10, marginBottom: 12,
         }}>
           <div>
-            <Caps size={9}>My schedule</Caps>
+            <Caps size={9}>{es ? 'Mi horario' : 'My schedule'}</Caps>
             <div style={{
               fontFamily: fonts.sans, fontSize: 16, fontWeight: 600,
               color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
-            }}>Week at a glance</div>
+            }}>{es ? 'Vista de la semana' : 'Week at a glance'}</div>
           </div>
           <span style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.06em' }}>
             {days[0]?.dateLabel} – {days[6]?.dateLabel}
@@ -165,7 +171,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
                       color: '#fff', background: 'rgba(255,255,255,0.18)',
                       border: '1px solid rgba(255,255,255,0.26)',
                       padding: '1px 6px', borderRadius: 999, letterSpacing: '0.08em', whiteSpace: 'nowrap',
-                    }}>TODAY</span>
+                    }}>{es ? 'HOY' : 'TODAY'}</span>
                   )}
                 </div>
                 {!isOff ? (
@@ -189,7 +195,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
                     border: `1px dashed ${isToday ? 'rgba(255,255,255,0.22)' : T.rule}`,
                     fontFamily: fonts.mono, fontSize: 10.5,
                     color: isToday ? 'rgba(255,255,255,0.6)' : T.ink3, textAlign: 'center',
-                  }}>Day off</div>
+                  }}>{es ? 'Día libre' : 'Day off'}</div>
                 )}
               </div>
             );
@@ -199,12 +205,14 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
         <div className="my-shifts-extras">
           <OpenShiftsCard
             shifts={myOpenShifts}
-            myDept={meDept.label.toLowerCase()}
+            myDept={myDeptLabel}
             hotelId={activePropertyId ?? ''}
+            es={es}
           />
           <TimeOffCard
             requests={myTor}
             onAddRequest={() => setRequestOpen(true)}
+            es={es}
           />
         </div>
       </div>
@@ -213,6 +221,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
         <RequestTimeOffModal
           hotelId={activePropertyId ?? ''}
           onClose={() => setRequestOpen(false)}
+          es={es}
         />
       )}
     </div>
@@ -221,8 +230,8 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
 
 // ── Hours card ─────────────────────────────────────────────────────────────
 function HoursCard({
-  hrs, cap, shifts, tone,
-}: { hrs: number; cap: number; shifts: number; tone: string }) {
+  hrs, cap, shifts, tone, es,
+}: { hrs: number; cap: number; shifts: number; tone: string; es: boolean }) {
   const pct = Math.min(1, cap > 0 ? hrs / cap : 0);
   return (
     <div style={{
@@ -230,7 +239,7 @@ function HoursCard({
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14,
       boxShadow: T.cardShadow,
     }}>
-      <Caps size={9}>This week</Caps>
+      <Caps size={9}>{es ? 'Esta semana' : 'This week'}</Caps>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginTop: 4, gap: 12 }}>
         <span style={{
           fontFamily: fonts.sans, fontSize: 23, fontWeight: 600, color: T.ink,
@@ -240,9 +249,9 @@ function HoursCard({
         </span>
         <div style={{ textAlign: 'right' }}>
           <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, fontWeight: 500 }}>
-            {shifts} {shifts === 1 ? 'shift' : 'shifts'}
+            {shifts} {es ? (shifts === 1 ? 'turno' : 'turnos') : (shifts === 1 ? 'shift' : 'shifts')}
           </div>
-          <div style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, marginTop: 2 }}>of {cap}h cap</div>
+          <div style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, marginTop: 2 }}>{es ? `de ${cap}h máx.` : `of ${cap}h cap`}</div>
         </div>
       </div>
       <span style={{ display: 'block', height: 5, borderRadius: 5, background: T.rule, overflow: 'hidden', marginTop: 10 }}>
@@ -262,8 +271,8 @@ function hoursBetween(start: string, end: string): number {
 
 // ── Open shifts card ──────────────────────────────────────────────────────
 function OpenShiftsCard({
-  shifts, myDept, hotelId,
-}: { shifts: ScheduledShift[]; myDept: string; hotelId: string }) {
+  shifts, myDept, hotelId, es,
+}: { shifts: ScheduledShift[]; myDept: string; hotelId: string; es: boolean }) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -278,11 +287,11 @@ function OpenShiftsCard({
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        throw new Error(b?.error || 'Pick up failed');
+        throw new Error(b?.error || (es ? 'No se pudo tomar el turno' : 'Pick up failed'));
       }
       // Realtime sub will refresh.
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : 'Pick up failed');
+      setErrorMsg(e instanceof Error ? e.message : (es ? 'No se pudo tomar el turno' : 'Pick up failed'));
     } finally {
       setBusyId(null);
     }
@@ -299,11 +308,11 @@ function OpenShiftsCard({
         display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12,
       }}>
         <div>
-          <Caps size={9}>Pick up</Caps>
+          <Caps size={9}>{es ? 'Tomar' : 'Pick up'}</Caps>
           <div style={{
             fontFamily: fonts.sans, fontSize: 14.5, fontWeight: 600,
             color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
-          }}>Open shifts</div>
+          }}>{es ? 'Turnos disponibles' : 'Open shifts'}</div>
         </div>
         <span style={{
           fontFamily: fonts.mono, fontSize: 9.5,
@@ -312,14 +321,14 @@ function OpenShiftsCard({
           background: shifts.length > 0 ? 'rgba(184,92,61,0.10)' : 'rgba(31,35,28,0.05)',
           border: `1px solid ${shifts.length > 0 ? 'rgba(184,92,61,0.28)' : T.rule}`,
           padding: '3px 9px', borderRadius: 999,
-        }}>{shifts.length} AVAILABLE</span>
+        }}>{shifts.length} {es ? 'DISPONIBLES' : 'AVAILABLE'}</span>
       </div>
       {shifts.length === 0 ? (
         <div style={{
           padding: '22px 18px', textAlign: 'center', flex: 1,
           fontFamily: fonts.sans, fontSize: 13,
           color: T.ink3, letterSpacing: '0',
-        }}>No open shifts in {myDept} this week.</div>
+        }}>{es ? `No hay turnos disponibles en ${myDept} esta semana.` : `No open shifts in ${myDept} this week.`}</div>
       ) : (
         <div>
           {shifts.map(s => (
@@ -344,7 +353,7 @@ function OpenShiftsCard({
                   {fmtRange(s.startTime, s.endTime)}
                 </div>
                 <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink2, marginTop: 3 }}>
-                  {s.reason ?? 'Open shift'}
+                  {s.reason ?? (es ? 'Turno disponible' : 'Open shift')}
                 </div>
               </div>
               <button
@@ -356,7 +365,7 @@ function OpenShiftsCard({
                   fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap',
                   opacity: busyId === s.id ? 0.5 : 1,
                 }}
-              >{busyId === s.id ? 'Picking…' : 'Pick up'}</button>
+              >{busyId === s.id ? (es ? 'Tomando…' : 'Picking…') : (es ? 'Tomar' : 'Pick up')}</button>
             </div>
           ))}
           {errorMsg && (
@@ -379,8 +388,8 @@ function dateLabelFromYmd(ymd: string): string {
 
 // ── Time-off card ─────────────────────────────────────────────────────────
 function TimeOffCard({
-  requests, onAddRequest,
-}: { requests: TimeOffRequest[]; onAddRequest: () => void }) {
+  requests, onAddRequest, es,
+}: { requests: TimeOffRequest[]; onAddRequest: () => void; es: boolean }) {
   return (
     <div style={{
       background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
@@ -392,35 +401,35 @@ function TimeOffCard({
         display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 12,
       }}>
         <div>
-          <Caps size={9}>Time off</Caps>
+          <Caps size={9}>{es ? 'Días libres' : 'Time off'}</Caps>
           <div style={{
             fontFamily: fonts.sans, fontSize: 14.5, fontWeight: 600,
             color: T.ink, letterSpacing: '-0.01em', marginTop: 3, lineHeight: 1.1,
-          }}>Your requests</div>
+          }}>{es ? 'Tus solicitudes' : 'Your requests'}</div>
         </div>
-        <Btn variant="primary" size="sm" onClick={onAddRequest}>+ Request</Btn>
+        <Btn variant="primary" size="sm" onClick={onAddRequest}>{es ? '+ Solicitar' : '+ Request'}</Btn>
       </div>
       {requests.length === 0 ? (
         <div style={{
           padding: '22px 18px', textAlign: 'center', flex: 1,
           fontFamily: fonts.sans, fontSize: 13,
           color: T.ink3, letterSpacing: '0',
-        }}>No active requests.</div>
+        }}>{es ? 'No hay solicitudes activas.' : 'No active requests.'}</div>
       ) : (
         <div>
-          {requests.slice(0, 8).map(r => <TorRow key={r.id} r={r}/>)}
+          {requests.slice(0, 8).map(r => <TorRow key={r.id} r={r} es={es}/>)}
         </div>
       )}
     </div>
   );
 }
 
-function TorRow({ r }: { r: TimeOffRequest }) {
+function TorRow({ r, es }: { r: TimeOffRequest; es: boolean }) {
   const palette: Record<string, { fg: string; bg: string; br: string; label: string; icon: string }> = {
-    pending:  { fg: '#8C6A33', bg: 'rgba(201,150,68,0.14)', br: 'rgba(140,106,51,0.32)', label: 'Pending',  icon: '⏱' },
-    approved: { fg: '#356B4C', bg: 'rgba(53,107,76,0.10)',  br: 'rgba(53,107,76,0.30)',  label: 'Approved', icon: '✓' },
-    denied:   { fg: '#B85C3D', bg: 'rgba(184,92,61,0.10)',  br: 'rgba(184,92,61,0.30)',  label: 'Denied',   icon: '✕' },
-    cancelled:{ fg: T.ink3,    bg: 'transparent',           br: T.rule,                  label: 'Cancelled',icon: '·' },
+    pending:  { fg: '#8C6A33', bg: 'rgba(201,150,68,0.14)', br: 'rgba(140,106,51,0.32)', label: es ? 'Pendiente' : 'Pending',  icon: '⏱' },
+    approved: { fg: '#356B4C', bg: 'rgba(53,107,76,0.10)',  br: 'rgba(53,107,76,0.30)',  label: es ? 'Aprobada' : 'Approved', icon: '✓' },
+    denied:   { fg: '#B85C3D', bg: 'rgba(184,92,61,0.10)',  br: 'rgba(184,92,61,0.30)',  label: es ? 'Denegada' : 'Denied',   icon: '✕' },
+    cancelled:{ fg: T.ink3,    bg: 'transparent',           br: T.rule,                  label: es ? 'Cancelada' : 'Cancelled',icon: '·' },
   };
   const p = palette[r.status];
   return (
@@ -453,7 +462,7 @@ function TorRow({ r }: { r: TimeOffRequest }) {
         )}
         {r.denyReason && r.status === 'denied' && (
           <div style={{ fontFamily: fonts.sans, fontSize: 11, color: '#B85C3D', marginTop: 2 }}>
-            Reason: {r.denyReason}
+            {es ? 'Motivo' : 'Reason'}: {r.denyReason}
           </div>
         )}
       </div>
@@ -463,8 +472,8 @@ function TorRow({ r }: { r: TimeOffRequest }) {
 
 // ── Request modal ─────────────────────────────────────────────────────────
 function RequestTimeOffModal({
-  hotelId, onClose,
-}: { hotelId: string; onClose: () => void }) {
+  hotelId, onClose, es,
+}: { hotelId: string; onClose: () => void; es: boolean }) {
   const today = new Date().toLocaleDateString('en-CA');
   const [requestDate, setRequestDate] = useState<string>(today);
   const [reason, setReason] = useState<string>('');
@@ -472,7 +481,7 @@ function RequestTimeOffModal({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const submit = async () => {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(requestDate)) { setErrorMsg('Pick a date.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(requestDate)) { setErrorMsg(es ? 'Elige una fecha.' : 'Pick a date.'); return; }
     setBusy(true);
     setErrorMsg(null);
     try {
@@ -483,11 +492,11 @@ function RequestTimeOffModal({
       });
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
-        throw new Error(b?.error || 'Failed to submit');
+        throw new Error(b?.error || (es ? 'No se pudo enviar' : 'Failed to submit'));
       }
       onClose();
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : 'Failed to submit');
+      setErrorMsg(e instanceof Error ? e.message : (es ? 'No se pudo enviar' : 'Failed to submit'));
     } finally { setBusy(false); }
   };
 
@@ -505,14 +514,16 @@ function RequestTimeOffModal({
         <h2 style={{
           margin: 0, fontFamily: fonts.sans, fontSize: 18,
           color: T.ink, letterSpacing: '-0.02em', fontWeight: 600,
-        }}>Request time off</h2>
+        }}>{es ? 'Solicitar día libre' : 'Request time off'}</h2>
         <p style={{ margin: '8px 0 16px', fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.5 }}>
-          Your manager will see this in the schedule grid and approve or deny.
+          {es
+            ? 'Tu gerente lo verá en el horario y lo aprobará o denegará.'
+            : 'Your manager will see this in the schedule grid and approve or deny.'}
         </p>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <Caps size={10}>Date</Caps>
+            <Caps size={10}>{es ? 'Fecha' : 'Date'}</Caps>
             <input
               type="date" value={requestDate}
               onChange={e => setRequestDate(e.target.value)}
@@ -521,11 +532,11 @@ function RequestTimeOffModal({
             />
           </div>
           <div>
-            <Caps size={10}>Reason (optional)</Caps>
+            <Caps size={10}>{es ? 'Motivo (opcional)' : 'Reason (optional)'}</Caps>
             <input
               value={reason}
               onChange={e => setReason(e.target.value)}
-              placeholder="e.g. doctor appointment"
+              placeholder={es ? 'ej. cita médica' : 'e.g. doctor appointment'}
               style={{ ...inputStyle, marginTop: 6 }}
             />
           </div>
@@ -537,9 +548,9 @@ function RequestTimeOffModal({
             }}>{errorMsg}</div>
           )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-            <Btn variant="ghost" size="md" onClick={onClose} disabled={busy}>Cancel</Btn>
+            <Btn variant="ghost" size="md" onClick={onClose} disabled={busy}>{es ? 'Cancelar' : 'Cancel'}</Btn>
             <Btn variant="primary" size="md" onClick={submit} disabled={busy}>
-              {busy ? 'Submitting…' : 'Submit'}
+              {busy ? (es ? 'Enviando…' : 'Submitting…') : (es ? 'Enviar' : 'Submit')}
             </Btn>
           </div>
         </div>
@@ -552,6 +563,8 @@ function RequestTimeOffModal({
 function NotLinkedState({
   displayName, propertyName,
 }: { displayName: string; propertyName: string }) {
+  const { lang } = useLang();
+  const es = lang === 'es';
   return (
     <div style={{
       background: 'transparent', color: T.ink, fontFamily: fonts.sans,
@@ -567,13 +580,15 @@ function NotLinkedState({
           fontFamily: fonts.sans, fontSize: 26, color: T.ink,
           margin: '8px 0 0', letterSpacing: '-0.02em', lineHeight: 1.15, fontWeight: 600,
         }}>
-          <span>Hi, {displayName}.</span>
+          <span>{es ? `Hola, ${displayName}.` : `Hi, ${displayName}.`}</span>
         </h1>
         <p style={{
           margin: '14px auto 0', maxWidth: 380,
           fontFamily: fonts.sans, fontSize: 14, color: T.ink2, lineHeight: 1.6,
         }}>
-          Your account isn’t linked to a staff record yet. Ask your manager to open <strong style={{ color: T.ink }}>Staff → Directory</strong> and link your login from your staff card.
+          {es
+            ? <>Tu cuenta aún no está vinculada a un registro de personal. Pide a tu gerente que abra <strong style={{ color: T.ink }}>Personal → Directorio</strong> y vincule tu inicio de sesión desde tu tarjeta de personal.</>
+            : <>Your account isn’t linked to a staff record yet. Ask your manager to open <strong style={{ color: T.ink }}>Staff → Directory</strong> and link your login from your staff card.</>}
         </p>
       </div>
     </div>

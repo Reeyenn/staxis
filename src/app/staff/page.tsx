@@ -132,9 +132,13 @@ function DemoViewSwitch({
       });
   }, [staff]);
 
-  // Default the preview to the first roster member once it loads.
+  // Default the preview to the first roster member once it loads. Also
+  // recover when a stored previewStaffId points at a since-deactivated or
+  // deleted staffer (no longer in the roster) — otherwise the preview shows
+  // "not linked" forever while the picker displays someone else.
   useEffect(() => {
-    if (mode === 'staff' && !previewStaffId && roster.length > 0) {
+    if (mode !== 'staff' || roster.length === 0) return;
+    if (!previewStaffId || !roster.some(s => s.id === previewStaffId)) {
       onPreviewStaff(roster[0].id);
     }
   }, [mode, previewStaffId, roster, onPreviewStaff]);

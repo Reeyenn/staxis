@@ -109,15 +109,24 @@ export function subscribeToScheduledShifts(
 export function subscribeToTimeOffRequests(
   _uid: string, pid: string,
   callback: (requests: TimeOffRequest[]) => void,
+  // Optional viewer scope. `undefined` (manager callers) → whole property.
+  // An explicit staff id → only that staffer's rows (keeps colleagues'
+  // free-text reasons off the wire). Explicit `null` (staff view with no
+  // linked staff record) → empty list. The realtime channel filter stays
+  // property-wide; events for other staff just trigger a cheap refetch.
+  staffId?: string | null,
 ): () => void {
   return subscribeTable<TimeOffRequest>(
     `time_off_requests:${pid}`,
     'time_off_requests',
     `property_id=eq.${pid}`,
     async () => {
-      const { data, error } = await supabase
+      if (staffId === null) return [];
+      let query = supabase
         .from('time_off_requests').select('*')
-        .eq('property_id', pid)
+        .eq('property_id', pid);
+      if (staffId) query = query.eq('staff_id', staffId);
+      const { data, error } = await query
         .order('submitted_at', { ascending: false });
       if (error) throw error;
       return (data ?? []).map(fromTimeOffRequestRow);
