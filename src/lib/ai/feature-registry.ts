@@ -208,6 +208,11 @@ export function isAiFeatureRuntimeProviderCompatible(
 }
 
 export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinition>> = {
+  'admin.model_recommendations': defineFeature(
+    'admin.model_recommendations', 'Admin', 'Model recommendations',
+    'Writes the suggestions on the Recommendations tab — reads your model prices, spend, and any newly available models. Runs only when you click refresh.',
+    ['text'], SONNET,
+  ),
   'agent.ask_staxis': defineFeature(
     'agent.ask_staxis', 'Agent', 'Ask Staxis',
     'The main AI helper — the box at the bottom of the screen where you ask questions and it can take actions for you.',

@@ -19,14 +19,13 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
-import { Users, ChevronLeft, Mail, KeyRound } from 'lucide-react';
+import { Users, ChevronLeft } from 'lucide-react';
 import { useCan } from '@/lib/capabilities/useCan';
 
 import { AdminAccountsCrud } from './_components/AdminAccountsCrud';
 import { TeamMembers } from './_components/TeamMembers';
-import { useInvites } from './_components/Invites';
-import { useJoinCodes } from './_components/JoinCodes';
-import { labelStyle, inputStyle, teamBtnStyle } from './_components/shared';
+import { InviteStaffPanel } from '@/components/team/InviteStaffPanel';
+import { labelStyle, inputStyle } from './_components/shared';
 
 export default function AccountsPage() {
   const { user } = useAuth();
@@ -49,9 +48,6 @@ export default function AccountsPage() {
   useEffect(() => {
     if (!teamHotelId && manageableHotels.length > 0) setTeamHotelId(manageableHotels[0].id);
   }, [manageableHotels, teamHotelId]);
-
-  const invites = useInvites(user, teamHotelId);
-  const joinCodes = useJoinCodes(user, teamHotelId);
 
   if (!user || !can('manage_team')) return null;
 
@@ -108,25 +104,15 @@ export default function AccountsPage() {
 
           <TeamMembers user={user} hotelId={teamHotelId} />
 
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button onClick={invites.openModal} style={teamBtnStyle}>
-              <Mail size={14} />
-              {lang === 'es' ? 'Invitar por correo' : 'Invite by email'}
-            </button>
-            <button onClick={joinCodes.openModal} style={teamBtnStyle}>
-              <KeyRound size={14} />
-              {lang === 'es' ? 'Generar código' : 'Generate code'}
-            </button>
-          </div>
-
-          {invites.list}
-          {joinCodes.list}
+          {/* One unified invite surface: shared join code + link + QR for
+              staff, plus the manager-only email invite. Replaces the old
+              separate "Invite by email" and "Generate code" sections. */}
+          {teamHotelId && (
+            <InviteStaffPanel hotelId={teamHotelId} lang={lang} variant="card" />
+          )}
         </div>
 
       </div>
-
-      {invites.modal}
-      {joinCodes.modal}
     </AppLayout>
   );
 }

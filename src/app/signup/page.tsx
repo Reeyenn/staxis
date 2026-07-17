@@ -50,6 +50,16 @@ function SignupInner() {
       setError(lang === 'es' ? 'Las contraseñas no coinciden.' : 'Passwords do not match.');
       return;
     }
+    // Phone is required for staff signups — the hotel texts staff their
+    // schedules, so a signup with no reachable number is useless. Require a
+    // non-empty value with at least 7 digits (the server normalizes any
+    // formatting like "(555) 123-4567" down to digits).
+    if (phone.replace(/\D/g, '').length < 7) {
+      setError(lang === 'es'
+        ? 'Ingresa un número de teléfono válido — el hotel te enviará tu horario por mensaje.'
+        : 'Enter a valid phone number — the hotel texts you your schedule.');
+      return;
+    }
     setSubmitting(true);
     try {
       const res = await fetch('/api/auth/use-join-code', {
@@ -62,12 +72,13 @@ function SignupInner() {
           password,
           role,
           phone: phone.trim() || null,
+          language: lang,
         }),
       });
       const body = await res.json() as {
         ok?: boolean;
         error?: string;
-        data?: { email?: string; twoFactorEnabled?: boolean };
+        data?: { email?: string; twoFactorEnabled?: boolean; pendingApproval?: boolean };
       };
       if (!res.ok || !body.ok) {
         setError(body.error ?? (lang === 'es' ? 'No se pudo crear la cuenta.' : 'Failed to create account.'));
@@ -123,6 +134,7 @@ function SignupInner() {
   const canSubmit = code.trim().length > 0
     && email.trim().length > 0
     && displayName.trim().length > 0
+    && phone.replace(/\D/g, '').length >= 7
     && password.length >= 6
     && confirm.length >= 6
     && !submitting;
@@ -155,7 +167,7 @@ function SignupInner() {
         <Input label={lang === 'es' ? 'Teléfono' : 'Phone'} type="tel" value={phone} onChange={setPhone} disabled={submitting} autoComplete="tel" placeholder="(555) 123-4567" />
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <AuthLabel>{lang === 'es' ? 'Tu rol' : 'Your role'}</AuthLabel>
+          <AuthLabel>{lang === 'es' ? 'Departamento' : 'Department'}</AuthLabel>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {(['front_desk', 'housekeeping', 'maintenance'] as SignupRole[]).map(r => {
               const active = role === r;

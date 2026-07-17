@@ -51,6 +51,9 @@ export type RateLimitEndpoint =
   // Anthropic/OpenAI + bulk catalog upserts. Not token-billable, so fail-open,
   // but bounded against a scripted retry loop rewriting the fleet catalog.
   | 'admin-ai-models-refresh'
+  // Recommendations tab generation — one real Claude call over the whole
+  // catalog + spend history (several cents per run). Billable, fail-closed.
+  | 'admin-ai-recommendations'
   // Manual 2FA code entry from the Launch Bay panel. Costs nothing,
   // but it feeds the robot's login — cap retries so a scripted storm
   // can't spray guesses into pms_auth_codes.
@@ -308,6 +311,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Catalog refreshes hit two provider list APIs; a human clicks this a few
   // times a day at most.
   'admin-ai-models-refresh':    30,
+  // A human asks for fresh advice a handful of times a day at most.
+  'admin-ai-recommendations':   10,
   // Manual 2FA code entry — a human typo-retries a few times at most.
   'admin-pms-auth-code':        30,
   // Invoice scans cost $0.003-0.01 each; 50/hr per property absorbs
@@ -632,6 +637,7 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Recipe regeneration is the same shape as pms-onboard.
   'admin-regenerate-recipe',
   'admin-ai-config-validate',
+  'admin-ai-recommendations',
   // Claude Vision calls.
   'scan-invoice',
   'photo-count',

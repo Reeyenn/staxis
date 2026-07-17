@@ -49,7 +49,9 @@ function normalizePhone(p: string | undefined | null): string | null {
   const trimmed = p.trim();
   if (!trimmed) return null;
   // Reject obvious junk but don't be strict — international formats vary.
-  if (!/[\d]{7,}/.test(trimmed)) return null;
+  // Count digits across the whole string: "(555) 010-2026" is a fine phone
+  // number even though its longest consecutive digit run is only 4.
+  if ((trimmed.match(/\d/g) ?? []).length < 7) return null;
   return trimmed;
 }
 
@@ -78,8 +80,10 @@ export async function POST(req: NextRequest) {
     password?: string;
     role?: string;
     phone?: string;
+    language?: string;
   };
   const { code, email, displayName, password, role: requestedRole, phone } = body;
+  const language = body.language === 'es' ? 'es' : 'en';
   if (!code || !email || !displayName || !password) {
     return err('code, email, displayName, password required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
@@ -267,17 +271,24 @@ export async function POST(req: NextRequest) {
   // Insert with collision-retry against accounts.username UNIQUE. On any
   // non-unique-violation error, bail to the cleanup path below (release
   // slot + delete auth user).
+  // New-flow staff signups (shared code, self-picked role) get NO property
+  // access at creation — they land in join_requests as 'pending' and a
+  // manager approves them from the Staff Directory (migration 0315), which
+  // is what grants access + creates their staff row. Legacy baked-role
+  // codes (single-use owner/GM onboarding invites) keep immediate access.
+  const pendingApproval = !row.role;
   let insErr: { code?: string; message?: string } | null = null;
+  let accountId: string | null = null;
   for (let i = 0; i < 5; i++) {
-    const { error } = await supabaseAdmin.from('accounts').insert({
+    const { data: insData, error } = await supabaseAdmin.from('accounts').insert({
       username,
       display_name: displayName,
       role: finalRole,
-      property_access: [row.hotel_id],
+      property_access: pendingApproval ? [] : [row.hotel_id],
       data_user_id: authUser.id,
       phone: normalizedPhone,
-    });
-    if (!error) { insErr = null; break; }
+    }).select('id').single();
+    if (!error) { insErr = null; accountId = String(insData.id); break; }
     insErr = error;
     if (error.code !== '23505') break;
     username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
@@ -306,6 +317,39 @@ export async function POST(req: NextRequest) {
     return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   // Slot already incremented via the CAS at the top.
+
+  // Pending staff signup → create the join request the manager will see in
+  // the Staff Directory. If this write fails the account would be stranded
+  // (no access, no request, nothing for a manager to approve), so treat it
+  // like the accounts-insert failure: roll everything back and let the
+  // person retry the whole signup.
+  if (pendingApproval && accountId) {
+    const { error: jrErr } = await supabaseAdmin.from('join_requests').insert({
+      property_id: row.hotel_id,
+      account_id: accountId,
+      name: displayName,
+      phone: normalizedPhone,
+      language,
+      department: finalRole,
+    });
+    if (jrErr) {
+      log.error('[use-join-code] join_requests insert failed', { err: jrErr, requestId });
+      await supabaseAdmin.from('accounts').delete().eq('id', accountId).then(({ error: accDelErr }) => {
+        if (accDelErr) log.error('[use-join-code] account rollback failed', { accountId, err: accDelErr, requestId });
+      });
+      await supabaseAdmin.auth.admin.deleteUser(authUser.id).catch(rollErr => {
+        log.error('[use-join-code] AUTH ROLLBACK FAILED', {
+          auth_user_id: authUser.id, email: normalizedEmail, err: rollErr, requestId,
+        });
+        captureException(rollErr, {
+          subsystem: 'auth', failure_mode: 'rollback_failed',
+          auth_user_id: authUser.id, flow: 'use-join-code',
+        });
+      });
+      await releaseSlot();
+      return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+  }
 
   // Hole #1 fix (audit 2026-05-22): write a password proof so the
   // client's first sign-in flow (signInWithOtp + verifyOtp + trust-device)
@@ -443,6 +487,7 @@ export async function POST(req: NextRequest) {
       code: normalizedCode, role: finalRole, username,
       hasPhone: !!normalizedPhone,
       ownerIdTransferred: finalRole === 'owner',
+      pendingApproval,
     },
   });
 
@@ -455,5 +500,5 @@ export async function POST(req: NextRequest) {
   // signInWithOtp → /signin/verify flow, unchanged.
   const twoFactorEnabled = await isTwoFactorEnabled();
 
-  return ok({ email: normalizedEmail, twoFactorEnabled }, { requestId });
+  return ok({ email: normalizedEmail, twoFactorEnabled, pendingApproval }, { requestId });
 }
