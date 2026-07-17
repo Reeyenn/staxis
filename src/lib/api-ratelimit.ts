@@ -130,9 +130,6 @@ export type RateLimitEndpoint =
   | 'housekeeper-checklist-read'
   | 'housekeeper-lunch-break'
   | 'housekeeper-daily-summary'
-  // Front-desk "rush" button (display side ships in piece A so the
-  // housekeeper banner works; the posting side comes in piece B).
-  | 'front-desk-rush'
   | 'laundry-bootstrap'
   | 'laundry-complete'
   // F-NEW-02 / Batch D — public POST that swaps the SMS-link CODE for the
@@ -178,7 +175,6 @@ export type RateLimitEndpoint =
   | 'housekeeping-notice-dismiss'    // per-user dismissal
   | 'housekeeping-room-notes-post'   // manager adds a note from RoomsTab
   | 'housekeeping-room-notes-read'   // housekeeper page reads manager notes
-  // 'front-desk-rush' was already added in piece A — re-using that bucket.
   | 'housekeeper-structured-issue'   // structured issue → work order
   | 'housekeeper-photo-presign'      // request signed-upload URL
   | 'housekeeper-add-note'           // quick note from housekeeper page
@@ -248,13 +244,8 @@ export type RateLimitEndpoint =
   // Equipment (asset) registry (0249). Manager create/edit/delete of assets,
   // keyed on the RAW property UUID (no SMS / Claude — not billing-impacting).
   | 'equipment-config'
-  // Lost & Found (feature, 2026-05-30). Front-desk register + AI features +
-  // housekeeper "Found an item". Reads keyed on pid; writes/AI too.
-  | 'lost-found-read'
-  | 'lost-found-write'
-  | 'lost-found-describe-photo'
-  | 'lost-found-auto-match'
-  | 'lost-found-photo-presign'
+  // Lost & Found (feature, 2026-05-30) — housekeeper "Found an item" reporting.
+  // The front-desk register surface was retired in the 2026-07 purge.
   | 'housekeeper-report-found-item'
   | 'housekeeper-found-item-photo-presign'
   // ── Communications (built-in staff messaging) ────────────────────────
@@ -315,17 +306,6 @@ export type RateLimitEndpoint =
   | 'inventory-catalog-read'
   | 'inventory-catalog-import'
   | 'inventory-spend-rollup'
-  // ── Packages (front-desk incoming guest-delivery log, 2026-06-01) ──────────
-  // ALL keyed on the RAW property id (a real properties.id) — NOT a
-  // hashToRateLimitKey pseudo-UUID. api_limits.property_id has an FK to
-  // properties(id) (migration 0142), so a pseudo-UUID would FK-violate → the RPC
-  // errors → the billing endpoints fail CLOSED. scan-label runs Claude Vision
-  // (in BILLING_IMPACTING_ENDPOINTS below). The rest are reads / deliberate
-  // desk writes.
-  | 'packages-read'
-  | 'packages-write'
-  | 'packages-scan-label'
-  | 'packages-photo-presign'
   // ── Knowledge hub (0252) — manager-gated. knowledge-presign mints a signed
   // upload URL; knowledge-write covers the document register (synchronous
   // storage download + text extraction). Both keyed on the (pid,userId)
@@ -462,7 +442,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeper-daily-summary':    30,
   // Front-desk rush button: each rush is a deliberate decision. 60/hr
   // per (pid, staffId) is generous for a busy front desk.
-  'front-desk-rush':              60,
   // laundry-bootstrap is a read-only page bootstrap. Polled less often
   // than housekeeper. 600/hr per property covers heavy use.
   'laundry-bootstrap':          600,
@@ -551,11 +530,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // dashboard tile polls counts — 3600/hr per property absorbs several
   // terminals. Writes are deliberate desk actions. AI + SMS endpoints cost
   // money so they're tighter (and fail-closed below).
-  'lost-found-read':            3600,
-  'lost-found-write':            300,
-  'lost-found-describe-photo':    50,
-  'lost-found-auto-match':        60,
-  'lost-found-photo-presign':    200,
   'housekeeper-report-found-item': 200,
   'housekeeper-found-item-photo-presign': 200,
   // ── Communications ───────────────────────────────────────────────────
@@ -603,10 +577,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Packages — per-property (raw pid). read = the polled list; write covers
   // create / pickup / delete; scan-label is Claude Vision; presign mints a
   // signed upload URL. Tuned to "a busy front desk".
-  'packages-read':              600,
-  'packages-write':             300,
-  'packages-scan-label':         50,
-  'packages-photo-presign':     200,
   // Knowledge hub uploads (0252). A manager bulk-adding files won't hit these;
   // a runaway/stolen session caps fast.
   'knowledge-presign':          120,
@@ -765,8 +735,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'compliance-anomaly-phrase',
   // Lost & Found — vision (describe) + Claude (auto-match). Each call costs
   // money, so fail CLOSED if the rate-limit RPC errors.
-  'lost-found-describe-photo',
-  'lost-found-auto-match',
   // Communications AI endpoints — each call costs Claude/OpenAI credit.
   // Keyed on the RAW property UUID (real properties.id), so failing closed
   // is never triggered by an FK violation. Clients degrade gracefully on 429
@@ -789,7 +757,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'inventory-order-send',
   // Packages — scan-label (Claude Vision). Fail CLOSED so a DB blip can't
   // uncap Anthropic spend.
-  'packages-scan-label',
 ]);
 
 /**

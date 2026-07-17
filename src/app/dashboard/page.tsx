@@ -47,8 +47,6 @@ import {
   subscribeToWorkOrders,
   subscribeToComplaints,
   fetchComplianceSummary,
-  subscribeLostFoundCounts,
-  type LostFoundCounts,
 } from '@/lib/db';
 import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
 import type { ComplianceSummary } from '@/lib/compliance/types';
@@ -186,7 +184,6 @@ export default function DashboardPage() {
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
   const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
-  const [lostFound, setLostFound] = useState<LostFoundCounts | null>(null);
 
   // The configured room count is the property's true inventory; the PMS
   // snapshot's total_rooms can be a partial sample, so don't let it shrink
@@ -225,10 +222,6 @@ export default function DashboardPage() {
   useEffect(() => {
     if (!user || !activePropertyId || !communicationsEnabled) return;
     return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
-  }, [user, activePropertyId, communicationsEnabled]);
-  useEffect(() => {
-    if (!user || !activePropertyId || !communicationsEnabled) return;
-    return subscribeLostFoundCounts(activePropertyId, setLostFound);
   }, [user, activePropertyId, communicationsEnabled]);
   useEffect(() => {
     // Property switch / section toggle: never let the previous scope's
@@ -456,9 +449,8 @@ export default function DashboardPage() {
     if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: attentionText('complaintsOverdue', overdueComplaints, ES) });
     if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: attentionText('callbacksDue', callbacksDueCount, ES) });
     if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: attentionText('roomsToClean', dirtyRooms, ES) });
-    if (communicationsEnabled && lostFound && lostFound.nearingDisposal > 0) out.push({ n: lostFound.nearingDisposal, text: attentionText('lostFoundDisposal', lostFound.nearingDisposal, ES) });
     return out.slice(0, 5);
-  }, [urgentOrders.length, compliance, overdueComplaints, callbacksDueCount, dirtyRooms, lostFound, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
+  }, [urgentOrders.length, compliance, overdueComplaints, callbacksDueCount, dirtyRooms, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
   const attnTotal = attention.reduce((a, x) => a + x.n, 0);
 
   // ── chart series ─────────────────────────────────────────────────────

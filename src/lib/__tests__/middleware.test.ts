@@ -67,7 +67,6 @@ describe('middleware — protected paths', () => {
     '/inventory',
     '/inventory/analytics',
     '/maintenance',
-    '/front-desk',
     '/staff',
     '/settings',
     '/settings/staff',
