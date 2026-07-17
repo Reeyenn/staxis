@@ -31,6 +31,7 @@ import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-contro
 import { captureException } from '@/lib/sentry';
 import { ok, err } from '@/lib/api-response';
 import type { AiFeatureKey } from '@/lib/ai/types';
+import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 
 type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
 const SUPPORTED_MEDIA_TYPES: readonly VisionMediaType[] = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -112,6 +113,10 @@ export async function runFinanceScanRoute<TExtract>(
     const data = await buildData(result, { pid });
     return ok(data, { requestId });
   } catch (e) {
+    if (e instanceof AiFeatureDisabledError) {
+      // Admin kill switch — an intentional state, not an outage. No error log.
+      return err('This AI feature is currently turned off.', { requestId, status: 503, code: 'feature_disabled' });
+    }
     if (e instanceof VisionTruncatedError) {
       return err(tooComplexCode, { requestId, status: 422, code: tooComplexCode });
     }

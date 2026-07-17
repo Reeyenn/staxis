@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/api-validate';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
+import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
@@ -286,6 +287,13 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     // Truncation: more items in the photo than we can describe in one
     // response. Same actionable handling as scan-invoice (pass-4).
+    if (e instanceof AiFeatureDisabledError) {
+      // Admin kill switch — an intentional state, not an outage. No error log.
+      return NextResponse.json(
+        { ok: false, error: 'feature_disabled', detail: 'This AI feature is currently turned off.' },
+        { status: 503 },
+      );
+    }
     if (e instanceof VisionTruncatedError) {
       return NextResponse.json(
         {

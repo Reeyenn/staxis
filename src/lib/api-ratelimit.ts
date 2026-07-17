@@ -51,6 +51,10 @@ export type RateLimitEndpoint =
   // a model can be activated. Admin-only, but still billable and therefore
   // bounded/fail-closed against a compromised session or retry loop.
   | 'admin-ai-config-validate'
+  // AI Control Center provider catalog refresh: outbound model-list calls to
+  // Anthropic/OpenAI + bulk catalog upserts. Not token-billable, so fail-open,
+  // but bounded against a scripted retry loop rewriting the fleet catalog.
+  | 'admin-ai-models-refresh'
   // Manual 2FA code entry from the Launch Bay panel. Costs nothing,
   // but it feeds the robot's login — cap retries so a scripted storm
   // can't spray guesses into pms_auth_codes.
@@ -355,6 +359,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // generous for legitimate ops use; tight enough to stop a runaway.
   'admin-regenerate-recipe':    10,
   'admin-ai-config-validate':   30,
+  // Catalog refreshes hit two provider list APIs; a human clicks this a few
+  // times a day at most.
+  'admin-ai-models-refresh':    30,
   // Manual 2FA code entry — a human typo-retries a few times at most.
   'admin-pms-auth-code':        30,
   // Invoice scans cost $0.003-0.01 each; 50/hr per property absorbs

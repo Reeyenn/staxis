@@ -2,6 +2,7 @@ import type { NextRequest } from 'next/server';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { checkAndIncrementRateLimit, hashToRateLimitKey, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { refreshAiModelCatalog } from '@/lib/ai/model-catalog';
 import type { RefreshAiModelsRequest, RefreshAiModelsResponse } from '@/lib/ai/types';
 import { aiControlError, NO_STORE_HEADERS, parseHostedProvider } from '../../_shared';
@@ -26,6 +27,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('provider must be anthropic or openai', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: NO_STORE_HEADERS,
     });
+  }
+  const rateLimit = await checkAndIncrementRateLimit(
+    'admin-ai-models-refresh',
+    hashToRateLimitKey(`admin-ai-control:${auth.accountId}`),
+  );
+  if (!rateLimit.allowed) {
+    return rateLimitedResponse(rateLimit.current, rateLimit.cap, rateLimit.retryAfterSec);
   }
   try {
     const refreshed = await refreshAiModelCatalog(provider, {

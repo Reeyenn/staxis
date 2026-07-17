@@ -52,14 +52,18 @@ test('malformed output is rejected before executeAiFeature can accept an attempt
       'translation batch returned an invalid JSON schema',
     ]],
     ['src/lib/notice-translate.ts', ['notice translation returned empty output']],
-    ['src/lib/reports/catalog/ai-summary.ts', ['report summary exceeded the output schema']],
+    // Overlong-but-valid outputs are truncated, not rejected (2026-07-17
+    // adversarial review): only empty/truncated-generation outputs throw.
+    ['src/lib/reports/catalog/ai-summary.ts', ['report summary returned empty output']],
     ['src/lib/reports/weekly-insights.ts', ['weekly insight exceeded the output schema']],
     ['src/lib/complaints-ai.ts', [
       'complaint classifier returned an invalid category',
       'service-recovery model returned an invalid JSON schema',
     ]],
     ['src/lib/compliance/nlp.ts', ['model returned an invalid JSON schema']],
-    ['src/lib/compliance/vision.ts', ['value must be a finite bounded number or null']],
+    // Missing optional keys are coerced to null (models omit null fields);
+    // only a non-object top level is rejected.
+    ['src/lib/compliance/vision.ts', ['expected an object at top level']],
   ];
 
   for (const [file, markers] of requiredSignals) {

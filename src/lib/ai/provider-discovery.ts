@@ -2,7 +2,7 @@ import 'server-only';
 
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
-import { CONSERVATIVE_ANTHROPIC_PRICING, getAiModelOverlay } from './feature-registry';
+import { AI_MODEL_OVERLAYS, CONSERVATIVE_ANTHROPIC_PRICING, getAiModelOverlay } from './feature-registry';
 import type {
   AiCapability,
   AiHostedProvider,
@@ -18,8 +18,43 @@ export interface DiscoveredAiModel {
   maxOutputTokens: number | null;
   releasedAt: string | null;
   pricing: AiModelPricing | null;
-  source: 'provider' | 'provider+registry';
+  source: 'provider' | 'registry' | 'provider+registry';
   rawMetadata: Record<string, unknown>;
+}
+
+/**
+ * Append registry-known models the provider's list endpoint omitted.
+ *
+ * The refresh RPC marks any catalog row absent from the submitted snapshot as
+ * unavailable, and defaultResolvedConfigWithCatalogSafety treats that as a
+ * definitive provider removal — failing the feature closed. But provider list
+ * endpoints don't reliably include alias ids (Anthropic's /v1/models omits
+ * `claude-haiku-4-5` while the dated snapshot is listed), and the application
+ * registry ships call-sites that actively use these ids. A model the code
+ * registry vouches for must therefore always survive a refresh; a provider
+ * truly retiring one is handled by updating the registry, not by list-absence.
+ */
+function withRegistryBaseline(
+  provider: AiHostedProvider,
+  rows: DiscoveredAiModel[],
+): DiscoveredAiModel[] {
+  const listed = new Set(rows.map((row) => row.modelId));
+  for (const overlay of AI_MODEL_OVERLAYS) {
+    if (overlay.provider !== provider || listed.has(overlay.modelId)) continue;
+    rows.push({
+      provider,
+      modelId: overlay.modelId,
+      displayName: overlay.displayName,
+      capabilities: [...overlay.capabilities],
+      maxInputTokens: null,
+      maxOutputTokens: null,
+      releasedAt: null,
+      pricing: overlay.pricing ? { ...overlay.pricing } : null,
+      source: 'registry',
+      rawMetadata: { registryBaseline: true, absentFromProviderList: true },
+    });
+  }
+  return rows;
 }
 
 export class AiProviderDiscoveryError extends Error {
@@ -140,7 +175,7 @@ async function discoverAnthropicModels(
         },
       });
     }
-    return rows;
+    return withRegistryBaseline('anthropic', rows);
   } catch (error) {
     if (error instanceof AiProviderDiscoveryError) throw error;
     throw new AiProviderDiscoveryError(
@@ -248,7 +283,7 @@ async function discoverOpenAiModels(
       },
     });
   }
-  return rows;
+  return withRegistryBaseline('openai', rows);
 }
 
 export async function discoverProviderModels(

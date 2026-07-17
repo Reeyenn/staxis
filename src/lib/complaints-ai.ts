@@ -129,13 +129,13 @@ export async function classifyComplaint(
         if (!(COMPLAINT_SEVERITIES as readonly unknown[]).includes(parsed.severity)) {
           throw new Error('complaint classifier returned an invalid severity');
         }
-        if (typeof parsed.summary !== 'string' || !parsed.summary.trim() || parsed.summary.length > 200) {
-          throw new Error('complaint classifier returned an invalid summary');
-        }
+        // A missing/overlong summary must not discard a valid category+severity —
+        // triage priority is the load-bearing output; the summary is cosmetic.
+        const summary = typeof parsed.summary === 'string' ? parsed.summary.trim().slice(0, 200) : '';
         return {
           category: coerceCategory(parsed.category),
           severity: coerceSeverity(parsed.severity),
-          summary: parsed.summary.trim(),
+          summary,
           aiClassified: true,
         } satisfies ComplaintClassification;
       },

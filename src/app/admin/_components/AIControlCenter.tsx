@@ -1115,13 +1115,10 @@ function FeatureEditor({
           </label>
           <label className={styles.field}>
             <span className={styles.fieldLabel}>Change note · optional</span>
-            <input
-              className={styles.reasonInput}
+            <ChangeNoteInput
               value={draft.changeReason}
-              onChange={(event) => onDraft({ changeReason: event.target.value })}
-              placeholder="Why are you changing this?"
-              maxLength={240}
               disabled={Boolean(action) || mutationBlocked}
+              onCommit={(value) => onDraft({ changeReason: value })}
             />
           </label>
           <div className={styles.featureActions}>
@@ -1250,6 +1247,38 @@ function ActivationRecap({
   );
 }
 
+/**
+ * Local-state text input committed on blur. Typing must not call onDraft per
+ * keystroke: every draft patch re-renders all ~30 feature cards (and their
+ * catalog-sorting ModelSelects), which made the note field visibly lag.
+ * Blur always fires before any button's click, so Test/Activate still read
+ * the committed value.
+ */
+function ChangeNoteInput({
+  value,
+  disabled,
+  onCommit,
+}: {
+  value: string;
+  disabled: boolean;
+  onCommit: (value: string) => void;
+}) {
+  const [text, setText] = useState(value);
+  // Re-sync when the draft is reset/replaced externally.
+  useEffect(() => { setText(value); }, [value]);
+  return (
+    <input
+      className={styles.reasonInput}
+      value={text}
+      onChange={(event) => setText(event.target.value)}
+      onBlur={() => { if (text !== value) onCommit(text); }}
+      placeholder="Why are you changing this?"
+      maxLength={240}
+      disabled={disabled}
+    />
+  );
+}
+
 function ModelSelect({
   value,
   models,
@@ -1267,33 +1296,37 @@ function ModelSelect({
   disabled: boolean;
   onChange: (value: string) => void;
 }) {
-  const options = [...models];
-  for (const ref of preserve) {
-    if (!isHostedProvider(ref.provider)) continue;
-    if (options.some((model) => modelRefKey(model) === modelRefKey(ref))) continue;
-    options.push({
-      provider: ref.provider,
-      modelId: ref.modelId,
-      displayName: ref.displayName ?? ref.modelId,
-      status: 'unavailable',
-      available: false,
-      capabilities: ref.capabilities ?? [],
-      maxInputTokens: null,
-      maxOutputTokens: null,
-      releasedAt: null,
-      pricing: ref.pricing,
-      source: 'registry',
-      firstSeenAt: '',
-      lastSeenAt: '',
-      updatedAt: '',
-    });
-  }
-  const grouped = AI_DISCOVERABLE_PROVIDERS.map((provider) => ({
-    provider,
-    models: options
-      .filter((model) => model.provider === provider)
-      .sort((a, b) => a.displayName.localeCompare(b.displayName)),
-  })).filter((group) => group.models.length > 0);
+  // Memoized: this select renders once per feature card, and rebuilding +
+  // re-sorting the whole catalog on every parent keystroke makes typing lag.
+  const grouped = useMemo(() => {
+    const options = [...models];
+    for (const ref of preserve) {
+      if (!isHostedProvider(ref.provider)) continue;
+      if (options.some((model) => modelRefKey(model) === modelRefKey(ref))) continue;
+      options.push({
+        provider: ref.provider,
+        modelId: ref.modelId,
+        displayName: ref.displayName ?? ref.modelId,
+        status: 'unavailable',
+        available: false,
+        capabilities: ref.capabilities ?? [],
+        maxInputTokens: null,
+        maxOutputTokens: null,
+        releasedAt: null,
+        pricing: ref.pricing,
+        source: 'registry',
+        firstSeenAt: '',
+        lastSeenAt: '',
+        updatedAt: '',
+      });
+    }
+    return AI_DISCOVERABLE_PROVIDERS.map((provider) => ({
+      provider,
+      models: options
+        .filter((model) => model.provider === provider)
+        .sort((a, b) => a.displayName.localeCompare(b.displayName)),
+    })).filter((group) => group.models.length > 0);
+  }, [models, preserve]);
 
   return (
     <select

@@ -133,7 +133,15 @@ export async function GET(req: NextRequest): Promise<Response> {
     // (uncached + cache creation + cache reads), while cached_input_tokens is
     // the cache-read subset. Do not add the cached subset to the denominator.
     const totalCached = requestCosts.reduce((acc, r) => acc + Number(r.cached_input_tokens ?? 0), 0);
-    const totalInput = requestCosts.reduce((acc, r) => acc + Number(r.tokens_in ?? 0), 0);
+    // Rows written before the accounting correction store only the UNCACHED
+    // input in tokens_in, so cached can exceed tokens_in on those rows. Use
+    // max(tokens_in, cached) per row so a mixed window stays a true ratio
+    // instead of clamping to a fake 100%; it converges to plain tokens_in
+    // once the window holds only post-correction rows.
+    const totalInput = requestCosts.reduce(
+      (acc, r) => acc + Math.max(Number(r.tokens_in ?? 0), Number(r.cached_input_tokens ?? 0)),
+      0,
+    );
     const cacheHitRatePct = totalInput > 0
       ? Math.min(100, Math.round((totalCached / totalInput) * 1000) / 10)
       : 0;

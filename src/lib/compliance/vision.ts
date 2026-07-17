@@ -60,25 +60,20 @@ export async function extractReadingFromImage(
         throw new VisionSchemaError('expected an object at top level');
       }
       const obj = raw as Record<string, unknown>;
-      if (
-        obj.value !== null
-        && (typeof obj.value !== 'number' || !Number.isFinite(obj.value) || Math.abs(obj.value) > 1e9)
-      ) throw new VisionSchemaError('value must be a finite bounded number or null');
-      if (obj.unit !== null && (typeof obj.unit !== 'string' || obj.unit.length > 50)) {
-        throw new VisionSchemaError('unit must be a string or null');
-      }
-      if (obj.confidence !== 'high' && obj.confidence !== 'medium' && obj.confidence !== 'low') {
-        throw new VisionSchemaError('confidence must be high, medium, or low');
-      }
-      if (obj.note !== null && (typeof obj.note !== 'string' || obj.note.length > 500)) {
-        throw new VisionSchemaError('note must be a string or null');
-      }
-      return {
-        value: obj.value as number | null,
-        unit: obj.unit as string | null,
-        confidence: obj.confidence,
-        note: obj.note as string | null,
-      };
+      // Coerce, don't reject: models routinely omit null-valued optional keys
+      // (undefined, not an explicit null). A missing unit/note/confidence must
+      // not throw away a perfectly good reading — normalize to null/'low'.
+      const value =
+        typeof obj.value === 'number' && Number.isFinite(obj.value) && Math.abs(obj.value) <= 1e9
+          ? obj.value
+          : null;
+      const unit = typeof obj.unit === 'string' && obj.unit ? obj.unit.slice(0, 50) : null;
+      const confidence =
+        obj.confidence === 'high' || obj.confidence === 'medium' || obj.confidence === 'low'
+          ? obj.confidence
+          : 'low';
+      const note = typeof obj.note === 'string' && obj.note ? obj.note.slice(0, 500) : null;
+      return { value, unit, confidence, note };
     },
     onUsage,
     'compliance.photo_reading',

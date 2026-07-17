@@ -99,8 +99,9 @@ export async function translateNoticeToSpanish(
           .join('')
           .trim();
         if (!out) throw new Error('notice translation returned empty output');
-        if (out.length > 1000) throw new Error('notice translation exceeded the storage schema');
-        return out;
+        // The notices column caps at 1000 chars. A long-but-valid translation is
+        // worth keeping truncated — never discard it and post English-only.
+        return out.slice(0, 1000);
       },
       {
         requirePricing: true,

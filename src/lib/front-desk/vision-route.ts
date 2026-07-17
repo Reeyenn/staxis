@@ -26,6 +26,7 @@ import {
   type VisionCallOptions,
 } from '@/lib/vision-extract';
 import type { RateLimitEndpoint } from '@/lib/api-ratelimit';
+import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 
 // Camera stills only (no gif). Both surfaces use inline base64 — nothing stored
 // — but keeping the list aligned with the presign allow-list avoids a latent
@@ -113,6 +114,14 @@ export async function runFrontDeskVisionRoute<TBody extends FrontDeskVisionBody,
     );
     return ok(result, { requestId });
   } catch (e) {
+    if (e instanceof AiFeatureDisabledError) {
+      // Admin kill switch — an intentional state, not an outage. No error log.
+      return err('This AI feature is currently turned off.', {
+        requestId,
+        status: 503,
+        code: 'feature_disabled',
+      });
+    }
     if (e instanceof VisionTruncatedError) {
       return err('image_too_complex', {
         requestId,

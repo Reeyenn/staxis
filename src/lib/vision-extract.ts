@@ -501,7 +501,12 @@ async function runVisionExtraction<T>(
         requirePricing: true,
         deadlineAt: opts.deadlineAt,
         deadlineMs: opts.deadlineAt === undefined ? ANTHROPIC_VISION_ABORT_MS : undefined,
-        fallbackReserveMs: 18_000,
+        // Vision long-tail (multi-page invoices) legitimately needs 45-50s of
+        // the ~52s route budget, and a fallback re-extraction of such an image
+        // could never finish in a carved-out reserve anyway. Give the primary
+        // the full budget; the fallback still fires on FAST primary failures
+        // (4xx/5xx/refusal) with nearly the whole budget intact.
+        fallbackReserveMs: 0,
         abortSignal: opts.abortSignal,
       },
     );

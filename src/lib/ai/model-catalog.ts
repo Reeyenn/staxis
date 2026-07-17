@@ -258,9 +258,14 @@ export async function refreshAiModelCatalog(
       && previousPricing.source !== 'conservative-unverified'
       ? previousPricing
       : model.pricing ?? previousPricing;
-    const source = model.source === 'provider+registry' || previous?.source === 'registry'
-      ? 'provider+registry'
-      : 'provider';
+    // Registry-baseline rows (appended because the provider list omitted an
+    // alias the application ships with) stay 'registry' — they were NOT
+    // observed on the provider list this refresh.
+    const source = model.source === 'registry'
+      ? 'registry'
+      : model.source === 'provider+registry' || previous?.source === 'registry'
+        ? 'provider+registry'
+        : 'provider';
     return {
       model_id: model.modelId,
       display_name: model.displayName,

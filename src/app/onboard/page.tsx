@@ -537,7 +537,7 @@ function Step1Welcome({ code, wizard, reviewing = false, onNext }: {
         {o.welcomeSteps}
       </p>
       <button className="btn btn-primary" onClick={begin} disabled={starting} style={{ width: '100%', justifyContent: 'center' }}>
-        {starting ? (reviewing ? 'Continuing…' : 'Starting…') : (reviewing ? 'Continue →' : 'Begin →')}
+        {starting ? (reviewing ? o.continuingEllipsis : o.startingEllipsis) : (reviewing ? o.continueArrow : o.beginArrow)}
       </button>
     </div>
   );

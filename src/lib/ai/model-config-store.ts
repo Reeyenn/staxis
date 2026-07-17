@@ -306,6 +306,16 @@ let activeCache: {
 } | null = null;
 let activeLoad: Promise<Map<AiFeatureKey, ResolvedAiFeatureConfig>> | null = null;
 let activeGeneration = 0;
+let lastLoadFailureAt = 0;
+const LOAD_FAILURE_COOLDOWN_MS = 5_000;
+
+/** Signals "we are inside the post-failure cooldown; no query was attempted". */
+class AiConfigLoadCooldownError extends Error {
+  constructor() {
+    super('AI config load skipped: within failure cooldown');
+    this.name = 'AiConfigLoadCooldownError';
+  }
+}
 
 async function loadActiveConfigs(): Promise<Map<AiFeatureKey, ResolvedAiFeatureConfig>> {
   const now = Date.now();
@@ -313,6 +323,12 @@ async function loadActiveConfigs(): Promise<Map<AiFeatureKey, ResolvedAiFeatureC
     return activeCache.configs;
   }
   if (activeLoad) return activeLoad;
+  // Negative caching: after a failed load, don't re-run the doomed query (or
+  // re-log the failure) on every sequential AI call — at most one probe per
+  // cooldown window per instance. Callers fall back to last-known/defaults.
+  if (now - lastLoadFailureAt < LOAD_FAILURE_COOLDOWN_MS) {
+    throw new AiConfigLoadCooldownError();
+  }
 
   const generation = activeGeneration;
   const pending = (async () => {
@@ -412,7 +428,12 @@ async function loadActiveConfigs(): Promise<Map<AiFeatureKey, ResolvedAiFeatureC
   activeLoad = pending;
 
   try {
-    return await pending;
+    const configs = await pending;
+    lastLoadFailureAt = 0;
+    return configs;
+  } catch (error) {
+    lastLoadFailureAt = Date.now();
+    throw error;
   } finally {
     if (activeLoad === pending) activeLoad = null;
   }
@@ -434,15 +455,23 @@ export async function resolveAiFeatureConfig(
       ?? await defaultResolvedConfigWithCatalogSafety(featureKey);
   } catch (error) {
     const lastKnown = activeCache?.configs;
-    log.error('[ai-config] active config unavailable; preserving last-known state or failing closed', {
-      featureKey,
-      err: error instanceof Error ? error : new Error(String(error)),
-    });
-    if (lastKnown) {
-      return lastKnown.get(featureKey)
-        ?? await defaultResolvedConfigWithCatalogSafety(featureKey);
+    if (!(error instanceof AiConfigLoadCooldownError)) {
+      log.error('[ai-config] active config unavailable; preserving last-known state or using code defaults', {
+        featureKey,
+        err: error instanceof Error ? error : new Error(String(error)),
+      });
     }
-    return failClosedResolvedConfig(featureKey);
+    if (lastKnown) {
+      return lastKnown.get(featureKey) ?? defaultResolvedConfig(featureKey);
+    }
+    // Infra failure with a cold cache (DB blip on a fresh instance) is NOT an
+    // explicit config state: fall back to the baked-in registry defaults —
+    // exactly the behavior these features had before the config store existed.
+    // Fail-closed is reserved for hydrated rows that are invalid/unavailable.
+    // Tradeoff (accepted): a DB-stored kill switch can't be seen during the
+    // outage window on cold instances, but a store blip must never black out
+    // every AI feature fleet-wide.
+    return defaultResolvedConfig(featureKey);
   }
 }
 

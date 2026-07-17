@@ -25,6 +25,7 @@ import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { escapeTrustMarkerContent, modelTierForModelId, PRICING, type ModelTier } from '@/lib/agent/llm';
 import {
+  AiFeatureDisabledError,
   executeAiPlan,
   estimateAiCostUsd,
   resolveAiExecutionPlan,
@@ -402,9 +403,15 @@ export async function POST(req: NextRequest): Promise<Response> {
       },
     );
   } catch (error) {
+    // Never surface internal error strings to the walkthrough client; the two
+    // states it can act on are "turned off by admin" vs "temporarily down".
+    const disabled = error instanceof AiFeatureDisabledError;
     return Response.json({
       ok: false,
-      error: error instanceof Error ? error.message : 'Guided walkthroughs are unavailable',
+      error: disabled
+        ? 'Guided walkthroughs are currently turned off.'
+        : 'Guided walkthroughs are temporarily unavailable.',
+      code: disabled ? 'feature_disabled' : 'ai_unavailable',
       requestId,
     }, { status: 503 });
   }

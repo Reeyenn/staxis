@@ -134,14 +134,12 @@ async function callBatch(
           throw new Error('translation batch returned invalid JSON');
         }
         const arr = JSON.parse(raw.slice(jsonStart, jsonEnd + 1)) as unknown;
-        if (
-          !Array.isArray(arr)
-          || arr.length !== texts.length
-          || arr.some((entry) => typeof entry !== 'string' || !entry.trim())
-        ) {
+        if (!Array.isArray(arr) || arr.length !== texts.length) {
           throw new Error('translation batch returned an invalid JSON schema');
         }
-        return arr.map((entry) => (entry as string).trim());
+        // Per-item tolerance: one malformed entry falls back to source text for
+        // that string only — never discard the 39 good translations with it.
+        return arr.map((entry) => (typeof entry === 'string' && entry.trim() ? entry.trim() : null));
       },
       {
         requirePricing: true,

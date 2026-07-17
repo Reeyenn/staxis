@@ -23,6 +23,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isUuid } from '@/lib/api-validate';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
+import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 import { mergeInvoicePages, type ExtractedInvoice } from '@/lib/invoice-scan-merge';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
@@ -318,6 +319,13 @@ export async function POST(req: NextRequest) {
     // vision_failed. Now that multi-page + PDF exist, the message points at
     // the real fix: fewer pages per scan / one page per photo. (May 2026
     // audit pass-4; message updated for the multi-page contract.)
+    if (e instanceof AiFeatureDisabledError) {
+      // Admin kill switch — an intentional state, not an outage. No error log.
+      return NextResponse.json(
+        { ok: false, error: 'feature_disabled', detail: 'This AI feature is currently turned off.' },
+        { status: 503 },
+      );
+    }
     if (e instanceof VisionTruncatedError) {
       return NextResponse.json(
         {

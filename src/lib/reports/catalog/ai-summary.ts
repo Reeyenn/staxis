@@ -97,8 +97,9 @@ export async function generateReportSummary(
         if (!block || block.type !== 'text') throw new Error('report summary returned no text');
         const text = block.text.trim().replace(/\s+/g, ' ');
         if (!text) throw new Error('report summary returned empty output');
-        if (text.length > 280) throw new Error('report summary exceeded the output schema');
-        return text;
+        // Slightly-long output is still a valid takeaway: truncate at a word
+        // boundary instead of discarding a paid response.
+        return text.length > 280 ? text.slice(0, 280).replace(/\s+\S*$/, '') + '…' : text;
       },
       {
         requirePricing: true,

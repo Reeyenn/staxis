@@ -47,6 +47,10 @@ const STRINGS = {
     accountEmailLabel: 'Account email',
     continueToVerify: 'Continue to verify email →',
     continueSetup: 'Continue setup →',
+    beginArrow: 'Begin →',
+    continueArrow: 'Continue →',
+    startingEllipsis: 'Starting…',
+    continuingEllipsis: 'Continuing…',
   },
   es: {
     welcomeSteps:
@@ -75,6 +79,10 @@ const STRINGS = {
     accountEmailLabel: 'Correo de la cuenta',
     continueToVerify: 'Continuar para verificar el correo →',
     continueSetup: 'Continuar configuración →',
+    beginArrow: 'Comenzar →',
+    continueArrow: 'Continuar →',
+    startingEllipsis: 'Comenzando…',
+    continuingEllipsis: 'Continuando…',
   },
 };
 

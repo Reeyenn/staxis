@@ -355,10 +355,14 @@ export async function phraseAnomalies(
       userText,
       (raw) => {
         if (!Array.isArray(raw.alerts)) return null;
+        // Per-row tolerance: keep every well-formed alert and drop the rest.
+        // One omitted or overlong row must not discard the batch's good
+        // phrasings — a partially-phrased sweep beats zero alerts.
         const expected = new Set(items.slice(0, 8).map((item) => item.id));
         const seen = new Set<string>();
+        const alerts: Array<{ id: string; en: string; es: string }> = [];
         for (const row of raw.alerts) {
-          if (!row || typeof row !== 'object' || Array.isArray(row)) return null;
+          if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
           const alert = row as Record<string, unknown>;
           if (
             typeof alert.id !== 'string'
@@ -366,15 +370,13 @@ export async function phraseAnomalies(
             || seen.has(alert.id)
             || typeof alert.en !== 'string'
             || !alert.en.trim()
-            || alert.en.length > 140
             || typeof alert.es !== 'string'
             || !alert.es.trim()
-            || alert.es.length > 140
-          ) return null;
+          ) continue;
           seen.add(alert.id);
+          alerts.push({ id: alert.id, en: alert.en.trim().slice(0, 140), es: alert.es.trim().slice(0, 140) });
         }
-        if (seen.size !== expected.size) return null;
-        return raw as unknown as { alerts: Array<{ id: string; en: string; es: string }> };
+        return { alerts };
       },
       1024,
       { ...opts, onUsage },
