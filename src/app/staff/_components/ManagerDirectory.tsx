@@ -19,7 +19,7 @@ import { canManageTeam } from '@/lib/roles';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import type { StaffMember, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from './_tokens';
-import { StaffAvatar, SeniorTag, HoursBar, PageHeader } from './_people';
+import { StaffAvatar, SeniorTag, HoursBar } from './_people';
 
 // ── Form types ────────────────────────────────────────────────────────────
 interface StaffFormData {
@@ -50,6 +50,10 @@ interface TeamMember {
   role: string;
   staffId: string | null;
 }
+
+const DEPT_ES: Record<string, string> = {
+  housekeeping: 'Limpieza', front_desk: 'Recepción', maintenance: 'Mantenimiento', other: 'Otros',
+};
 
 const DEPT_ORDER: ('housekeeping' | 'front_desk' | 'maintenance')[] = [
   'housekeeping', 'front_desk', 'maintenance',
@@ -371,19 +375,6 @@ export function ManagerDirectory() {
         .staff-dir-row:hover { background: rgba(31,35,28,0.04); }
       `}</style>
 
-      <PageHeader
-        title={lang === 'es' ? 'El equipo' : 'The people'}
-        eyebrow={lang === 'es' ? 'Personal · Directorio' : 'Staff · Directory'}
-        sub={lang === 'es'
-          ? 'Lista de todo el personal de la propiedad — gerentes, camaristas, recepción y mantenimiento.'
-          : 'Roster of everyone on the property — managers, housekeepers, front desk and maintenance.'}
-        right={
-          <div>
-            <Caps>{lang === 'es' ? `${total} en plantilla · ${onShift} en turno` : `${total} on roster · ${onShift} on shift`}</Caps>
-          </div>
-        }
-      />
-
       {/* KPI strip */}
       <div style={{
         display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 16,
@@ -438,27 +429,21 @@ export function ManagerDirectory() {
                 }}>{g.list.length}</span>
               </div>
               <div>
-                {g.list.length === 0 ? (
-                  <div style={{
-                    padding: '20px 18px', fontFamily: fonts.sans, fontSize: 12.5,
-                    color: T.ink3, textAlign: 'center',
-                  }}>No one yet.</div>
-                ) : (
-                  g.list.map(s => (
-                    <DirRow key={s.id} member={s} onClick={() => openEdit(s)}/>
-                  ))
-                )}
+                {g.list.map(s => (
+                  <DirRow key={s.id} member={s} onClick={() => openEdit(s)}/>
+                ))}
               </div>
               <button
                 onClick={() => openAdd(g.dept as StaffDepartment)}
                 style={{
-                  width: '100%', padding: '12px 16px', background: 'transparent',
-                  border: 'none', borderTop: `1px dashed ${T.rule}`,
-                  fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600,
-                  color: T.ink3, cursor: 'pointer',
+                  width: '100%', background: 'transparent', border: 'none',
+                  padding: g.list.length === 0 ? '22px 16px' : '12px 16px',
+                  borderTop: g.list.length === 0 ? 'none' : `1px dashed ${T.rule}`,
+                  fontFamily: fonts.sans, fontSize: 13, fontWeight: 700,
+                  color: T.ink2, cursor: 'pointer',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
                 }}
-              >+ Add to {m.label.toLowerCase()}</button>
+              >+ {lang === 'es' ? `Añadir A ${DEPT_ES[g.dept] ?? m.label}` : `Add To ${m.label.replace(/\b[a-z]/g, c => c.toUpperCase())}`}</button>
             </div>
           );
         })}
