@@ -37,10 +37,10 @@ import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid, validateDateStr } from '@/lib/api-validate';
 import {
-  DEFAULT_BASE_DURATIONS,
   resolveDurationMinutes,
-  type AssignmentTask,
-  type AssignmentTaskPriority,
+  toShadowAssignmentTask,
+  buildDurationConfig,
+  computeWorkloadByHk,
 } from '@/lib/assignment-engine';
 import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
 
@@ -191,27 +191,9 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     //    estimated_minutes, so this mainly matters for legacy/estimate-less
     //    rows.) Degrades to the static defaults when no standards exist.
     const cleanTimeBase = await fetchCleanTimeBaseDurations(propertyId);
-    const cfg = {
-      shiftMinutes: 420,
-      baseDurations: { ...DEFAULT_BASE_DURATIONS, ...cleanTimeBase },
-      weights: {} as never,
-      urgentWindowMinutes: 60,
-    };
+    const cfg = buildDurationConfig({ shiftMinutes: 420, cleanTimeBase });
     const tasksOut = tasks.map(t => {
-      const shadow: AssignmentTask = {
-        id: t.id,
-        property_id: t.property_id,
-        room_number: t.room_number,
-        cleaning_type: t.cleaning_type,
-        priority: (['urgent', 'high', 'normal', 'low'].includes(t.priority)
-          ? t.priority
-          : 'normal') as AssignmentTaskPriority,
-        due_by: t.due_by,
-        estimated_minutes: t.estimated_minutes,
-        requires_inspection: t.requires_inspection === true,
-        extras: Array.isArray(t.extras) ? (t.extras as string[]) : [],
-        guest_language: null,
-      };
+      const shadow = toShadowAssignmentTask(t);
       const minutes = resolveDurationMinutes(shadow, cfg);
       const assignment = assignmentByTask.get(t.id);
       return {
@@ -235,14 +217,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     //    NOT-YET-COMPLETED tasks. Completed/cancelled tasks don't
     //    contribute (they've already happened and would mislead the
     //    bar chart).
-    const workloadByHk = new Map<string, number>();
-    for (const t of tasksOut) {
-      if (!t.assignee_id) continue;
-      const dead = t.status === 'completed' || t.status === 'cancelled' || t.status === 'skipped';
-      if (dead) continue;
-      const cur = workloadByHk.get(t.assignee_id) ?? 0;
-      workloadByHk.set(t.assignee_id, cur + t.estimated_minutes_resolved);
-    }
+    const workloadByHk = computeWorkloadByHk(tasksOut);
 
     const housekeepersOut = staff.map(s => ({
       id: s.id,
