@@ -1,8 +1,16 @@
 'use client';
 
-import React from 'react';
 import { Activity, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { formatNextCron } from '@/lib/ml-cron-schedule';
+import {
+  MlSystemHealthShell,
+  Row,
+  fmt,
+  isFresh,
+  TRAINING_FRESH_SEC,
+  PREDICTION_FRESH_SEC,
+  type ComputedStatus,
+} from '../MlSystemHealthShell';
 
 /**
  * System health panel — single banner-driven view of "is the pipeline OK?"
@@ -12,11 +20,11 @@ import { formatNextCron } from '@/lib/ml-cron-schedule';
  *   • "fleet"  — aggregate; banner says "X of Y hotels healthy" with red
  *                state if any hotel has an issue
  *
- * Detail rows below the banner show specific timestamps + counts.
+ * Detail rows below the banner show specific timestamps + counts. The card
+ * chrome (header, banner, Row, fmt/isFresh, freshness constants) is shared
+ * with HousekeepingSystemHealth via MlSystemHealthShell; only computeStatus
+ * and the rows below are inventory-specific.
  */
-
-const TRAINING_FRESH_SEC = 8 * 86400;
-const PREDICTION_FRESH_SEC = 36 * 3600;
 
 interface CommonProps {
   lastTrainingRunAt: string | null;
@@ -43,94 +51,43 @@ export function InventoryPipelineHealth(props: SingleModeProps | FleetModeProps)
   const status = computeStatus(props);
 
   return (
-    <div style={{
-      background: '#ffffff',
-      border: '1px solid rgba(78,90,122,0.12)',
-      borderRadius: '12px',
-      padding: '24px',
-    }}>
-      <div style={{ marginBottom: '16px' }}>
-        <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#1b1c19', margin: 0 }}>
-          {props.mode === 'single' ? 'System health' : 'System health — network'}
-        </h2>
-        <p style={{ fontSize: '12px', color: '#7a8a9e', marginTop: '4px' }}>
-          {props.mode === 'single'
-            ? 'If anything breaks, you’ll see it here first.'
-            : 'Aggregated health across the fleet. Red banner = at least one hotel is broken.'}
-        </p>
-      </div>
-
-      {/* Banner */}
-      <div style={{
-        padding: '14px 16px',
-        background: status.bg,
-        border: `1px solid ${status.border}`,
-        borderRadius: '10px',
-        color: status.color,
-        display: 'flex',
-        alignItems: 'flex-start',
-        gap: '10px',
-        marginBottom: '20px',
-      }}>
-        {status.icon}
-        <div>
-          <div style={{ fontWeight: 600, fontSize: '14px', marginBottom: '2px' }}>
-            {status.headline}
-          </div>
-          <div style={{ fontSize: '12px', opacity: 0.85, lineHeight: 1.5 }}>
-            {status.detail}
-          </div>
-        </div>
-      </div>
-
-      {/* Detail rows */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        {props.mode === 'fleet' && (
-          <Row
-            label="Hotels by status"
-            value={`${props.healthCounts.healthy} healthy · ${props.healthCounts.warming} warming · ${props.healthCounts.issue} issue`}
-            healthy={props.healthCounts.issue === 0}
-          />
-        )}
+    <MlSystemHealthShell mode={props.mode} status={status}>
+      {props.mode === 'fleet' && (
         <Row
-          label="Last training run"
-          value={fmt(props.lastTrainingRunAt)}
-          healthy={isFresh(props.lastTrainingRunAt, TRAINING_FRESH_SEC)}
-          subtitle={formatNextCron(new Date(props.nextTrainingAt))}
+          label="Hotels by status"
+          value={`${props.healthCounts.healthy} healthy · ${props.healthCounts.warming} warming · ${props.healthCounts.issue} issue`}
+          healthy={props.healthCounts.issue === 0}
         />
-        <Row
-          label="Last prediction write"
-          value={fmt(props.lastInferenceWriteAt)}
-          healthy={isFresh(props.lastInferenceWriteAt, PREDICTION_FRESH_SEC)}
-          subtitle={formatNextCron(new Date(props.nextPredictionAt))}
-        />
-        <Row
-          label="Last anomaly fired"
-          value={fmt(props.lastAnomalyFiredAt)}
-          healthy
-        />
-        <Row
-          label="Active item models"
-          value={String(props.activeItemModelCount)}
-          healthy
-        />
-        <Row
-          label="Predictions in last 24h"
-          value={String(props.predictionsLast24h)}
-          healthy
-        />
-      </div>
-    </div>
+      )}
+      <Row
+        label="Last training run"
+        value={fmt(props.lastTrainingRunAt)}
+        healthy={isFresh(props.lastTrainingRunAt, TRAINING_FRESH_SEC)}
+        subtitle={formatNextCron(new Date(props.nextTrainingAt))}
+      />
+      <Row
+        label="Last prediction write"
+        value={fmt(props.lastInferenceWriteAt)}
+        healthy={isFresh(props.lastInferenceWriteAt, PREDICTION_FRESH_SEC)}
+        subtitle={formatNextCron(new Date(props.nextPredictionAt))}
+      />
+      <Row
+        label="Last anomaly fired"
+        value={fmt(props.lastAnomalyFiredAt)}
+        healthy
+      />
+      <Row
+        label="Active item models"
+        value={String(props.activeItemModelCount)}
+        healthy
+      />
+      <Row
+        label="Predictions in last 24h"
+        value={String(props.predictionsLast24h)}
+        healthy
+      />
+    </MlSystemHealthShell>
   );
-}
-
-interface ComputedStatus {
-  headline: string;
-  detail: string;
-  bg: string;
-  border: string;
-  color: string;
-  icon: React.ReactNode;
 }
 
 function computeStatus(props: SingleModeProps | FleetModeProps): ComputedStatus {
@@ -205,54 +162,4 @@ function computeStatus(props: SingleModeProps | FleetModeProps): ComputedStatus 
     color: '#b21e2f',
     icon: <AlertTriangle size={18} />,
   };
-}
-
-function isFresh(d: string | null, maxAgeSec: number): boolean {
-  if (!d) return false;
-  return (Date.now() - new Date(d).getTime()) / 1000 <= maxAgeSec;
-}
-
-function fmt(d: string | null): string {
-  if (!d) return 'Never';
-  const ms = Date.now() - new Date(d).getTime();
-  const min = Math.round(ms / 60000);
-  if (min < 60) return `${min} min ago`;
-  const hr = Math.round(min / 60);
-  if (hr < 48) return `${hr} hr ago`;
-  const days = Math.round(hr / 24);
-  return `${days} days ago`;
-}
-
-function Row({ label, value, healthy, subtitle }: { label: string; value: string; healthy: boolean; subtitle?: string }) {
-  return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'flex-start',
-      justifyContent: 'space-between',
-      paddingBottom: '12px',
-      borderBottom: '1px solid rgba(78,90,122,0.06)',
-      gap: '12px',
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#7a8a9e', fontSize: '12px', paddingTop: '2px' }}>
-        <span style={{
-          width: '6px', height: '6px', borderRadius: '50%',
-          background: healthy ? '#00a050' : '#dc3545',
-          flexShrink: 0,
-        }} />
-        <span>{label}</span>
-      </div>
-      <div style={{ textAlign: 'right' }}>
-        <div style={{
-          fontSize: '13px',
-          color: healthy ? '#1b1c19' : '#b21e2f',
-          fontWeight: healthy ? 500 : 600,
-        }}>{value}</div>
-        {subtitle && (
-          <div style={{ fontSize: '11px', color: '#7a8a9e', marginTop: '2px', fontFamily: "'JetBrains Mono', monospace" }}>
-            {subtitle}
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }
