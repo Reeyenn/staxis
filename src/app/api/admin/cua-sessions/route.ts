@@ -40,6 +40,7 @@ interface PropertySessionRow {
 interface PropertyRow {
   id: string;
   display_name: string | null;
+  name: string | null;
 }
 
 interface KnowledgeRow {
@@ -136,10 +137,10 @@ export async function GET(req: NextRequest) {
   if (propertyIds.length > 0) {
     const { data: propsData } = await supabaseAdmin
       .from('properties')
-      .select('id, display_name')
+      .select('id, display_name, name')
       .in('id', propertyIds);
     if (propsData) {
-      displayNames = new Map((propsData as PropertyRow[]).map((p) => [p.id, p.display_name ?? p.id]));
+      displayNames = new Map((propsData as PropertyRow[]).map((p) => [p.id, p.display_name ?? p.name ?? p.id]));
     }
   }
 

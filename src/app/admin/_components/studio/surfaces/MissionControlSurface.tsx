@@ -304,7 +304,14 @@ export function MissionControlSurface() {
   }
 
   // ── Derivations ──────────────────────────────────────────────────────
-  const enabledSessions = sessions.filter((s) => (s.status || '').toLowerCase() !== 'stopped');
+  // Owner's rule (2026-07-17): robots still LEARNING their PMS belong to the
+  // Onboarding tab — Mission Control only shows robots that graduated to
+  // daily work. Learning = no knowledge file yet, or a learning run in flight.
+  const isOnboardingPhase = (s: CuaSession): boolean =>
+    (s.status || '').toLowerCase().includes('no_knowledge') || s.active_mapper_job != null;
+  const learningCount = sessions.filter(isOnboardingPhase).length;
+  const liveRobots = sessions.filter((s) => !isOnboardingPhase(s));
+  const enabledSessions = liveRobots.filter((s) => (s.status || '').toLowerCase() !== 'stopped');
 
   // Split the worker roster by the owner's three-way mental model. A missing
   // tier (old cached response) falls back to 'timer' inside tierOf().
@@ -313,7 +320,7 @@ export function MissionControlSurface() {
   const timerWorkers = (workers ?? []).filter((w) => tierOf(w) === 'timer');
   // Headline counts ONLY the AI staff — the copilot, the hotel robots, and the
   // thinking-model background jobs. Prediction + chores are not "AI staff".
-  const aiStaffCount = 1 /* copilot */ + sessions.length + aiWorkers.length;
+  const aiStaffCount = 1 /* copilot */ + liveRobots.length + aiWorkers.length;
 
   // App light — website + database drive the colour; expanded shows all four.
   const appLight = (() => {
@@ -330,7 +337,11 @@ export function MissionControlSurface() {
 
   // Robot light.
   const robotLight = (() => {
-    if (sessions.length === 0) return { tone: 'muted' as DotTone, detail: 'No robots yet.' };
+    if (liveRobots.length === 0) {
+      return { tone: 'muted' as DotTone, detail: learningCount > 0
+        ? `${learningCount} robot${learningCount === 1 ? ' is' : 's are'} still in training — watch on Onboarding.`
+        : 'No robots yet.' };
+    }
     if (enabledSessions.length === 0) return { tone: 'muted' as DotTone, detail: 'All robots are stopped.' };
     const views = enabledSessions.map((s) => robotView(s.status));
     const worstSev = Math.max(...views.map((v) => robotSeverity(v.tone)));
@@ -357,7 +368,7 @@ export function MissionControlSurface() {
   );
   const robotPct = robotWorst.usd / ROBOT_CAP_USD;
   const spendLight = (() => {
-    if (!metrics && sessions.length === 0) return { tone: 'muted' as DotTone, detail: 'No AI spend yet today.' };
+    if (!metrics && liveRobots.length === 0) return { tone: 'muted' as DotTone, detail: 'No AI spend yet today.' };
     const pct = Math.max(copilotPct, robotPct);
     const tone: DotTone = pct >= 1 ? 'terracotta' : pct >= 0.7 ? 'gold' : 'forest';
     const detail = `Copilot ${money(copilotSpend)}${globalCap > 0 ? ` of $${globalCap}` : ''} today` +
@@ -369,7 +380,7 @@ export function MissionControlSurface() {
   const pendingNudges = metrics?.pendingNudges ?? 0;
   const inboxCards: InboxCard[] = (inboxRows !== null)
     ? inboxRows.map((it, i) => endpointInboxCard(it, i, runAction, busyKey))
-    : derivedInboxCards(sessions, pendingNudges, runAction, busyKey);
+    : derivedInboxCards(liveRobots, pendingNudges, runAction, busyKey);
 
   const attentionCount = inboxCards.length;
 
@@ -415,12 +426,16 @@ export function MissionControlSurface() {
 
             {/* Hotel robots */}
             <div>
-              <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {sessions.length}</span>
-              {sessions.length === 0 ? (
-                <div style={{ marginTop: 9 }}><DarkEmpty text="No hotel robots yet — they appear once a hotel's system is connected." /></div>
+              <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {liveRobots.length}</span>
+              {liveRobots.length === 0 ? (
+                <div style={{ marginTop: 9 }}>
+                  <DarkEmpty text={learningCount > 0
+                    ? `No graduated robots yet — ${learningCount === 1 ? 'one robot is' : `${learningCount} robots are`} still learning on the Onboarding tab.`
+                    : "No hotel robots yet — they appear once a hotel's system is connected."} />
+                </div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 9 }}>
-                  {sessions.map((s) => (
+                  {liveRobots.map((s) => (
                     <RobotRow key={s.property_id} s={s} busyKey={busyKey} onAction={runAction} />
                   ))}
                 </div>
@@ -705,7 +720,7 @@ function RobotRow({ s, busyKey, onAction }: {
         </span>
         <Pill tone={pillOf(v.tone)} style={{ fontSize: 9, padding: '2px 7px' }}>{v.label}</Pill>
         <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.5) }}>last seen {age(s.last_alive_at)} ago</span>
+          <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.5) }}>{s.last_alive_at ? `last seen ${age(s.last_alive_at)} ago` : 'not seen yet'}</span>
           <span className="mono" style={{ fontSize: 9.5, color: TONE_VAR[spendTone] }}>{money(spend)} of ${ROBOT_CAP_USD}</span>
         </div>
       </div>
