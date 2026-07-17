@@ -33,7 +33,6 @@ import { judgeStepOutcome, captureScreenshotForCritic } from './critic.js';
 import { captureHardenedScreenshot } from './screenshot-privacy.js';
 import { clickTrustDeviceIfPresent } from './mfa-handler.js';
 import { fetchLatestAuthCode } from './auth-code-helpers.js';
-import { sendAdminSms } from './admin-sms.js';
 
 // ── Cumulative-cost circuit-breaker (May 2026 audit pass-5) ───────────
 // Each phase has its own token + wallclock budget (~$2.40 max per phase),
@@ -861,25 +860,8 @@ async function acquireMfaCode(
 ): Promise<string | null> {
   await clickTrustDeviceIfPresent(page).catch(() => ({ clicked: false, selector: null }));
   await setAwaitingMfa(ctx.jobId, true);
-
-  // Fire-and-forget nudge — the PMS's own code text already pings the
-  // admin's phone; this just tells him WHERE to type it.
-  void (async () => {
-    let hotelName = 'A hotel';
-    try {
-      const { data } = await supabase
-        .from('properties')
-        .select('name')
-        .eq('id', ctx.propertyId)
-        .maybeSingle();
-      if (data?.name) hotelName = data.name;
-    } catch { /* best-effort */ }
-    await sendAdminSms(
-      `Staxis: ${hotelName} hit a 2FA screen while the robot was learning its PMS. ` +
-      `If a code was texted to you, open Admin → Onboarding, click the hotel, and type it in. ` +
-      `Emailed codes are read automatically — no action needed.`,
-    );
-  })();
+  // (SMS nudge removed 2026-07 — the paused_mfa status on Admin → Onboarding
+  // is the signal now; all Twilio texting was retired.)
 
   try {
     // notBefore = the full MFA wait window back (was a tight 120s). A 120s floor

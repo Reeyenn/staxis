@@ -52,10 +52,12 @@ export const AI_FEATURE_KEYS = [
   'ml.housekeeping_optimizer',
   'ml.inventory_consumption',
   'ml.daily_report_headcount',
+  'admin.model_recommendations',
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
 export type AiFeatureGroup =
+  | 'Admin'
   | 'Agent'
   | 'Guidance'
   | 'Inventory'
@@ -221,6 +223,39 @@ export interface RefreshAiModelsResponse {
   available: number;
   refreshedAt: string;
   models: AiModelCatalogEntry[];
+}
+
+/** One AI-written model recommendation, already server-validated against the
+ * catalog and the feature registry. */
+export interface AiRecommendation {
+  /** Feature this applies to, or null for general fleet-wide advice. */
+  featureKey: AiFeatureKey | null;
+  title: string;
+  /** Plain-English rationale for a non-technical owner. */
+  why: string;
+  suggestedPrimary: AiModelSelection | null;
+  suggestedFallback: AiModelSelection | null;
+  estimatedMonthlySavingsUsd: number | null;
+  confidence: 'high' | 'medium' | 'low';
+}
+
+/** One saved "Get recommendations" run. */
+export interface AiRecommendationReport {
+  /** Row id; null only if persisting the fresh run failed (still shown once). */
+  id: string | null;
+  generatedAt: string;
+  modelUsed: string;
+  /** 30-day fleet AI spend that grounded the advice (USD). */
+  spend30dUsd: number;
+  recommendations: AiRecommendation[];
+}
+
+export interface AiRecommendationsResponse {
+  report: AiRecommendationReport;
+}
+
+export interface AiRecommendationReportsResponse {
+  reports: AiRecommendationReport[];
 }
 
 export interface AiConfigsResponse {

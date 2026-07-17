@@ -25,7 +25,6 @@ import { floorFromRoomNumber, inferCleaningType } from '@/lib/housekeeper-workfl
 import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
 
 import InspectorView from './_components/InspectorView';
-import { SickReportButton } from './SickReportButton';
 import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 import { NoticeBoardBanner } from './_components/NoticeBoardBanner';
 import { StructuredIssueReporter } from './_components/StructuredIssueReporter';
@@ -1286,18 +1285,8 @@ export default function HousekeeperRoomPage({
                   setOpenBreakStartedAt(onBreak ? (startedAt ?? new Date().toISOString()) : null)
                 }
               />
-              {!allDone && (
-                <SickReportButton
-                  pid={pid}
-                  staffId={housekeeperId}
-                  businessDate={activeDate}
-                  language={lang}
-                  isMidShift={inProgress > 0}
-                  onCalloutChange={() => {
-                    lastRefetchAtRef.current = Date.now();
-                  }}
-                />
-              )}
+              {/* (Sick-callout button removed 2026-07 — the SMS coverage flow
+                  was retired with all Twilio texting.) */}
             </div>
           )}
 

@@ -19,9 +19,10 @@ afterEach(() => {
 
 describe('AI Control Center feature registry', () => {
   // 2026-07-17: the front-desk surface retirement removed lost-found photo
-  // description, lost-found match rerank, and package label scan (28→25).
-  test('covers 25 controllable hosted features and 8 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 33);
+  // description, lost-found match rerank, and package label scan (28→25);
+  // the Recommendations tab added admin.model_recommendations (25→26).
+  test('covers 26 controllable hosted features and 8 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 34);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

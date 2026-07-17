@@ -4,7 +4,7 @@
 // compliance readings + life-safety checks from their phone (feature #19).
 //
 // Reached via SMS magic-link: /engineer/{staffId}?pid={propertyId}&code={code}
-// (built by buildEngineerLink, sent by /api/send-engineer-links).
+// (built by buildEngineerLink; SMS delivery was retired 2026-07 — links are handed out manually until a new delivery method ships).
 //
 // RLS bug class: this is a PUBLIC page. It reads/writes ONLY through
 // /api/engineer/* (supabaseAdmin + pid+staffId capability check) — never the

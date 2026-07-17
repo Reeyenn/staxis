@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   History,
   Info,
+  Lightbulb,
   RefreshCw,
   RotateCcw,
   Search,
@@ -34,6 +35,10 @@ import {
   type AiFeatureKey,
   type AiFeatureSummary,
   type AiFeaturesResponse,
+  type AiRecommendationsResponse,
+  type AiRecommendationReportsResponse,
+  type AiRecommendationReport,
+  type AiRecommendation,
   type AiModelCatalogEntry,
   type AiModelPricing,
   type AiModelRef,
@@ -64,7 +69,7 @@ import {
 } from './AIControlCenter.helpers';
 import styles from './AIControlCenter.module.css';
 
-type TabId = 'features' | 'models' | 'history';
+type TabId = 'features' | 'models' | 'recommendations' | 'history';
 type ProviderFilter = 'all' | AiHostedProvider;
 type FeatureActionPhase = 'creating' | 'validating' | 'activating';
 type ToastKind = 'success' | 'error' | 'info';
@@ -95,6 +100,7 @@ const API_ROOT = '/api/admin/ai-control';
 const TABS: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
   { id: 'features', label: 'Features', icon: <Settings2 size={14} /> },
   { id: 'models', label: 'Models', icon: <Sparkles size={14} /> },
+  { id: 'recommendations', label: 'Recommendations', icon: <Lightbulb size={14} /> },
   { id: 'history', label: 'History', icon: <History size={14} /> },
 ];
 const FOCUSABLE = [
@@ -261,8 +267,8 @@ export function AIControlCenter() {
   const [featureQuery, setFeatureQuery] = useState('');
   const [modelQuery, setModelQuery] = useState('');
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
-  const [panelLoading, setPanelLoading] = useState<PanelStatus<boolean>>({ features: false, models: false, history: false });
-  const [panelErrors, setPanelErrors] = useState<PanelStatus<string | null>>({ features: null, models: null, history: null });
+  const [panelLoading, setPanelLoading] = useState<PanelStatus<boolean>>({ features: false, models: false, history: false, recommendations: false });
+  const [panelErrors, setPanelErrors] = useState<PanelStatus<string | null>>({ features: null, models: null, history: null, recommendations: null });
   const [featureActions, setFeatureActions] = useState<Record<string, FeatureActionPhase | undefined>>({});
   const [featureErrors, setFeatureErrors] = useState<Record<string, string | undefined>>({});
   const [pendingActivations, setPendingActivations] = useState<Record<string, PendingActivation | undefined>>({});
@@ -283,6 +289,15 @@ export function AIControlCenter() {
   const featureActionsRef = useRef<Record<string, FeatureActionPhase | undefined>>({});
   const [groupBulkBusy, setGroupBulkBusy] = useState<string | null>(null);
   const groupBulkBusyRef = useRef<string | null>(null);
+  const [recState, setRecState] = useState<{
+    status: 'idle' | 'loading-history' | 'generating' | 'ready' | 'error';
+    reports: AiRecommendationReport[];
+    error: string | null;
+  }>({ status: 'idle', reports: [], error: null });
+  const recBusyRef = useRef(false);
+  const recHistoryLoadedRef = useRef(false);
+  const [expandedReportId, setExpandedReportId] = useState<string | null>(null);
+  const [appliedRecs, setAppliedRecs] = useState<Record<string, 'applying' | 'applied' | undefined>>({});
   const draftsRef = useRef<Record<string, AiFeatureDraft>>({});
   const draftReviewRequiredRef = useRef<Record<string, boolean | undefined>>({});
   const toastIdRef = useRef(0);
@@ -369,8 +384,8 @@ export function AIControlCenter() {
     );
     const sequence = ++loadSequenceRef.current;
     if (!quiet) {
-      setPanelLoading({ features: true, models: true, history: true });
-      setPanelErrors({ features: null, models: null, history: null });
+      setPanelLoading({ features: true, models: true, history: true, recommendations: false });
+      setPanelErrors({ features: null, models: null, history: null, recommendations: null });
     }
 
     const finishPanel = (panel: TabId) => {
@@ -865,6 +880,99 @@ export function AIControlCenter() {
     });
   }, [models, runGroupCycle, toast]);
 
+  /** Load the saved advice history once, when the tab is first opened. */
+  const loadRecommendationHistory = useCallback(async () => {
+    if (recBusyRef.current) return;
+    recBusyRef.current = true;
+    setRecState((current) => ({ ...current, status: 'loading-history', error: null }));
+    try {
+      const data = await apiRequest<AiRecommendationReportsResponse>('/recommendations');
+      setRecState({ status: 'ready', reports: data.reports, error: null });
+      setExpandedReportId((current) => current ?? data.reports[0]?.id ?? null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not load saved recommendations.';
+      setRecState((current) => ({ status: 'error', reports: current.reports, error: message }));
+    } finally {
+      recBusyRef.current = false;
+    }
+  }, []);
+
+  // Saved advice history loads once, the first time the tab is opened.
+  useEffect(() => {
+    if (!open || tab !== 'recommendations' || recHistoryLoadedRef.current) return;
+    recHistoryLoadedRef.current = true;
+    void loadRecommendationHistory();
+  }, [open, tab, loadRecommendationHistory]);
+
+  /** Generate fresh advice on demand — one billable Claude call (a few cents).
+   * The run is saved server-side and lands at the top of the history. */
+  const generateRecommendations = useCallback(async () => {
+    if (recBusyRef.current) return;
+    recBusyRef.current = true;
+    setRecState((current) => ({ ...current, status: 'generating', error: null }));
+    try {
+      const data = await apiRequest<AiRecommendationsResponse>('/recommendations', { method: 'POST' });
+      setRecState((current) => ({ status: 'ready', reports: [data.report, ...current.reports], error: null }));
+      setExpandedReportId(data.report.id ?? 'fresh');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not generate recommendations.';
+      setRecState((current) => ({ status: 'error', reports: current.reports, error: message }));
+      toast('error', `Recommendations: ${message}`);
+    } finally {
+      recBusyRef.current = false;
+    }
+  }, [toast]);
+
+  /** Apply one suggestion via the normal create → test → activate cycle. */
+  const applyRecommendation = useCallback(async (rec: AiRecommendation, applyKey: string) => {
+    if (!rec.featureKey || !rec.suggestedPrimary) return;
+    if (groupBulkBusyRef.current || rollingBackIdRef.current || featureActionsRef.current[rec.featureKey]) return;
+    const feature = featuresRef.current.find((row) => row.key === rec.featureKey);
+    if (!feature) return;
+    const reason = `Applied recommendation: ${rec.title}`;
+    setAppliedRecs((current) => ({ ...current, [applyKey]: 'applying' }));
+    setFeatureAction(feature.key, 'validating');
+    try {
+      const createBody: CreateAiConfigRequest = {
+        featureKey: feature.key,
+        enabled: feature.activeConfig.enabled,
+        primary: { provider: rec.suggestedPrimary.provider as AiHostedProvider, modelId: rec.suggestedPrimary.modelId },
+        fallback: rec.suggestedFallback && isHostedProvider(rec.suggestedFallback.provider)
+          ? { provider: rec.suggestedFallback.provider, modelId: rec.suggestedFallback.modelId }
+          : null,
+        parameters: feature.activeConfig.parameters,
+        parentId: feature.activeConfig.versionId,
+        changeReason: reason,
+      };
+      const created = await apiRequest<CreateAiConfigResponse>('/configs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(createBody),
+      });
+      const validated = await apiRequest<ValidateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/validate`, {
+        method: 'POST',
+      });
+      const validationError = validationFailed(validated);
+      if (validationError) throw new Error(validationError);
+      setFeatureAction(feature.key, 'activating');
+      await apiRequest<ActivateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/activate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedActiveId: feature.activeConfig.versionId, reason } satisfies ActivateAiConfigRequest),
+      });
+      setAppliedRecs((current) => ({ ...current, [applyKey]: 'applied' }));
+      toast('success', `${feature.label} is now on the recommended setup.`);
+      await loadAll(true, true, [feature.key]);
+    } catch (error) {
+      setAppliedRecs((current) => ({ ...current, [applyKey]: undefined }));
+      const message = error instanceof Error ? error.message : 'failed';
+      toast('error', `${feature.label}: ${message}`);
+      await loadAll(true, true);
+    } finally {
+      setFeatureAction(feature.key, undefined);
+    }
+  }, [loadAll, setFeatureAction, toast]);
+
   const refreshModels = useCallback(async () => {
     if (catalogRefreshInFlightRef.current) return;
     catalogRefreshInFlightRef.current = true;
@@ -1062,6 +1170,17 @@ export function AIControlCenter() {
                 onProvider={setProviderFilter}
                 onRefresh={refreshModels}
               />
+            ) : tab === 'recommendations' ? (
+              <RecommendationsPanel
+                state={recState}
+                applied={appliedRecs}
+                features={features}
+                busy={featureActionInFlight || Boolean(groupBulkBusy)}
+                expandedReportId={expandedReportId}
+                onToggleReport={(id) => setExpandedReportId((current) => (current === id ? null : id))}
+                onGenerate={generateRecommendations}
+                onApply={applyRecommendation}
+              />
             ) : (
               <HistoryPanel
                 history={history}
@@ -1138,7 +1257,6 @@ function FeaturesPanel({
   onGroupModels: (groupName: string, groupFeatures: AiFeatureSummary[], primaryKey: string, fallbackKey: string) => void;
 }) {
   const groups = useMemo(() => groupAiFeatures(features, query), [features, query]);
-  const [modelEditorGroup, setModelEditorGroup] = useState<string | null>(null);
   return (
     <section
       id="ai-control-panel-features"
@@ -1192,29 +1310,16 @@ function FeaturesPanel({
                         >
                           All off
                         </button>
-                        <button
-                          type="button"
-                          className={styles.textButton}
+                        <GroupModelControls
+                          models={models}
                           disabled={Boolean(groupBulkBusy) || rollbackInFlight}
-                          onClick={() => setModelEditorGroup((current) => (current === group.group ? null : group.group))}
-                        >
-                          {modelEditorGroup === group.group ? 'Close' : 'Change models…'}
-                        </button>
+                          onApply={(primaryKey, fallbackKey) => onGroupModels(group.group, group.features, primaryKey, fallbackKey)}
+                        />
                       </>
                     )}
                   </span>
                 )}
               </div>
-              {modelEditorGroup === group.group && groupBulkBusy !== group.group && (
-                <GroupModelEditor
-                  models={models}
-                  disabled={Boolean(groupBulkBusy) || rollbackInFlight}
-                  onApply={(primaryKey, fallbackKey) => {
-                    setModelEditorGroup(null);
-                    onGroupModels(group.group, group.features, primaryKey, fallbackKey);
-                  }}
-                />
-              )}
               <div className={styles.featureList}>
                 {group.features.map((feature) => (
                   <FeatureEditor
@@ -1483,11 +1588,13 @@ function ActivationRecap({
 }
 
 /**
- * Inline category-wide model picker. The chosen models are applied to every
- * feature in the group that can run them (others are skipped and reported);
- * each application goes through the normal test-then-activate cycle.
+ * Compact category-wide model controls, inline with All on / All off:
+ * [Primary model ▾] [Fallback model ▾] [Test & apply my change]. The chosen
+ * models are applied to every feature in the group that can run them (others
+ * are skipped and reported); each application goes through the normal
+ * test-then-activate cycle. Selections clear after applying.
  */
-function GroupModelEditor({
+function GroupModelControls({
   models,
   disabled,
   onApply,
@@ -1500,47 +1607,45 @@ function GroupModelEditor({
   const [primaryKey, setPrimaryKey] = useState('');
   const [fallbackKey, setFallbackKey] = useState(NO_FALLBACK);
   return (
-    <div className={styles.groupModelEditor}>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>New main model for this whole category</span>
-        <ModelSelect
-          value={primaryKey}
-          models={available}
-          preserve={[]}
-          allowNone={false}
-          placeholder="Choose a model…"
-          ariaLabel="Category-wide primary model"
-          disabled={disabled}
-          onChange={(value) => {
-            setPrimaryKey(value);
-            if (value === fallbackKey) setFallbackKey(NO_FALLBACK);
-          }}
-        />
-      </label>
-      <label className={styles.field}>
-        <span className={styles.fieldLabel}>Backup model · optional</span>
-        <ModelSelect
-          value={fallbackKey}
-          models={available.filter((model) => modelRefKey(model) !== primaryKey)}
-          preserve={[]}
-          allowNone
-          ariaLabel="Category-wide fallback model"
-          disabled={disabled}
-          onChange={setFallbackKey}
-        />
-      </label>
-      <div className={styles.featureActions}>
-        <button
-          type="button"
-          className={styles.primaryButton}
-          disabled={disabled || !primaryKey}
-          onClick={() => onApply(primaryKey, fallbackKey)}
-        >
-          <CheckCircle2 size={14} />
-          Test & apply to whole category
-        </button>
-      </div>
-    </div>
+    <>
+      <ModelSelect
+        value={primaryKey}
+        models={available}
+        preserve={[]}
+        allowNone={false}
+        placeholder="Primary model"
+        compact
+        ariaLabel="Category-wide primary model"
+        disabled={disabled}
+        onChange={(value) => {
+          setPrimaryKey(value);
+          if (value === fallbackKey) setFallbackKey(NO_FALLBACK);
+        }}
+      />
+      <ModelSelect
+        value={fallbackKey}
+        models={available.filter((model) => modelRefKey(model) !== primaryKey)}
+        preserve={[]}
+        allowNone
+        noneLabel="Fallback model"
+        compact
+        ariaLabel="Category-wide fallback model"
+        disabled={disabled}
+        onChange={setFallbackKey}
+      />
+      <button
+        type="button"
+        className={styles.textButton}
+        disabled={disabled || !primaryKey}
+        onClick={() => {
+          onApply(primaryKey, fallbackKey);
+          setPrimaryKey('');
+          setFallbackKey(NO_FALLBACK);
+        }}
+      >
+        Test & apply my change
+      </button>
+    </>
   );
 }
 
@@ -1550,6 +1655,8 @@ function ModelSelect({
   preserve,
   allowNone = false,
   placeholder,
+  noneLabel = 'No fallback',
+  compact = false,
   ariaLabel,
   disabled,
   onChange,
@@ -1559,6 +1666,8 @@ function ModelSelect({
   preserve: AiModelRef[];
   allowNone?: boolean;
   placeholder?: string;
+  noneLabel?: string;
+  compact?: boolean;
   ariaLabel: string;
   disabled: boolean;
   onChange: (value: string) => void;
@@ -1597,14 +1706,14 @@ function ModelSelect({
 
   return (
     <select
-      className={styles.select}
+      className={compact ? styles.selectCompact : styles.select}
       value={value}
       aria-label={ariaLabel}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
     >
       {placeholder !== undefined && <option value="" disabled>{placeholder}</option>}
-      {allowNone && <option value={NO_FALLBACK}>No fallback</option>}
+      {allowNone && <option value={NO_FALLBACK}>{noneLabel}</option>}
       {grouped.map((group) => (
         <optgroup key={group.provider} label={providerLabel(group.provider)}>
           {group.models.map((model) => (
@@ -1871,6 +1980,145 @@ function ModelCard({
         <span>{model.source === 'registry' ? 'Registry record' : 'Provider last checked'} · {formatAiDate(model.lastSeenAt)}</span>
       </div>
     </article>
+  );
+}
+
+function RecommendationsPanel({
+  state,
+  applied,
+  features,
+  busy,
+  expandedReportId,
+  onToggleReport,
+  onGenerate,
+  onApply,
+}: {
+  state: { status: 'idle' | 'loading-history' | 'generating' | 'ready' | 'error'; reports: AiRecommendationReport[]; error: string | null };
+  applied: Record<string, 'applying' | 'applied' | undefined>;
+  features: AiFeatureSummary[];
+  busy: boolean;
+  expandedReportId: string | null;
+  onToggleReport: (id: string) => void;
+  onGenerate: () => void;
+  onApply: (rec: AiRecommendation, applyKey: string) => void;
+}) {
+  const featureByKey = useMemo(() => new Map(features.map((feature) => [feature.key as string, feature])), [features]);
+  const reportDate = (iso: string) => {
+    const date = new Date(iso);
+    return `${date.toLocaleDateString('en-US', { month: 'long', day: 'numeric' })} at ${date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+  };
+  return (
+    <section
+      id="ai-control-panel-recommendations"
+      className={styles.panel}
+      role="tabpanel"
+      aria-labelledby="ai-control-tab-recommendations"
+    >
+      <div className={styles.toolbar}>
+        <span className={styles.summaryText}>
+          Every run is saved below with its date — open any of them to reread the full advice.
+        </span>
+        <button type="button" className={styles.secondaryButton} disabled={state.status === 'generating'} onClick={onGenerate}>
+          {state.status === 'generating' ? <span className={styles.spinner} aria-hidden="true" /> : <Lightbulb size={14} />}
+          {state.status === 'generating' ? 'Thinking… (can take a minute)' : 'Get recommendations'}
+        </button>
+      </div>
+
+      {state.status === 'loading-history' && state.reports.length === 0 && (
+        <div className={styles.emptyState}><span className={styles.spinner} aria-hidden="true" />Loading saved recommendations…</div>
+      )}
+      {state.status === 'error' && state.reports.length === 0 && (
+        <div className={styles.emptyState}><AlertTriangle size={22} />{state.error ?? 'Could not load recommendations.'}</div>
+      )}
+      {state.status === 'ready' && state.reports.length === 0 && (
+        <div className={styles.emptyState}>
+          <Lightbulb size={22} />
+          No saved runs yet. Click “Get recommendations” to have the AI look over your setup — costs a few cents per run and changes nothing by itself.
+        </div>
+      )}
+
+      {state.reports.length > 0 && (
+        <div className={styles.featureList}>
+          {state.reports.map((report, reportIndex) => {
+            const reportKey = report.id ?? `fresh-${reportIndex}`;
+            const expanded = expandedReportId === reportKey || (report.id !== null && expandedReportId === report.id);
+            return (
+              <article key={reportKey} className={styles.featureCard}>
+                <button
+                  type="button"
+                  className={styles.reportHeader}
+                  aria-expanded={expanded}
+                  onClick={() => onToggleReport(report.id ?? reportKey)}
+                >
+                  <span className={styles.reportHeaderDate}>{reportDate(report.generatedAt)}</span>
+                  <StatusChip>{report.recommendations.length} suggestion{report.recommendations.length === 1 ? '' : 's'}</StatusChip>
+                  <span className={styles.reportHeaderMeta}>
+                    based on ${report.spend30dUsd.toFixed(2)} of 30-day spend · {report.modelUsed}
+                  </span>
+                  <span className={styles.reportHeaderChevron} aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+                </button>
+                {expanded && (
+                  report.recommendations.length === 0 ? (
+                    <p className={styles.featureDescription}>Nothing worth changing at that time — the setup already looked sensible.</p>
+                  ) : (
+                    <div className={styles.reportBody}>
+                      {report.recommendations.map((rec, index) => {
+                        const applyKey = `${reportKey}:${index}`;
+                        const feature = rec.featureKey ? featureByKey.get(rec.featureKey) : undefined;
+                        const applyState = applied[applyKey];
+                        const canApply = Boolean(rec.featureKey && rec.suggestedPrimary && feature);
+                        return (
+                          <div key={applyKey} className={styles.reportItem}>
+                            <div className={styles.featureTop}>
+                              <div className={styles.featureIdentity}>
+                                <div className={styles.featureTitleRow}>
+                                  <h4 className={styles.featureTitle}>{rec.title}</h4>
+                                  {feature && <StatusChip>{feature.label}</StatusChip>}
+                                  {rec.estimatedMonthlySavingsUsd !== null && rec.estimatedMonthlySavingsUsd > 0 && (
+                                    <StatusChip tone="good">~${rec.estimatedMonthlySavingsUsd.toFixed(2)}/mo less</StatusChip>
+                                  )}
+                                  <StatusChip tone={rec.confidence === 'high' ? 'good' : rec.confidence === 'medium' ? 'info' : undefined}>
+                                    {rec.confidence === 'high' ? 'Confident' : rec.confidence === 'medium' ? 'Fairly confident' : 'Worth a look'}
+                                  </StatusChip>
+                                </div>
+                                <p className={styles.featureDescription}>{rec.why}</p>
+                                {rec.suggestedPrimary && (
+                                  <p className={styles.featureDescription}>
+                                    Suggests: <strong>{rec.suggestedPrimary.modelId}</strong>
+                                    {rec.suggestedFallback ? <> with backup <strong>{rec.suggestedFallback.modelId}</strong></> : null}
+                                    {feature ? <> (currently {feature.activeConfig.primary.modelId})</> : null}
+                                  </p>
+                                )}
+                              </div>
+                              {canApply && (
+                                <div className={styles.featureActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.primaryButton}
+                                    disabled={busy || applyState === 'applying' || applyState === 'applied'}
+                                    onClick={() => onApply(rec, applyKey)}
+                                  >
+                                    {applyState === 'applying'
+                                      ? <span className={styles.spinner} aria-hidden="true" />
+                                      : <CheckCircle2 size={14} />}
+                                    {applyState === 'applied' ? 'Applied ✓' : applyState === 'applying' ? 'Testing…' : 'Test & apply'}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                )}
+              </article>
+            );
+          })}
+        </div>
+      )}
+      <p className={styles.summaryText}>Suggestions never apply themselves — every switch is tested first.</p>
+    </section>
   );
 }
 

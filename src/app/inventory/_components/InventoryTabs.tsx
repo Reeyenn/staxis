@@ -260,7 +260,9 @@ export function InventoryTabs({
           (in case the Done button isn't spotted). */}
       {editing && (
         <div
-          onPointerDown={() => { setEditing(false); setAdding(false); }}
+          // Finishing by tapping away must behave like Enter/Done: commit any
+          // typed-but-unsubmitted tab name instead of silently discarding it.
+          onPointerDown={() => { commitNew(); setEditing(false); }}
           style={{
             position: 'fixed', inset: 0, zIndex: 40,
             background: 'rgba(31,35,28,0.30)',
@@ -356,7 +358,9 @@ export function InventoryTabs({
         {canManage && (
           <button
             type="button"
-            onClick={() => { setEditing((v) => !v); setAdding(false); }}
+            // Done commits a typed-but-unsubmitted tab name (same as Enter);
+            // without this, "type a name → tap Done" silently lost the name.
+            onClick={() => { if (editing) commitNew(); setEditing((v) => !v); setAdding(false); }}
             style={editing ? {
               height: 36, padding: '0 18px', borderRadius: 999, cursor: 'pointer', marginLeft: 4,
               background: T.brand, color: '#fff', border: `1px solid ${T.brand}`,

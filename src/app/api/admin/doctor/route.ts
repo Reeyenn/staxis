@@ -192,8 +192,6 @@ const checks: Array<[string, CheckFn]> = [
   // Both read scraper_status keys (`morning`/`evening`/`alertState`) the
   // Railway scraper wrote. Scraper service is gone; CUA polling is
   // monitored via `cua_sessions_alive` instead.
-  ['twilio_credentials',             checkTwilioCredentials],
-  ['twilio_balance',                 checkTwilioBalance],
   // Twilio FROM-number registration: existing twilio_credentials check
   // only verifies the account is alive and not suspended. It does NOT
   // verify that TWILIO_FROM_NUMBER is actually a phone number owned by
@@ -202,8 +200,6 @@ const checks: Array<[string, CheckFn]> = [
   // the toll-free verification expired), sends silently 400 inside
   // sms.ts with error 21659 "From is not a valid, SMS-capable
   // Twilio phone number." May 2026 audit pass-3 closure.
-  ['twilio_from_number_registered',  checkTwilioFromNumberRegistered],
-  ['alert_phone_shape',              checkAlertPhoneShape],
   ['cron_secret_shape',              checkCronSecretShape],
   // Plan v4 (2026-05-24): removed `watchdog_alert_path` +
   // `scraper_pull_latency`. The former read scraper_status['vercel_watchdog'] +
@@ -407,11 +403,7 @@ const REQUIRED_ENV_VARS: Array<{ name: string; altNames?: string[]; group: strin
   // Supabase (server-only — service_role bypasses RLS, NEVER exposed to browser)
   { name: 'SUPABASE_SERVICE_ROLE_KEY',         group: 'supabase-admin' },
   // Twilio
-  { name: 'TWILIO_ACCOUNT_SID',                group: 'twilio' },
-  { name: 'TWILIO_AUTH_TOKEN',                 group: 'twilio' },
-  { name: 'TWILIO_FROM_NUMBER', altNames: ['TWILIO_PHONE_NUMBER'], group: 'twilio' },
   // Ops alert phone (without this, alerts silently no-op — the exact failure mode we're trying to prevent)
-  { name: 'MANAGER_PHONE',      altNames: ['OPS_ALERT_PHONE'],      group: 'alerts' },
   // Shared secret for cron auth
   { name: 'CRON_SECRET',                       group: 'cron' },
   // Local Claude Code hook auth. requireHeartbeatSecret() in
@@ -912,6 +904,7 @@ const RLS_REQUIRED_TABLES = [
   // Fleet-wide AI Control Center (service-role only).
   'ai_model_catalog',
   'ai_feature_config_versions',
+  'ai_recommendation_reports',
 
   // High-sensitivity backend tables — service-role only.
   // RLS off here would be catastrophic (plain-text PMS passwords, phone
@@ -1048,6 +1041,8 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   // 0313 — global AI provider catalog + immutable feature config history.
   'ai_model_catalog',
   'ai_feature_config_versions',
+  // 0316 — saved recommendation reports.
+  'ai_recommendation_reports',
 ]);
 
 async function checkSupabaseRlsPolicyCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {
@@ -1222,266 +1217,9 @@ async function checkStorageBucketPolicyCoverage(): Promise<Omit<Check, 'name' | 
 // dashboard_by_date, both dropped tables. They had no callers in the
 // check registry; safe to remove.)
 
-async function checkTwilioCredentials(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const sid = env.TWILIO_ACCOUNT_SID;
-  const tok = env.TWILIO_AUTH_TOKEN;
-  if (!sid || !tok) {
-    return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
-  }
-  try {
-    // GET the account itself — cheapest possible auth check, <100ms usually.
-    const res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}.json`,
-      {
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}`,
-        },
-        // Cap the call — if Twilio is slow, fail the check rather than the whole request.
-        signal: AbortSignal.timeout(10_000),
-      }
-    );
-    if (res.status === 401) {
-      return {
-        status: 'fail',
-        detail: 'Twilio rejected credentials (401 Unauthorized)',
-        fix: 'Twilio auth token was likely rotated. Twilio Console → Auth Tokens → copy primary. Update BOTH Vercel (TWILIO_AUTH_TOKEN) AND (if used) Railway.',
-      };
-    }
-    if (!res.ok) {
-      return { status: 'fail', detail: `Twilio returned ${res.status} ${res.statusText}` };
-    }
-    const json = await res.json() as { status?: string; friendly_name?: string };
-    if (json.status === 'suspended' || json.status === 'closed') {
-      return {
-        status: 'fail',
-        detail: `Twilio account status is "${json.status}"`,
-        fix: 'Twilio account is suspended. Log in to Twilio Console to resolve.',
-      };
-    }
-    return {
-      status: 'ok',
-      detail: `Twilio account "${json.friendly_name ?? '?'}" active`,
-    };
-  } catch (err) {
-    return { status: 'fail', detail: `Twilio API call failed: ${errToString(err)}` };
-  }
-}
 
-/**
- * Twilio prepaid balance freshness. Yesterday (2026-05-14) the balance
- * dropped to $4.51 with no autopay configured and no warning until the
- * scheduled weekly digest noticed — a fully-burnt balance silently
- * disables every outbound SMS (shift confirmations, watchdog SOS,
- * doctor alert texts), and the only way to learn about it is when a
- * housekeeper says "I never got the text." Cap the warn threshold
- * conservatively because the watchdog SMS is the priority queue and
- * needs runway.
- */
-async function checkTwilioBalance(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const sid = env.TWILIO_ACCOUNT_SID;
-  const tok = env.TWILIO_AUTH_TOKEN;
-  if (!sid || !tok) {
-    return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
-  }
-  // Round 18: thresholds are now env-tunable so tightening them after
-  // an outage doesn't require a code deploy. Defaults match Round 17:
-  // a typical day burns ~$1–2 in SMS sends, so $10 = 5+ days runway
-  // after warn, $5 = ~2 days before sends start failing.
-  const WARN_BELOW = env.TWILIO_BALANCE_WARN_USD;
-  const FAIL_BELOW = env.TWILIO_BALANCE_FAIL_USD;
-  try {
-    const res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Balance.json`,
-      {
-        headers: {
-          Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}`,
-        },
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-    if (res.status === 401) {
-      return {
-        status: 'fail',
-        detail: 'Twilio rejected credentials when reading balance (401)',
-        fix: 'See checkTwilioCredentials fix — token rotation likely.',
-      };
-    }
-    if (!res.ok) {
-      return {
-        status: 'warn',
-        detail: `Twilio balance API returned ${res.status} ${res.statusText}`,
-      };
-    }
-    const json = await res.json() as { balance?: string; currency?: string };
-    const balanceNum = parseFloat(json.balance ?? '0');
-    const currency = json.currency ?? 'USD';
-    if (!Number.isFinite(balanceNum)) {
-      return {
-        status: 'warn',
-        detail: `Twilio balance API returned non-numeric balance "${json.balance}"`,
-      };
-    }
-    const fixHint =
-      'Top up at https://console.twilio.com/ → Billing → Add Funds. ' +
-      'To prevent the next occurrence, enable Auto-Recharge on the same page ' +
-      '(adds $20 whenever balance falls below $10).';
-    if (balanceNum < FAIL_BELOW) {
-      return {
-        status: 'fail',
-        detail: `Twilio balance is $${balanceNum.toFixed(2)} ${currency} — below the $${FAIL_BELOW} hard floor. SMS sends are at risk of starting to fail.`,
-        fix: fixHint,
-      };
-    }
-    if (balanceNum < WARN_BELOW) {
-      // Round 18 #13: warn-band balance escapes to Sentry directly,
-      // independent of the alert-decision logic. The doctor's regular
-      // captureMessage path only fires on `fail`, so a warn band silently
-      // existed until balance dropped below FAIL_BELOW — exactly the
-      // failure mode that caused yesterday's $4.51 surprise.
-      // We bypass the lazy Sentry import via require because doctor/route
-      // is imported by routes that pre-date Sentry initialization. The
-      // dynamic import path matches what /lib/log.ts uses for the same
-      // reason.
-      try {
-        const sentry = await import('@/lib/sentry');
-        sentry.captureMessage(
-          `twilio balance $${balanceNum.toFixed(2)} ${currency} — below $${WARN_BELOW} warn`,
-          {
-            subsystem: 'doctor',
-            check: 'twilio_balance',
-            balance_usd: balanceNum,
-            warn_below: WARN_BELOW,
-            fail_below: FAIL_BELOW,
-          },
-        );
-      } catch {
-        // If Sentry import or capture fails, don't break the doctor check.
-      }
-      return {
-        status: 'warn',
-        detail: `Twilio balance is $${balanceNum.toFixed(2)} ${currency} — below the $${WARN_BELOW} warn threshold.`,
-        fix: fixHint,
-      };
-    }
-    return {
-      status: 'ok',
-      detail: `Twilio balance $${balanceNum.toFixed(2)} ${currency} (warn at <$${WARN_BELOW}, fail at <$${FAIL_BELOW})`,
-    };
-  } catch (err) {
-    return { status: 'warn', detail: `Twilio balance check raised: ${errToString(err)}` };
-  }
-}
 
-/**
- * twilio_from_number_registered — verify TWILIO_FROM_NUMBER is a phone
- * number that this Twilio account actually owns and can send SMS from.
- *
- * Why this matters: checkTwilioCredentials confirms the SID+token are
- * valid and the account isn't suspended. It does NOT confirm that the
- * specific number in TWILIO_FROM_NUMBER is registered to the account.
- * If Reeyen rotates Twilio numbers and updates the env var but the new
- * number isn't registered yet — or the toll-free verification lapsed —
- * Twilio rejects sends with error 21659 ("From is not a valid SMS-
- * capable Twilio phone number"). sendSms() throws; the caller catches
- * it as "send failed" in Vercel logs. Maria's shift confirmations
- * never arrive and the only signal is a single error-log line.
- *
- * The probe: GET the IncomingPhoneNumbers resource filtered by the
- * configured number. Twilio returns the number's details if it's
- * registered, empty list if not. SMS capabilities are reported in
- * the `capabilities.sms` field — we fail if the number is registered
- * but not SMS-capable (a voice-only number landed in the env var).
- */
-async function checkTwilioFromNumberRegistered(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  const sid = env.TWILIO_ACCOUNT_SID;
-  const tok = env.TWILIO_AUTH_TOKEN;
-  const from = env.TWILIO_FROM_NUMBER;
-  if (!sid || !tok || !from) {
-    return { status: 'skipped', detail: 'Twilio env vars missing (reported by env_vars check)' };
-  }
-  try {
-    const url = new URL(`https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/IncomingPhoneNumbers.json`);
-    url.searchParams.set('PhoneNumber', from);
-    url.searchParams.set('PageSize', '5');
-    const res = await fetch(url.toString(), {
-      headers: { Authorization: `Basic ${Buffer.from(`${sid}:${tok}`).toString('base64')}` },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!res.ok) {
-      // 401 will already fire from checkTwilioCredentials — don't double-report.
-      if (res.status === 401) {
-        return { status: 'skipped', detail: 'auth handled by twilio_credentials check' };
-      }
-      return { status: 'fail', detail: `Twilio IncomingPhoneNumbers returned ${res.status} ${res.statusText}` };
-    }
-    const json = await res.json() as {
-      incoming_phone_numbers?: Array<{
-        phone_number?: string;
-        sid?: string;
-        capabilities?: { sms?: boolean; mms?: boolean; voice?: boolean };
-      }>;
-    };
-    const list = json.incoming_phone_numbers ?? [];
-    if (list.length === 0) {
-      return {
-        status: 'fail',
-        detail: `TWILIO_FROM_NUMBER "${from}" is NOT registered to account ${sid.slice(0, 10)}…. Twilio will reject every send with error 21659.`,
-        fix: 'Twilio Console → Phone Numbers → Manage → Active. Confirm the number is owned by this account, or buy/port a new one and update TWILIO_FROM_NUMBER in Vercel.',
-      };
-    }
-    const match = list.find((n) => n.phone_number === from) ?? list[0];
-    if (!match.capabilities?.sms) {
-      return {
-        status: 'fail',
-        detail: `TWILIO_FROM_NUMBER "${from}" is registered but NOT SMS-capable (likely a voice-only number). Sends will fail.`,
-        fix: 'Twilio Console → Phone Numbers → click the number → Capabilities → ensure SMS is on. Or pick a different number and update TWILIO_FROM_NUMBER.',
-      };
-    }
-    return {
-      status: 'ok',
-      detail: `TWILIO_FROM_NUMBER "${from}" registered + SMS-capable.`,
-    };
-  } catch (err) {
-    return { status: 'warn', detail: `Twilio number check raised: ${errToString(err)}` };
-  }
-}
 
-async function checkAlertPhoneShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  // MANAGER_PHONE is read by scraper-health, scraper-weekly-digest, and the
-  // Railway vercel-watchdog. If it's missing or malformed, alerts silently
-  // no-op — which is the exact class of failure the alerting system was
-  // supposed to catch in the first place. env_vars already checks it's set;
-  // this check validates it's *usable*.
-  const phone = env.OPS_ALERT_PHONE;
-  if (!phone) {
-    return {
-      status: 'skipped',
-      detail: 'MANAGER_PHONE missing (reported by env_vars check)',
-    };
-  }
-  // Accept E.164: +[country code][digits], 11–15 digits total.
-  const e164 = /^\+[1-9]\d{10,14}$/;
-  if (!e164.test(phone.trim())) {
-    return {
-      status: 'fail',
-      detail: `MANAGER_PHONE is not in E.164 format (got "${phone}"). Twilio will reject sends.`,
-      fix: 'Set MANAGER_PHONE to E.164 format on Vercel, e.g. "+12816669887". No spaces, no parens, starts with +.',
-    };
-  }
-  // Placeholder sanity.
-  const placeholders = ['+10000000000', '+15555555555', '+1234567890'];
-  if (placeholders.includes(phone.trim())) {
-    return {
-      status: 'fail',
-      detail: `MANAGER_PHONE is a placeholder (${phone}). Real alerts will be silently sent to /dev/null.`,
-      fix: 'Set MANAGER_PHONE to Reeyen\'s actual cell on Vercel AND Railway.',
-    };
-  }
-  return {
-    status: 'ok',
-    detail: `MANAGER_PHONE is valid E.164 (${phone.slice(0, 2)}…${phone.slice(-4)})`,
-  };
-}
 
 async function checkCronSecretShape(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   const secret = env.CRON_SECRET;
@@ -2054,12 +1792,10 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // Plan v4 (2026-05-24): removed `scraper-health` — Railway scraper cron,
   // service is gone. The new `vercel-watchdog` (5-min, listed at the
   // bottom) replaces it.
-  { name: 'process-sms-jobs',              cadenceHours: 5/60,  description: '5-min SMS jobs queue worker (Vercel native cron; GH sms-jobs-cron.yml kept as redundant backup, audit 2026-06-26)' },
   { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
   { name: 'compliance-reminders',          cadenceHours: 1,     description: 'hourly engineering-compliance reminders + GM overdue escalation by SMS (Vercel native cron) — feature #19' },
   { name: 'compliance-anomaly-sweep',      cadenceHours: 30/60, description: 'every-30-min leak/spike anomaly sweep — slow-trend + stuck-meter detection + AI phrasing (Vercel native cron) — feature #19 v2' },
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
-  { name: 'pms-sync-watchdog',             cadenceHours: 5/60,  description: 'every-5-min PMS write-back stuck-sync watchdog — Twilio alert to ops on stuck/failed writes (Phase 3)' },
   { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
   { name: 'agent-consolidate-memory',      cadenceHours: 24,    description: 'nightly per-hotel memory consolidation — auto-learns durable facts from conversations (self-learning Move #2)' },
   { name: 'doctor-check',                  cadenceHours: 1,     description: 'hourly health check — runs the doctor battery + alerts Sentry/SMS on any fail (Round 13)' },
@@ -2094,7 +1830,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
   // scraper observability cron, scraper service is gone.
-  { name: 'agent-weekly-digest',           cadenceHours: 168,   description: 'weekly agent activity digest SMS to MANAGER_PHONE (Sundays 9am UTC)' },
   // Plan v4 (2026-05-23): replaces the Railway-hosted vercel-watchdog.js.
   // Runs the doctor every 5 min, Sentry-alerts on fail with business-hours-only SMS bump.
   { name: 'vercel-watchdog',               cadenceHours: 5/60,  description: '5-min Vercel cron that polls /api/admin/doctor and alerts on fail (replaces scraper/vercel-watchdog.js post-v4)' },
@@ -2113,7 +1848,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // whose redistribute_at has passed (or whose 'after_current_room'
   // gate is now satisfied) and fires the redistribute. Safety net for
   // inline failures on the report routes.
-  { name: 'process-pending-callouts',      cadenceHours: 5/60,  description: '5-min Vercel cron that processes deferred sick-callout redistribution (feature #6)' },
   // Plan v8 Phase B (migration 0217): 5-min Vercel cron that flips
   // mapping_help_requests past expires_at to 'expired' and deletes their
   // screenshots from the mapping-screenshots storage bucket. Without this
@@ -2128,9 +1862,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // regardless of whether a property got mailed.
   { name: 'run-weekly-report',             cadenceHours: 30/60, description: 'Sunday-only logic, 30-min cron — same per-property time-window check as run-daily-report; emits the Mon–Sun digest with a Claude-generated AI insight at the top' },
   // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity escalation.
-  { name: 'send-complaint-nudges',         cadenceHours: 15/60, description: '15-min Vercel cron — texts the property alert phone when a satisfaction callback is due or a high-severity complaint sits unresolved (idempotent via callback_nudged_at / escalation_nudged_at)' },
   { name: 'lost-found-disposal-check',     cadenceHours: 24, description: 'Daily Lost & Found disposal sweep — auto-expires found items past their 90-day hold and nudges owners/GMs about items nearing the deadline' },
-  { name: 'financials-alert-sweep',        cadenceHours: 24, description: 'Daily financials sweep — projects month-end overspend per department (occupancy-adjusted) + flags spend anomalies, texts the property alert phone ONLY when financials_alerts_sms_enabled. Idempotent/no-spam via app_events dedup; SMS billing-gated on raw pid' },
 ];
 
 async function checkCronHeartbeatsFresh(): Promise<Omit<Check, 'name' | 'durationMs'>> {

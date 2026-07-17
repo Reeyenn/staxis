@@ -2,7 +2,7 @@
  * POST /api/complaints/update
  *
  * One endpoint, four actions on an existing complaint:
- *   - assign            → set assignee/department; SMS the assignee; open→in_progress
+ * *   - assign            → set assignee/department; open→in_progress
  *   - status            → change status; resolved/closed stamps resolved_at + notes
  *   - schedule_callback → set a satisfaction-callback time
  *   - callback_done     → mark a callback completed (+ notes)
@@ -21,7 +21,6 @@ import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { canForUserId } from '@/lib/capabilities/server';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { sendSms } from '@/lib/sms';
 import { COMPLAINT_STATUSES, COMPLAINT_DEPTS } from '@/lib/complaints-shared';
 
 export const runtime = 'nodejs';
@@ -102,7 +101,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!existing) return err('complaint not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
 
     const patch: Record<string, unknown> = {};
-    let smsTarget: { assignedTo: string } | null = null;
 
     if (action === 'assign') {
       if (body.assignedTo != null) {
@@ -128,7 +126,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Map the staff department onto a complaint dept when it's one we track.
         const dept = staff.department as string | null;
         if (dept && (COMPLAINT_DEPTS as readonly string[]).includes(dept)) patch.assigned_dept = dept;
-        smsTarget = { assignedTo: staff.id };
+
       } else {
         // Explicit unassign — clear the snapshot fields too.
         patch.assigned_to = null;
@@ -181,28 +179,8 @@ export async function POST(req: NextRequest): Promise<Response> {
       return err('Internal server error', { requestId, status: 500, code: ApiErrorCode.InternalError, headers });
     }
 
-    // Best-effort SMS to a newly assigned staff member (billing-gated).
-    if (smsTarget) {
-      try {
-        const { data: staff } = await supabaseAdmin
-          .from('staff')
-          .select('phone, name')
-          .eq('id', smsTarget.assignedTo)
-          .eq('property_id', pid)
-          .maybeSingle();
-        const phone = (staff?.phone as string | null) ?? null;
-        if (phone) {
-          const smsRl = await checkAndIncrementRateLimit('complaints-sms', pid);
-          if (smsRl.allowed) {
-            const room = existing.room_number ? `Room ${existing.room_number} — ` : '';
-            const desc = String(existing.description ?? '').slice(0, 120);
-            await sendSms(phone, `New complaint assigned to you: ${room}${desc}`);
-          }
-        }
-      } catch (smsErr) {
-        log.warn('complaints/update: assignee SMS failed (non-fatal)', { requestId, err: errToString(smsErr) });
-      }
-    }
+    // (Assignee SMS removed 2026-07 — all Twilio texting retired. Assignment
+    // is visible in the Communications To-Do list.)
 
     return ok({ updated: true, action }, { requestId, headers });
   } catch (caughtErr) {

@@ -8,7 +8,7 @@
 //
 //   task        comms_tasks  → assigned_staff_id (+ derived assigned_department)
 //   complaint   complaints   → assigned_to/name/dept (server-derived from staff),
-//                              open→in_progress, best-effort SMS to the assignee
+//                              open→in_progress
 //   workorder   work_orders  → severity (priority lane: urgent|normal|low) — the
 //                              legacy table has no per-staff assignee column
 //   pm / inspection → 400 (no assign control: preventive has no department col;
@@ -23,7 +23,6 @@ import { log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { sendSms } from '@/lib/sms';
 import { COMPLAINT_DEPTS } from '@/lib/complaints-shared';
 import { worklistSeesAllSources } from '@/lib/worklist/core';
 import { WORKLIST_SOURCE_TYPES } from '@/lib/worklist/types';
@@ -98,7 +97,6 @@ export async function POST(req: NextRequest): Promise<Response> {
         if (!existing) return notFound(requestId, headers);
 
         const patch: Record<string, unknown> = {};
-        let smsStaffId: string | null = null;
         if (assigneeStaffId) {
           const staff = await staffOnProperty(assigneeStaffId, pid);
           if (!staff) return err('assignee not found on this property', { requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers });
@@ -106,7 +104,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           patch.assigned_name = staff.name;
           if (staff.department && (COMPLAINT_DEPTS as readonly string[]).includes(staff.department)) patch.assigned_dept = staff.department;
           if (existing.status === 'open') patch.status = 'in_progress';   // picking it up
-          smsStaffId = staff.id;
+
         } else {
           patch.assigned_to = null;
           patch.assigned_name = null;
@@ -114,24 +112,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         const { error } = await supabaseAdmin.from('complaints').update(patch).eq('id', sourceId).eq('property_id', pid);
         if (error) return fail(requestId, headers, error.message);
 
-        // Best-effort SMS to a newly assigned staff member (billing-gated).
-        if (smsStaffId) {
-          try {
-            const { data: staff } = await supabaseAdmin
-              .from('staff').select('phone, name').eq('id', smsStaffId).eq('property_id', pid).maybeSingle();
-            const phone = (staff?.phone as string | null) ?? null;
-            if (phone) {
-              const smsRl = await checkAndIncrementRateLimit('complaints-sms', pid);
-              if (smsRl.allowed) {
-                const room = existing.room_number ? `Room ${existing.room_number} — ` : '';
-                const desc = String(existing.description ?? '').slice(0, 120);
-                await sendSms(phone, `New complaint assigned to you: ${room}${desc}`);
-              }
-            }
-          } catch (smsErr) {
-            log.warn('[worklist] complaint assign SMS failed (non-fatal)', { requestId, err: errToString(smsErr) });
-          }
-        }
+        // (Assignee SMS removed 2026-07 — all Twilio texting retired.)
         break;
       }
       case 'workorder': {
