@@ -415,6 +415,22 @@
   margin-left: auto;
 }
 
+.groupModelEditor {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px dashed rgba(255, 255, 255, .18);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .03);
+}
+
+@media (max-width: 900px) {
+  .groupModelEditor { grid-template-columns: 1fr; }
+}
+
 .groupBulkBusy {
   display: inline-flex;
   align-items: center;

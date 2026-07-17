@@ -89,7 +89,7 @@ describe('can() — everyone-everything default', () => {
       assert.equal(MANAGER_FLOOR_CAPABILITIES.has(cap), true, `${cap} should be a manager-floor cap`);
     }
     // A clearly line-staff-safe cap must NOT be floored.
-    assert.equal(MANAGER_FLOOR_CAPABILITIES.has('use_packages'), false);
+    assert.equal(MANAGER_FLOOR_CAPABILITIES.has('use_lost_and_found'), false);
   });
   it('run_reports (self-serve report hub) is manager-only and override-proof (embeds money + audit log)', () => {
     // The reports hub can render inventory spend, budgets, and the activity
@@ -119,16 +119,16 @@ describe('can() — everyone-everything default', () => {
 
 describe('can() — allowed:false beats the default (the restriction)', () => {
   it('a false override denies exactly that (capability, role) and nothing else', () => {
-    // use_packages is an everyone-default (non-floored) cap.
-    const overrides: CapabilityOverrideMap = { use_packages: { housekeeping: false } };
-    assert.equal(can({ role: 'housekeeping' }, 'use_packages', overrides), false);
+    // use_lost_and_found is an everyone-default (non-floored) cap.
+    const overrides: CapabilityOverrideMap = { use_lost_and_found: { housekeeping: false } };
+    assert.equal(can({ role: 'housekeeping' }, 'use_lost_and_found', overrides), false);
     // Other roles at this hotel keep the default.
-    assert.equal(can({ role: 'front_desk' }, 'use_packages', overrides), true);
-    assert.equal(can({ role: 'owner' }, 'use_packages', overrides), true);
+    assert.equal(can({ role: 'front_desk' }, 'use_lost_and_found', overrides), true);
+    assert.equal(can({ role: 'owner' }, 'use_lost_and_found', overrides), true);
     // Other capabilities for the restricted role keep the default.
     assert.equal(can({ role: 'housekeeping' }, 'assign_work', overrides), true);
     // Admin is unaffected by any override.
-    assert.equal(can({ role: 'admin' }, 'use_packages', overrides), true);
+    assert.equal(can({ role: 'admin' }, 'use_lost_and_found', overrides), true);
   });
   it('an allowed:true override is honored for a non-floored cap (idempotent re-allow)', () => {
     const overrides: CapabilityOverrideMap = { manage_inventory_orders: { maintenance: true } };
@@ -170,7 +170,7 @@ describe('can() — manager floor is override-proof (security)', () => {
 describe('can() — overrides not yet loaded', () => {
   it('falls back to defaults for non-floored hotel caps; floored + admin-only stay closed', () => {
     // Non-floored cap falls back to the everyone-default.
-    assert.equal(can({ role: 'housekeeping' }, 'use_packages', undefined), true);
+    assert.equal(can({ role: 'housekeeping' }, 'use_lost_and_found', undefined), true);
     // Manager-floor cap stays closed to line staff even with no overrides loaded.
     assert.equal(can({ role: 'housekeeping' }, 'view_financials', undefined), false);
     assert.equal(can({ role: 'housekeeping' }, 'view_wages', undefined), false);

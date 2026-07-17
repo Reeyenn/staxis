@@ -12,6 +12,7 @@ import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state
 import { safeRedirect } from '@/lib/url-redirect';
 import type { Property } from '@/types';
 import { Building2, LogOut } from 'lucide-react';
+import JoinStatusGate from './JoinStatusGate';
 
 export default function PropertySelectorPage() {
   const { user, loading: authLoading, signOut } = useAuth();
@@ -95,6 +96,15 @@ export default function PropertySelectorPage() {
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
     );
+  }
+
+  // Account with ZERO property access → hand off to the join-status gate. For
+  // a pending staff signup it shows the "waiting for approval" screen; for a
+  // genuinely property-less account it falls back to the "No properties found"
+  // message. (Single-property accounts auto-enter above, so we never flash
+  // this for them.)
+  if (user && properties.length === 0) {
+    return <JoinStatusGate lang={lang} onSignOut={handleSignOut} />;
   }
 
   return (

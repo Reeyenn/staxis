@@ -12,8 +12,7 @@ export type AttentionKind =
   | 'anomalies'
   | 'complaintsOverdue'
   | 'callbacksDue'
-  | 'roomsToClean'
-  | 'lostFoundDisposal';
+  | 'roomsToClean';
 
 export function attentionText(kind: AttentionKind, n: number, es: boolean): string {
   const one = n === 1;
@@ -42,9 +41,5 @@ export function attentionText(kind: AttentionKind, n: number, es: boolean): stri
       return es
         ? (one ? 'habitación por limpiar' : 'habitaciones por limpiar')
         : (one ? 'room to clean' : 'rooms to clean');
-    case 'lostFoundDisposal':
-      return es
-        ? (one ? 'objeto por desechar' : 'objetos por desechar')
-        : (one ? 'lost item nearing disposal' : 'lost items nearing disposal');
   }
 }
