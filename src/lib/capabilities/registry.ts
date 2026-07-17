@@ -58,7 +58,6 @@ export const CAPABILITY_KEYS = [
   // front desk
   'use_lost_and_found',
   'use_complaints',
-  'use_packages',
   // comms & content
   'post_announcements',
   'manage_knowledge',
@@ -163,11 +162,6 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
     key: 'use_complaints', adminOnly: false, deptScoped: false, group: 'front_desk',
     label_en: 'Complaints', label_es: 'Quejas',
     desc_en: 'Log guest complaints and service recovery', desc_es: 'Registrar quejas y recuperación de servicio',
-  },
-  {
-    key: 'use_packages', adminOnly: false, deptScoped: false, group: 'front_desk',
-    label_en: 'Packages', label_es: 'Paquetes',
-    desc_en: 'Log package delivery and pickup', desc_es: 'Registrar entrega y retiro de paquetes',
   },
   {
     key: 'post_announcements', adminOnly: false, deptScoped: false, group: 'comms',

@@ -27,7 +27,7 @@ import type { WorklistItem, WorklistPriority } from './types';
 /** Deep-link targets per source (the page + the tab query param it now reads). */
 export const WORKLIST_DEEPLINK: Record<WorklistItem['sourceType'], string> = {
   task: '/communications',
-  complaint: '/front-desk?tab=complaints',
+  complaint: '/communications',
   workorder: '/maintenance?tab=work',
   inspection: '/housekeeping?tab=quality',
   pm: '/maintenance?tab=preventive',

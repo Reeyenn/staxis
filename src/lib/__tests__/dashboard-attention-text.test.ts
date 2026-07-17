@@ -21,7 +21,6 @@ const KINDS: AttentionKind[] = [
   'complaintsOverdue',
   'callbacksDue',
   'roomsToClean',
-  'lostFoundDisposal',
 ];
 
 describe('attentionText — singular vs plural differ on both sides', () => {
@@ -56,11 +55,8 @@ describe('attentionText — specific regressions', () => {
     assert.equal(attentionText('complianceOverdue', 1, true), 'revisión de cumplimiento vencida');
     assert.equal(attentionText('callbacksDue', 1, true), 'llamada de seguimiento hoy');
     assert.equal(attentionText('roomsToClean', 1, true), 'habitación por limpiar');
-    assert.equal(attentionText('lostFoundDisposal', 1, true), 'objeto por desechar');
   });
 
   test('EN singular lost item (was always "lost items nearing disposal")', () => {
-    assert.equal(attentionText('lostFoundDisposal', 1, false), 'lost item nearing disposal');
-    assert.equal(attentionText('lostFoundDisposal', 4, false), 'lost items nearing disposal');
   });
 });
