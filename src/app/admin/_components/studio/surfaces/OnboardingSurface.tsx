@@ -20,7 +20,7 @@
    Clicking a row expands a mission-control panel (JourneyPanel) fed by
    /api/admin/onboarding-detail — robot status + 5-feed freshness + blocker
    actions for the PMS phase, person/details for the wizard phase. Blocker
-   CTAs deep-link to /admin/mfa-resume/[id], /admin/property-sessions, and
+   CTAs deep-link to /admin/mfa-resume/[id], Mission Control (#system), and
    the live mapper console.
    ─────────────────────────────────────────────────────────────────────── */
 
@@ -128,11 +128,11 @@ function journeyOf(p: PropertyRow): Journey {
   const propHref = `/admin/properties/${p.id}`;
   switch (p.sessionStatus) {
     case 'paused_mfa':  return { step: 6, label: 'Needs your code', sub: 'Robot hit 2-factor — click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
-    case 'paused_no_knowledge_file': return { step: 6, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/property-sessions', needsYou: false, kind: 'mapper' };
-    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/property-sessions', needsYou: false, kind: 'cost' };
+    case 'paused_no_knowledge_file': return { step: 6, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/properties#system', needsYou: false, kind: 'mapper' };
+    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/properties#system', needsYou: false, kind: 'cost' };
     case 'paused_circuit_breaker':
-    case 'failed_restart': return { step: 6, label: 'Login failing', sub: p.sessionPausedReason ?? 'Sign-in keeps failing — check the credentials.', href: '/admin/property-sessions', needsYou: true, kind: 'login' };
-    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Session stopped — click to restart.', href: '/admin/property-sessions', needsYou: true, kind: 'stopped' };
+    case 'failed_restart': return { step: 6, label: 'Login failing', sub: p.sessionPausedReason ?? 'Sign-in keeps failing — check the credentials.', href: '/admin/properties#system', needsYou: true, kind: 'login' };
+    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Session stopped — click to restart.', href: '/admin/properties#system', needsYou: true, kind: 'stopped' };
     case 'starting': return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
   }
   const s = p.onboardingState;
@@ -616,7 +616,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
             {s.status === 'paused_cost_cap' && <Btn size="sm" variant="forest" onClick={() => void act('reset_cost_cap')} disabled={busy !== null}>{busy === 'reset_cost_cap' ? '…' : 'Reset cap'}</Btn>}
             {(s.status === 'stopped' || s.status === 'failed_restart' || s.status === 'paused_circuit_breaker') && <Btn size="sm" variant="forest" onClick={() => void act('restart')} disabled={busy !== null}>{busy === 'restart' ? '…' : 'Restart'}</Btn>}
             {(s.status === 'alive' || s.status === 'starting') && <Btn size="sm" variant="ghost" onClick={() => void act('stop')} disabled={busy !== null} style={{ color: '#fff', borderColor: dim(.25) }}>{busy === 'stop' ? '…' : 'Stop'}</Btn>}
-            <Btn size="sm" variant="ghost" href="/admin/property-sessions" style={{ color: dim(.7), borderColor: dim(.2) }}>Robot console</Btn>
+            <Btn size="sm" variant="ghost" href="/admin/properties#system" style={{ color: dim(.7), borderColor: dim(.2) }}>Mission Control</Btn>
           </div>
         </>
       ) : (

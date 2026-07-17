@@ -1,0 +1,174 @@
+/**
+ * /api/admin/mission/workers
+ *
+ * GET — the "background workers" section of Mission Control. Joins each
+ * scheduled job's last heartbeat (cron_heartbeats) against the schedule
+ * registry (SCHEDULE_REGISTRY) so the owner can see, per worker: what it
+ * does in plain English, how often it should run, when it last ran, and
+ * whether it's on time.
+ *
+ * Auth + service-role reads mirror /api/admin/cua-sessions exactly:
+ * requireAdminOrCron gate, supabaseAdmin only, envelope via ok()/err().
+ *
+ * "Late" is amber-only and never alerts — it means a heartbeat is older
+ * than 2x the worker's cadence. Registry entries with no heartbeat row
+ * yet are state 'never' (a worker that has been wired but hasn't fired).
+ */
+
+import { NextRequest } from 'next/server';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireAdminOrCron } from '@/lib/admin-auth';
+import { ok, err } from '@/lib/api-response';
+import { getOrMintRequestId } from '@/lib/log';
+import { SCHEDULE_REGISTRY } from '@/lib/cron-schedule-registry';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+/** Buckets the UI groups rows under. Assigned server-side from the map
+ *  below so a non-technical owner never has to guess a worker's domain. */
+type WorkerGroup = 'Reports' | 'Cleanup' | 'ML' | 'Inventory' | 'Agent' | 'Other';
+
+type WorkerState = 'ok' | 'late' | 'never';
+
+interface WorkerRow {
+  name: string;
+  /** Plain-English "what it does", read directly by the owner. */
+  description: string;
+  group: WorkerGroup;
+  /** Expected time between runs, in hours (derived from the cron string). */
+  cadenceHours: number;
+  /** ISO timestamp of the last successful run, or null if it never has. */
+  lastBeatAt: string | null;
+  /** Hours since the last run, or null when it has never run. */
+  ageHours: number | null;
+  state: WorkerState;
+}
+
+/**
+ * Plain-English label + group per heartbeat name. The schedule registry
+ * carries only timing (it feeds drift tests), so the human-readable copy
+ * lives here — the one place that turns worker names into something the
+ * owner can read. Names not listed fall back to a humanized name + 'Other'
+ * (a newly-wired cron shows up sensibly before it gets a line here).
+ */
+const WORKER_META: Record<string, { description: string; group: WorkerGroup }> = {
+  'run-scheduled-reports':               { description: 'Sends the reports you scheduled to their recipients.',       group: 'Reports' },
+  'run-daily-report':                    { description: 'Emails the daily housekeeping report.',                     group: 'Reports' },
+  'run-weekly-report':                   { description: 'Emails the weekly housekeeping summary.',                   group: 'Reports' },
+  'agent-nudges-check':                  { description: 'Looks for new things the AI assistant should flag for you.', group: 'Agent' },
+  'agent-sweep-reservations':            { description: 'Scans reservations so the AI can spot issues early.',        group: 'Agent' },
+  'agent-summarize-long-conversations':  { description: 'Tidies up long AI chats so they stay fast.',                group: 'Agent' },
+  'agent-consolidate-memory':            { description: "Cleans up the AI assistant's memory overnight.",            group: 'Agent' },
+  'agent-archive-stale-conversations':   { description: "Files away old AI chats you're done with.",                 group: 'Agent' },
+  'agent-heal-counters':                 { description: 'Fixes the AI usage counters if they drift.',                group: 'Agent' },
+  'compliance-reminders':                { description: 'Sends compliance reminders when they come due.',            group: 'Other' },
+  'compliance-anomaly-sweep':            { description: 'Watches for anything unusual in compliance checks.',         group: 'Other' },
+  'walkthrough-heal-stale':              { description: 'Restarts any property walkthrough that got stuck.',          group: 'Other' },
+  'sweep-orphan-auth-users':             { description: 'Removes leftover half-finished sign-up accounts.',           group: 'Cleanup' },
+  'sweep-mfa-verified-sessions':         { description: 'Clears out expired 2-factor sign-in sessions.',              group: 'Cleanup' },
+  'seal-daily':                          { description: "Locks in each hotel's daily room counts.",                  group: 'Other' },
+  'lost-found-disposal-check':           { description: 'Retires lost-and-found items past their hold time.',         group: 'Other' },
+  'ml-run-inference':                    { description: 'Runs the daily demand and staffing forecast.',              group: 'ML' },
+  'ml-predict-inventory':                { description: 'Predicts which supplies each hotel will need.',              group: 'Inventory' },
+  'ml-train-demand':                     { description: 'Retrains the demand-forecast model each week.',              group: 'ML' },
+  'ml-train-supply':                     { description: 'Retrains the staffing-forecast model each week.',            group: 'ML' },
+  'ml-train-inventory':                  { description: 'Retrains the supply-prediction model each week.',            group: 'Inventory' },
+  'ml-retention-purge':                  { description: 'Deletes old prediction data on schedule.',                  group: 'Cleanup' },
+  'purge-old-error-logs':                { description: 'Deletes old error logs to keep things tidy.',               group: 'Cleanup' },
+  'schedule-auto-fill':                  { description: "Builds each day's housekeeping schedule automatically.",     group: 'Other' },
+  'expire-trials':                       { description: 'Ends free trials once they run out.',                       group: 'Other' },
+  'claude-sessions-purge':               { description: 'Clears out old AI browser sessions.',                       group: 'Cleanup' },
+  'webhook-dedup-purge':                 { description: 'Removes old duplicate-message guards.',                     group: 'Cleanup' },
+  'pms-auth-codes-purge':                { description: 'Deletes used PMS login codes.',                             group: 'Cleanup' },
+  'pms-backfill-missing-feeds':          { description: "Retries any hotel data the robot couldn't grab yet.",       group: 'Other' },
+  'vercel-watchdog':                     { description: 'Health-checks the app every few minutes.',                  group: 'Other' },
+  'run-rules-engine':                    { description: 'Turns room activity into cleaning tasks.',                  group: 'Other' },
+  'run-auto-assign':                     { description: 'Assigns cleaning tasks to housekeepers automatically.',      group: 'Other' },
+  'expire-help-requests':                { description: 'Clears out expired robot help requests.',                   group: 'Cleanup' },
+};
+
+/**
+ * Cadence in hours from a 5-field cron string. Covers every pattern the
+ * registry actually uses (every-N-minutes, hourly, every-N-hours, daily,
+ * weekly). Cadence only drives the amber "late" threshold, so an
+ * approximate value on an unusual expression is harmless.
+ */
+function cadenceHoursFromCron(expr: string): number {
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length < 5) return 24;
+  const [minute, hour, dom, , dow] = parts;
+  const everyN = (field: string): number | null => {
+    const m = /^\*\/(\d+)$/.exec(field);
+    return m ? Number(m[1]) : null;
+  };
+  // A specific day-of-week means weekly; a specific day-of-month, monthly.
+  if (dow !== '*') return 24 * 7;
+  if (dom !== '*') return 24 * 30;
+  const hourEvery = everyN(hour);
+  if (hourEvery !== null) return hourEvery;        // e.g. "0 */6 * * *"
+  if (hour === '*') {
+    const minEvery = everyN(minute);
+    if (minEvery !== null) return minEvery / 60;   // e.g. "*/5 * * * *"
+    return 1;                                       // e.g. "5 * * * *" — hourly
+  }
+  return 24;                                        // fixed hour → daily
+}
+
+export async function GET(req: NextRequest) {
+  const requestId = getOrMintRequestId(req);
+
+  const auth = await requireAdminOrCron(req);
+  if (!auth.ok) return err('Admin sign-in required.', { requestId, status: 401, code: 'unauthorized' });
+
+  // Collapse the registry by heartbeat name (a few names have more than one
+  // schedule entry). Keep first-seen order for a stable list; take the
+  // TIGHTEST cadence across entries so a worker that fires twice a day is
+  // judged against its most-frequent slot.
+  const byName = new Map<string, { cadenceHours: number }>();
+  for (const entry of SCHEDULE_REGISTRY) {
+    const cadence = cadenceHoursFromCron(entry.cronExpr);
+    const existing = byName.get(entry.heartbeatName);
+    if (!existing) byName.set(entry.heartbeatName, { cadenceHours: cadence });
+    else existing.cadenceHours = Math.min(existing.cadenceHours, cadence);
+  }
+
+  const { data: beatRows, error: beatErr } = await supabaseAdmin
+    .from('cron_heartbeats')
+    .select('cron_name, last_success_at');
+  if (beatErr) return err(beatErr.message, { requestId, status: 500, code: 'internal_error' });
+
+  const lastBeatByName = new Map<string, string>();
+  for (const r of (beatRows ?? []) as Array<{ cron_name: string; last_success_at: string }>) {
+    lastBeatByName.set(r.cron_name, r.last_success_at);
+  }
+
+  const now = Date.now();
+  const workers: WorkerRow[] = [];
+  for (const [name, { cadenceHours }] of byName) {
+    const meta = WORKER_META[name] ?? {
+      description: `Runs the ${name.replace(/-/g, ' ')} job.`,
+      group: 'Other' as WorkerGroup,
+    };
+    const lastBeatAt = lastBeatByName.get(name) ?? null;
+
+    let ageHours: number | null = null;
+    let state: WorkerState = 'never';
+    if (lastBeatAt) {
+      ageHours = Math.round(((now - new Date(lastBeatAt).getTime()) / 3_600_000) * 100) / 100;
+      state = ageHours > cadenceHours * 2 ? 'late' : 'ok';
+    }
+
+    workers.push({
+      name,
+      description: meta.description,
+      group: meta.group,
+      cadenceHours: Math.round(cadenceHours * 1000) / 1000,
+      lastBeatAt,
+      ageHours,
+      state,
+    });
+  }
+
+  return ok({ workers }, { requestId });
+}

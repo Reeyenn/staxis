@@ -769,7 +769,7 @@ export default function CoveragePage() {
       <DarkScope>
         <SurfaceShell glow="tealTL" style={{ padding: '24px 48px 56px' }}>
           <div style={{ maxWidth: 1000, margin: '0 auto', fontFamily: FONT_SANS }}>
-            <Link href="/admin/property-sessions" style={{
+            <Link href="/admin/properties#system" style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.55),
               textDecoration: 'none', letterSpacing: '0.16em', textTransform: 'uppercase', marginBottom: 16,

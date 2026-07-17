@@ -10,7 +10,6 @@
    Data (same endpoints, params, response shapes, debounce, filters,
    sort and pagination as the prior tab):
      • /api/admin/list-properties?page&pageSize&status&search → fleet + pagination
-     • /api/admin/recent-errors?since=<72h ISO>              → grouped errors
      • /api/admin/feedback                                   → feedback inbox
    Mutation kept: PATCH /api/admin/feedback { id, status } —
      new → in_progress → resolved / wontfix, then refetch.
@@ -21,8 +20,8 @@
      2. Fleet-health strip — Healthy · Watch · Needs attention · Disconnected
         PMS, each a dot + counting-up serif number.
      3. Four-column control grid (repeat(4, minmax(0,1fr)), gap 18):
-        Hotels (single-click flip / double-click detail modal) · Recent errors
-        (expandable stack) · Feedback inbox (flip on status set).
+        Hotels (single-click flip / double-click detail modal) · Feedback inbox
+        (flip on status set). Recent errors moved to Mission Control (2026-07-17).
      Plus the Hotels-column pager (kept available for 18+ hotel fleets).
 
    Sync-freshness color (handoff): not connected = dim; stale(>12h) =
@@ -67,15 +66,6 @@ interface PropertyRow {
   createdAt: string;
   // Full resolved 8-key section on/off map (default-ON coalesced server-side).
   enabledSections: Record<AppSection, boolean>;
-}
-interface ErrorGroup {
-  source: string | null;
-  message: string;
-  count: number;
-  firstSeen: string;
-  lastSeen: string;
-  affectedPropertyIds: string[];
-  sampleStack: string | null;
 }
 interface FeedbackItem {
   id: string;
@@ -132,7 +122,6 @@ function fbTone(s: string): PillTone {
 
 export function LiveSurface() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
-  const [errors, setErrors] = useState<ErrorGroup[] | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -168,7 +157,6 @@ export function LiveSurface() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const since72h = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
       // 'no_pms' (unassigned hotels) has no server-side status — request the
       // broad 'all' set and narrow to pmsType === null client-side below.
       const serverStatus = statusFilter === 'no_pms' ? 'all' : statusFilter;
@@ -178,19 +166,17 @@ export function LiveSurface() {
         status: serverStatus,
       });
       if (searchTerm) propsParams.set('search', searchTerm);
-      const [propsRes, errorsRes, feedbackRes] = await Promise.all([
+      const [propsRes, feedbackRes] = await Promise.all([
         fetchWithAuth(`/api/admin/list-properties?${propsParams.toString()}`),
-        fetchWithAuth(`/api/admin/recent-errors?since=${encodeURIComponent(since72h)}`),
         fetchWithAuth('/api/admin/feedback'),
       ]);
-      const [propsJson, errorsJson, feedbackJson] = await Promise.all([
-        propsRes.json(), errorsRes.json(), feedbackRes.json(),
+      const [propsJson, feedbackJson] = await Promise.all([
+        propsRes.json(), feedbackRes.json(),
       ]);
       if (propsJson.ok) {
         setProps(propsJson.data.properties);
         setPagination(propsJson.data.pagination ?? null);
       }
-      if (errorsJson.ok) setErrors(errorsJson.data.groups);
       if (feedbackJson.ok) setFeedback(feedbackJson.data.feedback);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
@@ -214,7 +200,7 @@ export function LiveSurface() {
       </SurfaceShell>
     );
   }
-  if (!props || !errors || !feedback) {
+  if (!props || !feedback) {
     return (
       <SurfaceShell glow="tealTL">
         <div style={{ padding: '80px 0', textAlign: 'center' }}><DarkSpinner /></div>
@@ -274,7 +260,7 @@ export function LiveSurface() {
         <DarkHealth label="Disconnected PMS" n={health.disc} tone="terracotta" />
       </div>
 
-      {/* Control grid: Hotels · Recent errors · Feedback inbox */}
+      {/* Control grid: Hotels · Feedback inbox */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 18, alignItems: 'start' }}>
 
         {/* Column 1 — Hotels */}
@@ -307,19 +293,7 @@ export function LiveSurface() {
           )}
         </section>
 
-        {/* Column 2 — Recent errors */}
-        <section style={{ minWidth: 0 }}>
-          <span className="caps" style={{ color: dimWhite(.5) }}>Recent errors · 72h · {errors.length}</span>
-          {errors.length === 0 ? (
-            <div style={{ marginTop: 10 }}><DarkEmpty text="No errors ✓" /></div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-              {errors.map((g, i) => <ErrorRow key={i} g={g} />)}
-            </div>
-          )}
-        </section>
-
-        {/* Column 3 — Feedback inbox */}
+        {/* Column 2 — Feedback inbox */}
         <section style={{ minWidth: 0 }}>
           <span className="caps" style={{ color: dimWhite(.5) }}>Feedback inbox · {newFeedbackCount} new</span>
           {feedback.length === 0 ? (
@@ -759,33 +733,6 @@ function Stat({ label, v, c }: { label: string; v: React.ReactNode; c?: string }
   );
 }
 
-// ── Recent error group — click to expand the stack trace ─────────────────
-function ErrorRow({ g }: { g: ErrorGroup }) {
-  const [open, setOpen] = useState(false);
-  const message = open ? g.message : (g.message.length > 96 ? g.message.slice(0, 96) + '…' : g.message);
-  return (
-    <DarkCard
-      onClick={() => g.sampleStack && setOpen((o) => !o)}
-      style={{ padding: '11px 13px', borderRadius: 12, background: dimWhite(.05), cursor: g.sampleStack ? 'pointer' : 'default' }}
-    >
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
-        <Dot tone="terracotta" size={7} style={{ marginTop: 5 }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="mono" style={{ fontSize: 11.5, color: '#fff', lineHeight: 1.45, wordBreak: 'break-word' }}>{message}</div>
-          <div className="mono" style={{ fontSize: 10, color: dimWhite(.5), marginTop: 5, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-            <span>{g.source ?? 'unknown'}</span>
-            <span>{g.count}× · {age(g.lastSeen)} ago</span>
-            {g.affectedPropertyIds.length > 0 && <span>{g.affectedPropertyIds.length} {g.affectedPropertyIds.length === 1 ? 'hotel' : 'hotels'}</span>}
-          </div>
-        </div>
-        <span className="mono" style={{ fontSize: 11, fontWeight: 700, color: 'var(--terracotta)' }}>×{g.count}</span>
-      </div>
-      {open && g.sampleStack && (
-        <pre className="mono" style={{ margin: '10px 0 0', padding: 11, background: 'rgba(0,0,0,.3)', borderRadius: 9, fontSize: 10.5, color: dimWhite(.7), whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{g.sampleStack}</pre>
-      )}
-    </DarkCard>
-  );
-}
 
 // ── Feedback inbox card — flip on status set, real PATCH + refetch ───────
 function FeedbackRow({ row, onChanged }: { row: FeedbackItem; onChanged: () => Promise<void> }) {
