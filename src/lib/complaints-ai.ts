@@ -17,12 +17,7 @@ import {
   type ComplaintCategory, type ComplaintSeverity,
 } from '@/lib/complaints-shared';
 import { executeAiFeature } from '@/lib/ai/runtime';
-import {
-  captureTokenUsage,
-  emitAiUsage,
-  type AiCallOptions,
-  type AiUsageAttempt,
-} from '@/lib/ai/usage';
+import { captureTokenUsage, type AiCallOptions } from '@/lib/ai/usage';
 
 let cachedClient: Anthropic | null = null;
 function getClient(): Anthropic | null {
@@ -104,7 +99,6 @@ export async function classifyComplaint(
   const client = getClient();
   if (!client || !description?.trim()) return fallback;
 
-  const attempts: AiUsageAttempt[] = [];
   try {
     const userMsg =
       (roomNumber ? `Room ${roomNumber}.\n` : '') +
@@ -119,7 +113,7 @@ export async function classifyComplaint(
           system: CLASSIFY_SYSTEM,
           messages: [{ role: 'user', content: userMsg }],
         }, { signal: context.signal });
-        captureTokenUsage(attempts, model, res.model, res.usage);
+        captureTokenUsage(context.attempts, model, res.model, res.usage);
         if (res.stop_reason === 'max_tokens') throw new Error('complaint classifier response was truncated');
         const parsed = extractJson(textOf(res));
         if (!parsed) throw new Error('complaint classifier returned invalid JSON');
@@ -145,14 +139,15 @@ export async function classifyComplaint(
         deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
         fallbackReserveMs: 7_000,
         abortSignal: opts.abortSignal,
+        // The runtime aggregates usage, emits onUsage, and records the ledger.
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return value;
   } catch (err) {
     log.warn('[complaints-ai] classify failed', { err: err instanceof Error ? err.message : String(err) });
     return fallback;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
   }
 }
 
@@ -197,7 +192,6 @@ export async function draftServiceRecovery(input: {
   const client = getClient();
   if (!client) return fallback;
 
-  const attempts: AiUsageAttempt[] = [];
   try {
     const userMsg =
       `Category: ${input.category}. Severity: ${input.severity}. ` +
@@ -214,7 +208,7 @@ export async function draftServiceRecovery(input: {
           system: DRAFT_SYSTEM,
           messages: [{ role: 'user', content: userMsg }],
         }, { signal: context.signal });
-        captureTokenUsage(attempts, model, res.model, res.usage);
+        captureTokenUsage(context.attempts, model, res.model, res.usage);
         if (res.stop_reason === 'max_tokens') throw new Error('service-recovery response was truncated');
         const parsed = extractJson(textOf(res));
         if (
@@ -240,13 +234,13 @@ export async function draftServiceRecovery(input: {
         deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
         fallbackReserveMs: 7_000,
         abortSignal: opts.abortSignal,
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return value;
   } catch (err) {
     log.warn('[complaints-ai] draft failed', { err: err instanceof Error ? err.message : String(err) });
     return fallback;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
   }
 }

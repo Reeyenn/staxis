@@ -9,8 +9,6 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { defineRoute } from '@/lib/api-route';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { detectAction } from '@/lib/comms/assistant';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,19 +25,15 @@ export const POST = defineRoute({
     const rl = await checkAndIncrementRateLimit('comms-detect-action', ctx.pid);
     if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-    let usage: AiUsageReport | null = null;
     const action = await detectAction(tV.value!, {
       deadlineAt,
       abortSignal: ctx.req.signal,
-      onUsage: (value) => { usage = value; },
-    });
-    await recordAiUsageBestEffort({
-      usage,
-      userId: ctx.accountId,
-      propertyId: ctx.pid,
-      kind: 'background',
-      requestId: ctx.requestId,
-      feature: 'communications.action_detection',
+      ledger: {
+        userId: ctx.accountId,
+        propertyId: ctx.pid,
+        requestId: ctx.requestId,
+        feature: 'communications.action_detection',
+      },
     });
     return ctx.ok({ action });
   },

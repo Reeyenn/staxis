@@ -19,8 +19,6 @@ import { canForUserId } from '@/lib/capabilities/server';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { draftServiceRecovery } from '@/lib/complaints-ai';
 import { fromComplaintRow } from '@/lib/complaints-shared';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -88,7 +86,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       .select('id')
       .eq('data_user_id', session.userId)
       .maybeSingle();
-    let usage: AiUsageReport | null = null;
+    const accountId = typeof account?.id === 'string' ? account.id : null;
     const draft = await draftServiceRecovery({
       description: c.description,
       category: c.category,
@@ -98,18 +96,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     }, {
       deadlineAt,
       abortSignal: req.signal,
-      onUsage: (value) => { usage = value; },
+      ledger: accountId
+        ? { userId: accountId, propertyId: pid, requestId, feature: 'complaints.recovery_draft' }
+        : undefined,
     });
-    if (typeof account?.id === 'string') {
-      await recordAiUsageBestEffort({
-        usage,
-        userId: account.id,
-        propertyId: pid,
-        kind: 'background',
-        requestId,
-        feature: 'complaints.recovery_draft',
-      });
-    }
 
     return ok(draft, { requestId, headers });
   } catch (caughtErr) {

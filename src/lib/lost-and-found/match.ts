@@ -19,10 +19,8 @@ import { env } from '@/lib/env';
 import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
 import { executeAiFeature, estimateAiCostUsd } from '@/lib/ai/runtime';
 import {
-  aggregateAiUsage,
   normalizeAnthropicUsage,
   type AiCallOptions,
-  type AiUsageAttempt,
   type AiUsageReport,
 } from '@/lib/ai/usage';
 import type { LostFoundItem } from './types';
@@ -197,7 +195,6 @@ Return ONLY JSON, no prose:
 {"matches":[{"index":<1-based index from the list>,"confidence":"high"|"medium"|"low","reason":"<= 12 words"}]}
 Only include items that genuinely could be the lost item. If none match, return {"matches":[]}.`;
 
-  const attempts: AiUsageAttempt[] = [];
   try {
     const { value } = await executeAiFeature(
       'lost_found.match_rerank',
@@ -213,7 +210,7 @@ Only include items that genuinely could be the lost item. If none match, return 
         );
 
         const usage = normalizeAnthropicUsage(resp.usage);
-        attempts.push({
+        context.attempts.push({
           ...usage,
           model: selected.modelId,
           modelId: resp.model ?? null,
@@ -269,14 +266,14 @@ Only include items that genuinely could be the lost item. If none match, return 
         deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
         fallbackReserveMs: 7_000,
         abortSignal: opts.abortSignal,
+        // The runtime aggregates usage, emits onUsage, and records the ledger.
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return value;
   } catch {
     // Fail safe — deterministic ranking still stands.
     return shortlist;
-  } finally {
-    const usage = aggregateAiUsage(attempts);
-    if (usage) opts.onUsage?.(usage);
   }
 }

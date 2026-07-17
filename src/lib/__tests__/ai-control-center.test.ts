@@ -109,7 +109,9 @@ describe('AI Control Center feature registry', () => {
     assert.equal(embeddings.fallbackAllowed, false);
     assert.match(embeddings.modelLockReason ?? '', /protected Knowledge OCR/i);
     assert.match(embeddings.modelLockReason ?? '', /re-index/i);
-    assert.match(embeddings.description, /display only/i);
+    // Plain-English copy (2026-07-17): the "can't change it here" signal moved
+    // to "information only" wording.
+    assert.match(embeddings.description, /information only/i);
 
     const daily = getAiFeatureDefinition('ml.daily_report_headcount');
     assert.equal(daily.availability, 'unavailable');

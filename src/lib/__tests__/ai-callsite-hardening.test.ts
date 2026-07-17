@@ -80,7 +80,7 @@ test('Whisper parses verbose JSON inside the fallback attempt and uses route can
   assert.match(block, /form\.append\('response_format', 'verbose_json'\)/);
   assert.match(block, /signal:\s*context\.signal/);
   assert.match(block, /await response\.json\(\)\.catch/);
-  assert.match(block, /capturePricedUsage\(attempts/);
+  assert.match(block, /capturePricedUsage\(context\.attempts/);
   assert.ok(block.indexOf('response.json') < block.indexOf('return json.text.trim()'));
 
   const route = source('src/app/api/comms/transcribe/route.ts');
@@ -92,6 +92,10 @@ test('Whisper parses verbose JSON inside the fallback attempt and uses route can
 });
 
 test('authenticated scoped routes attribute every provider attempt to agent_costs', () => {
+  // Attribution is now runtime-owned: a route passes `ledger` through the AI
+  // call options and the runtime records every billable attempt itself. A
+  // route hand-rolling recordAiUsageBestEffort again would reintroduce the
+  // forgettable-epilogue pattern this refactor removed.
   const routes = [
     'src/app/api/comms/detect-action/route.ts',
     'src/app/api/comms/summary/route.ts',
@@ -111,13 +115,21 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
     'src/app/api/compliance/setup/route.ts',
     'src/app/api/engineer/voice-log/route.ts',
     'src/app/api/cron/compliance-anomaly-sweep/route.ts',
+    'src/app/api/cron/run-scheduled-reports/route.ts',
   ];
 
   for (const file of routes) {
     const text = source(file);
-    assert.match(text, /recordAiUsageBestEffort\(/, `${file}: cost attribution missing`);
+    assert.match(text, /ledger:\s*(\{|accountId|costAccountId)/, `${file}: ledger attribution missing`);
+    assert.doesNotMatch(text, /recordAiUsageBestEffort/, `${file}: hand-rolled ledger epilogue reintroduced`);
     assert.match(text, /deadlineAt/, `${file}: route deadline missing`);
   }
+
+  // The runtime side of the contract: executeAiPlan settles usage in a
+  // finally, emitting onUsage and recording the ledger even when the
+  // primary threw before the fallback ran.
+  const runtimeSource = source('src/lib/ai/runtime.ts');
+  assert.match(runtimeSource, /finally\s*\{[\s\S]*?aggregateAiUsage\(attempts\)[\s\S]*?recordAiUsageBestEffort\(/);
 });
 
 test('usage ledger preserves per-attempt rows with bounded parallel writes', () => {

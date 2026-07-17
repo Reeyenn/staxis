@@ -210,147 +210,147 @@ export function isAiFeatureRuntimeProviderCompatible(
 export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinition>> = {
   'agent.ask_staxis': defineFeature(
     'agent.ask_staxis', 'Agent', 'Ask Staxis',
-    'Main conversational hotel-operations assistant and its action tools.',
+    'The main AI helper — the box at the bottom of the screen where you ask questions and it can take actions for you.',
     ['text', 'tool_use'], SONNET,
   ),
   'agent.conversation_summary': defineFeature(
     'agent.conversation_summary', 'Agent', 'Conversation summaries',
-    'Compresses long assistant conversations into durable context.',
+    'Shortens long AI chats behind the scenes so the helper remembers earlier parts of the conversation.',
     ['text'], HAIKU,
   ),
   'agent.memory_consolidation': defineFeature(
     'agent.memory_consolidation', 'Agent', 'Memory consolidation',
-    'Extracts durable hotel facts and operational patterns from conversations.',
+    'Learns lasting facts about your hotel from conversations so the AI gets smarter over time.',
     ['text'], SONNET,
   ),
   'walkthrough.step_generation': defineFeature(
     'walkthrough.step_generation', 'Guidance', 'Guided walkthroughs',
-    'Plans the next step in interactive product walkthroughs.',
+    'Powers the step-by-step guided tours that walk someone through using the app.',
     ['text', 'tool_use'], SONNET,
   ),
   'inventory.photo_count': defineFeature(
     'inventory.photo_count', 'Inventory', 'Shelf photo counting',
-    'Identifies and counts inventory items from a shelf photo.',
+    'Counts what is on a shelf from a photo during inventory counts.',
     ['text', 'image_input'], SONNET,
   ),
   'inventory.invoice_scan': defineFeature(
     'inventory.invoice_scan', 'Inventory', 'Inventory invoice scanning',
-    'Extracts inventory deliveries from invoice photos or PDFs.',
+    'Reads a delivery invoice photo/PDF and pulls out the items that arrived.',
     ['text', 'image_input', 'pdf_input'], SONNET,
   ),
   'financials.invoice_scan': defineFeature(
     'financials.invoice_scan', 'Financials', 'Financial invoice scanning',
-    'Extracts payable and line-item information from invoice images.',
+    'Reads a vendor invoice photo and pre-fills the expense — who, how much, what for.',
     ['text', 'image_input'], SONNET,
   ),
   'financials.quote_scan': defineFeature(
     'financials.quote_scan', 'Financials', 'Quote scanning',
-    'Extracts vendor quote totals and line items from images.',
+    'Reads a contractor/vendor quote photo and pulls out the total and line items.',
     ['text', 'image_input'], SONNET,
   ),
   'lost_found.photo_description': defineFeature(
     'lost_found.photo_description', 'Front desk', 'Lost-item photo description',
-    'Creates a structured description of a photographed lost item.',
+    'Writes the description automatically when the front desk photographs a lost-and-found item.',
     ['text', 'image_input'], SONNET,
   ),
   'lost_found.match_rerank': defineFeature(
     'lost_found.match_rerank', 'Front desk', 'Lost-and-found match reranking',
-    'Reranks deterministic lost-item candidate matches using text context.',
+    'Helps match a guest calling about a lost item to the right item on the lost-and-found shelf.',
     ['text'], HAIKU,
   ),
   'packages.label_scan': defineFeature(
     'packages.label_scan', 'Front desk', 'Package label scanning',
-    'Reads recipient and carrier details from package-label photos.',
+    'Reads who a package is for from a photo of the shipping label.',
     ['text', 'image_input'], SONNET,
   ),
   'compliance.photo_reading': defineFeature(
     'compliance.photo_reading', 'Engineering', 'Compliance photo readings',
-    'Reads gauges, meters, strips, and other compliance measurements from photos.',
+    'Reads the number off a gauge, meter, or test strip from an engineer photo.',
     ['text', 'image_input'], SONNET,
   ),
   'compliance.text_reading_parse': defineFeature(
     'compliance.text_reading_parse', 'Engineering', 'Compliance reading parser',
-    'Parses typed or transcribed engineering readings into structured values.',
+    'Turns a typed or spoken engineering reading into a properly logged number.',
     ['text'], SONNET,
   ),
   'compliance.setup_parse': defineFeature(
     'compliance.setup_parse', 'Engineering', 'Compliance setup parser',
-    'Extracts equipment counts and presence from a manager setup description.',
+    'During setup, turns a manager plain-English equipment description into the compliance checklist.',
     ['text'], SONNET,
   ),
   'compliance.anomaly_phrasing': defineFeature(
     'compliance.anomaly_phrasing', 'Engineering', 'Compliance anomaly phrasing',
-    'Rewrites detected anomalies into concise, actionable alerts.',
+    'Writes the short warning message when an equipment reading looks wrong.',
     ['text'], SONNET,
   ),
   'communications.staxis_assistant': defineFeature(
     'communications.staxis_assistant', 'Communications', 'Messaging assistant',
-    'Answers @Staxis questions in staff conversations and can use approved tools.',
+    'Answers when staff type @Staxis in team chat — can check rooms, create work orders, and more.',
     ['text', 'tool_use'], SONNET,
   ),
   'communications.action_detection': defineFeature(
     'communications.action_detection', 'Communications', 'Message action detection',
-    'Detects work orders and complaints implied by a staff message.',
+    'Spots messages like broken-AC reports in team chat and offers a one-tap create-work-order button.',
     ['text'], HAIKU,
   ),
   'communications.unread_summary': defineFeature(
     'communications.unread_summary', 'Communications', 'Unread-message summaries',
-    'Summarizes missed staff messages into a short action-oriented brief.',
+    'Writes the what-did-I-miss summary of unread team messages.',
     ['text'], HAIKU,
   ),
   'communications.announcement_polish': defineFeature(
     'communications.announcement_polish', 'Communications', 'Announcement polish',
-    'Rewrites a rough manager note into a clear staff announcement.',
+    'Cleans up a rough manager note into a clear announcement before posting.',
     ['text'], HAIKU,
   ),
   'communications.ui_translation': defineFeature(
     'communications.ui_translation', 'Communications', 'Interface translation',
-    'Translates uncached interface phrases for multilingual staff.',
+    'Translates the app buttons and labels for staff who use it in another language.',
     ['text'], HAIKU,
   ),
   'communications.message_translation': defineFeature(
     'communications.message_translation', 'Communications', 'Message translation',
-    'Translates uncached staff messages into each reader’s language.',
+    'Translates team-chat messages so each person reads them in their own language.',
     ['text'], HAIKU,
   ),
   'housekeeping.notice_translation': defineFeature(
     'housekeeping.notice_translation', 'Housekeeping', 'Housekeeping notice translation',
-    'Translates manager notices for housekeeping staff.',
+    'Translates manager notice-board posts into Spanish for housekeepers.',
     ['text'], HAIKU,
   ),
   'communications.announcement_translation': defineFeature(
     'communications.announcement_translation', 'Communications', 'Announcement translation',
-    'Translates organization-wide announcements for staff.',
+    'Translates announcements so every staff member reads them in their language.',
     ['text'], HAIKU,
   ),
   'complaints.classification': defineFeature(
     'complaints.classification', 'Guest service', 'Complaint classification',
-    'Classifies guest complaints by severity and operational category.',
+    'Sorts each guest complaint by how serious it is and what kind of problem it is.',
     ['text'], HAIKU,
   ),
   'complaints.recovery_draft': defineFeature(
     'complaints.recovery_draft', 'Guest service', 'Service-recovery drafts',
-    'Drafts concise guest service-recovery responses.',
+    'Drafts the apology and make-it-right message to a guest after a complaint (staff edit before sending).',
     ['text'], HAIKU,
   ),
   'reports.run_summary': defineFeature(
     'reports.run_summary', 'Reports', 'Report-run summaries',
-    'Explains the most important findings in an individual report run.',
+    'Writes the one-line takeaway at the top of each emailed report.',
     ['text'], HAIKU_PINNED,
   ),
   'reports.weekly_insight': defineFeature(
     'reports.weekly_insight', 'Reports', 'Weekly insights',
-    'Turns weekly operating metrics into a concise management insight.',
+    'Writes the short insight in your Sunday weekly report.',
     ['text'], HAIKU_PINNED,
   ),
   'communications.voice_transcription': defineFeature(
     'communications.voice_transcription', 'Communications', 'Voice transcription',
-    'Transcribes staff voice-message audio into text.',
+    'Turns staff voice messages into text.',
     ['audio_transcription'], WHISPER,
   ),
   'knowledge.embeddings': defineFeature(
     'knowledge.embeddings', 'Knowledge', 'Knowledge embeddings',
-    'Display only. The fixed shared vector model powers knowledge search and protected Knowledge OCR; changing it requires a versioned full re-index outside this control center.',
+    'Powers document search in the Knowledge hub. Shown for information only — its model cannot be changed here.',
     ['embeddings'], EMBEDDING,
     {
       editable: false,
@@ -362,7 +362,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'speech.ask_staxis_dictation': defineFeature(
     'speech.ask_staxis_dictation', 'Speech & input', 'Ask Staxis dictation',
-    'Browser Web Speech recognition used to dictate Ask Staxis messages. Display only; no hosted model is called.',
+    'The free talk-to-type used when dictating into Ask Staxis. Runs in the browser — costs nothing, nothing to configure.',
     ['speech_recognition'],
     {
       provider: 'browser', modelId: 'web-speech-recognition',
@@ -372,7 +372,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'speech.engineer_dictation': defineFeature(
     'speech.engineer_dictation', 'Speech & input', 'Engineer reading dictation',
-    'Browser Web Speech recognition used to dictate engineering readings. Display only; no hosted model is called.',
+    'The free talk-to-type engineers use to speak readings aloud. Runs in the browser — costs nothing, nothing to configure.',
     ['speech_recognition'],
     {
       provider: 'browser', modelId: 'web-speech-recognition',
@@ -382,7 +382,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'ml.housekeeping_demand': defineFeature(
     'ml.housekeeping_demand', 'In-house ML', 'Housekeeping demand forecast',
-    'In-house Bayesian/XGBoost layer that forecasts daily cleaning demand. Display only.',
+    'Our own forecasting system that predicts how many rooms need cleaning each day. Shown for information only.',
     ['forecasting'],
     {
       provider: 'in_house', modelId: 'housekeeping-demand-bayesian-xgboost',
@@ -392,7 +392,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'ml.housekeeping_supply': defineFeature(
     'ml.housekeeping_supply', 'In-house ML', 'Housekeeping supply forecast',
-    'In-house Bayesian room-by-staff cleaning-time model. Display only.',
+    'Our own system that learns how long each housekeeper takes per room. Shown for information only.',
     ['forecasting'],
     {
       provider: 'in_house', modelId: 'housekeeping-supply-bayesian',
@@ -402,7 +402,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'ml.housekeeping_optimizer': defineFeature(
     'ml.housekeeping_optimizer', 'In-house ML', 'Housekeeping optimizer',
-    'In-house Monte Carlo/LPT optimizer that recommends staffing headcount. Display only.',
+    'Our own system that recommends how many housekeepers to schedule. Shown for information only.',
     ['optimization'],
     {
       provider: 'in_house', modelId: 'housekeeping-monte-carlo-lpt',
@@ -412,7 +412,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'ml.inventory_consumption': defineFeature(
     'ml.inventory_consumption', 'In-house ML', 'Inventory consumption forecast',
-    'In-house Bayesian inventory-rate model that predicts item consumption. Display only.',
+    'Our own system that predicts how fast you go through supplies. Shown for information only.',
     ['forecasting'],
     {
       provider: 'in_house', modelId: 'inventory-rate-bayesian',
@@ -422,7 +422,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'ml.daily_report_headcount': defineFeature(
     'ml.daily_report_headcount', 'In-house ML', 'Daily-report headcount forecast',
-    'The daily report calls an ML headcount endpoint that is not implemented by the current service. Display only and unavailable.',
+    'A staffing forecast the daily report will use once it is wired up. Not active yet.',
     [],
     {
       provider: 'in_house', modelId: 'unwired-predict-headcount-endpoint',

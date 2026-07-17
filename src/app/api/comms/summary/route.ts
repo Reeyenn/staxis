@@ -8,8 +8,6 @@ import { defineRoute } from '@/lib/api-route';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { getUnreadDigest } from '@/lib/comms/core';
 import { summarizeUnread } from '@/lib/comms/assistant';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -27,19 +25,15 @@ export const POST = defineRoute({
     if (digest.length === 0) {
       return ctx.ok({ summary: '', count: 0 });
     }
-    let usage: AiUsageReport | null = null;
     const summary = await summarizeUnread(digest, ctx.lang, {
       deadlineAt,
       abortSignal: ctx.req.signal,
-      onUsage: (value) => { usage = value; },
-    });
-    await recordAiUsageBestEffort({
-      usage,
-      userId: ctx.accountId,
-      propertyId: ctx.pid,
-      kind: 'background',
-      requestId: ctx.requestId,
-      feature: 'communications.unread_summary',
+      ledger: {
+        userId: ctx.accountId,
+        propertyId: ctx.pid,
+        requestId: ctx.requestId,
+        feature: 'communications.unread_summary',
+      },
     });
     return ctx.ok({ summary, count: digest.length });
   },

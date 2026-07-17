@@ -20,12 +20,7 @@ import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
 import { captureException } from '@/lib/sentry';
 import type { ReportDefinition, ReportRunResult } from './types';
 import { executeAiFeature } from '@/lib/ai/runtime';
-import {
-  captureTokenUsage,
-  emitAiUsage,
-  type AiCallOptions,
-  type AiUsageAttempt,
-} from '@/lib/ai/usage';
+import { captureTokenUsage, type AiCallOptions } from '@/lib/ai/usage';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_ROWS_IN_PROMPT = 15;
@@ -67,7 +62,6 @@ export async function generateReportSummary(
   const content = buildPromptContent(def, result, lang);
   const langName = lang === 'es' ? 'Spanish' : 'English';
 
-  const attempts: AiUsageAttempt[] = [];
   try {
     const configured = await executeAiFeature(
       'reports.run_summary',
@@ -91,7 +85,7 @@ export async function generateReportSummary(
           },
           { signal: context.signal },
         );
-        captureTokenUsage(attempts, model, response.model, response.usage);
+        captureTokenUsage(context.attempts, model, response.model, response.usage);
         if (response.stop_reason === 'max_tokens') throw new Error('report summary response was truncated');
         const block = response.content.find((item) => item.type === 'text');
         if (!block || block.type !== 'text') throw new Error('report summary returned no text');
@@ -107,13 +101,14 @@ export async function generateReportSummary(
         deadlineMs: opts.deadlineAt === undefined ? 18_000 : undefined,
         fallbackReserveMs: 6_000,
         abortSignal: opts.abortSignal,
+        // The runtime aggregates usage, emits onUsage, and records the ledger.
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return configured.value;
   } catch (err) {
     captureException(err, { subsystem: 'report-ai-summary', report_key: def.key });
     return null;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
   }
 }
