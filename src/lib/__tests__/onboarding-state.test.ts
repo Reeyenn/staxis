@@ -261,7 +261,7 @@ describe('isOnboardingInProgress — login-funnel gate', () => {
     );
   });
 
-  test('COMPLETED onboarding → false (normal login to dashboard)', () => {
+  test('COMPLETED onboarding → false (normal login to Home)', () => {
     assert.equal(
       isOnboardingInProgress('2026-06-15T20:00:00Z', {
         step: 8,

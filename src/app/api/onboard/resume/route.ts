@@ -42,9 +42,10 @@ export async function GET(req: NextRequest) {
     // exactly the bounce this whole fix exists to kill. /property-selector
     // handles the genuinely-unauthenticated visitor itself (its own guard →
     // /signin), and for our authenticated-but-racing caller the one-shot
-    // RESUME_GUARD_KEY makes the selector fall through to the dashboard instead
-    // of looping back here. The dashboard's own gate then re-resumes once the
-    // session read settles. Either way: no /signin bounce out of onboarding.
+    // RESUME_GUARD_KEY makes the selector fall through to Home instead
+    // of looping back here. Either way: no /signin bounce out of onboarding;
+    // the next authenticated session can retry because shared sign-out clears
+    // the guard.
     return to('/property-selector');
   }
 
