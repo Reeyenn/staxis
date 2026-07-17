@@ -49,7 +49,9 @@ function normalizePhone(p: string | undefined | null): string | null {
   const trimmed = p.trim();
   if (!trimmed) return null;
   // Reject obvious junk but don't be strict — international formats vary.
-  if (!/[\d]{7,}/.test(trimmed)) return null;
+  // Count digits across the whole string: "(555) 010-2026" is a fine phone
+  // number even though its longest consecutive digit run is only 4.
+  if ((trimmed.match(/\d/g) ?? []).length < 7) return null;
   return trimmed;
 }
 
