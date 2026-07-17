@@ -83,7 +83,45 @@ export function Sidebar({
       <RailBtn label={tx.history} badge={historyCount} onClick={() => onAction('history')} />
       <RailBtn label={tx.aiHelper} onClick={() => onAction('ai')} />
       {canViewFinancials && <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />}
-      {canManage && <RailBtn label={tx.orderingSettings} onClick={() => onAction('ordersettings')} />}
+      {/* Ordering automation is per-hotel (vendors, how orders are placed,
+          who approves) — parked as "coming soon" until the per-hotel setup
+          exists. The panel code stays; only this entry point is retired. */}
+      {canManage && (
+        <div
+          aria-disabled="true"
+          style={{
+            padding: '9px 12px',
+            borderRadius: 9,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 9,
+            fontFamily: fonts.sans,
+            fontSize: 13.5,
+            fontWeight: 500,
+            color: T.dim,
+            cursor: 'default',
+          }}
+        >
+          {tx.orderingSettings}
+          <span
+            style={{
+              padding: '1px 7px',
+              borderRadius: 999,
+              background: T.inkWash,
+              border: `1px solid ${T.rule}`,
+              fontFamily: fonts.mono,
+              fontSize: 9,
+              fontWeight: 600,
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              color: T.dim,
+            }}
+          >
+            {tx.comingSoon}
+          </span>
+        </div>
+      )}
 
       {/* Month spend vs budget — money-capability only. */}
       {canViewFinancials && (
