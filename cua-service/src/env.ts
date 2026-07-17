@@ -180,11 +180,6 @@ const Schema = z.object({
   // ── Admin SMS nudge (optional — all four required to send) ──────────
   // When a learning run hits a 2FA screen, text the admin so he opens
   // Launch Bay and types the code in. No-ops unless ALL FOUR are set
-  // (admin-sms.ts checks). Same Twilio account as the web app; set via
-  // `fly secrets set TWILIO_ACCOUNT_SID=... -a staxis-cua` etc.
-  TWILIO_ACCOUNT_SID: z.string().min(10).optional(),
-  TWILIO_AUTH_TOKEN: z.string().min(10).optional(),
-  TWILIO_FROM_NUMBER: z.string().min(8).optional(),
   ADMIN_ALERT_PHONE: z.string().min(8).optional(),
 
   // ── Platform auto-injected (read-only metadata) ───────

@@ -142,7 +142,7 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
 
   test('RPC error → billing endpoint FAILS CLOSED', async () => {
     nextRpcResult = { data: null, error: { message: 'connection terminated' } };
-    const result = await checkAndIncrementRateLimit('send-shift-confirmations', NO_PROPERTY_RATE_LIMIT_KEY);
+    const result = await checkAndIncrementRateLimit('email-transactional', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(result.allowed, false);
     if (!result.allowed) {
       assert.equal(result.retryAfterSec, 60);
@@ -151,7 +151,7 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
 
   test('RPC throws → billing endpoint FAILS CLOSED', async () => {
     throwOnRpc = true;
-    const result = await checkAndIncrementRateLimit('send-shift-confirmations', NO_PROPERTY_RATE_LIMIT_KEY);
+    const result = await checkAndIncrementRateLimit('email-transactional', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(result.allowed, false);
   });
 
@@ -168,13 +168,13 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
 
   test('RPC error → non-billing endpoint fails OPEN so read paths never brick', async () => {
     nextRpcResult = { data: null, error: { message: 'connection terminated' } };
-    const result = await checkAndIncrementRateLimit('sync-room-assignments', NO_PROPERTY_RATE_LIMIT_KEY);
+    const result = await checkAndIncrementRateLimit('worklist-read', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(result.allowed, true);
   });
 
   test('RPC throws → non-billing endpoint fails OPEN', async () => {
     throwOnRpc = true;
-    const result = await checkAndIncrementRateLimit('sync-room-assignments', NO_PROPERTY_RATE_LIMIT_KEY);
+    const result = await checkAndIncrementRateLimit('worklist-read', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(result.allowed, true);
   });
 
@@ -196,15 +196,15 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
     assert.equal(onboard.allowed, false);
     if (!onboard.allowed) assert.equal(onboard.cap, 5);
 
-    // sync-room-assignments cap = 200
-    nextRpcResult = { data: 199, error: null };
-    const sync = await checkAndIncrementRateLimit('sync-room-assignments', NO_PROPERTY_RATE_LIMIT_KEY);
+    // worklist-read cap = 3600
+    nextRpcResult = { data: 3599, error: null };
+    const sync = await checkAndIncrementRateLimit('worklist-read', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(sync.allowed, true);
 
-    nextRpcResult = { data: 201, error: null };
-    const syncOver = await checkAndIncrementRateLimit('sync-room-assignments', NO_PROPERTY_RATE_LIMIT_KEY);
+    nextRpcResult = { data: 3601, error: null };
+    const syncOver = await checkAndIncrementRateLimit('worklist-read', NO_PROPERTY_RATE_LIMIT_KEY);
     assert.equal(syncOver.allowed, false);
-    if (!syncOver.allowed) assert.equal(syncOver.cap, 200);
+    if (!syncOver.allowed) assert.equal(syncOver.cap, 3600);
   });
 });
 

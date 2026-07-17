@@ -10,7 +10,6 @@
 // block the underlying reading/check from being recorded (audit integrity).
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { enqueueSms } from '@/lib/sms-jobs';
 import { sanitizeForSms } from '@/lib/api-validate';
 import { todayStr, APP_TIMEZONE } from '@/lib/utils';
 import { log } from '@/lib/log';
@@ -64,98 +63,6 @@ export async function createComplianceWorkOrder(
 }
 
 /**
- * Text the property's on-shift maintenance staff. Returns the number of
- * messages enqueued. `idemBase` keys SMS idempotency per (recipient) so a
- * retried log can't double-text.
- */
-export async function smsMaintenance(
-  pid: string,
-  body: string,
-  idemBase: string,
-): Promise<number> {
-  try {
-    const { data: staff, error } = await supabaseAdmin
-      .from('staff')
-      .select('id, name, phone, is_active, department')
-      .eq('property_id', pid)
-      .eq('department', 'maintenance');
-    if (error) {
-      log.error('[compliance/autoact] staff lookup failed', { pid, msg: error.message });
-      return 0;
-    }
-    const recipients = (staff ?? []).filter(
-      (s) => s.is_active !== false && typeof s.phone === 'string' && s.phone.trim().length > 0,
-    );
-    let sent = 0;
-    const safeBody = sanitizeForSms(body).slice(0, 480);
-    for (const s of recipients) {
-      const phone164 = toE164(String(s.phone));
-      if (!phone164) continue;
-      try {
-        await enqueueSms({
-          propertyId: pid,
-          toPhone: phone164,
-          body: safeBody,
-          idempotencyKey: `compliance:${idemBase}:${s.id}`,
-          metadata: { kind: 'compliance-alert', staffId: s.id },
-        });
-        sent += 1;
-      } catch (e) {
-        log.error('[compliance/autoact] enqueueSms failed', { pid, staffId: s.id, err: e instanceof Error ? e : new Error(String(e)) });
-      }
-    }
-    return sent;
-  } catch (e) {
-    log.error('[compliance/autoact] smsMaintenance threw', { pid, err: e instanceof Error ? e : new Error(String(e)) });
-    return 0;
-  }
-}
-
-/**
- * Escalate to the property's GM/owner by SMS (their `accounts.phone`). Used for
- * critical anomalies. Recipient resolution is inlined (not via nudges) to avoid
- * an import cycle autoact → nudges → store → autoact. Returns count enqueued.
- */
-export async function smsGm(pid: string, body: string, idemBase: string): Promise<number> {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('accounts')
-      .select('id, phone, role, property_access')
-      .in('role', ['owner', 'general_manager']);
-    if (error) {
-      log.error('[compliance/autoact] smsGm accounts lookup failed', { pid, msg: error.message });
-      return 0;
-    }
-    const recipients = (data ?? []).filter((a) => {
-      const access = (a.property_access as string[] | null) ?? [];
-      return (access.includes(pid) || access.includes('*')) && typeof a.phone === 'string' && a.phone.trim().length > 0;
-    });
-    let sent = 0;
-    const safeBody = sanitizeForSms(body).slice(0, 480);
-    for (const a of recipients) {
-      const phone164 = toE164(String(a.phone));
-      if (!phone164) continue;
-      try {
-        await enqueueSms({
-          propertyId: pid,
-          toPhone: phone164,
-          body: safeBody,
-          idempotencyKey: `compliance:gm:${idemBase}:${a.id}`,
-          metadata: { kind: 'compliance-gm-escalation', accountId: a.id },
-        });
-        sent += 1;
-      } catch (e) {
-        log.error('[compliance/autoact] smsGm enqueue failed', { pid, accountId: a.id, err: e instanceof Error ? e : new Error(String(e)) });
-      }
-    }
-    return sent;
-  } catch (e) {
-    log.error('[compliance/autoact] smsGm threw', { pid, err: e instanceof Error ? e : new Error(String(e)) });
-    return 0;
-  }
-}
-
-/**
  * Out-of-range reading → urgent work order + SMS. Returns the work order id
  * (so the caller can link it on the reading row), or null.
  */
@@ -178,14 +85,7 @@ export async function autoActOnOutOfRangeReading(opts: {
     description: desc,
     priority: 'urgent',
   });
-  // Idempotency base carries the local date so a recurring out-of-range at the
-  // same value on a later day re-texts maintenance (the urgent channel must not
-  // be silently deduped across days). Same value same day → one text.
-  await smsMaintenance(
-    pid,
-    `⚠️ Compliance alert: ${typeName} = ${value}${unit} (${bound}). Work order created — please check the pool/equipment.`,
-    `oor:${pid}:${typeName}:${value}:${todayStr(APP_TIMEZONE)}`,
-  );
+  // (SMS notify removed 2026-07 — the urgent work order is the signal.)
   return workOrderId;
 }
 
@@ -204,10 +104,6 @@ export async function autoActOnFailedPmCheck(opts: {
     description: desc,
     priority: 'urgent',
   });
-  await smsMaintenance(
-    pid,
-    `⚠️ Compliance alert: ${taskName} check FAILED. Work order created — please remediate.`,
-    `pmfail:${pid}:${taskName}:${todayStr(APP_TIMEZONE)}`,
-  );
+  // (SMS notify removed 2026-07 — the urgent work order is the signal.)
   return workOrderId;
 }

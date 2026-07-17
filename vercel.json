@@ -46,20 +46,8 @@
       "schedule": "0 4 * * *"
     },
     {
-      "path": "/api/cron/agent-weekly-digest",
-      "schedule": "0 9 * * 0"
-    },
-    {
-      "path": "/api/cron/doctor-check",
-      "schedule": "0 * * * *"
-    },
-    {
       "path": "/api/cron/walkthrough-heal-stale",
       "schedule": "*/30 * * * *"
-    },
-    {
-      "path": "/api/cron/walkthrough-health-alert",
-      "schedule": "*/10 * * * *"
     },
     {
       "path": "/api/cron/seal-daily",
@@ -90,20 +78,12 @@
       "schedule": "*/5 * * * *"
     },
     {
-      "path": "/api/cron/pms-sync-watchdog",
-      "schedule": "*/5 * * * *"
-    },
-    {
       "path": "/api/cron/run-rules-engine",
       "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/cron/run-auto-assign",
       "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/cron/process-pending-callouts",
-      "schedule": "*/5 * * * *"
     },
     {
       "path": "/api/cron/run-daily-report",
@@ -120,18 +100,6 @@
     {
       "path": "/api/cron/run-scheduled-reports",
       "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/cron/send-complaint-nudges",
-      "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/cron/financials-alert-sweep",
-      "schedule": "0 14 * * *"
-    },
-    {
-      "path": "/api/cron/process-sms-jobs",
-      "schedule": "*/5 * * * *"
     }
   ]
 }

@@ -18,7 +18,6 @@
 //   POST /api/housekeeping/reset-assignments(clear all, or one — drag-to-unassigned)
 //   POST /api/housekeeping/auto-assign      (balance unassigned rooms across crew)
 //   POST /api/housekeeping/staff-priority   (★ Priority modal)
-//   POST /api/send-shift-confirmations      (→ Send links)
 //
 // Kept from the prior tab: the live date stepper, the PMS pull strip (with
 // its cleaning-time settings modal), and the sick-callout banner. Dropped
@@ -45,7 +44,6 @@ import {
 import {
   T, FONT_SANS, FONT_MONO, Caps, Btn, HousekeeperDot,
 } from './_snow';
-import { CalloutBanner } from './CalloutBanner';
 import {
   ScheduleBoard, type BoardTask, type BoardHk,
   chipKind, fmtMinutes,
@@ -307,48 +305,6 @@ export function ScheduleTab() {
     }
   }, [pid, shiftDate, busy, tasks, refreshBoard, flashToast, lang]);
 
-  const onSendLinks = useCallback(async () => {
-    if (!pid || busy) return;
-    // One text per crew member who has BOTH a phone and at least one room.
-    const recipients = crew
-      .filter(h => h.has_phone && h.phone)
-      .map(h => ({
-        staffId: h.id,
-        name: h.name,
-        phone: h.phone as string,
-        language: h.language,
-        assignedRooms: tasks.filter(t => t.assignee_id === h.id).map(t => t.room_number),
-      }))
-      .filter(r => r.assignedRooms.length > 0);
-    if (recipients.length === 0) {
-      flashToast(lang === 'es' ? 'Nadie con cuartos y teléfono' : 'No crew with rooms + a phone');
-      return;
-    }
-    if (typeof window !== 'undefined' && !window.confirm(
-      lang === 'es'
-        ? `¿Enviar el enlace de turno por SMS a ${recipients.length} personas?`
-        : `Text the shift link to ${recipients.length} housekeeper(s)?`,
-    )) return;
-    setBusy('send');
-    try {
-      const res = await fetchWithAuth('/api/send-shift-confirmations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pid, shiftDate,
-          baseUrl: window.location.origin,
-          staff: recipients,
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-      flashToast(lang === 'es' ? `Enlaces enviados a ${recipients.length}` : `Sent links to ${recipients.length}`);
-    } catch (e) {
-      flashToast((lang === 'es' ? 'Error al enviar: ' : 'Send failed: ') + (e instanceof Error ? e.message : String(e)));
-    } finally {
-      setBusy(null);
-    }
-  }, [pid, shiftDate, busy, crew, tasks, flashToast, lang]);
-
   const onSavePriority = useCallback(async (staffId: string, priority: 'priority' | 'normal' | 'excluded') => {
     // Optimistic.
     setBoardData(d => {
@@ -374,8 +330,6 @@ export function ScheduleTab() {
       padding: '24px 48px 130px', background: 'transparent', color: T.ink,
       fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)',
     }}>
-      <CalloutBanner shiftDate={shiftDate} />
-
       {/* feat/cua-partial-promotion — honesty strips. One banner at a
           time: pending > paused > feed-level. */}
       {connPending && (
@@ -539,9 +493,6 @@ export function ScheduleTab() {
             <Btn variant="ghost" size="sm" onClick={onReset} disabled={busy != null}>{lang === 'es' ? 'Reiniciar' : 'Reset'}</Btn>
             <Btn variant="primary" size="sm" onClick={onAutoAssign} disabled={busy != null}>
               {busy === 'auto' ? (lang === 'es' ? 'Asignando…' : 'Assigning…') : `↻ ${lang === 'es' ? 'Auto-asignar' : 'Auto-assign'}`}
-            </Btn>
-            <Btn variant="sage" size="sm" onClick={onSendLinks} disabled={busy != null}>
-              {busy === 'send' ? (lang === 'es' ? 'Enviando…' : 'Sending…') : `→ ${lang === 'es' ? 'Enviar enlaces' : 'Send links'}`}
             </Btn>
           </div>
         </div>

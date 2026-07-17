@@ -15,7 +15,6 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { processSmsJobs } from '@/lib/sms-jobs';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import {
@@ -131,10 +130,6 @@ async function handle(req: NextRequest) {
       log.error('[cron/compliance-anomaly-sweep] property failed', { requestId, pid, msg: errToString(e) });
     }
   }
-
-  // Drain any SMS the sweep enqueued.
-  try { await processSmsJobs(100); }
-  catch (e) { log.error('[cron/compliance-anomaly-sweep] drain failed', { requestId, msg: errToString(e) }); }
 
   await writeCronHeartbeat('compliance-anomaly-sweep', {
     requestId,

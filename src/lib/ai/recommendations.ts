@@ -33,11 +33,12 @@ import { getAiFeatureDefinition, isAiFeatureKey } from '@/lib/ai/feature-registr
 import { listAiFeatureSummaries } from '@/lib/ai/model-config-store';
 import { applyLegacyModelOverridesToSummaries } from '@/lib/ai/legacy-model-overrides';
 import { listAiModels } from '@/lib/ai/model-catalog';
+import { log } from '@/lib/log';
 import type {
   AiFeatureSummary,
   AiModelCatalogEntry,
   AiRecommendation,
-  AiRecommendationsResponse,
+  AiRecommendationReport,
 } from '@/lib/ai/types';
 
 const MAX_RECOMMENDATIONS = 8;
@@ -49,7 +50,7 @@ function getClient(): Anthropic | null {
   if (cachedClient) return cachedClient;
   const key = env.ANTHROPIC_API_KEY;
   if (!key) return null;
-  cachedClient = new Anthropic({ apiKey: key, timeout: 45_000, maxRetries: 1 });
+  cachedClient = new Anthropic({ apiKey: key, timeout: 100_000, maxRetries: 1 });
   return cachedClient;
 }
 
@@ -185,8 +186,13 @@ function parseRecommendation(
 }
 
 export async function generateAiModelRecommendations(
-  opts: { deadlineAt?: number; abortSignal?: AbortSignal } = {},
-): Promise<AiRecommendationsResponse> {
+  opts: {
+    deadlineAt?: number;
+    abortSignal?: AbortSignal;
+    /** Admin actor for the saved report's attribution. */
+    actor?: { accountId: string; email: string | null };
+  } = {},
+): Promise<AiRecommendationReport> {
   const client = getClient();
   if (!client) throw new Error('ANTHROPIC_API_KEY is not configured.');
 
@@ -215,7 +221,12 @@ export async function generateAiModelRecommendations(
     async (model, context) => {
       const resp = await client.messages.create({
         model: model.modelId,
-        max_tokens: 2_000,
+        // max_tokens covers THINKING + answer: newer models (Sonnet 5+) think
+        // adaptively by default and the thinking spend counts against this
+        // budget — 3.5k was fully consumed by thinking on Sonnet 5, yielding
+        // zero text. Runs a few times a day at most, so buy generous headroom
+        // rather than pinning model-specific thinking config.
+        max_tokens: 8_000,
         system: SYSTEM_PROMPT,
         messages: [{
           role: 'user',
@@ -223,7 +234,14 @@ export async function generateAiModelRecommendations(
         }],
       }, { signal: context.signal });
       captureTokenUsage(context.attempts, model, resp.model, resp.usage);
-      if (resp.stop_reason === 'max_tokens') throw new Error('recommendations response was truncated');
+      if (resp.stop_reason === 'max_tokens') {
+        log.warn('[ai-recommendations] response truncated', {
+          model: resp.model,
+          outputTokens: resp.usage?.output_tokens,
+          textChars: resp.content.reduce((n, b) => n + (b.type === 'text' ? b.text.length : 0), 0),
+        });
+        throw new Error('recommendations response was truncated');
+      }
       const text = resp.content
         .map((block) => (block.type === 'text' ? block.text : ''))
         .join('')
@@ -243,16 +261,89 @@ export async function generateAiModelRecommendations(
     {
       requirePricing: true,
       deadlineAt: opts.deadlineAt,
-      deadlineMs: opts.deadlineAt === undefined ? 40_000 : undefined,
+      deadlineMs: opts.deadlineAt === undefined ? 100_000 : undefined,
       fallbackReserveMs: 12_000,
       abortSignal: opts.abortSignal,
     },
   );
 
-  return {
-    recommendations: value,
+  const report: AiRecommendationReport = {
+    id: null,
     generatedAt: new Date().toISOString(),
-    spend30dUsd: spend.totalUsd,
     modelUsed: usedModel.modelId,
+    spend30dUsd: spend.totalUsd,
+    recommendations: value,
   };
+  // Persist best-effort: advice history is worth having, but a storage blip
+  // must never cost the admin the (paid) advice they just generated.
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('ai_recommendation_reports')
+      .insert({
+        generated_at: report.generatedAt,
+        model_used: report.modelUsed,
+        spend_30d_usd: report.spend30dUsd,
+        recommendations: report.recommendations,
+        created_by: opts.actor?.accountId ?? null,
+        created_by_email: opts.actor?.email ?? null,
+      })
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    report.id = typeof data?.id === 'string' ? data.id : null;
+  } catch (error) {
+    log.error('[ai-recommendations] report save failed; returning unsaved report', {
+      err: error instanceof Error ? error : new Error(String(error)),
+    });
+  }
+  return report;
+}
+
+function parseStoredRecommendation(raw: unknown): AiRecommendation | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  if (typeof obj.title !== 'string' || typeof obj.why !== 'string') return null;
+  const asSelection = (value: unknown): AiRecommendation['suggestedPrimary'] => {
+    if (!value || typeof value !== 'object') return null;
+    const sel = value as Record<string, unknown>;
+    if (sel.provider !== 'anthropic' && sel.provider !== 'openai') return null;
+    if (typeof sel.modelId !== 'string' || !sel.modelId) return null;
+    return { provider: sel.provider, modelId: sel.modelId };
+  };
+  return {
+    featureKey: typeof obj.featureKey === 'string' && isAiFeatureKey(obj.featureKey) ? obj.featureKey : null,
+    title: obj.title.slice(0, 120),
+    why: obj.why.slice(0, 400),
+    suggestedPrimary: asSelection(obj.suggestedPrimary),
+    suggestedFallback: asSelection(obj.suggestedFallback),
+    estimatedMonthlySavingsUsd: typeof obj.estimatedMonthlySavingsUsd === 'number' && Number.isFinite(obj.estimatedMonthlySavingsUsd)
+      ? obj.estimatedMonthlySavingsUsd
+      : null,
+    confidence: obj.confidence === 'high' || obj.confidence === 'medium' || obj.confidence === 'low' ? obj.confidence : 'low',
+  };
+}
+
+/** Saved advice history, newest first. */
+export async function listAiRecommendationReports(limit = 20): Promise<AiRecommendationReport[]> {
+  const { data, error } = await supabaseAdmin
+    .from('ai_recommendation_reports')
+    .select('id, generated_at, model_used, spend_30d_usd, recommendations')
+    .order('generated_at', { ascending: false })
+    .limit(Math.max(1, Math.min(50, limit)));
+  if (error) throw new Error(`recommendation history load failed: ${error.message}`);
+  const reports: AiRecommendationReport[] = [];
+  for (const row of data ?? []) {
+    if (typeof row.id !== 'string' || typeof row.generated_at !== 'string') continue;
+    const items = Array.isArray(row.recommendations) ? row.recommendations : [];
+    reports.push({
+      id: row.id,
+      generatedAt: row.generated_at,
+      modelUsed: typeof row.model_used === 'string' ? row.model_used : '(unknown)',
+      spend30dUsd: Number(row.spend_30d_usd ?? 0),
+      recommendations: items
+        .map(parseStoredRecommendation)
+        .filter((item): item is AiRecommendation => item !== null),
+    });
+  }
+  return reports;
 }
