@@ -26,7 +26,7 @@ import { Overlay } from './Overlay';
 import { seedCartState, type LineState } from './reorder-cart';
 import { isBudgetForLocalMonth } from '../month';
 import { fmtMoney } from '../format';
-import { recommendReorder, suggestQuantity } from '../adapter';
+import { packsLabelFor, recommendReorder, suggestQuantity } from '../adapter';
 import type { DisplayItem, ReorderRec } from '../types';
 import styles from './ReorderPanel.module.css';
 import { catLabelFor, type Lang } from '../inv-i18n';
@@ -241,8 +241,15 @@ export function ReorderPanel({
   // Place orders: create real purchase_orders grouped BY VENDOR (server-side),
   // then auto-email each vendor that has an address on file. Vendors with no
   // email stay as drafts to send from the Orders panel once an address is added.
+  // Synchronous in-flight lock. `saving` state lags one render behind
+  // setSaving(true), so a fast double-click could run this handler twice and
+  // create + email every purchase order twice. Same guard pattern as
+  // CountSheet's addLockRef.
+  const placeLockRef = useRef(false);
   const handlePlaceOrders = async () => {
     if (!user || !activePropertyId || saving || cartItems.length === 0 || !canManage) return;
+    if (placeLockRef.current) return;
+    placeLockRef.current = true;
     setSaving(true);
     try {
       const lines: CartLineInput[] = cartItems.map((r) => ({
@@ -289,6 +296,7 @@ export function ReorderPanel({
         errors: [err instanceof Error ? err.message : 'Placing the orders failed.'],
       });
     } finally {
+      placeLockRef.current = false;
       setSaving(false);
     }
   };
@@ -484,6 +492,7 @@ export function ReorderPanel({
                 {g.recs.map((rec) => (
                   <ReorderRow
                     key={rec.itemId}
+                    lang={L}
                     daysLeftSuffix={TT.daysLeftSuffix}
                     leadLabel={TT.lead}
                     showCost={canViewFinancials}
@@ -678,6 +687,7 @@ function BudgetMeter({
 }
 
 function ReorderRow({
+  lang,
   daysLeftSuffix,
   leadLabel,
   showCost,
@@ -686,6 +696,7 @@ function ReorderRow({
   onToggle,
   onQty,
 }: {
+  lang: Lang;
   daysLeftSuffix: string;
   leadLabel: string;
   /** Show the per-line dollar cost. False for non-financial roles — they still
@@ -855,7 +866,7 @@ function ReorderRow({
             textOverflow: 'ellipsis',
           }}
         >
-          {rec.packs}
+          {packsLabelFor(d, line.qty, lang)}
         </span>
         <span
           style={{

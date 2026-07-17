@@ -152,6 +152,19 @@ export function MobileInventoryTriage({
             ) : null}
           </button>
         ))}
+        {onAdd ? (
+          // Desktop always shows "+ Add item" in the filter bar; without this
+          // a phone user with a non-empty catalog had NO direct add path
+          // (only the empty-catalog panel wired onAdd).
+          <button
+            type="button"
+            className={actionClassName(undefined)}
+            onClick={onAdd}
+            aria-label={tx.addItem}
+          >
+            <span className={styles.actionLabel}>{tx.addItem}</span>
+          </button>
+        ) : null}
       </div>
 
       <div className={styles.filterRail} role="group" aria-label={tx.pageTitle}>
@@ -342,7 +355,10 @@ function InventoryCard({
   lang: Lang;
   onQuickCount: (itemId: string, nextValue: number) => void;
 }) {
-  const onHand = Math.max(0, Math.round(item.estimated));
+  // Real last count, not the occupancy estimate — the +/− steppers save a new
+  // physical count, so stepping off the estimate would silently rewrite the
+  // count with a projection (same fix as LedgerRow.onHand on desktop).
+  const onHand = Math.max(0, Math.round(item.counted));
   const par = Math.max(0, Math.round(item.par));
   const fill = par > 0 ? Math.max(0, Math.min(100, (100 * onHand) / par)) : 100;
   const statusClass = item.uncounted ? styles.statusNeutral : STATUS_CLASS[item.status];

@@ -20,7 +20,7 @@
  * collide with RLS.
  */
 
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { requireFinanceAccess } from '@/lib/financials/api-gate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -69,9 +69,8 @@ export async function GET(req: NextRequest) {
     // Log the detail server-side; don't leak PostgREST table/column/constraint
     // names to the client (matches scan-invoice's hardening). (Audit fix 2026-06-18.)
     log.error('[inventory/accounting-summary] aggregation failed', { err: errToString(e) });
-    return NextResponse.json(
-      { ok: false, error: 'aggregation_failed' },
-      { status: 500 },
-    );
+    return err('aggregation_failed', {
+      requestId: gate.requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
   }
 }

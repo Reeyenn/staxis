@@ -661,7 +661,9 @@ export function InventoryShell() {
     const d = displayRef.current.find((x) => x.id === itemId);
     if (!d) return;
     const curDraft = draftCountsRef.current.get(itemId);
-    const have = curDraft != null ? curDraft : Math.max(0, Math.round(d?.estimated ?? 0));
+    // Baseline for the "no change" guard is the real count (what the row's
+    // stepper edits), never the occupancy estimate — see LedgerRow.onHand.
+    const have = curDraft != null ? curDraft : Math.max(0, Math.round(d?.counted ?? 0));
     const v = Math.max(0, Math.round(nextValue));
     if (v === have) return; // no change (e.g. − at floor 0) → never write
 
@@ -951,16 +953,12 @@ export function InventoryShell() {
   }
 
   if (!revealed || !itemsLoaded) {
+    // Byte-identical to InventoryLoading in ../page.tsx (the SSR Suspense
+    // fallback); any drift between the two makes React hydration re-render
+    // the whole tree and the loading text visibly flash mid-load.
     return (
-      <div
-        style={{
-          padding: '64px 24px',
-          textAlign: 'center',
-          fontFamily: fonts.sans,
-          color: T.ink2,
-        }}
-      >
-        {tx.loading}
+      <div style={{ padding: '64px 24px', textAlign: 'center', color: '#5C625C' }}>
+        Loading inventory…
       </div>
     );
   }

@@ -339,7 +339,12 @@ function LedgerRow({
   quickCountLocked: boolean;
 }) {
   const uncounted = d.uncounted;
+  // Projection (occupancy-drained estimate) drives the bar; the EDITABLE
+  // number and its valuation must be the real last count. Basing the stepper
+  // on the estimate made one tap silently overwrite the physical count with
+  // the projection (e.g. counted 280, estimated 273, "+" saved 274).
   const have = Math.max(0, Math.round(d.estimated));
+  const onHand = Math.max(0, Math.round(d.counted));
   const c = uncounted ? T.dim : statusText[d.status];
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
@@ -453,7 +458,7 @@ function LedgerRow({
         <StepBtn
           kind="minus"
           disabled={quickCountLocked}
-          onClick={(e) => { stop(e); onQuickCount(d.id, have - 1); }}
+          onClick={(e) => { stop(e); onQuickCount(d.id, onHand - 1); }}
         />
         <span
           style={{
@@ -467,12 +472,12 @@ function LedgerRow({
             transition: 'color .3s ease',
           }}
         >
-          {have}
+          {onHand}
         </span>
         <StepBtn
           kind="plus"
           disabled={quickCountLocked}
-          onClick={(e) => { stop(e); onQuickCount(d.id, have + 1); }}
+          onClick={(e) => { stop(e); onQuickCount(d.id, onHand + 1); }}
         />
       </div>
 
@@ -495,7 +500,9 @@ function LedgerRow({
       </span>
 
       {/* Value (money-gated) — valuation of the on-hand quantity shown in this
-          row (have × unit cost), so the two money-adjacent cells never disagree. */}
+          row (onHand × unit cost), so the two money-adjacent cells never
+          disagree — and so the rows sum to the masthead "On the shelf" total,
+          which values the same counted stock. */}
       {canViewFinancials && (
         <span
           style={{
@@ -505,7 +512,7 @@ function LedgerRow({
             textAlign: 'right',
           }}
         >
-          {fmtMoney(have * d.unitCost)}
+          {fmtMoney(onHand * d.unitCost)}
         </span>
       )}
     </div>
