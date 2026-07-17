@@ -306,7 +306,6 @@ export function toStaffRow(s: Partial<StaffMember>): Record<string, unknown> {
     vacation_dates: s.vacationDates,
     is_active: s.isActive,
     schedule_priority: s.schedulePriority,
-    is_scheduling_manager: s.isSchedulingManager,
   });
 }
 
@@ -329,7 +328,6 @@ export function fromStaffRow(r: Record<string, unknown>): StaffMember {
       : undefined,
     isActive: r.is_active == null ? undefined : Boolean(r.is_active),
     schedulePriority: parseOptionalUnionField(r.schedule_priority, SCHEDULE_PRIORITIES),
-    isSchedulingManager: r.is_scheduling_manager == null ? undefined : Boolean(r.is_scheduling_manager),
     lastPairedAt: toDate(r.last_paired_at),
   };
 }
