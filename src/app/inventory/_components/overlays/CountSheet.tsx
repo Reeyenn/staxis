@@ -79,6 +79,7 @@ function csStrings(lang: Lang) {
       generalInventory: 'General inventory',
       breakfastInventory: 'Breakfast inventory',
       everything: 'Everything',
+      otherGroup: 'Other',
       items: 'items',
       cancel: 'Cancel',
       back: 'Back',
@@ -121,6 +122,7 @@ function csStrings(lang: Lang) {
       generalInventory: 'Inventario general',
       breakfastInventory: 'Inventario de desayuno',
       everything: 'Todo',
+      otherGroup: 'Otros',
       items: 'artículos',
       cancel: 'Cancelar',
       back: 'Atrás',
@@ -757,12 +759,36 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
   }
 
   // STEP 2 — the count list. One slim line per item: name + number box.
-  // Blank = skipped. Group by whatever built-in categories are actually present
-  // in the scope (a custom tab's items keep their built-in category for the
-  // icon/divider); dividers only when more than one category is present.
-  const cats = (['housekeeping', 'maintenance', 'breakfast'] as InvCat[])
-    .filter((c) => scopedDisplay.some((d) => d.cat === c));
-  const showDividers = cats.length > 1;
+  // Blank = skipped. Grouping mirrors what the hotel actually sees: a hotel
+  // that removed both built-in tabs and runs on custom tabs gets its
+  // "Everything" count grouped BY TAB (with an "Other" tail for unassigned
+  // items) — Housekeeping/Maintenance dividers would name sections that
+  // hotel's tabs don't have. Everyone else keeps the built-in category
+  // dividers; either way dividers only appear when there's more than one group.
+  const bothBuiltinsHidden =
+    (tabLayout?.hidden ?? []).includes('general') && (tabLayout?.hidden ?? []).includes('breakfast');
+  const groups: Array<{ key: string; label: string; items: DisplayItem[] }> =
+    scope === 'all' && bothBuiltinsHidden && customCategories.length > 0
+      ? [
+          ...customCategories.map((cc) => ({
+            key: `custom:${cc.id}`,
+            label: cc.name,
+            items: scopedDisplay.filter((d) => d.customCategoryId === cc.id),
+          })),
+          {
+            key: 'other',
+            label: cs.otherGroup,
+            items: scopedDisplay.filter((d) => !d.customCategoryId),
+          },
+        ].filter((g) => g.items.length > 0)
+      : (['housekeeping', 'maintenance', 'breakfast'] as InvCat[])
+          .filter((c) => scopedDisplay.some((d) => d.cat === c))
+          .map((c) => ({
+            key: c,
+            label: catLabelFor(lang, c),
+            items: scopedDisplay.filter((d) => d.cat === c),
+          }));
+  const showDividers = groups.length > 1;
 
   return (
     <Overlay
@@ -910,15 +936,15 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
         )}
       </div>}
 
-      {cats.map((cat) => (
-        <div key={cat}>
+      {groups.map((group) => (
+        <div key={group.key}>
           {showDividers && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 2px' }}>
-              <Caps size={8.5}>{catLabelFor(lang, cat)}</Caps>
+              <Caps size={8.5}>{group.label}</Caps>
               <span style={{ flex: 1, height: 1, background: T.ruleSoft }} />
             </div>
           )}
-          {scopedDisplay.filter((d) => d.cat === cat).map((d) => (
+          {group.items.map((d) => (
             <CountLine
               key={d.id}
               d={d}

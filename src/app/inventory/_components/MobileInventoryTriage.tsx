@@ -204,7 +204,9 @@ export function MobileInventoryTriage({
         {items.length === 0 ? (
           <EmptyCatalog lang={lang} onAdd={onAdd} />
         ) : partition.visibleCount === 0 ? (
-          <div className={styles.noMatches} role="status">{tx.nothingMatches}</div>
+          // Mobile has no search box — an empty bucket here is an empty TAB,
+          // so "nothing matches your search" would be misleading.
+          <div className={styles.noMatches} role="status">{tx.emptyTab}</div>
         ) : (
           <>
             <TriageGroup
