@@ -123,6 +123,7 @@ const STRINGS = {
     colValue: 'Value',
     notCountedPill: 'Not counted',
     nothingMatches: 'Nothing matches your search.',
+    emptyTab: 'No items in this tab yet — add one, or move items here from Edit item.',
     ledgerHint: 'Quick counts save after a short pause · full walk lives in Start count',
     // ── View toggle (Ledger table ↔ triage board) ──
     viewLedger: 'Ledger',
@@ -217,6 +218,7 @@ const STRINGS = {
     colValue: 'Valor',
     notCountedPill: 'Sin contar',
     nothingMatches: 'Nada coincide con tu búsqueda.',
+    emptyTab: 'Aún no hay artículos en esta pestaña — agrega uno, o mueve artículos aquí desde Editar artículo.',
     ledgerHint: 'Los conteos rápidos se guardan tras una pausa breve · el recorrido completo está en Iniciar conteo',
     // ── View toggle (tabla Libro ↔ tablero) ──
     viewLedger: 'Tabla',

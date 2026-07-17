@@ -263,7 +263,9 @@ export function LedgerTable({
                 color: T.dim,
               }}
             >
-              {tx.nothingMatches}
+              {/* "matches your search" only makes sense when there IS a search;
+                  an empty tab with no query gets an honest empty state. */}
+              {query.trim() ? tx.nothingMatches : tx.emptyTab}
             </div>
           ) : (
             rows.map((d) => (

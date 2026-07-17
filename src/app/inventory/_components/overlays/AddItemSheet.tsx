@@ -44,6 +44,10 @@ interface AddItemSheetProps {
   customCategories?: InventoryCustomCategory[];
   /** Custom category a *new* item starts in (when added from a custom tab). */
   defaultCustomCategoryId?: string | null;
+  /** Built-in tabs this hotel removed (tabLayout.hidden, 0308). The category
+   *  row mirrors the hotel's ACTUAL tabs — a hotel that runs purely on custom
+   *  tabs shouldn't be offered Housekeeping/Maintenance/F&B chips. */
+  hiddenBuiltins?: readonly string[];
 }
 
 const CATS: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
@@ -120,7 +124,7 @@ function aisStrings(lang: Lang) {
   }[lang];
 }
 
-export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, defaultCategory = 'housekeeping', customCategories = [], defaultCustomCategoryId = null }: AddItemSheetProps) {
+export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, defaultCategory = 'housekeeping', customCategories = [], defaultCustomCategoryId = null, hiddenBuiltins = [] }: AddItemSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ais = aisStrings(lang);
@@ -132,6 +136,18 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
   // null = the item lives in its built-in `category`; a string id = it lives in
   // that hotel-defined custom category tab (0307).
   const [customCategoryId, setCustomCategoryId] = useState<string | null>(defaultCustomCategoryId);
+
+  // The category row mirrors the hotel's actual tabs: built-in chips only for
+  // tabs the hotel still shows (General → Housekeeping + Maintenance,
+  // Breakfast → Food & Beverage), plus the custom tabs. An item being edited
+  // that lives in a now-hidden built-in bucket keeps its chip so the current
+  // assignment stays visible; a hotel with everything hidden and no custom
+  // tabs falls back to all three (the picker can't be empty).
+  const generalVisible = !hiddenBuiltins.includes('general');
+  const breakfastVisible = !hiddenBuiltins.includes('breakfast');
+  let visibleCats = CATS.filter((c) => (c === 'breakfast' ? breakfastVisible : generalVisible));
+  if (!customCategoryId && !visibleCats.includes(category)) visibleCats = [...visibleCats, category];
+  if (visibleCats.length === 0 && customCategories.length === 0) visibleCats = CATS;
   const [currentStock, setCurrentStock] = useState<string>('0');
   // What the on-hand field was seeded with (item value at open, or the DB's
   // post-write-off value). On edit-save we only send currentStock if the user
@@ -424,7 +440,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
 
         <Field label={ais.category} tip={ais.tipCategory}>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {CATS.map((c) => {
+            {visibleCats.map((c) => {
               // A built-in chip is active only when the item isn't in a custom tab.
               const active = !customCategoryId && category === c;
               return (
