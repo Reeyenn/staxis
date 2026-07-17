@@ -149,7 +149,7 @@ export default function FrontDeskPage() {
 
   useEffect(() => {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
-    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
+    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/property-selector');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
   // Restore the saved tab; force back to Rooms if a non-manager somehow has

@@ -7,7 +7,7 @@
 // app_events (for anomaly history once session 2 wires that up).
 //
 // All queries are scoped by property_id and rely on RLS via the supabase
-// browser client (the signed-in user's JWT). The owner gate on /admin/ml is
+// browser client (the signed-in user's JWT). The owner gate on the admin ML surface is
 // enforced at the page level.
 // ═══════════════════════════════════════════════════════════════════════════
 

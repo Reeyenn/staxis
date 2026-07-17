@@ -161,7 +161,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (authLoading || propLoading) return;
     if (!user) { router.replace('/signin'); return; }
-    if (!activePropertyId) { router.replace('/onboarding'); return; }
+    if (!activePropertyId) { router.replace('/property-selector'); return; }
     // Backstop for the login-funnel gate: if anything lands a mid-onboarding
     // owner on the dashboard (their hotel has no PMS and an empty board),
     // send them back into the wizard to finish. Legacy/complete hotels have

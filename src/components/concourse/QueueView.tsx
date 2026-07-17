@@ -7,7 +7,7 @@
 // cards with Approve and a per-card secondary action (Adjust / Deny / Snooze).
 // Approve/dismiss is optimistic-local: the card dims but stays visible, and
 // the pending count is broadcast so the pill-bar badge tracks it.
-// Shared by /feed and /demo/concourse. Sample decisions are Phase 1 — the
+// Shared by /feed. Sample decisions are Phase 1 — the
 // same footing as the previous feed; live agent_nudges wiring is Phase 2.
 // ═══════════════════════════════════════════════════════════════════════════
 

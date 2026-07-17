@@ -55,8 +55,7 @@ export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => vo
 }
 
 // ScheduleView — the full schedule surface, decoupled from where its data
-// comes from: the real tab feeds it useScheduleData (Supabase-backed), the
-// public /demo/schedule page feeds it useDemoScheduleData (in-memory).
+// comes from: the real tab feeds it useScheduleData (Supabase-backed).
 export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory }: {
   staff: StaffMember[];
   lang: 'en' | 'es';

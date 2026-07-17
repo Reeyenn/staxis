@@ -47,8 +47,6 @@ export function canViewFinancials(role: AppRole): boolean {
   return role === 'admin' || role === 'owner' || role === 'general_manager';
 }
 
-// Roles that can manage inventory ordering — place / approve / receive purchase
-// orders, edit vendors, import the starter catalog, and toggle Simple/Pro mode.
 // Display label for the role (English). Spanish translations live in the UI.
 export function roleLabel(role: AppRole): string {
   switch (role) {

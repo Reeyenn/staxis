@@ -184,7 +184,6 @@ export type RateLimitEndpoint =
   | 'housekeeper-add-note'           // quick note from housekeeper page
   | 'housekeeper-mark-inspection'    // tap to flag ready for inspection
   | 'housekeeper-save-language-loc'  // language-switcher save (locale-wide)
-  | 'housekeeper-offline-replay'     // service worker replay-batch handler
   // Cross-department activity log export (feature #18, 2026-05-25).
   | 'settings-activity-log-export'
   // Post-merge sweep (Plan v4 cutover) — manager-facing Rooms board read
@@ -498,7 +497,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeper-add-note':         200,
   'housekeeper-mark-inspection':  200,
   'housekeeper-save-language-loc': 10,
-  'housekeeper-offline-replay':   300,
   // Cross-department activity log export.
   'settings-activity-log-export':  30,
   // Plan v4 manager Rooms board — 6s polling + visibility refetches.
