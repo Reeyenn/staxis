@@ -419,6 +419,7 @@ const RLS_REQUIRED_TABLES = [
   // Fleet-wide AI Control Center (service-role only).
   'ai_model_catalog',
   'ai_feature_config_versions',
+  'ai_recommendation_reports',
 
   // High-sensitivity backend tables — service-role only.
   // RLS off here would be catastrophic (plain-text PMS passwords, phone
@@ -460,6 +461,7 @@ const RLS_REQUIRED_TABLES = [
  * 'fail' so the doctor doesn't alert during the rollout window.
  */
 const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
+  'join_requests',
   'agent_eval_baselines',
   'agent_prompts',
   'agent_conversations_archived',
@@ -497,6 +499,8 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   // 0313 — global AI provider catalog + immutable feature config history.
   'ai_model_catalog',
   'ai_feature_config_versions',
+  // 0316 — saved recommendation reports.
+  'ai_recommendation_reports',
 ]);
 
 

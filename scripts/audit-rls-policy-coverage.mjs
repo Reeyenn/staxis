@@ -86,6 +86,7 @@ const TENANT_COLUMNS = new Set([
 const SERVICE_ROLE_ONLY = new Set([
   // From the audit — RLS-on, no policies, intentional (per inline comments
   // in their originating migrations).
+  'join_requests',
   'agent_eval_baselines',
   'agent_prompts',
   'agent_conversations_archived',
