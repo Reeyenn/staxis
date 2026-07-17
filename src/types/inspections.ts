@@ -51,10 +51,10 @@ export interface InspectionFailedItem {
   /**
    * Signed Supabase Storage URL valid for ~7 days at upload time. The
    * canonical location is `photoPath` — the URL is stored too as a
-   * UX convenience for the just-completed view, but anything reading
-   * a >7-day-old inspection must re-sign using photoPath via
-   * /api/housekeeping/inspections/sign-photo. See M5 fix in
-   * fix/inspections-flow-followup.
+   * UX convenience for the just-completed view. Anything reading a
+   * >7-day-old inspection would need to re-sign from photoPath — the
+   * dedicated re-sign endpoint was removed unused in the 2026-07 dead-code
+   * purge; re-add one if a history view ever needs stale photos.
    */
   photoUrl: string | null;
   /**

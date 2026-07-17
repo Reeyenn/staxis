@@ -28,7 +28,6 @@ const PUBLIC_EXACT = new Set<string>([
   '/privacy',
   '/terms',
   '/consent',
-  '/roi',
   // Signup / onboarding flow
   '/signup',
   '/onboard',
@@ -47,7 +46,6 @@ const PUBLIC_PREFIXES = [
   '/housekeeper/',   // /housekeeper/[id]
   '/laundry/',       // /laundry/[id]
   '/engineer/',      // /engineer/[id] — engineering-compliance mobile page
-  '/demo/',          // login-free design previews on sample data (no real reads/writes)
   '/api/',           // every API route does its own auth
 ];
 

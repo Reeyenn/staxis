@@ -95,7 +95,7 @@ type TranslationKey =
   | 'hkFromManagement' | 'hkMembers' | 'hkDirectMessage' | 'hkJustNow' | 'hkAnnouncementsFromMgmt'
   | 'hkNoMessages'
   // Navigation
-  | 'dashboard' | 'morningSetup' | 'rooms' | 'analytics' | 'roi' | 'settings' | 'staffing' | 'maintenance'
+  | 'dashboard' | 'rooms' | 'settings' | 'maintenance'
   // Room status / type / priority
   | 'clean' | 'dirty' | 'inProgress' | 'checkout' | 'stayover'
   | 'vip' | 'earlyCheckin' | 'standard'
@@ -423,12 +423,8 @@ const translations: TranslationMaps = {
   en: {
     // ── Navigation ──
     dashboard: 'Dashboard',
-    morningSetup: 'Morning Setup',
     rooms: 'Rooms',
-    analytics: 'Analytics',
-    roi: 'ROI',
     settings: 'Settings',
-    staffing: 'Staffing',
     // ── Room status / type / priority ──
     clean: 'Clean',
     dirty: 'Dirty',
@@ -1285,12 +1281,8 @@ const translations: TranslationMaps = {
   es: {
     // ── Navigation ──
     dashboard: 'Tablero',
-    morningSetup: 'Conf. Matutina',
     rooms: 'Habitaciones',
-    analytics: 'Análisis',
-    roi: 'Retorno',
     settings: 'Ajustes',
-    staffing: 'Personal',
     // ── Room status / type / priority ──
     clean: 'Limpia',
     dirty: 'Sucia',

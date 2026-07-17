@@ -12,7 +12,7 @@
    server-side in src/app/admin/layout.tsx, with a client spinner during
    auth load.
 
-   Five surfaces (Agent is folded into System, per the handoff):
+   Six surfaces (Agent is folded into System, per the handoff; Access came later):
      Onboarding · Live hotels · System & Agent · Money · ML
 
    Tab selection deep-links via the URL hash (#live etc.) so a refresh keeps

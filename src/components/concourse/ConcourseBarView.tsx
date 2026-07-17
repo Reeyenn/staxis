@@ -3,9 +3,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // ConcourseBarView — the floating pill bar, presentational.
 //
-// Pure props in, clicks out: the connected app bar (ConcourseBar.tsx) and the
-// login-free /demo/concourse preview both render THIS, so the demo can never
-// drift from the real thing. Layout per the handoff: logo · divider · section
+// Pure props in, clicks out: the connected app bar (ConcourseBar.tsx) renders
+// THIS, so the shell can never drift from the real thing. Layout per the handoff: logo · divider · section
 // pills (icon-only inactive, icon+label active) · divider · EN/ES segmented
 // toggle · settings gear · avatar slot.
 // ═══════════════════════════════════════════════════════════════════════════

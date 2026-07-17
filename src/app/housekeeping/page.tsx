@@ -50,7 +50,7 @@ export default function HousekeepingPage() {
   // Auth guard — redirect if not logged in or no property
   useEffect(() => {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
-    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
+    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/property-selector');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
   // Restore tab on mount. A `?tab=` deep-link (e.g. from the worklist) wins

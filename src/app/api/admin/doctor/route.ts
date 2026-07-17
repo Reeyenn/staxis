@@ -300,7 +300,7 @@ const checks: Array<[string, CheckFn]> = [
   // handler added in main.py blocks /health from responding until env
   // validation passes, so a 200 here proves the new fail-fast startup
   // gate is alive. Surfaces in MlHealthPanel (filters checks by `ml_`
-  // prefix) so Reeyen sees the safety net on /admin/ml without hunting.
+  // prefix) so Reeyen sees the safety net on the admin ML surface without hunting.
   ['ml_service_lifespan_active',     checkMlServiceLifespanActive],
   // Error tracking — Sentry no-ops gracefully when DSN missing, but a
   // malformed DSN means errors silently disappear. Fail on bad shape.
@@ -3443,7 +3443,7 @@ async function checkMlServiceUrlsConfigured(): Promise<Omit<Check, 'name' | 'dur
  * blocks /health from responding until Pydantic Settings validation passes
  * — so a 200 from /health proves the new fail-fast startup is alive. If
  * env on the Railway side is broken, this check FAILs and Reeyen sees a
- * row on /admin/ml indicating the safety net caught a misconfig.
+ * row on the admin ML surface indicating the safety net caught a misconfig.
  *
  * Why this matters: before the lifespan, missing env on ml-service only
  * surfaced as a 500 on the first /predict — operators saw a "healthy"

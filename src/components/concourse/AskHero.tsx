@@ -3,7 +3,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // AskHero — the glowing Ask Staxis bar on the home hub.
 //
-// AskHeroView is presentational (shared with /demo/concourse). The connected
+// AskHeroView is presentational. The connected
 // AskHero hands real input off to the ONE live chat surface — the global
 // AskStaxisBar — over a window event ('staxis:ask'), so there's a single
 // conversation brain, history, and approval flow no matter where you typed.

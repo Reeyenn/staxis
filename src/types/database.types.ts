@@ -89,9 +89,6 @@ export type Database = {
           skip_2fa: boolean
           updated_at: string
           username: string
-          voice_onboarded_at: string | null
-          voice_replies_enabled: boolean
-          wake_word_enabled: boolean
         }
         Insert: {
           ai_cost_tier?: string
@@ -106,9 +103,6 @@ export type Database = {
           skip_2fa?: boolean
           updated_at?: string
           username: string
-          voice_onboarded_at?: string | null
-          voice_replies_enabled?: boolean
-          wake_word_enabled?: boolean
         }
         Update: {
           ai_cost_tier?: string
@@ -123,9 +117,6 @@ export type Database = {
           skip_2fa?: boolean
           updated_at?: string
           username?: string
-          voice_onboarded_at?: string | null
-          voice_replies_enabled?: boolean
-          wake_word_enabled?: boolean
         }
         Relationships: []
       }
