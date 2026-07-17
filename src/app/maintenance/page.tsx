@@ -44,7 +44,7 @@ export default function MaintenancePage() {
   // Auth guard — redirect if not logged in or no property selected.
   useEffect(() => {
     if (!authLoading && !propLoading && !user) router.replace('/signin');
-    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/onboarding');
+    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/property-selector');
   }, [user, authLoading, propLoading, activePropertyId, router]);
 
   // Restore tab choice on mount. A `?tab=` deep-link (e.g. from the worklist)

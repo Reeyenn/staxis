@@ -139,14 +139,3 @@ test('usage ledger preserves per-attempt rows with bounded parallel writes', () 
   assert.match(text, /Promise\.all\(chunk\.map/);
   assert.match(text, /model: attempt\.model/);
 });
-
-test('lost-and-found reranking composes route cancellation with its AI deadline', () => {
-  const helper = source('src/lib/lost-and-found/match.ts');
-  assert.match(helper, /opts:\s*AiCallOptions\s*=\s*\{\}/);
-  assert.match(helper, /deadlineAt:\s*opts\.deadlineAt/);
-  assert.match(helper, /abortSignal:\s*opts\.abortSignal/);
-  assert.match(helper, /signal:\s*context\.signal/);
-
-  const route = source('src/app/api/front-desk/lost-and-found/auto-match/route.ts');
-  assert.match(route, /aiRerank\([\s\S]*?abortSignal:\s*req\.signal/);
-});

@@ -25,7 +25,7 @@ interface Body {
   pid?: string;
   staffId?: string;
   noticeId?: string;
-  // Idempotency key for offline replay — see offline-replay route.
+  // Idempotency key so a retried dismiss (e.g. flaky cellular) is a no-op.
   actionId?: string;
 }
 

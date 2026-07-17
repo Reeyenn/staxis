@@ -42,7 +42,6 @@ describe('middleware — public allowlist', () => {
     '/privacy',
     '/terms',
     '/consent',
-    '/roi',
     '/housekeeper',
     '/housekeeper/staff-uuid',
     '/laundry',
@@ -73,7 +72,6 @@ describe('middleware — protected paths', () => {
     '/settings',
     '/settings/staff',
     '/property-selector',
-    '/onboarding',
     '/chat',
   ]) {
     test(`${path} with no auth cookie → redirect to /signin`, () => {

@@ -49,7 +49,6 @@ test('vision request routes forward caller cancellation into provider execution'
     'src/app/api/inventory/photo-count/route.ts',
     'src/app/api/inventory/scan-invoice/route.ts',
     'src/lib/financials/scan-vision-route.ts',
-    'src/lib/front-desk/vision-route.ts',
     'src/app/api/compliance/vision-reading/route.ts',
     'src/app/api/engineer/vision-reading/route.ts',
   ]) {

@@ -22,7 +22,7 @@ import { useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
 import { ConcourseBarView, type BarItem } from './ConcourseBarView';
-import { SAMPLE_DECISIONS, QUEUE_COUNT_EVENT } from './sample-decisions';
+import { QUEUE_COUNT_EVENT } from './queue-count';
 import { PhoneHandoffDialog } from '@/components/phone-handoff/PhoneHandoffDialog';
 import { InstallStaxisDialog } from '@/components/pwa/InstallStaxisDialog';
 import { useInstallStaxis } from '@/contexts/InstallStaxisContext';
@@ -86,7 +86,8 @@ export function ConcourseBar() {
   // Pending-decision badge on the Staxis pill. Seeded from the sample queue
   // (same Phase-1 footing as the queue page) and kept in sync while the user
   // approves/dismisses on /feed via the queue's broadcast event.
-  const [pendingCount, setPendingCount] = React.useState(SAMPLE_DECISIONS.length);
+  // Starts at 0 — the queue broadcasts the real pending count when it mounts.
+  const [pendingCount, setPendingCount] = React.useState(0);
   React.useEffect(() => {
     const h = (e: Event) => {
       const n = (e as CustomEvent).detail?.pending;

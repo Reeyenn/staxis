@@ -248,21 +248,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Reads a contractor/vendor quote photo and pulls out the total and line items.',
     ['text', 'image_input'], SONNET,
   ),
-  'lost_found.photo_description': defineFeature(
-    'lost_found.photo_description', 'Front desk', 'Lost-item photo description',
-    'Writes the description automatically when the front desk photographs a lost-and-found item.',
-    ['text', 'image_input'], SONNET,
-  ),
-  'lost_found.match_rerank': defineFeature(
-    'lost_found.match_rerank', 'Front desk', 'Lost-and-found match reranking',
-    'Helps match a guest calling about a lost item to the right item on the lost-and-found shelf.',
-    ['text'], HAIKU,
-  ),
-  'packages.label_scan': defineFeature(
-    'packages.label_scan', 'Front desk', 'Package label scanning',
-    'Reads who a package is for from a photo of the shipping label.',
-    ['text', 'image_input'], SONNET,
-  ),
   'compliance.photo_reading': defineFeature(
     'compliance.photo_reading', 'Engineering', 'Compliance photo readings',
     'Reads the number off a gauge, meter, or test strip from an engineer photo.',

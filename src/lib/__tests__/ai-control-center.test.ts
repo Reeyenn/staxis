@@ -52,8 +52,6 @@ describe('AI Control Center feature registry', () => {
       'inventory.invoice_scan',
       'financials.invoice_scan',
       'financials.quote_scan',
-      'lost_found.photo_description',
-      'packages.label_scan',
       'compliance.photo_reading',
       'compliance.text_reading_parse',
       'compliance.setup_parse',
@@ -62,7 +60,6 @@ describe('AI Control Center feature registry', () => {
     ] as const;
     const haiku = [
       'agent.conversation_summary',
-      'lost_found.match_rerank',
       'communications.action_detection',
       'communications.unread_summary',
       'communications.announcement_polish',
