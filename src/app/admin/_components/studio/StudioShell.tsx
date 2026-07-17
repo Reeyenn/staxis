@@ -12,7 +12,8 @@
    server-side in src/app/admin/layout.tsx, with a client spinner during
    auth load.
 
-   Six surfaces (Agent is folded into System, per the handoff; Access came later):
+   Five surfaces (Agent is folded into System, per the handoff; Access is a
+   popover on Live hotels since 2026-07-17):
      Onboarding · Live hotels · System & Agent · Money · ML
 
    Tab selection deep-links via the URL hash (#live etc.) so a refresh keeps
@@ -27,9 +28,8 @@ import { LiveSurface } from './surfaces/LiveSurface';
 import { SystemSurface } from './surfaces/SystemSurface';
 import { MoneySurface } from './surfaces/MoneySurface';
 import { MlSurface } from './surfaces/MlSurface';
-import { AccessSurface } from './surfaces/AccessSurface';
 
-export type StudioTab = 'onboarding' | 'live' | 'system' | 'money' | 'ml' | 'access';
+export type StudioTab = 'onboarding' | 'live' | 'system' | 'money' | 'ml';
 
 const TABS: { id: StudioTab; label: string }[] = [
   { id: 'onboarding', label: 'Onboarding' },
@@ -37,7 +37,6 @@ const TABS: { id: StudioTab; label: string }[] = [
   { id: 'system', label: 'System & Agent' },
   { id: 'money', label: 'Money' },
   { id: 'ml', label: 'ML' },
-  { id: 'access', label: 'Access' },
 ];
 
 interface Overview {
@@ -54,6 +53,7 @@ function readHashTab(): StudioTab {
   if (typeof window === 'undefined') return 'onboarding';
   const h = window.location.hash.replace('#', '');
   if (h === 'agent') return 'system'; // legacy deep-link → folded surface
+  if (h === 'access') return 'live';  // Access is a popover on Live now (2026-07-17)
   return VALID.has(h) ? (h as StudioTab) : 'onboarding';
 }
 
@@ -117,7 +117,7 @@ export function StudioShell() {
   // Delayed slightly so the initial Onboarding paint isn't competing for the
   // network on load.
   useEffect(() => {
-    const t = setTimeout(() => setMounted(new Set<StudioTab>(['onboarding', 'live', 'system', 'money', 'ml', 'access'])), 500);
+    const t = setTimeout(() => setMounted(new Set<StudioTab>(['onboarding', 'live', 'system', 'money', 'ml'])), 500);
     return () => clearTimeout(t);
   }, []);
 
@@ -201,7 +201,6 @@ export function StudioShell() {
         {mounted.has('system') && <div style={{ display: tab === 'system' ? 'block' : 'none' }}><SystemSurface /></div>}
         {mounted.has('money') && <div style={{ display: tab === 'money' ? 'block' : 'none' }}><MoneySurface /></div>}
         {mounted.has('ml') && <div style={{ display: tab === 'ml' ? 'block' : 'none' }}><MlSurface /></div>}
-        {mounted.has('access') && <div style={{ display: tab === 'access' ? 'block' : 'none' }}><AccessSurface /></div>}
       </div>
     </div>
   );

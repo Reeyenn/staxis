@@ -46,6 +46,7 @@ import { CoveragePickerModal } from '../CoveragePickerModal';
 import { SectionsModal } from '../SectionsModal';
 import { AddHotelModal } from '../AddHotelModal';
 import { AIControlCenter } from '../../AIControlCenter';
+import { AccessPopover } from '../../AccessPopover';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
 
@@ -428,6 +429,9 @@ function Controls({
   const bg = dimWhite(.06);
   return (
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+      {/* Per-hotel access grid (the former Access tab) — left of AI Control
+          Center per Reeyen 2026-07-17. */}
+      <AccessPopover />
       {/* Fleet-wide, non-CUA AI settings — intentionally left of 2FA. */}
       <AIControlCenter />
       {/* Global 2FA master switch — left of the hotel search. */}
