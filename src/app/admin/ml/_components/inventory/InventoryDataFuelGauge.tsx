@@ -1,7 +1,7 @@
 'use client';
 
-import React from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { DataFuelGauge } from '../DataFuelGauge';
 
 const MILESTONES = [10, 50, 200, 500, 2000];
 
@@ -13,7 +13,9 @@ const MILESTONES = [10, 50, 200, 500, 2000];
  *   • "fleet"  — sum across all hotels (with daysOfHistoryRange = min-max
  *                across the network)
  *
- * Data is server-computed and passed in via props.
+ * Data is server-computed and passed in via props. The card chrome +
+ * milestone progress bar is shared with HousekeepingDataFuelGauge via
+ * DataFuelGauge; the stat strip and daily chart are inventory-specific slots.
  */
 
 interface CommonProps {
@@ -39,11 +41,6 @@ interface FleetModeProps extends CommonProps {
 
 export function InventoryDataFuelGauge(props: SingleModeProps | FleetModeProps) {
   const total = props.totalCounts;
-  const nextMilestone = MILESTONES.find((m) => m > total) ?? MILESTONES[MILESTONES.length - 1];
-  const prevMilestone = MILESTONES.filter((m) => m <= total).pop() ?? 0;
-  const progressToNext = nextMilestone > prevMilestone
-    ? ((total - prevMilestone) / (nextMilestone - prevMilestone)) * 100
-    : 100;
 
   const headline = props.mode === 'single' ? 'Inventory data fuel' : 'Inventory data fuel — network';
   const subtitle = props.mode === 'single'
@@ -56,74 +53,52 @@ export function InventoryDataFuelGauge(props: SingleModeProps | FleetModeProps) 
         ? `${props.daysOfHistoryRange.min}`
         : `${props.daysOfHistoryRange.min}–${props.daysOfHistoryRange.max}`);
 
-  return (
-    <div style={cardStyle}>
-      <div style={{ marginBottom: '16px' }}>
-        <h2 style={{ fontSize: '16px', fontWeight: 600, color: '#1b1c19', margin: 0 }}>
-          {headline}
-        </h2>
-        <p style={{ fontSize: '12px', color: '#7a8a9e', marginTop: '4px' }}>{subtitle}</p>
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px', marginBottom: '20px' }}>
-        <Stat label="Total counts" value={total.toLocaleString()} />
-        <Stat label="Last 7 days" value={props.countsLast7d.toLocaleString()} />
-        <Stat label="Last 24 hours" value={props.countsLast24h.toLocaleString()} />
-        <Stat label="Items tracked" value={props.itemsTracked.toLocaleString()} />
-        <Stat
-          label={props.mode === 'fleet' ? 'Days of history (range)' : 'Days of history'}
-          value={historyDisplay}
-        />
-      </div>
-
-      {/* Progress bar */}
-      <div style={{ marginBottom: '20px' }}>
-        <div style={{
-          display: 'flex', justifyContent: 'space-between',
-          fontSize: '11px', color: '#7a8a9e', marginBottom: '6px',
-        }}>
-          <span>Next milestone: {nextMilestone.toLocaleString()} counts</span>
-          <span>{Math.round(progressToNext)}%</span>
-        </div>
-        <div style={{ height: '6px', background: '#f0f4f7', borderRadius: '3px', overflow: 'hidden' }}>
-          <div style={{
-            width: `${Math.min(100, Math.max(0, progressToNext))}%`,
-            height: '100%',
-            background: '#004b4b',
-            transition: 'width 0.4s',
-          }} />
-        </div>
-      </div>
-
-      {/* Daily activity chart */}
-      <div style={{ height: '180px' }}>
-        <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={props.dailyCountSeries} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(78,90,122,0.1)" />
-            <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#7a8a9e' }} />
-            <YAxis tick={{ fontSize: 11, fill: '#7a8a9e' }} allowDecimals={false} />
-            <Tooltip
-              contentStyle={{
-                background: '#ffffff',
-                border: '1px solid rgba(78,90,122,0.15)',
-                borderRadius: '8px',
-                fontSize: '12px',
-              }}
-            />
-            <Bar dataKey="recorded" fill="#004b4b" radius={[2, 2, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+  const stats = (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '16px', marginBottom: '20px' }}>
+      <Stat label="Total counts" value={total.toLocaleString()} />
+      <Stat label="Last 7 days" value={props.countsLast7d.toLocaleString()} />
+      <Stat label="Last 24 hours" value={props.countsLast24h.toLocaleString()} />
+      <Stat label="Items tracked" value={props.itemsTracked.toLocaleString()} />
+      <Stat
+        label={props.mode === 'fleet' ? 'Days of history (range)' : 'Days of history'}
+        value={historyDisplay}
+      />
     </div>
   );
-}
 
-const cardStyle: React.CSSProperties = {
-  background: '#ffffff',
-  border: '1px solid rgba(78,90,122,0.12)',
-  borderRadius: '12px',
-  padding: '24px',
-};
+  const chart = (
+    <div style={{ height: '180px' }}>
+      <ResponsiveContainer width="100%" height="100%">
+        <BarChart data={props.dailyCountSeries} margin={{ top: 8, right: 8, bottom: 8, left: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(78,90,122,0.1)" />
+          <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#7a8a9e' }} />
+          <YAxis tick={{ fontSize: 11, fill: '#7a8a9e' }} allowDecimals={false} />
+          <Tooltip
+            contentStyle={{
+              background: '#ffffff',
+              border: '1px solid rgba(78,90,122,0.15)',
+              borderRadius: '8px',
+              fontSize: '12px',
+            }}
+          />
+          <Bar dataKey="recorded" fill="#004b4b" radius={[2, 2, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+
+  return (
+    <DataFuelGauge
+      headline={headline}
+      subtitle={subtitle}
+      total={total}
+      milestones={MILESTONES}
+      milestoneNoun="counts"
+      stats={stats}
+      chart={chart}
+    />
+  );
+}
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
