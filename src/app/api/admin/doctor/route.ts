@@ -1010,6 +1010,7 @@ async function checkSupabaseRlsEnabled(): Promise<Omit<Check, 'name' | 'duration
  * 'fail' so the doctor doesn't alert during the rollout window.
  */
 const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
+  'join_requests',
   'agent_eval_baselines',
   'agent_prompts',
   'agent_conversations_archived',
