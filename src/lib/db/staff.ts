@@ -37,7 +37,7 @@ export const STAFF_COLS =
   'id, name, phone, language, is_senior, department, ' +
   'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
   'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
-  'is_scheduling_manager, last_paired_at';
+  'last_paired_at';
 
 // Defense for the WRITE side of the same leak. `toStaffRow` faithfully maps
 // hourlyWage → hourly_wage (the mapper is a pure translator), but the anon
@@ -76,24 +76,6 @@ export async function getStaff(
     .range(from, to);
   if (error) { logErr('getStaff', error); throw error; }
   return asRecordRows(data).map(fromStaffRow);
-}
-
-/**
- * Fetch the next page of staff plus the exact total count. Use this when
- * the UI needs "Showing X of Y" — `count: 'exact'` is more expensive than
- * a plain select, so plain `getStaff` skips it.
- */
-export async function getStaffPage(
-  _uid: string, pid: string, opts?: StaffListOpts,
-): Promise<{ rows: StaffMember[]; total: number }> {
-  const { from, to } = clampedRange(opts);
-  const { data, error, count } = await supabase
-    .from('staff').select(STAFF_COLS, { count: 'exact' })
-    .eq('property_id', pid)
-    .order('name', { ascending: true })
-    .range(from, to);
-  if (error) { logErr('getStaffPage', error); throw error; }
-  return { rows: asRecordRows(data).map(fromStaffRow), total: count ?? 0 };
 }
 
 export function subscribeToStaff(

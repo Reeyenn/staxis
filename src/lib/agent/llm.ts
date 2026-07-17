@@ -25,6 +25,25 @@ import {
   ANTHROPIC_REQUEST_TIMEOUT_MS,
   ANTHROPIC_MAX_RETRIES,
 } from '@/lib/external-service-config';
+import type { AiFeatureKey, AiModelRef } from '@/lib/ai/types';
+import {
+  AiExecutionDeadlineError,
+  createAiAttemptContext,
+  estimateAiCostUsd,
+  executeAiPlan,
+  resolveAiExecutionPlan,
+  shouldRetryAiFallback,
+  type AiExecutionPlan,
+} from '@/lib/ai/runtime';
+import {
+  normalizeAnthropicUsage,
+  type NormalizedAnthropicUsage,
+} from '@/lib/ai/usage';
+import {
+  applyLegacyModelOverrideToPlan,
+  EFFECTIVE_LEGACY_MODELS,
+  type LegacyModelTier,
+} from '@/lib/ai/legacy-model-overrides';
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
@@ -43,34 +62,22 @@ import {
 //   MODEL_OVERRIDE=sonnet=claude-sonnet-4-6-20260427
 // freezes Sonnet requests to a specific build, ignoring future alias
 // updates. Useful when Anthropic ships a snapshot that breaks evals.
-const BASE_MODELS = {
-  haiku:  'claude-haiku-4-5',
-  sonnet: 'claude-sonnet-4-6',
-  opus:   'claude-opus-4-7',
-} as const;
+export type ModelTier = LegacyModelTier;
 
-export type ModelTier = keyof typeof BASE_MODELS;
-
-function parseModelOverride(): Partial<Record<ModelTier, string>> {
-  const raw = env.MODEL_OVERRIDE;
-  if (!raw) return {};
-  const out: Partial<Record<ModelTier, string>> = {};
-  for (const pair of raw.split(',')) {
-    const [tier, snapshot] = pair.split('=', 2).map(s => s.trim());
-    if (tier && snapshot && (tier === 'haiku' || tier === 'sonnet' || tier === 'opus')) {
-      out[tier as ModelTier] = snapshot;
-    }
-  }
-  return out;
+/** Preserve the legacy telemetry schema while deriving its tier from the
+ * model actually selected by admin routing/fallback. */
+export function modelTierForModelId(
+  modelId: string | null | undefined,
+  fallback: ModelTier,
+): ModelTier {
+  const normalized = modelId?.toLowerCase() ?? '';
+  if (normalized.includes('haiku')) return 'haiku';
+  if (normalized.includes('sonnet')) return 'sonnet';
+  if (normalized.includes('opus')) return 'opus';
+  return fallback;
 }
 
-const MODEL_OVERRIDES = parseModelOverride();
-
-export const MODELS: Record<ModelTier, string> = {
-  haiku:  MODEL_OVERRIDES.haiku  ?? BASE_MODELS.haiku,
-  sonnet: MODEL_OVERRIDES.sonnet ?? BASE_MODELS.sonnet,
-  opus:   MODEL_OVERRIDES.opus   ?? BASE_MODELS.opus,
-};
+export const MODELS: Record<ModelTier, string> = { ...EFFECTIVE_LEGACY_MODELS };
 
 // Pricing in USD per million tokens (input | output). Cached input is 10×
 // cheaper. Numbers are approximate per the cost-estimation rule — real
@@ -81,10 +88,16 @@ export const MODELS: Record<ModelTier, string> = {
 // × MAX_TOOL_ITERATIONS). Keeping the reservation tied to these constants
 // means raising the output cap or iteration limit automatically raises
 // the reservation — no silent cap bypass. Codex review fix H1.
-export const PRICING: Record<ModelTier, { input: number; output: number; cachedInput: number }> = {
-  haiku:  { input: 1.00,  output: 5.00,  cachedInput: 0.10 },
-  sonnet: { input: 3.00,  output: 15.00, cachedInput: 0.30 },
-  opus:   { input: 15.00, output: 75.00, cachedInput: 1.50 },
+export const PRICING: Record<ModelTier, {
+  input: number;
+  output: number;
+  cachedInput: number;
+  cacheCreation5mInput: number;
+  cacheCreation1hInput: number;
+}> = {
+  haiku:  { input: 1.00,  output: 5.00,  cachedInput: 0.10, cacheCreation5mInput: 1.25, cacheCreation1hInput: 2.00 },
+  sonnet: { input: 3.00,  output: 15.00, cachedInput: 0.30, cacheCreation5mInput: 3.75, cacheCreation1hInput: 6.00 },
+  opus:   { input: 15.00, output: 75.00, cachedInput: 1.50, cacheCreation5mInput: 18.75, cacheCreation1hInput: 30.00 },
 };
 
 // Per-request timeout. Tool loops can fan out — if Claude calls 5 tools
@@ -98,6 +111,13 @@ export const PRICING: Record<ModelTier, { input: number; output: number; cachedI
 // the budget math; the comment above stays here because this is the
 // load-bearing call site (every chat turn).
 const REQUEST_TIMEOUT_MS = ANTHROPIC_REQUEST_TIMEOUT_MS;
+
+/** Route maxDuration is 60s. Start this absolute budget at route entry so
+ * provider attempts, fallback, and pre-stream work share one ceiling. */
+export const ASK_STAXIS_EXECUTION_BUDGET_MS = 55_000;
+export const ASK_STAXIS_FALLBACK_RESERVE_MS = 15_000;
+export const AGENT_TOOL_START_RESERVE_MS = 2_000;
+export const AGENT_KNOWLEDGE_SEARCH_START_RESERVE_MS = 31_000;
 
 // Max output tokens per single Anthropic API call. Sonnet 4.6 supports
 // 8192. Exported so cost-controls.ts can use it to size the reservation.
@@ -291,9 +311,14 @@ function pickModel(): ModelTier {
 // ─── Cost estimation ───────────────────────────────────────────────────────
 
 export interface UsageReport {
+  /** Total input across uncached, cache creation, and cache reads. */
   inputTokens: number;
+  uncachedInputTokens: number;
   outputTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheCreation5mInputTokens: number;
+  cacheCreation1hInputTokens: number;
   /** The internal model tier ('haiku' | 'sonnet' | 'opus'). */
   model: ModelTier;
   /** The exact Anthropic snapshot ID, e.g. 'claude-sonnet-4-6-20260427'.
@@ -305,17 +330,139 @@ export interface UsageReport {
 
 export function estimateCost(
   model: ModelTier,
-  inputTokens: number,
+  uncachedInputTokens: number,
   outputTokens: number,
   cachedInputTokens = 0,
+  cacheCreationInputTokens = 0,
+  cacheCreation5mInputTokens = 0,
+  cacheCreation1hInputTokens = 0,
 ): number {
   const p = PRICING[model];
-  const freshInput = Math.max(0, inputTokens - cachedInputTokens);
-  return (
-    (freshInput / 1_000_000) * p.input +
-    (cachedInputTokens / 1_000_000) * p.cachedInput +
-    (outputTokens / 1_000_000) * p.output
+  return estimateAiCostUsd({
+    inputUsdPerMillionTokens: p.input,
+    outputUsdPerMillionTokens: p.output,
+    cachedInputUsdPerMillionTokens: p.cachedInput,
+    cacheCreation5mInputUsdPerMillionTokens: p.cacheCreation5mInput,
+    cacheCreation1hInputUsdPerMillionTokens: p.cacheCreation1hInput,
+    source: 'agent-tier-default',
+    asOf: '2026-07',
+  }, {
+    uncachedInputTokens,
+    outputTokens,
+    cacheReadInputTokens: cachedInputTokens,
+    cacheCreationInputTokens,
+    cacheCreation5mInputTokens,
+    cacheCreation1hInputTokens,
+  });
+}
+
+function defaultModelRef(tier: ModelTier): AiModelRef {
+  const p = PRICING[tier];
+  return {
+    provider: 'anthropic',
+    modelId: MODELS[tier],
+    pricing: {
+      inputUsdPerMillionTokens: p.input,
+      outputUsdPerMillionTokens: p.output,
+      cachedInputUsdPerMillionTokens: p.cachedInput,
+      cacheCreation5mInputUsdPerMillionTokens: p.cacheCreation5mInput,
+      cacheCreation1hInputUsdPerMillionTokens: p.cacheCreation1hInput,
+      source: 'agent-tier-default',
+      asOf: '2026-05',
+    },
+  };
+}
+
+async function resolveAgentExecutionPlan(
+  opts: Pick<RunAgentOpts, 'executionPlan' | 'featureKey'>,
+  tier: ModelTier,
+): Promise<AiExecutionPlan | null> {
+  if (opts.executionPlan) {
+    if (opts.featureKey && opts.executionPlan.config.featureKey !== opts.featureKey) {
+      throw new Error(
+        `Agent execution plan is for ${opts.executionPlan.config.featureKey}, not ${opts.featureKey}`,
+      );
+    }
+    return applyLegacyModelOverrideToPlan(opts.executionPlan, tier);
+  }
+  if (!opts.featureKey) return null;
+  const resolved = await resolveAiExecutionPlan(opts.featureKey, 'anthropic', { requirePricing: true });
+  return applyLegacyModelOverrideToPlan(resolved, tier);
+}
+
+export async function resolveAskStaxisExecutionPlan(): Promise<AiExecutionPlan> {
+  const resolved = await resolveAiExecutionPlan(
+    'agent.ask_staxis',
+    'anthropic',
+    { requirePricing: true },
   );
+  return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
+}
+
+function agentDeadlineAt(opts: RunAgentOpts): number | null {
+  if (typeof opts.deadlineAt === 'number' && Number.isFinite(opts.deadlineAt)) {
+    return opts.deadlineAt;
+  }
+  return opts.featureKey === 'agent.ask_staxis'
+    ? Date.now() + ASK_STAXIS_EXECUTION_BUDGET_MS
+    : null;
+}
+
+export type AgentStopReason = 'caller_abort' | 'deadline' | null;
+
+/** Boundary-only stop check. We intentionally do not race an already-started
+ * tool/mutation against a timer: returning while it continues could strand its
+ * result and invite a duplicate retry. */
+export function agentStopReason(
+  deadlineAt: number | null,
+  abortSignal?: AbortSignal,
+  now = Date.now(),
+): AgentStopReason {
+  if (abortSignal?.aborted) return 'caller_abort';
+  if (deadlineAt !== null && now >= deadlineAt) return 'deadline';
+  return null;
+}
+
+/** Prevent a tool from starting when it cannot reasonably finish inside the
+ * shared route budget. Knowledge search gets a larger reserve because its
+ * query-embedding request has a 30s provider timeout. This remains a boundary
+ * check: an already-started mutation is never raced or abandoned. */
+export function agentToolStopReason(
+  toolName: string,
+  deadlineAt: number | null,
+  abortSignal?: AbortSignal,
+  now = Date.now(),
+): AgentStopReason {
+  const reserveMs = toolName === 'search_knowledge'
+    ? AGENT_KNOWLEDGE_SEARCH_START_RESERVE_MS
+    : AGENT_TOOL_START_RESERVE_MS;
+  return agentStopReason(deadlineAt, abortSignal, now + reserveMs);
+}
+
+function assertAgentCanContinue(deadlineAt: number | null, abortSignal?: AbortSignal): void {
+  const reason = agentStopReason(deadlineAt, abortSignal);
+  if (reason === 'caller_abort') {
+    const error = new Error('aborted by client');
+    error.name = 'AbortError';
+    throw error;
+  }
+  if (reason === 'deadline') throw new AiExecutionDeadlineError();
+}
+
+function estimateModelRefCost(
+  ref: AiModelRef,
+  usage: NormalizedAnthropicUsage,
+): number {
+  const pricing = ref.pricing;
+  if (!pricing) throw new Error(`Missing pricing for ${ref.provider}/${ref.modelId}`);
+  return estimateAiCostUsd(pricing, {
+    uncachedInputTokens: usage.uncachedInputTokens,
+    outputTokens: usage.outputTokens,
+    cacheReadInputTokens: usage.cachedInputTokens,
+    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens,
+    cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
+  });
 }
 
 // ─── Public agent interface ────────────────────────────────────────────────
@@ -375,6 +522,28 @@ export interface RunAgentOpts {
    *  ($3/$15 per M). Normal user-driven requests omit this and get
    *  pickModel()'s default. Longevity L4 part B, 2026-05-13. */
   model?: ModelTier;
+  /** Runtime-admin feature route. Omit in evals/tests to retain the explicit
+   * tier/model behavior above; production callers pass a stable registry key. */
+  featureKey?: AiFeatureKey;
+  /** Pre-resolved immutable config snapshot. Production Ask Staxis routes pass
+   * this same plan to reservation sizing and execution to prevent activation
+   * races. When present, featureKey is never resolved again. */
+  executionPlan?: AiExecutionPlan;
+  /** Absolute route deadline shared by every model/tool iteration. */
+  deadlineAt?: number;
+  /** Portion of the remaining deadline protected for configured fallback. */
+  fallbackReserveMs?: number;
+  /** Optional one-shot output contract checked inside each provider attempt.
+   * Throwing makes a malformed/empty primary eligible for configured fallback.
+   * Intended for no-tool background calls such as summaries and strict JSON. */
+  validateAssistantResponse?: (candidate: {
+    text: string;
+    stopReason: string | null;
+    toolCallCount: number;
+  }) => void;
+  /** Receives the aggregate billable sync usage exactly once when runAgent
+   * exits, including when output validation or both configured attempts fail. */
+  onUsage?: (usage: UsageReport) => void;
   /**
    * When true, MUTATION tool calls are NOT executed inline. Instead the loop
    * yields a `tool_call_pending_approval` event per mutation and ENDS the turn
@@ -415,6 +584,25 @@ export interface RunAgentResult {
 
 type ClaudeMessage = Anthropic.Messages.MessageParam;
 type ClaudeContent = Anthropic.Messages.ContentBlockParam;
+
+/** Conservative partial-stream input estimate that covers the entire
+ * provider request, not just conversation messages. */
+export function estimateAnthropicRequestInputTokens(input: {
+  system: unknown;
+  tools?: unknown;
+  messages: unknown;
+}): number {
+  return Math.max(1, Math.ceil(JSON.stringify(input).length / 4));
+}
+
+export function hasInflightBillingEvidence(
+  hasContent: boolean,
+  exactInputTokens: number | null,
+): boolean {
+  // message_start carries provider-counted input usage before the first content
+  // block. A failure in that window can still be billable.
+  return hasContent || exactInputTokens !== null;
+}
 
 /**
  * Translate our AgentMessage shape into Claude's MessageParam list.
@@ -577,29 +765,97 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const model = opts.model ?? pickModel();
   const client = getClient();
   const tools = toAnthropicTools(opts.tools);
+  const configured = await resolveAgentExecutionPlan(opts, model);
+  // resolveAgentExecutionPlan applies the legacy override only to code defaults;
+  // an explicit database version remains authoritative.
+  let activeModel = configured?.primary ?? defaultModelRef(model);
+  let fallbackModel = configured?.fallback ?? null;
+  const deadlineAt = agentDeadlineAt(opts);
 
   let messages = toClaudeMessages(opts.history, opts.newUserMessage);
   const toolCallsExecuted: RunAgentResult['toolCallsExecuted'] = [];
   const assistantMessages: RunAgentResult['assistantMessages'] = [];
 
   let totalInput = 0;
+  let totalUncachedInput = 0;
   let totalOutput = 0;
   let totalCachedInput = 0;
+  let totalCacheCreationInput = 0;
+  let totalCacheCreation5mInput = 0;
+  let totalCacheCreation1hInput = 0;
+  let totalCostUsd = 0;
   let lastModelId: string | null = null;
+  const selectedUsageTier = (): ModelTier => modelTierForModelId(activeModel.modelId, model);
+  const buildSyncUsage = (): UsageReport => ({
+    inputTokens: totalInput,
+    uncachedInputTokens: totalUncachedInput,
+    outputTokens: totalOutput,
+    cachedInputTokens: totalCachedInput,
+    cacheCreationInputTokens: totalCacheCreationInput,
+    cacheCreation5mInputTokens: totalCacheCreation5mInput,
+    cacheCreation1hInputTokens: totalCacheCreation1hInput,
+    model: selectedUsageTier(),
+    modelId: lastModelId,
+    costUsd: totalCostUsd,
+  });
 
-  for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-    const response = await client.messages.create({
-      model: MODELS[model],
-      max_tokens: MAX_OUTPUT_TOKENS,
-      system: buildSystemBlocks(opts.systemPrompt),
-      tools: tools.length > 0 ? tools : undefined,
-      messages,
-    });
+  try {
+    for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
+    assertAgentCanContinue(deadlineAt, opts.abortSignal);
+    const request = async (selected: AiModelRef, signal: AbortSignal | undefined) => {
+      const response = await client.messages.create({
+        model: selected.modelId,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        system: buildSystemBlocks(opts.systemPrompt),
+        tools: tools.length > 0 ? tools : undefined,
+        messages,
+      }, { signal });
+      // Account before output validation. A malformed 200 is still billable and
+      // may then fall back to another billable model attempt.
+      const usage = normalizeAnthropicUsage(response.usage);
+      totalInput += usage.inputTokens;
+      totalUncachedInput += usage.uncachedInputTokens;
+      totalOutput += usage.outputTokens;
+      totalCachedInput += usage.cachedInputTokens;
+      totalCacheCreationInput += usage.cacheCreationInputTokens;
+      totalCacheCreation5mInput += usage.cacheCreation5mInputTokens;
+      totalCacheCreation1hInput += usage.cacheCreation1hInputTokens;
+      totalCostUsd += estimateModelRefCost(selected, usage);
+      lastModelId = response.model;
 
-    totalInput += response.usage.input_tokens;
-    totalOutput += response.usage.output_tokens;
-    totalCachedInput += response.usage.cache_read_input_tokens ?? 0;
-    lastModelId = response.model;
+      if (opts.validateAssistantResponse) {
+        const text = response.content
+          .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+          .map((block) => block.text)
+          .join('\n');
+        opts.validateAssistantResponse({
+          text,
+          stopReason: response.stop_reason,
+          toolCallCount: response.content.filter((block) => block.type === 'tool_use').length,
+        });
+      }
+      return response;
+    };
+    let response: Awaited<ReturnType<typeof request>>;
+    if (configured) {
+      const executed = await executeAiPlan(
+        { ...configured, primary: activeModel, fallback: fallbackModel },
+        (selected, context) => request(selected, context.signal),
+        {
+          deadlineAt: deadlineAt ?? undefined,
+          fallbackReserveMs: opts.fallbackReserveMs ?? ASK_STAXIS_FALLBACK_RESERVE_MS,
+          abortSignal: opts.abortSignal,
+        },
+      );
+      response = executed.value;
+      activeModel = executed.model;
+      if (executed.usedFallback) fallbackModel = null;
+    } else {
+      const context = createAiAttemptContext('primary', deadlineAt, false, {
+        abortSignal: opts.abortSignal,
+      });
+      response = await request(activeModel, context.signal);
+    }
 
     // Collect text + tool_use blocks from this assistant turn.
     const textParts: string[] = [];
@@ -631,14 +887,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         text: finalText,
         toolCallsExecuted,
         assistantMessages,
-        usage: {
-          inputTokens: totalInput,
-          outputTokens: totalOutput,
-          cachedInputTokens: totalCachedInput,
-          model,
-          modelId: lastModelId,
-          costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
-        },
+        usage: buildSyncUsage(),
       };
     }
 
@@ -658,14 +907,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         text: refusal,
         toolCallsExecuted,
         assistantMessages,
-        usage: {
-          inputTokens: totalInput,
-          outputTokens: totalOutput,
-          cachedInputTokens: totalCachedInput,
-          model,
-          modelId: lastModelId,
-          costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
-        },
+        usage: buildSyncUsage(),
       };
     }
 
@@ -676,6 +918,14 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // execution and returns a synthetic success — eval-safe.
     const toolResultBlocks: ClaudeContent[] = [];
     for (const call of calls) {
+      assertAgentCanContinue(deadlineAt, opts.abortSignal);
+      const toolStopped = agentToolStopReason(call.name, deadlineAt, opts.abortSignal);
+      if (toolStopped === 'caller_abort') {
+        const error = new Error('aborted by client');
+        error.name = 'AbortError';
+        throw error;
+      }
+      if (toolStopped === 'deadline') throw new AiExecutionDeadlineError();
       // Codex post-merge review 2026-05-13 (F2): dryRun is now threaded
       // through ToolContext so mutation tools can run their pre-write
       // validation (findRoomByNumber, role check) and return synthetic
@@ -706,20 +956,23 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     messages = [...messages, { role: 'user', content: toolResultBlocks }];
   }
 
-  // Hit the iteration cap — return what we have with a stub error message.
-  return {
-    text: 'I reached the maximum number of tool calls without resolving. Please rephrase or try a more specific question.',
-    toolCallsExecuted,
-    assistantMessages,
-    usage: {
-      inputTokens: totalInput,
-      outputTokens: totalOutput,
-      cachedInputTokens: totalCachedInput,
-      model,
-      modelId: lastModelId,
-      costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
-    },
-  };
+    // Hit the iteration cap — return what we have with a stub error message.
+    return {
+      text: 'I reached the maximum number of tool calls without resolving. Please rephrase or try a more specific question.',
+      toolCallsExecuted,
+      assistantMessages,
+      usage: buildSyncUsage(),
+    };
+  } finally {
+    // A schema-invalid 200 is still billable. Emit from finally so a failed
+    // primary followed by a failed fallback cannot disappear from background
+    // ledgers. Callers capture this report and book it only on their error path;
+    // successful calls continue using the returned usage, avoiding duplicates.
+    const usage = buildSyncUsage();
+    if (usage.inputTokens > 0 || usage.outputTokens > 0 || usage.costUsd > 0) {
+      opts.onUsage?.(usage);
+    }
+  }
 }
 
 // ─── Approval-gate held-set computation ────────────────────────────────────
@@ -820,11 +1073,27 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   const model = opts.model ?? pickModel();
   const client = getClient();
   const tools = toAnthropicTools(opts.tools);
+  let configured;
+  try {
+    configured = await resolveAgentExecutionPlan(opts, model);
+  } catch (error) {
+    yield { type: 'error', message: error instanceof Error ? error.message : String(error) };
+    return;
+  }
+  let activeModel = configured?.primary ?? defaultModelRef(model);
+  let fallbackModel = configured?.fallback ?? null;
+  let usingFallback = false;
+  const deadlineAt = agentDeadlineAt(opts);
 
   let messages = toClaudeMessages(opts.history, opts.newUserMessage);
   let totalInput = 0;
+  let totalUncachedInput = 0;
   let totalOutput = 0;
   let totalCachedInput = 0;
+  let totalCacheCreationInput = 0;
+  let totalCacheCreation5mInput = 0;
+  let totalCacheCreation1hInput = 0;
+  let totalCostUsd = 0;
   let finalText = '';
   let lastModelId: string | null = null;
 
@@ -841,74 +1110,159 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   // tool_use-only streams: when the model emits a tool_use block (with
   // input_json_delta bytes) but no text and the stream errors before
   // finalMessage, we still owe Anthropic for input + partial output.
-  // We now track any content (text OR tool_use) as billing evidence.
+  // We now track message_start input usage OR any content (text/tool_use) as
+  // billing evidence.
   let inflightIterStarted = false;
   let inflightHasContent = false;
+  let inflightEmittedToUser = false;
   let inflightOutputBytes = 0;
+  let inflightUsage: NormalizedAnthropicUsage | null = null;
+  let inflightModelId: string | null = null;
 
   // Helpers for the abort signal + usage report. Codex adversarial review
   // 2026-05-13 (A-C3, A-C7).
   const buildUsage = (): UsageReport => ({
     inputTokens: totalInput,
+    uncachedInputTokens: totalUncachedInput,
     outputTokens: totalOutput,
     cachedInputTokens: totalCachedInput,
-    model,
+    cacheCreationInputTokens: totalCacheCreationInput,
+    cacheCreation5mInputTokens: totalCacheCreation5mInput,
+    cacheCreation1hInputTokens: totalCacheCreation1hInput,
+    model: modelTierForModelId(activeModel.modelId, model),
     modelId: lastModelId,
-    costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
+    costUsd: totalCostUsd,
   });
   const checkAborted = (): boolean => opts.abortSignal?.aborted ?? false;
+  const commitUsage = (
+    selected: AiModelRef,
+    usage: NormalizedAnthropicUsage,
+    responseModel: string | null,
+  ): void => {
+    totalInput += usage.inputTokens;
+    totalUncachedInput += usage.uncachedInputTokens;
+    totalOutput += usage.outputTokens;
+    totalCachedInput += usage.cachedInputTokens;
+    totalCacheCreationInput += usage.cacheCreationInputTokens;
+    totalCacheCreation5mInput += usage.cacheCreation5mInputTokens;
+    totalCacheCreation1hInput += usage.cacheCreation1hInputTokens;
+    totalCostUsd += estimateModelRefCost(selected, usage);
+    lastModelId = responseModel;
+  };
 
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
-      if (checkAborted()) {
-        yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
+      const stopped = agentStopReason(deadlineAt, opts.abortSignal);
+      if (stopped) {
+        yield {
+          type: 'error',
+          message: stopped === 'caller_abort' ? 'aborted by client' : 'AI execution deadline exhausted',
+          usage: buildUsage(),
+        };
         return;
       }
-      inflightIterStarted = true;
-      inflightHasContent = false;
-      inflightOutputBytes = 0;
-      const stream = client.messages.stream({
-        model: MODELS[model],
-        max_tokens: MAX_OUTPUT_TOKENS,
-        system: buildSystemBlocks(opts.systemPrompt),
-        tools: tools.length > 0 ? tools : undefined,
-        messages,
-      }, { signal: opts.abortSignal });
-
       // Buffer the assistant content blocks as we stream so we can replay them
       // on the next iteration if there are tool calls.
       const turnText: string[] = [];
       const calls: AgentToolCall[] = [];
+      let finalMsg: Anthropic.Message;
 
-      for await (const event of stream) {
-        // Codex round-7 F3: any content_block event is evidence that
-        // Anthropic processed the prompt and is generating billable
-        // output. text_delta + input_json_delta both produce output
-        // tokens; we accumulate their byte length for the catch-path
-        // estimate.
-        if (event.type === 'content_block_start') {
-          inflightHasContent = true;
-        }
-        if (event.type === 'content_block_delta') {
-          inflightHasContent = true;
-          if (event.delta.type === 'text_delta') {
-            turnText.push(event.delta.text);
-            inflightOutputBytes += event.delta.text.length;
-            finalText = ''; // reset — final text is reassembled at end of iteration
-            yield { type: 'text_delta', delta: event.delta.text };
-          } else if (event.delta.type === 'input_json_delta') {
-            // tool_use input streamed as partial JSON; accumulate for the
-            // mid-stream output-token estimate. Not surfaced to the UI.
-            inflightOutputBytes += event.delta.partial_json.length;
+      // A configured fallback is safe only before this iteration emits any
+      // content. Once a delta reaches the browser, retrying would duplicate or
+      // splice the answer. If the primary fails pre-output, retry this same
+      // message history once and keep the fallback for later tool iterations.
+      while (true) {
+        inflightIterStarted = true;
+        inflightHasContent = false;
+        inflightEmittedToUser = false;
+        inflightOutputBytes = 0;
+        inflightUsage = null;
+        inflightModelId = null;
+        const requestSystem = buildSystemBlocks(opts.systemPrompt);
+        const requestTools = tools.length > 0 ? tools : undefined;
+        try {
+          const attemptContext = createAiAttemptContext(
+            usingFallback ? 'fallback' : 'primary',
+            deadlineAt,
+            fallbackModel !== null,
+            {
+              fallbackReserveMs: opts.fallbackReserveMs ?? ASK_STAXIS_FALLBACK_RESERVE_MS,
+              abortSignal: opts.abortSignal,
+            },
+          );
+          const stream = client.messages.stream({
+            model: activeModel.modelId,
+            max_tokens: MAX_OUTPUT_TOKENS,
+            system: requestSystem,
+            tools: requestTools,
+            messages,
+          }, { signal: attemptContext.signal });
+
+          for await (const event of stream) {
+            if (event.type === 'message_start') {
+              inflightUsage = normalizeAnthropicUsage(event.message.usage);
+              inflightModelId = event.message.model;
+            }
+            // Codex round-7 F3: any content block is evidence of billable output.
+            if (event.type === 'content_block_start') inflightHasContent = true;
+            if (event.type === 'content_block_delta') {
+              inflightHasContent = true;
+              if (event.delta.type === 'text_delta') {
+                turnText.push(event.delta.text);
+                inflightOutputBytes += event.delta.text.length;
+                finalText = '';
+                if (event.delta.text.length > 0) inflightEmittedToUser = true;
+                yield { type: 'text_delta', delta: event.delta.text };
+              } else if (event.delta.type === 'input_json_delta') {
+                inflightOutputBytes += event.delta.partial_json.length;
+              }
+            }
           }
+          finalMsg = await stream.finalMessage();
+          break;
+        } catch (error) {
+          if (shouldRetryAiFallback({
+            fallbackAvailable: fallbackModel !== null,
+            aborted: checkAborted(),
+            emittedToUser: inflightEmittedToUser,
+            error,
+          })) {
+            // A content_block_start / partial tool JSON is billable even though
+            // it was not user-visible. Preserve an estimate before retrying so
+            // fallback resilience does not erase primary-model spend.
+            if (hasInflightBillingEvidence(inflightHasContent, inflightUsage?.inputTokens ?? null)) {
+              const estUncachedInputTokens = inflightUsage?.uncachedInputTokens
+                ?? estimateAnthropicRequestInputTokens({
+                system: requestSystem,
+                tools: requestTools,
+                messages,
+              });
+              const estOutputTokens = Math.round(inflightOutputBytes / 4);
+              const partialUsage: NormalizedAnthropicUsage = inflightUsage
+                ? { ...inflightUsage, outputTokens: estOutputTokens }
+                : {
+                    inputTokens: estUncachedInputTokens,
+                    uncachedInputTokens: estUncachedInputTokens,
+                    outputTokens: estOutputTokens,
+                    cachedInputTokens: 0,
+                    cacheCreationInputTokens: 0,
+                    cacheCreation5mInputTokens: 0,
+                    cacheCreation1hInputTokens: 0,
+                  };
+              commitUsage(activeModel, partialUsage, inflightModelId);
+            }
+            activeModel = fallbackModel!;
+            fallbackModel = null;
+            usingFallback = true;
+            inflightIterStarted = false;
+            inflightHasContent = false;
+            continue;
+          }
+          throw error;
         }
       }
 
-      const finalMsg = await stream.finalMessage();
-      totalInput += finalMsg.usage.input_tokens;
-      totalOutput += finalMsg.usage.output_tokens;
-      totalCachedInput += finalMsg.usage.cache_read_input_tokens ?? 0;
-      lastModelId = finalMsg.model;
+      commitUsage(activeModel, normalizeAnthropicUsage(finalMsg.usage), finalMsg.model);
       // Iter usage is now committed to running totals — clear the inflight flag.
       inflightIterStarted = false;
       inflightHasContent = false;
@@ -942,14 +1296,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         }
         yield {
           type: 'done',
-          usage: {
-            inputTokens: totalInput,
-            outputTokens: totalOutput,
-            cachedInputTokens: totalCachedInput,
-            model,
-            modelId: lastModelId,
-            costUsd: estimateCost(model, totalInput, totalOutput, totalCachedInput),
-          },
+          usage: buildUsage(),
           finalText, // clean — no truncation marker baked in
         };
         return;
@@ -1036,8 +1383,14 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           // they may also include quick-tier mutations (which the gate does
           // not hold), so they really do execute and mutate here.
           for (const call of inline) {
-            if (checkAborted()) {
-              yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
+            const stopped = agentStopReason(deadlineAt, opts.abortSignal)
+              ?? agentToolStopReason(call.name, deadlineAt, opts.abortSignal);
+            if (stopped) {
+              yield {
+                type: 'error',
+                message: stopped === 'caller_abort' ? 'aborted by client' : 'AI execution deadline exhausted',
+                usage: buildUsage(),
+              };
               return;
             }
             yield { type: 'tool_call_started', call };
@@ -1074,8 +1427,14 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       //          they exist to protect.
       const toolResultBlocks: ClaudeContent[] = [];
       for (const call of calls) {
-        if (checkAborted()) {
-          yield { type: 'error', message: 'aborted by client', usage: buildUsage() };
+        const stopped = agentStopReason(deadlineAt, opts.abortSignal)
+          ?? agentToolStopReason(call.name, deadlineAt, opts.abortSignal);
+        if (stopped) {
+          yield {
+            type: 'error',
+            message: stopped === 'caller_abort' ? 'aborted by client' : 'AI execution deadline exhausted',
+            usage: buildUsage(),
+          };
           return;
         }
         yield { type: 'tool_call_started', call };
@@ -1118,14 +1477,33 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
     // Estimate them so the route FINALIZES against actual spend instead
     // of cancelling (which would lose the billed cost silently).
     //
-    // For pre-output errors (rate limit, bad request, connection refused)
-    // no content was streamed → totals stay 0 → reservation gets cancelled
-    // as before. ~4 chars per token is the standard rough conversion.
-    if (inflightIterStarted && inflightHasContent) {
-      const estInputTokens = Math.round(JSON.stringify(messages).length / 4);
+    // For errors before message_start and before content (rate limit, bad
+    // request, connection refused), totals stay 0 and the hold is cancelled.
+    // ~4 chars per token is the standard fallback conversion when the provider
+    // did not supply exact input usage.
+    if (
+      inflightIterStarted
+      && hasInflightBillingEvidence(inflightHasContent, inflightUsage?.inputTokens ?? null)
+    ) {
+      const estUncachedInputTokens = inflightUsage?.uncachedInputTokens
+        ?? estimateAnthropicRequestInputTokens({
+          system: buildSystemBlocks(opts.systemPrompt),
+          tools: tools.length > 0 ? tools : undefined,
+          messages,
+        });
       const estOutputTokens = Math.round(inflightOutputBytes / 4);
-      totalInput += estInputTokens;
-      totalOutput += estOutputTokens;
+      const partialUsage: NormalizedAnthropicUsage = inflightUsage
+        ? { ...inflightUsage, outputTokens: estOutputTokens }
+        : {
+            inputTokens: estUncachedInputTokens,
+            uncachedInputTokens: estUncachedInputTokens,
+            outputTokens: estOutputTokens,
+            cachedInputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheCreation5mInputTokens: 0,
+            cacheCreation1hInputTokens: 0,
+          };
+      commitUsage(activeModel, partialUsage, inflightModelId);
     }
     // Longevity L8a, 2026-05-13: classify the SDK error so the operator-
     // facing log can break down causes (rate_limit vs auth vs malformed

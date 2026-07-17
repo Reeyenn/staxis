@@ -16,7 +16,6 @@ import { strict as assert } from 'node:assert';
 // side effect that hangs the Node test runner under tsx.
 import {
   buildPickupSms,
-  buildManagerSummarySms,
   buildRevertSms,
 } from '../sick-callout/sms-bodies';
 
@@ -41,49 +40,6 @@ describe('buildPickupSms', () => {
   test('Spanish uses Spanish phrasing', () => {
     const body = buildPickupSms('Maria', ['101'], 5, 'es');
     assert.match(body, /enfermo|enferma|recogiste/i);
-  });
-});
-
-describe('buildManagerSummarySms', () => {
-  test('multi-receiver breakdown', () => {
-    const body = buildManagerSummarySms(
-      'Maria',
-      8,
-      [
-        { staff_name: 'Carlos', count: 2 },
-        { staff_name: 'Lupe', count: 3 },
-        { staff_name: 'Ana', count: 2 },
-        { staff_name: 'Sara', count: 1 },
-      ],
-    );
-    assert.match(body, /Maria called out/);
-    assert.match(body, /Carlos \+2/);
-    assert.match(body, /Lupe \+3/);
-    assert.match(body, /Ana \+2/);
-    assert.match(body, /Sara \+1/);
-    assert.match(body, /8 rooms/);
-  });
-  test('drops receivers with zero count', () => {
-    const body = buildManagerSummarySms(
-      'Maria',
-      1,
-      [
-        { staff_name: 'Carlos', count: 1 },
-        { staff_name: 'Lupe', count: 0 },
-      ],
-    );
-    assert.match(body, /Carlos \+1/);
-    assert.ok(!/Lupe/.test(body));
-  });
-  test('handles zero redistributed (no rooms had been assigned)', () => {
-    const body = buildManagerSummarySms('Maria', 0, []);
-    assert.match(body, /No rooms to redistribute/);
-  });
-  test('singular vs plural', () => {
-    const single = buildManagerSummarySms('Maria', 1, [{ staff_name: 'Carlos', count: 1 }]);
-    const multi = buildManagerSummarySms('Maria', 4, [{ staff_name: 'Carlos', count: 4 }]);
-    assert.match(single, /1 room redistributed/);
-    assert.match(multi, /4 rooms redistributed/);
   });
 });
 

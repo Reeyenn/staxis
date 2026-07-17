@@ -102,6 +102,15 @@ const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
   'count', 'scan', 'reorder', 'orders', 'ordersettings', 'reports', 'history', 'budgets', 'ai', 'add',
 ];
 
+// Shared container for the full-page loading / load-error notices (identical
+// framing; the error variant just adds role="alert" + a retry button).
+const NOTICE_STYLE: React.CSSProperties = {
+  padding: '64px 24px',
+  textAlign: 'center',
+  fontFamily: fonts.sans,
+  color: T.ink2,
+};
+
 export function InventoryShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -939,15 +948,7 @@ export function InventoryShell() {
 
   if (itemsLoadError) {
     return (
-      <div
-        role="alert"
-        style={{
-          padding: '64px 24px',
-          textAlign: 'center',
-          fontFamily: fonts.sans,
-          color: T.ink2,
-        }}
-      >
+      <div role="alert" style={NOTICE_STYLE}>
         <div style={{ marginBottom: 14 }}>{tx.loadFailed}</div>
         <button
           type="button"

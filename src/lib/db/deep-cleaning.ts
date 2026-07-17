@@ -6,7 +6,7 @@
 
 import type { DeepCleanConfig, DeepCleanRecord } from '@/types';
 import { supabase, logErr } from './_common';
-import { dropUndefined, fromDeepCleanRecordRow } from '../db-mappers';
+import { fromDeepCleanRecordRow } from '../db-mappers';
 
 const DEFAULT_DEEP_CLEAN_CONFIG: DeepCleanConfig = {
   frequencyDays: 90,
@@ -44,41 +44,6 @@ export async function getDeepCleanRecords(_uid: string, pid: string): Promise<De
   return (data ?? []).map(fromDeepCleanRecordRow);
 }
 
-export async function setDeepCleanRecord(_uid: string, pid: string, record: DeepCleanRecord): Promise<void> {
-  const row = dropUndefined({
-    property_id: pid,
-    room_number: record.roomNumber,
-    last_deep_clean: record.lastDeepClean,
-    cleaned_by: record.cleanedBy,
-    cleaned_by_team: record.cleanedByTeam,
-    notes: record.notes,
-    status: record.status,
-    assigned_at: record.assignedAt,
-    completed_at: record.completedAt,
-  });
-  const { error } = await supabase
-    .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
-  if (error) { logErr('setDeepCleanRecord', error); throw error; }
-}
-
-export async function markRoomDeepCleaned(
-  _uid: string, pid: string, roomNumber: string, cleanedBy?: string, notes?: string,
-): Promise<void> {
-  const today = new Date().toLocaleDateString('en-CA');
-  const row = dropUndefined({
-    property_id: pid,
-    room_number: roomNumber,
-    last_deep_clean: today,
-    status: 'completed',
-    completed_at: today,
-    cleaned_by: cleanedBy,
-    notes,
-  });
-  const { error } = await supabase
-    .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
-  if (error) { logErr('markRoomDeepCleaned', error); throw error; }
-}
-
 export async function assignRoomDeepClean(
   _uid: string, pid: string, roomNumber: string, team: string[],
 ): Promise<void> {
@@ -113,22 +78,4 @@ export async function assignRoomDeepClean(
   const { error } = await supabase
     .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
   if (error) { logErr('assignRoomDeepClean', error); throw error; }
-}
-
-export async function completeRoomDeepClean(
-  _uid: string, pid: string, roomNumber: string, team: string[],
-): Promise<void> {
-  const today = new Date().toLocaleDateString('en-CA');
-  const row = {
-    property_id: pid,
-    room_number: roomNumber,
-    last_deep_clean: today,
-    cleaned_by_team: team,
-    cleaned_by: team.join(', '),
-    status: 'completed',
-    completed_at: today,
-  };
-  const { error } = await supabase
-    .from('deep_clean_records').upsert(row, { onConflict: 'property_id,room_number' });
-  if (error) { logErr('completeRoomDeepClean', error); throw error; }
 }

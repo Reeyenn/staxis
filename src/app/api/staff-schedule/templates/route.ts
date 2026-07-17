@@ -13,11 +13,13 @@
 // Table is service-role only (no RLS policies); this route is the only door.
 
 import { NextRequest } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import type { StaffDepartment } from '@/types';
 
@@ -27,8 +29,6 @@ export const dynamic = 'force-dynamic';
 const VALID_DEPTS: StaffDepartment[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
 const MAX_SHIFTS_PER_DAY = 60;
 const MAX_TEMPLATES = 50;
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export interface TemplateShift {
   staffId: string;
   department: StaffDepartment;
@@ -40,7 +40,7 @@ function validShiftList(list: unknown): list is TemplateShift[] {
   if (!Array.isArray(list) || list.length > MAX_SHIFTS_PER_DAY) return false;
   return list.every(s =>
     s && typeof s === 'object'
-    && UUID_RE.test(String((s as TemplateShift).staffId))
+    && isUuid(String((s as TemplateShift).staffId))
     && VALID_DEPTS.includes((s as TemplateShift).department)
     && Number.isInteger((s as TemplateShift).startMin)
     && Number.isInteger((s as TemplateShift).endMin)
@@ -95,6 +95,10 @@ export async function POST(req: NextRequest) {
   const auth = await authedHotelId(req, body.hotelId, requestId);
   if ('failure' in auth) return auth.failure;
 
+  // Section gate: if Staff is turned off for this hotel, block the write.
+  const sectionGate = await requireSectionEnabled(req, auth.hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
+
   const scope = body.scope;
   if (scope !== 'day' && scope !== 'week') {
     return err('scope must be day | week', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
@@ -147,6 +151,10 @@ export async function DELETE(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const auth = await authedHotelId(req, searchParams.get('hotelId'), requestId);
   if ('failure' in auth) return auth.failure;
+
+  // Section gate: if Staff is turned off for this hotel, block the write.
+  const sectionGate = await requireSectionEnabled(req, auth.hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const idCheck = validateUuid(searchParams.get('id'), 'id');
   if (idCheck.error) return err(idCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });

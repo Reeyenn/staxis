@@ -24,6 +24,7 @@ import {
   type VisionMediaType,
   type VisionUsageReport,
 } from '@/lib/vision-extract';
+import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 
 export const runtime = 'nodejs';
@@ -38,6 +39,7 @@ interface Body {
 }
 
 export async function POST(req: NextRequest) {
+  const visionDeadlineAt = Date.now() + 52_000;
   const requestId = getOrMintRequestId(req);
   const body = (await req.json().catch(() => null)) as Body | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
@@ -87,9 +89,12 @@ export async function POST(req: NextRequest) {
       { data: body.imageBase64, mediaType: body.mediaType as VisionMediaType },
       { name: String(typeRow.name), unit: String(typeRow.unit ?? ''), category: String(typeRow.category ?? 'other') },
       (u) => { usage = u; },
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
     return ok({ value: result.value, unit: result.unit, confidence: result.confidence, note: result.note }, { requestId });
   } catch (e) {
+    // Admin kill switch — an intentional state, not an outage. No error log.
+    if (e instanceof AiFeatureDisabledError) return err('This AI feature is currently turned off.', { requestId, status: 503, code: 'feature_disabled' });
     if (e instanceof VisionTruncatedError) return err('image_too_complex', { requestId, status: 422, code: ApiErrorCode.ValidationFailed });
     if (e instanceof VisionImageInvalidError) return err('invalid_image', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     if (e instanceof VisionSchemaError) return err('reading_unreadable', { requestId, status: 422, code: ApiErrorCode.UpstreamFailure });
@@ -106,6 +111,7 @@ export async function POST(req: NextRequest) {
           userId: accountId, propertyId: pid, conversationId: null,
           model: u.model, modelId: u.modelId,
           tokensIn: u.inputTokens, tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd, kind: 'vision',
         });
       } catch { /* cost ledger best-effort */ }

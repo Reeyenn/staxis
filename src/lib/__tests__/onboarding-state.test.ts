@@ -12,7 +12,30 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { deriveCurrentStep, isValidPartialState, isOnboardingInProgress, type OnboardingState } from '@/lib/onboarding/state';
+import {
+  deriveCurrentStep,
+  isValidPartialState,
+  isOnboardingInProgress,
+  resolveOnboardingDisplayStep,
+  type OnboardingState,
+} from '@/lib/onboarding/state';
+
+describe('resolveOnboardingDisplayStep — safe early-step review', () => {
+  test('verify email can review Account, then Welcome', () => {
+    assert.equal(resolveOnboardingDisplayStep(3, 2), 2);
+    assert.equal(resolveOnboardingDisplayStep(3, 1), 1);
+  });
+
+  test('review never advances beyond durable progress', () => {
+    assert.equal(resolveOnboardingDisplayStep(2, 2), 2);
+    assert.equal(resolveOnboardingDisplayStep(1, 2), 1);
+  });
+
+  test('leaving review returns to the durable current step', () => {
+    assert.equal(resolveOnboardingDisplayStep(3, null), 3);
+    assert.equal(resolveOnboardingDisplayStep(7, null), 7);
+  });
+});
 
 describe('deriveCurrentStep — fresh wizard', () => {
   test('empty state → step 1 (welcome)', () => {
@@ -261,7 +284,7 @@ describe('isOnboardingInProgress — login-funnel gate', () => {
     );
   });
 
-  test('COMPLETED onboarding → false (normal login to dashboard)', () => {
+  test('COMPLETED onboarding → false (normal login to Home)', () => {
     assert.equal(
       isOnboardingInProgress('2026-06-15T20:00:00Z', {
         step: 8,

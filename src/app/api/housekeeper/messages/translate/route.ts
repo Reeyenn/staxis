@@ -19,6 +19,7 @@ export const maxDuration = 30;
 const LANGS = ['en', 'es', 'ht', 'tl', 'vi'] as const;
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 24_000;
   const requestId = getOrMintRequestId(req);
   const headers = { 'x-request-id': requestId };
   let body: { pid?: string; staffId?: string; texts?: unknown; target?: string };
@@ -47,6 +48,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const rl = await checkAndIncrementRateLimit('comms-translate', pidV.value!);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const translations = await translateUiStrings(texts, targetV.value as CommsLang);
+  const translations = await translateUiStrings(texts, targetV.value as CommsLang, {
+    deadlineAt,
+    abortSignal: req.signal,
+  });
   return ok({ translations }, { requestId, headers });
 }

@@ -2,9 +2,6 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import type { PhonePairingStatus } from '@/lib/phone-pairing-contract';
 
 export const PHONE_PAIRING_TTL_MS = 60_000;
-export const PHONE_PAIRING_RESEND_COOLDOWN_SECONDS = 10;
-export const PHONE_PAIRING_MAX_SENDS = 3;
-export const PHONE_PAIRING_MAX_ATTEMPTS = 5;
 
 export const PHONE_PAIRING_NO_STORE_HEADERS = {
   'Cache-Control': 'no-store, max-age=0',

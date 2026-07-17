@@ -57,16 +57,6 @@ export function subscribeToShiftPresets(
   );
 }
 
-export async function getShiftPresets(_uid: string, pid: string): Promise<ShiftPreset[]> {
-  const { data, error } = await supabase
-    .from('property_shift_presets').select('*')
-    .eq('property_id', pid)
-    .order('department', { ascending: true })
-    .order('sort_order', { ascending: true });
-  if (error) { logErr('getShiftPresets', error); throw error; }
-  return (data ?? []).map(fromShiftPresetRow);
-}
-
 // ─── Scheduled shifts ──────────────────────────────────────────────────────
 
 /**
@@ -109,15 +99,24 @@ export function subscribeToScheduledShifts(
 export function subscribeToTimeOffRequests(
   _uid: string, pid: string,
   callback: (requests: TimeOffRequest[]) => void,
+  // Optional viewer scope. `undefined` (manager callers) → whole property.
+  // An explicit staff id → only that staffer's rows (keeps colleagues'
+  // free-text reasons off the wire). Explicit `null` (staff view with no
+  // linked staff record) → empty list. The realtime channel filter stays
+  // property-wide; events for other staff just trigger a cheap refetch.
+  staffId?: string | null,
 ): () => void {
   return subscribeTable<TimeOffRequest>(
     `time_off_requests:${pid}`,
     'time_off_requests',
     `property_id=eq.${pid}`,
     async () => {
-      const { data, error } = await supabase
+      if (staffId === null) return [];
+      let query = supabase
         .from('time_off_requests').select('*')
-        .eq('property_id', pid)
+        .eq('property_id', pid);
+      if (staffId) query = query.eq('staff_id', staffId);
+      const { data, error } = await query
         .order('submitted_at', { ascending: false });
       if (error) throw error;
       return (data ?? []).map(fromTimeOffRequestRow);
@@ -152,18 +151,4 @@ export function subscribeToWeekPublications(
     },
     callback,
   );
-}
-
-export async function getLatestPublicationForWeek(
-  _uid: string, pid: string, weekStart: string,
-): Promise<WeekPublication | null> {
-  const { data, error } = await supabase
-    .from('week_publications').select('*')
-    .eq('property_id', pid)
-    .eq('week_start', weekStart)
-    .order('published_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (error) { logErr('getLatestPublicationForWeek', error); throw error; }
-  return data ? fromWeekPublicationRow(data) : null;
 }

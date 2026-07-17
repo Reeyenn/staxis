@@ -234,11 +234,17 @@ export function InventoryTabs({
   }, [canManage]);
 
   // ── Add-tab inline input ──────────────────────────────────────────────
+  // No preset suggestions: a removed built-in is simply gone. But if someone
+  // types a removed built-in's exact name ("General inventory"), restore THAT
+  // tab (its items reattach) instead of creating an empty custom duplicate.
   const commitNew = () => {
     const name = newName.trim();
     setNewName('');
     setAdding(false);
-    if (name) onAdd(name);
+    if (!name) return;
+    const hidden = hiddenBuiltins.find((h) => h.label.trim().toLowerCase() === name.toLowerCase());
+    if (hidden) onRestore(hidden.key);
+    else onAdd(name);
   };
   const cancelNew = () => { setNewName(''); setAdding(false); };
 
@@ -309,49 +315,27 @@ export function InventoryTabs({
           ),
         )}
 
-        {/* Add a tab — while adding, also offer to bring back any removed
-            built-ins (so they aren't clutter in the bar, but aren't a dead end). */}
+        {/* Add a tab — a plain name input, no preset suggestions. (Typing a
+            removed built-in's name restores it — see commitNew.) */}
         {editing && (
           adding ? (
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-              <input
-                autoFocus
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') { e.preventDefault(); commitNew(); }
-                  else if (e.key === 'Escape') { e.preventDefault(); cancelNew(); }
-                }}
-                onBlur={cancelNew}
-                placeholder={tx.newTabPh}
-                maxLength={40}
-                style={{
-                  height: 34, width: 150, padding: '0 12px', borderRadius: 999,
-                  background: T.bg, border: `1px solid ${T.ink}`, fontFamily: fonts.sans,
-                  fontSize: 12.5, color: T.ink, outline: 'none',
-                }}
-              />
-              {hiddenBuiltins.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  // Fire on pointerDOWN (before the input's onBlur can cancel the
-                  // add flow) — reliable on touch where preventDefault-to-hold-
-                  // focus isn't guaranteed. onClick is the keyboard fallback; the
-                  // pointerdown path unmounts this button first, so it never double-fires.
-                  onPointerDown={(e) => { e.preventDefault(); onRestore(tab.key); setNewName(''); setAdding(false); }}
-                  onClick={() => { onRestore(tab.key); setNewName(''); setAdding(false); }}
-                  style={{
-                    height: 34, padding: '0 12px', borderRadius: 999, cursor: 'pointer',
-                    background: T.forestDim, color: T.forestText, border: `1px solid rgba(92,122,96,0.28)`,
-                    fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600,
-                    display: 'inline-flex', alignItems: 'center', gap: 6,
-                  }}
-                >
-                  <span style={{ fontSize: 14, lineHeight: 1 }}>＋</span>{tab.label}
-                </button>
-              ))}
-            </span>
+            <input
+              autoFocus
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); commitNew(); }
+                else if (e.key === 'Escape') { e.preventDefault(); cancelNew(); }
+              }}
+              onBlur={cancelNew}
+              placeholder={tx.newTabPh}
+              maxLength={40}
+              style={{
+                height: 34, width: 150, padding: '0 12px', borderRadius: 999,
+                background: T.bg, border: `1px solid ${T.ink}`, fontFamily: fonts.sans,
+                fontSize: 12.5, color: T.ink, outline: 'none',
+              }}
+            />
           ) : (
             <button
               type="button"

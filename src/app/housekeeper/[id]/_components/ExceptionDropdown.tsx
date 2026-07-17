@@ -7,6 +7,7 @@ import type { HousekeeperLocale } from '@/lib/translations';
 type Language = HousekeeperLocale;
 import { t } from '@/lib/translations';
 import type { ExceptionType } from '@/lib/housekeeper-workflow/state-machine';
+import { sheetOverlayStyle, sheetCloseBtnStyle } from './dialog-styles';
 
 /**
  * ExceptionDropdown — opens when the housekeeper taps the ⋯ button on a
@@ -70,14 +71,7 @@ export function ExceptionDropdown({
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.55)',
-        zIndex: 250,
-        display: 'flex',
-        alignItems: 'flex-end',
-      }}
+      style={sheetOverlayStyle}
     >
       <div
         style={{
@@ -102,21 +96,7 @@ export function ExceptionDropdown({
               {t('hkRoomShort', lang)} {roomNumber}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label={t('hkClose', lang)}
-            style={{
-              minHeight: '44px',
-              minWidth: '44px',
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-              padding: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
+          <button onClick={onClose} aria-label={t('hkClose', lang)} style={sheetCloseBtnStyle}>
             <X size={22} color="#374151" />
           </button>
         </div>

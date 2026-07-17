@@ -13,17 +13,6 @@ export async function getPublicAreas(_uid: string, pid: string): Promise<PublicA
   return (data ?? []).map(fromPublicAreaRow);
 }
 
-export async function setPublicArea(_uid: string, pid: string, area: PublicArea): Promise<void> {
-  const row = { ...toPublicAreaRow(area), id: area.id, property_id: pid };
-  const { error } = await supabase.from('public_areas').upsert(row);
-  if (error) { logErr('setPublicArea', error); throw error; }
-}
-
-export async function deletePublicArea(_uid: string, _pid: string, aid: string): Promise<void> {
-  const { error } = await supabase.from('public_areas').delete().eq('id', aid);
-  if (error) { logErr('deletePublicArea', error); throw error; }
-}
-
 export async function bulkSetPublicAreas(_uid: string, pid: string, areas: PublicArea[]): Promise<void> {
   const rows = areas.map(a => ({ ...toPublicAreaRow(a), id: a.id, property_id: pid }));
   const { error } = await supabase.from('public_areas').upsert(rows);

@@ -419,38 +419,15 @@ def _train_single_item(
 
     total_rooms = require_total_rooms(property_meta, property_id)
 
-    if family == "exposure":
-        return _train_exposure_item(
-            property_id=property_id,
-            item=item,
-            item_id=item_id,
-            item_name=item_name,
-            canonical_name=canonical_name,
-            cohort_key=cohort_key,
-            counts=counts,
-            orders=orders,
-            discards=discards,
-            daily_logs=daily_logs,
-            total_rooms=total_rooms,
-            settings=settings,
-            client=client,
-            timezone=(property_meta or {}).get("timezone"),
-        )
-    return _train_occupancy_item(
-        property_id=property_id,
-        item=item,
-        item_id=item_id,
-        item_name=item_name,
-        cohort_key=cohort_key,
-        counts=counts,
-        orders=orders,
-        discards=discards,
-        daily_logs=daily_logs,
-        total_rooms=total_rooms,
-        settings=settings,
-        client=client,
-        timezone=(property_meta or {}).get("timezone"),
+    common = dict(
+        property_id=property_id, item=item, item_id=item_id, item_name=item_name,
+        cohort_key=cohort_key, counts=counts, orders=orders, discards=discards,
+        daily_logs=daily_logs, total_rooms=total_rooms, settings=settings,
+        client=client, timezone=(property_meta or {}).get("timezone"),
     )
+    if family == "exposure":
+        return _ExposureTrainer(canonical_name=canonical_name, **common).run()
+    return _OccupancyTrainer(**common).run()
 
 
 def _existing_graduated_active(client, property_id: str, item_id: str) -> bool:
@@ -505,254 +482,334 @@ def _install_inventory_run(
     return {"skipped": False, "model_run_id": row.get("model_run_id")}
 
 
-def _train_exposure_item(
-    *,
-    property_id, item, item_id, item_name, canonical_name, cohort_key,
-    counts, orders, discards, daily_logs, total_rooms, settings, client,
-    timezone=None,
-) -> Dict[str, Any]:
+class _ItemTrainer:
+    """Shared training harness for one (property, item) model.
+
+    Both model families — the reduced EXPOSURE fit (guest consumables) and the
+    legacy affine OCCUPANCY fit (public-area/staff items) — run the identical
+    sequence: build windows → clean → look up prior → design matrix → 80/20
+    split → conjugate Bayesian fit → validation/baseline metrics → prospective
+    graduation gate → shadow routing → force-deactivate safety gate → persist via
+    the migration-0110 install RPC. The orchestration and every shared metric and
+    gate live once, in ``run()``; the per-family differences (row builder, prior
+    lookup, design, model construction, baseline formula, graduation scoping, and
+    the persisted feature-version/hyperparameters) live in the subclass hooks.
+    """
+
+    family: str = ""
+
+    def __init__(
+        self, *, property_id, item, item_id, item_name, cohort_key,
+        counts, orders, discards, daily_logs, total_rooms, settings, client,
+        timezone=None, canonical_name=None,
+    ) -> None:
+        self.property_id = property_id
+        self.item = item
+        self.item_id = item_id
+        self.item_name = item_name
+        self.canonical_name = canonical_name
+        self.cohort_key = cohort_key
+        self.counts = counts
+        self.orders = orders
+        self.discards = discards
+        self.daily_logs = daily_logs
+        self.total_rooms = total_rooms
+        self.settings = settings
+        self.client = client
+        self.timezone = timezone
+
+    # Required per-family hooks (every subclass implements all of these):
+    #   build_rows() -> (rows, n_dropped_incomplete)  clean_df(rows) -> df
+    #   min_rows_skip / clean_skip -> skip dict        lookup_prior() (stashes on self)
+    #   build_design(df) -> (X, y, weights|None)       build_model() -> BayesianRegression
+    #   model_version()/algorithm()/feature_set_version() -> str
+    #   baseline_pred(X_eval) -> ndarray (y's units)   graduation(...) -> gate result
+    #   hyperparameters(*, model, grad, mean_observed, n_dropped) -> dict
+    # Optional hooks with base defaults:
+    def posterior_extra(self):
+        """Extra posterior_params keys inserted before the ``family`` tag."""
+        return {}
+
+    def install_extra(self, n_dropped):
+        """Extra keys stamped onto the install result dict."""
+        return {}
+
+    def post_install(self, is_active):
+        """Best-effort side work after the primary run installs."""
+        return None
+
+    # ── shared orchestration ────────────────────────────────────────────
+    def run(self) -> Dict[str, Any]:
+        min_rows = self.settings.inventory_min_events_per_item - 1
+
+        rows, n_dropped = self.build_rows()
+        if len(rows) < min_rows:
+            return self.min_rows_skip(rows, n_dropped)
+        df = self.clean_df(rows)
+        if len(df) < min_rows:
+            return self.clean_skip(df, n_dropped)
+
+        self.lookup_prior()
+        X, y, weights = self.build_design(df)
+
+        if len(X) >= 5:
+            split_idx = int(len(X) * 0.8)
+            X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+            y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+            w_train = weights[:split_idx] if weights is not None else None
+        else:
+            X_train, X_test = X, X.iloc[:0]
+            y_train, y_test = y, y.iloc[:0]
+            w_train = weights
+
+        model = self.build_model()
+        algorithm = self.algorithm()
+        if w_train is not None:
+            model.fit(X_train, y_train, sample_weight=w_train)
+        else:
+            model.fit(X_train, y_train)
+
+        if len(X_test) > 0:
+            validation_mae = float(np.mean(np.abs(model.predict(X_test) - y_test.values)))
+        else:
+            validation_mae = 0.0
+        training_mae = float(np.mean(np.abs(model.predict(X_train) - y_train.values)))
+
+        # Baseline = the cohort prior applied to the same evaluation slice.
+        if len(X_test) > 0:
+            baseline_mae = float(np.mean(np.abs(self.baseline_pred(X_test) - y_test.values)))
+            mean_observed = float(y_test.mean())
+        else:
+            baseline_mae = float(np.mean(np.abs(self.baseline_pred(X_train) - y_train.values)))
+            mean_observed = float(y.mean())
+        # Gate-2 denominator: with a tiny holdout (< 3 windows) one quiet week can
+        # make y_test.mean() ~0 and bench a good model on a coin flip — use the
+        # pooled mean so a genuinely bad fit still trips the gate (see _gates.py).
+        gate_mean_observed = float(y.mean()) if len(X_test) < 3 else mean_observed
+        beats_baseline_pct = (
+            float(max(0.0, (baseline_mae - validation_mae) / baseline_mae))
+            if baseline_mae > 1e-9 else 0.0
+        )
+
+        trained_at_iso = datetime.utcnow().isoformat()
+        grad = self.graduation(n_training_windows=len(df), rows=rows, df=df)
+        auto_fill_candidate = grad.passed
+
+        # Shadow routing: a retrain lands as shadow if a graduated active exists.
+        is_shadow = _existing_graduated_active(self.client, self.property_id, self.item_id)
+        is_active = not is_shadow
+        shadow_started_at = trained_at_iso if is_shadow else None
+
+        mae_reject_notes: Optional[str] = None
+        _force_deactivate, _gate_note = should_force_deactivate(
+            algorithm=algorithm,
+            xgboost_inference_ready=False,
+            is_currently_active=is_active,
+            validation_holdout_n=len(X_test),
+            validation_mae=validation_mae,
+            mean_observed_rate=gate_mean_observed,
+            training_row_count=len(X_train),
+        )
+        if _force_deactivate:
+            is_active = False
+            mae_reject_notes = _gate_note
+        auto_fill_enabled = auto_fill_candidate and is_active
+
+        posterior_params = {
+            "mu_n": model.mu_n.tolist() if model.mu_n is not None else None,
+            "sigma_n": model.sigma_n.tolist() if model.sigma_n is not None else None,
+            "alpha_n": float(model.alpha_n) if model.alpha_n is not None else None,
+            "beta_n": float(model.beta_n) if model.beta_n is not None else None,
+            "mu_0": model.mu_0.tolist() if model.mu_0 is not None else None,
+            "sigma_0": model.sigma_0.tolist() if model.sigma_0 is not None else None,
+            "alpha": float(model.alpha),
+            "beta": float(model.beta),
+            "feature_names": model.feature_names,
+        }
+        posterior_params.update(self.posterior_extra())
+        posterior_params["family"] = self.family
+
+        fields = {
+            "trained_at": trained_at_iso,
+            "training_row_count": len(df),
+            "feature_set_version": self.feature_set_version(),
+            "model_version": self.model_version(),
+            "algorithm": algorithm,
+            "training_mae": training_mae,
+            "validation_mae": validation_mae,
+            "baseline_mae": baseline_mae,
+            "beats_baseline_pct": beats_baseline_pct,
+            "validation_holdout_n": len(X_test),
+            "shadow_started_at": shadow_started_at,
+            "consecutive_passing_runs": 0,  # streak retired; kept for column parity
+            "auto_fill_enabled": auto_fill_enabled if is_active else False,
+            "posterior_params": posterior_params,
+            "hyperparameters": self.hyperparameters(
+                model=model, grad=grad, mean_observed=mean_observed, n_dropped=n_dropped,
+            ),
+            "notes": mae_reject_notes,
+        }
+        install = _install_inventory_run(
+            self.client, self.property_id, self.item_id, fields, is_active, is_shadow
+        )
+        install["family"] = self.family
+        install.update(self.install_extra(n_dropped))
+        if install.get("skipped"):
+            return install
+
+        self.post_install(is_active)
+        return {
+            **install,
+            "is_active": is_active,
+            "auto_fill_enabled": auto_fill_enabled,
+            "validation_mae": validation_mae,
+            "training_row_count": len(df),
+        }
+
+
+class _ExposureTrainer(_ItemTrainer):
     """Reduced-exposure fit: window_consumption = s·(ΣCO + κ·ΣSO), no intercept.
 
     s is the ONE learned coefficient. κ is fixed per item from its usage config.
-    The BayesianRegression fits a single-coefficient posterior on the composite
-    exposure regressor, with per-row weights that down-weight long/noisy windows.
+    A single-coefficient conjugate posterior is fit on the composite exposure
+    regressor, with per-row weights that down-weight long/noisy windows.
     """
-    # κ fixed per item (usage_per_stayover / usage_per_checkout; fallback 0.30).
-    kappa = resolve_kappa(item, INVENTORY_DEFAULT_KAPPA)
 
-    rows, n_dropped_incomplete = build_exposure_rows(
-        counts, orders, discards, daily_logs, kappa,
-        settings.inventory_daily_process_var, settings.inventory_count_noise,
-        timezone=timezone,
-    )
-    if len(rows) < settings.inventory_min_events_per_item - 1:
+    family = "exposure"
+
+    def build_rows(self):
+        # κ fixed per item (usage_per_stayover / usage_per_checkout; fallback 0.30).
+        self.kappa = resolve_kappa(self.item, INVENTORY_DEFAULT_KAPPA)
+        return build_exposure_rows(
+            self.counts, self.orders, self.discards, self.daily_logs, self.kappa,
+            self.settings.inventory_daily_process_var, self.settings.inventory_count_noise,
+            timezone=self.timezone,
+        )
+
+    def min_rows_skip(self, rows, n_dropped):
         return {"skipped": True, "reason": "insufficient_exposure_windows",
                 "pairs": len(rows), "family": "exposure",
-                "windows_dropped_incomplete": n_dropped_incomplete}
+                "windows_dropped_incomplete": n_dropped}
 
-    df = pd.DataFrame(rows)
-    df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
-    df["exposure"] = pd.to_numeric(df["exposure"], errors="coerce")
-    df = df[
-        df["consumption"].notna() & (df["consumption"] >= 0)
-        & df["exposure"].notna() & (df["exposure"] > 0)
-    ].reset_index(drop=True)
-    if len(df) < settings.inventory_min_events_per_item - 1:
+    def clean_df(self, rows):
+        df = pd.DataFrame(rows)
+        df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+        df["exposure"] = pd.to_numeric(df["exposure"], errors="coerce")
+        return df[
+            df["consumption"].notna() & (df["consumption"] >= 0)
+            & df["exposure"].notna() & (df["exposure"] > 0)
+        ].reset_index(drop=True)
+
+    def clean_skip(self, df, n_dropped):
         return {"skipped": True, "reason": "insufficient_clean_exposure_rows",
                 "rows": len(df), "family": "exposure",
-                "windows_dropped_incomplete": n_dropped_incomplete}
+                "windows_dropped_incomplete": n_dropped}
 
-    # Exposure prior for s (per-checkout-equivalent). Falls back to converting a
-    # per-room prior. prior_strength schedule as before, but precision-capped.
-    prior_s, prior_strength, prior_source = _lookup_exposure_prior_with_source(
-        client, cohort_key, item, canonical_name
-    )
+    def lookup_prior(self):
+        self.prior_s, self.prior_strength, self.prior_source = (
+            _lookup_exposure_prior_with_source(
+                self.client, self.cohort_key, self.item, self.canonical_name
+            )
+        )
 
-    # Design: [intercept, exposure]; target = consumption. The review specifies
-    # NO real intercept ("base fixed at 0") for guest consumables. We keep an
-    # intercept COLUMN — because BayesianRegression's serving path assumes column
-    # 0 is the all-ones bias and injecting/omitting it via a heuristic is fragile
-    # — but PIN it at 0 with a near-zero prior variance so it can't absorb signal.
-    # The learned coefficient is s (the second one); base stays ≈0. The pin gives
-    # exactly the reduced model window_consumption ≈ s·(ΣCO + κ·ΣSO).
-    X = df[["exposure"]].astype(float).copy()
-    X.insert(0, "intercept", 1.0)
-    y = df["consumption"].astype(float)
-    weights = df["weight"].astype(float).values
+    def build_design(self, df):
+        # [intercept, exposure]; target = consumption. The review specifies NO real
+        # intercept ("base fixed at 0") for guest consumables — we keep an intercept
+        # COLUMN (BayesianRegression's serving path assumes column 0 is the bias)
+        # but PIN it at 0 via a near-zero prior variance (build_model) so it can't
+        # absorb signal. The learned coefficient is s; base stays ≈0.
+        X = df[["exposure"]].astype(float).copy()
+        X.insert(0, "intercept", 1.0)
+        y = df["consumption"].astype(float)
+        return X, y, df["weight"].astype(float).values
 
-    if len(X) >= 5:
-        split_idx = int(len(X) * 0.8)
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-        w_train = weights[:split_idx]
-    else:
-        X_train, X_test = X, X.iloc[:0]
-        y_train, y_test = y, y.iloc[:0]
-        w_train = weights
+    def build_model(self):
+        # intercept: mean 0, variance ~1e-6 → pinned at 0 (no free base).
+        # s: mean prior_s, variance 1/prior_strength → real windows move s off the
+        # cohort seed; a stronger cohort shrinks harder toward the seed at cold-start.
+        return BayesianRegression(
+            prior_strength=self.prior_strength,
+            prior_mean=np.array([0.0, self.prior_s]),
+            prior_variance=np.array([1e-6, 1.0 / max(self.prior_strength, 1e-6)]),
+        )
 
-    # Prior per coefficient:
-    #   intercept (base): mean 0, variance ~1e-6 → pinned at 0 (no free base).
-    #   s (exposure scale): mean prior_s, variance 1/prior_strength → a hotel
-    #     with real windows moves s off the cohort seed; stronger cohort (larger
-    #     prior_strength) shrinks harder toward the seed at cold-start.
-    model = BayesianRegression(
-        prior_strength=prior_strength,
-        prior_mean=np.array([0.0, prior_s]),
-        prior_variance=np.array([1e-6, 1.0 / max(prior_strength, 1e-6)]),
-    )
-    model.fit(X_train, y_train, sample_weight=w_train)
-    model_version = f"inventory-exposure-v1-{item_id}-{datetime.utcnow().isoformat()}"
-    algorithm = INVENTORY_EXPOSURE_ALGORITHM
+    def model_version(self):
+        return f"inventory-exposure-v1-{self.item_id}-{datetime.utcnow().isoformat()}"
 
-    # Metrics (window-consumption units).
-    if len(X_test) > 0:
-        pred_test = model.predict(X_test)
-        validation_mae = float(np.mean(np.abs(pred_test - y_test.values)))
-    else:
-        validation_mae = 0.0
-    training_mae = float(np.mean(np.abs(model.predict(X_train) - y_train.values)))
+    def algorithm(self):
+        return INVENTORY_EXPOSURE_ALGORITHM
 
-    # Baseline = the cohort-prior s applied to the same exposures.
-    if len(X_test) > 0:
-        baseline_pred = prior_s * X_test["exposure"].values
-        baseline_mae = float(np.mean(np.abs(baseline_pred - y_test.values)))
-        mean_observed = float(y_test.mean())
-    else:
-        baseline_pred = prior_s * X_train["exposure"].values
-        baseline_mae = float(np.mean(np.abs(baseline_pred - y_train.values)))
-        mean_observed = float(y.mean())
-    # Gate-2 denominator: with a tiny holdout (< 3 windows) one quiet week
-    # can make y_test.mean() ~0 and bench a good model on a coin flip. Use
-    # the pooled mean instead — a genuinely bad fit (MAE >= the item's
-    # overall mean) still trips the gate. See _gates.py docstring.
-    gate_mean_observed = float(y.mean()) if len(X_test) < 3 else mean_observed
-    beats_baseline_pct = (
-        float(max(0.0, (baseline_mae - validation_mae) / baseline_mae))
-        if baseline_mae > 1e-9 else 0.0
-    )
+    def baseline_pred(self, X_eval):
+        return self.prior_s * X_eval["exposure"].values
 
-    trained_at_iso = datetime.utcnow().isoformat()
+    def graduation(self, *, n_training_windows, rows, df):
+        # Per-pair baselines join on the count that closed each clean window:
+        # count_id → (exposure, days), so baseline = prior_s·exposure/days lands in
+        # the same daily-rate units as the pair's actual_value.
+        window_baselines = {
+            str(r["count_id"]): (float(r["exposure"]), float(r["days"]))
+            for r in rows
+            if r.get("count_id") and float(r.get("days") or 0) > 0
+        }
+        return _evaluate_inventory_graduation(
+            client=self.client, property_id=self.property_id, item_id=self.item_id,
+            n_training_windows=n_training_windows, prior_s=self.prior_s, kappa=self.kappa,
+            settings=self.settings, family_algorithms={INVENTORY_EXPOSURE_ALGORITHM},
+            window_baselines=window_baselines,
+        )
 
-    # ── Prospective graduation gate ──────────────────────────────────────
-    # Per-pair baselines join on the count that closed each clean window:
-    # count_id → (exposure, days), so baseline = prior_s·exposure/days lands in
-    # the same daily-rate units as the pair's actual_value.
-    window_baselines = {
-        str(r["count_id"]): (float(r["exposure"]), float(r["days"]))
-        for r in rows
-        if r.get("count_id") and float(r.get("days") or 0) > 0
-    }
-    grad = _evaluate_inventory_graduation(
-        client=client,
-        property_id=property_id,
-        item_id=item_id,
-        n_training_windows=len(df),
-        prior_s=prior_s,
-        kappa=kappa,
-        settings=settings,
-        family_algorithms={INVENTORY_EXPOSURE_ALGORITHM},
-        window_baselines=window_baselines,
-    )
-    auto_fill_candidate = grad.passed
+    def posterior_extra(self):
+        return {"kappa": self.kappa}  # serving needs κ to recompose tomorrow's exposure
 
-    # Shadow routing: a retrain lands as shadow if a graduated active exists.
-    is_shadow = _existing_graduated_active(client, property_id, item_id)
-    is_active = not is_shadow
-    shadow_started_at = trained_at_iso if is_shadow else None
+    def feature_set_version(self):
+        return INVENTORY_EXPOSURE_FEATURE_SET_VERSION
 
-    # Force-deactivate safety gates (no-validation-set + max-MAE). XGBoost gate
-    # is unreachable (algorithm is bayesian-exposure) but harmless.
-    mae_reject_notes: Optional[str] = None
-    _force_deactivate, _gate_note = should_force_deactivate(
-        algorithm=algorithm,
-        xgboost_inference_ready=False,
-        is_currently_active=is_active,
-        validation_holdout_n=len(X_test),
-        validation_mae=validation_mae,
-        mean_observed_rate=gate_mean_observed,
-        training_row_count=len(X_train),
-    )
-    if _force_deactivate:
-        is_active = False
-        mae_reject_notes = _gate_note
-
-    auto_fill_enabled = auto_fill_candidate and is_active
-
-    posterior_params = {
-        "mu_n": model.mu_n.tolist() if model.mu_n is not None else None,
-        "sigma_n": model.sigma_n.tolist() if model.sigma_n is not None else None,
-        "alpha_n": float(model.alpha_n) if model.alpha_n is not None else None,
-        "beta_n": float(model.beta_n) if model.beta_n is not None else None,
-        "mu_0": model.mu_0.tolist() if model.mu_0 is not None else None,
-        "sigma_0": model.sigma_0.tolist() if model.sigma_0 is not None else None,
-        "alpha": float(model.alpha),
-        "beta": float(model.beta),
-        "feature_names": model.feature_names,
-        # Serving needs κ to recompose tomorrow's exposure.
-        "kappa": kappa,
-        "family": "exposure",
-    }
-
-    fields = {
-        "trained_at": trained_at_iso,
-        "training_row_count": len(df),
-        "feature_set_version": INVENTORY_EXPOSURE_FEATURE_SET_VERSION,
-        "model_version": model_version,
-        "algorithm": algorithm,
-        "training_mae": training_mae,
-        "validation_mae": validation_mae,
-        "baseline_mae": baseline_mae,
-        "beats_baseline_pct": beats_baseline_pct,
-        "validation_holdout_n": len(X_test),
-        "shadow_started_at": shadow_started_at,
-        "consecutive_passing_runs": 0,  # streak retired; kept for column parity
-        "auto_fill_enabled": auto_fill_enabled if is_active else False,
-        "posterior_params": posterior_params,
-        "hyperparameters": {
-            "prior_s_used": prior_s,
-            "prior_source": prior_source,
-            "kappa": kappa,
-            "cohort_key": cohort_key,
+    def hyperparameters(self, *, model, grad, mean_observed, n_dropped):
+        return {
+            "prior_s_used": self.prior_s,
+            "prior_source": self.prior_source,
+            "kappa": self.kappa,
+            "cohort_key": self.cohort_key,
             "mean_observed_rate": mean_observed,
-            "windows_dropped_incomplete": n_dropped_incomplete,
+            "windows_dropped_incomplete": n_dropped,
             "graduation_reason": grad.reason,
             "graduation_n_pairs": grad.n_pairs,
             "graduation_span_days": grad.span_days,
             "graduation_wape": grad.wape,
             "graduation_prospective_mae": grad.prospective_mae,
             "graduation_baseline_mae": grad.baseline_mae,
-            # Thresholds persisted alongside the readings so the AI-report UI
-            # shows the trainer's ACTUAL bar (these are env-overridable — a
-            # TS-side mirror constant would silently lie after a tune).
-            "graduation_min_windows": settings.inventory_graduation_min_events,
-            "graduation_min_pairs": settings.inventory_graduation_min_prospective_pairs,
+            # Thresholds persisted alongside the readings so the AI-report UI shows
+            # the trainer's ACTUAL bar (env-overridable — a TS mirror would lie).
+            "graduation_min_windows": self.settings.inventory_graduation_min_events,
+            "graduation_min_pairs": self.settings.inventory_graduation_min_prospective_pairs,
             **(model.get_config() if hasattr(model, "get_config") else {}),
-        },
-        "notes": mae_reject_notes,
-    }
-    install = _install_inventory_run(
-        client, property_id, item_id, fields, is_active, is_shadow
-    )
-    install["family"] = "exposure"
-    install["windows_dropped_incomplete"] = n_dropped_incomplete
-    if install.get("skipped"):
-        return install
+        }
 
-    # ── Shadow challenger (work item 6) ──────────────────────────────────
-    # Keep training the OLD occupancy-form model for exposure-family items as a
-    # SHADOW run so the existing shadow-evaluate cron can compare it against the
-    # new exposure primary over time. LIMITATION (documented honestly): the
-    # migration-0110 install RPC keys the shadow track by (property, item) and
-    # allows exactly one active + one in-flight shadow per item. So we can only
-    # register the occupancy-form shadow when the exposure run we just installed
-    # is the ACTIVE one — if the exposure run itself landed as a shadow (because
-    # a graduated active already serves this item), we skip the challenger this
-    # cycle rather than clobber the exposure shadow. This matches the review's
-    # "simplify: train occupancy-form as shadow only when an active exposure run
-    # exists" fallback.
-    if is_active:
+    def install_extra(self, n_dropped):
+        return {"windows_dropped_incomplete": n_dropped}
+
+    def post_install(self, is_active):
+        # Shadow challenger (work item 6): keep training the OLD occupancy-form model
+        # as a SHADOW so the shadow-evaluate cron can compare it against the exposure
+        # primary. The migration-0110 RPC allows one active + one in-flight shadow per
+        # item, so we only register the occupancy shadow when the exposure run we just
+        # installed is the ACTIVE one — otherwise we'd clobber the exposure shadow.
+        if not is_active:
+            return
         try:
             _train_occupancy_shadow_challenger(
-                property_id=property_id, item=item, item_id=item_id,
-                item_name=item_name, cohort_key=cohort_key, counts=counts,
-                orders=orders, discards=discards, daily_logs=daily_logs,
-                total_rooms=total_rooms, settings=settings, client=client,
-                timezone=timezone,
+                property_id=self.property_id, item=self.item, item_id=self.item_id,
+                item_name=self.item_name, cohort_key=self.cohort_key, counts=self.counts,
+                orders=self.orders, discards=self.discards, daily_logs=self.daily_logs,
+                total_rooms=self.total_rooms, settings=self.settings, client=self.client,
+                timezone=self.timezone,
             )
         except Exception as exc:  # never let the challenger fail the primary
             print(json.dumps({
                 "evt": "inventory_shadow_challenger_failed",
-                "property_id": property_id, "item_id": item_id,
+                "property_id": self.property_id, "item_id": self.item_id,
                 "error": str(exc),
             }))
-
-    return {
-        **install,
-        "is_active": is_active,
-        "auto_fill_enabled": auto_fill_enabled,
-        "validation_mae": validation_mae,
-        "training_row_count": len(df),
-    }
 
 
 def _train_occupancy_shadow_challenger(
@@ -835,172 +892,94 @@ def _train_occupancy_shadow_challenger(
     )
 
 
-def _train_occupancy_item(
-    *,
-    property_id, item, item_id, item_name, cohort_key,
-    counts, orders, discards, daily_logs, total_rooms, settings, client,
-    timezone=None,
-) -> Dict[str, Any]:
-    """LEGACY affine occupancy model for occupancy-independent public-area /
-    staff items: daily_rate = a + b·(occupancy − baseline). Unchanged behavior
-    from the pre-rebuild model (minus the dead XGBoost branch + retrain streak),
-    now scoped to the occupancy family only.
+class _OccupancyTrainer(_ItemTrainer):
+    """Legacy affine occupancy model for occupancy-independent public-area/staff
+    items: daily_rate = a + b·(occupancy − baseline). Unchanged behavior from the
+    pre-rebuild model (minus the dead XGBoost branch + retrain streak), now scoped
+    to the occupancy family only.
     """
-    rows = _build_training_rows(counts, orders, discards, daily_logs, total_rooms, timezone=timezone)
-    if len(rows) < settings.inventory_min_events_per_item - 1:
+
+    family = "occupancy"
+
+    def build_rows(self):
+        rows = _build_training_rows(
+            self.counts, self.orders, self.discards, self.daily_logs,
+            self.total_rooms, timezone=self.timezone,
+        )
+        return rows, 0
+
+    def min_rows_skip(self, rows, n_dropped):
         return {"skipped": True, "reason": "insufficient_consecutive_pairs",
                 "pairs": len(rows), "family": "occupancy"}
 
-    df = pd.DataFrame(rows)
-    df["daily_rate"] = pd.to_numeric(df["daily_rate"], errors="coerce")
-    df["occupancy_pct"] = pd.to_numeric(df["occupancy_pct"], errors="coerce").fillna(INVENTORY_OCC_BASELINE_PCT)
-    df = df[df["daily_rate"].notna() & (df["daily_rate"] >= 0)].reset_index(drop=True)
-    if len(df) < settings.inventory_min_events_per_item - 1:
+    def clean_df(self, rows):
+        df = pd.DataFrame(rows)
+        df["daily_rate"] = pd.to_numeric(df["daily_rate"], errors="coerce")
+        df["occupancy_pct"] = pd.to_numeric(
+            df["occupancy_pct"], errors="coerce"
+        ).fillna(INVENTORY_OCC_BASELINE_PCT)
+        return df[df["daily_rate"].notna() & (df["daily_rate"] >= 0)].reset_index(drop=True)
+
+    def clean_skip(self, df, n_dropped):
         return {"skipped": True, "reason": "insufficient_clean_rows",
                 "rows": len(df), "family": "occupancy"}
 
-    prior_rate, prior_strength = _lookup_prior(client, cohort_key, item, item_name)
+    def lookup_prior(self):
+        self.prior_rate, self.prior_strength = _lookup_prior(
+            self.client, self.cohort_key, self.item, self.item_name
+        )
+        self.baseline_rate_abs = self.prior_rate * float(max(self.total_rooms, 1))
 
-    X = _center_occupancy(df[INVENTORY_FEATURE_COLS].copy())
-    X.insert(0, "intercept", 1.0)
-    y = df["daily_rate"].astype(float)
+    def build_design(self, df):
+        X = _center_occupancy(df[INVENTORY_FEATURE_COLS].copy())
+        X.insert(0, "intercept", 1.0)
+        y = df["daily_rate"].astype(float)
+        return X, y, None
 
-    if len(X) >= 5:
-        split_idx = int(len(X) * 0.8)
-        X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
-        y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
-    else:
-        X_train, X_test = X, X.iloc[:0]
-        y_train, y_test = y, y.iloc[:0]
+    def build_model(self):
+        # Rebuild removed the dead XGBoost branch — occupancy is always the
+        # conjugate Bayesian fit with the per-room prior seeded into the intercept.
+        model = BayesianRegression(prior_strength=self.prior_strength)
+        _seed_bayesian_intercept(model, self.prior_rate, self.total_rooms)
+        return model
 
-    # Reduced-exposure rebuild removed the dead XGBoost branch — the occupancy
-    # family is always the conjugate Bayesian fit.
-    model = BayesianRegression(prior_strength=prior_strength)
-    _seed_bayesian_intercept(model, prior_rate, total_rooms)
-    model_version = f"inventory-bayesian-v1-{item_id}-{datetime.utcnow().isoformat()}"
-    algorithm = "bayesian"
+    def model_version(self):
+        return f"inventory-bayesian-v1-{self.item_id}-{datetime.utcnow().isoformat()}"
 
-    model.fit(X_train, y_train)
+    def algorithm(self):
+        return "bayesian"
 
-    if len(X_test) > 0:
-        pred_test = model.predict(X_test)
-        validation_mae = float(np.mean(np.abs(pred_test - y_test.values)))
-    else:
-        validation_mae = 0.0
-    training_mae = float(np.mean(np.abs(model.predict(X_train) - y_train.values)))
+    def baseline_pred(self, X_eval):
+        return np.full(len(X_eval), self.baseline_rate_abs)
 
-    baseline_rate_abs = prior_rate * float(max(total_rooms, 1))
-    baseline_pred = np.full(len(y_test) if len(X_test) > 0 else len(y_train), baseline_rate_abs)
-    if len(X_test) > 0:
-        baseline_mae = float(np.mean(np.abs(baseline_pred - y_test.values)))
-        mean_observed_rate = float(y_test.mean())
-    else:
-        baseline_mae = float(np.mean(np.abs(baseline_pred - y_train.values)))
-        mean_observed_rate = float(y.mean())
-    beats_baseline_pct = (
-        float(max(0.0, (baseline_mae - validation_mae) / baseline_mae))
-        if baseline_mae > 1e-9 else 0.0
-    )
+    def graduation(self, *, n_training_windows, rows, df):
+        # baseline = per-room prior scaled to total_rooms (already a daily rate — no
+        # window join). Pairs scoped to this family's own fitted runs ('bayesian'),
+        # so cold-start-prior and exposure-generation pairs can neither graduate nor
+        # block an occupancy fit.
+        return _evaluate_inventory_graduation(
+            client=self.client, property_id=self.property_id, item_id=self.item_id,
+            n_training_windows=n_training_windows, prior_s=None, kappa=None,
+            settings=self.settings, family_algorithms={"bayesian"},
+            occupancy_baseline_rate_abs=self.baseline_rate_abs,
+        )
 
-    trained_at_iso = datetime.utcnow().isoformat()
+    def feature_set_version(self):
+        return INVENTORY_FEATURE_SET_VERSION
 
-    # Occupancy family also graduates via the prospective gate now (streak
-    # retired). n_training_windows = clean rows; baseline = per-room prior
-    # scaled to total_rooms (already a daily rate — no window join needed).
-    # Pairs are scoped to this family's own fitted runs ('bayesian'), so
-    # cold-start-prior pairs and exposure-generation pairs can neither
-    # graduate nor block an occupancy fit.
-    grad = _evaluate_inventory_graduation(
-        client=client,
-        property_id=property_id,
-        item_id=item_id,
-        n_training_windows=len(df),
-        prior_s=None,  # occupancy items have no per-checkout s; baseline via per-room
-        kappa=None,
-        settings=settings,
-        family_algorithms={"bayesian"},
-        occupancy_baseline_rate_abs=baseline_rate_abs,
-    )
-    auto_fill_candidate = grad.passed
-
-    is_shadow = _existing_graduated_active(client, property_id, item_id)
-    is_active = not is_shadow
-    shadow_started_at = trained_at_iso if is_shadow else None
-
-    mae_reject_notes: Optional[str] = None
-    # Pooled-mean denominator at tiny holdouts — same flap guard as the
-    # exposure path (see _gates.py docstring).
-    _gate_mean = float(y.mean()) if len(X_test) < 3 else mean_observed_rate
-    _force_deactivate, _gate_note = should_force_deactivate(
-        algorithm=algorithm,
-        xgboost_inference_ready=False,
-        is_currently_active=is_active,
-        validation_holdout_n=len(X_test),
-        validation_mae=validation_mae,
-        mean_observed_rate=_gate_mean,
-        training_row_count=len(X_train),
-    )
-    if _force_deactivate:
-        is_active = False
-        mae_reject_notes = _gate_note
-
-    auto_fill_enabled = auto_fill_candidate and is_active
-
-    posterior_params = {
-        "mu_n": model.mu_n.tolist() if model.mu_n is not None else None,
-        "sigma_n": model.sigma_n.tolist() if model.sigma_n is not None else None,
-        "alpha_n": float(model.alpha_n) if model.alpha_n is not None else None,
-        "beta_n": float(model.beta_n) if model.beta_n is not None else None,
-        "mu_0": model.mu_0.tolist() if model.mu_0 is not None else None,
-        "sigma_0": model.sigma_0.tolist() if model.sigma_0 is not None else None,
-        "alpha": float(model.alpha),
-        "beta": float(model.beta),
-        "feature_names": model.feature_names,
-        "family": "occupancy",
-    }
-
-    fields = {
-        "trained_at": trained_at_iso,
-        "training_row_count": len(df),
-        "feature_set_version": INVENTORY_FEATURE_SET_VERSION,
-        "model_version": model_version,
-        "algorithm": algorithm,
-        "training_mae": training_mae,
-        "validation_mae": validation_mae,
-        "baseline_mae": baseline_mae,
-        "beats_baseline_pct": beats_baseline_pct,
-        "validation_holdout_n": len(X_test),
-        "shadow_started_at": shadow_started_at,
-        "consecutive_passing_runs": 0,
-        "auto_fill_enabled": auto_fill_enabled if is_active else False,
-        "posterior_params": posterior_params,
-        "hyperparameters": {
-            "prior_rate_used": prior_rate,
-            "cohort_key": cohort_key,
-            "mean_observed_rate": mean_observed_rate,
+    def hyperparameters(self, *, model, grad, mean_observed, n_dropped):
+        return {
+            "prior_rate_used": self.prior_rate,
+            "cohort_key": self.cohort_key,
+            "mean_observed_rate": mean_observed,
             "graduation_reason": grad.reason,
             "graduation_n_pairs": grad.n_pairs,
             "graduation_span_days": grad.span_days,
             "graduation_wape": grad.wape,
-            "graduation_min_windows": settings.inventory_graduation_min_events,
-            "graduation_min_pairs": settings.inventory_graduation_min_prospective_pairs,
+            "graduation_min_windows": self.settings.inventory_graduation_min_events,
+            "graduation_min_pairs": self.settings.inventory_graduation_min_prospective_pairs,
             **(model.get_config() if hasattr(model, "get_config") else {}),
-        },
-        "notes": mae_reject_notes,
-    }
-    install = _install_inventory_run(
-        client, property_id, item_id, fields, is_active, is_shadow
-    )
-    install["family"] = "occupancy"
-    if install.get("skipped"):
-        return install
-    return {
-        **install,
-        "is_active": is_active,
-        "auto_fill_enabled": auto_fill_enabled,
-        "validation_mae": validation_mae,
-        "training_row_count": len(df),
-    }
+        }
 
 
 def _build_training_rows(

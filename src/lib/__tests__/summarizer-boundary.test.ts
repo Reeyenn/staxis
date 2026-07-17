@@ -15,7 +15,11 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { trimTrailingOrphanToolUses, type MessageRow } from '../agent/summarizer';
+import {
+  assertValidSummaryResponse,
+  trimTrailingOrphanToolUses,
+  type MessageRow,
+} from '../agent/summarizer';
 
 // Helpers to keep fixtures readable.
 function userRow(id: string, content: string): MessageRow {
@@ -210,5 +214,30 @@ describe('trimTrailingOrphanToolUses', () => {
     for (let i = 0; i < trimmed.length; i++) {
       assert.equal(trimmed[i].id, rows[i].id, `prefix invariant: trimmed[${i}].id should match rows[${i}].id`);
     }
+  });
+});
+
+describe('summary attempt validation', () => {
+  test('accepts a complete non-empty summary', () => {
+    assert.doesNotThrow(() => assertValidSummaryResponse({
+      text: 'The manager asked about room 214.',
+      stopReason: 'end_turn',
+      toolCallCount: 0,
+    }));
+  });
+
+  test('rejects empty, truncated, or tool-calling responses so fallback can run', () => {
+    assert.throws(
+      () => assertValidSummaryResponse({ text: ' ', stopReason: 'end_turn', toolCallCount: 0 }),
+      /empty/i,
+    );
+    assert.throws(
+      () => assertValidSummaryResponse({ text: 'partial', stopReason: 'max_tokens', toolCallCount: 0 }),
+      /truncated/i,
+    );
+    assert.throws(
+      () => assertValidSummaryResponse({ text: 'text', stopReason: 'tool_use', toolCallCount: 1 }),
+      /tool/i,
+    );
   });
 });

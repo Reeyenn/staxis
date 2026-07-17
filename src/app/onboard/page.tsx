@@ -38,7 +38,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Users, Sparkles, ChevronLeft } from 'lucide-react';
-import { PLACEHOLDER_HOTEL_NAME, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
+import {
+  PLACEHOLDER_HOTEL_NAME,
+  RESUME_GUARD_KEY,
+  resolveOnboardingDisplayStep,
+  type OnboardingReviewStep,
+  type OnboardingStep,
+} from '@/lib/onboarding/state';
 import { useLang } from '@/contexts/LanguageContext';
 import { ChevronMark } from '@/components/AuthShell';
 import { mt, MILESTONES, milestoneIndexForLabel, milestoneLabel, type MappingStrings } from './_mapping-i18n';
@@ -60,7 +66,7 @@ const PMS_PICKER_OPTIONS = PMS_DROPDOWN_OPTIONS.map((d) => ({
 interface WizardStateResponse {
   propertyId: string;
   propertyName: string;
-  currentStep: number;
+  currentStep: OnboardingStep;
   completed: boolean;
   state: Record<string, string | number | undefined>;
   hotelDefaults: {
@@ -125,6 +131,7 @@ function OnboardWizard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [wizard, setWizard] = useState<WizardStateResponse | null>(null);
+  const [reviewStep, setReviewStep] = useState<OnboardingReviewStep | null>(null);
 
   const loadState = useCallback(async () => {
     if (!code) {
@@ -147,7 +154,7 @@ function OnboardWizard() {
       // dashboard mid-wizard correctly re-gates back here instead of escaping.
       if (typeof window !== 'undefined') sessionStorage.removeItem(RESUME_GUARD_KEY);
       if (data.completed) {
-        // Home is always available; a hotel's Dashboard section may be off.
+        // Already done — Home is always available even when Dashboard is off.
         router.push('/home');
         return;
       }
@@ -190,18 +197,46 @@ function OnboardWizard() {
   }
   if (!wizard) return null;
 
-  const advance = async () => { await loadState(); };
+  const advance = async () => {
+    setReviewStep(null);
+    await loadState();
+  };
+  const displayStep = resolveOnboardingDisplayStep(wizard.currentStep, reviewStep);
+  const review = (step: OnboardingReviewStep) => setReviewStep(step);
 
   return (
-    <WizardLayout step={wizard.currentStep} hotelName={wizard.propertyName}>
-      {wizard.currentStep === 1 && <Step1Welcome code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 2 && <Step2CreateAccount code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 3 && <Step3VerifyEmail code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 4 && <Step4HotelDetails code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 5 && <Step6ConnectPms code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 6 && <Step7Mapping code={code} onNext={advance} />}
-      {wizard.currentStep === 7 && <Step8AddTeam code={code} wizard={wizard} onNext={advance} />}
-      {wizard.currentStep === 8 && <Step9AllSet code={code} wizard={wizard} />}
+    <WizardLayout
+      currentStep={wizard.currentStep}
+      displayStep={displayStep}
+      hotelName={wizard.propertyName}
+      onReviewStep={review}
+    >
+      {displayStep === 1 && (
+        <Step1Welcome
+          code={code}
+          wizard={wizard}
+          reviewing={wizard.currentStep > 1}
+          onNext={wizard.currentStep > 1 ? async () => review(2) : advance}
+        />
+      )}
+      {displayStep === 2 && wizard.currentStep === 2 && (
+        <Step2CreateAccount code={code} wizard={wizard} onNext={advance} />
+      )}
+      {displayStep === 2 && wizard.currentStep > 2 && (
+        <Step2AccountReview
+          currentStep={wizard.currentStep}
+          onBack={() => review(1)}
+          onContinue={() => setReviewStep(null)}
+        />
+      )}
+      {displayStep === 3 && (
+        <Step3VerifyEmail code={code} wizard={wizard} onNext={advance} onBack={() => review(2)} />
+      )}
+      {displayStep === 4 && <Step4HotelDetails code={code} wizard={wizard} onNext={advance} />}
+      {displayStep === 5 && <Step6ConnectPms code={code} wizard={wizard} onNext={advance} />}
+      {displayStep === 6 && <Step7Mapping code={code} onNext={advance} />}
+      {displayStep === 7 && <Step8AddTeam code={code} wizard={wizard} onNext={advance} />}
+      {displayStep === 8 && <Step9AllSet code={code} wizard={wizard} />}
     </WizardLayout>
   );
 }
@@ -254,12 +289,24 @@ const WIZARD_STYLE = `
   .btn-primary:disabled { opacity:0.5; cursor:not-allowed; box-shadow:none; }
   .btn-secondary { background:rgba(255,255,255,0.7); color:#1F231C; border:1px solid rgba(31,35,28,0.12); }
   .btn-secondary:hover { background:#fff; }
+  .wizard-back { min-width:44px; min-height:44px; margin-left:-8px; padding:0 12px 0 8px; border:0; border-radius:10px; background:transparent; color:#5C625C; cursor:pointer; display:inline-flex; align-items:center; gap:5px; font:500 13px/1 var(--font-geist),sans-serif; transition:background .15s cubic-bezier(0.2,0,0,1),color .15s cubic-bezier(0.2,0,0,1),transform .1s cubic-bezier(0.2,0,0,1); }
+  .wizard-back:hover { background:rgba(31,35,28,0.06); color:#1F231C; }
+  .wizard-back:active { background:rgba(31,35,28,0.1); transform:scale(.98); }
+  .wizard-back:focus-visible,.wizard-progress-step:focus-visible { outline:2px solid #C99644; outline-offset:2px; }
+  .wizard-back:disabled { cursor:default; opacity:.5; transform:none; }
+  .wizard-progress-step { appearance:none; border:0; border-radius:12px; background:transparent; padding:4px 2px; margin:-4px -2px; color:inherit; font:inherit; cursor:pointer; transition:background .15s cubic-bezier(0.2,0,0,1),transform .1s cubic-bezier(0.2,0,0,1); }
+  .wizard-progress-step:hover { background:rgba(31,35,28,0.06); }
+  .wizard-progress-step:active { transform:scale(.98); }
   .label { display:block; font-size:11px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:#5C625C; margin-bottom:6px; }
-  @media (prefers-reduced-motion: reduce){ .si-blob{animation:none!important} .si-rise{animation:none!important} }
+  @media (prefers-reduced-motion: reduce){ .si-blob{animation:none!important} .si-rise{animation:none!important} .wizard-back,.wizard-progress-step{transition:none!important} }
 `;
 
-function WizardLayout({ step, hotelName, children }: {
-  step: number; hotelName: string; children: React.ReactNode;
+function WizardLayout({ currentStep, displayStep, hotelName, onReviewStep, children }: {
+  currentStep: OnboardingStep;
+  displayStep: OnboardingStep;
+  hotelName: string;
+  onReviewStep: (step: OnboardingReviewStep) => void;
+  children: React.ReactNode;
 }) {
   return (
     <div style={{
@@ -287,13 +334,12 @@ function WizardLayout({ step, hotelName, children }: {
         }}>
           {STEP_LABELS.map((label, i) => {
             const stepNum = i + 1;
-            const isPast = stepNum < step;
-            const isCurrent = stepNum === step;
-            return (
-              <div key={label} style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center',
-                flex: 1, minWidth: 44, position: 'relative',
-              }}>
+            const isPast = stepNum < currentStep;
+            const isDisplayed = stepNum === displayStep;
+            const isCurrent = stepNum === currentStep;
+            const canReview = isPast && (stepNum === 1 || stepNum === 2);
+            const content = (
+              <>
                 <div style={{
                   width: 26, height: 26, borderRadius: '50%',
                   background: isPast ? '#C99644' : isCurrent ? '#1F231C' : 'rgba(31,35,28,0.06)',
@@ -302,14 +348,37 @@ function WizardLayout({ step, hotelName, children }: {
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 12, fontWeight: 600,
                   boxShadow: isPast ? '0 4px 10px -4px rgba(201,150,68,0.6)' : 'none',
+                  outline: isDisplayed && isPast ? '2px solid #1F231C' : 'none',
+                  outlineOffset: 2,
                 }}>
                   {isPast ? <Check size={14} /> : stepNum}
                 </div>
                 <span style={{
                   fontSize: 10, marginTop: 5,
-                  color: isCurrent ? '#1F231C' : '#8A8F88',
-                  fontWeight: isCurrent ? 600 : 400, textAlign: 'center',
+                  color: isDisplayed ? '#1F231C' : '#8A8F88',
+                  fontWeight: isDisplayed ? 600 : 400, textAlign: 'center',
                 }}>{label}</span>
+              </>
+            );
+            const stepStyle: React.CSSProperties = {
+              display: 'flex', flexDirection: 'column', alignItems: 'center',
+              flex: 1, minWidth: 44, position: 'relative',
+            };
+            return canReview ? (
+              <button
+                key={label}
+                type="button"
+                className="wizard-progress-step"
+                style={stepStyle}
+                aria-label={`Review ${label} step`}
+                aria-current={isDisplayed ? 'step' : undefined}
+                onClick={() => onReviewStep(stepNum as OnboardingReviewStep)}
+              >
+                {content}
+              </button>
+            ) : (
+              <div key={label} style={stepStyle} aria-current={isDisplayed ? 'step' : undefined}>
+                {content}
               </div>
             );
           })}
@@ -396,13 +465,11 @@ function WizardBackButton({ code, clearKeys, onNext }: {
     <div style={{ marginBottom: '16px' }}>
       <button
         type="button"
+        className="wizard-back"
         onClick={goBack}
         disabled={backing}
         style={{
-          background: 'none', border: 'none', padding: 0,
           cursor: backing ? 'default' : 'pointer',
-          color: '#5C625C', fontSize: '13px',
-          display: 'inline-flex', alignItems: 'center', gap: '4px',
           opacity: backing ? 0.5 : 1,
         }}
       >
@@ -417,9 +484,23 @@ function WizardBackButton({ code, clearKeys, onNext }: {
   );
 }
 
+function WizardReviewBackButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" className="wizard-back" onClick={onClick} style={{ marginBottom: '12px' }}>
+      <ChevronLeft size={15} aria-hidden="true" />
+      {label}
+    </button>
+  );
+}
+
 // ─── Step 1: Welcome ────────────────────────────────────────────────────
 
-function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+function Step1Welcome({ code, wizard, reviewing = false, onNext }: {
+  code: string;
+  wizard: WizardStateResponse;
+  reviewing?: boolean;
+  onNext: () => Promise<void>;
+}) {
   const { lang } = useLang();
   const o = ot(lang);
   const role = wizard.inviteRole === 'general_manager' ? 'General Manager' : 'Owner';
@@ -431,11 +512,13 @@ function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardSt
   const begin = async () => {
     setStarting(true);
     try {
-      await fetch('/api/onboard/wizard', {
-        method: 'PATCH',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ code, partialState: { step: 2 } }),
-      });
+      if (!reviewing) {
+        await fetch('/api/onboard/wizard', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ code, partialState: { step: 2 } }),
+        });
+      }
       await onNext();
     } finally {
       setStarting(false);
@@ -454,7 +537,7 @@ function Step1Welcome({ code, wizard, onNext }: { code: string; wizard: WizardSt
         {o.welcomeSteps}
       </p>
       <button className="btn btn-primary" onClick={begin} disabled={starting} style={{ width: '100%', justifyContent: 'center' }}>
-        {starting ? 'Starting…' : 'Begin →'}
+        {starting ? (reviewing ? o.continuingEllipsis : o.startingEllipsis) : (reviewing ? o.continueArrow : o.beginArrow)}
       </button>
     </div>
   );
@@ -603,9 +686,49 @@ function Step2CreateAccount({ code, wizard, onNext }: { code: string; wizard: Wi
   );
 }
 
+function Step2AccountReview({ currentStep, onBack, onContinue }: {
+  currentStep: OnboardingStep;
+  onBack: () => void;
+  onContinue: () => void;
+}) {
+  const { lang } = useLang();
+  const o = ot(lang);
+  const pendingEmail = typeof window !== 'undefined'
+    ? sessionStorage.getItem('onboard:pendingEmail') ?? ''
+    : '';
+
+  return (
+    <div>
+      <WizardReviewBackButton label={o.backToWelcome} onClick={onBack} />
+      <CheckCircle2 size={32} color="#C99644" style={{ marginBottom: '16px' }} />
+      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>{o.accountReadyTitle}</h2>
+      <p style={{ color: '#5C625C', marginBottom: pendingEmail ? '16px' : '24px', fontSize: '13px', lineHeight: 1.5 }}>
+        {o.accountReadyBody}
+      </p>
+      {pendingEmail && (
+        <div style={{
+          padding: '12px 14px', marginBottom: '24px', borderRadius: '12px',
+          border: '1px solid rgba(31,35,28,0.1)', background: 'rgba(255,255,255,0.58)',
+        }}>
+          <span className="label" style={{ marginBottom: '4px' }}>{o.accountEmailLabel}</span>
+          <strong style={{ fontSize: '14px', overflowWrap: 'anywhere' }}>{pendingEmail}</strong>
+        </div>
+      )}
+      <button className="btn btn-primary" type="button" onClick={onContinue} style={{ width: '100%', justifyContent: 'center' }}>
+        {currentStep === 3 ? o.continueToVerify : o.continueSetup}
+      </button>
+    </div>
+  );
+}
+
 // ─── Step 3: Verify email ───────────────────────────────────────────────
 
-function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateResponse; onNext: () => Promise<void>; }) {
+function Step3VerifyEmail({ code, onNext, onBack }: {
+  code: string;
+  wizard: WizardStateResponse;
+  onNext: () => Promise<void>;
+  onBack: () => void;
+}) {
   const { lang } = useLang();
   const o = ot(lang);
   const [otp, setOtp] = useState('');
@@ -682,6 +805,7 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
   if (recovered) {
     return (
       <div>
+        <WizardReviewBackButton label={o.backToAccount} onClick={onBack} />
         <Mail size={32} color="#C99644" style={{ marginBottom: '16px' }} />
         <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>{o.resumeTitle}</h2>
         <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px', lineHeight: 1.5 }}>
@@ -701,6 +825,7 @@ function Step3VerifyEmail({ code, onNext }: { code: string; wizard: WizardStateR
 
   return (
     <div>
+      <WizardReviewBackButton label={o.backToAccount} onClick={onBack} />
       <Mail size={32} color="#C99644" style={{ marginBottom: '16px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Check your email</h2>
       <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
@@ -1638,8 +1763,8 @@ function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateRespon
       // Full navigation (not router.push) so PropertyContext re-fetches the
       // property FRESH — now with onboarding_completed_at set. A client-side
       // push would leave the cached (pre-completion) property in context, and
-      // a cached onboarding gate could bounce the owner back through
-      // the wizard once before settling. A reload lands them cleanly.
+      // a cached onboarding gate could bounce the owner back through the wizard
+      // once before settling. A reload lands them cleanly on the Home hub.
       window.location.href = '/home';
     } catch (e) {
       if (e instanceof SessionEndedError) return;  // redirect in progress

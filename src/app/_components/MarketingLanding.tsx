@@ -99,7 +99,7 @@ const ORBIT_PAGES = [
   /* farther out than the rest, on purpose: it's not here yet */
   { id: 'comingsoon', label: 'Coming Soon', x: 97, y: 30, dir: 'right', tabs: ['Guest Experience'], soon: true },
   { id: 'inventory', label: 'Inventory', x: 87, y: 52, dir: 'right', tabs: ['Inventory'] },
-  { id: 'staff', label: 'Staff', x: 16, y: 92, dir: 'down-left', tabs: ['Schedule', 'Directory', 'Recognition'] },
+  { id: 'staff', label: 'Staff', x: 16, y: 92, dir: 'down-left', tabs: ['Schedule', 'Directory'] },
   { id: 'communications', label: 'Communications', x: 76, y: 94, dir: 'down-right', tabs: ['Messages', 'Log Book', 'Calendar'] },
 ] as const;
 

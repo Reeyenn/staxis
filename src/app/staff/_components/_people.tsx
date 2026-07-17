@@ -94,19 +94,6 @@ export function SeniorTag({ size = 10 }: { size?: number }) {
   );
 }
 
-// ── Scheduling manager tag — "★ MANAGER" pill ─────────────────────────────
-export function SMTag({ size = 10, compact = false }: { size?: number; compact?: boolean }) {
-  return (
-    <span style={{
-      fontFamily: fonts.mono, fontSize: size, fontWeight: 600,
-      color: T.ink, background: '#FBE3B8',
-      border: '1px solid rgba(31,35,28,0.18)',
-      padding: '1px 6px', borderRadius: 999, letterSpacing: '0.06em',
-      display: 'inline-flex', alignItems: 'center', gap: 4,
-    }}>{compact ? '★' : '★ MANAGER'}</span>
-  );
-}
-
 // ── HoursBar — slim utilization meter ─────────────────────────────────────
 export function HoursBar({
   hrs, max, height = 4, width = 72,

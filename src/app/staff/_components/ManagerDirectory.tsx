@@ -2,14 +2,14 @@
 //
 // Replaces the existing /staff Directory tab. The visual treatment changes
 // (3 cards instead of a single department-filter list) but the underlying
-// CRUD logic is preserved 1:1: same Add/Edit modal, same scheduling-manager
-// swap guard, same delete confirm, same write-timeout protection. The
-// modal additionally now has a "Linked login" picker that maps an account
-// to this staff row (writes `accounts.staff_id` via /api/auth/team).
+// CRUD logic is preserved 1:1: same Add/Edit modal, same delete confirm,
+// same write-timeout protection. The modal additionally now has a "Linked
+// login" picker that maps an account to this staff row (writes
+// `accounts.staff_id` via /api/auth/team).
 
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -18,8 +18,8 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { canManageTeam } from '@/lib/roles';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import type { StaffMember, StaffDepartment } from '@/types';
-import { T, fonts, deptMeta, asDeptKey, Caps, Btn } from './_tokens';
-import { StaffAvatar, SeniorTag, SMTag, HoursBar, PageHeader } from './_people';
+import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from './_tokens';
+import { StaffAvatar, SeniorTag, HoursBar, PageHeader } from './_people';
 
 // ── Form types ────────────────────────────────────────────────────────────
 interface StaffFormData {
@@ -33,13 +33,12 @@ interface StaffFormData {
   maxDaysPerWeek: number;
   vacationDates: string;
   isActive: boolean;
-  isSchedulingManager: boolean;
 }
 
 const EMPTY_FORM: StaffFormData = {
   name: '', language: 'es', department: 'housekeeping',
   isSenior: false, maxWeeklyHours: 40, maxDaysPerWeek: 5,
-  vacationDates: '', isActive: true, isSchedulingManager: false,
+  vacationDates: '', isActive: true,
 };
 
 // Team-member shape returned by GET /api/auth/team (with our new staffId field).
@@ -72,14 +71,12 @@ export function ManagerDirectory() {
   /* ── Modal state ── */
   const [showModal, setShowModal] = useState(false);
   const [editMember, setEditMember] = useState<StaffMember | null>(null);
+  const createdIdRef = useRef<string | null>(null);
   const [form, setForm] = useState<StaffFormData>(EMPTY_FORM);
   const [linkedAccountId, setLinkedAccountId] = useState<string | null>(null);
   const [originalLinkedAccountId, setOriginalLinkedAccountId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [swapConfirm, setSwapConfirm] = useState<
-    { currentManagerId: string; currentManagerName: string; newName: string } | null
-  >(null);
   const [team, setTeam] = useState<TeamMember[]>([]);
   // staffId → hourly wage. Fetched from the management-gated service-role
   // route (GET /api/staff/wages) — wages are deliberately NOT part of the
@@ -141,11 +138,13 @@ export function ManagerDirectory() {
     setSaveError(null);
     setLinkedAccountId(null);
     setOriginalLinkedAccountId(null);
+    createdIdRef.current = null;
   };
 
   /* ── Open handlers ── */
   const openAdd = (dept: StaffDepartment = 'housekeeping') => {
     setEditMember(null);
+    createdIdRef.current = null;
     setForm({ ...EMPTY_FORM, department: dept });
     setWageTouched(false);
     setLinkedAccountId(null);
@@ -157,6 +156,7 @@ export function ManagerDirectory() {
 
   const openEdit = (member: StaffMember) => {
     setEditMember(member);
+    createdIdRef.current = null;
     setForm({
       name: member.name,
       phone: member.phone,
@@ -170,7 +170,6 @@ export function ManagerDirectory() {
       maxDaysPerWeek: member.maxDaysPerWeek ?? 5,
       vacationDates: (member.vacationDates ?? []).join('\n'),
       isActive: member.isActive ?? true,
-      isSchedulingManager: member.isSchedulingManager === true,
     });
     setWageTouched(false);
     // linkedAccountId is set once the team list arrives — we look up the
@@ -214,16 +213,18 @@ export function ManagerDirectory() {
         maxDaysPerWeek: form.maxDaysPerWeek,
         vacationDates,
         isActive: form.isActive,
-        isSchedulingManager: form.isSchedulingManager,
       };
 
       // Hard 15s timeout on the staff write — see notes in the legacy
       // /staff/page.tsx about why this matters (Supabase auth-lock wedge).
-      let savedStaffId: string | null = editMember?.id ?? null;
-      const writePromise: Promise<unknown> = editMember
-        ? updateStaffMember(uid, pid, editMember.id, data)
+      const existingId = editMember?.id ?? createdIdRef.current;
+      let savedStaffId: string | null = existingId;
+      const writePromise: Promise<unknown> = existingId
+        ? updateStaffMember(uid, pid, existingId, data)
         : addStaffMember(uid, pid, { ...data, scheduledToday: false, weeklyHours: 0 })
-            .then((newId: string | void) => { if (typeof newId === 'string') savedStaffId = newId; });
+            .then((newId: string | void) => {
+              if (typeof newId === 'string') { savedStaffId = newId; createdIdRef.current = newId; }
+            });
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutId = setTimeout(
@@ -245,13 +246,18 @@ export function ManagerDirectory() {
       if (savedStaffId && originalLinkedAccountId !== linkedAccountId) {
         // Detach old account if it was set.
         if (originalLinkedAccountId && originalLinkedAccountId !== linkedAccountId) {
-          await fetchWithAuth('/api/auth/team', {
+          const detachRes = await fetchWithAuth('/api/auth/team', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               hotelId: pid, accountId: originalLinkedAccountId, staffId: null,
             }),
-          }).catch(err => console.warn('[ManagerDirectory] unlink old account failed', err));
+          });
+          if (!detachRes.ok) {
+            throw new Error(lang === 'es'
+              ? 'Detalles guardados, pero no se pudo desvincular el inicio de sesión. Inténtalo de nuevo.'
+              : "Details saved, but the login couldn't be unlinked. Try again.");
+          }
         }
         // Attach new account.
         if (linkedAccountId) {
@@ -263,8 +269,9 @@ export function ManagerDirectory() {
             }),
           });
           if (!linkRes.ok) {
-            const body = await linkRes.json().catch(() => ({}));
-            throw new Error(body?.error || 'Failed to link login to staff record');
+            throw new Error(lang === 'es'
+              ? 'Detalles guardados, pero no se pudo vincular el inicio de sesión. Inténtalo de nuevo.'
+              : "Details saved, but the login couldn't be linked. Try again.");
           }
         }
       }
@@ -285,8 +292,9 @@ export function ManagerDirectory() {
           body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, hourlyWage: desiredWage }),
         });
         if (!wageRes.ok) {
-          const body = await wageRes.json().catch(() => ({}));
-          throw new Error(body?.error || 'Failed to save wage');
+          throw new Error(lang === 'es'
+            ? 'Detalles guardados, pero no se pudo actualizar el salario. Inténtalo de nuevo.'
+            : "Details saved, but the wage couldn't be updated. Try again.");
         }
         const sid = savedStaffId;
         setWages(w => ({ ...w, [sid]: desiredWage }));
@@ -303,47 +311,25 @@ export function ManagerDirectory() {
     }
   };
 
-  const handleSave = async () => {
-    if (!uid || !pid || !form.name.trim()) return;
-    // Scheduling Manager swap guard.
-    if (form.isSchedulingManager) {
-      const currentManager = staff.find(
-        s => s.isSchedulingManager === true && s.id !== editMember?.id,
-      );
-      if (currentManager) {
-        setSwapConfirm({
-          currentManagerId: currentManager.id,
-          currentManagerName: currentManager.name,
-          newName: form.name.trim(),
-        });
-        return;
-      }
-    }
-    await performSave();
-  };
-
-  const confirmSchedulingManagerSwap = async () => {
-    if (!uid || !pid || !swapConfirm) return;
-    setSaving(true);
-    try {
-      await updateStaffMember(uid, pid, swapConfirm.currentManagerId, { isSchedulingManager: false });
-    } catch (err) {
-      console.error('[ManagerDirectory] clear previous SM failed', err);
-      setSaving(false);
-      setSwapConfirm(null);
-      return;
-    }
-    setSwapConfirm(null);
-    setSaving(false);
-    await performSave();
-  };
-
-  const handleDelete = (member: StaffMember) => {
-    const msg = lang === 'es' ? `¿Eliminar a ${member.name}?` : `Delete ${member.name}?`;
+  const handleDelete = async (member: StaffMember) => {
+    const msg = lang === 'es'
+      ? `¿Eliminar a ${member.name}? También se eliminará su historial de horarios.`
+      : `Delete ${member.name}? Their schedule history will be deleted too.`;
     if (!window.confirm(msg)) return;
-    if (uid && pid) {
-      deleteStaffMember(uid, pid, member.id)
-        .catch(err => console.error('[ManagerDirectory] delete failed:', err));
+    if (!uid || !pid) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await deleteStaffMember(uid, pid, member.id);
+      await refreshStaff();
+      closeModal();
+    } catch (err) {
+      console.error('[ManagerDirectory] delete failed:', err);
+      setSaveError(lang === 'es'
+        ? 'No se pudo eliminar. Inténtalo de nuevo.'
+        : "Couldn't delete. Please try again.");
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -352,15 +338,19 @@ export function ManagerDirectory() {
   const onShift = staff.filter(s => s.scheduledToday).length;
   const nearOT  = staff.filter(s => s.weeklyHours >= s.maxWeeklyHours - 4).length;
 
-  const groups = useMemo(() => DEPT_ORDER.map(dept => {
-    const list = staff
+  const groups = useMemo(() => {
+    const byDept = (dept: DeptKey) => staff
       .filter(s => asDeptKey(s.department) === dept)
       .sort((a, b) => {
         if (a.scheduledToday !== b.scheduledToday) return a.scheduledToday ? -1 : 1;
         return a.name.localeCompare(b.name);
       });
-    return { dept, list };
-  }), [staff]);
+    const base: { dept: DeptKey; list: StaffMember[] }[] =
+      DEPT_ORDER.map(dept => ({ dept, list: byDept(dept) }));
+    const otherList = byDept('other');
+    if (otherList.length > 0) base.push({ dept: 'other', list: otherList });
+    return base;
+  }, [staff]);
 
   // Accounts available to link: those without a staff_id, plus whichever
   // account is currently linked to this staff member (so the picker still
@@ -368,12 +358,6 @@ export function ManagerDirectory() {
   const linkableAccounts = useMemo(() => {
     return team.filter(t => t.staffId === null || t.accountId === originalLinkedAccountId);
   }, [team, originalLinkedAccountId]);
-
-  /* ── Missing scheduling manager warning ── */
-  const hasSchedulingManager = useMemo(
-    () => staff.some(s => s.isSchedulingManager === true && s.isActive !== false),
-    [staff],
-  );
 
   return (
     <div style={{
@@ -399,25 +383,6 @@ export function ManagerDirectory() {
           </div>
         }
       />
-
-      {/* Missing scheduling-manager warning (preserved from legacy page) */}
-      {total > 0 && !hasSchedulingManager && (
-        <div style={{
-          marginBottom: 16, padding: '12px 16px',
-          background: 'rgba(201,150,68,0.12)',
-          border: '1px solid rgba(140,106,51,0.32)',
-          borderRadius: 12,
-          display: 'flex', alignItems: 'flex-start', gap: 10,
-          fontFamily: fonts.sans, fontSize: 13, color: '#8C6A33', lineHeight: 1.45,
-        }}>
-          <strong style={{ color: '#8C6A33' }}>
-            {lang === 'es' ? 'Sin Responsable de Horarios.' : 'No Scheduling Manager set.'}
-          </strong>{' '}
-          {lang === 'es'
-            ? 'Si un limpiador presiona "Necesito ayuda", nadie recibirá el mensaje. Abre un miembro del personal y activa "Responsable de horarios".'
-            : 'If a housekeeper taps "Need Help", nobody will get texted. Open a staff member and toggle on "Scheduling Manager".'}
-        </div>
-      )}
 
       {/* KPI strip */}
       <div style={{
@@ -508,25 +473,14 @@ export function ManagerDirectory() {
           saving={saving}
           saveError={saveError}
           onClose={closeModal}
-          onSave={handleSave}
-          onDelete={editMember ? () => { closeModal(); handleDelete(editMember); } : undefined}
+          onSave={performSave}
+          onDelete={editMember ? () => handleDelete(editMember) : undefined}
           linkableAccounts={linkableAccounts}
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}
           showWage={isManager}
           markWageTouched={() => setWageTouched(true)}
           lang={lang}
-        />
-      )}
-
-      {/* Scheduling manager swap confirmation */}
-      {swapConfirm && (
-        <SchedulingManagerSwapModal
-          info={swapConfirm}
-          saving={saving}
-          lang={lang}
-          onCancel={() => { if (!saving) setSwapConfirm(null); }}
-          onConfirm={confirmSchedulingManagerSwap}
         />
       )}
     </div>
@@ -554,7 +508,6 @@ function DirRow({ member, onClick }: { member: StaffMember; onClick: () => void 
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
           }}>{member.name}</span>
           {member.isSenior && <SeniorTag/>}
-          {member.isSchedulingManager && <SMTag/>}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
           <span style={{
@@ -751,14 +704,7 @@ function StaffEditModal({
           {[
             { label: lang === 'es' ? 'Activo' : 'Active', field: 'isActive' as const },
             { label: lang === 'es' ? 'Sénior' : 'Senior', field: 'isSenior' as const },
-            {
-              label: lang === 'es' ? 'Responsable de horarios' : 'Scheduling Manager',
-              field: 'isSchedulingManager' as const,
-              hint: lang === 'es'
-                ? 'Recibe el mensaje cuando un limpiador presiona "Necesito ayuda". Una persona a la vez.'
-                : 'Receives the SMS when a housekeeper taps "Need Help". One person at a time.',
-            },
-          ].map(({ label, field, hint }) => (
+          ].map(({ label, field }) => (
             <div key={field} style={{
               padding: '10px 14px',
               background: T.sageDim, borderRadius: 12,
@@ -776,12 +722,6 @@ function StaffEditModal({
                   style={{ width: 18, height: 18, cursor: 'pointer' }}
                 />
               </label>
-              {hint && (
-                <p style={{
-                  margin: '6px 0 0', fontFamily: fonts.sans, fontSize: 11,
-                  color: T.ink2, lineHeight: 1.4,
-                }}>{hint}</p>
-              )}
             </div>
           ))}
 
@@ -898,69 +838,6 @@ function Field({
           color: T.ink3, lineHeight: 1.4,
         }}>{hint}</p>
       )}
-    </div>
-  );
-}
-
-// ── Scheduling Manager swap modal ───────────────────────────────────────────
-function SchedulingManagerSwapModal({
-  info, saving, lang, onCancel, onConfirm,
-}: {
-  info: { currentManagerName: string; newName: string };
-  saving: boolean;
-  lang: 'en' | 'es';
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <div
-      onClick={onCancel}
-      style={{
-        position: 'fixed', inset: 0, zIndex: 1100,
-        background: 'rgba(31,35,28,0.5)', backdropFilter: 'blur(8px)',
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        padding: 16,
-      }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
-        style={{
-          background: T.paper, borderRadius: 18,
-          padding: '24px 26px', maxWidth: 440, width: '100%',
-          boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24)',
-        }}
-      >
-        <h2 style={{
-          margin: 0, fontFamily: fonts.sans, fontSize: 18,
-          color: T.ink, letterSpacing: '-0.02em', fontWeight: 600,
-        }}>
-          {lang === 'es' ? '¿Cambiar responsable de horarios?' : 'Switch Scheduling Manager?'}
-        </h2>
-        <p style={{
-          margin: '14px 0 22px',
-          fontFamily: fonts.sans, fontSize: 13.5, color: T.ink2, lineHeight: 1.55,
-        }}>
-          {lang === 'es' ? (
-            <><strong style={{ color: T.ink }}>{info.currentManagerName}</strong> es el responsable actual.
-            {' '}Si continúas, <strong style={{ color: T.ink }}>{info.newName}</strong> tomará ese rol
-            y <strong style={{ color: T.ink }}>{info.currentManagerName}</strong> dejará de recibir los mensajes.</>
-          ) : (
-            <><strong style={{ color: T.ink }}>{info.currentManagerName}</strong> currently has this role.
-            {' '}If you continue, <strong style={{ color: T.ink }}>{info.newName}</strong> will take it
-            and <strong style={{ color: T.ink }}>{info.currentManagerName}</strong> will stop receiving alerts.</>
-          )}
-        </p>
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-          <Btn variant="ghost" size="md" onClick={onCancel} disabled={saving}>
-            {lang === 'es' ? 'Cancelar' : 'Cancel'}
-          </Btn>
-          <Btn variant="primary" size="md" onClick={onConfirm} disabled={saving}>
-            {saving
-              ? (lang === 'es' ? 'Guardando…' : 'Saving…')
-              : (lang === 'es' ? 'Sí, cambiar' : 'Yes, switch')}
-          </Btn>
-        </div>
-      </div>
     </div>
   );
 }

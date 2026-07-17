@@ -10,6 +10,7 @@ import {
   VisionSchemaError,
   type VisionImage,
   type VisionUsageReport,
+  type VisionCallOptions,
 } from '@/lib/vision-extract';
 
 export interface ExtractedReading {
@@ -49,6 +50,7 @@ export async function extractReadingFromImage(
   image: VisionImage,
   hint: { name: string; unit: string; category: string },
   onUsage?: (u: VisionUsageReport) => void,
+  opts: VisionCallOptions = {},
 ): Promise<ExtractedReading> {
   return visionExtractJSON<ExtractedReading>(
     image,
@@ -58,21 +60,23 @@ export async function extractReadingFromImage(
         throw new VisionSchemaError('expected an object at top level');
       }
       const obj = raw as Record<string, unknown>;
+      // Coerce, don't reject: models routinely omit null-valued optional keys
+      // (undefined, not an explicit null). A missing unit/note/confidence must
+      // not throw away a perfectly good reading — normalize to null/'low'.
       const value =
-        typeof obj.value === 'number' && Number.isFinite(obj.value)
+        typeof obj.value === 'number' && Number.isFinite(obj.value) && Math.abs(obj.value) <= 1e9
           ? obj.value
           : null;
+      const unit = typeof obj.unit === 'string' && obj.unit ? obj.unit.slice(0, 50) : null;
       const confidence =
         obj.confidence === 'high' || obj.confidence === 'medium' || obj.confidence === 'low'
           ? obj.confidence
           : 'low';
-      return {
-        value,
-        unit: typeof obj.unit === 'string' ? obj.unit : null,
-        confidence,
-        note: typeof obj.note === 'string' ? obj.note : null,
-      };
+      const note = typeof obj.note === 'string' && obj.note ? obj.note.slice(0, 500) : null;
+      return { value, unit, confidence, note };
     },
     onUsage,
+    'compliance.photo_reading',
+    opts,
   );
 }

@@ -20,6 +20,8 @@ import { requireSectionEnabled } from '@/lib/sections/server';
 import { canForUserId } from '@/lib/capabilities/server';
 import { postAnnouncement, createAckCampaign } from '@/lib/comms/core';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,6 +30,7 @@ export const maxDuration = 30; // org-wide fan-out + one translate
 interface Body { pid?: string; body?: string; requiresAck?: boolean; orgWide?: boolean }
 
 export async function POST(req: NextRequest): Promise<Response> {
+  const deadlineAt = Date.now() + 12_000;
   let body: Body;
   try { body = (await req.json()) as Body; } catch { body = {}; }
 
@@ -59,7 +62,22 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // Translate to Spanish once for the legacy notice banner (best-effort). Reused
   // across every property in an org-wide blast.
-  const bodyEs = ctx.lang === 'es' ? text : await translateNoticeToSpanish(text);
+  let usage: AiUsageReport | null = null;
+  const bodyEs = ctx.lang === 'es'
+    ? text
+    : await translateNoticeToSpanish(text, 'communications.announcement_translation', {
+        deadlineAt,
+        abortSignal: req.signal,
+        onUsage: (value) => { usage = value; },
+      });
+  await recordAiUsageBestEffort({
+    usage,
+    userId: ctx.accountId,
+    propertyId: ctx.pid,
+    kind: 'background',
+    requestId: ctx.requestId,
+    feature: 'communications.announcement_translation',
+  });
 
   // ── Org-wide mandatory-read campaign ──────────────────────────────────────
   if (orgWide) {

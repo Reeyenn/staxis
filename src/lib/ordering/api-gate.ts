@@ -24,12 +24,9 @@ import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { type AppRole } from '@/lib/roles';
 import { canForProperty } from '@/lib/capabilities/server';
+import { isUuid } from '@/lib/api-validate';
 
-const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function isUuid(s: unknown): s is string {
-  return typeof s === 'string' && UUID_RX.test(s);
-}
+export { isUuid };
 
 export type OrderingAccess =
   | {

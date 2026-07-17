@@ -128,14 +128,22 @@ export async function GET(req: NextRequest): Promise<Response> {
     const uniqueUsers = new Set(requestCosts.map(r => r.user_id as string)).size;
     const uniqueProperties = new Set(requestCosts.map(r => r.property_id as string)).size;
 
-    // Cache hit rate (Codex fix G4): cached_input_tokens / (cached + fresh
-    // input). Fresh input = tokens_in (which is the FRESH input tokens not
-    // already cached). Higher is better — proves the prompt cache is
-    // hitting and we're not paying full input price every turn.
+    // Cache hit rate: cached_input_tokens / total input. Since the 2026-07
+    // accounting correction, tokens_in is Anthropic's full input sum
+    // (uncached + cache creation + cache reads), while cached_input_tokens is
+    // the cache-read subset. Do not add the cached subset to the denominator.
     const totalCached = requestCosts.reduce((acc, r) => acc + Number(r.cached_input_tokens ?? 0), 0);
-    const totalFresh = requestCosts.reduce((acc, r) => acc + Number(r.tokens_in ?? 0), 0);
-    const cacheHitRatePct = totalCached + totalFresh > 0
-      ? Math.round((totalCached / (totalCached + totalFresh)) * 1000) / 10
+    // Rows written before the accounting correction store only the UNCACHED
+    // input in tokens_in, so cached can exceed tokens_in on those rows. Use
+    // max(tokens_in, cached) per row so a mixed window stays a true ratio
+    // instead of clamping to a fake 100%; it converges to plain tokens_in
+    // once the window holds only post-correction rows.
+    const totalInput = requestCosts.reduce(
+      (acc, r) => acc + Math.max(Number(r.tokens_in ?? 0), Number(r.cached_input_tokens ?? 0)),
+      0,
+    );
+    const cacheHitRatePct = totalInput > 0
+      ? Math.min(100, Math.round((totalCached / totalInput) * 1000) / 10)
       : 0;
 
     // Distinct Anthropic snapshot IDs seen today (Codex fix G9). When this

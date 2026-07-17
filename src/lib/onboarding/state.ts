@@ -7,6 +7,7 @@
  */
 
 export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type OnboardingReviewStep = 1 | 2;
 
 /**
  * Placeholder name a property is created with when the admin generates an
@@ -106,10 +107,23 @@ export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
 }
 
 /**
+ * Keep early-step review navigation separate from durable onboarding progress.
+ * Welcome and Account are safe to revisit as read-only screens after the
+ * account exists; rewinding the persisted auth markers is not safe because it
+ * would strand an already-created Supabase user in the signup flow.
+ */
+export function resolveOnboardingDisplayStep(
+  currentStep: OnboardingStep,
+  reviewStep: OnboardingReviewStep | null,
+): OnboardingStep {
+  return reviewStep !== null && reviewStep < currentStep ? reviewStep : currentStep;
+}
+
+/**
  * Is this property an owner who STARTED the signup wizard but hasn't
- * finished it? Used by the login funnel (property-selector + dashboard)
+ * finished it? Used by the login funnel (Home, property-selector, dashboard)
  * to keep a mid-onboarding owner inside the wizard instead of dropping
- * them on an empty dashboard with no PMS connected.
+ * them on an empty app with no PMS connected.
  *
  * The signal is deliberately narrow:
  *   - `completedAt` set  → fully onboarded, never gated (normal login).
@@ -130,15 +144,15 @@ export function isOnboardingInProgress(
 }
 
 /**
- * sessionStorage flag, set by the login-funnel gate (property-selector /
- * dashboard) right before it sends a mid-onboarding owner to
+ * sessionStorage property id, set by the login-funnel gate (Home /
+ * property-selector / dashboard) right before it sends a mid-onboarding owner to
  * /api/onboard/resume. It is a ONE-SHOT loop-breaker: if the resume route
  * can't complete (e.g. the device-trust/2FA session lapsed, or no join code
  * could be produced) it falls back to /property-selector — which would
  * otherwise re-fire the gate for a single-property owner and loop forever.
- * With the flag already set, the gate degrades gracefully to the dashboard
- * instead of re-attempting. The wizard clears it on successful load (so a
- * later resume works), and sign-out clears it too.
+ * With that property's id already set, the gate degrades gracefully to Home
+ * instead of re-attempting. A different unfinished hotel can still resume in
+ * the same tab. The wizard clears it on successful load, and sign-out clears it.
  */
 export const RESUME_GUARD_KEY = 'staxis-onboard-resume-tried';
 

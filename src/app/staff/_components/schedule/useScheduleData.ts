@@ -146,6 +146,9 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   const serverDayMapRef = useRef(serverDayMap);
   serverDayMapRef.current = serverDayMap;
   const pendingSaves = useRef(new Map<string, number>());
+  // Per-date chain of the last in-flight save promise — saveDays waits on it
+  // so two writes to the same day can never overlap (see saveDays).
+  const saveChain = useRef(new Map<string, Promise<unknown>>());
   const gestureActive = useRef(false);
   const undoStack = useRef<DayEntry[][]>([]);
   const [undoCount, setUndoCount] = useState(0);
@@ -155,6 +158,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
     liveOv.current = {};
     setOverrides({});
     pendingSaves.current.clear();
+    saveChain.current.clear();
     gestureActive.current = false;
     undoStack.current = [];
     setUndoCount(0);
@@ -203,67 +207,96 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   // ── Persistence: bulk replace-days ────────────────────────────────────
   // The fill endpoint takes ≤7 days per call; bigger writes (auto-repeat
   // across upcoming weeks, undo of one) go out as sequential week chunks.
-  const saveDays = useCallback(async (entries: DayEntry[]): Promise<FillResult> => {
-    if (!propertyId) throw new Error('No property selected');
-    for (const e of entries) {
-      pendingSaves.current.set(e.date, (pendingSaves.current.get(e.date) ?? 0) + 1);
+  const saveDays = useCallback((entries: DayEntry[]): Promise<FillResult> => {
+    if (!propertyId) return Promise.reject(new Error('No property selected'));
+    const dates = entries.map(e => e.date);
+    for (const d of dates) {
+      pendingSaves.current.set(d, (pendingSaves.current.get(d) ?? 0) + 1);
     }
-    try {
-      const data: FillResult = { inserted: 0, updated: 0, deleted: 0, skippedTimeOff: 0, skippedUnknown: 0 };
-      for (let i = 0; i < entries.length; i += 7) {
-        const chunk = entries.slice(i, i + 7);
-        const res = await fetchWithAuth('/api/staff-schedule/fill', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            hotelId: propertyId,
-            days: chunk.map(e => ({
-              date: e.date,
-              shifts: e.shifts.map(s => ({
-                staffId: s.staffId,
-                department: s.dept,
-                startTime: toHHMM(s.startMin),
-                endTime: toHHMM(Math.min(s.endMin, 24 * 60 - 1)),
-                note: s.note ?? null,
-                ...(s.overrideTimeOff ? { overrideTimeOff: true } : {}),
+    // Wait for any in-flight save on these days before firing our own. The
+    // fill route's read→delete→insert isn't transactional, so overlapping
+    // same-day writes can trip the (staff,date) exclusion constraint; a
+    // prior save's failure doesn't concern us (it reverts its own day).
+    const prior = Promise.allSettled(
+      dates.map(d => saveChain.current.get(d)).filter(Boolean) as Promise<unknown>[],
+    );
+    const run = (async (): Promise<FillResult> => {
+      await prior;
+      let committed = 0;
+      try {
+        const data: FillResult = { inserted: 0, updated: 0, deleted: 0, skippedTimeOff: 0, skippedUnknown: 0 };
+        for (let i = 0; i < entries.length; i += 7) {
+          const chunk = entries.slice(i, i + 7);
+          const res = await fetchWithAuth('/api/staff-schedule/fill', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              hotelId: propertyId,
+              // Read the live day state at send time — a save that queued
+              // behind another must ship the latest edits, not a stale
+              // snapshot (this also coalesces rapid same-day changes).
+              days: chunk.map(e => ({
+                date: e.date,
+                shifts: getDayLive(e.date).map(s => ({
+                  staffId: s.staffId,
+                  department: s.dept,
+                  startTime: toHHMM(s.startMin),
+                  endTime: toHHMM(Math.min(s.endMin, 24 * 60 - 1)),
+                  note: s.note ?? null,
+                  ...(s.overrideTimeOff ? { overrideTimeOff: true } : {}),
+                })),
               })),
-            })),
-          }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body?.error || 'Save failed');
-        const part = (body?.data ?? {}) as Partial<FillResult>;
-        data.inserted += part.inserted ?? 0;
-        data.updated += part.updated ?? 0;
-        data.deleted += part.deleted ?? 0;
-        data.skippedTimeOff += part.skippedTimeOff ?? 0;
-        data.skippedUnknown += part.skippedUnknown ?? 0;
+            }),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(body?.error || 'Save failed');
+          const part = (body?.data ?? {}) as Partial<FillResult>;
+          data.inserted += part.inserted ?? 0;
+          data.updated += part.updated ?? 0;
+          data.deleted += part.deleted ?? 0;
+          data.skippedTimeOff += part.skippedTimeOff ?? 0;
+          data.skippedUnknown += part.skippedUnknown ?? 0;
+          committed++;
+        }
+        // Server intentionally diverged (time-off / departed staff): show its
+        // truth as soon as the refetch lands instead of pinning our version.
+        if ((data.skippedTimeOff ?? 0) > 0 || (data.skippedUnknown ?? 0) > 0) {
+          clearOverrides(dates);
+        } else {
+          // Failsafe: never leave an override pinned forever if the refetch
+          // and the override disagree for reasons we didn't anticipate.
+          setTimeout(() => {
+            const stillPending = dates.some(d => (pendingSaves.current.get(d) ?? 0) > 0);
+            if (!stillPending && !gestureActive.current) clearOverrides(dates);
+          }, 8000);
+        }
+        return data;
+      } catch (e) {
+        clearOverrides(dates); // revert to server truth
+        // Multi-week fills chunk by week; earlier chunks may have committed
+        // before a later one failed. Tag the count so the UI can say some
+        // weeks saved instead of implying nothing did.
+        if (committed > 0 && e instanceof Error) {
+          (e as Error & { partialSaved?: number }).partialSaved = committed;
+        }
+        throw e;
+      } finally {
+        for (const d of dates) {
+          const n = (pendingSaves.current.get(d) ?? 1) - 1;
+          if (n <= 0) pendingSaves.current.delete(d);
+          else pendingSaves.current.set(d, n);
+        }
       }
-      // Server intentionally diverged (time-off / departed staff): show its
-      // truth as soon as the refetch lands instead of pinning our version.
-      if ((data.skippedTimeOff ?? 0) > 0 || (data.skippedUnknown ?? 0) > 0) {
-        clearOverrides(entries.map(e => e.date));
-      } else {
-        // Failsafe: never leave an override pinned forever if the refetch
-        // and the override disagree for reasons we didn't anticipate.
-        const dates = entries.map(e => e.date);
-        setTimeout(() => {
-          const stillPending = dates.some(d => (pendingSaves.current.get(d) ?? 0) > 0);
-          if (!stillPending && !gestureActive.current) clearOverrides(dates);
-        }, 8000);
+    })();
+    const chained = run.catch(() => {});
+    for (const d of dates) saveChain.current.set(d, chained);
+    void chained.then(() => {
+      for (const d of dates) {
+        if (saveChain.current.get(d) === chained) saveChain.current.delete(d);
       }
-      return data;
-    } catch (e) {
-      clearOverrides(entries.map(e2 => e2.date)); // revert to server truth
-      throw e;
-    } finally {
-      for (const e of entries) {
-        const n = (pendingSaves.current.get(e.date) ?? 1) - 1;
-        if (n <= 0) pendingSaves.current.delete(e.date);
-        else pendingSaves.current.set(e.date, n);
-      }
-    }
-  }, [propertyId, clearOverrides]);
+    });
+    return run;
+  }, [propertyId, clearOverrides, getDayLive]);
 
   /** Persist the current local state of a single day (gesture end). */
   const commitDay = useCallback((date: string) => {

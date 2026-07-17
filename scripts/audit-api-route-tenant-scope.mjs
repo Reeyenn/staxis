@@ -42,13 +42,22 @@ const APP = join(REPO, 'src', 'app');
 const KNOWN_GUARDS = [
   // From src/lib/api-auth.ts
   'requireSession',
-  'requireSessionOrCron',
   'requireCronSecret',
   'requireHeartbeatSecret',
   'userHasPropertyAccess',
   // From src/lib/admin-auth.ts
   'requireAdmin',
   'requireAdminOrCron',
+  // From src/lib/api-route.ts — the shared route wrapper's gate helpers.
+  // Each thinly wraps a real auth guard above (sessionGate → requireSession,
+  // adminGate → requireAdmin, cronGate → requireCronSecret) and returns it in
+  // the wrapper's { ok, requestId, ... } shape. Routes converted to defineRoute
+  // reference these instead of the bare guard. (publicGate is intentionally
+  // NOT listed — it performs no auth; public routes still need validateUuid +
+  // a capability/link-token check, which are recognized separately.)
+  'sessionGate',
+  'adminGate',
+  'cronGate',
   // From src/lib/team-auth.ts
   'verifyTeamManager',
   'canManageHotel',

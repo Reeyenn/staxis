@@ -21,7 +21,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
+import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 import { mergeInvoicePages, type ExtractedInvoice } from '@/lib/invoice-scan-merge';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
@@ -34,9 +36,6 @@ import { captureException } from '@/lib/sentry';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
-
-const isUuid = (s: unknown): s is string =>
-  typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
 // Anthropic Vision only accepts these four. iPhone HEIC/HEIF must be
 // converted (or rejected at the picker) before reaching here.
@@ -101,6 +100,7 @@ function validateInvoice(raw: unknown): ExtractedInvoice {
 }
 
 export async function POST(req: NextRequest) {
+  const visionDeadlineAt = Date.now() + 52_000;
   // Auth gate: this route hits the Anthropic Vision API on each request.
   // Without a session check, anyone with a guessed property UUID could
   // submit unlimited images and burn through ANTHROPIC_API_KEY budget.
@@ -249,6 +249,8 @@ export async function POST(req: NextRequest) {
         PROMPT,
         validateInvoice,
         captureUsage,
+        'inventory.invoice_scan',
+        { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
       );
       extracted = [one];
     } else {
@@ -259,6 +261,8 @@ export async function POST(req: NextRequest) {
             PROMPT,
             validateInvoice,
             captureUsage,
+            'inventory.invoice_scan',
+            { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
           ),
         ),
       );
@@ -315,6 +319,13 @@ export async function POST(req: NextRequest) {
     // vision_failed. Now that multi-page + PDF exist, the message points at
     // the real fix: fewer pages per scan / one page per photo. (May 2026
     // audit pass-4; message updated for the multi-page contract.)
+    if (e instanceof AiFeatureDisabledError) {
+      // Admin kill switch — an intentional state, not an outage. No error log.
+      return NextResponse.json(
+        { ok: false, error: 'feature_disabled', detail: 'This AI feature is currently turned off.' },
+        { status: 503 },
+      );
+    }
     if (e instanceof VisionTruncatedError) {
       return NextResponse.json(
         {
@@ -372,6 +383,7 @@ export async function POST(req: NextRequest) {
     if (usages.length > 0 && accountId) {
       const tokensIn = usages.reduce((s, u) => s + u.inputTokens, 0);
       const tokensOut = usages.reduce((s, u) => s + u.outputTokens, 0);
+      const cachedInputTokens = usages.reduce((s, u) => s + u.cachedInputTokens, 0);
       const costUsd = usages.reduce((s, u) => s + u.costUsd, 0);
       const { model, modelId } = usages[0];
       try {
@@ -383,6 +395,7 @@ export async function POST(req: NextRequest) {
           modelId,
           tokensIn,
           tokensOut,
+          cachedInputTokens,
           costUsd,
           kind: 'vision',
         });

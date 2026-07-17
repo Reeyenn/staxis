@@ -23,6 +23,21 @@ export const GLOW: Record<string, string> = {
   tealTop:   'radial-gradient(100% 80% at 50% 0%, rgba(51,137,160,.14), transparent 62%)',
 };
 
+/** Full-bleed dark page scope — breaks out of the app's centered column to
+ *  paint the ink canvas edge-to-edge under a studio route. The three admin
+ *  studio pages (mapper, coverage, property-sessions) each hand-wrote this. */
+export function DarkScope({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="admin-studio" style={{
+      background: 'var(--ink)', color: '#fff',
+      marginLeft: 'calc(50% - 50vw)', marginRight: 'calc(50% - 50vw)',
+      minHeight: 'calc(100vh - 64px)',
+    }}>
+      {children}
+    </div>
+  );
+}
+
 /** Dark editorial stage section with a configurable radial glow. Seamless
  *  with the full-bleed dark admin canvas (no card chrome) — just padding +
  *  the per-surface glow over the shared ink background. */

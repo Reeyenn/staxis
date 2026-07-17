@@ -47,6 +47,14 @@ export type RateLimitEndpoint =
   // hit them, a compromised admin account or scripted retry storm
   // could rack up real spend. Cap at 10/hr per property.
   | 'admin-regenerate-recipe'
+  // AI Control Center validation runs a real synthetic provider probe before
+  // a model can be activated. Admin-only, but still billable and therefore
+  // bounded/fail-closed against a compromised session or retry loop.
+  | 'admin-ai-config-validate'
+  // AI Control Center provider catalog refresh: outbound model-list calls to
+  // Anthropic/OpenAI + bulk catalog upserts. Not token-billable, so fail-open,
+  // but bounded against a scripted retry loop rewriting the fleet catalog.
+  | 'admin-ai-models-refresh'
   // Manual 2FA code entry from the Launch Bay panel. Costs nothing,
   // but it feeds the robot's login — cap retries so a scripted storm
   // can't spray guesses into pms_auth_codes.
@@ -350,6 +358,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Admin recipe regeneration costs $1-3 each. 10/hour/property is
   // generous for legitimate ops use; tight enough to stop a runaway.
   'admin-regenerate-recipe':    10,
+  'admin-ai-config-validate':   30,
+  // Catalog refreshes hit two provider list APIs; a human clicks this a few
+  // times a day at most.
+  'admin-ai-models-refresh':    30,
   // Manual 2FA code entry — a human typo-retries a few times at most.
   'admin-pms-auth-code':        30,
   // Invoice scans cost $0.003-0.01 each; 50/hr per property absorbs
@@ -714,6 +726,7 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'pms-writeback-enqueue',
   // Recipe regeneration is the same shape as pms-onboard.
   'admin-regenerate-recipe',
+  'admin-ai-config-validate',
   // Claude Vision calls.
   'scan-invoice',
   'photo-count',

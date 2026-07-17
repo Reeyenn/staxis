@@ -110,6 +110,7 @@ function emptyWeek(): WeekShiftCell[] {
 export function useWeekShifts(
   propertyId: string | null,
   weekStart: string,
+  staffId: string | null,
 ): WeekShiftsResult {
   const days = buildDays(weekStart);
   const weekEnd = days[6].date;
@@ -137,7 +138,7 @@ export function useWeekShifts(
       subscribeToTimeOffRequests('', propertyId, (rows) => {
         setTor(rows);
         setLoadingFlags(f => ({ ...f, tor: false }));
-      }),
+      }, staffId),
       subscribeToWeekPublications('', propertyId, (rows) => {
         setPubs(rows);
         setLoadingFlags(f => ({ ...f, pubs: false }));
@@ -148,7 +149,7 @@ export function useWeekShifts(
       }),
     ];
     return () => { unSubs.forEach(u => { try { u(); } catch { /* ignore */ } }); };
-  }, [propertyId, weekStart, weekEnd]);
+  }, [propertyId, weekStart, weekEnd, staffId]);
 
   // Bucket assigned shifts per (staff, day). Open shifts collected separately.
   const byStaff: Record<string, WeekShiftCell[]> = {};

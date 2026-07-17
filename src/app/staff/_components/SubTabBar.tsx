@@ -1,4 +1,4 @@
-// Staff sub-tab bar (manager-only): Schedule | Directory | Recognition.
+// Staff sub-tab bar (manager-only): Schedule | Directory.
 // Matches the design's StaffSubTabBar — 1.5px black underline on active,
 // ink2 on inactive, 28px gap between tabs.
 
@@ -6,7 +6,7 @@ import React from 'react';
 import { useLang } from '@/contexts/LanguageContext';
 import { T, fonts } from './_tokens';
 
-export type StaffTab = 'schedule' | 'directory' | 'recognition';
+export type StaffTab = 'schedule' | 'directory';
 
 export function SubTabBar({
   tab, onTab,
@@ -16,9 +16,8 @@ export function SubTabBar({
 }) {
   const { lang } = useLang();
   const tabs: { key: StaffTab; label: string }[] = [
-    { key: 'schedule',    label: lang === 'es' ? 'Horario'        : 'Schedule' },
-    { key: 'directory',   label: lang === 'es' ? 'Directorio'     : 'Directory' },
-    { key: 'recognition', label: lang === 'es' ? 'Reconocimiento' : 'Recognition' },
+    { key: 'schedule',    label: lang === 'es' ? 'Horario'    : 'Schedule' },
+    { key: 'directory',   label: lang === 'es' ? 'Directorio' : 'Directory' },
   ];
   return (
     <div style={{

@@ -22,7 +22,6 @@ export function ChevronMark({ size = 32, color = '#1A1F1B' }: { size?: number; c
 }
 
 // Caramel accent shared across all auth screens.
-export const AUTH_ACCENT = '#C99644';
 export const AUTH_LINK = '#8C6A33';
 
 export const authLabelStyle: React.CSSProperties = {

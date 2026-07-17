@@ -5,31 +5,19 @@
  *
  * Same hardened path as scan-invoice: visionExtractJSON + daily $ cap + the
  * api_limits rate limiter keyed on the RAW pid (billing endpoint, fails closed).
+ * The gate / image checks / rate limit / budget / Vision error mapping /
+ * cost-ledger `finally` are shared with scan-invoice via runFinanceScanRoute;
+ * this file supplies the prompt, the schema mapper, and the draft builder.
  */
 
-import { NextResponse, type NextRequest } from 'next/server';
-import {
-  visionExtractJSON,
-  VisionTruncatedError,
-  VisionImageInvalidError,
-  VisionSchemaError,
-  type VisionUsageReport,
-} from '@/lib/vision-extract';
-import { errToString } from '@/lib/utils';
-import { log } from '@/lib/log';
-import { requireFinanceAccess } from '@/lib/financials/api-gate';
-import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
-import { captureException } from '@/lib/sentry';
-import { ok, err } from '@/lib/api-response';
+import { type NextRequest } from 'next/server';
+import { VisionSchemaError } from '@/lib/vision-extract';
+import { runFinanceScanRoute } from '@/lib/financials/scan-vision-route';
 import { parseDollarsToCents } from '@/lib/financials/shared';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
-
-type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
-const SUPPORTED_MEDIA_TYPES: readonly VisionMediaType[] = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
 interface ExtractedQuote {
   project_name: string | null;
@@ -58,80 +46,51 @@ Rules:
 - If the image is not a quote/estimate, return nulls and an empty line_items array.`;
 
 export async function POST(req: NextRequest): Promise<Response> {
-  const body = (await req.json().catch(() => null)) as
-    | { pid?: string; imageBase64?: string; mediaType?: string }
-    | null;
-  if (!body) return err('invalid_json', { requestId: 'na', status: 400, code: 'invalid_json' });
+  return runFinanceScanRoute<ExtractedQuote>(req, {
+    featureKey: 'financials.quote_scan',
+    endpoint: 'financials-scan-quote',
+    logLabel: '[financials/scan-quote]',
+    costRoute: 'financials-scan-quote',
+    tooComplexCode: 'quote_too_complex',
+    invalidShapeCode: 'quote_extract_invalid_shape',
+    prompt: PROMPT,
+    mapRaw: (raw): ExtractedQuote => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new VisionSchemaError('expected an object at top level');
+      }
+      const o = raw as Record<string, unknown>;
+      const rawLines = Array.isArray(o.line_items) ? o.line_items : [];
+      const line_items = rawLines
+        .map((l) => {
+          const li = (l ?? {}) as Record<string, unknown>;
+          return {
+            label: typeof li.label === 'string' ? li.label : '',
+            amount: typeof li.amount === 'number' && Number.isFinite(li.amount) ? li.amount : null,
+          };
+        })
+        .filter((l) => l.label.trim().length > 0)
+        .slice(0, 100);
+      return {
+        project_name: typeof o.project_name === 'string' ? o.project_name : null,
+        vendor_name: typeof o.vendor_name === 'string' ? o.vendor_name : null,
+        quote_total: typeof o.quote_total === 'number' && Number.isFinite(o.quote_total) ? o.quote_total : null,
+        quote_date: typeof o.quote_date === 'string' ? o.quote_date : null,
+        line_items,
+        summary: typeof o.summary === 'string' ? o.summary : null,
+      };
+    },
+    buildData: (result) => {
+      const ymd = /^\d{4}-\d{2}-\d{2}$/;
+      const quoteCents = result.quote_total != null ? Math.max(0, parseDollarsToCents(result.quote_total) ?? 0) : null;
+      const lineItems = result.line_items.map((l) => ({
+        label: l.label.trim().slice(0, 200),
+        amountCents: l.amount != null ? Math.max(0, parseDollarsToCents(l.amount) ?? 0) : null,
+      }));
+      // If the model didn't see a grand total, fall back to the sum of priced lines.
+      const lineSum = lineItems.reduce((a, l) => a + (l.amountCents ?? 0), 0);
+      const effectiveQuoteCents = quoteCents ?? (lineSum > 0 ? lineSum : null);
 
-  const gate = await requireFinanceAccess(req, body.pid);
-  if (!gate.ok) return gate.response;
-  const { pid, requestId, accountId } = gate;
-
-  const { imageBase64, mediaType } = body;
-  if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
-    return err('invalid_image', { requestId, status: 400, code: 'invalid_image' });
-  }
-  if (!SUPPORTED_MEDIA_TYPES.includes(mediaType as VisionMediaType)) {
-    return err('unsupported_media_type', { requestId, status: 400, code: 'unsupported_media_type' });
-  }
-
-  const rl = await checkAndIncrementRateLimit('financials-scan-quote', pid);
-  if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
-
-  const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
-  if (!budget.ok) {
-    return NextResponse.json({ ok: false, requestId, error: budget.message, code: budget.reason }, { status: 429 });
-  }
-
-  let usage: VisionUsageReport | null = null;
-  const captureUsage = (u: VisionUsageReport): void => {
-    usage = u;
-  };
-
-  try {
-    const result = await visionExtractJSON<ExtractedQuote>(
-      { data: imageBase64, mediaType: mediaType as VisionMediaType },
-      PROMPT,
-      (raw): ExtractedQuote => {
-        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-          throw new VisionSchemaError('expected an object at top level');
-        }
-        const o = raw as Record<string, unknown>;
-        const rawLines = Array.isArray(o.line_items) ? o.line_items : [];
-        const line_items = rawLines
-          .map((l) => {
-            const li = (l ?? {}) as Record<string, unknown>;
-            return {
-              label: typeof li.label === 'string' ? li.label : '',
-              amount: typeof li.amount === 'number' && Number.isFinite(li.amount) ? li.amount : null,
-            };
-          })
-          .filter((l) => l.label.trim().length > 0)
-          .slice(0, 100);
-        return {
-          project_name: typeof o.project_name === 'string' ? o.project_name : null,
-          vendor_name: typeof o.vendor_name === 'string' ? o.vendor_name : null,
-          quote_total: typeof o.quote_total === 'number' && Number.isFinite(o.quote_total) ? o.quote_total : null,
-          quote_date: typeof o.quote_date === 'string' ? o.quote_date : null,
-          line_items,
-          summary: typeof o.summary === 'string' ? o.summary : null,
-        };
-      },
-      captureUsage,
-    );
-
-    const ymd = /^\d{4}-\d{2}-\d{2}$/;
-    const quoteCents = result.quote_total != null ? Math.max(0, parseDollarsToCents(result.quote_total) ?? 0) : null;
-    const lineItems = result.line_items.map((l) => ({
-      label: l.label.trim().slice(0, 200),
-      amountCents: l.amount != null ? Math.max(0, parseDollarsToCents(l.amount) ?? 0) : null,
-    }));
-    // If the model didn't see a grand total, fall back to the sum of priced lines.
-    const lineSum = lineItems.reduce((a, l) => a + (l.amountCents ?? 0), 0);
-    const effectiveQuoteCents = quoteCents ?? (lineSum > 0 ? lineSum : null);
-
-    return ok(
-      {
+      return {
         draft: {
           name: (result.project_name ?? '').toString().trim().slice(0, 200) || null,
           vendor: (result.vendor_name ?? '').toString().trim().slice(0, 200) || null,
@@ -140,44 +99,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           summary: (result.summary ?? '').toString().trim().slice(0, 500) || null,
           lineItems,
         },
-      },
-      { requestId },
-    );
-  } catch (e) {
-    if (e instanceof VisionTruncatedError) {
-      return err('quote_too_complex', { requestId, status: 422, code: 'quote_too_complex' });
-    }
-    if (e instanceof VisionImageInvalidError) {
-      return err('invalid_image', { requestId, status: 400, code: 'invalid_image', details: e.message });
-    }
-    if (e instanceof VisionSchemaError) {
-      log.warn('[financials/scan-quote] vision JSON failed schema validation', { pid, reason: e.reason });
-      return err('quote_extract_invalid_shape', { requestId, status: 422, code: 'quote_extract_invalid_shape' });
-    }
-    const msg = errToString(e);
-    const status = /api[_ ]?key|ANTHROPIC_API_KEY/i.test(msg) ? 503 : 500;
-    log.error('[financials/scan-quote] vision call failed', { pid, err: e instanceof Error ? e : new Error(msg) });
-    return err(status === 503 ? 'vision_unavailable' : 'vision_failed', { requestId, status, code: status === 503 ? 'vision_unavailable' : 'vision_failed' });
-  } finally {
-    if (usage && accountId) {
-      const u = usage as VisionUsageReport;
-      try {
-        await recordNonRequestCost({
-          userId: accountId,
-          propertyId: pid,
-          conversationId: null,
-          model: u.model,
-          modelId: u.modelId,
-          tokensIn: u.inputTokens,
-          tokensOut: u.outputTokens,
-          costUsd: u.costUsd,
-          kind: 'vision',
-        });
-      } catch (costErr) {
-        const errObj = costErr instanceof Error ? costErr : new Error(String(costErr));
-        log.error('[financials/scan-quote] cost-ledger write failed', { err: errObj, pid, accountId });
-        captureException(errObj, { subsystem: 'cost-ledger', route: 'financials-scan-quote', severity: 'high', pid, accountId, cost_usd: u.costUsd });
-      }
-    }
-  }
+      };
+    },
+  });
 }

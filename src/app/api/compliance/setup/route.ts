@@ -19,6 +19,8 @@ import { canForUserId } from '@/lib/capabilities/server';
 import { detectTemplate } from '@/lib/compliance/templates';
 import { parseSetupFromText, buildSeedsFromSpec } from '@/lib/compliance/nlp';
 import { applySeeds } from '@/lib/compliance/store';
+import type { NlpUsage } from '@/lib/compliance/nlp';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,6 +30,7 @@ interface Body { pid?: unknown; text?: unknown }
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
+  const deadlineAt = Date.now() + 22_000;
   const session = await requireSession(req);
   if (!session.ok) return session.response;
 
@@ -62,11 +65,32 @@ export async function POST(req: NextRequest) {
 
     let readingSeeds = template.readingTypes;
     let pmSeeds = template.pmTasks;
+    let usage: NlpUsage | null = null;
     if (text.trim()) {
-      const spec = await parseSetupFromText(text);
+      const spec = await parseSetupFromText(
+        text,
+        (value) => { usage = value; },
+        { deadlineAt, abortSignal: req.signal },
+      );
       const built = buildSeedsFromSpec(template, spec);
       readingSeeds = built.readingSeeds;
       pmSeeds = built.pmSeeds;
+    }
+
+    const { data: account } = await supabaseAdmin
+      .from('accounts')
+      .select('id')
+      .eq('data_user_id', session.userId)
+      .maybeSingle();
+    if (typeof account?.id === 'string') {
+      await recordAiUsageBestEffort({
+        usage,
+        userId: account.id,
+        propertyId: pid,
+        kind: 'background',
+        requestId,
+        feature: 'compliance.setup_parse',
+      });
     }
 
     const { readingsCreated, pmCreated } = await applySeeds(pid, readingSeeds, pmSeeds, template.key);

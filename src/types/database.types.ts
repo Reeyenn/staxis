@@ -726,6 +726,167 @@ export type Database = {
           },
         ]
       }
+      ai_feature_config_versions: {
+        Row: {
+          activated_at: string | null
+          activated_by: string | null
+          activated_by_email: string | null
+          change_reason: string | null
+          created_at: string
+          created_by: string | null
+          created_by_email: string | null
+          enabled: boolean
+          fallback_model_id: string | null
+          fallback_provider: string | null
+          feature_key: string
+          id: string
+          is_active: boolean
+          parameters: Json
+          parent_id: string | null
+          primary_model_id: string
+          primary_provider: string
+          validated_at: string | null
+          validated_by: string | null
+          validated_by_email: string | null
+          validation_report: Json
+          validation_status: string
+          version: number
+        }
+        Insert: {
+          activated_at?: string | null
+          activated_by?: string | null
+          activated_by_email?: string | null
+          change_reason?: string | null
+          created_at?: string
+          created_by?: string | null
+          created_by_email?: string | null
+          enabled?: boolean
+          fallback_model_id?: string | null
+          fallback_provider?: string | null
+          feature_key: string
+          id?: string
+          is_active?: boolean
+          parameters?: Json
+          parent_id?: string | null
+          primary_model_id: string
+          primary_provider: string
+          validated_at?: string | null
+          validated_by?: string | null
+          validated_by_email?: string | null
+          validation_report?: Json
+          validation_status?: string
+          version: number
+        }
+        Update: {
+          activated_at?: string | null
+          activated_by?: string | null
+          activated_by_email?: string | null
+          change_reason?: string | null
+          created_at?: string
+          created_by?: string | null
+          created_by_email?: string | null
+          enabled?: boolean
+          fallback_model_id?: string | null
+          fallback_provider?: string | null
+          feature_key?: string
+          id?: string
+          is_active?: boolean
+          parameters?: Json
+          parent_id?: string | null
+          primary_model_id?: string
+          primary_provider?: string
+          validated_at?: string | null
+          validated_by?: string | null
+          validated_by_email?: string | null
+          validation_report?: Json
+          validation_status?: string
+          version?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "ai_feature_config_versions_activated_by_fkey"
+            columns: ["activated_by"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_feature_config_versions_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_feature_config_versions_parent_id_fkey"
+            columns: ["parent_id"]
+            isOneToOne: false
+            referencedRelation: "ai_feature_config_versions"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "ai_feature_config_versions_validated_by_fkey"
+            columns: ["validated_by"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      ai_model_catalog: {
+        Row: {
+          available: boolean
+          capabilities: string[]
+          display_name: string
+          first_seen_at: string
+          last_seen_at: string
+          max_input_tokens: number | null
+          max_output_tokens: number | null
+          model_id: string
+          pricing: Json | null
+          provider: string
+          raw_metadata: Json
+          released_at: string | null
+          source: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          available?: boolean
+          capabilities?: string[]
+          display_name: string
+          first_seen_at?: string
+          last_seen_at?: string
+          max_input_tokens?: number | null
+          max_output_tokens?: number | null
+          model_id: string
+          pricing?: Json | null
+          provider: string
+          raw_metadata?: Json
+          released_at?: string | null
+          source?: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          available?: boolean
+          capabilities?: string[]
+          display_name?: string
+          first_seen_at?: string
+          last_seen_at?: string
+          max_input_tokens?: number | null
+          max_output_tokens?: number | null
+          model_id?: string
+          pricing?: Json | null
+          provider?: string
+          raw_metadata?: Json
+          released_at?: string | null
+          source?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       api_limits: {
         Row: {
           count: number
@@ -4838,6 +4999,63 @@ export type Database = {
       staxis_activate_prompt: {
         Args: { p_id: string; p_role: string }
         Returns: undefined
+      }
+      staxis_activate_ai_feature_config: {
+        Args: {
+          p_action: string
+          p_actor_account_id: string
+          p_actor_email: string | null
+          p_actor_user_id: string
+          p_config_id: string
+          p_expected_active_id: string | null
+          p_reason: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
+      staxis_create_ai_feature_config: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_email: string | null
+          p_actor_user_id: string
+          p_change_reason: string | null
+          p_enabled: boolean
+          p_fallback_model_id: string | null
+          p_fallback_provider: string | null
+          p_feature_key: string
+          p_parameters: Json
+          p_parent_id: string | null
+          p_primary_model_id: string
+          p_primary_provider: string
+          p_request_id: string
+        }
+        Returns: string
+      }
+      staxis_record_ai_feature_validation: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_email: string | null
+          p_actor_user_id: string
+          p_checked_at: string
+          p_config_id: string
+          p_request_id: string
+          p_validation_report: Json
+          p_validation_status: string
+        }
+        Returns: undefined
+      }
+      staxis_refresh_ai_model_catalog: {
+        Args: {
+          p_actor_account_id: string
+          p_actor_email: string | null
+          p_actor_user_id: string
+          p_missing_model_ids: string[]
+          p_models: Json
+          p_provider: string
+          p_refreshed_at: string
+          p_request_id: string
+        }
+        Returns: Json
       }
       staxis_api_limit_cleanup: { Args: never; Returns: number }
       staxis_api_limit_hit: {

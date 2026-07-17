@@ -1,11 +1,10 @@
 /**
- * Tests for the Phase 2 honesty fields added to /api/inventory/ai-status
- * (mirrored in src/lib/db/ml-inventory-cockpit.ts → getInventoryAiStatus).
+ * Tests for the Phase 2 honesty fields added to /api/inventory/ai-status.
  *
  * We don't spin up the Next route. We test the computation logic directly,
- * which lives inline in route.ts and ml-inventory-cockpit.ts. Two cheap pure
- * helpers are duplicated here as the contract assertion — if the route's
- * inline math drifts, these tests fail loud.
+ * which lives inline in route.ts. Two cheap pure helpers are duplicated here
+ * as the contract assertion — if the route's inline math drifts, these tests
+ * fail loud.
  *
  * Pins:
  *   1. `lastInferenceStale` flips at 26h (one missed cron + 2h grace).
@@ -19,7 +18,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-// ─── Contract helpers (mirror route.ts / ml-inventory-cockpit.ts) ─────────
+// ─── Contract helpers (mirror route.ts) ──────────────────────────────────
 //
 // These re-implement the inline math from the route to give us a single
 // place to assert the contract. If the route's math drifts from these
