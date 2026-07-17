@@ -24,7 +24,7 @@ import { NextRequest } from 'next/server';
 import { requireFinanceAccess } from '@/lib/financials/api-gate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { getInventoryAccountingSummary } from '@/lib/db/inventory-accounting';
+import { getInventoryAccountingSummary, localMonthWindowUTC } from '@/lib/db/inventory-accounting';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 
@@ -55,15 +55,32 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Resolve monthStart in UTC. The page sends YYYY-MM; we anchor to day 1.
-  const now = new Date();
-  const fallbackMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-  const month = monthParam ?? fallbackMonth;
+  // Month boundaries follow the caller's IANA time zone (`tz`, sent by the
+  // Reports panel) so this page and the Budgets overlay agree on which month
+  // an order received near midnight on the 1st belongs to. No/invalid tz →
+  // UTC, the legacy behavior.
+  const tzParam = url.searchParams.get('tz');
+  let tz = 'UTC';
+  if (tzParam && tzParam.length <= 64) {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tzParam });
+      tz = tzParam;
+    } catch { /* unknown zone → UTC */ }
+  }
+
+  // Resolve the month: the page sends YYYY-MM; default to "this month" as the
+  // caller's clock sees it, anchored to day 1.
+  const nowParts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit' })
+    .format(new Date()); // "YYYY-MM"
+  const month = monthParam ?? nowParts;
   const [yearStr, mStr] = month.split('-');
-  const monthStart = new Date(Date.UTC(Number(yearStr), Number(mStr) - 1, 1));
+  const window = localMonthWindowUTC(Number(yearStr), Number(mStr), tz);
 
   try {
-    const summary = await getInventoryAccountingSummary(supabaseAdmin, gate.pid, monthStart);
+    const summary = await getInventoryAccountingSummary(supabaseAdmin, gate.pid, window.start, {
+      endExclusive: window.endExclusive,
+      budgetMonthKey: window.budgetMonthKey,
+    });
     return ok(summary, { requestId: gate.requestId });
   } catch (e) {
     // Log the detail server-side; don't leak PostgREST table/column/constraint

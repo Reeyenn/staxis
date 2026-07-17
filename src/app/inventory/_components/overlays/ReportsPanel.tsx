@@ -97,8 +97,13 @@ export function ReportsPanel({ lang, open, onClose, display }: ReportsPanelProps
     setLoading(true);
     void (async () => {
       try {
+        // Send the viewer's time zone so the server bounds "this month" on the
+        // same local clock the Budgets overlay uses (month.ts) — otherwise an
+        // order received the evening of the 31st lands in different months on
+        // the two screens.
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
         const res = await fetchWithAuth(
-          `/api/inventory/accounting-summary?propertyId=${activePropertyId}`,
+          `/api/inventory/accounting-summary?propertyId=${activePropertyId}&tz=${encodeURIComponent(tz)}`,
           { cache: 'no-store' },
         );
         if (!res.ok) return;

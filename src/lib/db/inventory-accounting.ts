@@ -92,17 +92,63 @@ interface InventoryItemRow {
   unit_cost: number | null;
 }
 
+/** Offset (ms) of an IANA time zone at a given UTC instant. */
+function zoneOffsetMs(timeZone: string, utc: Date): number {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone, hourCycle: 'h23',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const p: Record<string, string> = {};
+  for (const part of dtf.formatToParts(utc)) p[part.type] = part.value;
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second);
+  return asUTC - utc.getTime();
+}
+
+/**
+ * The UTC instants that bound a CALENDAR MONTH in an IANA time zone, plus the
+ * YYYY-MM-01 key the `inventory_budgets.month_start` date column uses. The
+ * Budgets overlay and every other inventory surface work in the viewer's
+ * local month (see _components/month.ts); the accounting window must match or
+ * an order received on the evening of the 31st lands in different months on
+ * the two screens.
+ */
+export function localMonthWindowUTC(
+  year: number,
+  month1: number, // 1-12
+  timeZone: string,
+): { start: Date; endExclusive: Date; budgetMonthKey: string } {
+  const midnightUTC = (y: number, m1: number): Date => {
+    // Guess local-midnight = UTC, then correct by the zone offset; second pass
+    // handles the rare DST transition sitting between guess and answer.
+    let t = Date.UTC(y, m1 - 1, 1);
+    for (let i = 0; i < 2; i++) t = Date.UTC(y, m1 - 1, 1) - zoneOffsetMs(timeZone, new Date(t));
+    return new Date(t);
+  };
+  const nextY = month1 === 12 ? year + 1 : year;
+  const nextM = month1 === 12 ? 1 : month1 + 1;
+  return {
+    start: midnightUTC(year, month1),
+    endExclusive: midnightUTC(nextY, nextM),
+    budgetMonthKey: `${year}-${String(month1).padStart(2, '0')}-01`,
+  };
+}
+
 /**
  * Compute the accounting summary for a property × month. The page calls this
  * via /api/inventory/accounting-summary so the aggregation runs server-side
  * with service-role auth — keeps the math out of the browser and out of RLS.
+ *
+ * `window` (from localMonthWindowUTC) anchors the month to the caller's time
+ * zone; without it the month is bounded in UTC (legacy behavior).
  */
 export async function getInventoryAccountingSummary(
   client: SupabaseClient,
   pid: string,
   monthStart: Date,
+  window?: { endExclusive: Date; budgetMonthKey: string },
 ): Promise<AccountingSummary> {
-  const monthEndExclusive = new Date(Date.UTC(
+  const monthEndExclusive = window?.endExclusive ?? new Date(Date.UTC(
     monthStart.getUTCFullYear(),
     monthStart.getUTCMonth() + 1,
     1,
@@ -145,8 +191,10 @@ export async function getInventoryAccountingSummary(
     .lt('reconciled_at', monthEndExclusive.toISOString());
   if (recErr) { logErr('accounting/recs', recErr); throw recErr; }
 
-  // 5. Budgets for the month.
-  const monthStartISODate = monthStart.toISOString().slice(0, 10);
+  // 5. Budgets for the month. The date-column key comes from the window (the
+  // local first-of-month), not from slicing the instant — in UTC+ zones the
+  // local month starts on the previous UTC calendar day.
+  const monthStartISODate = window?.budgetMonthKey ?? monthStart.toISOString().slice(0, 10);
   const { data: budgetsRaw, error: budgetErr } = await client
     .from('inventory_budgets')
     .select('category, budget_cents')
