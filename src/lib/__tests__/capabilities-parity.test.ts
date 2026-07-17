@@ -54,7 +54,7 @@ const OVERRIDE_MAPS: CapabilityOverrideMap[] = [
   {},
   { view_financials: { housekeeping: false } },
   { view_wages: { front_desk: false, maintenance: false } },
-  { use_packages: { owner: false }, manage_inventory_orders: { housekeeping: false } },
+  { use_lost_and_found: { owner: false }, manage_inventory_orders: { housekeeping: false } },
   // An (illegal-but-defensive) attempt to grant an admin-only cap — must be ignored by both.
   { access_admin: { owner: true }, manage_pms_coverage: { general_manager: true } },
   // An attempt to GRANT team/user management to line staff — the manager floor
@@ -82,15 +82,15 @@ describe('resolver parity: can() matches the reference across the full matrix', 
   });
 
   it('is a pure function of (role, capability, overrides) — deterministic', () => {
-    const overrides: CapabilityOverrideMap = { view_financials: { housekeeping: false }, use_packages: { housekeeping: false } };
+    const overrides: CapabilityOverrideMap = { view_financials: { housekeeping: false }, use_lost_and_found: { housekeeping: false } };
     for (let i = 0; i < 5; i++) {
       // view_financials is a manager-floor cap — line staff are denied regardless
       // of the override (restricted housekeeping AND un-restricted front_desk).
       assert.equal(can({ role: 'housekeeping' }, 'view_financials', overrides), false);
       assert.equal(can({ role: 'front_desk' }, 'view_financials', overrides), false);
       // A non-floored cap still follows the override/default for line staff.
-      assert.equal(can({ role: 'housekeeping' }, 'use_packages', overrides), false);
-      assert.equal(can({ role: 'front_desk' }, 'use_packages', overrides), true);
+      assert.equal(can({ role: 'housekeeping' }, 'use_lost_and_found', overrides), false);
+      assert.equal(can({ role: 'front_desk' }, 'use_lost_and_found', overrides), true);
     }
   });
 });

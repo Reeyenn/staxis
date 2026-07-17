@@ -22,10 +22,26 @@ export interface AiUsageReport extends AiUsageAttempt {
   attempts: AiUsageAttempt[];
 }
 
+/** Ledger attribution for runtime-owned cost recording. When passed through
+ * to executeAiFeature/executeAiPlan, the runtime records every billable
+ * attempt to agent_costs itself — call-sites cannot forget to meter. */
+export interface AiLedgerContext {
+  userId: string;
+  propertyId: string;
+  kind?: 'background' | 'audio' | 'vision';
+  requestId?: string;
+  /** Defaults to the executed plan's feature key. */
+  feature?: string;
+}
+
 export interface AiCallOptions {
   deadlineAt?: number;
   abortSignal?: AbortSignal;
+  /** Called once per runtime execution with that execution's aggregated
+   * usage. Helpers that run several executions per public call re-aggregate
+   * with mergeAiUsage before reporting upward. */
   onUsage?: (usage: AiUsageReport) => void;
+  ledger?: AiLedgerContext;
 }
 
 function finiteNonnegative(value: unknown): number {

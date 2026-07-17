@@ -20,8 +20,6 @@ import { requireSectionEnabled } from '@/lib/sections/server';
 import { canForUserId } from '@/lib/capabilities/server';
 import { postAnnouncement, createAckCampaign } from '@/lib/comms/core';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -62,22 +60,19 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   // Translate to Spanish once for the legacy notice banner (best-effort). Reused
   // across every property in an org-wide blast.
-  let usage: AiUsageReport | null = null;
   const bodyEs = ctx.lang === 'es'
     ? text
     : await translateNoticeToSpanish(text, 'communications.announcement_translation', {
         deadlineAt,
         abortSignal: req.signal,
-        onUsage: (value) => { usage = value; },
+        // The AI runtime records the spend itself (agent_costs, kind=background).
+        ledger: {
+          userId: ctx.accountId,
+          propertyId: ctx.pid,
+          requestId: ctx.requestId,
+          feature: 'communications.announcement_translation',
+        },
       });
-  await recordAiUsageBestEffort({
-    usage,
-    userId: ctx.accountId,
-    propertyId: ctx.pid,
-    kind: 'background',
-    requestId: ctx.requestId,
-    feature: 'communications.announcement_translation',
-  });
 
   // ── Org-wide mandatory-read campaign ──────────────────────────────────────
   if (orgWide) {

@@ -18,8 +18,10 @@ afterEach(() => {
 });
 
 describe('AI Control Center feature registry', () => {
-  test('covers 28 controllable hosted features and 8 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 36);
+  // 2026-07-17: the front-desk surface retirement removed lost-found photo
+  // description, lost-found match rerank, and package label scan (28→25).
+  test('covers 25 controllable hosted features and 8 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 33);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
@@ -52,8 +54,6 @@ describe('AI Control Center feature registry', () => {
       'inventory.invoice_scan',
       'financials.invoice_scan',
       'financials.quote_scan',
-      'lost_found.photo_description',
-      'packages.label_scan',
       'compliance.photo_reading',
       'compliance.text_reading_parse',
       'compliance.setup_parse',
@@ -62,7 +62,6 @@ describe('AI Control Center feature registry', () => {
     ] as const;
     const haiku = [
       'agent.conversation_summary',
-      'lost_found.match_rerank',
       'communications.action_detection',
       'communications.unread_summary',
       'communications.announcement_polish',
@@ -109,7 +108,9 @@ describe('AI Control Center feature registry', () => {
     assert.equal(embeddings.fallbackAllowed, false);
     assert.match(embeddings.modelLockReason ?? '', /protected Knowledge OCR/i);
     assert.match(embeddings.modelLockReason ?? '', /re-index/i);
-    assert.match(embeddings.description, /display only/i);
+    // Plain-English copy (2026-07-17): the "can't change it here" signal moved
+    // to "information only" wording.
+    assert.match(embeddings.description, /information only/i);
 
     const daily = getAiFeatureDefinition('ml.daily_report_headcount');
     assert.equal(daily.availability, 'unavailable');

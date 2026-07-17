@@ -21,9 +21,9 @@ import type { CommsLang } from './types';
 import { executeAiFeature } from '@/lib/ai/runtime';
 import {
   captureTokenUsage,
-  emitAiUsage,
+  mergeAiUsage,
   type AiCallOptions,
-  type AiUsageAttempt,
+  type AiUsageReport,
 } from '@/lib/ai/usage';
 
 export const LANG_NAMES: Record<CommsLang, string> = {
@@ -59,7 +59,6 @@ const SYSTEM = (target: string) =>
 async function callOne(
   text: string,
   target: CommsLang,
-  attempts: AiUsageAttempt[],
   opts: AiCallOptions,
 ): Promise<string | null> {
   const c = client();
@@ -75,7 +74,7 @@ async function callOne(
           system: SYSTEM(LANG_NAMES[target]),
           messages: [{ role: 'user', content: text }],
         }, { signal: context.signal });
-        captureTokenUsage(attempts, model, resp.model, resp.usage);
+        captureTokenUsage(context.attempts, model, resp.model, resp.usage);
         if (resp.stop_reason === 'max_tokens') throw new Error('translation response was truncated');
         const block = resp.content.find((b) => b.type === 'text');
         const out = block && block.type === 'text' ? block.text.trim() : '';
@@ -88,6 +87,9 @@ async function callOne(
         deadlineMs: opts.deadlineAt === undefined ? 16_000 : undefined,
         fallbackReserveMs: 5_000,
         abortSignal: opts.abortSignal,
+        // The runtime aggregates usage, emits onUsage, and records the ledger.
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return value;
@@ -102,7 +104,6 @@ async function callOne(
 async function callBatch(
   texts: string[],
   target: CommsLang,
-  attempts: AiUsageAttempt[],
   opts: AiCallOptions,
 ): Promise<(string | null)[]> {
   const c = client();
@@ -124,7 +125,7 @@ async function callBatch(
           system: sys,
           messages: [{ role: 'user', content: numbered }],
         }, { signal: context.signal });
-        captureTokenUsage(attempts, model, resp.model, resp.usage);
+        captureTokenUsage(context.attempts, model, resp.model, resp.usage);
         if (resp.stop_reason === 'max_tokens') throw new Error('translation batch response was truncated');
         const block = resp.content.find((b) => b.type === 'text');
         const raw = block && block.type === 'text' ? block.text.trim() : '';
@@ -147,6 +148,8 @@ async function callBatch(
         deadlineMs: opts.deadlineAt === undefined ? 16_000 : undefined,
         fallbackReserveMs: 5_000,
         abortSignal: opts.abortSignal,
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return value;
@@ -176,53 +179,58 @@ export async function translateUiStrings(
   const unique = Array.from(new Set(texts.filter((t) => t && t.trim())));
   if (unique.length === 0) return out;
 
-  const attempts: AiUsageAttempt[] = [];
-  try {
-    // 1) cache lookup
-    const hashes = unique.map(sha256);
-    const { data: cached } = await supabaseAdmin
-      .from('comms_translation_cache')
-      .select('source_hash, translated_text')
-      .eq('target_lang', target)
-      .in('source_hash', hashes);
-    const hitByHash = new Map<string, string>(
-      ((cached ?? []) as { source_hash: string; translated_text: string }[])
-        .map((r) => [r.source_hash, r.translated_text]),
-    );
+  // 1) cache lookup
+  const hashes = unique.map(sha256);
+  const { data: cached } = await supabaseAdmin
+    .from('comms_translation_cache')
+    .select('source_hash, translated_text')
+    .eq('target_lang', target)
+    .in('source_hash', hashes);
+  const hitByHash = new Map<string, string>(
+    ((cached ?? []) as { source_hash: string; translated_text: string }[])
+      .map((r) => [r.source_hash, r.translated_text]),
+  );
 
-    const misses: string[] = [];
-    for (let i = 0; i < unique.length; i++) {
-      const hit = hitByHash.get(hashes[i]);
-      if (hit !== undefined) out[unique[i]] = hit;
-      else misses.push(unique[i]);
-    }
-    if (misses.length === 0) return out;
-
-    // 2) translate misses (chunked) + write-through cache
-    const CHUNK = 40;
-    for (let i = 0; i < misses.length; i += CHUNK) {
-      const chunk = misses.slice(i, i + CHUNK);
-      const translated = await callBatch(chunk, target, attempts, opts);
-      const rows: { source_hash: string; target_lang: string; source_text: string; translated_text: string }[] = [];
-      for (let j = 0; j < chunk.length; j++) {
-        const tr = translated[j];
-        if (tr) {
-          out[chunk[j]] = tr;
-          rows.push({ source_hash: sha256(chunk[j]), target_lang: target, source_text: chunk[j], translated_text: tr });
-        } else {
-          out[chunk[j]] = chunk[j]; // graceful fallback to source
-        }
-      }
-      if (rows.length) {
-        await supabaseAdmin
-          .from('comms_translation_cache')
-          .upsert(rows, { onConflict: 'source_hash,target_lang', ignoreDuplicates: true });
-      }
-    }
-    return out;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
+  const misses: string[] = [];
+  for (let i = 0; i < unique.length; i++) {
+    const hit = hitByHash.get(hashes[i]);
+    if (hit !== undefined) out[unique[i]] = hit;
+    else misses.push(unique[i]);
   }
+  if (misses.length === 0) return out;
+
+  // Each chunk is its own runtime execution (which emits per-execution usage
+  // and records the ledger itself); re-aggregate here so the caller still
+  // receives ONE merged report for the whole call, like before.
+  let merged: AiUsageReport | null = null;
+  const chunkOpts: AiCallOptions = {
+    ...opts,
+    onUsage: (u) => { merged = mergeAiUsage(merged, u); },
+  };
+
+  // 2) translate misses (chunked) + write-through cache
+  const CHUNK = 40;
+  for (let i = 0; i < misses.length; i += CHUNK) {
+    const chunk = misses.slice(i, i + CHUNK);
+    const translated = await callBatch(chunk, target, chunkOpts);
+    const rows: { source_hash: string; target_lang: string; source_text: string; translated_text: string }[] = [];
+    for (let j = 0; j < chunk.length; j++) {
+      const tr = translated[j];
+      if (tr) {
+        out[chunk[j]] = tr;
+        rows.push({ source_hash: sha256(chunk[j]), target_lang: target, source_text: chunk[j], translated_text: tr });
+      } else {
+        out[chunk[j]] = chunk[j]; // graceful fallback to source
+      }
+    }
+    if (rows.length) {
+      await supabaseAdmin
+        .from('comms_translation_cache')
+        .upsert(rows, { onConflict: 'source_hash,target_lang', ignoreDuplicates: true });
+    }
+  }
+  if (merged !== null) opts.onUsage?.(merged);
+  return out;
 }
 
 // ── Message-body translation (per-message cache) ───────────────────────────
@@ -239,20 +247,14 @@ export async function translateMessageBody(
   target: CommsLang,
   opts: AiCallOptions = {},
 ): Promise<string> {
-  const attempts: AiUsageAttempt[] = [];
-  try {
-    return await translateMessageBodyWithAttempts(messageId, body, sourceLang, target, attempts, opts);
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
-  }
+  return translateMessageBodyImpl(messageId, body, sourceLang, target, opts);
 }
 
-async function translateMessageBodyWithAttempts(
+async function translateMessageBodyImpl(
   messageId: string,
   body: string,
   sourceLang: string | null,
   target: CommsLang,
-  attempts: AiUsageAttempt[],
   opts: AiCallOptions,
 ): Promise<string> {
   const trimmed = (body ?? '').trim();
@@ -268,7 +270,7 @@ async function translateMessageBodyWithAttempts(
       .maybeSingle();
     if (cached?.translated_body) return cached.translated_body;
 
-    const tr = await callOne(trimmed, target, attempts, opts);
+    const tr = await callOne(trimmed, target, opts);
     if (!tr) return body; // graceful fallback to original
     await supabaseAdmin
       .from('comms_message_translations')
@@ -304,42 +306,46 @@ export async function translateMessagesForReader(
     // be authored in any language; still translate into EN when source != en.
   }
 
-  const attempts: AiUsageAttempt[] = [];
-  try {
-    const ids = rows.map((r) => r.id);
-    const { data: cached } = await supabaseAdmin
-      .from('comms_message_translations')
-      .select('message_id, translated_body')
-      .eq('lang', target)
-      .in('message_id', ids);
-    const hitById = new Map<string, string>(
-      ((cached ?? []) as { message_id: string; translated_body: string }[])
-        .map((r) => [r.message_id, r.translated_body]),
-    );
+  const ids = rows.map((r) => r.id);
+  const { data: cached } = await supabaseAdmin
+    .from('comms_message_translations')
+    .select('message_id, translated_body')
+    .eq('lang', target)
+    .in('message_id', ids);
+  const hitById = new Map<string, string>(
+    ((cached ?? []) as { message_id: string; translated_body: string }[])
+      .map((r) => [r.message_id, r.translated_body]),
+  );
 
-    const misses = rows.filter(
-      (r) => r.body.trim() && r.source_lang !== target && !hitById.has(r.id),
-    );
-    for (const r of rows) {
-      const hit = hitById.get(r.id);
-      if (hit) result.set(r.id, hit);
-    }
-
-    // Translate misses with small concurrency to keep latency bounded.
-    const POOL = 5;
-    for (let i = 0; i < misses.length; i += POOL) {
-      const slice = misses.slice(i, i + POOL);
-      await Promise.all(
-        slice.map(async (r) => {
-          const tr = await translateMessageBodyWithAttempts(
-            r.id, r.body, r.source_lang, target, attempts, opts,
-          );
-          result.set(r.id, tr);
-        }),
-      );
-    }
-    return result;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
+  const misses = rows.filter(
+    (r) => r.body.trim() && r.source_lang !== target && !hitById.has(r.id),
+  );
+  for (const r of rows) {
+    const hit = hitById.get(r.id);
+    if (hit) result.set(r.id, hit);
   }
+
+  // Each miss is its own runtime execution (per-execution usage + ledger);
+  // re-aggregate so the caller still receives ONE merged report per call.
+  let merged: AiUsageReport | null = null;
+  const perMessageOpts: AiCallOptions = {
+    ...opts,
+    onUsage: (u) => { merged = mergeAiUsage(merged, u); },
+  };
+
+  // Translate misses with small concurrency to keep latency bounded.
+  const POOL = 5;
+  for (let i = 0; i < misses.length; i += POOL) {
+    const slice = misses.slice(i, i + POOL);
+    await Promise.all(
+      slice.map(async (r) => {
+        const tr = await translateMessageBodyImpl(
+          r.id, r.body, r.source_lang, target, perMessageOpts,
+        );
+        result.set(r.id, tr);
+      }),
+    );
+  }
+  if (merged !== null) opts.onUsage?.(merged);
+  return result;
 }

@@ -114,7 +114,7 @@ export async function POST(req: NextRequest) {
     return err('Invite already used', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
   // Release the claim if account creation fails below, so a legitimate retry can
-  // re-accept (mirrors the offline-replay releaseClaim pattern).
+  // re-accept (claim-then-release-on-failure pattern).
   const releaseInvite = async () => {
     try { await supabaseAdmin.from('account_invites').update({ accepted_at: null }).eq('id', invite.id); }
     catch { /* best-effort */ }

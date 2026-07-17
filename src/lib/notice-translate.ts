@@ -3,12 +3,7 @@ import { env } from '@/lib/env';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { executeAiFeature } from '@/lib/ai/runtime';
-import {
-  captureTokenUsage,
-  emitAiUsage,
-  type AiCallOptions,
-  type AiUsageAttempt,
-} from '@/lib/ai/usage';
+import { captureTokenUsage, type AiCallOptions } from '@/lib/ai/usage';
 
 /**
  * Auto-translate a manager's notice-board post from English into Spanish.
@@ -80,7 +75,6 @@ export async function translateNoticeToSpanish(
     return null;
   }
 
-  const attempts: AiUsageAttempt[] = [];
   try {
     const { value } = await executeAiFeature(
       featureKey,
@@ -92,7 +86,7 @@ export async function translateNoticeToSpanish(
           system: SYSTEM_PROMPT,
           messages: [{ role: 'user', content: text }],
         }, { signal: context.signal });
-        captureTokenUsage(attempts, model, res.model, res.usage);
+        captureTokenUsage(context.attempts, model, res.model, res.usage);
         if (res.stop_reason === 'max_tokens') throw new Error('notice translation response was truncated');
         const out = res.content
           .map((block) => (block.type === 'text' ? block.text : ''))
@@ -109,6 +103,9 @@ export async function translateNoticeToSpanish(
         deadlineMs: opts.deadlineAt === undefined ? 10_000 : undefined,
         fallbackReserveMs: 3_000,
         abortSignal: opts.abortSignal,
+        // The runtime aggregates usage, emits onUsage, and records the ledger.
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return value;
@@ -117,7 +114,5 @@ export async function translateNoticeToSpanish(
       err: errToString(err),
     });
     return null;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
   }
 }

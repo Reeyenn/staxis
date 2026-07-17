@@ -24,12 +24,7 @@ import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
 import { captureException } from '@/lib/sentry';
 import type { WeeklyReportPayload } from './types';
 import { executeAiFeature } from '@/lib/ai/runtime';
-import {
-  captureTokenUsage,
-  emitAiUsage,
-  type AiCallOptions,
-  type AiUsageAttempt,
-} from '@/lib/ai/usage';
+import { captureTokenUsage, type AiCallOptions } from '@/lib/ai/usage';
 
 const REQUEST_TIMEOUT_MS = 20_000;
 
@@ -89,7 +84,6 @@ export async function generateWeeklyInsight(
 
   const promptContent = buildPromptContent(payload);
 
-  const attempts: AiUsageAttempt[] = [];
   try {
     const configured = await executeAiFeature(
       'reports.weekly_insight',
@@ -111,7 +105,7 @@ export async function generateWeeklyInsight(
             },
           ],
         }, { signal: context.signal });
-        captureTokenUsage(attempts, model, response.model, response.usage);
+        captureTokenUsage(context.attempts, model, response.model, response.usage);
         if (response.stop_reason === 'max_tokens') throw new Error('weekly insight response was truncated');
         const block = response.content.find((item) => item.type === 'text');
         if (!block || block.type !== 'text') throw new Error('weekly insight returned no text');
@@ -126,6 +120,9 @@ export async function generateWeeklyInsight(
         deadlineMs: opts.deadlineAt === undefined ? 25_000 : undefined,
         fallbackReserveMs: 8_000,
         abortSignal: opts.abortSignal,
+        // The runtime aggregates usage, emits onUsage, and records the ledger.
+        onUsage: opts.onUsage,
+        ledger: opts.ledger,
       },
     );
     return configured.value;
@@ -138,7 +135,5 @@ export async function generateWeeklyInsight(
       propertyId: payload.propertyId,
     });
     return null;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
   }
 }

@@ -25,8 +25,6 @@ import { sendReportEmail } from '@/lib/reports/catalog/email';
 import { listEnabledSchedules, markScheduleRun, type ReportSchedule } from '@/lib/reports/catalog/store';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { resolveCostAccount } from '@/lib/compliance/api-helpers';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
-import type { AiUsageReport } from '@/lib/ai/usage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -87,25 +85,16 @@ export async function GET(req: NextRequest) {
 
         const { from, to } = scheduleDateRange(s.rangeKind, parts.date);
         const result = await def.run({ propertyId: s.propertyId, from, to, timezone: meta.timezone });
-        let usage: AiUsageReport | null = null;
-        const aiSummary = await generateReportSummary(def, result, 'en', {
-          deadlineAt: startedAt + HARD_DEADLINE_MS,
-          abortSignal: req.signal,
-          onUsage: (value) => { usage = value; },
-        });
         // Cron context: attribute spend to the property's owner/GM account —
         // the manual twin (/api/settings/reports/run) meters the same feature.
         const costAccountId = await resolveCostAccount(s.propertyId);
-        if (costAccountId) {
-          await recordAiUsageBestEffort({
-            usage,
-            userId: costAccountId,
-            propertyId: s.propertyId,
-            kind: 'background',
-            requestId,
-            feature: 'reports.run_summary',
-          });
-        }
+        const aiSummary = await generateReportSummary(def, result, 'en', {
+          deadlineAt: startedAt + HARD_DEADLINE_MS,
+          abortSignal: req.signal,
+          ledger: costAccountId
+            ? { userId: costAccountId, propertyId: s.propertyId, requestId, feature: 'reports.run_summary' }
+            : undefined,
+        });
 
         let sent = 0;
         let failed = 0;

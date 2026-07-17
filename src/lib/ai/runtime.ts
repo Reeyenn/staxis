@@ -6,6 +6,12 @@ import type {
 } from '@/lib/ai/types';
 import { getAiFeatureDefinition } from '@/lib/ai/feature-registry';
 import { resolveAiFeatureConfig } from '@/lib/ai/model-config-store';
+// Function-level-only imports; the usage↔runtime cycle is safe because
+// neither module touches the other's bindings during module evaluation.
+// usage-ledger is imported LAZILY inside executeAiPlan: it pulls in
+// supabase-admin ('server-only'), and runtime.ts must stay importable from
+// plain node test files that never pass a ledger.
+import { aggregateAiUsage, type AiLedgerContext, type AiUsageAttempt, type AiUsageReport } from '@/lib/ai/usage';
 
 type ResolvedModel = ResolvedAiFeatureConfig['primary'];
 
@@ -122,6 +128,12 @@ export interface AiAttemptContext {
   deadlineAt: number | null;
   /** Remaining whole-call time when this attempt began. */
   remainingMs: number | null;
+  /** Runtime-owned usage sink shared by the primary and fallback attempts.
+   * Closures push billable usage here (captureTokenUsage/capturePricedUsage);
+   * the runtime aggregates, emits opts.onUsage, and records opts.ledger when
+   * the execution settles — including on the error path, so a failed primary's
+   * spend is never lost. */
+  attempts: AiUsageAttempt[];
 }
 
 export interface AiExecutionOptions {
@@ -135,6 +147,11 @@ export interface AiExecutionOptions {
   /** User/request cancellation. It is composed with, never replaced by, the
    * internal attempt deadline. */
   abortSignal?: AbortSignal;
+  /** Called once with this execution's aggregated usage when it settles. */
+  onUsage?: (usage: AiUsageReport) => void;
+  /** When set, the runtime writes every billable attempt to agent_costs
+   * itself; `feature` defaults to the executed plan's feature key. */
+  ledger?: AiLedgerContext;
 }
 
 export class AiExecutionDeadlineError extends Error {
@@ -159,6 +176,7 @@ export function createAiAttemptContext(
   deadlineAt: number | null,
   hasFallback: boolean,
   opts: AiExecutionOptions,
+  attempts: AiUsageAttempt[] = [],
 ): AiAttemptContext {
   const remainingMs = deadlineAt === null ? null : Math.floor(deadlineAt - Date.now());
   if (remainingMs !== null && remainingMs <= 0) throw new AiExecutionDeadlineError();
@@ -184,6 +202,7 @@ export function createAiAttemptContext(
     signal,
     deadlineAt,
     remainingMs,
+    attempts,
   };
 }
 
@@ -216,8 +235,11 @@ export async function executeAiPlan<T>(
   opts: AiExecutionOptions = {},
 ): Promise<AiExecutionResult<T>> {
   const deadlineAt = executionDeadlineAt(opts);
+  // One usage sink for both attempts, settled in the finally below so a failed
+  // primary's spend (already charged by the provider) is still emitted/recorded.
+  const attempts: AiUsageAttempt[] = [];
   try {
-    const context = createAiAttemptContext('primary', deadlineAt, plan.fallback !== null, opts);
+    const context = createAiAttemptContext('primary', deadlineAt, plan.fallback !== null, opts, attempts);
     return { value: await invoke(plan.primary, context), model: plan.primary, usedFallback: false };
   } catch (error) {
     const fallback = plan.fallback;
@@ -227,8 +249,24 @@ export async function executeAiPlan<T>(
       emittedToUser: false,
       error,
     }) || !fallback) throw error;
-    const context = createAiAttemptContext('fallback', deadlineAt, false, opts);
+    const context = createAiAttemptContext('fallback', deadlineAt, false, opts, attempts);
     return { value: await invoke(fallback, context), model: fallback, usedFallback: true };
+  } finally {
+    const usage = aggregateAiUsage(attempts);
+    if (usage) {
+      opts.onUsage?.(usage);
+      if (opts.ledger) {
+        const { recordAiUsageBestEffort } = await import('@/lib/ai/usage-ledger');
+        await recordAiUsageBestEffort({
+          usage,
+          userId: opts.ledger.userId,
+          propertyId: opts.ledger.propertyId,
+          kind: opts.ledger.kind ?? 'background',
+          requestId: opts.ledger.requestId,
+          feature: opts.ledger.feature ?? plan.config.featureKey,
+        });
+      }
+    }
   }
 }
 

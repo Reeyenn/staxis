@@ -456,6 +456,30 @@ export function InventoryShell() {
   const lastTabStatRef = React.useRef<{ label: string; value: number } | null>(null);
   if (activeTab) lastTabStatRef.current = { label: activeTab.label, value: activeTabValue };
   const tabStat = activeTab ? { label: activeTab.label, value: activeTabValue } : lastTabStatRef.current;
+  // The stat's animated slot transitions to the EXACT pixel width of its
+  // content. The content div keeps its natural width (min-width: max-content)
+  // even while the slot clips it, so we track it with a ResizeObserver and
+  // feed the number back as the slot's width. That makes the FIRST-ever
+  // appearance slide open (slot is always mounted at width 0), makes a
+  // "Sheets" → "Housekeeping supplies" tab switch glide between the two
+  // label widths, and follows the CountUp's settling digits.
+  const tabStatInnerRef = React.useRef<HTMLDivElement | null>(null);
+  const [tabStatWidth, setTabStatWidth] = useState(0);
+  const tabStatMounted = tabStat != null;
+  React.useLayoutEffect(() => {
+    const el = tabStatInnerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const w = Math.ceil(el.getBoundingClientRect().width);
+      if (w > 0) setTabStatWidth(w);
+      // Never store 0 — keep the last real width so the exit animation
+      // shrinks from the correct size.
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [tabStatMounted]);
 
   const reorderCount = useMemo(
     () => countedItems.filter((d) => d.status !== 'good').length,
@@ -1084,31 +1108,35 @@ export function InventoryShell() {
           >
             <CountUp value={statusCounts.critical} />
           </HStat>
-          {/* Active-tab valuation — money-capability only. Collapses to zero
-              width on All; the -34px margin cancels the flex gap so the
-              neighbors (ring / Order now) glide left into the freed space. */}
-          {canViewFinancials && tabStat && (
+          {/* Active-tab valuation — money-capability only. The slot is ALWAYS
+              mounted (collapsed to zero width on All / before any tab is ever
+              picked) so its very first appearance transitions instead of
+              popping in. It animates to the measured width of its content, so
+              switching between short- and long-named tabs glides too. The
+              -34px margin cancels the flex gap while collapsed so the ring and
+              Order-now stat sit exactly where they did before this existed. */}
+          {canViewFinancials && (
             <div
               aria-hidden={!activeTab}
               style={{
                 display: 'flex',
                 overflow: 'hidden',
-                maxWidth: activeTab ? 240 : 0,
+                width: activeTab ? tabStatWidth : 0,
                 opacity: activeTab ? 1 : 0,
                 marginRight: activeTab ? 0 : -34,
                 transform: activeTab ? 'translateX(0)' : 'translateX(16px)',
                 transition:
-                  'max-width .45s cubic-bezier(.22,.8,.28,1), opacity .3s ease, ' +
+                  'width .45s cubic-bezier(.22,.8,.28,1), opacity .3s ease, ' +
                   'margin-right .45s cubic-bezier(.22,.8,.28,1), transform .45s cubic-bezier(.22,.8,.28,1)',
               }}
             >
-              {/* max-content keeps the stat at natural width while the outer
-                  wrapper clips it, so text never rewraps mid-animation. */}
-              <div style={{ minWidth: 'max-content' }}>
-                <HStat eyebrow={tabStat.label}>
-                  <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
-                </HStat>
-              </div>
+              {tabStat && (
+                <div ref={tabStatInnerRef} style={{ minWidth: 'max-content' }}>
+                  <HStat eyebrow={tabStat.label}>
+                    <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
+                  </HStat>
+                </div>
+              )}
             </div>
           )}
           {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}

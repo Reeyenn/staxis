@@ -5,7 +5,7 @@
 //
 // Serif greeting → dateline → the glowing Ask Staxis hero bar (passed in as a
 // slot so the real app wires it to the live agent while the demo stays inert)
-// → the board of live department tiles. Shared by /home and /demo/concourse.
+// → the board of live department tiles. Rendered by /home.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React from 'react';

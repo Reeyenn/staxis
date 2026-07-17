@@ -19,9 +19,7 @@ import type { AiFeatureKey } from '@/lib/ai/types';
 import { executeAiFeature } from '@/lib/ai/runtime';
 import {
   captureTokenUsage,
-  emitAiUsage,
   type AiCallOptions,
-  type AiUsageAttempt,
   type AiUsageReport,
 } from '@/lib/ai/usage';
 
@@ -48,61 +46,59 @@ async function callClaudeJSON<T>(
   maxTokens = 1024,
   opts: AiCallOptions = {},
 ): Promise<T> {
-  const attempts: AiUsageAttempt[] = [];
-  try {
-    const { value } = await executeAiFeature(
-      featureKey,
-      'anthropic',
-      async (selected, context) => {
-        const resp = await client().messages.create({
-          model: selected.modelId,
-          max_tokens: maxTokens,
-          system,
-          messages: [{ role: 'user', content: userText }],
-        }, { signal: context.signal });
-        captureTokenUsage(attempts, selected, resp.model, resp.usage);
-        if (resp.stop_reason === 'max_tokens') throw new Error('model JSON response was truncated');
+  const { value } = await executeAiFeature(
+    featureKey,
+    'anthropic',
+    async (selected, context) => {
+      const resp = await client().messages.create({
+        model: selected.modelId,
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: 'user', content: userText }],
+      }, { signal: context.signal });
+      captureTokenUsage(context.attempts, selected, resp.model, resp.usage);
+      if (resp.stop_reason === 'max_tokens') throw new Error('model JSON response was truncated');
 
-        const text = resp.content
-          .filter((b) => b.type === 'text')
-          .map((b) => (b as { type: 'text'; text: string }).text)
-          .join('\n')
-          .trim();
-        const tryParse = (s: string): T | null => {
-          try {
-            const raw = JSON.parse(s) as unknown;
-            return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as T : null;
-          } catch {
-            return null;
-          }
-        };
-        let parsed = tryParse(text);
-        if (!parsed) {
-          const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-          if (fence) parsed = tryParse(fence[1]);
+      const text = resp.content
+        .filter((b) => b.type === 'text')
+        .map((b) => (b as { type: 'text'; text: string }).text)
+        .join('\n')
+        .trim();
+      const tryParse = (s: string): T | null => {
+        try {
+          const raw = JSON.parse(s) as unknown;
+          return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as T : null;
+        } catch {
+          return null;
         }
-        if (!parsed) {
-          const start = text.indexOf('{');
-          const end = text.lastIndexOf('}');
-          if (start !== -1 && end > start) parsed = tryParse(text.slice(start, end + 1));
-        }
-        if (!parsed) throw new Error('model did not return a JSON object');
-        const validated = validate(parsed as unknown as Record<string, unknown>);
-        if (validated === null) throw new Error('model returned an invalid JSON schema');
-        return validated;
-      },
-      {
-        requirePricing: true,
-        deadlineAt: opts.deadlineAt,
-        deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
-        fallbackReserveMs: 7_000,
-        abortSignal: opts.abortSignal,
-      },
-    );
-    return value;
-  } finally {
-    emitAiUsage(attempts, opts.onUsage);
-  }
+      };
+      let parsed = tryParse(text);
+      if (!parsed) {
+        const fence = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+        if (fence) parsed = tryParse(fence[1]);
+      }
+      if (!parsed) {
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
+        if (start !== -1 && end > start) parsed = tryParse(text.slice(start, end + 1));
+      }
+      if (!parsed) throw new Error('model did not return a JSON object');
+      const validated = validate(parsed as unknown as Record<string, unknown>);
+      if (validated === null) throw new Error('model returned an invalid JSON schema');
+      return validated;
+    },
+    {
+      requirePricing: true,
+      deadlineAt: opts.deadlineAt,
+      deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
+      fallbackReserveMs: 7_000,
+      abortSignal: opts.abortSignal,
+      // The runtime aggregates usage, emits onUsage, and records the ledger.
+      onUsage: opts.onUsage,
+      ledger: opts.ledger,
+    },
+  );
+  return value;
 }
 
 // ─── Voice / typed reading parsing ───────────────────────────────────────────

@@ -22,8 +22,6 @@ import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { userHasPropertyAccess } from '@/lib/api-auth';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
-import type { AiUsageReport } from '@/lib/ai/usage';
-import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 import {
   checkAndIncrementRateLimit,
   rateLimitedResponse,
@@ -177,22 +175,14 @@ export const POST = defineRoute({
       .eq('data_user_id', ctx.userId)
       .maybeSingle();
     const accountId = typeof account?.id === 'string' ? account.id : null;
-    let usage: AiUsageReport | null = null;
     const bodyEs = await translateNoticeToSpanish(bodyEn, 'housekeeping.notice_translation', {
       deadlineAt,
       abortSignal: ctx.req.signal,
-      onUsage: (value) => { usage = value; },
+      // The AI runtime records the spend itself (agent_costs, kind=background).
+      ledger: accountId
+        ? { userId: accountId, propertyId: pid, requestId: ctx.requestId }
+        : undefined,
     });
-    if (accountId) {
-      await recordAiUsageBestEffort({
-        usage,
-        userId: accountId,
-        propertyId: pid,
-        kind: 'background',
-        requestId: ctx.requestId,
-        feature: 'housekeeping.notice_translation',
-      });
-    }
 
     try {
       const { data, error: rpcErr } = await supabaseAdmin.rpc('staxis_post_notice', {
