@@ -27,10 +27,6 @@ export type RateLimitEndpoint =
   // on the RAW property id, never a hashed composite (api_limits FK trap).
   | 'reports-run'
   | 'reports-export'
-  | 'send-shift-confirmations'
-  | 'sms-reply-resend'
-  | 'test-sms-flow'
-  | 'sync-room-assignments'
   | 'populate-rooms-from-plan'
   // Phase 3 — each manager room-status change, when write-back is enabled,
   // enqueues a robot job that MUTATES the real PMS. Cap per property so a
@@ -72,7 +68,6 @@ export type RateLimitEndpoint =
   // No auth gate, creates auth.users + properties + Stripe customer +
   // bcrypt CPU work, so trivially abusable without a rate cap. (Pass-3
   // fix — H6.)
-  | 'signup-ip'
   // Public join-code signup and invite acceptance — IP-keyed. Both
   // create auth.users without any prior auth gate and do bcrypt CPU
   // work; codes/tokens are low-entropy enough that brute-force or
@@ -107,11 +102,6 @@ export type RateLimitEndpoint =
   // indefinitely if a SMS forward leaks the link. Rate limits are
   // defense-in-depth so a stolen link can't be hammered.
   //
-  // sms-reply is keyed on the From phone (housekeeper's E.164 hashed
-  // via ipToRateLimitKey). The other three are keyed on `${pid}:${staffId}`
-  // hashed the same way (laundry-bootstrap is keyed on pid directly
-  // since the page has no per-staff identity).
-  | 'sms-reply'
   | 'housekeeper-rooms'
   | 'housekeeper-room-action'
   | 'housekeeper-save-language'
@@ -148,24 +138,6 @@ export type RateLimitEndpoint =
   // gets its own bucket so a runaway in one channel doesn't lock the
   // others. Caps tuned to "this is a person tapping a button" — anything
   // above the cap is bot/script abuse and should 429.
-  //
-  // callout-housekeeper: HK taps "I can't work today" on their mobile.
-  //   Keyed on (pid, staffId). 10/hr — one real callout per day, the
-  //   rest is room for accidental re-taps and undo-then-redo flows.
-  // callout-manager: manager presses "Mark sick" on the dashboard.
-  //   Keyed on (pid, userId). Manager might mark several HKs sick in a
-  //   bad-flu morning, so 30/hr.
-  // callout-sms: inbound Twilio webhook firing the SICK keyword.
-  //   Keyed on the sender phone hash. 20/hr stops a Twilio replay or a
-  //   phone in someone's pocket dialing the route.
-  // callout-revert: same cap shape as the report path it mirrors.
-  // callout-status: read endpoint feeding the CalloutBanner. Polled on
-  //   the manager page; 600/hr per property is plenty.
-  | 'callout-housekeeper'
-  | 'callout-manager'
-  | 'callout-sms'
-  | 'callout-revert'
-  | 'callout-status'
   // Housekeeper mobile rebuild B/C (2026-05-25). Each endpoint gets its
   // own bucket so a runaway in one flow can't lock out the others. Caps
   // tuned for "person tapping a button" — generous enough that real use
@@ -179,7 +151,6 @@ export type RateLimitEndpoint =
   | 'housekeeper-photo-presign'      // request signed-upload URL
   | 'housekeeper-add-note'           // quick note from housekeeper page
   | 'housekeeper-mark-inspection'    // tap to flag ready for inspection
-  | 'housekeeper-save-language-loc'  // language-switcher save (locale-wide)
   // Cross-department activity log export (feature #18, 2026-05-25).
   | 'settings-activity-log-export'
   // Post-merge sweep (Plan v4 cutover) — manager-facing Rooms board read
@@ -204,7 +175,6 @@ export type RateLimitEndpoint =
   | 'complaints-log'
   | 'complaints-update'
   | 'complaints-draft'
-  | 'complaints-sms'
   // Financials — GM/owner finance suite (2026-05-31). ALL keyed on the RAW
   // property id (api_limits.property_id has an FK to properties(id), so a hashed
   // pid:user pseudo-UUID FK-violates → the RPC errors → billing endpoints fail
@@ -212,7 +182,6 @@ export type RateLimitEndpoint =
   // anomaly alert fan-out. All three are billing-impacting → fail closed.
   | 'financials-scan-invoice'
   | 'financials-scan-quote'
-  | 'financials-sms'
   // Engineering Compliance (feature #19, 2026-05-30). ALL keyed on the RAW
   // property id (a real properties.id) — api_limits.property_id has an FK to
   // properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
@@ -239,7 +208,6 @@ export type RateLimitEndpoint =
   | 'compliance-log'          // manager logs a reading / PM check from desktop
   | 'compliance-setup'        // one-line AI setup (Claude)
   | 'compliance-vision'       // manager snap-to-log (Claude Vision)
-  | 'send-engineer-links'     // SMS the compliance magic-link to maintenance staff
   | 'compliance-anomaly-phrase' // v2: AI-sharpen anomaly alert wording (sweep cron; Claude; raw pid)
   // Equipment (asset) registry (0249). Manager create/edit/delete of assets,
   // keyed on the RAW property UUID (no SMS / Claude — not billing-impacting).
@@ -288,8 +256,7 @@ export type RateLimitEndpoint =
   // are the dispatch writes. ALL keyed on the RAW property id (a real
   // properties.id) — api_limits.property_id FKs properties(id), so a
   // hashToRateLimitKey composite would FK-violate. Per-property caps; not
-  // billing-impacting (the complaint-assign SMS keeps its own complaints-sms
-  // raw-pid guard), so they fail OPEN on an RPC blip.
+  // billing-impacting, so they fail OPEN on an RPC blip.
   | 'worklist-read'
   | 'worklist-assign'
   | 'worklist-complete'
@@ -353,13 +320,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'photo-count':                50,
   // Maria might re-send shift confirmations 2-3 times if she tweaks the
   // schedule. 10/hour gives plenty of room without unlimited resend abuse.
-  'send-shift-confirmations': 10,
   // ENGLISH/ESPAÑOL replies look like loops if abused.
-  'sms-reply-resend':          30,
-  'test-sms-flow':             50,
   // Schedule autosave is debounced client-side but a runaway tab could
   // hammer this. 200/hr is "click 3x per minute for an hour" headroom.
-  'sync-room-assignments':    200,
   'populate-rooms-from-plan':  20,
   // PMS write-back enqueue — one per manager status change when enabled. A
   // busy 74-room checkout morning is ~100-150 changes/hr; 300/hr/property
@@ -369,7 +332,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // legitimate person filling out the form 5 times in an hour is
   // already a customer-support situation, not a happy path. Anything
   // higher is bot/abuse and should 429.
-  'signup-ip':                  5,
   // Public join-code signup — 10/hour per source IP. Same logic as
   // 'signup-ip' (real signups are rare, anything higher is abuse).
   'auth-use-join-code':         10,
@@ -395,21 +357,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'email-transactional':         5,
   // 2026-05-20 audit M3 — public SMS-linked surface. Caps tuned to
   // generous real-world ops use.
-  // sms-reply: a chatty housekeeper might fire 50+ ENGLISH/ESPAÑOL toggles
-  // and short replies per shift; 120/hr per phone leaves headroom.
-  'sms-reply':                  120,
-  // housekeeper-rooms is the polled-read endpoint for the housekeeper
-  // page. The page polls every 4 seconds (see subscribeToRoomsForStaff
-  // in src/lib/db/housekeeper-helpers.ts) so legitimate worst-case is
-  // 900/hr from polling alone, plus realtime-triggered refetches plus
-  // action-driven refetches after every Done/Reset tap. 3600/hr = 1/sec
-  // gives ~4x headroom over worst legitimate use while still bounding
-  // a stolen-link replay loop within an hour.
-  //
-  // DO NOT tighten below ~2400 without first reducing the page's poll
-  // interval — the original 600 cap (2026-05-20) shipped broken: real
-  // housekeepers got 429'd after ~40 minutes of normal foreground use
-  // (Codex post-shipment review, 2026-05-21, finding A2).
   'housekeeper-rooms':         3600,
   // housekeeper-room-action is the write path (mark clean / dirty / etc.).
   // One action every ~18s sustained = 200/hr, well above realistic use.
@@ -459,11 +406,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // 30/hr per IP — well above any single phone's realistic re-tap rate.
   'housekeeper-log-legacy-token': 30,
   // Sick-callout buckets — see RateLimitEndpoint union comment for rationale.
-  'callout-housekeeper':          10,
-  'callout-manager':              30,
-  'callout-sms':                  20,
-  'callout-revert':               30,
-  'callout-status':              600,
   // Piece B/C caps. Manager posts (notices, room notes) are deliberate
   // actions — 60/hr is "manager spamming the notice board" headroom.
   'housekeeping-notices-post':     60,
@@ -475,7 +417,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeper-photo-presign':    200,
   'housekeeper-add-note':         200,
   'housekeeper-mark-inspection':  200,
-  'housekeeper-save-language-loc': 10,
   // Cross-department activity log export.
   'settings-activity-log-export':  30,
   // Plan v4 manager Rooms board — 6s polling + visibility refetches.
@@ -495,13 +436,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'complaints-log':              100,
   'complaints-update':           300,
   'complaints-draft':             30,
-  'complaints-sms':               60,
   // Financials — GM/owner finance suite. Per-property (raw pid). scan-* are
-  // Claude-Vision-cost-bounded (a manager scanning a stack of invoices); sms is
-  // the overspend/anomaly alert fan-out, same shape as complaints-sms.
+  // Claude-Vision-cost-bounded (a manager scanning a stack of invoices).
   'financials-scan-invoice':      50,
   'financials-scan-quote':        50,
-  'financials-sms':               60,
   // Engineering Compliance (feature #19). All PER-PROPERTY (keyed on raw pid).
   // Read/log caps sized for several engineers polling one property at once
   // (bootstrap polls ~80/hr each). Vision/voice/setup are Claude-cost bounded;
@@ -521,7 +459,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'compliance-log':              200,
   'compliance-setup':             20,
   'compliance-vision':            50,
-  'send-engineer-links':          10,
   // v2 anomaly AI phrasing — at most one Claude batch per property per sweep.
   'compliance-anomaly-phrase':    20,
   // Equipment registry writes — manager-only create/edit/delete; generous.
@@ -699,9 +636,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'scan-invoice',
   'photo-count',
   // Twilio SMS fan-out (per-recipient charge).
-  'send-shift-confirmations',
-  'sms-reply-resend',
-  'test-sms-flow',
   // Resend transactional email (per-recipient charge).
   'email-transactional',
   // Claim/resend each attempt a transactional OTP email. The inner Resend
@@ -709,29 +643,17 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // api-limit outage from reaching link generation/email at all.
   'auth-phone-pairing-claim',
   'auth-phone-pairing-resend',
-  // Codex review 2026-05-24 (Probe 10) — sick-callout report endpoints
-  // fan out Twilio SMS to every affected housekeeper plus the manager
-  // via sendCalloutNotifications. A rate-limit RPC failure would let a
-  // valid (pid, staffId) link spam those messages until the daily
-  // Twilio cap hit. callout-status is read-only and stays fail-open.
-  'callout-housekeeper',
-  'callout-manager',
-  'callout-sms',
-  'callout-revert',
-  // Complaints — Claude service-recovery draft (token cost) + Twilio
-  // assignee-notify / satisfaction-callback nudges (per-message charge).
-  // Fail CLOSED so a Supabase blip can't uncap spend. complaints-log is here
-  // too: it runs a Claude classify on every call (Codex review #6).
+  // Complaints — Claude service-recovery draft (token cost). Fail CLOSED so a
+  // Supabase blip can't uncap spend. complaints-log is here too: it runs a
+  // Claude classify on every call (Codex review #6).
   'complaints-log',
   'complaints-draft',
-  'complaints-sms',
   // Engineering Compliance (feature #19) — Claude Vision, Claude text parse,
   // and Twilio SMS fan-out. Fail closed so a DB blip can't uncap spend.
   'engineer-vision',
   'engineer-voice',
   'compliance-setup',
   'compliance-vision',
-  'send-engineer-links',
   'compliance-anomaly-phrase',
   // Lost & Found — vision (describe) + Claude (auto-match). Each call costs
   // money, so fail CLOSED if the rate-limit RPC errors.
@@ -750,7 +672,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Anthropic / Twilio spend.
   'financials-scan-invoice',
   'financials-scan-quote',
-  'financials-sms',
   // Inventory order-send fires a Resend email to the vendor. Fail CLOSED so a
   // Supabase blip can't uncap email spend. (The Resend wrapper also enforces a
   // per-recipient 5/hr cap; this is the per-property guardrail.)

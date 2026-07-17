@@ -11,7 +11,6 @@
    sort and pagination as the prior tab):
      • /api/admin/list-properties?page&pageSize&status&search → fleet + pagination
      • /api/admin/recent-errors?since=<72h ISO>              → grouped errors
-     • /api/admin/sms-health?hours=72                        → per-hotel SMS
      • /api/admin/feedback                                   → feedback inbox
    Mutation kept: PATCH /api/admin/feedback { id, status } —
      new → in_progress → resolved / wontfix, then refetch.
@@ -23,7 +22,7 @@
         PMS, each a dot + counting-up serif number.
      3. Four-column control grid (repeat(4, minmax(0,1fr)), gap 18):
         Hotels (single-click flip / double-click detail modal) · Recent errors
-        (expandable stack) · SMS health · Feedback inbox (flip on status set).
+        (expandable stack) · Feedback inbox (flip on status set).
      Plus the Hotels-column pager (kept available for 18+ hotel fleets).
 
    Sync-freshness color (handoff): not connected = dim; stale(>12h) =
@@ -76,15 +75,6 @@ interface ErrorGroup {
   lastSeen: string;
   affectedPropertyIds: string[];
   sampleStack: string | null;
-}
-interface SmsHealthRow {
-  propertyId: string;
-  propertyName: string | null;
-  sent: number;
-  inFlight: number;
-  failed: number;
-  deliveryPct: number | null;
-  topErrors: { message: string; count: number }[];
 }
 interface FeedbackItem {
   id: string;
@@ -142,7 +132,6 @@ function fbTone(s: string): PillTone {
 export function LiveSurface() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
   const [errors, setErrors] = useState<ErrorGroup[] | null>(null);
-  const [sms, setSms] = useState<SmsHealthRow[] | null>(null);
   const [feedback, setFeedback] = useState<FeedbackItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -188,21 +177,19 @@ export function LiveSurface() {
         status: serverStatus,
       });
       if (searchTerm) propsParams.set('search', searchTerm);
-      const [propsRes, errorsRes, smsRes, feedbackRes] = await Promise.all([
+      const [propsRes, errorsRes, feedbackRes] = await Promise.all([
         fetchWithAuth(`/api/admin/list-properties?${propsParams.toString()}`),
         fetchWithAuth(`/api/admin/recent-errors?since=${encodeURIComponent(since72h)}`),
-        fetchWithAuth('/api/admin/sms-health?hours=72'),
         fetchWithAuth('/api/admin/feedback'),
       ]);
-      const [propsJson, errorsJson, smsJson, feedbackJson] = await Promise.all([
-        propsRes.json(), errorsRes.json(), smsRes.json(), feedbackRes.json(),
+      const [propsJson, errorsJson, feedbackJson] = await Promise.all([
+        propsRes.json(), errorsRes.json(), feedbackRes.json(),
       ]);
       if (propsJson.ok) {
         setProps(propsJson.data.properties);
         setPagination(propsJson.data.pagination ?? null);
       }
       if (errorsJson.ok) setErrors(errorsJson.data.groups);
-      if (smsJson.ok) setSms(smsJson.data.perHotel);
       if (feedbackJson.ok) setFeedback(feedbackJson.data.feedback);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
@@ -226,7 +213,7 @@ export function LiveSurface() {
       </SurfaceShell>
     );
   }
-  if (!props || !errors || !sms || !feedback) {
+  if (!props || !errors || !feedback) {
     return (
       <SurfaceShell glow="tealTL">
         <div style={{ padding: '80px 0', textAlign: 'center' }}><DarkSpinner /></div>
@@ -286,7 +273,7 @@ export function LiveSurface() {
         <DarkHealth label="Disconnected PMS" n={health.disc} tone="terracotta" />
       </div>
 
-      {/* Control grid: Hotels · Recent errors · SMS health · Feedback inbox */}
+      {/* Control grid: Hotels · Recent errors · Feedback inbox */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 18, alignItems: 'start' }}>
 
         {/* Column 1 — Hotels */}
@@ -331,19 +318,7 @@ export function LiveSurface() {
           )}
         </section>
 
-        {/* Column 3 — SMS health */}
-        <section style={{ minWidth: 0 }}>
-          <span className="caps" style={{ color: dimWhite(.5) }}>SMS health · {sms.length}</span>
-          {sms.length === 0 ? (
-            <div style={{ marginTop: 10 }}><DarkEmpty text="No SMS activity." /></div>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 10 }}>
-              {sms.map((s) => <SmsRow key={s.propertyId} s={s} />)}
-            </div>
-          )}
-        </section>
-
-        {/* Column 4 — Feedback inbox */}
+        {/* Column 3 — Feedback inbox */}
         <section style={{ minWidth: 0 }}>
           <span className="caps" style={{ color: dimWhite(.5) }}>Feedback inbox · {newFeedbackCount} new</span>
           {feedback.length === 0 ? (
@@ -359,7 +334,6 @@ export function LiveSurface() {
       {sel && (
         <MapDetail
           h={sel}
-          sms={sms}
           onClose={() => setSel(null)}
           onPickCoverage={() => setPickerHotel(sel)}
           onOpenSections={() => { setSectionsHotel(sel); setSel(null); }}
@@ -662,9 +636,8 @@ function DeleteHotelModal({ h, onClose, onDeleted }: {
 }
 
 // ── Hotel detail modal (light card on blurred ink) ───────────────────────
-function MapDetail({ h, sms, onClose, onPickCoverage, onOpenSections, onDetached, onRequestDelete }: {
+function MapDetail({ h, onClose, onPickCoverage, onOpenSections, onDetached, onRequestDelete }: {
   h: EnrichedRow;
-  sms: SmsHealthRow[];
   onClose: () => void;
   onPickCoverage: () => void;   // opens CoveragePickerModal (assign or switch)
   onOpenSections: () => void;   // opens SectionsModal for this hotel
@@ -672,7 +645,6 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onOpenSections, onDetached
   onRequestDelete: () => void;  // open the shared DeleteHotelModal for this hotel
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const row = sms.find((x) => x.propertyId === h.id);
   const hasSystem = h.pmsType !== null;
   const [detaching, setDetaching] = useState(false);
   const [detachError, setDetachError] = useState<string | null>(null);
@@ -714,7 +686,6 @@ function MapDetail({ h, sms, onClose, onPickCoverage, onOpenSections, onDetached
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: 14 }}>
           <Stat label="Rooms" v={h.totalRooms ?? '—'} />
           <Stat label="Staff" v={h.staffCount} />
-          <Stat label="SMS" v={row && row.deliveryPct !== null ? `${row.deliveryPct}%` : '—'} c={row && row.deliveryPct !== null && row.deliveryPct < 90 ? 'var(--terracotta)' : 'var(--forest-deep)'} />
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
           <Pill tone={hasSystem ? subTone(h.subscriptionStatus) : 'gold'}>
@@ -809,25 +780,6 @@ function ErrorRow({ g }: { g: ErrorGroup }) {
         <pre className="mono" style={{ margin: '10px 0 0', padding: 11, background: 'rgba(0,0,0,.3)', borderRadius: 9, fontSize: 10.5, color: dimWhite(.7), whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{g.sampleStack}</pre>
       )}
     </DarkCard>
-  );
-}
-
-// ── SMS health row ────────────────────────────────────────────────────────
-function SmsRow({ s }: { s: SmsHealthRow }) {
-  const fail = s.failed > 0;
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 11, background: dimWhite(.05), border: `1px solid ${fail ? 'rgba(194,86,46,.3)' : dimWhite(.12)}`, borderRadius: 12, padding: '11px 13px' }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 600, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.propertyName ?? '(deleted property)'}</div>
-        <div className="mono" style={{ fontSize: 10.5, marginTop: 3, display: 'flex', gap: 9, flexWrap: 'wrap' }}>
-          <span style={{ color: 'var(--forest-deep)' }}>{s.sent} sent</span>
-          {s.inFlight > 0 && <span style={{ color: dimWhite(.6) }}>{s.inFlight} in flight</span>}
-          {s.failed > 0 && <span style={{ color: 'var(--terracotta)' }}>{s.failed} failed</span>}
-          {s.deliveryPct !== null && <span style={{ color: s.deliveryPct >= 95 ? 'var(--forest-deep)' : s.deliveryPct >= 80 ? 'var(--gold-deep)' : 'var(--terracotta)' }}>{s.deliveryPct}% delivery</span>}
-        </div>
-        {s.topErrors.length > 0 && <div className="mono" style={{ fontSize: 10, color: 'var(--terracotta)', marginTop: 4 }}>{s.topErrors[0].message}{s.topErrors.length > 1 ? ` (+${s.topErrors.length - 1})` : ''}</div>}
-      </div>
-    </div>
   );
 }
 

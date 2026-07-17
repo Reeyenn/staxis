@@ -103,16 +103,6 @@ const ServerSchema = z.object({
   // failure mode this gate exists to prevent. (Audit Batch 1, F-01.)
   OPENAI_API_KEY: z.string().startsWith('sk-'),
 
-  // ── Twilio ────────────────────────────────────────────
-  // Optional everywhere — sms.ts gracefully refuses to send when unset.
-  // We deliberately don't enforce the `AC` prefix on the SID: tests use
-  // synthetic credentials that don't match Twilio's real-world format.
-  TWILIO_ACCOUNT_SID: z.string().optional(),
-  TWILIO_AUTH_TOKEN: z.string().optional(),
-  TWILIO_FROM_NUMBER: z.string().optional(),
-  TWILIO_BALANCE_WARN_USD: z.coerce.number().default(10),
-  TWILIO_BALANCE_FAIL_USD: z.coerce.number().default(5),
-
   // ── Stripe (graceful disable when unset) ──────────────
   // Same relaxed validation as Twilio — tests use 'sk_test_…' but the
   // value can be any non-empty string.
@@ -195,12 +185,6 @@ const ServerSchema = z.object({
   HEARTBEAT_SECRET: z.string().optional(),
   GITHUB_WEBHOOK_SECRET: z.string().optional(),
 
-  // Dev/staging escape hatch for /api/sms-reply: when set to '1', the
-  // route accepts JSON payloads without a Twilio signature. Must NEVER
-  // be set on a prod deploy. Default unset → fail-closed (only signed
-  // form-encoded Twilio webhooks accepted).
-  ALLOW_UNSIGNED_SMS_WEBHOOK: z.string().optional(),
-
   // Dev/local escape hatch for promoteMap's tamper-seal guard: when set to
   // '1', a NULL-signature (unsigned) knowledge file may still be promoted to
   // active. Meant ONLY for a local environment with no RECIPE_SIGNING_KEY
@@ -260,12 +244,6 @@ const ServerSchema = z.object({
 
   // ── reCAPTCHA ─────────────────────────────────────────
   NEXT_PUBLIC_RECAPTCHA_SITE_KEY: z.string().optional(),
-
-  // ── Ops alert phone (canonical = OPS_ALERT_PHONE) ─────
-  // Legacy MANAGER_PHONE accepted by parse layer. Schema relaxed to plain
-  // string so tests can use synthetic numbers; the doctor check enforces
-  // E.164 separately for prod monitoring.
-  OPS_ALERT_PHONE: z.string().optional(),
 
   // ── ML routing (canonical = ML_SERVICE_URLS only) ─────
   // CSV — single-shard is just one entry. Legacy singular ML_SERVICE_URL
@@ -354,5 +332,3 @@ export const env = new Proxy({} as Env, {
 // current state, not a value frozen at module-load time. Tests that mutate
 // process.env between cases observe the new state.
 export const isStripeConfigured = () => !!(env.STRIPE_SECRET_KEY && env.STRIPE_WEBHOOK_SECRET);
-export const isSmsConfigured = () =>
-  !!(env.TWILIO_ACCOUNT_SID && env.TWILIO_AUTH_TOKEN && env.TWILIO_FROM_NUMBER);

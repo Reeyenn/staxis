@@ -10,7 +10,6 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { processSmsJobs } from '@/lib/sms-jobs';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { runComplianceRemindersForProperty } from '@/lib/compliance/reminders';
 import { runWithConcurrency } from '@/lib/parallel';
@@ -86,10 +85,6 @@ async function handle(req: NextRequest) {
       failed += 1;
     }
   }
-
-  // Drain whatever we just enqueued.
-  try { await processSmsJobs(100); }
-  catch (e) { log.error('[cron/compliance-reminders] drain failed', { requestId, msg: errToString(e) }); }
 
   await writeCronHeartbeat('compliance-reminders', {
     requestId,

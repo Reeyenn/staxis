@@ -39,7 +39,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // backup scheduler (failsafe #4 — don't disable workflows); dual-firing is
   // safe because staxis_claim_sms_jobs uses FOR UPDATE SKIP LOCKED (no
   // double-send). This entry is the scheduler of record (Vercel).
-  { heartbeatName: 'process-sms-jobs',                  source: { kind: 'vercel', cronPath: '/api/cron/process-sms-jobs' },                  cronExpr: '*/5 * * * *' },
   // Plan v4 (2026-05-24): removed `scraper-health` cron entry — Railway
   // scraper service is gone, `vercel-watchdog` (5-min, listed below) is
   // its replacement.
@@ -47,7 +46,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'compliance-reminders',              source: { kind: 'vercel', cronPath: '/api/cron/compliance-reminders' },             cronExpr: '0 * * * *' },
   { heartbeatName: 'compliance-anomaly-sweep',          source: { kind: 'vercel', cronPath: '/api/cron/compliance-anomaly-sweep' },          cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'pms-sync-watchdog',                 source: { kind: 'vercel', cronPath: '/api/cron/pms-sync-watchdog' },                 cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-consolidate-memory',          source: { kind: 'vercel', cronPath: '/api/cron/agent-consolidate-memory' },          cronExpr: '0 5 * * *' },
   { heartbeatName: 'doctor-check',                      source: { kind: 'vercel', cronPath: '/api/cron/doctor-check' },                       cronExpr: '0 * * * *' },
@@ -88,7 +86,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // learned (active knowledge files with feedGaps). 10:00 UTC — after the
   // 3am-local nightly CUA restarts have settled across US timezones.
   { heartbeatName: 'pms-backfill-missing-feeds',        source: { kind: 'vercel', cronPath: '/api/cron/pms-backfill-missing-feeds' },       cronExpr: '0 10 * * *' },
-  { heartbeatName: 'agent-weekly-digest',               source: { kind: 'vercel', cronPath: '/api/cron/agent-weekly-digest' },              cronExpr: '0 9 * * 0' },
   // Weekly
   { heartbeatName: 'ml-train-demand',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 8 * * 0' },
   { heartbeatName: 'ml-train-supply',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 8 * * 0' },
@@ -118,7 +115,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // the redistribute. Acts as a safety net for the inline path on the
   // report routes — if their inline call failed transiently, this picks
   // up the slack.
-  { heartbeatName: 'process-pending-callouts', source: { kind: 'vercel', cronPath: '/api/cron/process-pending-callouts' },        cronExpr: '*/5 * * * *' },
   // Plan v8 Phase B (migration 0217): every 5 min, flips
   // mapping_help_requests past expires_at from 'pending' to 'expired'
   // and deletes the corresponding screenshot objects from the
@@ -134,8 +130,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'run-weekly-report',        source: { kind: 'vercel', cronPath: '/api/cron/run-weekly-report' },              cronExpr: '*/30 * * * *' },
   // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity
   // escalation SMS. Idempotent via callback_nudged_at / escalation_nudged_at.
-  { heartbeatName: 'send-complaint-nudges',    source: { kind: 'vercel', cronPath: '/api/cron/send-complaint-nudges' },          cronExpr: '*/15 * * * *' },
   // 2026-05-31: financials — daily overspend-forecast + spend-anomaly sweep.
   // Texts the property alert phone; idempotent/no-spam via app_events dedup.
-  { heartbeatName: 'financials-alert-sweep',   source: { kind: 'vercel', cronPath: '/api/cron/financials-alert-sweep' },          cronExpr: '0 14 * * *' },
 ];
