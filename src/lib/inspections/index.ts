@@ -5,6 +5,12 @@ export { startInspectionCore } from './start-core';
 export type { StartInspectionInput, StartInspectionResult } from './start-core';
 
 export {
+  parseCompleteInspectionBody,
+  validateAndFinalizeInspection,
+} from './complete-core';
+export type { ParsedCompleteBody } from './complete-core';
+
+export {
   detectImageMime,
   declaredMimeMatchesBytes,
   looksStructurallyValid,
