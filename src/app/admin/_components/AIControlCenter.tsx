@@ -14,6 +14,7 @@ import {
   CheckCircle2,
   History,
   Info,
+  Lightbulb,
   RefreshCw,
   RotateCcw,
   Search,
@@ -34,6 +35,8 @@ import {
   type AiFeatureKey,
   type AiFeatureSummary,
   type AiFeaturesResponse,
+  type AiRecommendationsResponse,
+  type AiRecommendation,
   type AiModelCatalogEntry,
   type AiModelPricing,
   type AiModelRef,
@@ -64,7 +67,7 @@ import {
 } from './AIControlCenter.helpers';
 import styles from './AIControlCenter.module.css';
 
-type TabId = 'features' | 'models' | 'history';
+type TabId = 'features' | 'models' | 'recommendations' | 'history';
 type ProviderFilter = 'all' | AiHostedProvider;
 type FeatureActionPhase = 'creating' | 'validating' | 'activating';
 type ToastKind = 'success' | 'error' | 'info';
@@ -95,6 +98,7 @@ const API_ROOT = '/api/admin/ai-control';
 const TABS: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
   { id: 'features', label: 'Features', icon: <Settings2 size={14} /> },
   { id: 'models', label: 'Models', icon: <Sparkles size={14} /> },
+  { id: 'recommendations', label: 'Recommendations', icon: <Lightbulb size={14} /> },
   { id: 'history', label: 'History', icon: <History size={14} /> },
 ];
 const FOCUSABLE = [
@@ -261,8 +265,8 @@ export function AIControlCenter() {
   const [featureQuery, setFeatureQuery] = useState('');
   const [modelQuery, setModelQuery] = useState('');
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
-  const [panelLoading, setPanelLoading] = useState<PanelStatus<boolean>>({ features: false, models: false, history: false });
-  const [panelErrors, setPanelErrors] = useState<PanelStatus<string | null>>({ features: null, models: null, history: null });
+  const [panelLoading, setPanelLoading] = useState<PanelStatus<boolean>>({ features: false, models: false, history: false, recommendations: false });
+  const [panelErrors, setPanelErrors] = useState<PanelStatus<string | null>>({ features: null, models: null, history: null, recommendations: null });
   const [featureActions, setFeatureActions] = useState<Record<string, FeatureActionPhase | undefined>>({});
   const [featureErrors, setFeatureErrors] = useState<Record<string, string | undefined>>({});
   const [pendingActivations, setPendingActivations] = useState<Record<string, PendingActivation | undefined>>({});
@@ -283,6 +287,13 @@ export function AIControlCenter() {
   const featureActionsRef = useRef<Record<string, FeatureActionPhase | undefined>>({});
   const [groupBulkBusy, setGroupBulkBusy] = useState<string | null>(null);
   const groupBulkBusyRef = useRef<string | null>(null);
+  const [recState, setRecState] = useState<{
+    status: 'idle' | 'loading' | 'done' | 'error';
+    data: AiRecommendationsResponse | null;
+    error: string | null;
+  }>({ status: 'idle', data: null, error: null });
+  const recLoadingRef = useRef(false);
+  const [appliedRecs, setAppliedRecs] = useState<Record<number, 'applying' | 'applied' | undefined>>({});
   const draftsRef = useRef<Record<string, AiFeatureDraft>>({});
   const draftReviewRequiredRef = useRef<Record<string, boolean | undefined>>({});
   const toastIdRef = useRef(0);
@@ -369,8 +380,8 @@ export function AIControlCenter() {
     );
     const sequence = ++loadSequenceRef.current;
     if (!quiet) {
-      setPanelLoading({ features: true, models: true, history: true });
-      setPanelErrors({ features: null, models: null, history: null });
+      setPanelLoading({ features: true, models: true, history: true, recommendations: false });
+      setPanelErrors({ features: null, models: null, history: null, recommendations: null });
     }
 
     const finishPanel = (panel: TabId) => {
@@ -865,6 +876,74 @@ export function AIControlCenter() {
     });
   }, [models, runGroupCycle, toast]);
 
+  /** Generate fresh advice on demand — one billable Claude call (a few cents). */
+  const generateRecommendations = useCallback(async () => {
+    if (recLoadingRef.current) return;
+    recLoadingRef.current = true;
+    setRecState((current) => ({ ...current, status: 'loading', error: null }));
+    setAppliedRecs({});
+    try {
+      const data = await apiRequest<AiRecommendationsResponse>('/recommendations', { method: 'POST' });
+      setRecState({ status: 'done', data, error: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not generate recommendations.';
+      setRecState((current) => ({ status: 'error', data: current.data, error: message }));
+      toast('error', `Recommendations: ${message}`);
+    } finally {
+      recLoadingRef.current = false;
+    }
+  }, [toast]);
+
+  /** Apply one suggestion via the normal create → test → activate cycle. */
+  const applyRecommendation = useCallback(async (rec: AiRecommendation, index: number) => {
+    if (!rec.featureKey || !rec.suggestedPrimary) return;
+    if (groupBulkBusyRef.current || rollingBackIdRef.current || featureActionsRef.current[rec.featureKey]) return;
+    const feature = featuresRef.current.find((row) => row.key === rec.featureKey);
+    if (!feature) return;
+    const reason = `Applied recommendation: ${rec.title}`;
+    setAppliedRecs((current) => ({ ...current, [index]: 'applying' }));
+    setFeatureAction(feature.key, 'validating');
+    try {
+      const createBody: CreateAiConfigRequest = {
+        featureKey: feature.key,
+        enabled: feature.activeConfig.enabled,
+        primary: { provider: rec.suggestedPrimary.provider as AiHostedProvider, modelId: rec.suggestedPrimary.modelId },
+        fallback: rec.suggestedFallback && isHostedProvider(rec.suggestedFallback.provider)
+          ? { provider: rec.suggestedFallback.provider, modelId: rec.suggestedFallback.modelId }
+          : null,
+        parameters: feature.activeConfig.parameters,
+        parentId: feature.activeConfig.versionId,
+        changeReason: reason,
+      };
+      const created = await apiRequest<CreateAiConfigResponse>('/configs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(createBody),
+      });
+      const validated = await apiRequest<ValidateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/validate`, {
+        method: 'POST',
+      });
+      const validationError = validationFailed(validated);
+      if (validationError) throw new Error(validationError);
+      setFeatureAction(feature.key, 'activating');
+      await apiRequest<ActivateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/activate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ expectedActiveId: feature.activeConfig.versionId, reason } satisfies ActivateAiConfigRequest),
+      });
+      setAppliedRecs((current) => ({ ...current, [index]: 'applied' }));
+      toast('success', `${feature.label} is now on the recommended setup.`);
+      await loadAll(true, true, [feature.key]);
+    } catch (error) {
+      setAppliedRecs((current) => ({ ...current, [index]: undefined }));
+      const message = error instanceof Error ? error.message : 'failed';
+      toast('error', `${feature.label}: ${message}`);
+      await loadAll(true, true);
+    } finally {
+      setFeatureAction(feature.key, undefined);
+    }
+  }, [loadAll, setFeatureAction, toast]);
+
   const refreshModels = useCallback(async () => {
     if (catalogRefreshInFlightRef.current) return;
     catalogRefreshInFlightRef.current = true;
@@ -1061,6 +1140,15 @@ export function AIControlCenter() {
                 onQuery={setModelQuery}
                 onProvider={setProviderFilter}
                 onRefresh={refreshModels}
+              />
+            ) : tab === 'recommendations' ? (
+              <RecommendationsPanel
+                state={recState}
+                applied={appliedRecs}
+                features={features}
+                busy={featureActionInFlight || Boolean(groupBulkBusy)}
+                onGenerate={generateRecommendations}
+                onApply={applyRecommendation}
               />
             ) : (
               <HistoryPanel
@@ -1871,6 +1959,116 @@ function ModelCard({
         <span>{model.source === 'registry' ? 'Registry record' : 'Provider last checked'} · {formatAiDate(model.lastSeenAt)}</span>
       </div>
     </article>
+  );
+}
+
+function RecommendationsPanel({
+  state,
+  applied,
+  features,
+  busy,
+  onGenerate,
+  onApply,
+}: {
+  state: { status: 'idle' | 'loading' | 'done' | 'error'; data: AiRecommendationsResponse | null; error: string | null };
+  applied: Record<number, 'applying' | 'applied' | undefined>;
+  features: AiFeatureSummary[];
+  busy: boolean;
+  onGenerate: () => void;
+  onApply: (rec: AiRecommendation, index: number) => void;
+}) {
+  const featureByKey = useMemo(() => new Map(features.map((feature) => [feature.key as string, feature])), [features]);
+  const items = state.data?.recommendations ?? [];
+  return (
+    <section
+      id="ai-control-panel-recommendations"
+      className={styles.panel}
+      role="tabpanel"
+      aria-labelledby="ai-control-tab-recommendations"
+    >
+      <div className={styles.toolbar}>
+        <span className={styles.summaryText}>
+          {state.data
+            ? `Based on your setup, model prices, and $${state.data.spend30dUsd.toFixed(2)} of AI spend in the last 30 days.`
+            : 'Fresh advice on which models to use — written from your real setup, prices, and spend.'}
+        </span>
+        <button type="button" className={styles.secondaryButton} disabled={state.status === 'loading'} onClick={onGenerate}>
+          {state.status === 'loading' ? <span className={styles.spinner} aria-hidden="true" /> : <Lightbulb size={14} />}
+          {state.status === 'loading' ? 'Thinking…' : state.data ? 'Get fresh recommendations' : 'Get recommendations'}
+        </button>
+      </div>
+
+      {state.status === 'idle' && (
+        <div className={styles.emptyState}>
+          <Lightbulb size={22} />
+          Click “Get recommendations” to have the AI look over your setup. Costs a few cents per run and changes nothing by itself.
+        </div>
+      )}
+      {state.status === 'error' && !state.data && (
+        <div className={styles.emptyState}><AlertTriangle size={22} />{state.error ?? 'Could not generate recommendations.'}</div>
+      )}
+      {state.status === 'done' && items.length === 0 && (
+        <div className={styles.emptyState}>
+          <CheckCircle2 size={22} />
+          Nothing worth changing right now — your current setup already looks sensible.
+        </div>
+      )}
+      {items.length > 0 && (
+        <div className={styles.featureList}>
+          {items.map((rec, index) => {
+            const feature = rec.featureKey ? featureByKey.get(rec.featureKey) : undefined;
+            const applyState = applied[index];
+            const canApply = Boolean(rec.featureKey && rec.suggestedPrimary && feature);
+            return (
+              <article key={`${rec.featureKey ?? 'general'}-${index}`} className={styles.featureCard}>
+                <div className={styles.featureTop}>
+                  <div className={styles.featureIdentity}>
+                    <div className={styles.featureTitleRow}>
+                      <h4 className={styles.featureTitle}>{rec.title}</h4>
+                      {feature && <StatusChip>{feature.label}</StatusChip>}
+                      {rec.estimatedMonthlySavingsUsd !== null && rec.estimatedMonthlySavingsUsd > 0 && (
+                        <StatusChip tone="good">~${rec.estimatedMonthlySavingsUsd.toFixed(2)}/mo less</StatusChip>
+                      )}
+                      <StatusChip tone={rec.confidence === 'high' ? 'good' : rec.confidence === 'medium' ? 'info' : undefined}>
+                        {rec.confidence === 'high' ? 'Confident' : rec.confidence === 'medium' ? 'Fairly confident' : 'Worth a look'}
+                      </StatusChip>
+                    </div>
+                    <p className={styles.featureDescription}>{rec.why}</p>
+                    {rec.suggestedPrimary && (
+                      <p className={styles.featureDescription}>
+                        Suggests: <strong>{rec.suggestedPrimary.modelId}</strong>
+                        {rec.suggestedFallback ? <> with backup <strong>{rec.suggestedFallback.modelId}</strong></> : null}
+                        {feature ? <> (currently {feature.activeConfig.primary.modelId})</> : null}
+                      </p>
+                    )}
+                  </div>
+                  {canApply && (
+                    <div className={styles.featureActions}>
+                      <button
+                        type="button"
+                        className={styles.primaryButton}
+                        disabled={busy || applyState === 'applying' || applyState === 'applied'}
+                        onClick={() => onApply(rec, index)}
+                      >
+                        {applyState === 'applying'
+                          ? <span className={styles.spinner} aria-hidden="true" />
+                          : <CheckCircle2 size={14} />}
+                        {applyState === 'applied' ? 'Applied ✓' : applyState === 'applying' ? 'Testing…' : 'Test & apply'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+      {state.data && (
+        <p className={styles.summaryText}>
+          Written by {state.data.modelUsed} · {new Date(state.data.generatedAt).toLocaleString()} · suggestions never apply themselves.
+        </p>
+      )}
+    </section>
   );
 }
 
