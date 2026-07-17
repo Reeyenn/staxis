@@ -9,7 +9,8 @@
 
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { UserPlus } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -17,9 +18,31 @@ import { addStaffMember, updateStaffMember, deleteStaffMember } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { canManageTeam } from '@/lib/roles';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
+import { InviteStaffPanel } from '@/components/team/InviteStaffPanel';
 import type { StaffMember, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from './_tokens';
 import { StaffAvatar, SeniorTag, HoursBar } from './_people';
+
+// A pending join request awaiting a manager's approve/deny.
+interface JoinRequest {
+  id: string;
+  name: string;
+  phone: string | null;
+  language: 'en' | 'es';
+  department: string;
+  created_at: string;
+}
+
+// "how long ago" in plain words, EN/ES. Coarse buckets are enough here.
+function timeAgo(iso: string, lang: 'en' | 'es'): string {
+  const mins = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 60000));
+  if (mins < 1) return lang === 'es' ? 'ahora mismo' : 'just now';
+  if (mins < 60) return lang === 'es' ? `hace ${mins} min` : `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return lang === 'es' ? `hace ${hrs} h` : `${hrs}h ago`;
+  const days = Math.round(hrs / 24);
+  return lang === 'es' ? `hace ${days} d` : `${days}d ago`;
+}
 
 // ── Form types ────────────────────────────────────────────────────────────
 interface StaffFormData {
@@ -71,6 +94,66 @@ export function ManagerDirectory() {
   // column + the wage fetch on the role so payroll can never render or be
   // requested for a non-manager if this component is ever reused.
   const isManager = !!user && canManageTeam(user.role);
+
+  /* ── Invite + join-request queue state (managers only) ── */
+  const [showInvite, setShowInvite] = useState(false);
+  const [requests, setRequests] = useState<JoinRequest[]>([]);
+  // Which request id currently has an approve/deny in flight (disables its row).
+  const [decidingId, setDecidingId] = useState<string | null>(null);
+
+  const loadRequests = useCallback(async () => {
+    if (!isManager || !pid) return;
+    try {
+      const res = await fetchWithAuth(`/api/staff/join-requests?hotelId=${pid}`);
+      if (!res.ok) return; // non-fatal; queue just stays as-is
+      const body = await res.json() as { data?: { requests?: JoinRequest[] } };
+      setRequests(body.data?.requests ?? []);
+    } catch (err) {
+      console.error('[ManagerDirectory] join-requests load failed', err);
+    }
+  }, [isManager, pid]);
+
+  // Poll the queue on mount and every 30s while mounted (managers only).
+  useEffect(() => {
+    if (!isManager || !pid) return;
+    void loadRequests();
+    const iv = setInterval(() => { void loadRequests(); }, 30000);
+    return () => clearInterval(iv);
+  }, [isManager, pid, loadRequests]);
+
+  const decideRequest = async (requestId: string, decision: 'approve' | 'deny') => {
+    if (!pid || decidingId) return;
+    setDecidingId(requestId);
+    try {
+      const res = await fetchWithAuth('/api/staff/join-requests', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hotelId: pid, requestId, decision }),
+      });
+      if (res.ok) {
+        setRequests(rs => rs.filter(r => r.id !== requestId));
+        if (decision === 'approve') {
+          try { await refreshStaff(); } catch (err) { console.warn('[ManagerDirectory] refresh after approve failed', err); }
+        }
+        return;
+      }
+      // 409 = someone else already decided it (or it's already linked) → just
+      // resync the queue so the stale row drops.
+      if (res.status === 409) { void loadRequests(); return; }
+      const body = await res.json().catch(() => ({})) as { error?: string };
+      window.alert(body.error ?? (lang === 'es' ? 'No se pudo procesar. Intenta de nuevo.' : "Couldn't process that. Try again."));
+    } catch (err) {
+      console.error('[ManagerDirectory] decide request failed', err);
+      window.alert(lang === 'es' ? 'No se pudo procesar — revisa tu conexión.' : "Couldn't process that — check your connection.");
+    } finally {
+      setDecidingId(null);
+    }
+  };
+
+  const deptLabel = (dept: string): string => {
+    const key = asDeptKey(dept);
+    return lang === 'es' ? (DEPT_ES[key] ?? deptMeta[key].label) : deptMeta[key].label;
+  };
 
   /* ── Modal state ── */
   const [showModal, setShowModal] = useState(false);
@@ -375,6 +458,63 @@ export function ManagerDirectory() {
         .staff-dir-row:hover { background: rgba(31,35,28,0.04); }
       `}</style>
 
+      {/* Slim action row — Invite Staff (managers only). The page header was
+          removed, so this is the directory's top-level action affordance. */}
+      {isManager && (
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+          <Btn variant="primary" size="md" onClick={() => setShowInvite(true)}>
+            <UserPlus size={14} />
+            {lang === 'es' ? 'Invitar Personal' : 'Invite Staff'}
+          </Btn>
+        </div>
+      )}
+
+      {/* Waiting-to-approve queue (managers only, hidden when empty) */}
+      {isManager && requests.length > 0 && (
+        <div style={{
+          background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
+          boxShadow: T.cardShadow, marginBottom: 16, overflow: 'hidden',
+        }}>
+          <div style={{
+            padding: '12px 18px', borderBottom: `1px solid ${T.rule}`,
+            display: 'flex', alignItems: 'center', gap: 8,
+          }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: T.caramel }} />
+            <span style={{ fontWeight: 600, fontSize: 14, color: T.ink, letterSpacing: '-0.01em' }}>
+              {lang === 'es' ? 'Esperando aprobación' : 'Waiting to approve'}
+            </span>
+            <span style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3 }}>{requests.length}</span>
+          </div>
+          {requests.map(r => {
+            const busy = decidingId === r.id;
+            return (
+              <div key={r.id} style={{
+                display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px',
+                borderBottom: `1px solid ${T.ruleSoft}`, opacity: busy ? 0.55 : 1,
+              }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14, color: T.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {r.name}
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
+                    <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>{deptLabel(r.department)}</span>
+                    <span style={{ fontSize: 10, color: T.ink3 }}>·</span>
+                    <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>{timeAgo(r.created_at, lang)}</span>
+                  </div>
+                </div>
+                <Btn variant="ghost" size="sm" onClick={() => decideRequest(r.id, 'deny')} disabled={busy}
+                  style={{ color: '#B85C3D', borderColor: 'rgba(184,92,61,0.25)' }}>
+                  {lang === 'es' ? 'Rechazar' : 'Deny'}
+                </Btn>
+                <Btn variant="primary" size="sm" onClick={() => decideRequest(r.id, 'approve')} disabled={busy}>
+                  {lang === 'es' ? 'Aprobar' : 'Approve'}
+                </Btn>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* KPI strip */}
       <div style={{
         display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 16,
@@ -448,6 +588,37 @@ export function ManagerDirectory() {
           );
         })}
       </div>
+
+      {/* Invite Staff modal — same overlay + click-outside idiom as the edit
+          modal. On close, re-poll the queue so a fresh signup that happened
+          while the sheet was open shows up immediately. */}
+      {showInvite && (
+        <div
+          onClick={() => { setShowInvite(false); void loadRequests(); }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(31,35,28,0.42)', backdropFilter: 'blur(8px)', padding: 16,
+          }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: T.paper, borderRadius: 18,
+              width: '100%', maxWidth: 440, maxHeight: '88vh', overflowY: 'auto',
+              padding: '20px 22px',
+              boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24), 0 0 0 1px rgba(31,35,28,0.04)',
+            }}
+          >
+            <InviteStaffPanel
+              hotelId={pid}
+              lang={lang}
+              variant="modal"
+              onClose={() => { setShowInvite(false); void loadRequests(); }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Add/Edit modal */}
       {showModal && (
