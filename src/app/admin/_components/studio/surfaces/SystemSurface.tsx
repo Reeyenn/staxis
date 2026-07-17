@@ -38,6 +38,7 @@ import {
   EASE_OUT, prefersReducedMotion, type PillTone,
 } from '../kit';
 import { SurfaceShell, SurfaceHead, DarkCard, DarkSpinner, DarkEmpty, dimWhite } from '../surface-kit';
+import { DimCaps } from '../ui-kit';
 
 // ── Real API shapes (copied verbatim from SystemTab.tsx) ────────────────
 interface Commit {
@@ -274,13 +275,13 @@ export function SystemSurface() {
           {/* Active sessions · Build activity */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px,1fr))', gap: 18, marginTop: 26 }}>
             <div>
-              <span className="caps" style={{ color: dimWhite(.5) }}>Active sessions</span>
+              <DimCaps>Active sessions</DimCaps>
               <div style={{ marginTop: 10 }}>
                 <SessionsPanel resp={activeSessions} />
               </div>
             </div>
             <div>
-              <span className="caps" style={{ color: dimWhite(.5) }}>Build activity</span>
+              <DimCaps>Build activity</DimCaps>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 7, marginTop: 10 }}>
                 {build && buildEvents(build).length === 0
                   ? <DarkEmpty text="No recent build activity." />
@@ -463,9 +464,9 @@ function SessionsPanel({ resp }: { resp: ActiveSessionsResp | null }) {
     <DarkCard>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         <PulseDot />
-        <span className="caps" style={{ color: dimWhite(.7) }}>
+        <DimCaps o={.7}>
           {total} Claude {total === 1 ? 'session' : 'sessions'} active
-        </span>
+        </DimCaps>
         <span style={{ fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 11.5, color: dimWhite(.5) }}>
           heartbeat &lt; 2m
         </span>
@@ -568,7 +569,7 @@ function AgentBlock() {
     <div>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', marginBottom: 12 }}>
         <div>
-          <span className="caps" style={{ color: dimWhite(.5) }}>AI agent · today</span>
+          <DimCaps>AI agent · today</DimCaps>
           <h2 style={{ fontFamily: FONT_SERIF, fontSize: 23, fontWeight: 400, letterSpacing: '-0.02em', margin: '2px 0 0', color: '#fff' }}>
             The <span style={{ fontStyle: 'italic' }}>AI</span> inside Staxis
           </h2>
@@ -609,7 +610,7 @@ function AgentBlock() {
 
       {/* Tool-call mix */}
       <div style={{ marginTop: 12, background: cardBg, border: `1px solid ${bd}`, borderRadius: 14, padding: '12px 16px' }}>
-        <span className="caps" style={{ color: dimWhite(.5) }}>Tool calls · today</span>
+        <DimCaps>Tool calls · today</DimCaps>
         <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 7 }}>
           {!data ? (
             <div style={{ fontSize: 12, color: dimWhite(.45), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>Loading…</div>
@@ -645,7 +646,7 @@ function AgentStat({ label, value, sub, c, bd, last }: {
   }, [value]);
   return (
     <div style={{ flex: '1 1 160px', minWidth: 150, padding: '14px 18px', borderRight: last ? 'none' : `1px solid ${bd}` }}>
-      <span className="caps" style={{ color: dimWhite(.5) }}>{label}</span>
+      <DimCaps>{label}</DimCaps>
       <div style={{ marginTop: 4 }}>
         <SerifNum size={28} c={c}><span ref={ref}>{value}</span></SerifNum>
       </div>
@@ -694,7 +695,7 @@ function AgentActionCard({ href, caps, title, italic, desc, expandable }: {
 
   return (
     <div style={{ background: dimWhite(.05), border: `1px solid ${dimWhite(.14)}`, borderRadius: 14, padding: '16px 18px' }}>
-      <span className="caps" style={{ color: dimWhite(.5) }}>{caps}</span>
+      <DimCaps>{caps}</DimCaps>
       <h3 style={{ fontFamily: FONT_SERIF, fontSize: 20, fontWeight: 400, letterSpacing: '-0.02em', margin: '3px 0 6px', color: '#fff' }}>
         {title} <span style={{ fontStyle: 'italic' }}>{italic}</span>
       </h3>

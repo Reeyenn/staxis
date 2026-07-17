@@ -42,11 +42,6 @@ export async function updatePreventiveTask(
   if (error) { logErr('updatePreventiveTask', error); throw error; }
 }
 
-export async function deletePreventiveTask(_uid: string, _pid: string, tid: string): Promise<void> {
-  const { error } = await supabase.from('preventive_tasks').delete().eq('id', tid);
-  if (error) { logErr('deletePreventiveTask', error); throw error; }
-}
-
 // Complete a preventive task. Caller picks the completed date (today or
 // a backfill); next-due is reconstructed client-side from
 // last_completed_at + frequencyDays whenever the row is read back. The

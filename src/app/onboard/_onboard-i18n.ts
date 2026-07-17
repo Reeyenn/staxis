@@ -37,6 +37,20 @@ const STRINGS = {
     resumeSignInBtn: 'Sign in to continue →',
     sessionExpiredError:
       'Your sign-up link expired. Sign in with the email and password you chose to continue.',
+
+    // Safe review navigation for the auth-locked early steps
+    backToAccount: 'Back to account',
+    backToWelcome: 'Back to welcome',
+    accountReadyTitle: 'Your account is ready',
+    accountReadyBody:
+      'Your Staxis account has already been created. You can review this step without restarting your signup.',
+    accountEmailLabel: 'Account email',
+    continueToVerify: 'Continue to verify email →',
+    continueSetup: 'Continue setup →',
+    beginArrow: 'Begin →',
+    continueArrow: 'Continue →',
+    startingEllipsis: 'Starting…',
+    continuingEllipsis: 'Continuing…',
   },
   es: {
     welcomeSteps:
@@ -56,6 +70,19 @@ const STRINGS = {
     resumeSignInBtn: 'Iniciar sesión para continuar →',
     sessionExpiredError:
       'Tu enlace de registro expiró. Inicia sesión con el correo y la contraseña que elegiste para continuar.',
+
+    backToAccount: 'Volver a la cuenta',
+    backToWelcome: 'Volver a la bienvenida',
+    accountReadyTitle: 'Tu cuenta está lista',
+    accountReadyBody:
+      'Tu cuenta de Staxis ya fue creada. Puedes revisar este paso sin reiniciar tu registro.',
+    accountEmailLabel: 'Correo de la cuenta',
+    continueToVerify: 'Continuar para verificar el correo →',
+    continueSetup: 'Continuar configuración →',
+    beginArrow: 'Comenzar →',
+    continueArrow: 'Continuar →',
+    startingEllipsis: 'Comenzando…',
+    continuingEllipsis: 'Continuando…',
   },
 };
 

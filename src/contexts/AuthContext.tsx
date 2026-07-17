@@ -21,6 +21,7 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { migrateLegacySessionIfPresent } from '@/lib/auth-storage-migration';
+import { RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import type { AppRole } from '@/lib/roles';
 
 export interface AppUser {
@@ -48,6 +49,20 @@ const AuthContext = createContext<AuthContextType>({
   signIn: async () => null,
   signOut: async () => {},
 });
+
+function clearSignedOutBrowserState(): void {
+  try {
+    sessionStorage.removeItem('hotelops-session-selected');
+    // The onboarding resume loop-breaker is scoped to one authenticated
+    // session. Never let a failed resume suppress a later login.
+    sessionStorage.removeItem(RESUME_GUARD_KEY);
+    // Remove any legacy Firebase-era keys so a mixed-state browser doesn't
+    // feed stale data back to AuthContext after migration.
+    localStorage.removeItem('hotelops-account');
+  } catch {
+    // ignore — private browsing / no storage
+  }
+}
 
 // Fetch the accounts row for the current auth user and translate to AppUser.
 //
@@ -196,6 +211,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!active) return;
       // Synchronous bookkeeping is fine here; only DEFER the supabase calls.
       if (event === 'SIGNED_OUT') {
+        // Covers wrapper sign-out AND terminal 401/session-expiry paths that
+        // call supabase.auth.signOut() directly.
+        clearSignedOutBrowserState();
         setUser(null);
         return;
       }
@@ -339,14 +357,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const signOut = async () => {
-    try {
-      sessionStorage.removeItem('hotelops-session-selected');
-      // Remove any legacy Firebase-era keys so a mixed-state browser doesn't
-      // feed stale data back to AuthContext after migration.
-      localStorage.removeItem('hotelops-account');
-    } catch {
-      // ignore — private browsing / no storage
-    }
+    clearSignedOutBrowserState();
 
     // F-02 — best-effort revoke of trusted-device cookie + DB row BEFORE
     // we tear the session down. Without this, a stolen cookie outlives a

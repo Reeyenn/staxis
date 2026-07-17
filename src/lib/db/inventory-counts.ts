@@ -9,38 +9,7 @@
 
 import type { InventoryCount } from '@/types';
 import { supabase, logErr, asRecordRows } from './_common';
-import { toInventoryCountRow, fromInventoryCountRow } from '../db-mappers';
-
-export async function addInventoryCount(
-  _uid: string,
-  pid: string,
-  count: Omit<InventoryCount, 'id'>,
-): Promise<string> {
-  const row = { ...toInventoryCountRow({ ...count, propertyId: pid }), property_id: pid };
-  const { data: inserted, error } = await supabase
-    .from('inventory_counts').insert(row).select('id').single();
-  if (error) { logErr('addInventoryCount', error); throw error; }
-  return String(inserted.id);
-}
-
-/**
- * Bulk-insert a batch of count rows from a single Count Mode save.
- * Single round-trip is faster than N inserts and keeps the rows visually
- * grouped by their identical counted_at timestamp on later reports.
- */
-export async function addInventoryCountBatch(
-  _uid: string,
-  pid: string,
-  counts: Array<Omit<InventoryCount, 'id'>>,
-): Promise<void> {
-  if (counts.length === 0) return;
-  const rows = counts.map(c => ({
-    ...toInventoryCountRow({ ...c, propertyId: pid }),
-    property_id: pid,
-  }));
-  const { error } = await supabase.from('inventory_counts').insert(rows);
-  if (error) { logErr('addInventoryCountBatch', error); throw error; }
-}
+import { fromInventoryCountRow } from '../db-mappers';
 
 export async function listInventoryCounts(
   _uid: string,

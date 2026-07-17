@@ -26,6 +26,7 @@
  */
 
 import { NextRequest } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { requireCronSecret } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
@@ -41,9 +42,6 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const cronGate = requireCronSecret(req);
@@ -54,7 +52,7 @@ export async function GET(req: NextRequest) {
   const dryRun = url.searchParams.get('dryRun') === 'true';
   const verbose = url.searchParams.get('verbose') === 'true';
 
-  if (rawPropertyId && !UUID_RE.test(rawPropertyId)) {
+  if (rawPropertyId && !isUuid(rawPropertyId)) {
     return err('propertyId must be a UUID', {
       requestId,
       status: 400,

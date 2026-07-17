@@ -10,6 +10,7 @@ import {
   visionExtractJSON,
   VisionSchemaError,
   type VisionImage,
+  type VisionCallOptions,
   type VisionUsageReport,
 } from '@/lib/vision-extract';
 import { LAF_CATEGORIES } from './types';
@@ -62,6 +63,7 @@ function clean(s: unknown, max: number): string {
 export async function describeFoundItemPhoto(
   image: VisionImage,
   onUsage?: (u: VisionUsageReport) => void,
+  opts: VisionCallOptions = {},
 ): Promise<DescribedItem> {
   return visionExtractJSON<DescribedItem>(
     image,
@@ -79,5 +81,7 @@ export async function describeFoundItemPhoto(
       return { description, category, color };
     },
     onUsage,
+    'lost_found.photo_description',
+    opts,
   );
 }

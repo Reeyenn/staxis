@@ -19,6 +19,22 @@ import { t, SUPPORTED_LOCALES } from '@/lib/translations';
 import type { HousekeeperLocale } from '@/lib/translations';
 import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 
+// Shared full-screen state wrapper (missing-link / loading / error). Each state
+// spreads this and overrides only gap/padding/textAlign, so the rendered inline
+// style stays byte-for-byte what it was when written out three times.
+const SCREEN_WRAP: React.CSSProperties = {
+  minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+  flexDirection: 'column',
+  background: 'var(--blue-dim, #F0F9FF)', fontFamily: 'system-ui, -apple-system, sans-serif',
+};
+
+// Toggle a string in a Set immutably (add if absent, remove if present).
+function toggleInSet(set: Set<string>, key: string): Set<string> {
+  const next = new Set(set);
+  if (next.has(key)) next.delete(key); else next.add(key);
+  return next;
+}
+
 export default function LaundryPersonPage({ params }: { params: Promise<{ id: string }> }) {
   const { id: laundryPersonId } = React.use(params);
   const searchParams = useSearchParams();
@@ -55,11 +71,17 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   const seededRef = useRef(false);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Seed the page language from the staff row on mount. Goes through
+  // Seed BOTH the page language and this worker's name from the staff row on
+  // mount. These used to be two effects firing one identical getStaffSelfPublic
+  // round-trip each; folded into a single fetch. Goes through
   // /api/housekeeper/me (service-role) instead of getStaffMember(), because
   // this page has no auth session and the supabase browser client would
   // silently return null under RLS. Same RLS-blocks-anon trap as the
   // 2026-04-30 housekeeper rooms bug.
+  //
+  // Security audit 2026-06-26 #1: the roster endpoint /api/staff-list is
+  // retired (it leaked every staff UUID) — this reads just THIS worker's own
+  // row, gated by the per-staff link token (getStaffSelfPublic forwards it).
   useEffect(() => {
     if (!laundryPersonId || !pid) return;
     let cancelled = false;
@@ -67,36 +89,20 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     void (async () => {
       try {
         const s = await getStaffSelfPublic(pid, laundryPersonId);
+        if (cancelled || !s) return;
         // Full housekeeper locale set (en/es/ht/tl/vi) — the /api/housekeeper/me
         // read now round-trips ht/tl/vi instead of collapsing them to English.
-        if (!cancelled && s && s.language && (SUPPORTED_LOCALES as readonly string[]).includes(s.language)) {
+        if (s.language && (SUPPORTED_LOCALES as readonly string[]).includes(s.language)) {
           setLang(s.language);
         }
+        if (s.name) setLaundryPersonName(s.name);
       } catch (err) {
-        console.error('[laundry] staff row lang load failed:', err);
+        console.error('[laundry] staff row load failed:', err);
       }
     })();
 
     return () => { cancelled = true; };
   }, [laundryPersonId, pid]);
-
-  // Load this laundry worker's name. Security audit 2026-06-26 #1: the roster
-  // endpoint /api/staff-list is retired (it leaked every staff UUID). We now
-  // fetch just THIS worker's own name via /api/housekeeper/me, gated by the
-  // per-staff link token (getStaffSelfPublic forwards it).
-  useEffect(() => {
-    if (!pid || !laundryPersonId) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const self = await getStaffSelfPublic(pid, laundryPersonId);
-        if (!cancelled && self?.name) setLaundryPersonName(self.name);
-      } catch (err) {
-        console.error('[laundry] staff name load failed:', err);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [pid, laundryPersonId]);
 
   // Bootstrap fetch — public_areas + laundry_config + today's rooms in
   // one server-side round-trip. Goes through /api/laundry/bootstrap
@@ -269,12 +275,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // runs forever. Render a concrete error so the worker can flag it.
   if (!pid || !laundryPersonId) {
     return (
-      <div style={{
-        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexDirection: 'column', gap: '12px', padding: '24px',
-        background: 'var(--blue-dim, #F0F9FF)', fontFamily: 'system-ui, -apple-system, sans-serif',
-        textAlign: 'center',
-      }}>
+      <div style={{ ...SCREEN_WRAP, gap: '12px', padding: '24px', textAlign: 'center' }}>
         <AlertTriangle size={32} color="var(--red, #EF4444)" />
         <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
           {t('cxIncompleteLink', lang)}
@@ -288,11 +289,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
 
   if (loading) {
     return (
-      <div style={{
-        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexDirection: 'column', gap: '12px',
-        background: 'var(--blue-dim, #F0F9FF)', fontFamily: 'system-ui, -apple-system, sans-serif',
-      }}>
+      <div style={{ ...SCREEN_WRAP, gap: '12px' }}>
         <div style={{
           width: '32px', height: '32px', border: '4px solid var(--border)',
           borderTopColor: 'var(--navy)', borderRadius: '50%',
@@ -312,12 +309,7 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // for a genuinely empty day.
   if (error) {
     return (
-      <div style={{
-        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexDirection: 'column', gap: '14px', padding: '24px',
-        background: 'var(--blue-dim, #F0F9FF)', fontFamily: 'system-ui, -apple-system, sans-serif',
-        textAlign: 'center',
-      }}>
+      <div style={{ ...SCREEN_WRAP, gap: '14px', padding: '24px', textAlign: 'center' }}>
         <AlertTriangle size={32} color="var(--red, #EF4444)" />
         <p style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', margin: 0 }}>
           {t('somethingWentWrong', lang)}
@@ -481,18 +473,13 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {areasDueToday.map(area => (
-                    <AreaTaskCard
+                    <TaskCard
                       key={area.id}
-                      area={area}
-                      lang={lang}
+                      title={area.name}
+                      subtitle={<>{t('floor', lang)} {area.floor} • {area.minutesPerClean} min</>}
                       isCompleted={completedAreas.has(area.id)}
                       onToggle={() => {
-                        const newSet = new Set(completedAreas);
-                        if (newSet.has(area.id)) {
-                          newSet.delete(area.id);
-                        } else {
-                          newSet.add(area.id);
-                        }
+                        const newSet = toggleInSet(completedAreas, area.id);
                         setCompletedAreas(newSet);
                         persistCompletion(newSet, completedLoads);
                       }}
@@ -513,18 +500,13 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
                 </h3>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   {loadCards.map(load => (
-                    <LaundryLoadCard
+                    <TaskCard
                       key={load.id}
-                      load={load}
-                      lang={lang}
+                      title={load.category}
+                      subtitle={<>{load.loads} {t('lndLoadsUnit', lang)} • {load.minutes} min</>}
                       isCompleted={completedLoads.has(load.category)}
                       onToggle={() => {
-                        const newSet = new Set(completedLoads);
-                        if (newSet.has(load.category)) {
-                          newSet.delete(load.category);
-                        } else {
-                          newSet.add(load.category);
-                        }
+                        const newSet = toggleInSet(completedLoads, load.category);
                         setCompletedLoads(newSet);
                         persistCompletion(completedAreas, newSet);
                       }}
@@ -541,16 +523,20 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   AreaTaskCard - Public area task
+   TaskCard - one tappable checklist row (public area OR laundry load).
+   The two used to be separate components with byte-identical markup differing
+   only in title/subtitle text; merged so there is a single source of truth for
+   the card's look and tap behavior. Callers pass the pre-composed subtitle so
+   the rendered DOM is unchanged.
    ───────────────────────────────────────────────────────────────────────────── */
-function AreaTaskCard({
-  area,
-  lang,
+function TaskCard({
+  title,
+  subtitle,
   isCompleted,
   onToggle,
 }: {
-  area: PublicArea;
-  lang: HousekeeperLocale;
+  title: React.ReactNode;
+  subtitle: React.ReactNode;
   isCompleted: boolean;
   onToggle: () => void;
 }) {
@@ -585,70 +571,12 @@ function AreaTaskCard({
             color: isCompleted ? 'var(--green)' : 'var(--text-primary)',
             marginBottom: '4px',
           }}>
-            {area.name}
+            {title}
           </p>
           <p style={{
-            fontSize: '13px', color: isCompleted ? 'var(--text-muted)' : 'var(--text-muted)',
+            fontSize: '13px', color: 'var(--text-muted)',
           }}>
-            {t('floor', lang)} {area.floor} • {area.minutesPerClean} min
-          </p>
-        </div>
-      </div>
-    </button>
-  );
-}
-
-/* ─────────────────────────────────────────────────────────────────────────────
-   LaundryLoadCard - Laundry category task
-   ───────────────────────────────────────────────────────────────────────────── */
-function LaundryLoadCard({
-  load,
-  lang,
-  isCompleted,
-  onToggle,
-}: {
-  load: { id: string; category: string; loads: number; minutes: number };
-  lang: HousekeeperLocale;
-  isCompleted: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      style={{
-        width: '100%', textAlign: 'left',
-        background: isCompleted ? 'var(--green-dim)' : 'white',
-        border: `2px solid ${isCompleted ? 'var(--green-light, #86EFAC)' : 'var(--border)'}`,
-        borderLeft: `6px solid ${isCompleted ? 'var(--green)' : 'var(--navy)'}`,
-        borderRadius: '16px',
-        padding: '16px',
-        transition: 'background 300ms ease, border-color 300ms ease',
-        boxShadow: isCompleted ? 'none' : '0 1px 6px rgba(0,0,0,0.07)',
-        cursor: 'pointer',
-        WebkitTapHighlightColor: 'transparent',
-      }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-        <div style={{
-          width: '20px', height: '20px', borderRadius: '4px',
-          border: `2px solid ${isCompleted ? 'var(--green)' : 'var(--border)'}`,
-          background: isCompleted ? 'var(--green)' : 'transparent',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          flexShrink: 0,
-        }}>
-          {isCompleted && <CheckCircle size={14} color="white" />}
-        </div>
-        <div style={{ flex: 1 }}>
-          <p style={{
-            fontSize: '16px', fontWeight: 700,
-            color: isCompleted ? 'var(--green)' : 'var(--text-primary)',
-            marginBottom: '4px',
-          }}>
-            {load.category}
-          </p>
-          <p style={{
-            fontSize: '13px', color: isCompleted ? 'var(--text-muted)' : 'var(--text-muted)',
-          }}>
-            {load.loads} {t('lndLoadsUnit', lang)} • {load.minutes} min
+            {subtitle}
           </p>
         </div>
       </div>

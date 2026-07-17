@@ -19,8 +19,10 @@ import { consolidateAllProperties } from '@/lib/agent/memory-consolidate';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300; // fleet-scale: concurrency + early-exits keep 300+ hotels well inside this
+const CRON_EXECUTION_BUDGET_MS = 285_000;
 
 export async function GET(req: NextRequest) {
+  const executionDeadlineAt = Date.now() + CRON_EXECUTION_BUDGET_MS;
   const requestId = getOrMintRequestId(req);
   const cronGate = requireCronSecret(req);
   if (cronGate) return cronGate;
@@ -35,6 +37,8 @@ export async function GET(req: NextRequest) {
     const result = await consolidateAllProperties({
       shardOffset: Number.isFinite(shardOffset) ? shardOffset : 0,
       shardCount: Number.isFinite(shardCount) ? shardCount : 1,
+      deadlineAt: executionDeadlineAt,
+      abortSignal: req.signal,
     });
 
     await writeCronHeartbeat('agent-consolidate-memory', {

@@ -8,12 +8,10 @@
 // Here we expose the equivalent on top of the `rooms` Postgres table.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import type { Room, StaffMember } from '@/types';
+import type { Room } from '@/types';
 import type { PropertyFeedStatus } from '@/lib/pms/feed-status';
 import type { HousekeeperLocale } from '@/lib/translations';
-import { supabase, logErr, subscribeTable, asRecordRow } from './_common';
-import { fromRoomRow, fromStaffRow } from '../db-mappers';
-import { STAFF_COLS } from './staff';
+import { logErr, subscribeTable } from './_common';
 import { withStaffLinkToken, withStaffLinkTokenBody } from '@/lib/staff-link-client';
 
 /**
@@ -108,25 +106,6 @@ export function subscribeToRoomsForStaff(
 }
 
 /**
- * Fetch a single staff member by id, scoped to a property.
- * Returns null if not found.
- *
- * NOTE: This goes through the supabase browser client and therefore needs
- * an authenticated session (Maria / admin) to work. The publicly-linkable
- * /housekeeper/[id] page must NOT call this — for unauthenticated housekeepers
- * RLS silently filters the SELECT to zero rows and you get null back. Use
- * `getStaffSelfPublic()` from that page instead.
- */
-export async function getStaffMember(pid: string, sid: string): Promise<StaffMember | null> {
-  const { data, error } = await supabase
-    .from('staff').select(STAFF_COLS)
-    .eq('property_id', pid).eq('id', sid).maybeSingle();
-  if (error) { logErr('getStaffMember', error); throw error; }
-  const row = asRecordRow(data);
-  return row ? fromStaffRow(row) : null;
-}
-
-/**
  * Public-page fetch for the housekeeper's own minimal profile (id, name,
  * language). Routes through /api/housekeeper/me which uses service-role to
  * bypass RLS, so it works from the publicly-linkable /housekeeper/[id]
@@ -159,21 +138,6 @@ export async function getStaffSelfPublic(
     logErr('getStaffSelfPublic', err);
     return null;
   }
-}
-
-/**
- * Persist a staff member's language choice (admin / authenticated path).
- *
- * NOTE: Like getStaffMember(), this routes through the browser supabase
- * client and only works when the caller has an auth session that satisfies
- * the staff RLS policy. The publicly-linkable /housekeeper/[id] and
- * /laundry/[id] pages must use `saveStaffLanguagePublic()` below — this
- * one silently no-ops for unauthenticated housekeepers (RLS filters the
- * UPDATE to zero rows but the supabase client returns 200 OK).
- */
-export async function saveStaffLanguage(sid: string, language: 'en' | 'es'): Promise<void> {
-  const { error } = await supabase.from('staff').update({ language }).eq('id', sid);
-  if (error) { logErr('saveStaffLanguage', error); throw error; }
 }
 
 /**

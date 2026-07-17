@@ -909,6 +909,10 @@ const RLS_REQUIRED_TABLES = [
   'agent_nudges',
   'walkthrough_runs',
 
+  // Fleet-wide AI Control Center (service-role only).
+  'ai_model_catalog',
+  'ai_feature_config_versions',
+
   // High-sensitivity backend tables — service-role only.
   // RLS off here would be catastrophic (plain-text PMS passwords, phone
   // numbers, webhook dedupe, Stripe events).
@@ -1040,6 +1044,9 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   // 0310 — global app settings singleton (the master 2FA switch). Service-role
   // only; the anon/authenticated clients are denied by app_settings_deny_browser.
   'app_settings',
+  // 0313 — global AI provider catalog + immutable feature config history.
+  'ai_model_catalog',
+  'ai_feature_config_versions',
 ]);
 
 async function checkSupabaseRlsPolicyCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {

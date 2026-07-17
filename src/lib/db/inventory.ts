@@ -148,32 +148,3 @@ export async function archiveInventoryItem(uid: string, pid: string, iid: string
   }
 }
 
-/**
- * Fetch the CURRENT stored current_stock for a set of items, keyed by item id.
- *
- * Used at count-save time to compute the auto-"stock-up" delta against the
- * FRESH stored stock rather than the value read at page load. Without this, a
- * delivery received in-app after the page loaded would be double-logged: the
- * count exceeds the stale page-load stock, the sheet fabricates a duplicate
- * order for goods already recorded, and that phantom order inflates consumption
- * in neighbouring learning windows. Scoped by property_id (defense-in-depth
- * alongside RLS). Items missing from the result (deleted between load and save)
- * are simply absent from the map — the caller falls back safely.
- */
-export async function fetchInventoryStockByIds(
-  _uid: string, pid: string, itemIds: string[],
-): Promise<Record<string, number>> {
-  if (itemIds.length === 0) return {};
-  const { data, error } = await supabase
-    .from('inventory')
-    .select('id, current_stock')
-    .eq('property_id', pid)
-    .is('archived_at', null)
-    .in('id', itemIds);
-  if (error) { logErr('fetchInventoryStockByIds', error); throw error; }
-  const out: Record<string, number> = {};
-  for (const r of data ?? []) {
-    out[String(r.id)] = Number((r as { current_stock?: unknown }).current_stock ?? 0);
-  }
-  return out;
-}

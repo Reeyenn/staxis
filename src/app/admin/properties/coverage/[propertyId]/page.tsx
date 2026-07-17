@@ -31,7 +31,7 @@ import {
   FONT_SANS, FONT_MONO, FONT_SERIF, Btn, Pill, Caps, type PillTone,
 } from '@/app/admin/_components/studio/kit';
 import {
-  SurfaceShell, DarkCard, DarkEmpty, dimWhite, Backdrop, MODAL_CARD,
+  SurfaceShell, DarkCard, DarkScope, DarkEmpty, dimWhite, Backdrop, MODAL_CARD,
 } from '@/app/admin/_components/studio/surface-kit';
 import '@/app/admin/_components/studio/studio.css';
 import { FeedCaptureView, type CaptureState } from '@/app/admin/_components/cua/FeedCaptureView';
@@ -123,18 +123,6 @@ const STATE_PILL: Record<FeedDetail['state'], { tone: PillTone; label: string }>
   live: { tone: 'forest', label: 'Live' },
   learning: { tone: 'gold', label: 'Still learning' },
 };
-
-function DarkScope({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="admin-studio" style={{
-      background: 'var(--ink)', color: '#fff',
-      marginLeft: 'calc(50% - 50vw)', marginRight: 'calc(50% - 50vw)',
-      minHeight: 'calc(100vh - 64px)',
-    }}>
-      {children}
-    </div>
-  );
-}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 

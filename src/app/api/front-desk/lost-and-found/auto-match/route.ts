@@ -75,8 +75,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       aiAllowed = budget.ok;
     }
     const finalRanked = aiAllowed
-      ? await aiRerank(lost, ranked, (u) => {
-          usage = u;
+      ? await aiRerank(lost, ranked, {
+          abortSignal: req.signal,
+          onUsage: (u) => {
+            usage = u;
+          },
         })
       : ranked;
 
@@ -117,6 +120,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           modelId: u.modelId,
           tokensIn: u.inputTokens,
           tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd,
           kind: 'background',
         });

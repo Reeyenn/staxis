@@ -23,14 +23,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
-import { recordWebhookLog } from '@/lib/event-recorder';
-import { redactPhone } from '@/lib/api-validate';
 import {
   checkAndIncrementRateLimit,
   hashToRateLimitKey,
 } from '@/lib/api-ratelimit';
-import twilio from 'twilio';
 import { env } from '@/lib/env';
+import {
+  twimlOk,
+  forbidden,
+  verifyTwilioSignature,
+  reconstructWebhookUrl,
+  toE164,
+  makeWebhookLogger,
+} from '@/lib/twilio-webhook';
 import {
   classifyCalloutSms,
   createCallout,
@@ -41,13 +46,6 @@ import {
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
-
-function twimlOk(): NextResponse {
-  return new NextResponse(
-    '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
-    { headers: { 'Content-Type': 'text/xml; charset=utf-8' } },
-  );
-}
 
 function twimlReply(message: string): NextResponse {
   // Escape XML special chars so a message body can't break out of the tag.
@@ -61,63 +59,9 @@ function twimlReply(message: string): NextResponse {
   );
 }
 
-function forbidden(reason: string): NextResponse {
-  return new NextResponse(reason, {
-    status: 403,
-    headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-  });
-}
-
-function toE164(raw: string): string | null {
-  const digits = raw.replace(/\D/g, '');
-  if (digits.length === 10) return `+1${digits}`;
-  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
-  if (raw.startsWith('+')) return raw.trim();
-  return null;
-}
-
-function verifyTwilioSignature(
-  url: string,
-  signature: string | null,
-  params: Record<string, string>,
-): boolean {
-  if (!signature) return false;
-  const authToken = env.TWILIO_AUTH_TOKEN;
-  if (!authToken) return false;
-  try {
-    return twilio.validateRequest(authToken, signature, url, params);
-  } catch {
-    return false;
-  }
-}
-
-function reconstructWebhookUrl(req: NextRequest): string {
-  const proto = req.headers.get('x-forwarded-proto') ?? 'https';
-  const host  = req.headers.get('x-forwarded-host')  ?? req.headers.get('host') ?? new URL(req.url).host;
-  const path  = new URL(req.url).pathname;
-  const search = new URL(req.url).search;
-  return `${proto}://${host}${path}${search}`;
-}
-
-async function logHit(payload: Record<string, unknown>): Promise<void> {
-  try {
-    const PHONE_KEYS = new Set(['fromNumber', 'fromHeader', 'phone', 'phone164', 'From']);
-    const redacted: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(payload)) {
-      if (PHONE_KEYS.has(k) && typeof v === 'string') {
-        redacted[k] = redactPhone(v);
-      } else {
-        redacted[k] = v;
-      }
-    }
-    await recordWebhookLog({
-      source: 'twilio-sms-callout',
-      payload: redacted,
-    });
-  } catch (e) {
-    log.warn('[sms/callout] logHit failed', { err: e });
-  }
-}
+// Phone-number fields are redacted before insertion — see makeWebhookLogger
+// in src/lib/twilio-webhook.ts.
+const logHit = makeWebhookLogger('twilio-sms-callout');
 
 function todayBusinessDate(): string {
   // Same convention as the rest of the app: business_date is the ISO date

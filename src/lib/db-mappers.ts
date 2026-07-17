@@ -37,16 +37,10 @@ import type {
   InventoryItem,
   InventoryCount,
   InventoryOrder,
-  InventoryDiscard,
-  InventoryReconciliation,
   InventoryBudget,
   InventoryBudgetSection,
   InventoryCustomCategory,
   InventoryTabLayout,
-  HandoffEntry,
-  GuestRequest,
-  ShiftConfirmation,
-  ManagerNotification,
   DeepCleanRecord,
   ShiftPreset,
   ScheduledShift,
@@ -162,12 +156,6 @@ const LANGUAGES = ['en', 'es'] as const;
 const STAFF_DEPARTMENTS = ['housekeeping', 'front_desk', 'maintenance', 'other'] as const;
 const SCHEDULE_PRIORITIES = ['priority', 'normal', 'excluded'] as const;
 const INVENTORY_CATEGORIES = ['housekeeping', 'maintenance', 'breakfast'] as const;
-const INVENTORY_DISCARD_REASONS = ['stained', 'damaged', 'lost', 'theft', 'other'] as const;
-const HANDOFF_SHIFT_TYPES = ['morning', 'afternoon', 'night'] as const;
-const GUEST_REQUEST_STATUSES = ['pending', 'in_progress', 'done'] as const;
-const GUEST_REQUEST_TYPES = ['towels', 'pillows', 'blanket', 'iron', 'crib', 'toothbrush', 'amenities', 'maintenance', 'other'] as const;
-const CONFIRMATION_STATUSES = ['sent', 'pending', 'confirmed', 'declined'] as const;
-const NOTIFICATION_TYPES = ['decline', 'no_response', 'all_confirmed', 'replacement_found', 'no_replacement'] as const;
 const DEEP_CLEAN_STATUSES = ['in_progress', 'completed'] as const;
 
 // ─── Property ───────────────────────────────────────────────────────────────
@@ -482,34 +470,6 @@ export function fromLaundryRow(r: Record<string, unknown>): LaundryCategory {
 
 // ─── Daily log ──────────────────────────────────────────────────────────────
 
-export function toDailyLogRow(l: Partial<DailyLog> & { propertyId?: string }): Record<string, unknown> {
-  return dropUndefined({
-    property_id: l.propertyId,
-    date: l.date,
-    occupied: l.occupied,
-    checkouts: l.checkouts,
-    two_bed_checkouts: l.twoBedCheckouts,
-    stayovers: l.stayovers,
-    vips: l.vips,
-    early_checkins: l.earlyCheckins,
-    room_minutes: l.roomMinutes,
-    public_area_minutes: l.publicAreaMinutes,
-    laundry_minutes: l.laundryMinutes,
-    total_minutes: l.totalMinutes,
-    recommended_staff: l.recommendedStaff,
-    actual_staff: l.actualStaff,
-    hourly_wage: l.hourlyWage,
-    labor_cost: l.laborCost,
-    labor_saved: l.laborSaved,
-    start_time: l.startTime,
-    completion_time: l.completionTime,
-    public_areas_due_today: l.publicAreasDueToday,
-    laundry_loads: l.laundryLoads,
-    rooms_completed: l.roomsCompleted,
-    avg_turnaround_minutes: l.avgTurnaroundMinutes,
-  });
-}
-
 export function fromDailyLogRow(r: Record<string, unknown>): DailyLog {
   // Defensive parse for the JSONB laundry_loads column — accept the shape
   // we wrote, fall back to zeros for anything else.
@@ -785,92 +745,6 @@ export function fromInventoryOrderRow(r: Record<string, unknown>): InventoryOrde
   };
 }
 
-export function toInventoryOrderRow(o: Partial<InventoryOrder>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: o.propertyId,
-    item_id: o.itemId,
-    item_name: o.itemName,
-    quantity: o.quantity,
-    quantity_cases: o.quantityCases,
-    unit_cost: o.unitCost,
-    total_cost: o.totalCost,
-    vendor_name: o.vendorName,
-    ordered_at: toISO(o.orderedAt),
-    received_at: toISO(o.receivedAt),
-    notes: o.notes,
-  });
-}
-
-// ─── Inventory discard (stained linen / damaged / lost / theft) ─────────────
-
-export function fromInventoryDiscardRow(r: Record<string, unknown>): InventoryDiscard {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    itemId: String(r.item_id ?? ''),
-    itemName: String(r.item_name ?? ''),
-    quantity: Number(r.quantity ?? 0),
-    reason: parseUnionField(r.reason, INVENTORY_DISCARD_REASONS, 'other'),
-    costValue: r.cost_value == null ? undefined : Number(r.cost_value),
-    unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
-    discardedAt: toDate(r.discarded_at),
-    discardedBy: parseStringField(r.discarded_by),
-    notes: parseStringField(r.notes),
-  };
-}
-
-export function toInventoryDiscardRow(d: Partial<InventoryDiscard>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: d.propertyId,
-    item_id: d.itemId,
-    item_name: d.itemName,
-    quantity: d.quantity,
-    reason: d.reason,
-    cost_value: d.costValue,
-    unit_cost: d.unitCost,
-    discarded_at: toISO(d.discardedAt),
-    discarded_by: d.discardedBy,
-    notes: d.notes,
-  });
-}
-
-// ─── Inventory reconciliation (physical recount with $-variance) ────────────
-
-export function fromInventoryReconciliationRow(r: Record<string, unknown>): InventoryReconciliation {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    itemId: String(r.item_id ?? ''),
-    itemName: String(r.item_name ?? ''),
-    reconciledAt: toDate(r.reconciled_at),
-    physicalCount: Number(r.physical_count ?? 0),
-    systemEstimate: Number(r.system_estimate ?? 0),
-    discardsSinceLast: Number(r.discards_since_last ?? 0),
-    unaccountedVariance: Number(r.unaccounted_variance ?? 0),
-    unaccountedVarianceValue: r.unaccounted_variance_value == null ? undefined : Number(r.unaccounted_variance_value),
-    unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
-    reconciledBy: parseStringField(r.reconciled_by),
-    notes: parseStringField(r.notes),
-  };
-}
-
-export function toInventoryReconciliationRow(r: Partial<InventoryReconciliation>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: r.propertyId,
-    item_id: r.itemId,
-    item_name: r.itemName,
-    reconciled_at: toISO(r.reconciledAt),
-    physical_count: r.physicalCount,
-    system_estimate: r.systemEstimate,
-    discards_since_last: r.discardsSinceLast,
-    unaccounted_variance: r.unaccountedVariance,
-    unaccounted_variance_value: r.unaccountedVarianceValue,
-    unit_cost: r.unitCost,
-    reconciled_by: r.reconciledBy,
-    notes: r.notes,
-  });
-}
-
 // ─── Inventory budget (per-property × budget key × month) ────────────────────
 
 export function fromInventoryBudgetRow(r: Record<string, unknown>): InventoryBudget {
@@ -942,87 +816,6 @@ export function toInventoryBudgetRow(b: Partial<InventoryBudget>): Record<string
   });
 }
 
-// ─── Handoff ────────────────────────────────────────────────────────────────
-
-export function fromHandoffRow(r: Record<string, unknown>): HandoffEntry {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    shiftType: parseUnionField(r.shift_type, HANDOFF_SHIFT_TYPES, 'morning'),
-    author: String(r.author ?? ''),
-    notes: String(r.notes ?? ''),
-    acknowledged: Boolean(r.acknowledged),
-    acknowledgedBy: parseStringField(r.acknowledged_by),
-    createdAt: toDate(r.created_at),
-    acknowledgedAt: toDate(r.acknowledged_at),
-  };
-}
-
-// ─── Guest request ──────────────────────────────────────────────────────────
-
-export function fromGuestRequestRow(r: Record<string, unknown>): GuestRequest {
-  return {
-    id: String(r.id),
-    propertyId: String(r.property_id ?? ''),
-    roomNumber: String(r.room_number ?? ''),
-    type: parseUnionField(r.type, GUEST_REQUEST_TYPES, 'other'),
-    notes: parseStringField(r.notes),
-    status: parseUnionField(r.status, GUEST_REQUEST_STATUSES, 'pending'),
-    assignedTo: parseStringField(r.assigned_to),
-    assignedName: parseStringField(r.assigned_name),
-    createdAt: toDate(r.created_at),
-    completedAt: toDate(r.completed_at),
-  };
-}
-
-export function toGuestRequestRow(g: Partial<GuestRequest>): Record<string, unknown> {
-  return dropUndefined({
-    property_id: g.propertyId,
-    room_number: g.roomNumber,
-    type: g.type,
-    notes: g.notes,
-    status: g.status,
-    assigned_to: g.assignedTo,
-    assigned_name: g.assignedName,
-    completed_at: toISO(g.completedAt),
-  });
-}
-
-// ─── Shift confirmation + manager notification ──────────────────────────────
-
-export function fromShiftConfirmationRow(r: Record<string, unknown>): ShiftConfirmation {
-  return {
-    id: String(r.token ?? r.id ?? ''),
-    uid: '',
-    pid: String(r.property_id ?? ''),
-    staffId: String(r.staff_id ?? ''),
-    staffName: String(r.staff_name ?? ''),
-    staffPhone: String(r.staff_phone ?? ''),
-    shiftDate: String(r.shift_date ?? ''),
-    status: parseUnionField(r.status, CONFIRMATION_STATUSES, 'sent'),
-    language: parseUnionField(r.language, LANGUAGES, 'en'),
-    sentAt: toDate(r.sent_at),
-    respondedAt: toDate(r.responded_at),
-    smsSent: Boolean(r.sms_sent),
-    smsError: parseStringField(r.sms_error),
-  };
-}
-
-export function fromManagerNotificationRow(r: Record<string, unknown>): ManagerNotification {
-  return {
-    id: String(r.id),
-    uid: '',
-    pid: String(r.property_id ?? ''),
-    type: parseUnionField(r.type, NOTIFICATION_TYPES, 'no_response'),
-    message: String(r.message ?? ''),
-    staffName: parseStringField(r.staff_name),
-    replacementName: parseStringField(r.replacement_name),
-    shiftDate: String(r.shift_date ?? ''),
-    read: Boolean(r.read),
-    createdAt: toDate(r.created_at),
-  };
-}
-
 // ─── Deep clean ─────────────────────────────────────────────────────────────
 
 export function fromDeepCleanRecordRow(r: Record<string, unknown>): DeepCleanRecord {
@@ -1067,16 +860,6 @@ export function fromShiftPresetRow(r: Record<string, unknown>): ShiftPreset {
   };
 }
 
-export function toShiftPresetRow(p: Partial<ShiftPreset>): Record<string, unknown> {
-  return dropUndefined({
-    name:       p.name,
-    department: p.department,
-    start_time: p.startTime,
-    end_time:   p.endTime,
-    sort_order: p.sortOrder,
-  });
-}
-
 export function fromScheduledShiftRow(r: Record<string, unknown>): ScheduledShift {
   return {
     id:         String(r.id),
@@ -1097,22 +880,6 @@ export function fromScheduledShiftRow(r: Record<string, unknown>): ScheduledShif
     createdAt:  toDate(r.created_at) ?? new Date(),
     updatedAt:  toDate(r.updated_at) ?? new Date(),
   };
-}
-
-export function toScheduledShiftRow(s: Partial<ScheduledShift>): Record<string, unknown> {
-  return dropUndefined({
-    staff_id:   s.staffId,
-    department: s.department,
-    shift_date: s.shiftDate,
-    start_time: s.startTime,
-    end_time:   s.endTime,
-    kind:       s.kind,
-    status:     s.status,
-    preset_id:  s.presetId,
-    reason:     s.reason,
-    note:       s.note,
-    filled_by_history: s.filledByHistory,
-  });
 }
 
 export function fromTimeOffRequestRow(r: Record<string, unknown>): TimeOffRequest {

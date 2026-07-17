@@ -17,6 +17,14 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
 import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
+import { executeAiFeature, estimateAiCostUsd } from '@/lib/ai/runtime';
+import {
+  aggregateAiUsage,
+  normalizeAnthropicUsage,
+  type AiCallOptions,
+  type AiUsageAttempt,
+  type AiUsageReport,
+} from '@/lib/ai/usage';
 import type { LostFoundItem } from './types';
 
 export interface MatchCandidate {
@@ -134,17 +142,7 @@ function getClient(): Anthropic {
   return _client;
 }
 
-const MATCH_MODEL = 'claude-haiku-4-5';
-const MATCH_PRICE_INPUT_PER_MTOK = 0.8;
-const MATCH_PRICE_OUTPUT_PER_MTOK = 4.0;
-
-export interface MatchUsage {
-  inputTokens: number;
-  outputTokens: number;
-  model: string;
-  modelId: string | null;
-  costUsd: number;
-}
+export type MatchUsage = AiUsageReport;
 
 export interface AiRankedCandidate extends MatchCandidate {
   /** AI confidence, when the re-rank ran. */
@@ -163,7 +161,7 @@ export interface AiRankedCandidate extends MatchCandidate {
 export async function aiRerank(
   lost: LostFoundItem,
   shortlist: MatchCandidate[],
-  onUsage?: (u: MatchUsage) => void,
+  opts: AiCallOptions = {},
 ): Promise<AiRankedCandidate[]> {
   if (shortlist.length === 0) return shortlist;
 
@@ -199,71 +197,86 @@ Return ONLY JSON, no prose:
 {"matches":[{"index":<1-based index from the list>,"confidence":"high"|"medium"|"low","reason":"<= 12 words"}]}
 Only include items that genuinely could be the lost item. If none match, return {"matches":[]}.`;
 
+  const attempts: AiUsageAttempt[] = [];
   try {
-    const resp = await getClient().messages.create(
-      {
-        model: MATCH_MODEL,
-        max_tokens: 512,
-        messages: [{ role: 'user', content: prompt }],
+    const { value } = await executeAiFeature(
+      'lost_found.match_rerank',
+      'anthropic',
+      async (selected, context) => {
+        const resp = await getClient().messages.create(
+          {
+            model: selected.modelId,
+            max_tokens: 512,
+            messages: [{ role: 'user', content: prompt }],
+          },
+          { signal: context.signal },
+        );
+
+        const usage = normalizeAnthropicUsage(resp.usage);
+        attempts.push({
+          ...usage,
+          model: selected.modelId,
+          modelId: resp.model ?? null,
+          costUsd: estimateAiCostUsd(selected.pricing!, {
+            uncachedInputTokens: usage.uncachedInputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadInputTokens: usage.cachedInputTokens,
+            cacheCreationInputTokens: usage.cacheCreationInputTokens,
+            cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens,
+            cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
+          }),
+        });
+
+        const text = resp.content
+          .filter((b) => b.type === 'text')
+          .map((b) => (b as { type: 'text'; text: string }).text)
+          .join('\n');
+        const start = text.indexOf('{');
+        const end = text.lastIndexOf('}');
+        if (start === -1 || end <= start) throw new Error('reranker returned invalid JSON');
+        const parsed = JSON.parse(text.slice(start, end + 1)) as {
+          matches?: Array<{ index?: unknown; confidence?: unknown; reason?: unknown }>;
+        };
+        if (!Array.isArray(parsed.matches)) {
+          throw new Error('reranker returned an invalid JSON schema');
+        }
+
+        const byIndex = new Map<number, { confidence?: 'high' | 'medium' | 'low'; reason?: string }>();
+        for (const m of parsed.matches) {
+          const idx = typeof m.index === 'number' ? m.index - 1 : -1;
+          if (idx < 0 || idx >= shortlist.length) continue;
+          const conf =
+            m.confidence === 'high' || m.confidence === 'medium' || m.confidence === 'low'
+              ? m.confidence
+              : undefined;
+          const reason = typeof m.reason === 'string' ? m.reason.slice(0, 120) : undefined;
+          byIndex.set(idx, { confidence: conf, reason });
+        }
+
+        const confBonus = { high: 30, medium: 15, low: 5 } as const;
+        const blended = (c: AiRankedCandidate) =>
+          c.score + (c.aiConfidence ? confBonus[c.aiConfidence] : 0);
+        return shortlist
+          .map((c, i): AiRankedCandidate => {
+            const ai = byIndex.get(i);
+            return { ...c, aiConfidence: ai?.confidence, aiReason: ai?.reason };
+          })
+          .sort((a, b) => blended(b) - blended(a));
       },
-      { signal: AbortSignal.timeout(22_000) },
+      {
+        requirePricing: true,
+        deadlineAt: opts.deadlineAt,
+        deadlineMs: opts.deadlineAt === undefined ? 22_000 : undefined,
+        fallbackReserveMs: 7_000,
+        abortSignal: opts.abortSignal,
+      },
     );
-
-    if (onUsage) {
-      const inT = resp.usage?.input_tokens ?? 0;
-      const outT = resp.usage?.output_tokens ?? 0;
-      onUsage({
-        inputTokens: inT,
-        outputTokens: outT,
-        model: MATCH_MODEL,
-        modelId: resp.model ?? null,
-        costUsd:
-          (inT / 1_000_000) * MATCH_PRICE_INPUT_PER_MTOK +
-          (outT / 1_000_000) * MATCH_PRICE_OUTPUT_PER_MTOK,
-      });
-    }
-
-    const text = resp.content
-      .filter((b) => b.type === 'text')
-      .map((b) => (b as { type: 'text'; text: string }).text)
-      .join('\n');
-    const start = text.indexOf('{');
-    const end = text.lastIndexOf('}');
-    if (start === -1 || end <= start) return shortlist;
-    const parsed = JSON.parse(text.slice(start, end + 1)) as {
-      matches?: Array<{ index?: unknown; confidence?: unknown; reason?: unknown }>;
-    };
-    if (!Array.isArray(parsed.matches)) return shortlist;
-
-    const byIndex = new Map<number, { confidence?: 'high' | 'medium' | 'low'; reason?: string }>();
-    for (const m of parsed.matches) {
-      const idx = typeof m.index === 'number' ? m.index - 1 : -1;
-      if (idx < 0 || idx >= shortlist.length) continue;
-      const conf =
-        m.confidence === 'high' || m.confidence === 'medium' || m.confidence === 'low'
-          ? m.confidence
-          : undefined;
-      const reason = typeof m.reason === 'string' ? m.reason.slice(0, 120) : undefined;
-      byIndex.set(idx, { confidence: conf, reason });
-    }
-
-    // The deterministic score (room/date/description) stays the dominant
-    // signal; AI confidence is a bounded BONUS, not a primary key. This way a
-    // strong deterministic match the model happened to omit (latency, a
-    // conservative/partial list) is never buried beneath a weak candidate the
-    // model merely tagged "low". Bonus is capped well below the deterministic
-    // range so it reorders near-ties without overriding a clear winner.
-    const confBonus = { high: 30, medium: 15, low: 5 } as const;
-    const blended = (c: AiRankedCandidate) =>
-      c.score + (c.aiConfidence ? confBonus[c.aiConfidence] : 0);
-    return shortlist
-      .map((c, i): AiRankedCandidate => {
-        const ai = byIndex.get(i);
-        return { ...c, aiConfidence: ai?.confidence, aiReason: ai?.reason };
-      })
-      .sort((a, b) => blended(b) - blended(a));
+    return value;
   } catch {
     // Fail safe — deterministic ranking still stands.
     return shortlist;
+  } finally {
+    const usage = aggregateAiUsage(attempts);
+    if (usage) opts.onUsage?.(usage);
   }
 }

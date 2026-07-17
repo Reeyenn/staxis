@@ -15,14 +15,8 @@ import { validateUuid, validateString } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import {
-  createInspection,
-  getActiveChecklists,
-  getInspectionById,
-} from '@/lib/db/inspections';
-import { selectChecklist } from '@/lib/inspections';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { parseRoomId, mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
+import { startInspectionCore } from '@/lib/inspections';
+import { parseRoomId } from '@/lib/pms-rooms-server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -111,58 +105,26 @@ export async function POST(req: NextRequest) {
     const roomType =
       typeof body.roomType === 'string' && body.roomType ? body.roomType : null;
 
-    // 1. Look up the linked cleaning task and housekeeper (best-effort).
-    const linked = await lookupLinkedTaskAndHousekeeper(pid, roomNumber, roomId);
-
-    // 2. Pick a checklist.
-    const candidates = await getActiveChecklists(pid);
-    const checklist = selectChecklist({
-      candidates,
-      cleaningType: cleaningType ?? linked.cleaningType,
-      roomType,
+    const result = await startInspectionCore({
       propertyId: pid,
+      roomNumber,
+      roomId,
+      cleaningType,
+      roomType,
+      inspectorStaffId,
+      parentInspectionId,
     });
 
-    if (!checklist) {
+    if (result.kind === 'no_checklist') {
       return err('No active checklist available for this room', {
         requestId, status: 409, code: 'no_checklist',
       });
     }
 
-    // 3. Reuse any in-progress inspection on this room (idempotent start).
-    const existing = await findInProgress(pid, roomNumber);
-    if (existing) {
-      const full = await getInspectionById(existing.id);
-      return ok({ inspection: full, checklist }, { requestId });
-    }
-
-    try {
-      const inspection = await createInspection({
-        propertyId: pid,
-        roomNumber,
-        roomId,
-        cleaningTaskId: linked.cleaningTaskId,
-        checklistId: checklist.id,
-        inspectorStaffId,
-        housekeeperStaffId: linked.housekeeperStaffId,
-        parentInspectionId,
-      });
-      return ok({ inspection, checklist }, { requestId, status: 201 });
-    } catch (e: unknown) {
-      // Codex M1 + migration 0221 add a partial unique index for
-      // (property_id, room_number) WHERE result='in_progress'. If a
-      // racing inspector inserted first, the unique violation surfaces
-      // here — fall back to returning their row instead of 500ing.
-      const msg = errToString(e);
-      if (msg.includes('inspections_one_in_progress_per_room') || msg.includes('23505')) {
-        const racing = await findInProgress(pid, roomNumber);
-        if (racing) {
-          const full = await getInspectionById(racing.id);
-          return ok({ inspection: full, checklist }, { requestId });
-        }
-      }
-      throw e;
-    }
+    return ok(
+      { inspection: result.inspection, checklist: result.checklist },
+      { requestId, status: result.created ? 201 : 200 },
+    );
   } catch (e: unknown) {
     log.error('[inspections/start] failed', {
       requestId, pid, roomNumber, msg: errToString(e),
@@ -171,63 +133,4 @@ export async function POST(req: NextRequest) {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
-}
-
-async function findInProgress(pid: string, roomNumber: string) {
-  const { data } = await supabaseAdmin
-    .from('inspections')
-    .select('id')
-    .eq('property_id', pid)
-    .eq('room_number', roomNumber)
-    .eq('result', 'in_progress')
-    .order('started_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  return data as { id: string } | null;
-}
-
-async function lookupLinkedTaskAndHousekeeper(
-  pid: string,
-  roomNumber: string,
-  roomId: string | null,
-): Promise<{
-  cleaningTaskId: string | null;
-  housekeeperStaffId: string | null;
-  cleaningType: string | null;
-}> {
-  let cleaningTaskId: string | null = null;
-  let cleaningType: string | null = null;
-  try {
-    const { data } = await supabaseAdmin
-      .from('cleaning_tasks')
-      .select('id, cleaning_type, assignee_id')
-      .eq('property_id', pid)
-      .eq('room_number', roomNumber)
-      .order('business_date', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (data) {
-      const row = data as { id: string; cleaning_type: string | null; assignee_id: string | null };
-      cleaningTaskId = row.id;
-      cleaningType = row.cleaning_type;
-    }
-  } catch {
-    // Non-fatal — cleaning_tasks may not yet exist for this room.
-  }
-
-  let housekeeperStaffId: string | null = null;
-  if (roomId) {
-    const parsed = parseRoomId(roomId);
-    if (parsed) {
-      try {
-        const merged = await mergePmsRoomsForDate(pid, parsed.date);
-        const room = merged.find((r) => r.number === parsed.roomNumber);
-        housekeeperStaffId = room?.assignedTo ?? null;
-      } catch {
-        // Non-fatal — fall back to null.
-      }
-    }
-  }
-
-  return { cleaningTaskId, housekeeperStaffId, cleaningType };
 }

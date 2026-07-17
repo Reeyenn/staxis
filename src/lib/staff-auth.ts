@@ -252,31 +252,36 @@ function generateMagicCode(): string {
 }
 
 /**
- * Mint a one-time magic-link for the given staff member and return
- * the full URL to embed in the SMS body or copy to clipboard.
+ * Mint a one-time magic-link for the given staff member and return the full
+ * URL to embed in the SMS body or copy to clipboard. Shared implementation
+ * behind buildHousekeeperLink / buildEngineerLink — the ONLY thing that
+ * differs between staff surfaces is the URL path segment (`pathPrefix`).
  *
- * F-NEW-02 (Batch D): the URL now carries a short opaque CODE instead
- * of the Supabase hashed_token. The hashed_token is stored server-side
- * in staff_magic_codes (keyed by code), and the housekeeper page POSTs
- * the code to /api/housekeeper/exchange-code to retrieve the token.
+ * F-NEW-02 (Batch D): the URL carries a short opaque CODE instead of the
+ * Supabase hashed_token. The hashed_token is stored server-side in
+ * staff_magic_codes (keyed by code), and the mobile page POSTs the code to
+ * /api/housekeeper/exchange-code to retrieve the token (that route is
+ * department-agnostic — it keys on staff_magic_codes by code+staff+property).
  * That keeps the actual credential out of: Vercel access logs, Sentry
  * breadcrumbs, browser history, and Referer headers.
  *
- * Returned URL shape:
- *   https://getstaxis.com/housekeeper/{staffId}?pid={pid}&code={short_code}
- *
- * The OLD ?token={hashed_token} URL pattern keeps working for the
- * transition window (in-flight SMSes from before this deploy). See
+ * The OLD ?token={hashed_token} URL pattern keeps working for the transition
+ * window (in-flight SMSes from before this deploy). See
  * src/app/housekeeper/[id]/page.tsx for the dual-format handler.
  *
- * @param staffId  UUID of the staff member
- * @param pid      UUID of the property the URL is scoped to
- * @param baseUrl  Optional override for the deployment origin. Defaults
- *                 to https://getstaxis.com.
+ * Returned URL shape:
+ *   https://getstaxis.com/{pathPrefix}/{staffId}?pid={pid}&code={short_code}&tok={link_token}
+ *
+ * @param staffId     UUID of the staff member
+ * @param pid         UUID of the property the URL is scoped to
+ * @param pathPrefix  URL path segment for the surface ('housekeeper' | 'engineer')
+ * @param baseUrl     Optional override for the deployment origin. Defaults
+ *                    to https://getstaxis.com.
  */
-export async function buildHousekeeperLink(
+export async function buildStaffLink(
   staffId: string,
   pid: string,
+  pathPrefix: string,
   baseUrl: string = 'https://getstaxis.com',
 ): Promise<string> {
   // F-NEW-04: pid is load-bearing — ensureStaffAuthUser asserts the
@@ -350,7 +355,7 @@ export async function buildHousekeeperLink(
   // Trim trailing slash from baseUrl just in case.
   const cleanBase = baseUrl.replace(/\/$/, '');
   return (
-    `${cleanBase}/housekeeper/${encodeURIComponent(staffId)}` +
+    `${cleanBase}/${pathPrefix}/${encodeURIComponent(staffId)}` +
     `?pid=${encodeURIComponent(pid)}` +
     `&code=${encodeURIComponent(code)}` +
     `&tok=${encodeURIComponent(tok)}`
@@ -358,74 +363,25 @@ export async function buildHousekeeperLink(
 }
 
 /**
- * Mint a one-time magic-link for an ENGINEERING / MAINTENANCE staff member —
- * the Engineering Compliance feature's mobile surface (/engineer/[id]).
- *
- * Byte-for-byte the same security model as buildHousekeeperLink: cross-tenant
- * gate via ensureStaffAuthUser(staffId, pid), Supabase magic-link hashed_token
- * stored server-side in staff_magic_codes, only the short opaque CODE in the
- * URL. The page exchanges the code via /api/housekeeper/exchange-code (that
- * route is department-agnostic — it keys on staff_magic_codes by code+staff+
- * property). The ONLY difference is the URL path: /engineer/ instead of
- * /housekeeper/.
- *
- * Returned URL shape:
- *   https://getstaxis.com/engineer/{staffId}?pid={pid}&code={short_code}
+ * Housekeeper magic-link (/housekeeper/[id]). Thin wrapper over buildStaffLink.
  */
-export async function buildEngineerLink(
+export function buildHousekeeperLink(
   staffId: string,
   pid: string,
   baseUrl: string = 'https://getstaxis.com',
 ): Promise<string> {
-  const { email } = await ensureStaffAuthUser(staffId, pid);
+  return buildStaffLink(staffId, pid, 'housekeeper', baseUrl);
+}
 
-  const { data, error } = await supabaseAdmin.auth.admin.generateLink({
-    type: 'magiclink',
-    email,
-  });
-  if (error) {
-    throw new Error(`[staff-auth] generateLink failed: ${errToString(error)}`);
-  }
-  const tokenHash = data?.properties?.hashed_token;
-  if (!tokenHash) {
-    // FAIL CLOSED — same rationale as buildHousekeeperLink: never fall back to
-    // action_link (would leak the credential in the URL).
-    throw new Error(
-      '[staff-auth] generateLink: hashed_token absent — refusing to fall back to action_link (would leak credential in URL)',
-    );
-  }
-
-  const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-  let code: string | null = null;
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const candidate = generateMagicCode();
-    const { error: insErr } = await supabaseAdmin
-      .from('staff_magic_codes')
-      .insert({
-        code: candidate,
-        staff_id: staffId,
-        property_id: pid,
-        hashed_token: tokenHash,
-        expires_at: expiresAt,
-      });
-    if (!insErr) { code = candidate; break; }
-    if (insErr.code !== '23505') {
-      throw new Error(`[staff-auth] staff_magic_codes insert failed: ${errToString(insErr)}`);
-    }
-  }
-  if (!code) {
-    throw new Error('[staff-auth] staff_magic_codes insert: 5 collisions in a row — PRNG broken?');
-  }
-
-  // Security audit 2026-06-26 #1: per-staff link token embedded as &tok= —
-  // the credential the public /api/engineer/* routes verify.
-  const tok = await mintStaffLinkToken(staffId, pid);
-
-  const cleanBase = baseUrl.replace(/\/$/, '');
-  return (
-    `${cleanBase}/engineer/${encodeURIComponent(staffId)}` +
-    `?pid=${encodeURIComponent(pid)}` +
-    `&code=${encodeURIComponent(code)}` +
-    `&tok=${encodeURIComponent(tok)}`
-  );
+/**
+ * Mint a one-time magic-link for an ENGINEERING / MAINTENANCE staff member —
+ * the Engineering Compliance feature's mobile surface (/engineer/[id]). Same
+ * security model as buildHousekeeperLink; only the URL path differs.
+ */
+export function buildEngineerLink(
+  staffId: string,
+  pid: string,
+  baseUrl: string = 'https://getstaxis.com',
+): Promise<string> {
+  return buildStaffLink(staffId, pid, 'engineer', baseUrl);
 }

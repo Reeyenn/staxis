@@ -13,7 +13,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
+import { isUuid } from '@/lib/api-validate';
 import { visionExtractJSON, VisionTruncatedError, VisionImageInvalidError, VisionSchemaError, type VisionUsageReport } from '@/lib/vision-extract';
+import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
@@ -41,9 +43,6 @@ interface PhotoCountResult {
     confidence: 'high' | 'medium' | 'low';
   }>;
 }
-
-const isUuid = (s: unknown): s is string =>
-  typeof s === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 
 const SUPPORTED_MEDIA_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'] as const;
 type VisionMediaType = 'image/jpeg' | 'image/png' | 'image/webp' | 'image/gif';
@@ -152,6 +151,7 @@ If the image contains no recognizable inventory, return { "counts": [] }.`;
 }
 
 export async function POST(req: NextRequest) {
+  const visionDeadlineAt = Date.now() + 52_000;
   // Auth gate — same story as scan-invoice. Vision API has real $$ cost
   // and we don't want random callers spending the budget.
   const session = await requireSession(req);
@@ -248,6 +248,8 @@ export async function POST(req: NextRequest) {
         return { counts: obj.counts as PhotoCountResult['counts'] };
       },
       captureUsage,
+      'inventory.photo_count',
+      { abortSignal: req.signal, deadlineAt: visionDeadlineAt },
     );
 
     // 2026-05-22 audit: build a canonical→original map so the post-call
@@ -285,6 +287,13 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     // Truncation: more items in the photo than we can describe in one
     // response. Same actionable handling as scan-invoice (pass-4).
+    if (e instanceof AiFeatureDisabledError) {
+      // Admin kill switch — an intentional state, not an outage. No error log.
+      return NextResponse.json(
+        { ok: false, error: 'feature_disabled', detail: 'This AI feature is currently turned off.' },
+        { status: 503 },
+      );
+    }
     if (e instanceof VisionTruncatedError) {
       return NextResponse.json(
         {
@@ -337,6 +346,7 @@ export async function POST(req: NextRequest) {
           modelId: u.modelId,
           tokensIn: u.inputTokens,
           tokensOut: u.outputTokens,
+          cachedInputTokens: u.cachedInputTokens,
           costUsd: u.costUsd,
           kind: 'vision',
         });

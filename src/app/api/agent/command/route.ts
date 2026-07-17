@@ -31,15 +31,23 @@
 // fires on TCP-level disconnect, which under Vercel's edge proxy is the
 // proxy timeout — NOT the browser close. In practice the abort can take
 // 30–60s to fire after the user closes the tab. The actual cost ceiling
-// is `REQUEST_TIMEOUT_MS = 50_000` per Anthropic call in
-// `src/lib/agent/llm.ts`. Treat the abort signal as best-effort cost
-// containment, not a deterministic kill switch.
+// is the absolute 55-second execution deadline shared by every provider
+// attempt and fallback in `src/lib/agent/llm.ts`. Treat the disconnect signal
+// as best effort; the shared deadline is the deterministic route ceiling.
 
 import type { NextRequest } from 'next/server';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 
-import { streamAgent, type AgentMessage } from '@/lib/agent/llm';
+import {
+  ASK_STAXIS_EXECUTION_BUDGET_MS,
+  ASK_STAXIS_FALLBACK_RESERVE_MS,
+  PRICING,
+  resolveAskStaxisExecutionPlan,
+  streamAgent,
+  type AgentMessage,
+} from '@/lib/agent/llm';
+import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { getToolsForRole } from '@/lib/agent/tools';
 import { getEnabledSections } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
@@ -53,6 +61,7 @@ import {
 import {
   reserveCostBudget,
   cancelCostReservation,
+  COST_LIMITS,
 } from '@/lib/agent/cost-controls';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
@@ -79,6 +88,7 @@ interface RequestBody {
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  const executionDeadlineAt = Date.now() + ASK_STAXIS_EXECUTION_BUDGET_MS;
 
   // ── Auth ──────────────────────────────────────────────────────────────
   const auth = await requireSession(req);
@@ -129,9 +139,31 @@ export async function POST(req: NextRequest): Promise<Response> {
   // ── Cost reservation (Codex review fix #1) ────────────────────────────
   // Atomic: cap check + reservation insert happen under an advisory lock
   // keyed on user_id. Concurrent requests for the same user serialize.
+  let estimatedUsd: number;
+  let executionPlan: AiExecutionPlan;
+  try {
+    executionPlan = await resolveAskStaxisExecutionPlan();
+    estimatedUsd = scaleAiReservationUsd(
+      [executionPlan.primary, executionPlan.fallback].filter(
+        (model): model is NonNullable<typeof model> => model !== null,
+      ),
+      {
+        usd: COST_LIMITS.estimatedRequestUsd,
+        inputUsdPerMillionTokens: PRICING.sonnet.input,
+        outputUsdPerMillionTokens: PRICING.sonnet.output,
+      },
+    );
+  } catch (error) {
+    return Response.json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Ask Staxis is unavailable',
+      requestId,
+    }, { status: 503 });
+  }
   const reservation = await reserveCostBudget({
     userId: userCtx.accountId,
     propertyId: body.propertyId,
+    estimatedUsd,
   });
   if (!reservation.ok) {
     return Response.json(
@@ -268,6 +300,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           // (pending row + card), NOT executed inline. Read-only tools still
           // run inline.
           approvalMode: true,
+          featureKey: 'agent.ask_staxis',
+          executionPlan,
+          deadlineAt: executionDeadlineAt,
+          fallbackReserveMs: ASK_STAXIS_FALLBACK_RESERVE_MS,
           // Codex adversarial review 2026-05-13 (A-C3): forward the request
           // abort signal into the agent loop so client disconnects stop
           // burning Anthropic tokens.

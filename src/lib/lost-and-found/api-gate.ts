@@ -66,85 +66,30 @@ async function resolveAccount(
   };
 }
 
-/** GET routes: pid comes from the query string. */
-export async function gateFrontDeskRead(
+/**
+ * Where a route reads its property id from. GET routes read `pid` from the
+ * query string (no body); POST routes parse the JSON body (which may fail
+ * with a 400) and read `pid` from it. Everything after the pid is resolved —
+ * management-role check, property-access check, rate limit — is identical, so
+ * the read/write variants differ only in this source.
+ */
+type PidSource<TBody> = (
+  req: NextRequest,
+  requestId: string,
+) => Promise<{ ok: true; pid: string; body: TBody } | FdGateFail>;
+
+async function gateFrontDesk<TBody>(
   req: NextRequest,
   endpoint: RateLimitEndpoint,
-): Promise<FdGateResult<Record<string, never>>> {
-  const requestId = getOrMintRequestId(req);
-  const session = await requireSession(req);
-  if (!session.ok) return { ok: false, response: session.response };
-
-  const pidV = validateUuid(new URL(req.url).searchParams.get('pid'), 'pid');
-  if (pidV.error || !pidV.value) {
-    return {
-      ok: false,
-      response: err(pidV.error ?? 'invalid pid', {
-        requestId,
-        status: 400,
-        code: ApiErrorCode.ValidationFailed,
-      }),
-    };
-  }
-  const pid = pidV.value;
-
-  const { accountId, role } = await resolveAccount(session.userId);
-  if (!role || !(await canForProperty({ role }, 'use_lost_and_found', pid))) {
-    return {
-      ok: false,
-      response: err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),
-    };
-  }
-  if (!(await userHasPropertyAccess(session.userId, pid))) {
-    return {
-      ok: false,
-      response: err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),
-    };
-  }
-
-  const rl = await checkAndIncrementRateLimit(endpoint, pid);
-  if (!rl.allowed) {
-    return { ok: false, response: rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec) };
-  }
-
-  return { ok: true, userId: session.userId, accountId, role, pid, requestId, body: {} };
-}
-
-/** POST routes: pid comes from the JSON body. */
-export async function gateFrontDeskWrite<TBody extends { pid?: unknown }>(
-  req: NextRequest,
-  endpoint: RateLimitEndpoint,
+  source: PidSource<TBody>,
 ): Promise<FdGateResult<TBody>> {
   const requestId = getOrMintRequestId(req);
   const session = await requireSession(req);
   if (!session.ok) return { ok: false, response: session.response };
 
-  let body: TBody;
-  try {
-    body = (await req.json()) as TBody;
-  } catch {
-    return {
-      ok: false,
-      response: err('invalid json', {
-        requestId,
-        status: 400,
-        code: ApiErrorCode.ValidationFailed,
-      }),
-    };
-  }
-
-  const pidV = validateUuid((body as { pid?: unknown }).pid, 'pid');
-  if (pidV.error || !pidV.value) {
-    return {
-      ok: false,
-      response: err(pidV.error ?? 'invalid pid', {
-        requestId,
-        status: 400,
-        code: ApiErrorCode.ValidationFailed,
-      }),
-    };
-  }
-  const pid = pidV.value;
+  const src = await source(req, requestId);
+  if (!src.ok) return src;
+  const { pid, body } = src;
 
   const { accountId, role } = await resolveAccount(session.userId);
   if (!role || !(await canForProperty({ role }, 'use_lost_and_found', pid))) {
@@ -166,4 +111,60 @@ export async function gateFrontDeskWrite<TBody extends { pid?: unknown }>(
   }
 
   return { ok: true, userId: session.userId, accountId, role, pid, requestId, body };
+}
+
+/** GET routes: pid comes from the query string. */
+export function gateFrontDeskRead(
+  req: NextRequest,
+  endpoint: RateLimitEndpoint,
+): Promise<FdGateResult<Record<string, never>>> {
+  return gateFrontDesk<Record<string, never>>(req, endpoint, async (r, requestId) => {
+    const pidV = validateUuid(new URL(r.url).searchParams.get('pid'), 'pid');
+    if (pidV.error || !pidV.value) {
+      return {
+        ok: false,
+        response: err(pidV.error ?? 'invalid pid', {
+          requestId,
+          status: 400,
+          code: ApiErrorCode.ValidationFailed,
+        }),
+      };
+    }
+    return { ok: true, pid: pidV.value, body: {} };
+  });
+}
+
+/** POST routes: pid comes from the JSON body. */
+export function gateFrontDeskWrite<TBody extends { pid?: unknown }>(
+  req: NextRequest,
+  endpoint: RateLimitEndpoint,
+): Promise<FdGateResult<TBody>> {
+  return gateFrontDesk<TBody>(req, endpoint, async (r, requestId) => {
+    let body: TBody;
+    try {
+      body = (await r.json()) as TBody;
+    } catch {
+      return {
+        ok: false,
+        response: err('invalid json', {
+          requestId,
+          status: 400,
+          code: ApiErrorCode.ValidationFailed,
+        }),
+      };
+    }
+
+    const pidV = validateUuid((body as { pid?: unknown }).pid, 'pid');
+    if (pidV.error || !pidV.value) {
+      return {
+        ok: false,
+        response: err(pidV.error ?? 'invalid pid', {
+          requestId,
+          status: 400,
+          code: ApiErrorCode.ValidationFailed,
+        }),
+      };
+    }
+    return { ok: true, pid: pidV.value, body };
+  });
 }

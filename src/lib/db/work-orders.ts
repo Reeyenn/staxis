@@ -49,11 +49,6 @@ export async function updateWorkOrder(
   } catch (err) { logErr('updateWorkOrder', err); throw err; }
 }
 
-export async function deleteWorkOrder(_uid: string, _pid: string, wid: string): Promise<void> {
-  const { error } = await supabase.from('work_orders').delete().eq('id', wid);
-  if (error) { logErr('deleteWorkOrder', error); throw error; }
-}
-
 // Mark a work order done in one call. Sets status, completed-by name, the
 // completion note + photo path, and resolved_at = now (we read this back as
 // the new design's completedAt timestamp).

@@ -16,7 +16,7 @@ export const dynamic = 'force-dynamic';
 //   4. supabase.auth.verifyOtp({email, token, type:'email'}) → fresh session.
 //   5. If trust-this-device was checked, POST /api/auth/trust-device with
 //      the new bearer token; cookie + DB row land.
-//   6. router.replace('/property-selector')
+//   6. router.replace('/home') for a normal sign-in
 
 import React, { useEffect, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -36,11 +36,13 @@ function VerifyInner() {
   // so we auto-trust the device and hide the checkbox entirely — Reeyen
   // wants signups to skip the extra "remember this device?" prompt.
   const postSignup = params.get('postSignup') === '1';
-  // F-04: the signin page forwards `?redirect=<original>` when the user
-  // arrived via the edge-gate. Honor it on OTP success so deep links land
-  // where they asked for. Signups don't carry a redirect, so postSignup
-  // falls through to the historical /property-selector target.
-  const redirectTarget = safeRedirect(params.get('redirect'), '/property-selector');
+  // OTP completion resolves through the property selector. A single-hotel
+  // account auto-selects and lands on Home; multi-hotel/admin accounts choose
+  // first. Explicit protected deep links are opened only after that selection.
+  const requestedTarget = safeRedirect(params.get('redirect'), '/home');
+  const redirectTarget = postSignup || requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
+    ? '/property-selector'
+    : `/property-selector?redirect=${encodeURIComponent(requestedTarget)}`;
 
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);
@@ -71,13 +73,13 @@ function VerifyInner() {
         if (cancelled || !body?.ok || body.data?.enabled !== false) return;
         const { data } = await supabase.auth.getSession();
         if (cancelled) return;
-        router.replace(data.session ? '/property-selector' : '/signin');
+        router.replace(data.session ? redirectTarget : '/signin');
       } catch {
         // Fail-safe: stay on the code screen (2FA-on behavior).
       }
     })();
     return () => { cancelled = true; };
-  }, [email, router]);
+  }, [email, redirectTarget, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

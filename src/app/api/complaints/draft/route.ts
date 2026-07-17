@@ -19,6 +19,8 @@ import { canForUserId } from '@/lib/capabilities/server';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { draftServiceRecovery } from '@/lib/complaints-ai';
 import { fromComplaintRow } from '@/lib/complaints-shared';
+import type { AiUsageReport } from '@/lib/ai/usage';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,6 +33,7 @@ interface Body {
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  const deadlineAt = Date.now() + 22_000;
   const headers = { 'x-request-id': requestId };
 
   const session = await requireSession(req, { requestId });
@@ -80,13 +83,33 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (!row) return err('complaint not found', { requestId, status: 404, code: ApiErrorCode.NotFound, headers });
 
     const c = fromComplaintRow(row as Record<string, unknown>);
+    const { data: account } = await supabaseAdmin
+      .from('accounts')
+      .select('id')
+      .eq('data_user_id', session.userId)
+      .maybeSingle();
+    let usage: AiUsageReport | null = null;
     const draft = await draftServiceRecovery({
       description: c.description,
       category: c.category,
       severity: c.severity,
       guestName: c.guestName,
       roomNumber: c.roomNumber,
+    }, {
+      deadlineAt,
+      abortSignal: req.signal,
+      onUsage: (value) => { usage = value; },
     });
+    if (typeof account?.id === 'string') {
+      await recordAiUsageBestEffort({
+        usage,
+        userId: account.id,
+        propertyId: pid,
+        kind: 'background',
+        requestId,
+        feature: 'complaints.recovery_draft',
+      });
+    }
 
     return ok(draft, { requestId, headers });
   } catch (caughtErr) {

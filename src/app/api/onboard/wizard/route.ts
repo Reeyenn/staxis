@@ -171,7 +171,7 @@ export async function GET(req: NextRequest) {
   }
   const isOwnerSession = sessionUserId !== null;
 
-  // Already completed? Tell the caller so the wizard can redirect to /dashboard.
+  // Already completed? Tell the caller so the wizard can redirect to /home.
   if (prop.onboarding_completed_at) {
     return ok({
       propertyId: prop.id,

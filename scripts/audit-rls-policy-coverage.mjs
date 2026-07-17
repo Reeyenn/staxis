@@ -112,6 +112,9 @@ const SERVICE_ROLE_ONLY = new Set([
   // writes via /api/admin/settings (service role); the auth hook reads it via
   // the SECURITY DEFINER staxis_2fa_enabled() function.
   'app_settings',
+  // 0313 — fleet-wide AI Control Center; admin API/service role only.
+  'ai_model_catalog',
+  'ai_feature_config_versions',
   // Phase 2B (2026-05-22 audit, Door B): hook writes mfa_verified_sessions
   // rows when a session is bound to a trusted device via trust-device.
   // Read-only by supabase_auth_admin (hook) + service-role. Never user-

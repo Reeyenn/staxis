@@ -21,9 +21,6 @@
 //        - orderByDate   (today + daysUntilOut - reorderLeadDays)
 //        - urgency       ('now' | 'soon' | 'ok' | 'unknown')
 //
-//   3. predictReorders(items, averages, effectiveStockMap)
-//      Convenience batch wrapper for #2.
-//
 // Why daily averages and not occupancy-since-last-count: the estimate-stock
 // path needs "events between item.last_counted_at and now". Predictions need
 // the steady-state run rate going forward. Mixing the two would either over-
@@ -163,7 +160,7 @@ export async function fetchDailyAverages(
 // instead of the manager-typed usagePerCheckout × avgDailyCheckouts math.
 //
 // Returns a Map<itemId, dailyRate>. Empty when no predictions exist or the
-// ai_mode is 'off'. The caller passes this map to predictReorders().
+// ai_mode is 'off'. The caller passes this map to predictReorder().
 
 // Freshness window for ML predictions: anything older than this is treated
 // as stale (cron broken, model not retraining, etc.) and excluded from
@@ -435,31 +432,6 @@ export function predictReorder(
   };
 }
 
-// ─── Batch prediction ──────────────────────────────────────────────────────
-
-export function predictReorders(
-  items: InventoryItem[],
-  averages: DailyAverages,
-  effectiveStockMap?: Map<string, number>,
-  mlRateMap?: Map<string, number>,
-): PredictionResult[] {
-  return items.map(item => {
-    const eff = effectiveStockMap?.get(item.id) ?? item.currentStock;
-    const override = mlRateMap?.get(item.id);
-    return predictReorder(item, averages, eff, override);
-  });
-}
-
-// ─── Convenience for callers that already have a prediction array ──────────
-
-export function predictionByItem(
-  predictions: PredictionResult[],
-): Map<string, PredictionResult> {
-  const m = new Map<string, PredictionResult>();
-  for (const p of predictions) m.set(p.itemId, p);
-  return m;
-}
-
 // ─── Budget headroom ───────────────────────────────────────────────────────
 //
 // Pure helper for the Smart Reorder List + accounting view. Given a spend
@@ -479,29 +451,3 @@ export interface BudgetStatus {
   remainingCents: number | null;     // null when no budget; can go negative
 }
 
-export function computeBudgetStatuses(
-  spendByCategory: Record<InventoryCategory, number>,           // dollars (numeric)
-  budgetByCategory: Partial<Record<InventoryCategory, number>>, // cents
-): Record<InventoryCategory, BudgetStatus> {
-  const cats: InventoryCategory[] = ['housekeeping', 'maintenance', 'breakfast'];
-  const out = {} as Record<InventoryCategory, BudgetStatus>;
-  for (const cat of cats) {
-    const spent = Math.round((spendByCategory[cat] ?? 0) * 100);
-    const budget = budgetByCategory[cat];
-    out[cat] = {
-      category: cat,
-      budgetCents: budget ?? null,
-      spentCents: spent,
-      remainingCents: budget != null ? budget - spent : null,
-    };
-  }
-  return out;
-}
-
-export function fitsInBudget(
-  status: BudgetStatus,
-  proposedSpendCents: number,
-): boolean {
-  if (status.remainingCents == null) return true; // no budget configured = no constraint
-  return proposedSpendCents <= status.remainingCents;
-}

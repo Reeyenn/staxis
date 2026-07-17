@@ -7,6 +7,7 @@ import type { HousekeeperLocale } from '@/lib/translations';
 // Locally aliased so piece-A code keeps reading `lang: Language` everywhere.
 type Language = HousekeeperLocale;
 import { t } from '@/lib/translations';
+import { sheetOverlayStyle, sheetCloseBtnStyle } from './dialog-styles';
 
 /**
  * ChecklistModal — opens when the housekeeper taps "Open checklist" on an
@@ -124,14 +125,7 @@ export function ChecklistModal(props: Props) {
     <div
       role="dialog"
       aria-modal="true"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(15,23,42,0.55)',
-        zIndex: 250,
-        display: 'flex',
-        alignItems: 'flex-end',
-      }}
+      style={sheetOverlayStyle}
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -167,21 +161,7 @@ export function ChecklistModal(props: Props) {
               {t('hkRoomShort', lang)} {roomNumber} · {checkedIds.size} / {items.length} {t('hkChecklistChecked', lang)}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            aria-label={t('hkClose', lang)}
-            style={{
-              minHeight: '44px',
-              minWidth: '44px',
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-              padding: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
+          <button onClick={onClose} aria-label={t('hkClose', lang)} style={sheetCloseBtnStyle}>
             <X size={22} color="#374151" />
           </button>
         </div>

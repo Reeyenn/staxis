@@ -25,11 +25,11 @@
  *   - rate-limit per (userId, pid)
  */
 
-import { NextRequest } from 'next/server';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { userHasPropertyAccess } from '@/lib/api-auth';
+import { defineRoute, sessionGate } from '@/lib/api-route';
 import { validateUuid } from '@/lib/api-validate';
-import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId, log } from '@/lib/log';
+import { ApiErrorCode } from '@/lib/api-response';
+import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import {
   applyRoomUpdate,
@@ -59,111 +59,104 @@ interface ActionBody {
   rooms?: Omit<Room, 'id'>[];
 }
 
-export async function POST(req: NextRequest) {
-  const requestId = getOrMintRequestId(req);
-
-  const auth = await requireSession(req, { requestId });
-  if (!auth.ok) return auth.response;
-
-  let body: ActionBody;
-  try {
-    body = (await req.json()) as ActionBody;
-  } catch {
-    return err('invalid_json', {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-    });
-  }
-
-  const pidV = validateUuid(body.pid, 'pid');
-  if (pidV.error) {
-    return err(pidV.error, {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-    });
-  }
-  const pid = pidV.value!;
-
-  const action = body.action as Action | undefined;
-  if (!action || !VALID_ACTIONS.has(action)) {
-    return err('action must be one of update | add | delete | bulk-add', {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-    });
-  }
-
-  const hasAccess = await userHasPropertyAccess(auth.userId, pid);
-  if (!hasAccess) {
-    log.warn('[housekeeping/room-action] forbidden — user lacks property access', {
-      requestId, userId: auth.userId, pid,
-    });
-    return err('forbidden — no access to this property', {
-      requestId, status: 403, code: ApiErrorCode.Forbidden,
-    });
-  }
-
-  const rl = await checkAndIncrementRateLimit(
-    'housekeeping-room-action',
-    hashToRateLimitKey(`${auth.userId}:${pid}`),
-  );
-  if (!rl.allowed) {
-    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
-  }
-
-  try {
-    switch (action) {
-      case 'update': {
-        if (!body.rid || !body.room) {
-          return err('update requires rid + room', {
-            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-          });
-        }
-        await applyRoomUpdate(pid, body.rid, body.room);
-        return ok({ updated: true }, { requestId });
-      }
-      case 'add': {
-        if (!body.room || !body.room.number) {
-          return err('add requires room with number', {
-            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-          });
-        }
-        const id = await applyRoomAdd(pid, body.room as Omit<Room, 'id'>);
-        return ok({ id }, { requestId });
-      }
-      case 'delete': {
-        if (!body.rid) {
-          return err('delete requires rid', {
-            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-          });
-        }
-        await applyRoomDelete(pid, body.rid);
-        return ok({ deleted: true }, { requestId });
-      }
-      case 'bulk-add': {
-        if (!Array.isArray(body.rooms)) {
-          return err('bulk-add requires rooms array', {
-            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-          });
-        }
-        const result = await applyBulkRoomAdd(pid, body.rooms);
-        if (result.assignmentsFailed.length > 0) {
-          // 207-style envelope — body carries the per-row outcome.
-          return err(
-            `bulk-add: ${result.assignmentsFailed.length} of ${result.requested} assignment writes failed`,
-            {
-              requestId,
-              status: 207,
-              code: ApiErrorCode.PartialFailure,
-              details: result,
-            },
-          );
-        }
-        return ok(result, { requestId });
-      }
+export const POST = defineRoute({
+  resolve: (req) => sessionGate(req),
+  handler: async (ctx) => {
+    let body: ActionBody;
+    try {
+      body = (await ctx.req.json()) as ActionBody;
+    } catch {
+      return ctx.err('invalid_json', { status: 400, code: ApiErrorCode.ValidationFailed });
     }
-  } catch (e: unknown) {
-    log.error('[housekeeping/room-action] write failed', {
-      requestId, pid, action, msg: errToString(e),
-    });
-    return err('Internal server error', {
-      requestId, status: 500, code: ApiErrorCode.InternalError,
-    });
-  }
-}
+
+    const pidV = validateUuid(body.pid, 'pid');
+    if (pidV.error) {
+      return ctx.err(pidV.error, { status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    const pid = pidV.value!;
+
+    const action = body.action as Action | undefined;
+    if (!action || !VALID_ACTIONS.has(action)) {
+      return ctx.err('action must be one of update | add | delete | bulk-add', {
+        status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+
+    const hasAccess = await userHasPropertyAccess(ctx.userId, pid);
+    if (!hasAccess) {
+      log.warn('[housekeeping/room-action] forbidden — user lacks property access', {
+        requestId: ctx.requestId, userId: ctx.userId, pid,
+      });
+      return ctx.err('forbidden — no access to this property', {
+        status: 403, code: ApiErrorCode.Forbidden,
+      });
+    }
+
+    const rl = await checkAndIncrementRateLimit(
+      'housekeeping-room-action',
+      hashToRateLimitKey(`${ctx.userId}:${pid}`),
+    );
+    if (!rl.allowed) {
+      return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+    }
+
+    try {
+      switch (action) {
+        case 'update': {
+          if (!body.rid || !body.room) {
+            return ctx.err('update requires rid + room', {
+              status: 400, code: ApiErrorCode.ValidationFailed,
+            });
+          }
+          await applyRoomUpdate(pid, body.rid, body.room);
+          return ctx.ok({ updated: true });
+        }
+        case 'add': {
+          if (!body.room || !body.room.number) {
+            return ctx.err('add requires room with number', {
+              status: 400, code: ApiErrorCode.ValidationFailed,
+            });
+          }
+          const id = await applyRoomAdd(pid, body.room as Omit<Room, 'id'>);
+          return ctx.ok({ id });
+        }
+        case 'delete': {
+          if (!body.rid) {
+            return ctx.err('delete requires rid', {
+              status: 400, code: ApiErrorCode.ValidationFailed,
+            });
+          }
+          await applyRoomDelete(pid, body.rid);
+          return ctx.ok({ deleted: true });
+        }
+        case 'bulk-add': {
+          if (!Array.isArray(body.rooms)) {
+            return ctx.err('bulk-add requires rooms array', {
+              status: 400, code: ApiErrorCode.ValidationFailed,
+            });
+          }
+          const result = await applyBulkRoomAdd(pid, body.rooms);
+          if (result.assignmentsFailed.length > 0) {
+            // 207-style envelope — body carries the per-row outcome.
+            return ctx.err(
+              `bulk-add: ${result.assignmentsFailed.length} of ${result.requested} assignment writes failed`,
+              {
+                status: 207,
+                code: ApiErrorCode.PartialFailure,
+                details: result,
+              },
+            );
+          }
+          return ctx.ok(result);
+        }
+      }
+    } catch (e: unknown) {
+      log.error('[housekeeping/room-action] write failed', {
+        requestId: ctx.requestId, pid, action, msg: errToString(e),
+      });
+      return ctx.err('Internal server error', {
+        status: 500, code: ApiErrorCode.InternalError,
+      });
+    }
+  },
+});

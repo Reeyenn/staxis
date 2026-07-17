@@ -67,21 +67,6 @@ export async function upsertInventoryBudget(
   if (error) { logErr('upsertInventoryBudget', error); throw error; }
 }
 
-export async function deleteInventoryBudget(
-  _uid: string,
-  pid: string,
-  category: InventoryCategory,
-  monthStart: Date,
-): Promise<void> {
-  const { error } = await supabase
-    .from('inventory_budgets')
-    .delete()
-    .eq('property_id', pid)
-    .eq('category', category)
-    .eq('month_start', monthStartToISODate(monthStart));
-  if (error) { logErr('deleteInventoryBudget', error); throw error; }
-}
-
 // ─── Custom budget sections (0306) ─────────────────────────────────────────
 // A hotel-defined section = name + the item ids whose orders count toward it.
 // Budget dollars for a section live in inventory_budgets keyed 'section:<id>'.
@@ -204,16 +189,6 @@ export async function monthToDateSpendDetail(
   }
 
   return { byCat, byItem, total };
-}
-
-/** Back-compat wrapper — category buckets only. */
-export async function monthToDateSpendByCategory(
-  uid: string,
-  pid: string,
-  monthStart: Date,
-  monthEndExclusive: Date,
-): Promise<Record<InventoryCategory, number>> {
-  return (await monthToDateSpendDetail(uid, pid, monthStart, monthEndExclusive)).byCat;
 }
 
 /** One month's spend detail, tagged with the (local) first-of-month it covers. */

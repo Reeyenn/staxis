@@ -65,6 +65,17 @@ export function validateUuid(v: unknown, label = 'id'): { error?: string; value?
   return { value: v };
 }
 
+/**
+ * Loose UUID type-guard (any-version, any-variant — the `/i` regex above).
+ * Single source of truth for the byte-identical `const isUuid` / `UUID_RE`
+ * copies that had accreted across API routes and the finance/ordering gates.
+ * NOT the strict RFC-4122 check used by phone-pairing (that one intentionally
+ * validates version + variant nibbles and stays separate).
+ */
+export function isUuid(s: unknown): s is string {
+  return typeof s === 'string' && UUID_RX.test(s);
+}
+
 export function validateString(
   v: unknown,
   opts: { max: number; min?: number; label: string; allowEmpty?: boolean },
@@ -121,23 +132,6 @@ export function validateEnum<T extends string>(
   if (typeof v !== 'string') return { error: `${label} must be a string` };
   if (!allowed.includes(v as T)) return { error: `${label} must be one of: ${allowed.join(', ')}` };
   return { value: v as T };
-}
-
-/**
- * Validate that a string is a real IANA timezone identifier.
- * Uses the runtime's Intl.DateTimeFormat which throws RangeError on
- * unknown zones. Catches typos like "Pacific/Wrong" before they land
- * in the DB and silently break date formatting downstream.
- */
-export function validateTimezone(v: unknown, label = 'timezone'): { error?: string; value?: string } {
-  if (typeof v !== 'string') return { error: `${label} must be a string` };
-  if (v.length === 0 || v.length > 100) return { error: `${label} length must be 1-100 chars` };
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: v });
-    return { value: v };
-  } catch {
-    return { error: `${label} is not a valid IANA timezone (e.g. America/Chicago)` };
-  }
 }
 
 export function validateDateStr(

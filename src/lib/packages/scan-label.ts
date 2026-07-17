@@ -13,6 +13,7 @@ import {
   VisionSchemaError,
   type VisionImage,
   type VisionUsageReport,
+  type VisionCallOptions,
 } from '@/lib/vision-extract';
 import { PACKAGE_CARRIERS, type PackageCarrier, type ScannedLabel } from './types';
 
@@ -76,6 +77,7 @@ function normalizeCarrier(v: unknown): PackageCarrier | null {
 export async function scanShippingLabel(
   image: VisionImage,
   onUsage?: (u: VisionUsageReport) => void,
+  opts: VisionCallOptions = {},
 ): Promise<ScannedLabel> {
   return visionExtractJSON<ScannedLabel>(
     image,
@@ -93,5 +95,7 @@ export async function scanShippingLabel(
       };
     },
     onUsage,
+    'packages.label_scan',
+    opts,
   );
 }

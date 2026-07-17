@@ -35,6 +35,9 @@ import {
 import { detectAnomalies } from './anomaly-detector';
 import { buildDailyReport } from './daily-report';
 import { generateWeeklyInsight } from './weekly-insights';
+import { resolveCostAccount } from '@/lib/compliance/api-helpers';
+import { recordAiUsageBestEffort } from '@/lib/ai/usage-ledger';
+import type { AiUsageReport } from '@/lib/ai/usage';
 import type {
   DailyReportPayload,
   StaffPerformance,
@@ -197,6 +200,8 @@ export async function buildWeeklyReport(args: {
   propertyId: string;
   /** ISO date of the Sunday at the end of the Mon–Sun window. YYYY-MM-DD. */
   reportDate: string;
+  /** Absolute route deadline shared with the optional AI insight. */
+  deadlineAt?: number;
 }): Promise<WeeklyReportPayload | null> {
   const { propertyId, reportDate } = args;
   const property = await loadProperty(propertyId);
@@ -466,7 +471,23 @@ export async function buildWeeklyReport(args: {
 
   // AI insight. Soft-fail — null if Claude is unreachable / key missing.
   try {
-    payload.insightText = await generateWeeklyInsight(payload);
+    let usage: AiUsageReport | null = null;
+    payload.insightText = await generateWeeklyInsight(payload, {
+      deadlineAt: args.deadlineAt,
+      onUsage: (value) => { usage = value; },
+    });
+    // Cron context: attribute the spend to the property's owner/GM account
+    // (same convention as the compliance anomaly sweep).
+    const costAccountId = await resolveCostAccount(propertyId);
+    if (costAccountId) {
+      await recordAiUsageBestEffort({
+        usage,
+        userId: costAccountId,
+        propertyId,
+        kind: 'background',
+        feature: 'reports.weekly_insight',
+      });
+    }
   } catch (e) {
     captureException(e, { subsystem: 'weekly-report', failure_mode: 'insight_failed', propertyId });
   }

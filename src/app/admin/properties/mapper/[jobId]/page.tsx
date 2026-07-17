@@ -51,8 +51,9 @@ import {
   FONT_SANS, FONT_MONO, FONT_SERIF, Btn, Pill, Caps, SerifNum, type PillTone,
 } from '@/app/admin/_components/studio/kit';
 import {
-  SurfaceShell, DarkCard, dimWhite,
+  SurfaceShell, DarkCard, DarkScope, dimWhite,
 } from '@/app/admin/_components/studio/surface-kit';
+import { MonoDim } from '@/app/admin/_components/studio/ui-kit';
 import '@/app/admin/_components/studio/studio.css';
 import {
   deriveFeedRows, summarizeFeedRows, isTerminalJobStatus, prettifyTargetKey,
@@ -215,18 +216,6 @@ function GlyphIcon({ glyph }: { glyph: FeedRow['glyph'] }) {
 // Full-bleed dark admin canvas — mirrors StudioShell's `.admin-studio`
 // wrapper (same inline overrides) so this standalone page sits on the same
 // continuous dark ink as the studio surfaces.
-function DarkScope({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="admin-studio" style={{
-      background: 'var(--ink)', color: '#fff',
-      marginLeft: 'calc(50% - 50vw)', marginRight: 'calc(50% - 50vw)',
-      minHeight: 'calc(100vh - 64px)',
-    }}>
-      {children}
-    </div>
-  );
-}
-
 /**
  * The LEARNED COLUMNS the mapper recorded for one feed (field → selector),
  * fetched from GET /api/admin/mapper/feed-detail and shown UNDER the source
@@ -1165,14 +1154,14 @@ export default function LiveMappingPage() {
                         )}
                       </span>
                       {typeof verification?.threshold === 'number' && scoreStr && (
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                        <MonoDim>
                           bar {verification.threshold.toFixed(2)}
-                        </span>
+                        </MonoDim>
                       )}
                       {typeof verification?.consistentPasses === 'number' && typeof verification?.requiredPasses === 'number' && (
-                        <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                        <MonoDim>
                           · {verification.consistentPasses}/{verification.requiredPasses} consistent passes
-                        </span>
+                        </MonoDim>
                       )}
                     </div>
                   );
@@ -1262,9 +1251,9 @@ export default function LiveMappingPage() {
                       <Btn variant="terracotta" onClick={() => void discardMap()} disabled={saveState === 'saving' || saveState === 'discarding'}>
                         {saveState === 'discarding' ? 'Discarding…' : 'Discard & Cancel'}
                       </Btn>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                      <MonoDim>
                         Save makes this the hotel&rsquo;s live PMS recipe. Discard throws it away.
-                      </span>
+                      </MonoDim>
                     </div>
                   </>
                 )}
@@ -1540,9 +1529,9 @@ export default function LiveMappingPage() {
                       <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>
                         This is the robot&rsquo;s screen. Click exactly where it should click
                       </span>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                      <MonoDim>
                         (passwords and payment details are blacked out automatically)
-                      </span>
+                      </MonoDim>
                     </div>
                     <div style={{
                       position: 'relative', display: 'inline-block', width: '100%',
@@ -1661,9 +1650,9 @@ export default function LiveMappingPage() {
                       <span style={{ fontSize: 13, color: '#fff', fontWeight: 600 }}>
                         Click where the robot should click. It does it, then shows you the new screen.
                       </span>
-                      <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5) }}>
+                      <MonoDim>
                         (passwords and payment details are blacked out automatically)
-                      </span>
+                      </MonoDim>
                     </div>
                     {takeoverFrame ? (
                       <div style={{

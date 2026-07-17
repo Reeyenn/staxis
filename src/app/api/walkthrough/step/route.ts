@@ -23,7 +23,17 @@ import Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { MODELS, PRICING } from '@/lib/agent/llm';
+import { escapeTrustMarkerContent, modelTierForModelId, PRICING, type ModelTier } from '@/lib/agent/llm';
+import {
+  AiFeatureDisabledError,
+  executeAiPlan,
+  estimateAiCostUsd,
+  resolveAiExecutionPlan,
+  scaleAiReservationUsd,
+  type AiExecutionPlan,
+} from '@/lib/ai/runtime';
+import { applyLegacyModelOverrideToPlan } from '@/lib/ai/legacy-model-overrides';
+import { normalizeAnthropicUsage } from '@/lib/ai/usage';
 import {
   ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
   ANTHROPIC_MAX_RETRIES,
@@ -34,7 +44,6 @@ import {
   cancelCostReservation,
 } from '@/lib/agent/cost-controls';
 import { buildHotelSnapshot, formatSnapshotForPrompt } from '@/lib/agent/context';
-import { escapeTrustMarkerContent } from '@/lib/agent/llm';
 import type { SnapshotElement } from '@/components/walkthrough/snapshotDom';
 import type { AppRole } from '@/lib/roles';
 import { env } from '@/lib/env';
@@ -82,6 +91,8 @@ const MAX_TASK_CHARS = 200;
 const MAX_HISTORY_ENTRIES = 16;
 const MAX_OUTPUT_TOKENS = 512;
 const MAX_ELEMENTS_TO_CLAUDE = 60;
+const WALKTHROUGH_ROUTE_AI_DEADLINE_MS = 25_000;
+const WALKTHROUGH_FALLBACK_RESERVE_MS = 8_000;
 
 // Walkthrough is Sonnet, one call per step. Worst case input ~4K tokens,
 // output ~500 tokens.
@@ -290,6 +301,9 @@ const EMIT_STEP_TOOL = {
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
+  // One absolute budget starts with the route, not with each provider attempt.
+  // This leaves time under maxDuration for reservation reconciliation.
+  const routeAiDeadlineAt = Date.now() + WALKTHROUGH_ROUTE_AI_DEADLINE_MS;
 
   // ── Auth ──────────────────────────────────────────────────────────────
   const auth = await requireSession(req);
@@ -362,6 +376,44 @@ export async function POST(req: NextRequest): Promise<Response> {
       { ok: false, code: ownership.code, error: ownership.message, requestId },
       { status: ownership.status },
     );
+  }
+
+  // Resolve before consuming a walkthrough step or reserving money. Disabled
+  // features fail cleanly; expensive configured fallbacks expand the atomic
+  // hold while the current Sonnet default remains exactly $0.03. Keep the
+  // existing MODEL_OVERRIDE emergency rollback until an admin explicitly
+  // activates a saved configuration.
+  let walkthroughPlan: AiExecutionPlan;
+  let perStepEstimateUsd: number;
+  try {
+    const resolved = await resolveAiExecutionPlan(
+      'walkthrough.step_generation',
+      'anthropic',
+      { requirePricing: true },
+    );
+    walkthroughPlan = applyLegacyModelOverrideToPlan(resolved, 'sonnet');
+    perStepEstimateUsd = scaleAiReservationUsd(
+      [walkthroughPlan.primary, walkthroughPlan.fallback].filter(
+        (model): model is NonNullable<typeof model> => model !== null,
+      ),
+      {
+        usd: PER_STEP_ESTIMATE_USD,
+        inputUsdPerMillionTokens: PRICING.sonnet.input,
+        outputUsdPerMillionTokens: PRICING.sonnet.output,
+      },
+    );
+  } catch (error) {
+    // Never surface internal error strings to the walkthrough client; the two
+    // states it can act on are "turned off by admin" vs "temporarily down".
+    const disabled = error instanceof AiFeatureDisabledError;
+    return Response.json({
+      ok: false,
+      error: disabled
+        ? 'Guided walkthroughs are currently turned off.'
+        : 'Guided walkthroughs are temporarily unavailable.',
+      code: disabled ? 'feature_disabled' : 'ai_unavailable',
+      requestId,
+    }, { status: 503 });
   }
 
   // ── Server-side step gate (RC2 root-cause fix) ────────────────────────
@@ -446,7 +498,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   const reservation = await reserveCostBudget({
     userId: accountId,
     propertyId: body.propertyId,
-    estimatedUsd: PER_STEP_ESTIMATE_USD,
+    estimatedUsd: perStepEstimateUsd,
   });
   if (!reservation.ok) {
     log.warn('[walkthrough/step] cap_hit', { requestId, reason: reservation.reason, accountId });
@@ -481,30 +533,82 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   let action: StepAction | null = null;
   let actualUsd = 0;
-  let usageMeta: {
+  const usageState: { current: {
     inputTokens: number;
+    uncachedInputTokens: number;
     outputTokens: number;
     cachedInputTokens: number;
+    cacheCreationInputTokens: number;
+    cacheCreation5mInputTokens: number;
+    cacheCreation1hInputTokens: number;
     modelId: string;
-  } | null = null;
+    model: ModelTier;
+  } | null } = { current: null };
 
   try {
-    let response: Awaited<ReturnType<Anthropic['messages']['create']>>;
     try {
-      response = await client().messages.create(
-        {
-          model: MODELS.sonnet,
-          max_tokens: MAX_OUTPUT_TOKENS,
-          system: systemPrompt,
-          tools: [EMIT_STEP_TOOL],
-          tool_choice: { type: 'tool', name: 'emit_step' },
-          messages: [{ role: 'user', content: userContent }],
+      const configured = await executeAiPlan(
+        walkthroughPlan,
+        async (model, context) => {
+          const response = await client().messages.create(
+            {
+              model: model.modelId,
+              max_tokens: MAX_OUTPUT_TOKENS,
+              system: systemPrompt,
+              tools: [EMIT_STEP_TOOL],
+              tool_choice: { type: 'tool', name: 'emit_step' },
+              messages: [{ role: 'user', content: userContent }],
+            },
+            { signal: context.signal },
+          );
+
+          const usage = normalizeAnthropicUsage(response.usage);
+          actualUsd += estimateAiCostUsd(model.pricing!, {
+            uncachedInputTokens: usage.uncachedInputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadInputTokens: usage.cachedInputTokens,
+            cacheCreationInputTokens: usage.cacheCreationInputTokens,
+            cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens,
+            cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
+          });
+          usageState.current = {
+            inputTokens: (usageState.current?.inputTokens ?? 0) + usage.inputTokens,
+            uncachedInputTokens: (usageState.current?.uncachedInputTokens ?? 0) + usage.uncachedInputTokens,
+            outputTokens: (usageState.current?.outputTokens ?? 0) + usage.outputTokens,
+            cachedInputTokens: (usageState.current?.cachedInputTokens ?? 0) + usage.cachedInputTokens,
+            cacheCreationInputTokens: (usageState.current?.cacheCreationInputTokens ?? 0) + usage.cacheCreationInputTokens,
+            cacheCreation5mInputTokens: (usageState.current?.cacheCreation5mInputTokens ?? 0) + usage.cacheCreation5mInputTokens,
+            cacheCreation1hInputTokens: (usageState.current?.cacheCreation1hInputTokens ?? 0) + usage.cacheCreation1hInputTokens,
+            modelId: response.model,
+            model: modelTierForModelId(model.modelId, 'sonnet'),
+          };
+
+          // Tool/schema validation belongs to the attempt. A malformed 200
+          // response is eligible for the configured fallback and its spend is
+          // still retained above.
+          const toolUseBlocks = response.content.filter(
+            (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit_step',
+          );
+          if (toolUseBlocks.length === 0) {
+            throw new Error('AI returned no emit_step tool call');
+          }
+          if (toolUseBlocks.length > 1) {
+            log.warn('[walkthrough/step] multiple emit_step tool_use blocks; using first', {
+              requestId, count: toolUseBlocks.length,
+            });
+          }
+          const raw = toolUseBlocks[0].input as { type?: string; elementId?: string; narration?: string };
+          const parsed = validateAction(raw, body.snapshot.elements);
+          if (!parsed) throw new Error('AI returned an invalid walkthrough action');
+          return parsed;
         },
-        // RC1/CX4 fix: forward the request's AbortSignal into the SDK so
-        // client Stop actually cancels the Anthropic call (the agent layer
-        // does the same thing in /api/agent/command).
-        { signal: req.signal },
+        {
+          deadlineAt: routeAiDeadlineAt,
+          fallbackReserveMs: WALKTHROUGH_FALLBACK_RESERVE_MS,
+          abortSignal: req.signal,
+        },
       );
+      action = configured.value;
     } catch (err) {
       log.error('[walkthrough/step] Anthropic call failed', { requestId, err });
       return Response.json(
@@ -513,65 +617,19 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     }
 
-    // ── Parse the tool_use block ────────────────────────────────────────
-    const toolUseBlocks = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use' && b.name === 'emit_step',
-    );
-    if (toolUseBlocks.length === 0) {
-      log.error('[walkthrough/step] no emit_step tool_use in response', { requestId, content: response.content });
-      return Response.json(
-        { ok: false, error: 'AI returned an unexpected response. Try again.', requestId },
-        { status: 500 },
-      );
-    }
-    if (toolUseBlocks.length > 1) {
-      // tool_choice forces one tool call, but log it if Claude misbehaves
-      // so we notice. (Findings N10.)
-      log.warn('[walkthrough/step] multiple emit_step tool_use blocks; using first', {
-        requestId, count: toolUseBlocks.length,
-      });
-    }
-
-    const raw = toolUseBlocks[0].input as { type?: string; elementId?: string; narration?: string };
-    const parsed = validateAction(raw, body.snapshot.elements);
-    if (!parsed) {
-      log.warn('[walkthrough/step] AI returned invalid action shape', { requestId, raw });
-      return Response.json(
-        { ok: false, error: 'AI returned an invalid action. Try again.', requestId },
-        { status: 500 },
-      );
-    }
-    action = parsed;
-
-    // ── Compute actual cost for the reconcile ───────────────────────────
-    const usage = response.usage;
-    const inputTokens = usage.input_tokens;
-    const outputTokens = usage.output_tokens;
-    const cachedInputTokens =
-      ('cache_read_input_tokens' in usage ? (usage.cache_read_input_tokens as number) : 0) ?? 0;
-    const pricing = PRICING.sonnet;
-    actualUsd =
-      ((inputTokens - cachedInputTokens) / 1_000_000) * pricing.input +
-      (cachedInputTokens / 1_000_000) * pricing.cachedInput +
-      (outputTokens / 1_000_000) * pricing.output;
-    usageMeta = {
-      inputTokens,
-      outputTokens,
-      cachedInputTokens,
-      modelId: response.model,
-    };
   } finally {
     // RC1: reconcile to actual. If we made the Claude call and got usage,
     // finalize. Otherwise (early validation failure, parse failure, abort)
     // cancel the reservation to release the budget hold. This replaces the
     // old fire-and-forget `void ... .then()` insert (Codex CX3).
+    const usageMeta = usageState.current;
     if (usageMeta) {
       try {
         await finalizeCostReservation({
           reservationId: reservation.reservationId,
           conversationId: null, // walkthroughs have no agent_conversations row
           actualUsd: Math.round(actualUsd * 1_000_000) / 1_000_000,
-          model: 'sonnet',
+          model: usageMeta.model,
           modelId: usageMeta.modelId,
           tokensIn: usageMeta.inputTokens,
           tokensOut: usageMeta.outputTokens,

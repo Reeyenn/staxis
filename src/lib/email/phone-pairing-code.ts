@@ -1,4 +1,5 @@
 import { sendTransactionalEmail, type SendEmailResult } from './resend';
+import { escapeHtml } from '@/lib/format';
 
 export interface PhonePairingCodeEmailParams {
   to: string;
@@ -6,15 +7,6 @@ export interface PhonePairingCodeEmailParams {
   pairingId: string;
   generation: number;
   reservationId: string;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }
 
 export function renderPhonePairingCodeEmail(code: string): {

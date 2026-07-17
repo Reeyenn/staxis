@@ -12,6 +12,7 @@ import { log } from '@/lib/log';
 import { todayStr } from '@/lib/utils';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { translateMessagesForReader } from './translate';
+import type { AiCallOptions } from '@/lib/ai/usage';
 import type {
   ChannelKey, CommsLang, CommsDept, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
   AckStatusDTO, CampaignStatusDTO, MemberDTO, SearchHitDTO, LogEntryDTO, LogReplyDTO,
@@ -649,7 +650,7 @@ export async function getMessages(
   conversationId: string,
   readerStaffId: string,
   readerLang: CommsLang,
-  opts: { limit?: number; withReceipts?: boolean } = {},
+  opts: { limit?: number; withReceipts?: boolean; ai?: AiCallOptions } = {},
 ): Promise<MessageDTO[]> {
   const limit = Math.min(opts.limit ?? 80, 200);
   const { data } = await supabaseAdmin
@@ -726,6 +727,7 @@ export async function getMessages(
   const translated = await translateMessagesForReader(
     rows.map((r) => ({ id: r.id, body: r.body, source_lang: r.source_lang })),
     readerLang,
+    opts.ai,
   );
 
   // Resolve sender names.
@@ -1475,11 +1477,11 @@ async function replyRollupsFor(
  */
 async function hydrateMessages(
   pid: string, rows: MessageRow[], readerStaffId: string, readerLang: CommsLang,
-  opts: { withReplies?: boolean } = {},
+  opts: { withReplies?: boolean; ai?: AiCallOptions } = {},
 ): Promise<MessageDTO[]> {
   if (rows.length === 0) return [];
   const translated = await translateMessagesForReader(
-    rows.map((r) => ({ id: r.id, body: r.body, source_lang: r.source_lang })), readerLang,
+    rows.map((r) => ({ id: r.id, body: r.body, source_lang: r.source_lang })), readerLang, opts.ai,
   );
   const nameMap = await staffNameMap(pid, rows.map((r) => r.sender_staff_id).filter((x): x is string => !!x));
   const urlByPath = new Map<string, string>();
@@ -1545,6 +1547,7 @@ export async function getMessageScope(
 /** The parent message + its threaded replies, translated for the reader. */
 export async function getThreadReplies(
   pid: string, conversationId: string, parentId: string, readerStaffId: string, readerLang: CommsLang,
+  opts: { ai?: AiCallOptions } = {},
 ): Promise<{ parent: MessageDTO | null; replies: MessageDTO[] }> {
   const { data: pData } = await supabaseAdmin
     .from('comms_messages')
@@ -1562,8 +1565,8 @@ export async function getThreadReplies(
     .order('created_at', { ascending: true })
     .limit(200);
   const [parentArr, replies] = await Promise.all([
-    hydrateMessages(pid, [pData as unknown as MessageRow], readerStaffId, readerLang, { withReplies: true }),
-    hydrateMessages(pid, (rData ?? []) as unknown as MessageRow[], readerStaffId, readerLang),
+    hydrateMessages(pid, [pData as unknown as MessageRow], readerStaffId, readerLang, { withReplies: true, ai: opts.ai }),
+    hydrateMessages(pid, (rData ?? []) as unknown as MessageRow[], readerStaffId, readerLang, { ai: opts.ai }),
   ]);
   return { parent: parentArr[0] ?? null, replies };
 }
@@ -1588,6 +1591,7 @@ export async function setPinned(
 /** The pinned board for a conversation (newest pin first). */
 export async function listPinned(
   pid: string, conversationId: string, readerStaffId: string, readerLang: CommsLang,
+  opts: { ai?: AiCallOptions } = {},
 ): Promise<MessageDTO[]> {
   const { data } = await supabaseAdmin
     .from('comms_messages')
@@ -1597,7 +1601,7 @@ export async function listPinned(
     .not('pinned_at', 'is', null)
     .order('pinned_at', { ascending: false })
     .limit(50);
-  return hydrateMessages(pid, (data ?? []) as unknown as MessageRow[], readerStaffId, readerLang);
+  return hydrateMessages(pid, (data ?? []) as unknown as MessageRow[], readerStaffId, readerLang, { ai: opts.ai });
 }
 
 /**
@@ -1704,6 +1708,7 @@ function escapeLike(s: string): string {
 export interface ThreadSummary { conversationId: string; conversationTitle: string; dept: CommsDept; parent: MessageDTO }
 export async function listThreads(
   pid: string, staffId: string, readerLang: CommsLang, ctx: { isManager: boolean; dept: string | null },
+  opts: { ai?: AiCallOptions } = {},
 ): Promise<ThreadSummary[]> {
   const convos = await listConversationsForStaff(pid, staffId, { ...ctx, floorMode: false });
   const convoIds = convos.map((c) => c.id);
@@ -1725,7 +1730,13 @@ export async function listThreads(
     .in('id', parentIds)
     .order('created_at', { ascending: false })
     .limit(100);
-  const hydrated = await hydrateMessages(pid, (parentRows ?? []) as unknown as MessageRow[], staffId, readerLang, { withReplies: true });
+  const hydrated = await hydrateMessages(
+    pid,
+    (parentRows ?? []) as unknown as MessageRow[],
+    staffId,
+    readerLang,
+    { withReplies: true, ai: opts.ai },
+  );
   return hydrated
     .map((m) => ({
       conversationId: m.conversationId,
