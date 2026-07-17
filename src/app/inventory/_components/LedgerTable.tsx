@@ -41,6 +41,9 @@ interface LedgerTableProps {
   bucket: StockBucket;
   query: string;
   canViewFinancials: boolean;
+  /** Custom-tab id → name. A row in a custom tab shows its tab's name instead
+   *  of the built-in HK/MX/FB glyph (the hotel may have hidden those tabs). */
+  customNameById?: ReadonlyMap<string, string>;
   /** Open the Add/Edit sheet for a row (click anywhere outside the stepper). */
   onEdit?: (item: DisplayItem) => void;
   /** Persist a single-item quick count (debounced save lives in the shell). */
@@ -95,6 +98,7 @@ export function LedgerTable({
   bucket,
   query,
   canViewFinancials,
+  customNameById,
   onEdit,
   onQuickCount,
   quickCountLockedIds,
@@ -276,6 +280,7 @@ export function LedgerTable({
                 lang={lang}
                 tx={tx}
                 canViewFinancials={canViewFinancials}
+                customNameById={customNameById}
                 onEdit={onEdit}
                 onQuickCount={onQuickCount}
                 quickCountLocked={quickCountLockedIds?.has(d.id) ?? false}
@@ -331,6 +336,7 @@ function LedgerRow({
   lang,
   tx,
   canViewFinancials,
+  customNameById,
   onEdit,
   onQuickCount,
   quickCountLocked,
@@ -340,6 +346,7 @@ function LedgerRow({
   lang: Lang;
   tx: InvStrings;
   canViewFinancials: boolean;
+  customNameById?: ReadonlyMap<string, string>;
   onEdit?: (item: DisplayItem) => void;
   onQuickCount: (itemId: string, nextValue: number) => void;
   quickCountLocked: boolean;
@@ -394,7 +401,7 @@ function LedgerRow({
               color: T.faint,
             }}
           >
-            {catGlyph[d.cat]} · {d.vendor || '—'}
+            {(d.customCategoryId && customNameById?.get(d.customCategoryId)) || catGlyph[d.cat]} · {d.vendor || '—'}
           </span>
         </div>
       </div>

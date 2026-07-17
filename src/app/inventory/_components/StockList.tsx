@@ -26,6 +26,8 @@ interface StockListProps {
   items: DisplayItem[];
   bucket: StockBucket;
   query: string;
+  /** Custom-tab id → name, passed through to each BoardCard's sub-label. */
+  customNameById?: ReadonlyMap<string, string>;
   onEdit?: (item: DisplayItem) => void;
   onCount?: () => void;
   onAdd?: () => void;
@@ -40,7 +42,7 @@ function columnsFor(lang: Lang): Array<{ status: StockStatus; label: string; sub
   ];
 }
 
-export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }: StockListProps) {
+export function StockList({ lang, items, bucket, query, customNameById, onEdit, onCount, onAdd }: StockListProps) {
   const tx = t(lang);
   const COLUMNS = columnsFor(lang);
   // Never-counted items are pulled OUT of the triage columns (where a 0-stock
@@ -106,7 +108,7 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                   {colItems.map((it) => (
-                    <BoardCard key={it.id} lang={lang} it={it} onEdit={onEdit} />
+                    <BoardCard key={it.id} lang={lang} it={it} customNameById={customNameById} onEdit={onEdit} />
                   ))}
                   {colItems.length === 0 && (
                     col.status === 'critical' ? (
@@ -138,6 +140,7 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }
           lang={lang}
           items={uncounted}
           dayOne={dayOne}
+          customNameById={customNameById}
           onEdit={onEdit}
           onCount={onCount}
         />
@@ -149,11 +152,12 @@ export function StockList({ lang, items, bucket, query, onEdit, onCount, onAdd }
 // Neutral "not counted yet" group — brand-new items with no physical count.
 // Rendered grey (never red), excluded from the triage columns above.
 function NotCountedSection({
-  lang, items, dayOne, onEdit, onCount,
+  lang, items, dayOne, customNameById, onEdit, onCount,
 }: {
   lang: Lang;
   items: DisplayItem[];
   dayOne: boolean;
+  customNameById?: ReadonlyMap<string, string>;
   onEdit?: (item: DisplayItem) => void;
   onCount?: () => void;
 }) {
@@ -192,7 +196,7 @@ function NotCountedSection({
       )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 9 }}>
         {items.map((it) => (
-          <BoardCard key={it.id} lang={lang} it={it} onEdit={onEdit} />
+          <BoardCard key={it.id} lang={lang} it={it} customNameById={customNameById} onEdit={onEdit} />
         ))}
       </div>
     </div>

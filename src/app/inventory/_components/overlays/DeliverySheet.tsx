@@ -34,13 +34,18 @@ import {
   type FrozenDeliveryAttempt,
 } from './scan-commit';
 import type { DisplayItem } from '../types';
-import { catLabelFor, type Lang } from '../inv-i18n';
+import { catLabelFor, t as invT, type Lang } from '../inv-i18n';
+import type { InventoryCustomCategory, InventoryTabLayout } from '@/types';
 
 interface DeliverySheetProps {
   lang: Lang;
   open: boolean;
   onClose: () => void;
   display: DisplayItem[];
+  /** Hotel-defined custom tabs + layout — the item dropdown groups by the
+   *  hotel's VISIBLE tabs, not by built-in categories it may have hidden. */
+  customCategories?: InventoryCustomCategory[];
+  tabLayout?: InventoryTabLayout;
 }
 
 // Delivery rows and stock increments commit in one database transaction. A
@@ -65,6 +70,7 @@ function dsStrings(lang: Lang) {
       retryPending: 'The result could not be confirmed. This exact delivery is locked until you retry it successfully.',
       retryBtn: 'Retry exact delivery',
       note: 'Delivery — added manually',
+      otherGroup: 'Other',
     },
     es: {
       title: 'Agregar entrega',
@@ -82,6 +88,7 @@ function dsStrings(lang: Lang) {
       retryPending: 'No se pudo confirmar el resultado. Esta entrega exacta está bloqueada hasta que la reintentes correctamente.',
       retryBtn: 'Reintentar la misma entrega',
       note: 'Entrega — agregada a mano',
+      otherGroup: 'Otros',
     },
   }[lang];
 }
@@ -91,7 +98,7 @@ type Row = { key: number; itemId: string; qty: string };
 
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetProps) {
+export function DeliverySheet({ lang, open, onClose, display, customCategories = [], tabLayout }: DeliverySheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ds = dsStrings(lang);
@@ -262,8 +269,32 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
         {rows.map((r) => {
           // A row's dropdown offers items not picked in OTHER rows (+ its own).
-          const availableFor = (cat: InvCat) =>
-            display.filter((d) => d.cat === cat && (d.id === r.itemId || !selectedIds.has(d.id)));
+          // Dropdown groups mirror the hotel's VISIBLE tabs when any built-in
+          // tab is hidden (custom tabs by name, hidden-bucket leftovers under
+          // "Other"); default hotels keep the built-in category groups.
+          const hiddenTabs = new Set(tabLayout?.hidden ?? []);
+          const groupDefs: Array<{ key: string; label: string; match: (d: DisplayItem) => boolean }> =
+            hiddenTabs.size > 0 && customCategories.length > 0
+              ? [
+                  ...(!hiddenTabs.has('general')
+                    ? [{ key: 'general', label: invT(lang).generalInventory, match: (d: DisplayItem) => !d.customCategoryId && d.cat !== 'breakfast' }]
+                    : []),
+                  ...(!hiddenTabs.has('breakfast')
+                    ? [{ key: 'breakfast', label: invT(lang).breakfastInventory, match: (d: DisplayItem) => !d.customCategoryId && d.cat === 'breakfast' }]
+                    : []),
+                  ...customCategories.map((cc) => ({
+                    key: cc.id, label: cc.name, match: (d: DisplayItem) => d.customCategoryId === cc.id,
+                  })),
+                  {
+                    key: 'other',
+                    label: ds.otherGroup,
+                    match: (d: DisplayItem) => !d.customCategoryId
+                      && (d.cat === 'breakfast' ? hiddenTabs.has('breakfast') : hiddenTabs.has('general')),
+                  },
+                ]
+              : CAT_ORDER.map((c) => ({ key: c as string, label: catLabelFor(lang, c), match: (d: DisplayItem) => d.cat === c }));
+          const availableFor = (g: { match: (d: DisplayItem) => boolean }) =>
+            display.filter((d) => g.match(d) && (d.id === r.itemId || !selectedIds.has(d.id)));
           return (
             <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <select
@@ -279,11 +310,11 @@ export function DeliverySheet({ lang, open, onClose, display }: DeliverySheetPro
                 }}
               >
                 <option value="">{ds.selectItem}</option>
-                {CAT_ORDER.filter((c) => display.some((d) => d.cat === c)).map((cat) => {
-                  const opts = availableFor(cat);
+                {groupDefs.map((g) => {
+                  const opts = availableFor(g);
                   if (opts.length === 0) return null;
                   return (
-                    <optgroup key={cat} label={catLabelFor(lang, cat)}>
+                    <optgroup key={g.key} label={g.label}>
                       {opts.map((d) => (
                         <option key={d.id} value={d.id}>{d.name}</option>
                       ))}

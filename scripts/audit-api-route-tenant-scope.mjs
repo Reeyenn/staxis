@@ -103,6 +103,11 @@ const KNOWN_GUARDS = [
   // canViewFinancials (owner/GM/admin) role check + userHasPropertyAccess.
   // Every /api/financials/* route calls this before any supabaseAdmin access.
   'requireFinanceAccess',
+  // Ordering gate (src/lib/ordering/api-gate.ts) — wraps requireSession +
+  // manage_inventory_orders capability (owner/GM/admin) + property scope.
+  // Every /api/inventory/{orders,vendors,catalog,property-config}/* route
+  // calls this before any supabaseAdmin access.
+  'requireOrderingAccess',
 ];
 
 // Inline capability-check patterns. If a file contains any of these

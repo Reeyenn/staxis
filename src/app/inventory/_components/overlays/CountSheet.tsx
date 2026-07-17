@@ -387,9 +387,17 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
       : scope === 'all'
         ? 'all'
         : 'general';
+    // Counting a custom tab files the new item into that tab. Counting
+    // "Everything" on a hotel that removed both built-in tabs must ALSO pick
+    // a custom tab (the first one) — the base-category default would file the
+    // item into hidden Housekeeping, leaving it under no named tab.
+    const bothHidden =
+      (tabLayout?.hidden ?? []).includes('general') && (tabLayout?.hidden ?? []).includes('breakfast');
     const customCategoryId = typeof scope === 'string' && scope.startsWith('custom:')
       ? scope.slice(7)
-      : null;
+      : scope === 'all' && bothHidden && customCategories.length > 0
+        ? customCategories[0].id
+        : null;
     const attempt = createFrozenInlineAddAttempt({
       propertyId: activePropertyId,
       requestId: generateId(),
@@ -765,22 +773,27 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
   // items) — Housekeeping/Maintenance dividers would name sections that
   // hotel's tabs don't have. Everyone else keeps the built-in category
   // dividers; either way dividers only appear when there's more than one group.
-  const bothBuiltinsHidden =
-    (tabLayout?.hidden ?? []).includes('general') && (tabLayout?.hidden ?? []).includes('breakfast');
+  // Any hidden built-in switches the Everything count to grouping BY THE
+  // HOTEL'S VISIBLE TABS (same list as the scope chooser) + an "Other" tail
+  // for items stranded in hidden buckets — a hotel that removed Breakfast
+  // must not see a "Food & Beverage" divider, and one that removed both
+  // built-ins should see its own tab names. Hotels with all built-ins visible
+  // keep the finer category dividers.
+  const anyBuiltinHidden = (tabLayout?.hidden ?? []).length > 0;
   const groups: Array<{ key: string; label: string; items: DisplayItem[] }> =
-    scope === 'all' && bothBuiltinsHidden && customCategories.length > 0
-      ? [
-          ...customCategories.map((cc) => ({
-            key: `custom:${cc.id}`,
-            label: cc.name,
-            items: scopedDisplay.filter((d) => d.customCategoryId === cc.id),
-          })),
-          {
-            key: 'other',
-            label: cs.otherGroup,
-            items: scopedDisplay.filter((d) => !d.customCategoryId),
-          },
-        ].filter((g) => g.items.length > 0)
+    scope === 'all' && anyBuiltinHidden && scopeOptions.length > 0
+      ? (() => {
+          const tabGroups = scopeOptions.map((o) => ({
+            key: String(o.bucket),
+            label: o.label,
+            items: scopedDisplay.filter((d) => inBucket(d, o.bucket)),
+          }));
+          const claimed = new Set(tabGroups.flatMap((g) => g.items.map((d) => d.id)));
+          return [
+            ...tabGroups,
+            { key: 'other', label: cs.otherGroup, items: scopedDisplay.filter((d) => !claimed.has(d.id)) },
+          ].filter((g) => g.items.length > 0);
+        })()
       : (['housekeeping', 'maintenance', 'breakfast'] as InvCat[])
           .filter((c) => scopedDisplay.some((d) => d.cat === c))
           .map((c) => ({

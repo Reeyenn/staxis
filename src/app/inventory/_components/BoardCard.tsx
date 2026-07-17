@@ -12,6 +12,9 @@ import { t, type Lang } from './inv-i18n';
 interface BoardCardProps {
   lang: Lang;
   it: DisplayItem;
+  /** Custom-tab id → name — a custom-tab item shows its tab's name instead of
+   *  the built-in HK/MX/FB glyph (the hotel may have hidden those tabs). */
+  customNameById?: ReadonlyMap<string, string>;
   /** Open the item's edit sheet — the SAME pop-up a Ledger row opens. */
   onEdit?: (item: DisplayItem) => void;
 }
@@ -32,7 +35,7 @@ function daysLeftLabel(it: DisplayItem, lang: Lang): string {
 // wrapper keeps `data-flip-id` so useFlipList in StockList still glides the
 // card between columns when a recount moves it; the inner card keeps the hover
 // paper-lift (.inv-card).
-export function BoardCard({ lang, it, onEdit }: BoardCardProps) {
+export function BoardCard({ lang, it, customNameById, onEdit }: BoardCardProps) {
   const uncounted = it.uncounted;
   const c = uncounted ? T.dim : statusText[it.status];
   const open = () => onEdit?.(it);
@@ -74,7 +77,7 @@ export function BoardCard({ lang, it, onEdit }: BoardCardProps) {
                 textOverflow: 'ellipsis',
               }}
             >
-              {catGlyph[it.cat]} · {it.vendor || '—'}
+              {(it.customCategoryId && customNameById?.get(it.customCategoryId)) || catGlyph[it.cat]} · {it.vendor || '—'}
             </div>
           </div>
         </div>

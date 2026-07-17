@@ -5,7 +5,8 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import type { OrderStatus, PurchaseOrder, SpendRollup } from '@/lib/ordering/types';
 
-import { T, fonts, statusColor } from '../tokens';
+import { T, fonts, statusColor, type InvCat } from '../tokens';
+import { catLabelFor } from '../inv-i18n';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import { banner } from './form-kit';
@@ -75,6 +76,7 @@ function opStrings(lang: 'en' | 'es') {
       byProperty: 'By property',
       byVendor: 'By vendor',
       byCategory: 'By category',
+      uncategorized: 'Uncategorized',
       noSpend: 'No spend recorded in this window.',
       spendLoading: 'Loading spend…',
       last30: '30 days',
@@ -110,6 +112,7 @@ function opStrings(lang: 'en' | 'es') {
       byProperty: 'Por propiedad',
       byVendor: 'Por proveedor',
       byCategory: 'Por categoría',
+      uncategorized: 'Sin categoría',
       noSpend: 'Sin gastos registrados en este período.',
       spendLoading: 'Cargando gasto…',
       last30: '30 días',
@@ -336,7 +339,7 @@ export function OrdersPanel({ open, onClose, canManage, onChanged }: OrdersPanel
         ))}
 
         {view === 'spend' && (
-          <SpendView rollup={rollup} loading={rollupLoading} days={rollupDays} setDays={setRollupDays} tt={tt} />
+          <SpendView rollup={rollup} loading={rollupLoading} days={rollupDays} setDays={setRollupDays} tt={tt} lang={L} />
         )}
       </div>
     </Overlay>
@@ -349,12 +352,14 @@ function SpendView({
   days,
   setDays,
   tt,
+  lang,
 }: {
   rollup: SpendRollup | null;
   loading: boolean;
   days: number;
   setDays: (d: number) => void;
   tt: Record<string, string>;
+  lang: 'en' | 'es';
 }) {
   const ranges: Array<{ d: number; label: string }> = [
     { d: 30, label: tt.last30 },
@@ -397,7 +402,14 @@ function SpendView({
           <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '16px 18px' }}>
             {breakdown(tt.byProperty, rollup.byProperty)}
             {breakdown(tt.byVendor, rollup.byVendor)}
-            {breakdown(tt.byCategory, rollup.byCategory)}
+            {/* Server rows carry raw enum keys ('housekeeping') — translate for
+                display; the catch-all bucket gets a localized label too. */}
+            {breakdown(tt.byCategory, rollup.byCategory.map((r) => ({
+              ...r,
+              label: (['housekeeping', 'maintenance', 'breakfast'] as const).includes(r.key as InvCat)
+                ? catLabelFor(lang, r.key as InvCat)
+                : r.label === 'Uncategorized' ? tt.uncategorized : r.label,
+            })))}
           </div>
         </>
       )}

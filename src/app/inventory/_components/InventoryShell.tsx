@@ -453,6 +453,33 @@ export function InventoryShell() {
         : 0,
     [activeTab, bucket, effectiveDisplay],
   );
+  // Defaults for the Add-item sheet, honoring the hotel's visible tabs: an
+  // add from All must never file the item into a HIDDEN built-in bucket
+  // (it would then appear under no named tab). General hidden → first custom
+  // tab; no customs but Breakfast visible → breakfast; last resort HK.
+  const generalTabVisible = !tabLayout.hidden.includes('general');
+  const breakfastTabVisible = !tabLayout.hidden.includes('breakfast');
+  const addDefaultCustomId = bucket.startsWith('custom:')
+    ? bucket.slice(7)
+    : !generalTabVisible && customCategories.length > 0
+      ? customCategories[0].id
+      : null;
+  const addDefaultCategory: 'housekeeping' | 'breakfast' =
+    bucket === 'breakfast' && breakfastTabVisible
+      ? 'breakfast'
+      : !generalTabVisible && customCategories.length === 0 && breakfastTabVisible
+        ? 'breakfast'
+        : 'housekeeping';
+
+  // Custom-tab id → name, for row sub-labels (an item living in a custom tab
+  // shows its tab's name, not a built-in HK/MX/FB glyph the hotel may have
+  // hidden entirely).
+  const customNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of customCategories) m.set(c.id, c.name);
+    return m;
+  }, [customCategories]);
+
   // Keep the last shown label/value while the stat animates out, so the text
   // doesn't blank mid-collapse when the user taps All.
   const lastTabStatRef = React.useRef<{ label: string; value: number } | null>(null);
@@ -921,13 +948,20 @@ export function InventoryShell() {
   }, [uid, activePropertyId, refreshData]);
 
   // ── Tab layout (0308) — reorder / remove / restore built-ins ────────────
-  // Persist optimistically: update local state now, write to the property in the
-  // background. updateProperty only touches inventory_tab_layout (dropUndefined),
-  // so it never collides with the budget-mode write.
+  // Persist optimistically: update local state now, write in the background.
+  // The write goes through /api/inventory/property-config (service role +
+  // management gate) — NOT the anon client: `properties` RLS only lets admins
+  // UPDATE, so a GM's direct write was a silent no-op and their tab setup
+  // reverted on reload.
   const persistLayout = useCallback((next: InventoryTabLayout) => {
     setTabLayout(next);
     if (uid && activePropertyId) {
-      void updateProperty(uid, activePropertyId, { inventoryTabLayout: next })
+      void fetchWithAuth('/api/inventory/property-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pid: activePropertyId, tabLayout: next }),
+      })
+        .then((res) => { if (!res.ok) throw new Error(`save failed (${res.status})`); })
         .catch((err) => console.error('[inventory] save tab layout failed', err));
     }
   }, [uid, activePropertyId]);
@@ -1193,6 +1227,7 @@ export function InventoryShell() {
               bucket={bucket}
               query={query}
               canViewFinancials={canViewFinancials}
+              customNameById={customNameById}
               onEdit={onEditItem}
               onQuickCount={onQuickCount}
               quickCountLockedIds={quickCountLockedIds}
@@ -1205,6 +1240,7 @@ export function InventoryShell() {
               items={effectiveDisplay}
               bucket={bucket}
               query={query}
+              customNameById={customNameById}
               onEdit={onEditItem}
               onCount={() => setOverlay('count')}
               onAdd={() => { setEditItem(null); setOverlay('add'); }}
@@ -1296,6 +1332,8 @@ export function InventoryShell() {
         open={overlay === 'scan' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         display={display}
+        customCategories={customCategories}
+        tabLayout={tabLayout}
       />
 
       <AddItemSheet
@@ -1304,19 +1342,9 @@ export function InventoryShell() {
         onClose={() => { closeOverlay(); }}
         item={editItem}
         canViewFinancials={canViewFinancials}
-        defaultCategory={bucket === 'breakfast' && !tabLayout.hidden.includes('breakfast') ? 'breakfast' : 'housekeeping'}
+        defaultCategory={addDefaultCategory}
         customCategories={customCategories}
-        // Adding from a custom tab lands in that tab. Adding from All on a
-        // hotel that removed both built-in tabs preselects the first custom
-        // tab — otherwise the new item would default into hidden Housekeeping
-        // and appear under no named tab at all.
-        defaultCustomCategoryId={
-          bucket.startsWith('custom:')
-            ? bucket.slice(7)
-            : tabLayout.hidden.includes('general') && tabLayout.hidden.includes('breakfast') && customCategories.length > 0
-              ? customCategories[0].id
-              : null
-        }
+        defaultCustomCategoryId={addDefaultCustomId}
         hiddenBuiltins={tabLayout.hidden}
       />
     </div>

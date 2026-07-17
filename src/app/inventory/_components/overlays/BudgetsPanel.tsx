@@ -27,10 +27,10 @@ import {
   upsertInventoryBudgetSection,
   deleteInventoryBudgetSection,
   sectionBudgetKey,
-  updateProperty,
   type MonthSpendDetail,
   type MonthlySpend,
 } from '@/lib/db';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import type { InventoryBudget, InventoryBudgetMode, InventoryBudgetSection } from '@/types';
 
 import { T, fonts, type InvCat } from '../tokens';
@@ -96,6 +96,7 @@ function bpStrings(lang: Lang) {
       whichItems: 'Which items count toward it',
       searchItems: 'Search items…',
       nothingMatches: 'Nothing matches.',
+      pickerEmpty: 'No inventory items yet.',
       createSection: 'Create section',
       saveSection: 'Save section',
       items: (n: number) => `${n} item${n === 1 ? '' : 's'}`,
@@ -143,6 +144,7 @@ function bpStrings(lang: Lang) {
       whichItems: 'Qué artículos cuentan para ella',
       searchItems: 'Buscar artículos…',
       nothingMatches: 'Nada coincide.',
+      pickerEmpty: 'Aún no hay artículos de inventario.',
       createSection: 'Crear sección',
       saveSection: 'Guardar sección',
       items: (n: number) => `${n} artículo${n === 1 ? '' : 's'}`,
@@ -468,7 +470,16 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
         }
       }
       if (mode !== savedMode) {
-        writes.push(updateProperty(user.uid, activePropertyId, { inventoryBudgetMode: mode }));
+        // Server route, not the anon client: `properties` RLS only lets admins
+        // UPDATE, so a GM's mode switch silently didn't persist (reverted on
+        // reload). The route re-checks the same management capability.
+        writes.push(
+          fetchWithAuth('/api/inventory/property-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pid: activePropertyId, budgetMode: mode }),
+          }).then((res) => { if (!res.ok) throw new Error(`mode save failed (${res.status})`); }),
+        );
       }
       await Promise.all(writes);
       onChanged(mode);
@@ -623,7 +634,9 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                 <input value={formQuery} onChange={(e) => setFormQuery(e.target.value)} placeholder={bp.searchItems} style={{ ...textInput, height: 32, fontSize: 12.5, margin: '6px 0' }} />
                 <div style={{ maxHeight: 180, overflowY: 'auto', border: `1px solid ${T.ruleSoft}`, borderRadius: 10, padding: 6 }}>
                   {pickerItems.length === 0 && (
-                    <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, padding: '8px 6px' }}>{bp.nothingMatches}</div>
+                    <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, padding: '8px 6px' }}>
+                      {formQuery.trim() ? bp.nothingMatches : bp.pickerEmpty}
+                    </div>
                   )}
                   {pickerItems.map((d) => {
                     const on = formItems.has(d.id);

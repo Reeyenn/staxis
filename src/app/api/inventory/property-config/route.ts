@@ -1,0 +1,84 @@
+// POST /api/inventory/property-config — persist the hotel's inventory tab
+// layout and/or budget mode. Management-only (requireOrderingAccess — the same
+// capability that shows the tab editor and Budgets panel).
+//
+// Exists because these two values live on the `properties` row, whose RLS only
+// lets admins UPDATE. A general manager editing tabs through the anon client
+// got a silent no-op (PostgREST returns 200 with no rows), the UI showed the
+// change, and a reload brought the old tabs back. Writes go through
+// supabaseAdmin here instead; failures now surface as real errors.
+
+import type { NextRequest } from 'next/server';
+import { ok, err } from '@/lib/api-response';
+import { requireOrderingAccess } from '@/lib/ordering/api-gate';
+import { requireSectionEnabled } from '@/lib/sections/server';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { errToString } from '@/lib/utils';
+import { log } from '@/lib/log';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+interface Body {
+  pid?: string;
+  tabLayout?: { order?: unknown; hidden?: unknown };
+  budgetMode?: unknown;
+}
+
+const HIDEABLE_BUILTINS = ['general', 'breakfast'];
+
+export async function POST(req: NextRequest): Promise<Response> {
+  let body: Body;
+  try {
+    body = (await req.json()) as Body;
+  } catch {
+    return err('invalid json', { requestId: 'pre-auth', status: 400, code: 'validation_failed' });
+  }
+
+  const gate = await requireOrderingAccess(req, body.pid);
+  if (!gate.ok) return gate.response;
+  const { pid, requestId } = gate;
+
+  const sectionGate = await requireSectionEnabled(req, pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
+
+  const update: Record<string, unknown> = {};
+
+  if (body.tabLayout !== undefined) {
+    const t = body.tabLayout;
+    const order = Array.isArray(t?.order)
+      ? t.order.filter((k): k is string => typeof k === 'string' && k.length > 0 && k.length <= 64).slice(0, 40)
+      : null;
+    const hidden = Array.isArray(t?.hidden)
+      ? t.hidden.filter((k): k is string => typeof k === 'string' && HIDEABLE_BUILTINS.includes(k))
+      : null;
+    if (order === null || hidden === null) {
+      return err('tabLayout must have order[] and hidden[]', {
+        requestId, status: 400, code: 'validation_failed',
+      });
+    }
+    update.inventory_tab_layout = { order, hidden };
+  }
+
+  if (body.budgetMode !== undefined) {
+    if (body.budgetMode !== 'total' && body.budgetMode !== 'sections') {
+      return err('budgetMode must be total or sections', {
+        requestId, status: 400, code: 'validation_failed',
+      });
+    }
+    update.inventory_budget_mode = body.budgetMode;
+  }
+
+  if (Object.keys(update).length === 0) {
+    return err('nothing to update', { requestId, status: 400, code: 'validation_failed' });
+  }
+
+  const { error } = await supabaseAdmin.from('properties').update(update).eq('id', pid);
+  if (error) {
+    // Log detail server-side; don't leak table/constraint names to the client.
+    log.error('[inventory/property-config] update failed', { err: errToString(error) });
+    return err('save_failed', { requestId, status: 500, code: 'internal_error' });
+  }
+
+  return ok({ saved: true }, { requestId });
+}

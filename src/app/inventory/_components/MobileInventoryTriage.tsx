@@ -449,7 +449,9 @@ function EmptyCatalog({ lang, onAdd }: { lang: Lang; onAdd?: () => void }) {
   const tx = t(lang);
   return (
     <div className={styles.emptyCatalog} role="status">
-      <span className={styles.emptyIcon} aria-hidden="true">HK</span>
+      {/* Neutral mark — a hardcoded "HK" here read as a housekeeping tag on
+          hotels that don't even show the built-in categories. */}
+      <span className={styles.emptyIcon} aria-hidden="true">▢</span>
       <strong>{tx.noItemsYet}</strong>
       <span>{tx.noItemsBody}</span>
       {onAdd ? (
