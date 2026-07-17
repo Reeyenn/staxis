@@ -357,8 +357,16 @@ export function AIControlCenter() {
   const loadAll = useCallback(async (
     quiet = false,
     preserveDirtyDrafts = false,
-    resetFeatureKey?: AiFeatureKey,
+    resetFeatureKeys?: AiFeatureKey | readonly AiFeatureKey[],
   ) => {
+    // Keys whose drafts must follow the fresh live config even when dirty —
+    // a just-completed action (single activate or a category-wide bulk) is the
+    // admin's latest word, so a stale hand-flipped switch must not survive it.
+    const resetSet = new Set<AiFeatureKey>(
+      resetFeatureKeys === undefined
+        ? []
+        : Array.isArray(resetFeatureKeys) ? resetFeatureKeys : [resetFeatureKeys as AiFeatureKey],
+    );
     const sequence = ++loadSequenceRef.current;
     if (!quiet) {
       setPanelLoading({ features: true, models: true, history: true });
@@ -397,7 +405,7 @@ export function AIControlCenter() {
             && hasAiConfigBaseChanged(previous!.activeConfig, feature.activeConfig);
           if (baseChanged) changedBaseKeys.add(feature.key);
           const keepExisting = preserveDirtyDrafts
-            && feature.key !== resetFeatureKey
+            && !resetSet.has(feature.key)
             && existing !== undefined
             && previous !== undefined
             && isAiFeatureDraftDirty(previous.activeConfig, existing);
@@ -686,52 +694,44 @@ export function AIControlCenter() {
    * feature under an advisory lock, and a slow trickle of admin writes is
    * kinder than a burst.
    */
-  const bulkToggleGroup = useCallback(async (groupName: string, groupFeatures: AiFeatureSummary[], enable: boolean) => {
-    if (groupBulkBusyRef.current || rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
-    const targets = groupFeatures.filter((feature) =>
-      feature.editable
-      && feature.switchable
-      && feature.availability !== 'unavailable'
-      && isHostedProvider(feature.activeConfig.primary.provider)
-      && feature.activeConfig.enabled !== enable);
+  const runGroupCycle = useCallback(async (
+    groupName: string,
+    groupFeatures: AiFeatureSummary[],
+    plan: {
+      /** Eligible features + the exact config each should get. */
+      targets: Array<{ feature: AiFeatureSummary; body: CreateAiConfigRequest }>;
+      /** Features considered but not applicable (with a short why). */
+      skipped: string[];
+      reason: string;
+      successNoun: string;
+    },
+  ) => {
+    const { targets, skipped } = plan;
     if (targets.length === 0) {
-      toast('success', `${groupName}: everything here is already ${enable ? 'on' : 'off'}.`);
+      toast('success', `${groupName}: nothing to change${skipped.length > 0 ? ` (${skipped.length} not applicable)` : ''}.`);
       return;
     }
     groupBulkBusyRef.current = groupName;
     setGroupBulkBusy(groupName);
     const failures: string[] = [];
     try {
-      for (const feature of targets) {
-        setFeatureAction(feature.key, enable ? 'validating' : 'activating');
+      for (const { feature, body } of targets) {
+        setFeatureAction(feature.key, 'validating');
         try {
-          const reason = `Turned ${enable ? 'on' : 'off'} with the whole ${groupName} category`;
-          const primary = feature.activeConfig.primary;
-          const fallback = feature.activeConfig.fallback;
-          const createBody: CreateAiConfigRequest = {
-            featureKey: feature.key,
-            enabled: enable,
-            primary: { provider: primary.provider as AiHostedProvider, modelId: primary.modelId },
-            fallback: fallback && isHostedProvider(fallback.provider)
-              ? { provider: fallback.provider, modelId: fallback.modelId }
-              : null,
-            parameters: feature.activeConfig.parameters,
-            parentId: feature.activeConfig.versionId,
-            changeReason: reason,
-          };
           const created = await apiRequest<CreateAiConfigResponse>('/configs', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(createBody),
+            body: JSON.stringify(body),
           });
           const validated = await apiRequest<ValidateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/validate`, {
             method: 'POST',
           });
           const validationError = validationFailed(validated);
           if (validationError) throw new Error(validationError);
+          setFeatureAction(feature.key, 'activating');
           const activateBody: ActivateAiConfigRequest = {
             expectedActiveId: feature.activeConfig.versionId,
-            reason,
+            reason: plan.reason,
           };
           await apiRequest<ActivateAiConfigResponse>(`/configs/${encodeURIComponent(created.config.id)}/activate`, {
             method: 'POST',
@@ -747,14 +747,123 @@ export function AIControlCenter() {
     } finally {
       groupBulkBusyRef.current = null;
       setGroupBulkBusy(null);
-      await loadAll(true, true);
+      // The bulk action is the admin's latest word for this whole category:
+      // reset every card in the group to the fresh live config so a stale
+      // hand-flipped switch can't keep showing the old state.
+      await loadAll(true, true, groupFeatures.map((feature) => feature.key));
     }
+    const applied = targets.length - failures.length;
     if (failures.length === 0) {
-      toast('success', `${groupName}: turned ${enable ? 'on' : 'off'} ${targets.length} feature${targets.length === 1 ? '' : 's'}.`);
+      toast('success', `${groupName}: ${plan.successNoun} for ${applied} feature${applied === 1 ? '' : 's'}${skipped.length > 0 ? ` (${skipped.length} skipped: ${skipped[0]})` : ''}.`);
     } else {
-      toast('error', `${groupName}: ${failures.length} of ${targets.length} didn't switch — ${failures[0]}`);
+      toast('error', `${groupName}: ${failures.length} of ${targets.length} didn't apply — ${failures[0]}`);
     }
   }, [loadAll, setFeatureAction, toast]);
+
+  const bulkToggleGroup = useCallback(async (groupName: string, groupFeatures: AiFeatureSummary[], enable: boolean) => {
+    if (groupBulkBusyRef.current || rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
+    const reason = `Turned ${enable ? 'on' : 'off'} with the whole ${groupName} category`;
+    const targets = groupFeatures
+      .filter((feature) =>
+        feature.editable
+        && feature.switchable
+        && feature.availability !== 'unavailable'
+        && isHostedProvider(feature.activeConfig.primary.provider)
+        && feature.activeConfig.enabled !== enable)
+      .map((feature) => ({
+        feature,
+        body: {
+          featureKey: feature.key,
+          enabled: enable,
+          primary: { provider: feature.activeConfig.primary.provider as AiHostedProvider, modelId: feature.activeConfig.primary.modelId },
+          fallback: feature.activeConfig.fallback && isHostedProvider(feature.activeConfig.fallback.provider)
+            ? { provider: feature.activeConfig.fallback.provider, modelId: feature.activeConfig.fallback.modelId }
+            : null,
+          parameters: feature.activeConfig.parameters,
+          parentId: feature.activeConfig.versionId,
+          changeReason: reason,
+        } satisfies CreateAiConfigRequest,
+      }));
+    await runGroupCycle(groupName, groupFeatures, {
+      targets,
+      skipped: [],
+      reason,
+      successNoun: `turned ${enable ? 'on' : 'off'}`,
+    });
+  }, [runGroupCycle]);
+
+  /**
+   * Category-wide model change. Applies the chosen primary (and optional
+   * fallback) to every feature in the group that can actually run it —
+   * matching runtime provider, model switching allowed, and the model
+   * covering the feature's required capabilities (e.g. a text-only model is
+   * skipped for photo-reading features). Each feature keeps its current
+   * on/off state and goes through the same test-then-activate cycle.
+   */
+  const bulkChangeGroupModels = useCallback(async (
+    groupName: string,
+    groupFeatures: AiFeatureSummary[],
+    primaryKey: string,
+    fallbackKey: string,
+  ) => {
+    if (groupBulkBusyRef.current || rollingBackIdRef.current || Object.values(featureActionsRef.current).some(Boolean)) return;
+    const primaryEntry = models.find((model) => modelRefKey(model) === primaryKey);
+    if (!primaryEntry || !primaryEntry.available) {
+      toast('error', 'Pick an available primary model first.');
+      return;
+    }
+    const fallbackEntry = fallbackKey !== NO_FALLBACK
+      ? models.find((model) => modelRefKey(model) === fallbackKey)
+      : undefined;
+    const reason = `Set ${primaryEntry.displayName}${fallbackEntry ? ` (fallback ${fallbackEntry.displayName})` : ''} for the whole ${groupName} category`;
+    const targets: Array<{ feature: AiFeatureSummary; body: CreateAiConfigRequest }> = [];
+    const skipped: string[] = [];
+    for (const feature of groupFeatures) {
+      if (!feature.editable || feature.availability === 'unavailable') {
+        skipped.push(`${feature.label} is not configurable`);
+        continue;
+      }
+      if (!feature.modelSwitchable) {
+        skipped.push(`${feature.label} has a fixed model`);
+        continue;
+      }
+      if (!isRuntimeCompatibleAiModel(feature, primaryEntry)) {
+        skipped.push(`${feature.label} can't run ${primaryEntry.displayName}`);
+        continue;
+      }
+      const fallbackOk = fallbackEntry
+        && feature.fallbackAllowed
+        && isRuntimeCompatibleAiModel(feature, fallbackEntry)
+        && modelRefKey(fallbackEntry) !== modelRefKey(primaryEntry);
+      const samePrimary = feature.activeConfig.primary.provider === primaryEntry.provider
+        && feature.activeConfig.primary.modelId === primaryEntry.modelId;
+      const sameFallback = fallbackOk
+        ? feature.activeConfig.fallback?.provider === fallbackEntry.provider
+          && feature.activeConfig.fallback?.modelId === fallbackEntry.modelId
+        : feature.activeConfig.fallback === null;
+      if (samePrimary && sameFallback) continue; // already exactly this setup
+      targets.push({
+        feature,
+        body: {
+          featureKey: feature.key,
+          enabled: feature.activeConfig.enabled,
+          primary: { provider: primaryEntry.provider, modelId: primaryEntry.modelId },
+          fallback: fallbackOk
+            ? { provider: fallbackEntry.provider, modelId: fallbackEntry.modelId }
+            : null,
+          parameters: feature.activeConfig.parameters,
+          parentId: feature.activeConfig.versionId,
+          changeReason: reason,
+        },
+      });
+    }
+    await runGroupCycle(groupName, groupFeatures, {
+      targets,
+      skipped,
+      reason,
+      successNoun: `switched to ${primaryEntry.displayName}`,
+    });
+  }, [models, runGroupCycle, toast]);
 
   const refreshModels = useCallback(async () => {
     if (catalogRefreshInFlightRef.current) return;
@@ -939,6 +1048,7 @@ export function AIControlCenter() {
                 onActivate={activateTested}
                 groupBulkBusy={groupBulkBusy}
                 onGroupToggle={bulkToggleGroup}
+                onGroupModels={bulkChangeGroupModels}
               />
             ) : tab === 'models' ? (
               <ModelsPanel
@@ -1007,6 +1117,7 @@ function FeaturesPanel({
   onActivate,
   groupBulkBusy,
   onGroupToggle,
+  onGroupModels,
 }: {
   features: AiFeatureSummary[];
   models: AiModelCatalogEntry[];
@@ -1024,8 +1135,10 @@ function FeaturesPanel({
   onActivate: (feature: AiFeatureSummary) => void;
   groupBulkBusy: string | null;
   onGroupToggle: (groupName: string, groupFeatures: AiFeatureSummary[], enable: boolean) => void;
+  onGroupModels: (groupName: string, groupFeatures: AiFeatureSummary[], primaryKey: string, fallbackKey: string) => void;
 }) {
   const groups = useMemo(() => groupAiFeatures(features, query), [features, query]);
+  const [modelEditorGroup, setModelEditorGroup] = useState<string | null>(null);
   return (
     <section
       id="ai-control-panel-features"
@@ -1079,11 +1192,29 @@ function FeaturesPanel({
                         >
                           All off
                         </button>
+                        <button
+                          type="button"
+                          className={styles.textButton}
+                          disabled={Boolean(groupBulkBusy) || rollbackInFlight}
+                          onClick={() => setModelEditorGroup((current) => (current === group.group ? null : group.group))}
+                        >
+                          {modelEditorGroup === group.group ? 'Close' : 'Change models…'}
+                        </button>
                       </>
                     )}
                   </span>
                 )}
               </div>
+              {modelEditorGroup === group.group && groupBulkBusy !== group.group && (
+                <GroupModelEditor
+                  models={models}
+                  disabled={Boolean(groupBulkBusy) || rollbackInFlight}
+                  onApply={(primaryKey, fallbackKey) => {
+                    setModelEditorGroup(null);
+                    onGroupModels(group.group, group.features, primaryKey, fallbackKey);
+                  }}
+                />
+              )}
               <div className={styles.featureList}>
                 {group.features.map((feature) => (
                   <FeatureEditor
@@ -1351,11 +1482,74 @@ function ActivationRecap({
   );
 }
 
+/**
+ * Inline category-wide model picker. The chosen models are applied to every
+ * feature in the group that can run them (others are skipped and reported);
+ * each application goes through the normal test-then-activate cycle.
+ */
+function GroupModelEditor({
+  models,
+  disabled,
+  onApply,
+}: {
+  models: AiModelCatalogEntry[];
+  disabled: boolean;
+  onApply: (primaryKey: string, fallbackKey: string) => void;
+}) {
+  const available = useMemo(() => models.filter((model) => model.available), [models]);
+  const [primaryKey, setPrimaryKey] = useState('');
+  const [fallbackKey, setFallbackKey] = useState(NO_FALLBACK);
+  return (
+    <div className={styles.groupModelEditor}>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>New main model for this whole category</span>
+        <ModelSelect
+          value={primaryKey}
+          models={available}
+          preserve={[]}
+          allowNone={false}
+          placeholder="Choose a model…"
+          ariaLabel="Category-wide primary model"
+          disabled={disabled}
+          onChange={(value) => {
+            setPrimaryKey(value);
+            if (value === fallbackKey) setFallbackKey(NO_FALLBACK);
+          }}
+        />
+      </label>
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Backup model · optional</span>
+        <ModelSelect
+          value={fallbackKey}
+          models={available.filter((model) => modelRefKey(model) !== primaryKey)}
+          preserve={[]}
+          allowNone
+          ariaLabel="Category-wide fallback model"
+          disabled={disabled}
+          onChange={setFallbackKey}
+        />
+      </label>
+      <div className={styles.featureActions}>
+        <button
+          type="button"
+          className={styles.primaryButton}
+          disabled={disabled || !primaryKey}
+          onClick={() => onApply(primaryKey, fallbackKey)}
+        >
+          <CheckCircle2 size={14} />
+          Test & apply to whole category
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ModelSelect({
   value,
   models,
   preserve,
   allowNone = false,
+  placeholder,
   ariaLabel,
   disabled,
   onChange,
@@ -1364,6 +1558,7 @@ function ModelSelect({
   models: AiModelCatalogEntry[];
   preserve: AiModelRef[];
   allowNone?: boolean;
+  placeholder?: string;
   ariaLabel: string;
   disabled: boolean;
   onChange: (value: string) => void;
@@ -1408,6 +1603,7 @@ function ModelSelect({
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}
     >
+      {placeholder !== undefined && <option value="" disabled>{placeholder}</option>}
       {allowNone && <option value={NO_FALLBACK}>No fallback</option>}
       {grouped.map((group) => (
         <optgroup key={group.provider} label={providerLabel(group.provider)}>
