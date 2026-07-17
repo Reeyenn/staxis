@@ -42,13 +42,14 @@ test('agent tool loops enforce the shared deadline only at safe boundaries', () 
 });
 
 test('vision request routes forward caller cancellation into provider execution', () => {
+  // financials/* and front-desk/* vision routes delegate the actual Vision
+  // call to a shared runner (scan-vision-route / vision-route), so the
+  // cancellation forwarding is asserted on the runner, not the route file.
   for (const route of [
     'src/app/api/inventory/photo-count/route.ts',
     'src/app/api/inventory/scan-invoice/route.ts',
-    'src/app/api/financials/scan-invoice/route.ts',
-    'src/app/api/financials/scan-quote/route.ts',
-    'src/app/api/front-desk/lost-and-found/describe-photo/route.ts',
-    'src/app/api/front-desk/packages/scan-label/route.ts',
+    'src/lib/financials/scan-vision-route.ts',
+    'src/lib/front-desk/vision-route.ts',
     'src/app/api/compliance/vision-reading/route.ts',
     'src/app/api/engineer/vision-reading/route.ts',
   ]) {
