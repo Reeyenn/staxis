@@ -11,13 +11,15 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { checkAndIncrementRateLimit, hashToRateLimitKey, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { generateAiModelRecommendations } from '@/lib/ai/recommendations';
+import { generateAiModelRecommendations, listAiRecommendationReports } from '@/lib/ai/recommendations';
 import { aiControlError, NO_STORE_HEADERS } from '../_shared';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
-const EXECUTION_BUDGET_MS = 50_000;
+// Thinking models (e.g. Sonnet 5) can spend 60s+ reasoning over the whole
+// catalog. Admin click-and-wait action — buy time rather than truncate.
+export const maxDuration = 120;
+const EXECUTION_BUDGET_MS = 110_000;
 
 export async function POST(req: NextRequest): Promise<Response> {
   const deadlineAt = Date.now() + EXECUTION_BUDGET_MS;
@@ -34,8 +36,25 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   try {
-    const data = await generateAiModelRecommendations({ deadlineAt, abortSignal: req.signal });
-    return ok(data, { requestId, headers: NO_STORE_HEADERS });
+    const report = await generateAiModelRecommendations({
+      deadlineAt,
+      abortSignal: req.signal,
+      actor: { accountId: auth.accountId, email: auth.email },
+    });
+    return ok({ report }, { requestId, headers: NO_STORE_HEADERS });
+  } catch (error) {
+    return aiControlError(error, requestId);
+  }
+}
+
+/** Saved advice history, newest first. */
+export async function GET(req: NextRequest): Promise<Response> {
+  const requestId = getOrMintRequestId(req);
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return auth.response;
+  try {
+    const reports = await listAiRecommendationReports();
+    return ok({ reports }, { requestId, headers: NO_STORE_HEADERS });
   } catch (error) {
     return aiControlError(error, requestId);
   }

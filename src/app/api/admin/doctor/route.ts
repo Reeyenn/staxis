@@ -904,6 +904,7 @@ const RLS_REQUIRED_TABLES = [
   // Fleet-wide AI Control Center (service-role only).
   'ai_model_catalog',
   'ai_feature_config_versions',
+  'ai_recommendation_reports',
 
   // High-sensitivity backend tables — service-role only.
   // RLS off here would be catastrophic (plain-text PMS passwords, phone
@@ -1039,6 +1040,8 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   // 0313 — global AI provider catalog + immutable feature config history.
   'ai_model_catalog',
   'ai_feature_config_versions',
+  // 0316 — saved recommendation reports.
+  'ai_recommendation_reports',
 ]);
 
 async function checkSupabaseRlsPolicyCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {

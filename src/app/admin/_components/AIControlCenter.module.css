@@ -432,6 +432,42 @@
 .selectCompact:disabled { opacity: .5; cursor: default; }
 .selectCompact option { color: #181611; }
 
+.reportHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  flex-wrap: wrap;
+}
+
+.reportHeaderDate {
+  color: #fff;
+  font-family: var(--aic-sans);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.reportHeaderMeta { color: var(--aic-dim); font-size: 11px; }
+
+.reportHeaderChevron { margin-left: auto; color: var(--aic-dim); font-size: 12px; }
+
+.reportBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, .075);
+}
+
+.reportItem { min-width: 0; }
+
 .groupBulkBusy {
   display: inline-flex;
   align-items: center;

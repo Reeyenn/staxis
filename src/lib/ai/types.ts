@@ -239,12 +239,23 @@ export interface AiRecommendation {
   confidence: 'high' | 'medium' | 'low';
 }
 
-export interface AiRecommendationsResponse {
-  recommendations: AiRecommendation[];
+/** One saved "Get recommendations" run. */
+export interface AiRecommendationReport {
+  /** Row id; null only if persisting the fresh run failed (still shown once). */
+  id: string | null;
   generatedAt: string;
+  modelUsed: string;
   /** 30-day fleet AI spend that grounded the advice (USD). */
   spend30dUsd: number;
-  modelUsed: string;
+  recommendations: AiRecommendation[];
+}
+
+export interface AiRecommendationsResponse {
+  report: AiRecommendationReport;
+}
+
+export interface AiRecommendationReportsResponse {
+  reports: AiRecommendationReport[];
 }
 
 export interface AiConfigsResponse {
