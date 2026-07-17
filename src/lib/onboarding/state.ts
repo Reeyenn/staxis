@@ -144,6 +144,30 @@ export function isOnboardingInProgress(
 }
 
 /**
+ * Should the login funnel auto-open the setup wizard for this person on this
+ * hotel? True only when ALL hold:
+ *   - the caller is the hotel's owner or manager (line staff and admins never
+ *     see the wizard — a housekeeper who joins a half-set-up hotel just lands
+ *     in the app),
+ *   - the hotel's onboarding is genuinely mid-flight (isOnboardingInProgress),
+ *   - the wizard has never been auto-opened for this hotel before
+ *     (`promptShownAt` null). The resume route stamps it on first entry, so
+ *     the 2nd/3rd/… login lands in the app instead of re-opening the wizard.
+ * Single source of truth for the three funnel gates (property-selector, home,
+ * dashboard) and the server-side resume route.
+ */
+export function shouldResumeOnboarding(
+  role: string | null | undefined,
+  completedAt: string | null | undefined,
+  state: OnboardingState | null | undefined,
+  promptShownAt: string | null | undefined,
+): boolean {
+  if (role !== 'owner' && role !== 'general_manager') return false;
+  if (promptShownAt) return false;
+  return isOnboardingInProgress(completedAt, state);
+}
+
+/**
  * sessionStorage property id, set by the login-funnel gate (Home /
  * property-selector / dashboard) right before it sends a mid-onboarding owner to
  * /api/onboard/resume. It is a ONE-SHOT loop-breaker: if the resume route

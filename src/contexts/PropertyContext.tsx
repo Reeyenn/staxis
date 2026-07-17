@@ -113,13 +113,17 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     [properties, activePropertyId]
   );
 
-  // Is the active property still mid-onboarding? A primitive (not the property
-  // object) so the capabilities effect below can depend on it WITHOUT re-firing
-  // on every unrelated property-data update — but still re-evaluate once the
-  // properties list hydrates after a hard reload (where activePropertyId loads
-  // from localStorage before the list arrives).
+  // Is the active property still in the PRISTINE wizard phase — mid-onboarding
+  // AND the wizard has never been left for the app (onboardingPromptShownAt
+  // null)? Only then do we skip the capability-override fetch below. Once the
+  // owner has dropped into the app on a half-set-up hotel (stamped), it's a
+  // normal operable hotel — staff may have joined and the Access tab's
+  // restrictions must apply, so overrides MUST be fetched. A primitive (not the
+  // property object) so the capabilities effect depends on it without re-firing
+  // on unrelated property-data updates.
   const activeOnboardingInProgress = activeProperty
     ? isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState)
+      && !activeProperty.onboardingPromptShownAt
     : false;
 
   const setActivePropertyId = (id: string) => {

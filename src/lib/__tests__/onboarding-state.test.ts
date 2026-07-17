@@ -16,6 +16,7 @@ import {
   deriveCurrentStep,
   isValidPartialState,
   isOnboardingInProgress,
+  shouldResumeOnboarding,
   resolveOnboardingDisplayStep,
   type OnboardingState,
 } from '@/lib/onboarding/state';
@@ -310,5 +311,39 @@ describe('isOnboardingInProgress — login-funnel gate', () => {
       isOnboardingInProgress('2026-06-15T20:00:00Z', { step: 8, accountCreatedAt: 'x' }),
       false,
     );
+  });
+});
+
+describe('shouldResumeOnboarding — who the funnel opens the wizard for', () => {
+  const midState: OnboardingState = { step: 4, accountCreatedAt: '2026-06-15T19:28:43Z' };
+
+  test('owner mid-onboarding, never shown → true (first-time setup)', () => {
+    assert.equal(shouldResumeOnboarding('owner', null, midState, null), true);
+  });
+
+  test('general_manager counts as a manager → true', () => {
+    assert.equal(shouldResumeOnboarding('general_manager', null, midState, null), true);
+  });
+
+  test('line staff never see the wizard (the housekeeper-approval bug) → false', () => {
+    assert.equal(shouldResumeOnboarding('housekeeping', null, midState, null), false);
+    assert.equal(shouldResumeOnboarding('front_desk', null, midState, null), false);
+    assert.equal(shouldResumeOnboarding('maintenance', null, midState, null), false);
+  });
+
+  test('admins are never routed into a hotel wizard → false', () => {
+    assert.equal(shouldResumeOnboarding('admin', null, midState, null), false);
+  });
+
+  test('already shown once → false forever after (2nd/3rd/… login lands in app)', () => {
+    assert.equal(shouldResumeOnboarding('owner', null, midState, '2026-07-17T10:00:00Z'), false);
+  });
+
+  test('completed onboarding → false even if never stamped', () => {
+    assert.equal(shouldResumeOnboarding('owner', '2026-07-17T09:00:00Z', { step: 8, accountCreatedAt: 'x' }, null), false);
+  });
+
+  test('missing/undefined role → false', () => {
+    assert.equal(shouldResumeOnboarding(undefined, null, midState, null), false);
   });
 });

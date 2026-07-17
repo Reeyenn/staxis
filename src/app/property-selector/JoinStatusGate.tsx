@@ -7,8 +7,8 @@
 // wait for a manager to approve them.
 //
 // State comes from GET /api/auth/my-join-status (session-scoped, service-role
-// backed — join_requests is deny-all RLS). We poll it every 30s and also on a
-// manual "Check again" tap:
+// backed — join_requests is deny-all RLS). We poll it every 3s WHILE pending
+// (so approval feels live) and also on a manual "Check again" tap:
 //   - pending  → "You're almost in" + hotel name + refresh + sign out
 //   - denied   → declined message + sign out
 //   - approved → the manager granted access; refresh the session (re-mint
@@ -83,13 +83,18 @@ export default function JoinStatusGate({
     }
   }, [enterApp]);
 
-  // Initial load + 30s auto-refetch. The interval keeps running while pending
-  // so an approval that lands while the tab is open pulls the user straight in.
+  // Initial load once on mount.
+  useEffect(() => { void load(); }, [load]);
+
+  // Auto-refetch every 3s, but ONLY while pending — the moment a manager taps
+  // Approve, the waiting employee is pulled into the app within a few seconds
+  // without touching "Check again". Terminal states (denied / fallback) stop
+  // polling so a phone left on this screen isn't hammering the endpoint.
   useEffect(() => {
-    void load();
-    const id = window.setInterval(() => { void load(); }, 30_000);
+    if (state !== 'pending') return;
+    const id = window.setInterval(() => { void load(); }, 3_000);
     return () => window.clearInterval(id);
-  }, [load]);
+  }, [state, load]);
 
   const handleCheckAgain = useCallback(async () => {
     if (checking) return;

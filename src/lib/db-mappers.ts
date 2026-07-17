@@ -243,6 +243,7 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     onboardingState: (r.onboarding_state && typeof r.onboarding_state === 'object' && !Array.isArray(r.onboarding_state))
       ? (r.onboarding_state as OnboardingState)
       : null,
+    onboardingPromptShownAt: parseStringField(r.onboarding_prompt_shown_at) ?? null,
     // Demo/showcase flag (properties.is_test). The owner dashboard shows the
     // full synthetic chart/KPI showcase only on a demo property; real hotels
     // see an honest "learning from your PMS" state until real data exists.

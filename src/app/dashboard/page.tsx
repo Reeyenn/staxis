@@ -29,7 +29,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
-import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
+import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { C, SANS, MONO, LABEL, RING, STATUS_EN, STATUS_ES, type RingKey } from './_components/palette';
 import { attentionText } from './_components/attention-text';
@@ -167,9 +167,8 @@ export default function DashboardPage() {
     // are never gated (they manage hotels, not own the signup). One-shot via
     // RESUME_GUARD_KEY so a failed resume degrades here instead of looping.
     if (
-      user.role !== 'admin' &&
       activeProperty &&
-      isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState) &&
+      shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt) &&
       typeof window !== 'undefined' &&
       sessionStorage.getItem(RESUME_GUARD_KEY) !== activeProperty.id
     ) {

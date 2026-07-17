@@ -21,7 +21,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
-import { isOnboardingInProgress, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
+import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { HomeHubView, type HubTile, type TileTone } from '@/components/concourse/HomeHubView';
 import { AskHero } from '@/components/concourse/AskHero';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -58,8 +58,7 @@ function HomeHub() {
   React.useEffect(() => {
     if (propertyLoading || !user || !activeProperty) return;
     if (
-      user.role !== 'admin' &&
-      isOnboardingInProgress(activeProperty.onboardingCompletedAt, activeProperty.onboardingState) &&
+      shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt) &&
       typeof window !== 'undefined' &&
       sessionStorage.getItem(RESUME_GUARD_KEY) !== activeProperty.id
     ) {
