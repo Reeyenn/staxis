@@ -43,19 +43,18 @@ function cmStrings(lang: Lang) {
       spentSub: 'deliveries received',
       thrownOut: 'Thrown out',
       thrownOutSub: 'damaged, stained, lost',
-      valueStart: 'Value at start',
-      valueStartSub: 'shelf value on the 1st',
-      valueEnd: 'Value at end',
-      valueEndSub: 'shelf value at month end',
-      valueNowSub: 'shelf value right now',
+      shelfValue: 'Shelf value',
+      shelfValueSub: 'what your inventory is worth',
       countsDone: 'Counts done',
       countsDoneSub: 'times someone counted',
-      soFarThisYear: 'so far this year',
+      soFar: 'so far',
       more: 'more',
       less: 'less',
       same: 'same',
       noData: 'No data',
       noDataHint: 'Staxis wasn’t tracking inventory here yet.',
+      noRecord: 'No record',
+      noRecordHint: 'Staxis only knows today’s shelf value — it wasn’t saving month-end values back then.',
       loadFailed: 'Couldn’t load one of the periods — try again.',
     },
     es: {
@@ -71,19 +70,18 @@ function cmStrings(lang: Lang) {
       spentSub: 'entregas recibidas',
       thrownOut: 'Desechado',
       thrownOutSub: 'dañado, manchado, perdido',
-      valueStart: 'Valor al inicio',
-      valueStartSub: 'valor el día 1',
-      valueEnd: 'Valor al final',
-      valueEndSub: 'valor al cierre del mes',
-      valueNowSub: 'valor en este momento',
+      shelfValue: 'Valor del inventario',
+      shelfValueSub: 'lo que vale su inventario',
       countsDone: 'Conteos hechos',
       countsDoneSub: 'veces que se contó',
-      soFarThisYear: 'en lo que va del año',
+      soFar: 'hasta hoy',
       more: 'más',
       less: 'menos',
       same: 'igual',
       noData: 'Sin datos',
       noDataHint: 'Staxis aún no llevaba el inventario aquí.',
+      noRecord: 'Sin registro',
+      noRecordHint: 'Staxis solo conoce el valor de hoy — antes no guardaba el valor al cierre de cada mes.',
       loadFailed: 'No se pudo cargar uno de los períodos — intente de nuevo.',
     },
   }[lang];
@@ -223,8 +221,12 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
         return json.ok ? json.data : null;
       } catch { return null; }
     };
+    // Shelf value is only KNOWN for the current month (the accounting
+    // aggregate prices current stock — for past months that same formula
+    // yields a today-anchored estimate, not a historical fact, so we refuse
+    // to show it; see the noRecord cells).
     const fetchValues = async (p: Period): Promise<ValueTotals | null> => {
-      if (!p.monthKey) return null;
+      if (!p.monthKey || !p.isCurrent) return null;
       try {
         const res = await fetchWithAuth(
           `/api/inventory/accounting-summary?propertyId=${activePropertyId}&month=${p.monthKey}&tz=${encodeURIComponent(tz)}`,
@@ -244,7 +246,12 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
     ]).then(([fa, fb, va, vb]) => {
       if (cancelled) return;
       setFlowA(fa); setFlowB(fb); setValA(va); setValB(vb);
-      setFailed(fa === null || fb === null || (mode === 'months' && (va === null || vb === null)));
+      // A missing summary only counts as a failure for the current-month side
+      // — past months intentionally skip the shelf-value fetch (noRecord).
+      setFailed(
+        fa === null || fb === null ||
+        (mode === 'months' && ((!!periodA.isCurrent && va === null) || (!!periodB.isCurrent && vb === null))),
+      );
       setLoading(false);
     });
     return () => { cancelled = true; };
@@ -253,11 +260,15 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
 
   // "No data": the period ends before the hotel's first inventory activity
   // (or there's no activity at all). $0 after that point is a real zero.
+  // Compare INSTANTS, not date strings — firstActivityAt is a UTC timestamp
+  // and p.to is a local calendar date; an evening first-delivery near the
+  // day boundary would flip a string comparison the wrong way.
   const noDataFor = (p: Period, flow: FlowTotals | null): boolean => {
     if (!flow) return false; // fetch failure is handled separately
     if (!flow.firstActivityAt) return true;
-    const first = flow.firstActivityAt.slice(0, 10); // YYYY-MM-DD compare
-    return p.to < first;
+    const [y, m, d] = p.to.split('-').map(Number);
+    const periodEndExclusive = new Date(y, m - 1, d + 1); // local midnight after the period
+    return periodEndExclusive.getTime() <= new Date(flow.firstActivityAt).getTime();
   };
   const noDataA = noDataFor(periodA, flowA);
   const noDataB = noDataFor(periodB, flowB);
@@ -268,24 +279,27 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
     a: number | null;
     b: number | null;
     money: boolean;
+    /** Per-side "we don't have a record of this" (shelf value of past months). */
+    noRecordA?: boolean;
+    noRecordB?: boolean;
   }
   const rows: RowSpec[] = [
-    { label: cm.spent, sub: mode === 'years' && periodA.isCurrent ? `${cm.spentSub} · ${cm.soFarThisYear}` : cm.spentSub, a: flowA?.receiptsValue ?? null, b: flowB?.receiptsValue ?? null, money: true },
+    { label: cm.spent, sub: cm.spentSub, a: flowA?.receiptsValue ?? null, b: flowB?.receiptsValue ?? null, money: true },
     { label: cm.thrownOut, sub: cm.thrownOutSub, a: flowA?.discardsValue ?? null, b: flowB?.discardsValue ?? null, money: true },
     ...(mode === 'months'
-      ? [
-          { label: cm.valueStart, sub: cm.valueStartSub, a: valA?.openingValue ?? null, b: valB?.openingValue ?? null, money: true },
-          {
-            label: cm.valueEnd,
-            sub: periodA.isCurrent ? cm.valueNowSub : cm.valueEndSub,
-            a: valA?.closingValue ?? null,
-            b: valB?.closingValue ?? null,
-            money: true,
-          },
-        ]
+      ? [{
+          label: cm.shelfValue,
+          sub: cm.shelfValueSub,
+          a: valA?.closingValue ?? null,
+          b: valB?.closingValue ?? null,
+          money: true,
+          noRecordA: !periodA.isCurrent,
+          noRecordB: !periodB.isCurrent,
+        }]
       : []),
     { label: cm.countsDone, sub: cm.countsDoneSub, a: flowA?.countSessions ?? null, b: flowB?.countSessions ?? null, money: false },
   ];
+  const anyNoRecord = mode === 'months' && (!periodA.isCurrent || !periodB.isCurrent);
 
   const selectStyle: React.CSSProperties = {
     height: 38,
@@ -385,8 +399,14 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
         <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr 1fr', gap: 12, padding: '12px 0 8px' }}>
             <span />
-            <Caps size={9} style={{ textAlign: 'right' }}>{periodA.label}</Caps>
-            <Caps size={9} style={{ textAlign: 'right' }}>{periodB.label}</Caps>
+            {/* "· so far" marks a period that isn't over — comparing a partial
+                month/year against a complete one should say so. */}
+            <Caps size={9} style={{ textAlign: 'right' }}>
+              {periodA.label}{periodA.isCurrent ? ` · ${cm.soFar}` : ''}
+            </Caps>
+            <Caps size={9} style={{ textAlign: 'right' }}>
+              {periodB.label}{periodB.isCurrent ? ` · ${cm.soFar}` : ''}
+            </Caps>
             <span />
           </div>
           {rows.map((r, i) => (
@@ -401,8 +421,13 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
             />
           ))}
           {(noDataA || noDataB) && !loading && (
-            <div style={{ padding: '10px 0 14px', fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
+            <div style={{ padding: '10px 0 4px', fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
               {cm.noData}: {cm.noDataHint}
+            </div>
+          )}
+          {anyNoRecord && !loading && (
+            <div style={{ padding: '10px 0 14px', fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
+              {cm.noRecord}: {cm.noRecordHint}
             </div>
           )}
         </div>
@@ -419,24 +444,28 @@ function CompareRow({
   noDataB,
   first,
 }: {
-  row: { label: string; sub: string; a: number | null; b: number | null; money: boolean };
+  row: { label: string; sub: string; a: number | null; b: number | null; money: boolean; noRecordA?: boolean; noRecordB?: boolean };
   cm: ReturnType<typeof cmStrings>;
   loading: boolean;
   noDataA: boolean;
   noDataB: boolean;
   first: boolean;
 }) {
-  const cell = (v: number | null, noData: boolean): React.ReactNode => {
+  const cell = (v: number | null, noData: boolean, noRecord: boolean): React.ReactNode => {
     if (loading) return '…';
-    if (noData) {
-      return <span style={{ fontSize: 13, fontWeight: 500, fontStyle: 'italic', color: T.ink3 }}>{cm.noData}</span>;
+    if (noData || noRecord) {
+      return (
+        <span style={{ fontSize: 13, fontWeight: 500, fontStyle: 'italic', color: T.ink3 }}>
+          {noData ? cm.noData : cm.noRecord}
+        </span>
+      );
     }
     if (v == null) return '—';
     return row.money ? fmtMoney(v) : String(v);
   };
   // Difference in plain words — only when BOTH sides have real numbers.
   let diffText = '';
-  if (!loading && !noDataA && !noDataB && row.a != null && row.b != null) {
+  if (!loading && !noDataA && !noDataB && !row.noRecordA && !row.noRecordB && row.a != null && row.b != null) {
     const diff = row.a - row.b;
     if (Math.abs(diff) < (row.money ? 0.005 : 1)) {
       diffText = cm.same;
@@ -465,10 +494,10 @@ function CompareRow({
         </span>
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink, textAlign: 'right' }}>
-        {cell(row.a, noDataA)}
+        {cell(row.a, noDataA, !!row.noRecordA)}
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink2, textAlign: 'right' }}>
-        {cell(row.b, noDataB)}
+        {cell(row.b, noDataB, !!row.noRecordB)}
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink2, textAlign: 'right', whiteSpace: 'nowrap' }}>
         {diffText}

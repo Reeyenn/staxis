@@ -28,6 +28,7 @@
 // ADDITIVE + self-registering — add `import './inventory-actions';` to index.ts.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { ASSISTANT_COUNT_NOTE, ASSISTANT_ORDER_NOTE } from '@/lib/inventory-note-tags';
 import { registerTool, type ToolResult, type ToolContext } from '../tools';
 
 const INVENTORY_CATEGORIES = ['housekeeping', 'maintenance', 'breakfast'] as const;
@@ -220,7 +221,7 @@ registerTool<AdjustStockArgs>({
           item_id: item.id,
           expected_stock: Number(item.current_stock ?? 0),
           counted_stock: count,
-          notes: 'Counted via Staxis assistant',
+          notes: ASSISTANT_COUNT_NOTE,
         }],
       });
       if (countErr) return { ok: false, error: 'Failed to update the stock count.' };
@@ -238,7 +239,7 @@ registerTool<AdjustStockArgs>({
           item_name: item.name,
           quantity: orderQty ?? 0,
           ordered_at: nowIso,
-          notes: 'Marked ordered via assistant',
+          notes: ASSISTANT_ORDER_NOTE,
         });
       if (!ordErr) {
         orderLogged = true;

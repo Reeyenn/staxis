@@ -166,8 +166,14 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
           events.map((e, i) => {
             const k = pill[e.kind];
             const isOpen = expanded.has(e.id);
+            // Deliveries show what they cost; counts show their $ variance vs
+            // expected (red when stock came up short — the shrinkage signal
+            // the old panel carried; losing it was a review finding).
+            const isCountKind = e.kind === 'count' || e.kind === 'quickcount';
             const showAmount = canViewFinancials && e.amount != null &&
-              (e.kind === 'scan' || e.kind === 'delivery' || e.kind === 'assistant');
+              (e.kind === 'scan' || e.kind === 'delivery' || e.kind === 'assistant' ||
+                (isCountKind && e.amount !== 0));
+            const amountColor = isCountKind && (e.amount ?? 0) < 0 ? statusColor.critical : T.ink;
             return (
               <div key={e.id} style={{ borderTop: i === 0 ? 'none' : `1px solid ${T.ruleSoft}` }}>
                 <button
@@ -224,7 +230,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
                     {subFor(e)}
                   </span>
                   {canViewFinancials && (
-                    <span style={{ fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, textAlign: 'right', color: showAmount ? T.ink : T.ink3 }}>
+                    <span style={{ fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, textAlign: 'right', color: showAmount ? amountColor : T.ink3 }}>
                       {showAmount ? fmtMoney(e.amount!) : '—'}
                     </span>
                   )}

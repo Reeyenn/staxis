@@ -41,6 +41,36 @@ function parseDate(s: string): [number, number, number] {
   return [y, m, d];
 }
 
+// PostgREST caps every response at 1000 rows REGARDLESS of .limit() on this
+// project (verified empirically 2026-07-18: limit=2000 returned exactly 1000).
+// A busy hotel exceeds 1000 count rows in a single month, so summing one page
+// would silently understate the totals — page through instead.
+const PAGE = 1000;
+const MAX_PAGES = 60; // 60k rows ≫ any real 750-day window
+
+async function fetchAllRows<T>(
+  makePage: (fromRow: number, toRow: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const { data, error } = await makePage(page * PAGE, page * PAGE + PAGE - 1);
+    if (error) throw error;
+    const rows = data ?? [];
+    out.push(...rows);
+    if (rows.length < PAGE) break;
+  }
+  return out;
+}
+
+// Same delivery/discard valuation as getInventoryAccountingSummary: prefer the
+// stored total, fall back to unit × quantity so Compare and Reports can never
+// disagree about what the same row cost.
+function rowValue(r: { total: number | null; quantity: number | null; unit_cost: number | null }): number {
+  if (r.total != null) return Number(r.total);
+  if (r.unit_cost != null && r.quantity != null) return Number(r.unit_cost) * Number(r.quantity);
+  return 0;
+}
+
 export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const gate = await requireFinanceAccess(req, url.searchParams.get('propertyId'));
@@ -75,28 +105,39 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [ordersQ, discardsQ, countsQ, firstItemQ, firstCountQ, firstOrderQ] = await Promise.all([
-      supabaseAdmin
-        .from('inventory_orders')
-        .select('total_cost')
-        .eq('property_id', gate.pid)
-        .gte('received_at', start.toISOString())
-        .lt('received_at', endExclusive.toISOString())
-        .limit(50000),
-      supabaseAdmin
-        .from('inventory_discards')
-        .select('cost_value')
-        .eq('property_id', gate.pid)
-        .gte('discarded_at', start.toISOString())
-        .lt('discarded_at', endExclusive.toISOString())
-        .limit(50000),
-      supabaseAdmin
-        .from('inventory_counts')
-        .select('count_session_id, counted_at')
-        .eq('property_id', gate.pid)
-        .gte('counted_at', start.toISOString())
-        .lt('counted_at', endExclusive.toISOString())
-        .limit(50000),
+    const startIso = start.toISOString();
+    const endIso = endExclusive.toISOString();
+    const [orderRows, discardRows, countRows, firstItemQ, firstCountQ, firstOrderQ] = await Promise.all([
+      fetchAllRows<{ total_cost: number | null; quantity: number | null; unit_cost: number | null }>(
+        (a, b) => supabaseAdmin
+          .from('inventory_orders')
+          .select('total_cost, quantity, unit_cost')
+          .eq('property_id', gate.pid)
+          .gte('received_at', startIso)
+          .lt('received_at', endIso)
+          .order('received_at', { ascending: true })
+          .range(a, b),
+      ),
+      fetchAllRows<{ cost_value: number | null; quantity: number | null; unit_cost: number | null }>(
+        (a, b) => supabaseAdmin
+          .from('inventory_discards')
+          .select('cost_value, quantity, unit_cost')
+          .eq('property_id', gate.pid)
+          .gte('discarded_at', startIso)
+          .lt('discarded_at', endIso)
+          .order('discarded_at', { ascending: true })
+          .range(a, b),
+      ),
+      fetchAllRows<{ count_session_id: string | null; counted_at: string | null }>(
+        (a, b) => supabaseAdmin
+          .from('inventory_counts')
+          .select('count_session_id, counted_at')
+          .eq('property_id', gate.pid)
+          .gte('counted_at', startIso)
+          .lt('counted_at', endIso)
+          .order('counted_at', { ascending: true })
+          .range(a, b),
+      ),
       supabaseAdmin
         .from('inventory')
         .select('created_at')
@@ -118,19 +159,18 @@ export async function GET(req: NextRequest) {
         .order('received_at', { ascending: true })
         .limit(1),
     ]);
-    const firstErr = ordersQ.error ?? discardsQ.error ?? countsQ.error
-      ?? firstItemQ.error ?? firstCountQ.error ?? firstOrderQ.error;
+    const firstErr = firstItemQ.error ?? firstCountQ.error ?? firstOrderQ.error;
     if (firstErr) throw firstErr;
 
-    const receiptsValue = (ordersQ.data ?? []).reduce(
-      (s, r) => s + (typeof r.total_cost === 'number' ? r.total_cost : 0), 0,
+    const receiptsValue = orderRows.reduce(
+      (s, r) => s + rowValue({ total: r.total_cost, quantity: r.quantity, unit_cost: r.unit_cost }), 0,
     );
-    const discardsValue = (discardsQ.data ?? []).reduce(
-      (s, r) => s + (typeof r.cost_value === 'number' ? r.cost_value : 0), 0,
+    const discardsValue = discardRows.reduce(
+      (s, r) => s + rowValue({ total: r.cost_value, quantity: r.quantity, unit_cost: r.unit_cost }), 0,
     );
     const sessions = new Set<string>();
-    for (const r of countsQ.data ?? []) {
-      sessions.add((r.count_session_id as string | null) ?? `t:${r.counted_at}`);
+    for (const r of countRows) {
+      sessions.add(r.count_session_id ?? `t:${r.counted_at}`);
     }
 
     const candidates = [

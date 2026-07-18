@@ -4,7 +4,6 @@ import React, { useEffect, useRef } from 'react';
 import { T, fonts } from './tokens';
 import { Caps } from './Caps';
 import { Serif } from './Serif';
-import { StatusDot } from './StatusPill';
 import { Motion, EASE } from './motion';
 import { CountUp, TickNum } from './fx';
 import { fmtMoney } from './format';
@@ -100,12 +99,11 @@ interface RailBtnProps {
   label: string;
   badge?: number;
   primary?: boolean;
-  accent?: boolean;
   tone?: 'teal';
   onClick: () => void;
 }
 
-function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps) {
+function RailBtn({ label, badge, primary, tone, onClick }: RailBtnProps) {
   const ref = useRef<HTMLButtonElement>(null);
   const teal = tone === 'teal';
   const plain = !primary && !teal;
@@ -138,7 +136,6 @@ function RailBtn({ label, badge, primary, accent, tone, onClick }: RailBtnProps)
       }}
     >
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
-        {accent && <span aria-hidden="true"><StatusDot s="critical" size={6} /></span>}
         {(primary || teal) && (
           <span aria-hidden="true"><Serif size={14}><span className="inv-arrow">→</span></Serif></span>
         )}

@@ -17,6 +17,8 @@
 // when the estimate looks stale. See plan §3.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { INVOICE_SCAN_NOTE_PREFIX } from '@/lib/inventory-note-tags';
+
 export type LineDecision = 'match' | 'create' | 'skip';
 export type InvCategory = 'housekeeping' | 'maintenance' | 'breakfast';
 
@@ -104,15 +106,15 @@ function toCases(x: unknown): number | null {
  *  number was extracted; otherwise it's a generic source tag. */
 export function buildNotesTag(invoiceNumber?: string | null, vendorName?: string | null): string {
   const num = (invoiceNumber ?? '').trim();
-  if (!num) return 'Invoice scan';
+  if (!num) return INVOICE_SCAN_NOTE_PREFIX;
   const vendor = (vendorName ?? '').trim().toLowerCase();
-  return `Invoice scan · inv#${num}@${vendor}`;
+  return `${INVOICE_SCAN_NOTE_PREFIX} · inv#${num}@${vendor}`;
 }
 
 /** Warning-only duplicate check: true when an existing order note already
  *  carries this invoice's (numbered) tag. Not a hard guarantee — see plan §4. */
 export function invoiceAlreadyRecorded(existingNotes: readonly (string | null | undefined)[], notesTag: string): boolean {
-  if (!notesTag.startsWith('Invoice scan · inv#')) return false; // unnumbered → can't dedupe
+  if (!notesTag.startsWith(`${INVOICE_SCAN_NOTE_PREFIX} · inv#`)) return false; // unnumbered → can't dedupe
   return existingNotes.some((n) => typeof n === 'string' && n.includes(notesTag));
 }
 

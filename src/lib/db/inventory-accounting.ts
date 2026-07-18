@@ -114,8 +114,10 @@ function zoneOffsetMs(timeZone: string, utc: Date): number {
  * the two screens.
  */
 /** The UTC instant of local midnight on a given calendar date in `timeZone`.
- *  Same two-pass offset correction as localMonthWindowUTC — used by the
- *  Compare overlay's arbitrary date ranges. */
+ *  Guess local-midnight = UTC, then correct by the zone offset; the second
+ *  pass handles the rare DST transition sitting between guess and answer.
+ *  The single DST-correction implementation — localMonthWindowUTC and the
+ *  Compare overlay's arbitrary date ranges both build on it. */
 export function localDayStartUTC(
   year: number,
   month1: number, // 1-12
@@ -132,13 +134,9 @@ export function localMonthWindowUTC(
   month1: number, // 1-12
   timeZone: string,
 ): { start: Date; endExclusive: Date; budgetMonthKey: string } {
-  const midnightUTC = (y: number, m1: number): Date => {
-    // Guess local-midnight = UTC, then correct by the zone offset; second pass
-    // handles the rare DST transition sitting between guess and answer.
-    let t = Date.UTC(y, m1 - 1, 1);
-    for (let i = 0; i < 2; i++) t = Date.UTC(y, m1 - 1, 1) - zoneOffsetMs(timeZone, new Date(t));
-    return new Date(t);
-  };
+  // One DST-correction implementation for the whole file — a month window is
+  // just the day-1 boundary of this month and the next.
+  const midnightUTC = (y: number, m1: number): Date => localDayStartUTC(y, m1, 1, timeZone);
   const nextY = month1 === 12 ? year + 1 : year;
   const nextM = month1 === 12 ? 1 : month1 + 1;
   return {

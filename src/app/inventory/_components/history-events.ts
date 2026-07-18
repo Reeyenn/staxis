@@ -5,19 +5,19 @@
 // lines kept for the expandable detail view.
 //
 // Lang-agnostic on purpose: this module classifies and groups; HistoryPanel
-// owns every display string. The classification keys off the `notes` strings
-// each workflow stamps on its rows:
-//   • Invoice scan          → "Invoice scan" / "Invoice scan · inv#N@vendor"
-//                             (src/lib/inventory-invoice-commit.ts)
-//   • Typed-in delivery     → "Delivery — added manually" (EN) /
-//                             "Entrega — agregada a mano" (ES) (DeliverySheet)
-//   • AI assistant          → "Counted via Staxis assistant" /
-//                             "Marked ordered via assistant" (agent tools)
-// Unknown/legacy notes fall back to a generic delivery event — never dropped.
+// owns every display string. Classification keys off the shared note-tag
+// constants in @/lib/inventory-note-tags — the same constants the writers
+// stamp — so a reworded note can't silently break History. Typed-in
+// deliveries carry free-text UI copy and simply fall through to the generic
+// 'delivery' kind, as do legacy/unknown notes — never dropped.
 
-import type { InventoryCount, InventoryOrder } from '@/types';
+import type { InventoryCount, InventoryItem, InventoryOrder } from '@/types';
 import { groupInventoryCountsByEvent } from '@/lib/inventory-history';
-import type { DisplayItem } from './types';
+import {
+  ASSISTANT_COUNT_NOTE,
+  ASSISTANT_ORDER_NOTE,
+  INVOICE_SCAN_NOTE_PREFIX,
+} from '@/lib/inventory-note-tags';
 
 export type HistoryEventKind =
   | 'count'       // full count walk (2+ items)
@@ -53,10 +53,6 @@ export interface HistoryEvent {
   amount: number | null;
 }
 
-const ASSISTANT_COUNT_NOTE = 'Counted via Staxis assistant';
-const ASSISTANT_ORDER_NOTE = 'Marked ordered via assistant';
-const MANUAL_DELIVERY_NOTES = ['Delivery — added manually', 'Entrega — agregada a mano'];
-
 function parseInvoiceNumber(notes: string): string | null {
   const m = /inv#([^@]+)@/.exec(notes);
   return m ? m[1] : null;
@@ -65,7 +61,7 @@ function parseInvoiceNumber(notes: string): string | null {
 export function buildHistoryEvents(
   counts: InventoryCount[],
   orders: InventoryOrder[],
-  display: DisplayItem[],
+  items: InventoryItem[],
 ): HistoryEvent[] {
   const out: HistoryEvent[] = [];
 
@@ -113,7 +109,7 @@ export function buildHistoryEvents(
   }
   for (const [key, group] of deliveryGroups) {
     const notes = group[0].notes ?? '';
-    const kind: HistoryEventKind = notes.startsWith('Invoice scan')
+    const kind: HistoryEventKind = notes.startsWith(INVOICE_SCAN_NOTE_PREFIX)
       ? 'scan'
       : notes === ASSISTANT_ORDER_NOTE
         ? 'assistant'
@@ -142,11 +138,11 @@ export function buildHistoryEvents(
   }
 
   // ── New items: group creations by calendar day ───────────────────────────
-  // (Archived items drop out of `display`, so their creation events disappear
-  // with them — acceptable; the count/delivery history above survives.)
-  const addsByDay = new Map<string, DisplayItem[]>();
-  for (const d of display) {
-    const created = d.raw.createdAt;
+  // (Archived items drop out of the active item list, so their creation events
+  // disappear with them — acceptable; the count/delivery history survives.)
+  const addsByDay = new Map<string, InventoryItem[]>();
+  for (const d of items) {
+    const created = d.createdAt;
     if (!created) continue; // legacy rows predate authorship tracking
     const dayKey = `${created.getFullYear()}-${created.getMonth()}-${created.getDate()}`;
     const g = addsByDay.get(dayKey);
@@ -155,8 +151,8 @@ export function buildHistoryEvents(
   }
   for (const [dayKey, group] of addsByDay) {
     const date = group.reduce(
-      (latest, d) => (d.raw.createdAt! > latest ? d.raw.createdAt! : latest),
-      group[0].raw.createdAt!,
+      (latest, d) => (d.createdAt! > latest ? d.createdAt! : latest),
+      group[0].createdAt!,
     );
     out.push({
       id: `added:${dayKey}`,

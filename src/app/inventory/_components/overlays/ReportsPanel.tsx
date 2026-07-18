@@ -13,12 +13,12 @@
 //     until the underlying data actually exists (months of deliveries,
 //     count-vs-delivery reconciliations, real occupancy).
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
-import { currentMonthLabel, shortMonthFromYmd } from '@/lib/format-date';
+import { currentMonthLabel, shortDateFromDate, shortMonthFromYmd } from '@/lib/format-date';
 import { T, fonts, statusColor, type InvCat } from '../tokens';
 import { catLabelFor, type Lang } from '../inv-i18n';
 import { Caps } from '../Caps';
@@ -167,21 +167,22 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
   }, [open, user, activePropertyId]);
 
   // ── Day-one stats — computed from the live item list, always real ────────
-  const totalValue = display.reduce((s, d) => s + d.value, 0);
-  const pricedCount = display.filter((d) => d.unitCost > 0).length;
-  const uncountedCount = display.filter((d) => d.uncounted).length;
-  const countedCount = display.length - uncountedCount;
-  const criticalCount = display.filter((d) => !d.uncounted && d.status === 'critical').length;
-  const lowCount = display.filter((d) => !d.uncounted && d.status === 'low').length;
-  const lastCountAt = display.reduce<Date | null>(
-    (acc, d) => (d.lastCountedAt && (!acc || d.lastCountedAt > acc) ? d.lastCountedAt : acc),
-    null,
-  );
-
-  // Value by category — custom tabs by their hotel-chosen name, built-ins by
-  // their translated label. Sorted by value, zero-value groups dropped.
-  const catRows: Array<{ key: string; label: string; value: number }> = [];
-  {
+  // Memoized: this panel stays mounted while closed (the Overlay needs `open`
+  // for its exit animation), and the shell re-renders on every quick-count
+  // tick — don't re-scan the item list each time.
+  const stats = useMemo(() => {
+    const totalValue = display.reduce((s, d) => s + d.value, 0);
+    const pricedCount = display.filter((d) => d.unitCost > 0).length;
+    const uncountedCount = display.filter((d) => d.uncounted).length;
+    const criticalCount = display.filter((d) => !d.uncounted && d.status === 'critical').length;
+    const lowCount = display.filter((d) => !d.uncounted && d.status === 'low').length;
+    const lastCountAt = display.reduce<Date | null>(
+      (acc, d) => (d.lastCountedAt && (!acc || d.lastCountedAt > acc) ? d.lastCountedAt : acc),
+      null,
+    );
+    // Value by category — custom tabs by their hotel-chosen name, built-ins by
+    // their translated label. Sorted by value, zero-value groups dropped.
+    const catRows: Array<{ key: string; label: string; value: number }> = [];
     const byKey = new Map<string, { label: string; value: number }>();
     for (const d of display) {
       const key = d.customCategoryId ?? d.cat;
@@ -194,7 +195,9 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
     }
     for (const [key, v] of byKey) if (v.value > 0) catRows.push({ key, ...v });
     catRows.sort((a, b) => b.value - a.value);
-  }
+    return { totalValue, pricedCount, uncountedCount, countedCount: display.length - uncountedCount, criticalCount, lowCount, lastCountAt, catRows };
+  }, [display, customNameById, lang]);
+  const { totalValue, pricedCount, uncountedCount, countedCount, criticalCount, lowCount, lastCountAt, catRows } = stats;
 
   // ── History-dependent stats — shown only when the data exists ────────────
   const receipts = summary?.totals.receiptsValue ?? 0;
@@ -210,16 +213,16 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
   );
   const shrinkage = summary?.totals.unaccountedShrinkageValue ?? 0;
   const shrinkageReady = reconciliations > 0 || shrinkage > 0;
-  const shrinkagePct = receipts > 0 ? Math.min(100, (shrinkage / receipts) * 100) : 0;
+  // A % of spend only exists when there IS spend — with $ loss but no
+  // deliveries this month, showing "0.0%" would be the fake number this
+  // rebuild exists to kill. In that case the $ figure becomes the headline.
+  const shrinkagePct = receipts > 0 ? Math.min(100, (shrinkage / receipts) * 100) : null;
 
   // Real cost/occ-room from the server (actual occupancy) — null when the
   // hotel has no occupancy data. Never approximated client-side.
   const costPerOccRoom = summary?.costPerOccupiedRoom?.thisMonth ?? null;
   const occNights = summary?.costPerOccupiedRoom?.occupiedNightsThisMonth ?? 0;
 
-  const dateFmt = new Intl.DateTimeFormat(lang === 'es' ? 'es' : 'en', {
-    month: 'short', day: 'numeric',
-  });
 
   return (
     <Overlay
@@ -249,7 +252,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
             cohort={{
               left: `${countedCount} ${rp.counted}`,
               right: uncountedCount > 0 ? `${uncountedCount} ${rp.notCountedYet}` : (
-                lastCountAt ? `${rp.lastCount}: ${dateFmt.format(lastCountAt)}` : rp.noCountsYet
+                lastCountAt ? `${rp.lastCount}: ${shortDateFromDate(lastCountAt, lang)}` : rp.noCountsYet
               ),
             }}
           />
@@ -316,9 +319,11 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
           </Card>
         </div>
 
-        {/* Row 3 — spend trend: real chart once ≥2 months have activity */}
+        {/* Row 3 — spend trend: real chart once ≥2 months have activity.
+            Feed ALL months (zero months included) so gaps show as gaps — two
+            spikes five months apart must not render as adjacent bars. */}
         {trendReady ? (
-          <MonthlyChart ytd={monthsWithActivity} rp={rp} lang={lang} />
+          <MonthlyChart ytd={ytd} rp={rp} lang={lang} />
         ) : (
           <ComingSoonCard title={rp.spendByMonth} note={rp.trendSoon} soon={rp.comingSoon} />
         )}
@@ -328,8 +333,10 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
           {shrinkageReady ? (
             <KPI
               eyebrow={rp.shrinkageRate}
-              value={`${shrinkagePct.toFixed(1)}%`}
-              cohort={{ left: fmtMoney(shrinkage), right: rp.mtdLoss }}
+              value={shrinkagePct != null ? `${shrinkagePct.toFixed(1)}%` : fmtMoney(shrinkage)}
+              cohort={shrinkagePct != null
+                ? { left: fmtMoney(shrinkage), right: rp.mtdLoss }
+                : { left: rp.mtdLoss, right: '' }}
             />
           ) : (
             <ComingSoonCard title={rp.shrinkageRate} note={rp.shrinkageSoon} soon={rp.comingSoon} />

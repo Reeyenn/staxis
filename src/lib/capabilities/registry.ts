@@ -139,9 +139,13 @@ export const CAPABILITY_LIST: readonly CapabilityMeta[] = [
     desc_en: 'Hourly pay, wage settings, labor-cost % tile', desc_es: 'Pago por hora, salarios, % de costo laboral',
   },
   {
+    // 2026-07-18: the purchase-order flow was removed; this capability now
+    // gates deliveries (typed-in + invoice scan), vendors, and the inventory
+    // tab/budget config. Key kept for stored overrides; labels updated to
+    // match what it actually unlocks.
     key: 'manage_inventory_orders', adminOnly: false, deptScoped: false, group: 'operations',
-    label_en: 'Inventory ordering', label_es: 'Pedidos de inventario',
-    desc_en: 'Place / approve / receive orders, vendors, catalog', desc_es: 'Crear / aprobar / recibir pedidos, proveedores, catálogo',
+    label_en: 'Inventory deliveries & vendors', label_es: 'Entregas y proveedores',
+    desc_en: 'Add deliveries, scan invoices, manage vendors', desc_es: 'Agregar entregas, escanear facturas, gestionar proveedores',
   },
   {
     key: 'assign_work', adminOnly: false, deptScoped: false, group: 'operations',

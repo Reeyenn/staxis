@@ -506,10 +506,12 @@ export function InventoryShell() {
 
   // One entry per ACTION (count session, delivery, invoice scan, items added)
   // — the same grouping the History panel renders, so the rail badge and the
-  // panel can never disagree.
+  // panel can never disagree. Keyed off the RAW item rows, not `display`:
+  // the builder only reads createdAt/name, and display's identity churns on
+  // every occupancy/averages tick.
   const historyEvents = useMemo(
-    () => buildHistoryEvents(counts, orders, display),
-    [counts, orders, display],
+    () => buildHistoryEvents(counts, orders, items),
+    [counts, orders, items],
   );
   const historyCount = historyEvents.length;
 
