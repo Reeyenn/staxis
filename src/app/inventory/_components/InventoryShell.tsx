@@ -24,7 +24,7 @@ import {
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { generateId } from '@/lib/utils';
-import { groupInventoryCountsByEvent } from '@/lib/inventory-history';
+import { buildHistoryEvents } from './history-events';
 import {
   clearQuickCountAttempt,
   isDefinitiveQuickCountFailure,
@@ -502,11 +502,14 @@ export function InventoryShell() {
     return () => ro.disconnect();
   }, [tabStatMounted]);
 
-  // Show distinct count sessions, not raw per-item rows. New atomic saves use
-  // countSessionId; pre-0310 rows retain their exact-timestamp grouping.
-  const historyCount = useMemo(() => {
-    return orders.length + groupInventoryCountsByEvent(counts).length;
-  }, [counts, orders]);
+  // One entry per ACTION (count session, delivery, invoice scan, items added)
+  // — the same grouping the History panel renders, so the rail badge and the
+  // panel can never disagree.
+  const historyEvents = useMemo(
+    () => buildHistoryEvents(counts, orders, display),
+    [counts, orders, display],
+  );
+  const historyCount = historyEvents.length;
 
   // Whole-inventory spend this month, in dollars. (inventory_orders costs are
   // stored as dollars — the old sum here divided by 100 again and showed ~1%
@@ -1259,8 +1262,7 @@ export function InventoryShell() {
         lang={L}
         open={overlay === 'history'}
         onClose={closeOverlay}
-        counts={counts}
-        orders={orders}
+        events={historyEvents}
         canViewFinancials={canViewFinancials}
       />
 
