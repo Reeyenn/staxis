@@ -28,15 +28,17 @@ async function handle(req: NextRequest) {
   // whole fleet — only properties that actually use the feature).
   let propertyIds: string[] = [];
   try {
-    const { data } = await supabaseAdmin
+    const { data, error: readingsErr } = await supabaseAdmin
       .from('compliance_reading_types')
       .select('property_id')
       .limit(5000);
+    if (readingsErr) throw readingsErr;
     const fromReadings = new Set((data ?? []).map((r) => String(r.property_id)));
-    const { data: pmData } = await supabaseAdmin
+    const { data: pmData, error: pmErr } = await supabaseAdmin
       .from('compliance_pm_tasks')
       .select('property_id')
       .limit(5000);
+    if (pmErr) throw pmErr;
     for (const r of pmData ?? []) fromReadings.add(String(r.property_id));
     propertyIds = Array.from(fromReadings);
   } catch (e) {
@@ -51,10 +53,18 @@ async function handle(req: NextRequest) {
   const tzById = new Map<string, string>();
   const sectionsById = new Map<string, EnabledSections>();
   if (propertyIds.length) {
-    const { data: tzRows } = await supabaseAdmin
+    const { data: tzRows, error: tzErr } = await supabaseAdmin
       .from('properties')
       .select('id, timezone, enabled_sections')
       .in('id', propertyIds);
+    if (tzErr) {
+      log.error('[cron/compliance-reminders] property timezone read failed — refusing wrong-time reminders', {
+        requestId, msg: tzErr.message,
+      });
+      return err('failed to resolve property timezones', {
+        requestId, status: 500, code: ApiErrorCode.InternalError,
+      });
+    }
     for (const r of tzRows ?? []) {
       tzById.set(String(r.id), (r as { timezone?: string | null }).timezone || 'America/Chicago');
       sectionsById.set(String(r.id), (r as { enabled_sections?: EnabledSections }).enabled_sections ?? null);
@@ -64,7 +74,9 @@ async function handle(req: NextRequest) {
   // Section gate (WP6): a hotel with Maintenance off pauses compliance
   // reminders + life-safety escalations. Fail-open — only an explicit `false`
   // skips (null/missing ⇒ runs).
-  propertyIds = propertyIds.filter((id) => isSectionEnabled(sectionsById.get(id), 'maintenance'));
+  propertyIds = propertyIds.filter(
+    (id) => tzById.has(id) && isSectionEnabled(sectionsById.get(id), 'maintenance'),
+  );
 
   let remindersSent = 0;
   let escalationsSent = 0;
@@ -73,7 +85,7 @@ async function handle(req: NextRequest) {
   const now = new Date();
   const outcomes = await runWithConcurrency(
     propertyIds,
-    (id) => runComplianceRemindersForProperty(id, now, tzById.get(id) ?? 'America/Chicago'),
+    (id) => runComplianceRemindersForProperty(id, now, tzById.get(id)!),
     5,
   );
   let failed = 0;

@@ -15,9 +15,11 @@
  *   - room_count, staff_count
  *   - onboarding_source (self_signup vs admin etc.)
  *
- * Pagination: returns up to 200 properties. Beyond that the page
- * needs proper paging — Reeyen is unlikely to scroll past 200 today,
- * but the cap stops one big query from killing the dashboard.
+ * Pagination: returns up to 200 properties per page. Filters backed by
+ * database columns are paged in PostgREST. Computed health filters are
+ * evaluated across the matching fleet first, then paged, so a stale or
+ * disconnected property cannot disappear merely because it was outside
+ * the first unfiltered page.
  */
 
 import { NextRequest } from 'next/server';
@@ -27,6 +29,7 @@ import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { mapPropertySessionStatusToJobShape } from '@/lib/cua-session-job-mapping';
 import { normalizeSectionFlags, resolveSections } from '@/lib/sections/registry';
+import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,7 +66,7 @@ export async function GET(req: NextRequest) {
   // Default behavior unchanged for callers that omit them: 200-row cap,
   // sorted by health, summary computed. New optional params:
   //   ?search=X        — case-insensitive substring on name OR brand
-  //   ?status=Y        — 'active' | 'trial' | 'past_due' | 'stale' | 'pms_disconnected' | 'all'
+  //   ?status=Y        — 'active' | 'trial' | 'past_due' | 'stale' | 'pms_disconnected' | 'no_pms' | 'all'
   //   ?page=N          — 1-indexed page (default 1)
   //   ?pageSize=M      — default 50, max 200
   const params = new URL(req.url).searchParams;
@@ -72,48 +75,79 @@ export async function GET(req: NextRequest) {
   const page = Math.max(1, parseInt(params.get('page') ?? '1', 10) || 1);
   const pageSize = Math.min(200, Math.max(10, parseInt(params.get('pageSize') ?? '50', 10) || 50));
 
-  // Build the base query. Search uses ilike OR — we apply it before the
-  // server-side count so the summary reflects the filtered set, not all.
-  let query = supabaseAdmin
-    .from('properties')
-    .select(`
-      id, name, total_rooms, subscription_status, trial_ends_at,
-      pms_type, pms_connected, last_synced_at,
-      onboarding_source, property_kind, created_at, brand,
-      onboarding_state, onboarding_completed_at, enabled_sections
-    `, { count: 'exact' })
-    .order('created_at', { ascending: false });
+  const isComputedStatus = status === 'stale' || status === 'pms_disconnected';
+  const databaseStatuses = ['active', 'trial', 'past_due', 'canceled'];
 
-  if (search) {
-    // Postgrest .or() for two ilike conditions on different columns.
-    // Escape any commas/parens the user typed so they don't break the
-    // .or() syntax — basic defense; full regex escaping is overkill.
-    const safe = search.replace(/[,%(*)]/g, '');
-    query = query.or(`name.ilike.%${safe}%,brand.ilike.%${safe}%`);
-  }
+  // Build a fresh query for each batch. Supabase query builders are mutable,
+  // so reusing one while walking multiple ranges would stack range clauses.
+  const buildPropertyQuery = () => {
+    let query = supabaseAdmin
+      .from('properties')
+      .select(`
+        id, name, total_rooms, subscription_status, trial_ends_at,
+        pms_type, pms_connected, last_synced_at,
+        onboarding_source, property_kind, created_at, brand,
+        onboarding_state, onboarding_completed_at, enabled_sections
+      `, { count: 'exact' })
+      .order('created_at', { ascending: false });
 
-  // Subscription status filter applied server-side. 'stale' and
-  // 'pms_disconnected' are computed AFTER fetching (no SQL representation
-  // for "no PMS sync in 2h"); those filter the in-memory result.
-  if (status && status !== 'all' && ['active', 'trial', 'past_due', 'canceled'].includes(status)) {
-    query = query.eq('subscription_status', status);
-  }
+    if (search) {
+      // Postgrest .or() for two ilike conditions on different columns.
+      // Escape commas/parens/wildcards so input cannot alter the filter.
+      const safe = search.replace(/[,%_(*)]/g, '');
+      query = query.or(`name.ilike.%${safe}%,brand.ilike.%${safe}%`);
+    }
 
-  // Range for pagination. Postgrest treats range as inclusive on both
-  // ends, 0-indexed, so page 1 = [0, pageSize-1].
+    if (databaseStatuses.includes(status)) {
+      query = query.eq('subscription_status', status);
+    } else if (status === 'no_pms') {
+      query = query.is('pms_type', null);
+    }
+
+    return query;
+  };
+
+  // PostgREST ranges are inclusive and zero-indexed.
   const from = (page - 1) * pageSize;
   const to = from + pageSize - 1;
-  query = query.range(from, to);
+  let properties: PropertyRow[] = [];
+  let totalMatching: number | null = null;
 
-  const { data: rawProperties, error: propErr, count: totalMatching } = await query;
+  if (isComputedStatus) {
+    // Staleness and connection state depend on property_sessions, so applying
+    // the requested page before enrichment would lose matches on later pages.
+    const batchSize = 200;
+    for (let offset = 0; ; offset += batchSize) {
+      const { data, error: propErr, count } = await buildPropertyQuery()
+        .range(offset, offset + batchSize - 1);
 
-  if (propErr) {
-    return err(`Could not list properties: ${propErr.message}`, {
-      requestId, status: 500,
-    });
+      if (propErr) {
+        return err(`Could not list properties: ${propErr.message}`, {
+          requestId, status: 500,
+        });
+      }
+
+      const batch = (data ?? []) as PropertyRow[];
+      properties.push(...batch);
+      totalMatching ??= count;
+
+      if (batch.length < batchSize || (count !== null && properties.length >= count)) {
+        break;
+      }
+    }
+  } else {
+    const { data, error: propErr, count } = await buildPropertyQuery().range(from, to);
+
+    if (propErr) {
+      return err(`Could not list properties: ${propErr.message}`, {
+        requestId, status: 500,
+      });
+    }
+
+    properties = (data ?? []) as PropertyRow[];
+    totalMatching = count;
   }
 
-  const properties = (rawProperties ?? []) as PropertyRow[];
   const propertyIds = properties.map((p) => p.id);
   const now = Date.now();
 
@@ -122,13 +156,6 @@ export async function GET(req: NextRequest) {
   // an empty stub). property_sessions is one-row-per-hotel with the
   // canonical CUA driver state. Used by OnboardingTab to bucket
   // hotels into the onboarding funnel.
-  const { data: sessionsRaw } = await supabaseAdmin
-    .from('property_sessions')
-    .select(
-      'property_id, status, paused_reason, last_alive_at, last_successful_read_at, updated_at',
-    )
-    .in('property_id', propertyIds.length > 0 ? propertyIds : ['00000000-0000-0000-0000-000000000000']);
-
   interface SessionLite {
     property_id: string;
     status: string;
@@ -137,8 +164,28 @@ export async function GET(req: NextRequest) {
     last_successful_read_at: string | null;
     updated_at: string;
   }
+  const sessionsRaw: SessionLite[] = [];
+  const idBatchSize = 100;
+  for (let index = 0; index < propertyIds.length; index += idBatchSize) {
+    const ids = propertyIds.slice(index, index + idBatchSize);
+    const { data, error: sessionsErr } = await supabaseAdmin
+      .from('property_sessions')
+      .select(
+        'property_id, status, paused_reason, last_alive_at, last_successful_read_at, updated_at',
+      )
+      .in('property_id', ids);
+
+    if (sessionsErr) {
+      return err(`Could not load property sessions: ${sessionsErr.message}`, {
+        requestId, status: 500,
+      });
+    }
+
+    sessionsRaw.push(...((data ?? []) as SessionLite[]));
+  }
+
   const sessionByProperty = new Map<string, SessionLite>();
-  for (const s of (sessionsRaw ?? []) as SessionLite[]) {
+  for (const s of sessionsRaw) {
     sessionByProperty.set(s.property_id, s);
   }
 
@@ -163,20 +210,40 @@ export async function GET(req: NextRequest) {
 
   // ─── Staff counts per property ───────────────────────────────────────────
   // We need the count of active staff per property. supabase-js doesn't
-  // expose GROUP BY directly, so we select just the property_id column
-  // (one row per staff member, but tiny payload — just a UUID) and tally
-  // in JS. At 300 properties × 10 staff = 3000 small rows ≈ ~120KB —
+  // expose GROUP BY directly, so we select only id + property_id (one row
+  // per staff member) and tally in JS. The id gives paged reads a stable
+  // order. At 300 properties × 10 staff the payload remains small —
   // acceptable. Better than the previous version which fetched every
   // staff column.
-  const { data: staffCountsRaw } = await supabaseAdmin
-    .from('staff')
-    .select('property_id')
-    .eq('is_active', true)
-    .in('property_id', propertyIds.length > 0 ? propertyIds : ['00000000-0000-0000-0000-000000000000']);
+  const staffCountsRaw: Array<{ id: string; property_id: string }> = [];
+  for (let index = 0; index < propertyIds.length; index += idBatchSize) {
+    const ids = propertyIds.slice(index, index + idBatchSize);
+    const staffPageSize = 1_000;
+
+    for (let offset = 0; ; offset += staffPageSize) {
+      const { data, error: staffErr } = await supabaseAdmin
+        .from('staff')
+        .select('id, property_id')
+        .eq('is_active', true)
+        .in('property_id', ids)
+        .order('id', { ascending: true })
+        .range(offset, offset + staffPageSize - 1);
+
+      if (staffErr) {
+        return err(`Could not load staff counts: ${staffErr.message}`, {
+          requestId, status: 500,
+        });
+      }
+
+      const batch = (data ?? []) as Array<{ id: string; property_id: string }>;
+      staffCountsRaw.push(...batch);
+      if (batch.length < staffPageSize) break;
+    }
+  }
 
   const staffCount = new Map<string, number>();
-  for (const row of (staffCountsRaw ?? [])) {
-    const pid = (row as { property_id: string }).property_id;
+  for (const row of staffCountsRaw) {
+    const pid = row.property_id;
     staffCount.set(pid, (staffCount.get(pid) ?? 0) + 1);
   }
 
@@ -193,15 +260,16 @@ export async function GET(req: NextRequest) {
     const lastSyncMs = lastSyncIso ? Date.parse(lastSyncIso) : null;
     const syncFreshnessMin = lastSyncMs ? Math.round((now - lastSyncMs) / 60_000) : null;
 
-    // In v4, "pms connected" = there's a session row for this hotel.
-    // Fall back to the legacy boolean column if the session table is
-    // empty (shouldn't happen post-0206, but defensive).
-    const pmsConnected = !!session || !!p.pms_connected;
+    // A stopped session is the canonical detached state. For properties
+    // without any session row, retain the legacy boolean as a fallback.
+    const pmsConnected = session ? session.status !== 'stopped' : !!p.pms_connected;
 
-    // A property is "stale" if it has a PMS connected and sync is >2h old.
+    // A property is "stale" if it has a PMS connected and sync is >12h old.
     // Only counts if pmsConnected — fresh trial signups without PMS
     // connections aren't stale, they're just not started yet.
-    const isStale = pmsConnected && syncFreshnessMin !== null && syncFreshnessMin > 120;
+    const isStale = pmsConnected
+      && syncFreshnessMin !== null
+      && syncFreshnessMin > FLEET_STALE_SYNC_MINUTES;
 
     // Trial expired but still in trial status = needs nudging
     const trialExpired = p.subscription_status === 'trial'
@@ -263,10 +331,9 @@ export async function GET(req: NextRequest) {
     filtered = enriched.filter((p) => !p.pmsConnected);
   }
 
-  // Summary counts for the dashboard header. Computed against the
-  // CURRENT page's enriched set + the server-reported total. The
-  // pre-filter counts (active/trial/etc.) reflect the page; the
-  // pagination block tells the UI the full universe.
+  // Summary counts for the dashboard header. Computed filters enrich the
+  // whole search-matching fleet; database-backed filters retain page-level
+  // summary behavior for backwards compatibility.
   const summary = {
     total: enriched.length,
     trial: enriched.filter((p) => p.subscriptionStatus === 'trial').length,
@@ -281,13 +348,17 @@ export async function GET(req: NextRequest) {
   // Phase M2 pagination metadata. totalMatching reflects the SQL filter
   // (search + status='active'/'trial'/etc.); for in-memory-only filters
   // ('stale'/'pms_disconnected') we cap to the filtered length.
-  const totalForUi = (status === 'stale' || status === 'pms_disconnected')
+  const totalForUi = isComputedStatus
     ? filtered.length
     : (totalMatching ?? enriched.length);
 
+  const propertiesForPage = isComputedStatus
+    ? filtered.slice(from, to + 1)
+    : filtered;
+
   return ok({
     summary,
-    properties: filtered,
+    properties: propertiesForPage,
     pagination: {
       page,
       pageSize,

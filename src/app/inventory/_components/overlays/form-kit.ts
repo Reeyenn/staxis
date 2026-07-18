@@ -6,7 +6,6 @@
 // live now. Values are exact ports — do not "normalize" the sizes.
 
 import type React from 'react';
-import { bannerStyle } from '@/app/_components/ui/toast-core';
 import { T, fonts } from '../tokens';
 
 /** Accept only an empty string or a non-negative decimal in progress.
@@ -50,19 +49,5 @@ export const warnBannerStyle: React.CSSProperties = {
 
 /** ScanInvoiceSheet's `inputSm`. */
 export const inputSm = input(36, 12, 9, 13.5);
-/** OrderingSettingsPanel's `inputStyle`. */
-export const inputMd = input(38, 12, 9, 13);
 /** AddItemSheet's `inputStyle`. */
 export const inputLg = input(40, 14, 10, 14);
-
-/** Inline notice strip (OrdersPanel / OrderingSettingsPanel — previously two
- *  byte-identical local banner() copies). bannerStyle (F7) was parameterized
- *  from this exact style; the arguments below reproduce it byte-for-byte. */
-export function banner(color: string): React.CSSProperties {
-  return bannerStyle({
-    background: T.paper,
-    borderColor: color,
-    color: T.ink,
-    fontFamily: fonts.sans,
-  });
-}

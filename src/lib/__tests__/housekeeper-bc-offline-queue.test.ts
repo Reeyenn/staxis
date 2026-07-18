@@ -9,6 +9,8 @@
  */
 import { test, describe, before, beforeEach } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 // Mock indexedDB before importing the queue (it captures `indexedDB` at
 // module load time on the `globalThis`).
@@ -21,10 +23,16 @@ import {
   getQueueItems,
   clearQueue,
   clearFailures,
+  generateOfflineActionId,
 } from '../../lib/offline-sync/queue';
 
 // Helper: a fetchImpl that records every call and returns a fixed status.
-function makeFakeFetch(plan: Array<{ status: number; body?: unknown; throwError?: boolean }>) {
+function makeFakeFetch(plan: Array<{
+  status: number;
+  body?: unknown;
+  headers?: HeadersInit;
+  throwError?: boolean;
+}>) {
   const calls: Array<{ url: string; body: unknown }> = [];
   let i = 0;
   const fn: typeof fetch = async (input, init) => {
@@ -36,7 +44,10 @@ function makeFakeFetch(plan: Array<{ status: number; body?: unknown; throwError?
     if (step.throwError) {
       throw new Error('network error');
     }
-    return new Response(JSON.stringify(step.body ?? {}), { status: step.status });
+    return new Response(JSON.stringify(step.body ?? {}), {
+      status: step.status,
+      headers: step.headers,
+    });
   };
   return { fn, calls };
 }
@@ -64,6 +75,27 @@ describe('offline action queue', () => {
     assert.ok(action.id, 'id minted');
     assert.equal((action.body as { actionId?: string }).actionId, action.id);
     assert.equal(await getQueueLength(), 1);
+  });
+
+  test('action ID generator returns UUIDs with and without native randomUUID', () => {
+    const uuidShape = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    assert.match(generateOfflineActionId(), uuidShape);
+    assert.match(generateOfflineActionId(null), uuidShape, 'fallback must also mint a stable UUID');
+  });
+
+  test('online-to-offline fallback reuses the actionId from the attempted request', () => {
+    // The full test command resolves React's `react-server` condition, so this
+    // client hook cannot be rendered in this node:test process. Keep a focused
+    // contract check here beside the behavioral IndexedDB replay tests: the
+    // network-error branch must pass the already-sent actionId into enqueueAction.
+    const hookPath = fileURLToPath(new URL('../offline-sync/use-offline-sync.ts', import.meta.url));
+    const source = readFileSync(hookPath, 'utf8');
+    assert.match(
+      source,
+      /enqueueAction\(\{\s*endpoint,\s*body,\s*label,\s*id:\s*actionId\s*\}\)/,
+    );
+    assert.match(source, /const actionId = generateOfflineActionId\(\)/);
+    assert.match(source, /JSON\.stringify\(\{ \.\.\.body, actionId \}\)/);
   });
 
   test('drainQueue replays queued actions and removes on 200', async () => {
@@ -101,6 +133,48 @@ describe('offline action queue', () => {
     const r2 = await drainQueue({ fetchImpl: fn2 });
     assert.equal(r2.total, 0, 'permanent failures excluded from drain');
     assert.equal(calls2.length, 0);
+  });
+
+  test('drainQueue keeps 429 retryable and succeeds on a later drain', async () => {
+    await enqueueAction({ endpoint: '/api/rate-limited', body: {}, label: 'retry me' });
+
+    const { fn: limitedFetch, calls: limitedCalls } = makeFakeFetch([{
+      status: 429,
+      headers: { 'Retry-After': '1' },
+    }]);
+    const limited = await drainQueue({ fetchImpl: limitedFetch, maxAttempts: 1 });
+    assert.equal(limitedCalls.length, 1);
+    assert.equal(limited.done, 0);
+    assert.equal(limited.failed, 0, 'rate limiting is not a permanent failure');
+    assert.equal(limited.retryAfterMs, 1000);
+
+    const after429 = await getQueueItems();
+    assert.equal(after429.length, 1);
+    assert.equal(after429[0].attempts, 1);
+    assert.equal(after429[0].permanentFailure, false, '429 remains retryable even at maxAttempts');
+    assert.equal(after429[0].lastError, 'http 429');
+
+    const { fn: successFetch, calls: successCalls } = makeFakeFetch([{ status: 200 }]);
+    const retried = await drainQueue({ fetchImpl: successFetch, maxAttempts: 1 });
+    assert.equal(successCalls.length, 1);
+    assert.equal(retried.done, 1);
+    assert.equal(await getQueueLength(), 0);
+  });
+
+  test('503 with Retry-After stays retryable and requests a scheduled drain', async () => {
+    await enqueueAction({ endpoint: '/api/pending-claim', body: {}, label: 'pending' });
+    const { fn } = makeFakeFetch([{
+      status: 503,
+      headers: { 'Retry-After': '1' },
+    }]);
+
+    const result = await drainQueue({ fetchImpl: fn, maxAttempts: 1 });
+    const [item] = await getQueueItems();
+    assert.equal(item.permanentFailure, false);
+    assert.equal(item.attempts, 1);
+    assert.equal(result.failed, 0);
+    assert.equal(result.pending, 1);
+    assert.equal(result.retryAfterMs, 1000);
   });
 
   test('drainQueue stops on network error so we do not burn retries', async () => {

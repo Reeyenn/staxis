@@ -40,6 +40,8 @@ interface MockState {
   }>;
   /** How many times trusted_devices.insert was called (0 when remember=false). */
   trustedDevicesInserts: number;
+  /** Fingerprint-dedup deletes (identified by the token_hash neq guard). */
+  trustedDeviceDedupDeletes: number;
   /**
    * Phase A + atomic-claim RPC (Codex finding #3, migration 0164). The
    * RPC returns a proof id when one was atomically claimed, null when
@@ -58,6 +60,7 @@ const state: MockState = {
   mfaSessionsInsertError: null,
   mfaSessionsInserts: [],
   trustedDevicesInserts: 0,
+  trustedDeviceDedupDeletes: 0,
   claimedProofId: 'proof-id-from-rpc',
   claimRpcError: null,
   claimRpcCalls: 0,
@@ -71,6 +74,7 @@ beforeEach(() => {
   state.mfaSessionsInsertError = null;
   state.mfaSessionsInserts = [];
   state.trustedDevicesInserts = 0;
+  state.trustedDeviceDedupDeletes = 0;
   state.claimedProofId = 'proof-id-from-rpc';
   state.claimRpcError = null;
   state.claimRpcCalls = 0;
@@ -112,6 +116,10 @@ beforeEach(() => {
         delete: () => {
           const chain = {
             eq: () => chain,
+            neq: () => {
+              state.trustedDeviceDedupDeletes += 1;
+              return chain;
+            },
             gte: () => chain,
             then: (resolve: (v: unknown) => unknown) => resolve({ error: null }),
           };
@@ -134,6 +142,9 @@ beforeEach(() => {
           return { error: state.mfaSessionsInsertError };
         },
       };
+    }
+    if (table === 'app_events') {
+      return { insert: async () => ({ error: null }) };
     }
     throw new Error(`unexpected table: ${table}`);
   };
@@ -158,9 +169,11 @@ const ACCOUNT_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const SESSION_ID = '99999999-8888-7777-6666-555555555555';
 
 function freshJwt(extraClaims: Record<string, unknown> = {}): string {
+  const now = Math.floor(Date.now() / 1000);
   return mintJwt({
     sub: USER_ID,
-    iat: Math.floor(Date.now() / 1000) - 5,
+    iat: now - 5,
+    amr: [{ method: 'otp', timestamp: now - 5 }],
     ...extraClaims,
   });
 }
@@ -204,14 +217,13 @@ describe('trust-device — mfa_verified_sessions write (Phase 2B / Door B)', () 
     assert.equal(state.mfaSessionsInserts[0].user_id, USER_ID);
   });
 
-  test('JWT lacks session_id claim → mfa_verified_sessions write SKIPPED (route still 200, just warns)', async () => {
-    // Defensive: log a warning if Supabase ever changes the claim shape.
-    // trusted_devices is still inserted (the website-layer Phase 1 gate
-    // still works).
+  test('JWT lacks session_id claim → 403 before proof claim or trust writes', async () => {
     ok();
     const noSessionJwt = freshJwt({ /* no session_id */ });
     const res = await POST(mockReq({ jwt: noSessionJwt }));
-    assert.equal(res.status, 200, 'route succeeds despite missing session_id');
+    assert.equal(res.status, 403);
+    assert.equal(state.claimRpcCalls, 0, 'malformed OTP session must not burn a password proof');
+    assert.equal(state.trustedDevicesInserts, 0);
     assert.equal(state.mfaSessionsInserts.length, 0, 'no mfa_verified_sessions row should be written');
   });
 
@@ -237,14 +249,20 @@ describe('trust-device — mfa_verified_sessions write (Phase 2B / Door B)', () 
     assert.equal(res.status, 200);
   });
 
-  test('mfa_verified_sessions insert fails with other error → non-fatal (Phase 1 still works)', async () => {
-    // The trusted_devices row is in place; worst case user gets RLS
-    // denials from PostgREST and signs in again. The website-layer
-    // (Phase 1) gate still keeps them logged in.
+  test('mfa_verified_sessions insert fails persistently → 500 and proof released', async () => {
+    // A durable cookie cannot satisfy database RLS on its own. Returning 200
+    // here would put the user into a blank app and leave a half-trusted device.
     ok();
     state.mfaSessionsInsertError = { message: 'unexpected db error', code: '42P01' };
     const res = await POST(mockReq());
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 500);
+    assert.equal(state.mfaSessionsInserts.length, 2, 'critical write is retried once');
+    assert.equal(state.releaseRpcCalls, 1);
+    assert.equal(
+      state.trustedDeviceDedupDeletes,
+      0,
+      'existing trusted-device rows must remain intact when MFA persistence fails',
+    );
   });
 });
 
@@ -265,6 +283,7 @@ describe('trust-device — remember flag (unchecked "Trust this device")', () =>
     assert.equal(res.status, 200);
     assert.equal(state.trustedDevicesInserts, 1);
     assert.equal(state.mfaSessionsInserts.length, 1);
+    assert.equal(state.trustedDeviceDedupDeletes, 1, 'dedup runs only after MFA succeeds');
     const cookie = res.cookies.get(TRUST_COOKIE_NAME);
     assert.ok(cookie && cookie.value, 'durable cookie must be set when remember=true');
   });

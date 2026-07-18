@@ -547,15 +547,22 @@ export default function HousekeeperRoomPage({
   // refetching, and error surfacing.
   const postStaffAction = useCallback(
     async (url: string, body: Record<string, unknown>): Promise<{ ok: boolean; data: unknown }> => {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withStaffLinkTokenBody(body)),
-      });
-      const json = (await res.json().catch(() => null)) as
-        | { ok?: boolean; data?: unknown }
-        | null;
-      return { ok: res.ok && !!json?.ok, data: json?.data ?? null };
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(withStaffLinkTokenBody(body)),
+        });
+        const json = (await res.json().catch(() => null)) as
+          | { ok?: boolean; data?: unknown }
+          | null;
+        return { ok: res.ok && !!json?.ok, data: json?.data ?? null };
+      } catch {
+        // Keep failures inside the normal result path so callers can show
+        // their existing error UI instead of an unhandled promise rejection
+        // when connectivity drops mid-action.
+        return { ok: false, data: null as unknown };
+      }
     },
     [],
   );
@@ -1085,6 +1092,25 @@ export default function HousekeeperRoomPage({
               }}
             >
               {t('hkOfflineSyncing', lang)}
+            </div>
+          )}
+          {offline.online
+            && !offline.draining
+            && offline.lastDrain
+            && offline.lastDrain.pending > 0 && (
+            <div
+              role="status"
+              style={{
+                padding: '10px 14px',
+                background: '#EFF6FF',
+                border: '1px solid #93C5FD',
+                color: '#1E40AF',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            >
+              {t('hkOfflineSyncing', lang)} · {offline.lastDrain.pending}
             </div>
           )}
           {offline.online && offline.lastDrain && offline.lastDrain.failed > 0 && (
