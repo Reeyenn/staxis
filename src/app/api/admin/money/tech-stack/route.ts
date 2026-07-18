@@ -19,11 +19,17 @@
  * { id, name, monthlyUsd, serviceKey? } — serviceKey ties a line to a
  * detected service; lines without one are the personal group.
  *
- * GET  → { connected, billing|null, learning, detected, subscriptions }
+ * GET  → { connected, billing|null, learning, detected, subscriptions,
+ *          auditRequestedAt }
  *   billing: Anthropic cost_report month-to-date (daily UTC buckets,
  *   amounts = decimal-string CENTS, ~5 min lag); connected=false without
  *   ANTHROPIC_ADMIN_KEY — the UI says so instead of showing fake numbers.
  * POST { subscriptions: [...] } → saves the flat lines.
+ * POST { action: 'request_audit' } → stamps
+ *   app_settings.subscription_audit_requested_at (0319). The web app can't
+ *   read the founder's Gmail — a scheduled Claude session on his Mac
+ *   watches this flag, sweeps the receipt emails, updates the board, and
+ *   clears it. The button is a request, not an instant scan.
  *
  * Auth + envelope mirror the /api/admin/mission/* routes.
  */
@@ -192,7 +198,7 @@ export async function GET(req: NextRequest) {
       .gte('created_at', monthStartIso),
     supabaseAdmin
       .from('app_settings')
-      .select('ai_subscriptions')
+      .select('ai_subscriptions, subscription_audit_requested_at')
       .eq('id', true)
       .maybeSingle(),
   ]);
@@ -221,6 +227,7 @@ export async function GET(req: NextRequest) {
     learning,
     detected,
     subscriptions,
+    auditRequestedAt: settingsQ.data?.subscription_audit_requested_at ?? null,
   }, { requestId });
 }
 
@@ -230,8 +237,20 @@ export async function POST(req: NextRequest) {
   const auth = await requireAdminOrCron(req);
   if (!auth.ok) return err('Admin sign-in required.', { requestId, status: 401, code: 'unauthorized' });
 
-  let body: { subscriptions?: unknown };
-  try { body = (await req.json()) as { subscriptions?: unknown }; } catch { body = {}; }
+  let body: { subscriptions?: unknown; action?: unknown };
+  try { body = (await req.json()) as { subscriptions?: unknown; action?: unknown }; } catch { body = {}; }
+
+  // "Check my subscriptions" button — stamp the request flag for the
+  // scheduled audit session (it clears the flag after sweeping).
+  if (body.action === 'request_audit') {
+    const requestedAt = new Date().toISOString();
+    const { error } = await supabaseAdmin
+      .from('app_settings')
+      .update({ subscription_audit_requested_at: requestedAt })
+      .eq('id', true);
+    if (error) return err(error.message, { requestId, status: 500, code: 'internal_error' });
+    return ok({ auditRequestedAt: requestedAt }, { requestId });
+  }
 
   if (!Array.isArray(body.subscriptions)) {
     return err('subscriptions must be a list', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });

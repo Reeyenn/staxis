@@ -36,6 +36,7 @@ interface StackData {
   learning: { monthUsd: number; runs: number };
   detected: { key: string; name: string; desc: string }[];
   subscriptions: { id: string; name: string; monthlyUsd: number; serviceKey?: string }[];
+  auditRequestedAt: string | null;
 }
 
 /** Editable local copy of a flat line — amount kept as a string while typing. */
@@ -51,6 +52,23 @@ export function MoneySurface() {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
+  const [auditBusy, setAuditBusy] = useState(false);
+  const [auditRequestedAt, setAuditRequestedAt] = useState<string | null>(null);
+
+  // "Check my subscriptions" — asks the scheduled Claude audit (which reads
+  // the founder's receipt emails on his Mac) to run its sweep. Not instant:
+  // the web app itself can't read Gmail, so the button files the request.
+  const requestAudit = async () => {
+    setAuditBusy(true);
+    try {
+      const res = await fetchWithAuth('/api/admin/money/tech-stack', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'request_audit' }),
+      });
+      const json = await res.json();
+      if (json.ok) setAuditRequestedAt(json.data?.auditRequestedAt ?? new Date().toISOString());
+    } finally { setAuditBusy(false); }
+  };
 
   const load = async () => {
     try {
@@ -60,6 +78,7 @@ export function MoneySurface() {
         const data = json.data as StackData;
         setD(data);
         setLines(data.subscriptions.map((s) => ({ id: s.id, name: s.name, monthlyUsd: String(s.monthlyUsd), serviceKey: s.serviceKey })));
+        setAuditRequestedAt(data.auditRequestedAt);
         setLoadErr(null);
       } else setLoadErr(json.error ?? 'Could not load the money board.');
     } catch (e) { setLoadErr(`Network error: ${(e as Error).message}`); }
@@ -125,7 +144,18 @@ export function MoneySurface() {
             What Staxis <span style={{ fontStyle: 'italic' }}>costs to run</span>
           </h1>
         </div>
-        <Btn size="sm" variant="ghost" onClick={() => { void load(); }} style={{ color: '#fff', borderColor: dimWhite(.25) }}>Refresh</Btn>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          {auditRequestedAt ? (
+            <span className="mono" style={{ fontSize: 10, color: 'var(--forest)' }}>
+              CHECK REQUESTED — Claude reads your receipts &amp; updates this board, usually same day
+            </span>
+          ) : (
+            <Btn size="sm" variant="forest" onClick={() => void requestAudit()} disabled={auditBusy}>
+              {auditBusy ? '…' : 'Check my subscriptions'}
+            </Btn>
+          )}
+          <Btn size="sm" variant="ghost" onClick={() => { void load(); }} style={{ color: '#fff', borderColor: dimWhite(.25) }}>Refresh</Btn>
+        </div>
       </header>
 
       {/* ── Hero: money out vs money in ─────────────────────────────────── */}
