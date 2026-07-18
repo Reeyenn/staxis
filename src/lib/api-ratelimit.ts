@@ -263,19 +263,12 @@ export type RateLimitEndpoint =
   | 'worklist-read'
   | 'worklist-assign'
   | 'worklist-complete'
-  // ── Inventory Ordering (2026-05-31) — GM/owner ordering suite. ALL keyed on
-  // the RAW property id (a real properties.id) — api_limits.property_id has an
-  // FK to properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
-  // would FK-violate. order-send fires Resend email → billing-impacting → fail
-  // CLOSED (in the set below). The rest are writes/reads → fail open.
-  | 'inventory-order-create'
-  | 'inventory-order-send'
-  | 'inventory-order-receive'
-  | 'inventory-orders-read'
+  // ── Inventory vendors (2026-05-31) — keyed on the RAW property id (a real
+  // properties.id) — api_limits.property_id has an FK to properties(id)
+  // (migration 0142), so a hashToRateLimitKey pseudo-UUID would FK-violate.
+  // (The order-create/send/receive + catalog + spend-rollup keys were removed
+  // with the ordering flow, 2026-07-18.)
   | 'inventory-vendors'
-  | 'inventory-catalog-read'
-  | 'inventory-catalog-import'
-  | 'inventory-spend-rollup'
   // ── Knowledge hub (0252) — manager-gated. knowledge-presign mints a signed
   // upload URL; knowledge-write covers the document register (synchronous
   // storage download + text extraction). Both keyed on the (pid,userId)
@@ -508,14 +501,7 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Inventory Ordering — per-property (raw pid). order-create/approve/receive
   // are deliberate manager actions; order-send fires email (billing); reads are
   // panel polls. Tuned to "a manager working through orders" with headroom.
-  'inventory-order-create':      60,
-  'inventory-order-send':        60,
-  'inventory-order-receive':    200,
-  'inventory-orders-read':      600,
   'inventory-vendors':          200,
-  'inventory-catalog-read':     120,
-  'inventory-catalog-import':    20,
-  'inventory-spend-rollup':     120,
   // Packages — per-property (raw pid). read = the polled list; write covers
   // create / pickup / delete; scan-label is Claude Vision; presign mints a
   // signed upload URL. Tuned to "a busy front desk".
@@ -678,10 +664,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Anthropic / Twilio spend.
   'financials-scan-invoice',
   'financials-scan-quote',
-  // Inventory order-send fires a Resend email to the vendor. Fail CLOSED so a
-  // Supabase blip can't uncap email spend. (The Resend wrapper also enforces a
-  // per-recipient 5/hr cap; this is the per-property guardrail.)
-  'inventory-order-send',
   // Packages — scan-label (Claude Vision). Fail CLOSED so a DB blip can't
   // uncap Anthropic spend.
 ]);

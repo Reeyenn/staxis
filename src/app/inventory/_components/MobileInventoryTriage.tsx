@@ -72,7 +72,6 @@ export function MobileInventoryTriage({
   );
   const countedItems = items.filter((item) => !item.uncounted);
   const orderNowCount = countedItems.filter((item) => item.status === 'critical').length;
-  const reorderCount = countedItems.filter((item) => item.status !== 'good').length;
   // Selected tab's valuation for the masthead (same basis as shelfValue).
   const activeTab = bucket !== 'all' ? tabs.find((tb) => tb.key === bucket) ?? null : null;
   const activeTabValue = activeTab
@@ -88,21 +87,13 @@ export function MobileInventoryTriage({
         leading: 'arrow',
         badge: items.length,
       },
-      {
-        key: 'scan',
-        label: tx.addDelivery,
-        variant: 'sage',
-        leading: 'arrow',
-      },
-      {
-        key: 'reorder',
-        label: tx.reorderList,
-        variant: 'attention',
-        leading: 'dot',
-        badge: reorderCount,
-      },
     ];
-    if (canManage) next.push({ key: 'orders', label: tx.orders });
+    // Add-delivery writes stock + spend — management only, same as the
+    // desktop rail. openOverlay already blocks the tap for non-managers;
+    // gating here too avoids showing a button that silently does nothing.
+    if (canManage) {
+      next.push({ key: 'scan', label: tx.addDelivery, variant: 'sage', leading: 'arrow' });
+    }
     next.push({ key: 'ai', label: tx.aiHelper });
     next.push({ key: 'history', label: tx.history });
     if (canViewFinancials) {
@@ -110,7 +101,7 @@ export function MobileInventoryTriage({
       next.push({ key: 'budgets', label: tx.budgets });
     }
     return next;
-  }, [canManage, canViewFinancials, items.length, reorderCount, tx]);
+  }, [canManage, canViewFinancials, items.length, tx]);
 
   const filterTabs = useMemo(
     () => [

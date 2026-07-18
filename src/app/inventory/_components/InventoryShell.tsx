@@ -70,14 +70,11 @@ import type { DisplayItem } from './types';
 import type { StockBucket, StockStatus } from './tokens';
 
 import { CountSheet } from './overlays/CountSheet';
-import { ReorderPanel } from './overlays/ReorderPanel';
 import { ReportsPanel } from './overlays/ReportsPanel';
 import { HistoryPanel } from './overlays/HistoryPanel';
 import { BudgetsPanel } from './overlays/BudgetsPanel';
 import { DeliverySheet } from './overlays/DeliverySheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
-import { OrdersPanel } from './overlays/OrdersPanel';
-import { OrderingSettingsPanel } from './overlays/OrderingSettingsPanel';
 import { AiReportSheet } from './overlays/AiReportSheet';
 import { t, invLang, dateLocale } from './inv-i18n';
 
@@ -88,9 +85,6 @@ import { t, invLang, dateLocale } from './inv-i18n';
 type OverlayKey =
   | 'count'
   | 'scan'
-  | 'reorder'
-  | 'orders'
-  | 'ordersettings'
   | 'reports'
   | 'history'
   | 'budgets'
@@ -98,10 +92,8 @@ type OverlayKey =
   | 'add'
   | null;
 
-// 'ordersettings' is parked (coming soon — see Sidebar): the overlay wiring
-// stays, but neither the rail nor a ?action= deep link can open it.
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reorder', 'orders', 'reports', 'history', 'budgets', 'ai', 'add',
+  'count', 'scan', 'reports', 'history', 'budgets', 'ai', 'add',
 ];
 
 // Shared container for the full-page loading / load-error notices (identical
@@ -346,7 +338,7 @@ export function InventoryShell() {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
       if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
-      if ((action === 'scan' || action === 'orders' || action === 'ordersettings') && !canManage) return;
+      if (action === 'scan' && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
       if (action === 'add') setEditItem(null);
@@ -510,10 +502,6 @@ export function InventoryShell() {
     return () => ro.disconnect();
   }, [tabStatMounted]);
 
-  const reorderCount = useMemo(
-    () => countedItems.filter((d) => d.status !== 'good').length,
-    [countedItems],
-  );
   // Show distinct count sessions, not raw per-item rows. New atomic saves use
   // countSessionId; pre-0310 rows retain their exact-timestamp grouping.
   const historyCount = useMemo(() => {
@@ -551,7 +539,7 @@ export function InventoryShell() {
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
-    if ((k === 'scan' || k === 'orders' || k === 'ordersettings') && !canManage) return;
+    if (k === 'scan' && !canManage) return;
     if ((k === 'reports' || k === 'budgets') && !canViewFinancials) return;
     setOverlay(k as OverlayKey);
   }, [canManage, canViewFinancials]);
@@ -1191,7 +1179,6 @@ export function InventoryShell() {
         <Sidebar
           lang={L}
           totalItems={totalItems}
-          reorderCount={reorderCount}
           historyCount={historyCount}
           spendSpent={totalSpent}
           spendCap={totalCap}
@@ -1260,41 +1247,12 @@ export function InventoryShell() {
         tabLayout={tabLayout}
       />
 
-      <ReorderPanel
-        open={overlay === 'reorder'}
-        onClose={() => { closeOverlay(); void refreshData(); }}
-        items={items}
-        display={display}
-        budgets={budgets}
-        sections={budgetSections}
-        budgetMode={budgetMode}
-        spendDetail={spendDetail}
-        averages={averages}
-        mlRateMap={EMPTY_ML_RATES}
-        canManage={canManage}
-        canViewFinancials={canViewFinancials}
-        onViewOrders={() => setOverlay('orders')}
-      />
-
-      <OrdersPanel
-        open={overlay === 'orders'}
-        onClose={() => { closeOverlay(); void refreshData(); }}
-        canManage={canManage}
-        onChanged={() => void refreshData()}
-      />
-
-      <OrderingSettingsPanel
-        open={overlay === 'ordersettings'}
-        onClose={closeOverlay}
-        canManage={canManage}
-        onChanged={() => void refreshData()}
-      />
-
       <ReportsPanel
         lang={L}
         open={overlay === 'reports' && canViewFinancials}
         onClose={closeOverlay}
         display={display}
+        customNameById={customNameById}
       />
 
       <HistoryPanel

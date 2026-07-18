@@ -9,8 +9,7 @@
 //     re-show resets the timer, fixed top-center.
 //   - front-desk/page.tsx        — success/error pill, 2.5s auto-dismiss,
 //     fixed top-center.
-//   - inventory OrdersPanel banner() — inline strip, tone = border color,
-//     no timer (see <Banner/> in toast.tsx).
+//   - inline strips, tone = border color, no timer (see <Banner/> in toast.tsx).
 
 import type { CSSProperties, ReactNode } from 'react';
 
