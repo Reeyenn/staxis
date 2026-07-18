@@ -463,45 +463,46 @@ export function MissionControlSurface() {
           )}
         </RosterSection>
 
-        {/* RIGHT — the non-AI machinery, stacked: prediction over chores. */}
-        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 22 }}>
-          <RosterSection
-            eyebrow="Prediction engine"
-            count={predictionWorkers.length}
-            eyebrowColor={dimWhite(.46)}
-            subtitle="Classic forecasting math — learns from numbers, doesn't think."
-            last
-          >
-            {workers === null ? (
-              <DarkEmpty text="Prediction jobs will appear here." />
-            ) : predictionWorkers.length === 0 ? (
-              <DarkEmpty text="No prediction jobs yet." />
-            ) : (
-              <div style={{ background: dimWhite(.04), border: `1px solid ${dimWhite(.1)}`, borderRadius: 12, padding: '13px 14px', display: 'flex', flexDirection: 'column', gap: 11 }}>
-                {predictionWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
-              </div>
-            )}
-          </RosterSection>
-          <RosterSection
-            eyebrow="Scheduled chores"
-            count={timerWorkers.length}
-            eyebrowColor={dimWhite(.42)}
-            subtitle="Plain timers doing janitor work."
-            last
-          >
-            {workers === null ? (
-              <DarkEmpty text="Scheduled chores will appear here." />
-            ) : timerWorkers.length === 0 ? (
-              <DarkEmpty text="No scheduled chores yet." />
-            ) : (
-              <ChoresRow rows={timerWorkers} />
-            )}
-          </RosterSection>
-        </div>
+        {/* RIGHT — the prediction engine (classic ML, no language model). */}
+        <RosterSection
+          eyebrow="Prediction engine"
+          count={predictionWorkers.length}
+          eyebrowColor={dimWhite(.46)}
+          subtitle="Classic forecasting math — learns from numbers, doesn't think."
+          last
+        >
+          {workers === null ? (
+            <DarkEmpty text="Prediction jobs will appear here." />
+          ) : predictionWorkers.length === 0 ? (
+            <DarkEmpty text="No prediction jobs yet." />
+          ) : (
+            <div style={{ background: dimWhite(.04), border: `1px solid ${dimWhite(.1)}`, borderRadius: 12, padding: '13px 14px', display: 'flex', flexDirection: 'column', gap: 11 }}>
+              {predictionWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
+            </div>
+          )}
+        </RosterSection>
       </div>
 
-      {/* ── Block 3 — inbox + errors ──────────────────────────────────── */}
+      {/* ── Block 3 — second three-column row (owner's layout): chores ·
+          needs-your-okay · errors. ─────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20, alignItems: 'start' }}>
+        {/* Scheduled chores */}
+        <RosterSection
+          eyebrow="Scheduled chores"
+          count={timerWorkers.length}
+          eyebrowColor={dimWhite(.42)}
+          subtitle="Plain timers doing janitor work."
+          last
+        >
+          {workers === null ? (
+            <DarkEmpty text="Scheduled chores will appear here." />
+          ) : timerWorkers.length === 0 ? (
+            <DarkEmpty text="No scheduled chores yet." />
+          ) : (
+            <ChoresRow rows={timerWorkers} />
+          )}
+        </RosterSection>
+
         {/* Needs your okay */}
         <section style={{ minWidth: 0 }}>
           <span className="caps" style={{ color: dimWhite(.5) }}>Needs your okay · {attentionCount}</span>
