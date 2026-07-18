@@ -15,8 +15,14 @@ export interface DisplayItem {
   /** Hotel-defined custom category id (0307), or null for a built-in item. */
   customCategoryId: string | null;
   thumb: ThumbKind;
-  counted: number;          // last physical count (currentStock)
-  estimated: number;        // ML/occupancy estimate as of now
+  counted: number;          // last physical count (currentStock — TOTAL incl. set-aside)
+  /** Units owned but unusable right now (stained / awaiting repair). Counted
+   *  in value, excluded from usable stock (0321). */
+  setAside: number;
+  /** estimated − setAside, clamped at 0 — what can actually be used today.
+   *  Drives status + days-left so 30 stained sheets can't hide a shortage. */
+  usable: number;
+  estimated: number;        // ML/occupancy estimate as of now (TOTAL incl. set-aside)
   par: number;
   unit: string;
   unitCost: number;

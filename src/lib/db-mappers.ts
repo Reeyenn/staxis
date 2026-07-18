@@ -643,6 +643,7 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
     category: parseUnionField(r.category, INVENTORY_CATEGORIES, 'housekeeping'),
     customCategoryId: (r.custom_category_id as string | null) ?? null,
     currentStock: Number(r.current_stock ?? 0),
+    setAside: Number(r.set_aside ?? 0),
     parLevel: Number(r.par_level ?? 0),
     reorderAt: r.reorder_at == null ? undefined : Number(r.reorder_at),
     unit: String(r.unit ?? ''),
@@ -673,6 +674,7 @@ export function toInventoryRow(i: Omit<Partial<InventoryItem>, 'unitCost' | 'ven
     // undefined → not sent (preserve). null → clear (back to built-in bucket).
     custom_category_id: i.customCategoryId,
     current_stock: i.currentStock,
+    set_aside: i.setAside,
     par_level: i.parLevel,
     reorder_at: i.reorderAt,
     unit: i.unit,

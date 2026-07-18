@@ -37,6 +37,16 @@ const MONTHS: Record<Lang, string[]> = {
   en: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
   es: ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'],
 };
+// ── Set-aside marker (0321) — label + the ⓘ hover explanation ─────────────
+export function setAsideTagLabel(lang: Lang, count: number): string {
+  return lang === 'es' ? `${count} apartado${count === 1 ? '' : 's'}` : `${count} set aside`;
+}
+export function setAsideTip(lang: Lang): string {
+  return lang === 'es'
+    ? 'Apartado = no se puede usar por ahora (manchado, dañado, en reparación) pero sigue siendo suyo. Cuenta en el valor del inventario, no en el stock utilizable.'
+    : "Set aside = can't be used right now (stained, damaged, being fixed) but still yours. Counts in inventory value, not in usable stock.";
+}
+
 export function monthsFor(lang: Lang): string[] {
   return MONTHS[lang] ?? MONTHS.en;
 }

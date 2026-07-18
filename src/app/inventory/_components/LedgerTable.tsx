@@ -18,6 +18,8 @@ import { Btn } from './Btn';
 import { StatusDot } from './StatusPill';
 import { NoItemsPanel } from './NoItemsPanel';
 import { useBucketFilter } from './list-helpers';
+import { SetAsideTag } from './SetAsideTag';
+import { setAsideTagLabel } from './inv-i18n';
 import { fmtMoney, fmtInt } from './format';
 import { useFlipList } from './motion';
 import type { DisplayItem } from './types';
@@ -177,10 +179,14 @@ export function LedgerTable({
     else { setSortKey(key); setSortDir(1); }
   };
 
+  // Units set aside across the current view — appended to the live summary
+  // so the pile is visible even without scanning row tags.
+  const setAsideTotal = counted.reduce((s, d) => s + d.setAside, 0);
   const summaryLabel =
     `${summary.critical} ${tx.colOrderNow.toLowerCase()} · ` +
     `${summary.low} ${tx.colOrderSoon.toLowerCase()} · ` +
-    `${summary.good} ${tx.colStocked.toLowerCase()}`;
+    `${summary.good} ${tx.colStocked.toLowerCase()}` +
+    (setAsideTotal > 0 ? ` · ${setAsideTagLabel(lang, setAsideTotal)}` : '');
 
   return (
     <div>
@@ -366,11 +372,12 @@ function LedgerRow({
   quickCountLocked: boolean;
 }) {
   const uncounted = d.uncounted;
-  // Projection (occupancy-drained estimate) drives the bar; the EDITABLE
-  // number and its valuation must be the real last count. Basing the stepper
-  // on the estimate made one tap silently overwrite the physical count with
-  // the projection (e.g. counted 280, estimated 273, "+" saved 274).
-  const have = Math.max(0, Math.round(d.estimated));
+  // USABLE stock (projection minus set-aside) drives the bar — it must agree
+  // with the status pill, and a set-aside pile can't serve rooms. The
+  // EDITABLE number and its valuation stay on the real last count (TOTAL):
+  // basing the stepper on the estimate made one tap silently overwrite the
+  // physical count with the projection (counted 280, estimated 273, "+" → 274).
+  const have = d.usable;
   const onHand = Math.max(0, Math.round(d.counted));
   const c = uncounted ? T.dim : statusText[d.status];
 
@@ -409,6 +416,9 @@ function LedgerRow({
           </div>
           <span
             style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
               fontFamily: fonts.mono,
               fontSize: 8.5,
               letterSpacing: '0.04em',
@@ -416,6 +426,7 @@ function LedgerRow({
             }}
           >
             {(d.customCategoryId && customNameById?.get(d.customCategoryId)) || catGlyph[d.cat]} · {d.vendor || '—'}
+            <SetAsideTag count={d.setAside} lang={lang} />
           </span>
         </div>
       </div>

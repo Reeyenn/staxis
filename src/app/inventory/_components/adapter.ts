@@ -32,7 +32,12 @@ export function toDisplayItem(
   }
 
   const par = Math.max(0, item.parLevel || 0);
-  const status = ratioStatus(estimated, par);
+  // Set-aside units (stained / awaiting repair, 0321) are owned but not
+  // usable: value math stays on the TOTAL, but status and days-left run on
+  // what can actually be used — 30 stained sheets must not hide a shortage.
+  const setAside = Math.max(0, item.setAside ?? 0);
+  const usable = Math.max(0, Math.round(estimated) - setAside);
+  const status = ratioStatus(usable, par);
 
   // Honesty-audit Phase 4: explicit burn-source selection via the pure
   // helper in @/lib/inventory-predictions. The previous inline if/else
@@ -68,7 +73,8 @@ export function toDisplayItem(
           opts.dailyAverages.avgDailyStayovers,
         )
       : selected.burnPerDay;
-  const daysLeft = burnForDays > 0 ? estimated / burnForDays : 90;
+  // Days-left runs on USABLE stock — a set-aside pile can't serve rooms.
+  const daysLeft = burnForDays > 0 ? usable / burnForDays : 90;
 
   return {
     raw: item,
@@ -78,6 +84,8 @@ export function toDisplayItem(
     customCategoryId: item.customCategoryId ?? null,
     thumb: thumbKindFor(item.name, item.category as InvCat),
     counted: item.currentStock,
+    setAside,
+    usable,
     estimated: Math.max(0, Math.round(estimated)),
     par,
     unit: item.unit || 'unit',
@@ -111,19 +119,23 @@ export function toDisplayItem(
 export function applyDraft(d: DisplayItem, draft: number | undefined): DisplayItem {
   if (draft == null) return d;
   const value = Math.max(0, Math.round(draft));
+  // The stepper edits the TOTAL on hand; the set-aside portion stays put, so
+  // usable (which drives status/days) moves with the draft.
+  const usable = Math.max(0, value - d.setAside);
   let daysLeft: number;
-  if (d.estimated > 0) {
-    // burn/day ≈ estimated / daysLeft → new days = value / burn = value·days/est
-    daysLeft = Math.max(0, Math.min(90, Math.round((value / d.estimated) * d.daysLeft)));
+  if (d.usable > 0) {
+    // burn/day ≈ usable / daysLeft → new days = usable·days/oldUsable
+    daysLeft = Math.max(0, Math.min(90, Math.round((usable / d.usable) * d.daysLeft)));
   } else {
-    // Stepping up off a zero estimate: no burn signal to project from.
-    daysLeft = value > 0 ? 90 : 0;
+    // Stepping up off a zero usable estimate: no burn signal to project from.
+    daysLeft = usable > 0 ? 90 : 0;
   }
   return {
     ...d,
     counted: value,
     estimated: value,
-    status: ratioStatus(value, d.par),
+    usable,
+    status: ratioStatus(usable, d.par),
     daysLeft,
     value: value * d.unitCost,
     uncounted: false,

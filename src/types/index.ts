@@ -278,6 +278,13 @@ export interface InventoryItem {
    */
   customCategoryId?: string | null;
   currentStock: number;
+  /**
+   * Units of currentStock that can't be used right now (stained linens,
+   * awaiting repair) but are still owned — counted in inventory VALUE,
+   * excluded from usable stock (0321). usable = currentStock − setAside,
+   * clamped at 0 in the display layer.
+   */
+  setAside?: number;
   parLevel: number;             // minimum desired stock
   reorderAt?: number;           // stock threshold that triggers a reorder notification
   unit: string;                 // "sets", "units", "bottles", etc.

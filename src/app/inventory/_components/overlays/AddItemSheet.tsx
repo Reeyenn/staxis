@@ -26,9 +26,9 @@ import { T, fonts, type InvCat } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
-import { numGuard, inputLg as inputStyle } from './form-kit';
+import { numGuard, intGuard, inputLg as inputStyle } from './form-kit';
 import { apiListVendors } from '../ordering-api';
-import { catLabelFor, type Lang } from '../inv-i18n';
+import { catLabelFor, setAsideTip, type Lang } from '../inv-i18n';
 
 interface AddItemSheetProps {
   lang: Lang;
@@ -69,6 +69,8 @@ function aisStrings(lang: Lang) {
       namePh: 'e.g. Bath towels',
       category: 'Category',
       onHand: 'On hand',
+      setAside: 'Set aside',
+      usableNow: (n: number) => `= ${n} usable`,
       parLevel: 'Par level',
       unitCost: 'Unit cost ($)',
       vendor: 'Vendor',
@@ -83,7 +85,7 @@ function aisStrings(lang: Lang) {
       // Field tooltips (hover the ⓘ) — one plain line each.
       tipName: 'What you call this item.',
       tipCategory: 'Which team uses it — housekeeping, maintenance, or food & beverage.',
-      tipOnHand: 'How many you have right now.',
+      tipOnHand: 'How many you have right now, in total (including any set aside).',
       tipParLevel: 'The amount you want to keep in stock. Below it means it’s time to reorder.',
       tipUnitCost: 'What one unit costs you to buy.',
       tipVendor: 'Who you order this from.',
@@ -102,6 +104,8 @@ function aisStrings(lang: Lang) {
       namePh: 'ej. Toallas de baño',
       category: 'Categoría',
       onHand: 'Disponible',
+      setAside: 'Apartado',
+      usableNow: (n: number) => `= ${n} utilizables`,
       parLevel: 'Nivel par',
       unitCost: 'Costo unitario ($)',
       vendor: 'Proveedor',
@@ -116,7 +120,7 @@ function aisStrings(lang: Lang) {
       // Tooltips de cada campo (pasa el cursor sobre la ⓘ) — una línea simple.
       tipName: 'Cómo llamas a este artículo.',
       tipCategory: 'Qué equipo lo usa — limpieza, mantenimiento o alimentos y bebidas.',
-      tipOnHand: 'Cuántos tienes en este momento.',
+      tipOnHand: 'Cuántos tienes en este momento, en total (incluye los apartados).',
       tipParLevel: 'La cantidad que quieres mantener en stock. Por debajo, toca volver a pedir.',
       tipUnitCost: 'Lo que te cuesta comprar una unidad.',
       tipVendor: 'A quién le pides este artículo.',
@@ -166,6 +170,9 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
     countedAt: Date;
   } | null>(null);
   const [parLevel, setParLevel] = useState<string>('0');
+  // Set-aside units (0321) — owned but unusable right now. Edit-only: a
+  // brand-new item starts at 0 (you set things aside after you own them).
+  const [setAsideInput, setSetAsideInput] = useState<string>('0');
   const [unitCost, setUnitCost] = useState<string>('');
   const [vendor, setVendor] = useState('');
   const [vendorId, setVendorId] = useState<string | null>(null);
@@ -197,6 +204,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
       setCustomCategoryId(item.customCategoryId ?? null);
       setCurrentStock(String(item.currentStock ?? 0));
       stockBaselineRef.current = item.currentStock ?? 0;
+      setSetAsideInput(String(item.setAside ?? 0));
       setParLevel(String(item.parLevel ?? 0));
       setUnitCost(item.unitCost != null ? String(item.unitCost) : '');
       setVendor(item.vendorName || '');
@@ -249,6 +257,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
           Number.isFinite(stockNum) && stockNum !== stockBaselineRef.current;
         await updateInventoryItem(user.uid, activePropertyId, item.id, {
           ...base,
+          setAside: Math.max(0, Math.round(Number(setAsideInput) || 0)),
           ...(canViewFinancials
             ? { unitCost: unitCost ? Number(unitCost) : null }
             : {}),
@@ -482,6 +491,26 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
             />
           </Field>
         </div>
+
+        {/* Set aside (0321) — edit-only: new items start with nothing set
+            aside. The ⓘ carries the one-line explanation everywhere. */}
+        {isEdit && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'end' }}>
+            <Field label={ais.setAside} tip={setAsideTip(lang)}>
+              <input
+                type="number"
+                min="0"
+                inputMode="numeric"
+                value={setAsideInput}
+                onChange={(e) => { const v = e.target.value; if (intGuard(v)) setSetAsideInput(v); }}
+                style={inputStyle}
+              />
+            </Field>
+            <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.dim, paddingBottom: 10 }}>
+              {ais.usableNow(Math.max(0, (Number(currentStock) || 0) - (Number(setAsideInput) || 0)))}
+            </span>
+          </div>
+        )}
 
         <div style={{ display: 'grid', gridTemplateColumns: canViewFinancials ? '1fr 1fr' : '1fr', gap: 12 }}>
           {canViewFinancials && (

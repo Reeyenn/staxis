@@ -14,6 +14,7 @@ import {
 } from './tokens';
 import type { DisplayItem } from './types';
 import { partitionMobileInventory } from './mobile-inventory-triage';
+import { SetAsideTag } from './SetAsideTag';
 import styles from './MobileInventoryTriage.module.css';
 
 export interface MobileInventoryTriageProps {
@@ -367,7 +368,10 @@ function InventoryCard({
   // count with a projection (same fix as LedgerRow.onHand on desktop).
   const onHand = Math.max(0, Math.round(item.counted));
   const par = Math.max(0, Math.round(item.par));
-  const fill = par > 0 ? Math.max(0, Math.min(100, (100 * onHand) / par)) : 100;
+  // The bar shows USABLE stock (total minus set-aside) so it agrees with the
+  // status color — a set-aside pile can't serve rooms.
+  const usableNow = Math.max(0, onHand - item.setAside);
+  const fill = par > 0 ? Math.max(0, Math.min(100, (100 * usableNow) / par)) : 100;
   const statusClass = item.uncounted ? styles.statusNeutral : STATUS_CLASS[item.status];
   const categoryClass = CATEGORY_CLASS[item.cat] ?? styles.categoryHousekeeping;
   const days = daysLabel(item);
@@ -388,7 +392,14 @@ function InventoryCard({
         {monogram(item.name)}
       </span>
       <div className={styles.itemBody}>
-        <div className={styles.itemName} title={item.name}>{item.name}</div>
+        <div className={styles.itemName} title={item.name}>
+          {item.name}
+          {item.setAside > 0 && (
+            <span style={{ marginLeft: 6 }}>
+              <SetAsideTag count={item.setAside} lang={lang} />
+            </span>
+          )}
+        </div>
         <div className={styles.stockRow}>
           <span
             className={styles.stockBar}

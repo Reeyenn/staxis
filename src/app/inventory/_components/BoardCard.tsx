@@ -3,6 +3,7 @@
 import React from 'react';
 import { T, fonts, statusText, catGlyph } from './tokens';
 import { Thumb } from './ItemThumb';
+import { SetAsideTag } from './SetAsideTag';
 import { StockBar } from './StockBar';
 import { Serif } from './Serif';
 import { fmtInt } from './format';
@@ -79,11 +80,17 @@ export function BoardCard({ lang, it, customNameById, onEdit }: BoardCardProps) 
             >
               {(it.customCategoryId && customNameById?.get(it.customCategoryId)) || catGlyph[it.cat]} · {it.vendor || '—'}
             </div>
+            {it.setAside > 0 && (
+              <div style={{ marginTop: 3 }}>
+                <SetAsideTag count={it.setAside} lang={lang} />
+              </div>
+            )}
           </div>
         </div>
         <div style={{ marginTop: 10 }}>
+          {/* Usable stock (minus set-aside) — must agree with the status color. */}
           <StockBar
-            current={it.estimated}
+            current={it.usable}
             par={it.par}
             status={it.status}
             height={6}

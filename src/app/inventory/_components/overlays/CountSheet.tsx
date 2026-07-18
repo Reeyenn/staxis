@@ -30,6 +30,7 @@ import type { InventoryItem, InventoryCustomCategory, InventoryTabLayout } from 
 import { T, fonts, statusColor, inBucket, type InvCat, type StockBucket } from '../tokens';
 import { Caps } from '../Caps';
 import { Btn } from '../Btn';
+import { SetAsideTag } from '../SetAsideTag';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { toDisplayItem } from '../adapter';
@@ -961,6 +962,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
             <CountLine
               key={d.id}
               d={d}
+              lang={lang}
               entry={entries[d.id] || { value: '', source: 'manual' }}
               onChange={(v) => setEntry(d.id, v)}
               disabled={retryLocked || addRetryLocked}
@@ -996,11 +998,13 @@ function AddField({ label, hint, children }: { label: string; hint?: string; chi
 // One slim count line: item name + a number box. Nothing else.
 function CountLine({
   d,
+  lang,
   entry,
   onChange,
   disabled = false,
 }: {
   d: DisplayItem;
+  lang: Lang;
   entry: Entry;
   onChange: (v: string) => void;
   disabled?: boolean;
@@ -1019,11 +1023,15 @@ function CountLine({
     >
       <span
         style={{
+          display: 'inline-flex', alignItems: 'center', gap: 8,
           fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink,
-          minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          minWidth: 0, overflow: 'hidden', whiteSpace: 'nowrap',
         }}
       >
-        {d.name}
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</span>
+        {/* Reminds the counter the pile exists: the count box is the TOTAL on
+            hand, set-aside included (the pile itself is edited on the item). */}
+        <SetAsideTag count={d.setAside} lang={lang} />
       </span>
       <input
         type="number"
