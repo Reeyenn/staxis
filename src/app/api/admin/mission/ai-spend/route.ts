@@ -35,6 +35,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdminOrCron } from '@/lib/admin-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { env } from '@/lib/env';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -190,7 +191,7 @@ export async function GET(req: NextRequest) {
   const subscriptions = ((settingsQ.data?.ai_subscriptions ?? []) as SubscriptionLine[])
     .filter((s) => s && typeof s.name === 'string' && typeof s.monthlyUsd === 'number');
 
-  const adminKey = process.env.ANTHROPIC_ADMIN_KEY;
+  const adminKey = env.ANTHROPIC_ADMIN_KEY;
   let billing: Billing | null = null;
   if (adminKey) {
     try { billing = await fetchBilling(adminKey); } catch { billing = null; }

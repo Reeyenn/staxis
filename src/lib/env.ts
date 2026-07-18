@@ -94,6 +94,8 @@ const ServerSchema = z.object({
 
   // ── Anthropic ─────────────────────────────────────────
   ANTHROPIC_API_KEY: z.string().startsWith('sk-ant-').optional(),
+  // Admin API key (billing reports) — powers the tech-stack spend board.
+  ANTHROPIC_ADMIN_KEY: z.string().startsWith('sk-ant-admin').optional(),
 
   // ── OpenAI ────────────────────────────────────────────
   // Required: powers Whisper STT (/api/agent/transcribe) and is treated as
