@@ -1304,9 +1304,20 @@ export function InventoryShell() {
         onClose={() => { closeOverlay(); }}
         item={editItem}
         canViewFinancials={canViewFinancials}
-        defaultCategory={bucket === 'breakfast' ? 'breakfast' : 'housekeeping'}
+        defaultCategory={bucket === 'breakfast' && !tabLayout.hidden.includes('breakfast') ? 'breakfast' : 'housekeeping'}
         customCategories={customCategories}
-        defaultCustomCategoryId={bucket.startsWith('custom:') ? bucket.slice(7) : null}
+        // Adding from a custom tab lands in that tab. Adding from All on a
+        // hotel that removed both built-in tabs preselects the first custom
+        // tab — otherwise the new item would default into hidden Housekeeping
+        // and appear under no named tab at all.
+        defaultCustomCategoryId={
+          bucket.startsWith('custom:')
+            ? bucket.slice(7)
+            : tabLayout.hidden.includes('general') && tabLayout.hidden.includes('breakfast') && customCategories.length > 0
+              ? customCategories[0].id
+              : null
+        }
+        hiddenBuiltins={tabLayout.hidden}
       />
     </div>
   );

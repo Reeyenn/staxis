@@ -43,6 +43,28 @@ const FEED_TABLES = [
   { key: 'dashboard_counts', label: 'Live counts', table: 'pms_in_house_snapshot' },
 ] as const;
 
+/**
+ * The robot writes paused_reason as raw developer text (some of it still
+ * pointing at pages that no longer exist, e.g. /admin/property-sessions).
+ * The founder reads this on screen, so translate the known messages to
+ * plain English here — the one place every admin consumer reads from.
+ * Returns null to suppress entirely (a "learning" reason isn't a hiccup
+ * while the learning run is actually in flight).
+ */
+function translatePausedReason(raw: string, mapperInFlight: boolean): string | null {
+  if (/no active knowledge file/i.test(raw)) {
+    // Expected state, not an error: the robot can't read this PMS until the
+    // learning run finishes. The panel already shows the learning card.
+    if (mapperInFlight) return null;
+    return 'The robot doesn’t know this PMS yet — a learning run is queued and starts shortly.';
+  }
+  if (/exceeded .* restarts/i.test(raw)) {
+    return 'The robot kept crashing and paused itself to be safe. Restart it once the cause is fixed.';
+  }
+  // Unknown message: show it, but strip any dead-page pointers.
+  return raw.replace(/;?\s*check \/admin\/[a-z-]+ for progress\.?/i, '.').replace(/\s*\/admin\/[a-z-]+\s*/g, ' ').trim();
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const auth = await requireAdmin(req);
@@ -129,10 +151,11 @@ export async function GET(req: NextRequest) {
 
   // Plain-English "what last went wrong" — paused reason wins, then a
   // bad-counts read (last-good preserved), then a validation streak.
+  const mapperInFlight = (mapperQ.data?.length ?? 0) > 0;
   const snapshot = (feedQs[FEED_TABLES.length - 1]?.data?.[0] ?? null) as SnapshotRow | null;
   let lastHiccup: string | null = null;
   if (session?.paused_reason) {
-    lastHiccup = session.paused_reason;
+    lastHiccup = translatePausedReason(session.paused_reason, mapperInFlight);
   } else if (snapshot?.has_error) {
     lastHiccup = 'Live counts hit a bad read — kept the last good numbers instead of overwriting.';
   } else if ((session?.read_failure_streak ?? 0) > 0) {

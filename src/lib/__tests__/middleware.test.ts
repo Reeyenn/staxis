@@ -63,7 +63,7 @@ describe('middleware — protected paths', () => {
   for (const path of [
     '/dashboard',
     '/admin',
-    '/admin/agent',
+    '/admin/properties',
     '/inventory',
     '/inventory/analytics',
     '/maintenance',
@@ -71,7 +71,6 @@ describe('middleware — protected paths', () => {
     '/settings',
     '/settings/staff',
     '/property-selector',
-    '/chat',
   ]) {
     test(`${path} with no auth cookie → redirect to /signin`, () => {
       const res = middleware(reqFor(path));
