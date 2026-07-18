@@ -9,6 +9,7 @@
 
 import type { InventoryCount } from '@/types';
 import { supabase, logErr, asRecordRows } from './_common';
+import { fetchAllRows } from '../supabase-paginate';
 import { fromInventoryCountRow } from '../db-mappers';
 
 export async function listInventoryCounts(
@@ -20,12 +21,25 @@ export async function listInventoryCounts(
   const columns = includeFinancials
     ? '*'
     : 'id,property_id,count_session_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes';
-  const { data, error } = await supabase
-    .from('inventory_counts')
-    .select(columns)
-    .eq('property_id', pid)
-    .order('counted_at', { ascending: false })
-    .limit(limit);
-  if (error) { logErr('listInventoryCounts', error); throw error; }
-  return asRecordRows(data).map(fromInventoryCountRow);
+  // Paged: PostgREST caps every response at 1000 rows, so a bare
+  // .limit(2000) would silently return half the requested history
+  // (see supabase-paginate.ts).
+  try {
+    const rows = await fetchAllRows<Record<string, unknown>>(
+      // Cast: the dynamic column list defeats supabase-js's select-string
+      // type parser (it infers ParserError instead of rows) — runtime shape
+      // is unaffected.
+      (from, to) => supabase
+        .from('inventory_counts')
+        .select(columns)
+        .eq('property_id', pid)
+        .order('counted_at', { ascending: false })
+        .range(from, to) as unknown as PromiseLike<{ data: Record<string, unknown>[] | null; error: unknown }>,
+      { maxRows: limit },
+    );
+    return asRecordRows(rows).map(fromInventoryCountRow);
+  } catch (error) {
+    logErr('listInventoryCounts', error);
+    throw error;
+  }
 }

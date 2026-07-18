@@ -25,6 +25,7 @@ import { requireFinanceAccess } from '@/lib/financials/api-gate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { localDayStartUTC } from '@/lib/db/inventory-accounting';
+import { fetchAllRows } from '@/lib/supabase-paginate';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 
@@ -39,27 +40,6 @@ const MAX_WINDOW_DAYS = 750;
 function parseDate(s: string): [number, number, number] {
   const [y, m, d] = s.split('-').map(Number);
   return [y, m, d];
-}
-
-// PostgREST caps every response at 1000 rows REGARDLESS of .limit() on this
-// project (verified empirically 2026-07-18: limit=2000 returned exactly 1000).
-// A busy hotel exceeds 1000 count rows in a single month, so summing one page
-// would silently understate the totals — page through instead.
-const PAGE = 1000;
-const MAX_PAGES = 60; // 60k rows ≫ any real 750-day window
-
-async function fetchAllRows<T>(
-  makePage: (fromRow: number, toRow: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
-): Promise<T[]> {
-  const out: T[] = [];
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const { data, error } = await makePage(page * PAGE, page * PAGE + PAGE - 1);
-    if (error) throw error;
-    const rows = data ?? [];
-    out.push(...rows);
-    if (rows.length < PAGE) break;
-  }
-  return out;
 }
 
 // Same delivery/discard valuation as getInventoryAccountingSummary: prefer the

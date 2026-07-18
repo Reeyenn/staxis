@@ -13,6 +13,7 @@
 
 import type { InventoryBudget, InventoryBudgetSection, InventoryCategory } from '@/types';
 import { supabase, logErr, asRecordRows } from './_common';
+import { fetchAllRows } from '../supabase-paginate';
 import {
   toInventoryBudgetRow,
   fromInventoryBudgetRow,
@@ -155,13 +156,24 @@ export async function monthToDateSpendDetail(
   // LEFT join on inventory: an order whose item was later deleted still cost
   // real money — it must count in `total` (matching the owner's cross-property
   // spend rollup) even though it can't be attributed to a category bucket.
-  const { data, error } = await supabase
-    .from('inventory_orders')
-    .select('total_cost, quantity, unit_cost, item_id, inventory(category)')
-    .eq('property_id', pid)
-    .gte('received_at', monthStart.toISOString())
-    .lt('received_at', monthEndExclusive.toISOString());
-  if (error) { logErr('monthToDateSpendDetail', error); throw error; }
+  // Paged: a busy month can exceed PostgREST's 1000-row response cap, which
+  // would silently understate the month's spend (see supabase-paginate.ts).
+  let data: unknown[];
+  try {
+    data = await fetchAllRows(
+      (from, to) => supabase
+        .from('inventory_orders')
+        .select('total_cost, quantity, unit_cost, item_id, inventory(category)')
+        .eq('property_id', pid)
+        .gte('received_at', monthStart.toISOString())
+        .lt('received_at', monthEndExclusive.toISOString())
+        .order('received_at', { ascending: true })
+        .range(from, to),
+    );
+  } catch (error) {
+    logErr('monthToDateSpendDetail', error);
+    throw error;
+  }
 
   const byCat: Record<InventoryCategory, number> = {
     housekeeping: 0,
@@ -213,15 +225,26 @@ export async function monthlySpendHistory(
   earliestMonthStart: Date,
   endExclusive: Date,
 ): Promise<MonthlySpend[]> {
-  const { data, error } = await supabase
-    .from('inventory_orders')
-    // LEFT join — deleted-item orders still count toward each month's total
-    // (see monthToDateSpendDetail).
-    .select('received_at, total_cost, quantity, unit_cost, item_id, inventory(category)')
-    .eq('property_id', pid)
-    .gte('received_at', earliestMonthStart.toISOString())
-    .lt('received_at', endExclusive.toISOString());
-  if (error) { logErr('monthlySpendHistory', error); throw error; }
+  // Paged — six months of delivery rows can exceed the 1000-row response cap
+  // (see supabase-paginate.ts).
+  let data: unknown[];
+  try {
+    data = await fetchAllRows(
+      (from, to) => supabase
+        .from('inventory_orders')
+        // LEFT join — deleted-item orders still count toward each month's total
+        // (see monthToDateSpendDetail).
+        .select('received_at, total_cost, quantity, unit_cost, item_id, inventory(category)')
+        .eq('property_id', pid)
+        .gte('received_at', earliestMonthStart.toISOString())
+        .lt('received_at', endExclusive.toISOString())
+        .order('received_at', { ascending: true })
+        .range(from, to),
+    );
+  } catch (error) {
+    logErr('monthlySpendHistory', error);
+    throw error;
+  }
 
   const buckets = new Map<string, MonthlySpend>();
   for (const r of (data ?? []) as Array<{

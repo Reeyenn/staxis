@@ -28,6 +28,7 @@
 import type { InventoryCategory } from '@/types';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { logErr } from './_common';
+import { fetchAllRows } from '../supabase-paginate';
 
 // The aggregator is server-side only (called from /api/inventory/accounting-summary
 // after a session check). The caller passes a SupabaseClient — typically the
@@ -176,32 +177,50 @@ export async function getInventoryAccountingSummary(
   if (itemsErr) { logErr('accounting/items', itemsErr); throw itemsErr; }
   const items = (itemsRaw ?? []) as InventoryItemRow[];
 
-  // 2. Receipts in window (per category).
-  const { data: ordersRaw, error: ordersErr } = await client
+  // 2-4. Receipts / discards / reconciliations in window. Paged — a busy
+  // month exceeds PostgREST's 1000-row response cap (40 items × daily counts
+  // ≈ 1,200 reconciliation rows), which would silently understate the money
+  // totals (see supabase-paginate.ts).
+  const paged = async <T,>(
+    label: string,
+    makePage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
+    bestEffort = false,
+  ): Promise<T[]> => {
+    try {
+      return await fetchAllRows(makePage);
+    } catch (e) {
+      logErr(label, e);
+      if (bestEffort) return [];
+      throw e;
+    }
+  };
+
+  const ordersRaw = await paged('accounting/orders', (a, b) => client
     .from('inventory_orders')
     .select('total_cost, quantity, unit_cost, received_at, item_id, inventory!inner(category)')
     .eq('property_id', pid)
     .gte('received_at', monthStart.toISOString())
-    .lt('received_at', monthEndExclusive.toISOString());
-  if (ordersErr) { logErr('accounting/orders', ordersErr); throw ordersErr; }
+    .lt('received_at', monthEndExclusive.toISOString())
+    .order('received_at', { ascending: true })
+    .range(a, b));
 
-  // 3. Discards in window (per category via item lookup).
-  const { data: discardsRaw, error: discErr } = await client
+  const discardsRaw = await paged('accounting/discards', (a, b) => client
     .from('inventory_discards')
     .select('cost_value, quantity, unit_cost, discarded_at, item_id, inventory!inner(category)')
     .eq('property_id', pid)
     .gte('discarded_at', monthStart.toISOString())
-    .lt('discarded_at', monthEndExclusive.toISOString());
-  if (discErr) { logErr('accounting/discards', discErr); throw discErr; }
+    .lt('discarded_at', monthEndExclusive.toISOString())
+    .order('discarded_at', { ascending: true })
+    .range(a, b));
 
-  // 4. Reconciliations in window (unaccounted shrinkage $).
-  const { data: recRaw, error: recErr } = await client
+  const recRaw = await paged('accounting/recs', (a, b) => client
     .from('inventory_reconciliations')
     .select('unaccounted_variance_value, reconciled_at, item_id, inventory!inner(category)')
     .eq('property_id', pid)
     .gte('reconciled_at', monthStart.toISOString())
-    .lt('reconciled_at', monthEndExclusive.toISOString());
-  if (recErr) { logErr('accounting/recs', recErr); throw recErr; }
+    .lt('reconciled_at', monthEndExclusive.toISOString())
+    .order('reconciled_at', { ascending: true })
+    .range(a, b));
 
   // 5. Budgets for the month. The date-column key comes from the window (the
   // local first-of-month), not from slicing the instant — in UTC+ zones the
@@ -351,22 +370,25 @@ export async function getInventoryAccountingSummary(
   }
 
   // 8. YTD spend by month and category — last 12 months including current.
+  // Paged: a year of delivery rows blows straight past the 1000-row cap.
   const ytdStart = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() - 11, 1));
-  const { data: ytdOrders, error: ytdErr } = await client
+  const ytdOrders = await paged('accounting/ytd-orders', (a, b) => client
     .from('inventory_orders')
     .select('total_cost, quantity, unit_cost, received_at, inventory!inner(category)')
     .eq('property_id', pid)
     .gte('received_at', ytdStart.toISOString())
-    .lt('received_at', monthEndExclusive.toISOString());
-  if (ytdErr) { logErr('accounting/ytd-orders', ytdErr); throw ytdErr; }
+    .lt('received_at', monthEndExclusive.toISOString())
+    .order('received_at', { ascending: true })
+    .range(a, b));
 
-  const { data: ytdDiscards, error: ytdDErr } = await client
+  const ytdDiscards = await paged('accounting/ytd-discards', (a, b) => client
     .from('inventory_discards')
     .select('cost_value, discarded_at')
     .eq('property_id', pid)
     .gte('discarded_at', ytdStart.toISOString())
-    .lt('discarded_at', monthEndExclusive.toISOString());
-  if (ytdDErr) { logErr('accounting/ytd-discards', ytdDErr); throw ytdDErr; }
+    .lt('discarded_at', monthEndExclusive.toISOString())
+    .order('discarded_at', { ascending: true })
+    .range(a, b));
 
   const ytdBuckets = new Map<string, {
     monthStart: string;
@@ -436,18 +458,24 @@ export async function getInventoryAccountingSummary(
     unaccounted_variance_value: number | null;
     inventory: { name: string } | Array<{ name: string }> | null;
   };
-  const { data: discardsByItemRaw } = await client
+  // Best-effort (matches the old no-error-check reads): a failure logs and
+  // yields an empty problem list rather than failing the whole summary.
+  const discardsByItemRaw = await paged('accounting/problem-discards', (a, b) => client
     .from('inventory_discards')
     .select('item_id, cost_value, quantity, unit_cost, inventory!inner(name)')
     .eq('property_id', pid)
     .gte('discarded_at', monthStart.toISOString())
-    .lt('discarded_at', monthEndExclusive.toISOString());
-  const { data: recsByItemRaw } = await client
+    .lt('discarded_at', monthEndExclusive.toISOString())
+    .order('discarded_at', { ascending: true })
+    .range(a, b), true);
+  const recsByItemRaw = await paged('accounting/problem-recs', (a, b) => client
     .from('inventory_reconciliations')
     .select('item_id, unaccounted_variance_value, inventory!inner(name)')
     .eq('property_id', pid)
     .gte('reconciled_at', monthStart.toISOString())
-    .lt('reconciled_at', monthEndExclusive.toISOString());
+    .lt('reconciled_at', monthEndExclusive.toISOString())
+    .order('reconciled_at', { ascending: true })
+    .range(a, b), true);
 
   const problemMap = new Map<string, { itemId: string; itemName: string; discardValue: number; discardQty: number; unaccountedValue: number }>();
   for (const d of (discardsByItemRaw ?? []) as DiscardItemRow[]) {
@@ -495,13 +523,15 @@ export async function getInventoryAccountingSummary(
     else nightsLast += occ;
   }
 
-  // Last-month receipts for the comparison ratio.
-  const { data: lastReceiptsRaw } = await client
+  // Last-month receipts for the comparison ratio (best-effort, as before).
+  const lastReceiptsRaw = await paged('accounting/last-receipts', (a, b) => client
     .from('inventory_orders')
     .select('total_cost, quantity, unit_cost')
     .eq('property_id', pid)
     .gte('received_at', lastMonthStart.toISOString())
-    .lt('received_at', monthStart.toISOString());
+    .lt('received_at', monthStart.toISOString())
+    .order('received_at', { ascending: true })
+    .range(a, b), true);
   let lastReceipts = 0;
   for (const o of (lastReceiptsRaw ?? []) as Array<{ total_cost: number | null; quantity: number | null; unit_cost: number | null }>) {
     lastReceipts += o.total_cost != null

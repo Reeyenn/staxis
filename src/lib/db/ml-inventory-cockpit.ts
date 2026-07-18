@@ -96,6 +96,10 @@ export async function getInventoryAutoFillMap(
   const sinceMs = Date.now() - ML_PREDICTION_FRESHNESS_DAYS * 86400_000;
   const sinceIso = new Date(sinceMs).toISOString();
 
+  // NOTE (2026-07-18 review): .limit(2000) exceeds PostgREST's 1000-row
+  // response cap, but this function currently has ZERO callers (the manual
+  // inventory tab dropped auto-fill) — page with @/lib/supabase-paginate
+  // before wiring it back into a UI.
   const predResp = await client
     .from('inventory_rate_predictions')
     .select('item_id,predicted_current_stock,predicted_daily_rate,predicted_daily_rate_p25,predicted_daily_rate_p75,model_run_id,predicted_at')
