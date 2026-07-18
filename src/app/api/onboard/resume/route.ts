@@ -56,15 +56,14 @@ export async function GET(req: NextRequest) {
     .eq('data_user_id', session.userId)
     .maybeSingle();
   const access = (account?.property_access ?? []) as string[];
-  const isAdmin = account?.role === 'admin';
   const accountId = account?.id as string | undefined;
 
-  // Admins have NO personal onboarding to resume — they manage hotels, they
-  // don't own the signup. Routing an admin into a wizard would trap them in
-  // (and, via the wizard's owner-session path, mutate) someone else's
-  // onboarding. So an admin who ever reaches here just goes to the selector,
-  // regardless of any ?propertyId.
-  if (isAdmin) return to('/property-selector');
+  // Only the hotel's owner/manager resumes the wizard. Admins manage hotels but
+  // don't own the signup (routing one in would trap + mutate someone else's
+  // onboarding); line staff who join a half-set-up hotel just land in the app.
+  if (account?.role !== 'owner' && account?.role !== 'general_manager') {
+    return to('/property-selector');
+  }
   if (access.length === 0) return to('/property-selector');
 
   // Candidate properties: the explicit ?propertyId= (must be owned), else the
@@ -73,7 +72,7 @@ export async function GET(req: NextRequest) {
 
   let query = supabaseAdmin
     .from('properties')
-    .select('id, onboarding_completed_at, onboarding_state');
+    .select('id, onboarding_completed_at, onboarding_state, onboarding_prompt_shown_at');
   if (requestedPid) {
     query = query.eq('id', requestedPid);
   } else {
@@ -86,15 +85,19 @@ export async function GET(req: NextRequest) {
     return to('/property-selector');
   }
 
+  // The wizard auto-opens at most once per hotel. Skip any property already
+  // stamped (onboarding_prompt_shown_at) so a later login lands in the app,
+  // even if onboarding never finished.
   const target = (props ?? []).find(p =>
     access.includes(p.id as string) &&
+    !p.onboarding_prompt_shown_at &&
     isOnboardingInProgress(
       p.onboarding_completed_at as string | null,
       p.onboarding_state as OnboardingState | null,
     ),
   );
 
-  // Nothing mid-onboarding (already finished, or a stale redirect) — don't
+  // Nothing to resume (finished, already-shown, or a stale redirect) — don't
   // trap them; hand back to the normal funnel.
   if (!target) return to('/property-selector');
   const propertyId = target.id as string;
@@ -103,6 +106,18 @@ export async function GET(req: NextRequest) {
   if (!code) {
     log.error('onboard_resume_no_code', { userId: session.userId, propertyId });
     return to('/property-selector');
+  }
+
+  // Consume the one-shot: stamp the hotel now that we're actually opening the
+  // wizard. Guarded on IS NULL so it records only the first entry; a failed
+  // resume above never reaches here, so it never burns the shot. Non-fatal.
+  const { error: stampErr } = await supabaseAdmin
+    .from('properties')
+    .update({ onboarding_prompt_shown_at: new Date().toISOString() })
+    .eq('id', propertyId)
+    .is('onboarding_prompt_shown_at', null);
+  if (stampErr) {
+    log.error('onboard_resume_stamp_failed', { userId: session.userId, propertyId, err: stampErr.message });
   }
 
   log.info('onboard_resume', { userId: session.userId, propertyId });
