@@ -113,6 +113,20 @@ function zoneOffsetMs(timeZone: string, utc: Date): number {
  * an order received on the evening of the 31st lands in different months on
  * the two screens.
  */
+/** The UTC instant of local midnight on a given calendar date in `timeZone`.
+ *  Same two-pass offset correction as localMonthWindowUTC — used by the
+ *  Compare overlay's arbitrary date ranges. */
+export function localDayStartUTC(
+  year: number,
+  month1: number, // 1-12
+  day: number,
+  timeZone: string,
+): Date {
+  let t = Date.UTC(year, month1 - 1, day);
+  for (let i = 0; i < 2; i++) t = Date.UTC(year, month1 - 1, day) - zoneOffsetMs(timeZone, new Date(t));
+  return new Date(t);
+}
+
 export function localMonthWindowUTC(
   year: number,
   month1: number, // 1-12

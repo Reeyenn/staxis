@@ -98,6 +98,7 @@ export function MobileInventoryTriage({
     next.push({ key: 'history', label: tx.history });
     if (canViewFinancials) {
       next.push({ key: 'reports', label: tx.reports });
+      next.push({ key: 'compare', label: tx.compareMonths });
       next.push({ key: 'budgets', label: tx.budgets });
     }
     return next;

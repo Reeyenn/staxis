@@ -70,6 +70,7 @@ import type { DisplayItem } from './types';
 import type { StockBucket, StockStatus } from './tokens';
 
 import { CountSheet } from './overlays/CountSheet';
+import { ComparePanel } from './overlays/ComparePanel';
 import { ReportsPanel } from './overlays/ReportsPanel';
 import { HistoryPanel } from './overlays/HistoryPanel';
 import { BudgetsPanel } from './overlays/BudgetsPanel';
@@ -86,6 +87,7 @@ type OverlayKey =
   | 'count'
   | 'scan'
   | 'reports'
+  | 'compare'
   | 'history'
   | 'budgets'
   | 'ai'
@@ -93,7 +95,7 @@ type OverlayKey =
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reports', 'history', 'budgets', 'ai', 'add',
+  'count', 'scan', 'reports', 'compare', 'history', 'budgets', 'ai', 'add',
 ];
 
 // Shared container for the full-page loading / load-error notices (identical
@@ -337,7 +339,7 @@ export function InventoryShell() {
     if (action && VALID_QUERY_ACTIONS.includes(action as Exclude<OverlayKey, null>)) {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
-      if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
+      if ((action === 'reports' || action === 'compare' || action === 'budgets') && !canViewFinancials) return;
       if (action === 'scan' && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
@@ -543,7 +545,7 @@ export function InventoryShell() {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
     if (k === 'scan' && !canManage) return;
-    if ((k === 'reports' || k === 'budgets') && !canViewFinancials) return;
+    if ((k === 'reports' || k === 'compare' || k === 'budgets') && !canViewFinancials) return;
     setOverlay(k as OverlayKey);
   }, [canManage, canViewFinancials]);
 
@@ -1256,6 +1258,12 @@ export function InventoryShell() {
         onClose={closeOverlay}
         display={display}
         customNameById={customNameById}
+      />
+
+      <ComparePanel
+        lang={L}
+        open={overlay === 'compare' && canViewFinancials}
+        onClose={closeOverlay}
       />
 
       <HistoryPanel
