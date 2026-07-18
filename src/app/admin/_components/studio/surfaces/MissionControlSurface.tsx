@@ -309,7 +309,6 @@ export function MissionControlSurface() {
   // daily work. Learning = no knowledge file yet, or a learning run in flight.
   const isOnboardingPhase = (s: CuaSession): boolean =>
     (s.status || '').toLowerCase().includes('no_knowledge') || s.active_mapper_job != null;
-  const learningCount = sessions.filter(isOnboardingPhase).length;
   const liveRobots = sessions.filter((s) => !isOnboardingPhase(s));
   const enabledSessions = liveRobots.filter((s) => (s.status || '').toLowerCase() !== 'stopped');
 
@@ -335,12 +334,11 @@ export function MissionControlSurface() {
     return { tone, detail };
   })();
 
-  // Robot light.
+  // Robot light. Learning robots are Onboarding's business — this page
+  // doesn't mention them at all (owner rule, twice-stated 2026-07-17).
   const robotLight = (() => {
     if (liveRobots.length === 0) {
-      return { tone: 'muted' as DotTone, detail: learningCount > 0
-        ? `${learningCount} robot${learningCount === 1 ? ' is' : 's are'} still in training — watch on Onboarding.`
-        : 'No robots yet.' };
+      return { tone: 'muted' as DotTone, detail: 'No robots on duty yet.' };
     }
     if (enabledSessions.length === 0) return { tone: 'muted' as DotTone, detail: 'All robots are stopped.' };
     const views = enabledSessions.map((s) => robotView(s.status));
@@ -402,8 +400,9 @@ export function MissionControlSurface() {
         </div>
       </header>
 
-      {/* ── Block 1 — three health lights ─────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 26 }}>
+      {/* ── Block 1 — three health lights. alignItems start so an expanded
+          card doesn't stretch its two siblings into hollow boxes. ──────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 14, marginBottom: 26, alignItems: 'start' }}>
         <HealthLight tone={appLight.tone} label="App" detail={appLight.detail} expanded={<AppDetail system={system} />} />
         <HealthLight tone={robotLight.tone} label="Robots" detail={robotLight.detail} expanded={<RobotLightDetail sessions={enabledSessions} />} />
         <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} globalCap={globalCap} robotWorst={robotWorst} />} />
@@ -425,22 +424,18 @@ export function MissionControlSurface() {
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <CopilotRow metrics={metrics} />
-            <div>
-              <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {liveRobots.length}</span>
-              {liveRobots.length === 0 ? (
-                <div style={{ marginTop: 9 }}>
-                  <DarkEmpty text={learningCount > 0
-                    ? `No graduated robots yet — ${learningCount === 1 ? 'one robot is' : `${learningCount} robots are`} still learning on the Onboarding tab.`
-                    : "No hotel robots yet — they appear once a hotel's system is connected."} />
-                </div>
-              ) : (
+            {/* Hotel robots appear here ONLY once graduated — zero robots
+                means zero mention (learning ones are Onboarding's business). */}
+            {liveRobots.length > 0 && (
+              <div>
+                <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {liveRobots.length}</span>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 9 }}>
                   {liveRobots.map((s) => (
                     <RobotRow key={s.property_id} s={s} busyKey={busyKey} onAction={runAction} />
                   ))}
                 </div>
-              )}
-            </div>
+              </div>
+            )}
           </div>
         </RosterSection>
 
@@ -569,8 +564,14 @@ function HealthLight({ tone, label, detail, expanded }: {
           <div style={{ fontSize: 12, color: dimWhite(.6), marginTop: 4, lineHeight: 1.45 }}>{detail}</div>
         </div>
       </div>
-      {open && expanded && (
-        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${dimWhite(.1)}` }}>{expanded}</div>
+      {/* Always mounted so BOTH open and close animate — the 0fr↔1fr grid-row
+          transition slides the panel; opacity fades it in step. */}
+      {expanded && (
+        <div style={{ display: 'grid', gridTemplateRows: open ? '1fr' : '0fr', transition: 'grid-template-rows .26s ease', opacity: open ? 1 : 0 }} aria-hidden={!open}>
+          <div style={{ overflow: 'hidden', transition: 'opacity .22s ease', opacity: open ? 1 : 0 }}>
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${dimWhite(.1)}` }}>{expanded}</div>
+          </div>
+        </div>
       )}
     </DarkCard>
   );
@@ -663,7 +664,7 @@ function CopilotRow({ metrics }: { metrics: AgentMetrics | null }) {
           <span className="mono" style={{ fontSize: 12, color: dimWhite(.4) }}>{open ? '▾' : '▸'}</span>
         </div>
       </div>
-      {open && (
+      <Reveal open={open}>
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${dimWhite(.1)}` }}>
           <span className="caps" style={{ color: dimWhite(.4), fontSize: 9 }}>What it did today</span>
           {tools.length === 0 ? (
@@ -681,7 +682,7 @@ function CopilotRow({ metrics }: { metrics: AgentMetrics | null }) {
             </div>
           )}
         </div>
-      )}
+      </Reveal>
     </DarkCard>
   );
 }
@@ -810,6 +811,19 @@ function SimpleWorkerRow({ w }: { w: WorkerRow }) {
 
 // ── Scheduled chores — one collapsed summary row ("22 chores · all on time"),
 // click to expand the full list. The quietest tier: flat panel, calm tones. ─
+
+// Animated disclosure — 0fr↔1fr grid-row transition so both opening AND
+// closing slide + fade. Content stays mounted (cheap, all-local data).
+function Reveal({ open, children }: { open: boolean; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateRows: open ? '1fr' : '0fr', transition: 'grid-template-rows .26s ease' }} aria-hidden={!open}>
+      <div style={{ overflow: 'hidden', opacity: open ? 1 : 0, transition: 'opacity .22s ease' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function ChoresRow({ rows }: { rows: WorkerRow[] }) {
   const [open, setOpen] = useState(false);
   const views = rows.map((w) => workerView(w.state));
@@ -832,11 +846,11 @@ function ChoresRow({ rows }: { rows: WorkerRow[] }) {
         <span style={{ marginLeft: 'auto', fontSize: 11, color: dimWhite(.55) }}>{summary}</span>
         <span className="mono" style={{ fontSize: 12, color: dimWhite(.4) }}>{open ? '▾' : '▸'}</span>
       </div>
-      {open && (
+      <Reveal open={open}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 11, padding: '12px 13px', borderTop: `1px solid ${dimWhite(.08)}` }}>
           {rows.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
         </div>
-      )}
+      </Reveal>
     </div>
   );
 }
