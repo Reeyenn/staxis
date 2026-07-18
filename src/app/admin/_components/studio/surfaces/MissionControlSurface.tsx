@@ -409,22 +409,22 @@ export function MissionControlSurface() {
         <HealthLight tone={spendLight.tone} label="AI spend today" detail={spendLight.detail} expanded={<SpendDetail copilotSpend={copilotSpend} globalCap={globalCap} robotWorst={robotWorst} />} />
       </div>
 
-      {/* ── Block 2 — the roster, split three ways by the owner's model ─
-          1. AI staff (richest, cards) · 2. Prediction engine (quiet rows) ·
-          3. Scheduled chores (quietest, one collapsed row). */}
-      <div style={{ marginBottom: 26 }}>
-        {/* 1 — AI staff: the thinking-model workforce. Visually richest. */}
+      {/* ── Block 2 — the roster in three side-by-side columns (owner's
+          layout, 2026-07-17): left = Copilot + hotel robots, middle =
+          automatic AI jobs, right = prediction engine over scheduled
+          chores. Fills the width instead of one long scroll; columns wrap
+          on narrow windows. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 20, alignItems: 'start', marginBottom: 26 }}>
+        {/* LEFT — the thinking-model workforce doing the real work. */}
         <RosterSection
           eyebrow="AI staff"
-          count={aiStaffCount}
+          count={1 + liveRobots.length}
           eyebrowColor={dimWhite(.62)}
-          subtitle="Thinks with a language model — this is the workforce that couldn't exist before AI."
+          subtitle="Thinks with a language model — couldn't exist before AI."
+          last
         >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {/* Copilot */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
             <CopilotRow metrics={metrics} />
-
-            {/* Hotel robots */}
             <div>
               <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {liveRobots.length}</span>
               {liveRobots.length === 0 ? (
@@ -441,53 +441,63 @@ export function MissionControlSurface() {
                 </div>
               )}
             </div>
-
-            {/* Thinking-model background jobs */}
-            {aiWorkers.length > 0 && (
-              <div>
-                <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Automatic AI jobs · {aiWorkers.length}</span>
-                <DarkCard style={{ marginTop: 9, display: 'flex', flexDirection: 'column', gap: 11 }}>
-                  {aiWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
-                </DarkCard>
-              </div>
-            )}
           </div>
         </RosterSection>
 
-        {/* 2 — Prediction engine: classic forecasting math. Quieter. */}
+        {/* MIDDLE — the AI-written background jobs. */}
         <RosterSection
-          eyebrow="Prediction engine"
-          count={predictionWorkers.length}
-          eyebrowColor={dimWhite(.46)}
-          subtitle="Classic forecasting math — learns from numbers, doesn't think."
-        >
-          {workers === null ? (
-            <DarkEmpty text="Prediction jobs will appear here." />
-          ) : predictionWorkers.length === 0 ? (
-            <DarkEmpty text="No prediction jobs yet." />
-          ) : (
-            <div style={{ background: dimWhite(.04), border: `1px solid ${dimWhite(.1)}`, borderRadius: 12, padding: '13px 14px', display: 'flex', flexDirection: 'column', gap: 11 }}>
-              {predictionWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
-            </div>
-          )}
-        </RosterSection>
-
-        {/* 3 — Scheduled chores: plain timers. Quietest, collapsed by default. */}
-        <RosterSection
-          eyebrow="Scheduled chores"
-          count={timerWorkers.length}
-          eyebrowColor={dimWhite(.42)}
-          subtitle="Plain timers doing janitor work."
+          eyebrow="Automatic AI jobs"
+          count={aiWorkers.length}
+          eyebrowColor={dimWhite(.55)}
+          subtitle="AI-written reports and tidy-ups that run on their own."
           last
         >
           {workers === null ? (
-            <DarkEmpty text="Scheduled chores will appear here." />
-          ) : timerWorkers.length === 0 ? (
-            <DarkEmpty text="No scheduled chores yet." />
+            <DarkEmpty text="AI jobs will appear here." />
+          ) : aiWorkers.length === 0 ? (
+            <DarkEmpty text="No automatic AI jobs yet." />
           ) : (
-            <ChoresRow rows={timerWorkers} />
+            <DarkCard style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+              {aiWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
+            </DarkCard>
           )}
         </RosterSection>
+
+        {/* RIGHT — the non-AI machinery, stacked: prediction over chores. */}
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 22 }}>
+          <RosterSection
+            eyebrow="Prediction engine"
+            count={predictionWorkers.length}
+            eyebrowColor={dimWhite(.46)}
+            subtitle="Classic forecasting math — learns from numbers, doesn't think."
+            last
+          >
+            {workers === null ? (
+              <DarkEmpty text="Prediction jobs will appear here." />
+            ) : predictionWorkers.length === 0 ? (
+              <DarkEmpty text="No prediction jobs yet." />
+            ) : (
+              <div style={{ background: dimWhite(.04), border: `1px solid ${dimWhite(.1)}`, borderRadius: 12, padding: '13px 14px', display: 'flex', flexDirection: 'column', gap: 11 }}>
+                {predictionWorkers.map((w) => <SimpleWorkerRow key={w.name} w={w} />)}
+              </div>
+            )}
+          </RosterSection>
+          <RosterSection
+            eyebrow="Scheduled chores"
+            count={timerWorkers.length}
+            eyebrowColor={dimWhite(.42)}
+            subtitle="Plain timers doing janitor work."
+            last
+          >
+            {workers === null ? (
+              <DarkEmpty text="Scheduled chores will appear here." />
+            ) : timerWorkers.length === 0 ? (
+              <DarkEmpty text="No scheduled chores yet." />
+            ) : (
+              <ChoresRow rows={timerWorkers} />
+            )}
+          </RosterSection>
+        </div>
       </div>
 
       {/* ── Block 3 — inbox + errors ──────────────────────────────────── */}
