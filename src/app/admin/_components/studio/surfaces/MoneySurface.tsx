@@ -38,12 +38,15 @@ interface StackData {
   learning: { monthUsd: number; runs: number };
   detected: { key: string; name: string; desc: string }[];
   subscriptions: { id: string; name: string; monthlyUsd: number; serviceKey?: string }[];
+  /** Real receipt-backed charges (payment_history, 0320) — newest first. */
+  payments: Array<{ date: string; vendor: string; description: string | null; amountUsd: number }>;
+  paymentsTotalUsd: number;
   auditRequestedAt: string | null;
 }
 
 interface EditLine { id: string; name: string; monthlyUsd: string; serviceKey?: string }
 
-const money = (n: number) => `$${n.toFixed(2)}`;
+const money = (n: number) => `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const newId = () => `sub_${Math.random().toString(36).slice(2, 10)}`;
 
 /** Model ids → names a person recognizes, keeping the version so two
@@ -151,8 +154,11 @@ function WorkspaceCard({ w, models }: {
   );
 }
 
-/** One month of history, expandable into its days. */
-function MonthRow({ month, usd, days }: { month: string; usd: number; days: Array<{ date: string; usd: number }> }) {
+/** One month of payment history, expandable into its individual charges. */
+function MonthRow({ month, usd, items }: {
+  month: string; usd: number;
+  items: Array<{ date: string; vendor: string; description: string | null; amountUsd: number }>;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <div style={{ background: dimWhite(.04), border: `1px solid ${dimWhite(.12)}`, borderRadius: 11 }}>
@@ -162,17 +168,20 @@ function MonthRow({ month, usd, days }: { month: string; usd: number; days: Arra
         style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', padding: '11px 14px', color: '#fff' }}
       >
         <span style={{ fontSize: 13, fontWeight: 700 }}>{monthLabel(month)}</span>
+        <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.4) }}>{items.length} charge{items.length === 1 ? '' : 's'}</span>
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
           <span className="mono" style={{ fontSize: 12.5 }}>{money(usd)}</span>
-          <span className="mono" style={{ fontSize: 10, color: dimWhite(.4) }}>{open ? '▴' : 'DAYS ▾'}</span>
+          <span className="mono" style={{ fontSize: 10, color: dimWhite(.4) }}>{open ? '▴' : 'WHAT ▾'}</span>
         </span>
       </button>
       <Reveal open={open}>
         <div style={{ padding: '0 14px 12px', borderTop: `1px solid ${dimWhite(.08)}` }}>
-          {days.map((d) => (
-            <div key={d.date} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '3px 0' }}>
-              <span style={{ fontSize: 11.5, color: dimWhite(.7) }}>{dayLabel(d.date)}</span>
-              <span className="mono" style={{ fontSize: 11, color: '#fff' }}>{money(d.usd)}</span>
+          {items.map((p, i) => (
+            <div key={`${p.date}-${p.vendor}-${i}`} style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '4px 0' }}>
+              <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.4), flexShrink: 0, width: 74 }}>{dayLabel(p.date)}</span>
+              <span style={{ fontSize: 11.5, color: '#fff', fontWeight: 600, flexShrink: 0 }}>{p.vendor}</span>
+              <span style={{ fontSize: 10.5, color: dimWhite(.45), minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.description ?? ''}</span>
+              <span className="mono" style={{ marginLeft: 'auto', fontSize: 11, color: '#fff', flexShrink: 0 }}>{money(p.amountUsd)}</span>
             </div>
           ))}
         </div>
@@ -264,13 +273,13 @@ export function MoneySurface() {
   const personalLines = lines.filter((l) => !l.serviceKey);
   const orphanLines = lines.filter((l) => l.serviceKey && !detectedKeys.has(l.serviceKey));
 
-  // History: fold the daily rows into months (newest first, days newest first).
-  const monthsMap = new Map<string, { usd: number; days: Array<{ date: string; usd: number }> }>();
-  for (const day of d.billing?.days ?? []) {
-    const ym = day.date.slice(0, 7);
-    const entry = monthsMap.get(ym) ?? { usd: 0, days: [] };
-    entry.usd += day.usd;
-    entry.days.push(day);
+  // History: fold real charges into months (newest first, charges newest first).
+  const monthsMap = new Map<string, { usd: number; items: StackData['payments'] }>();
+  for (const p of d.payments) {
+    const ym = p.date.slice(0, 7);
+    const entry = monthsMap.get(ym) ?? { usd: 0, items: [] };
+    entry.usd += p.amountUsd;
+    entry.items.push(p);
     monthsMap.set(ym, entry);
   }
   const months = [...monthsMap.entries()].sort((a, b) => b[0].localeCompare(a[0]));
@@ -322,10 +331,10 @@ export function MoneySurface() {
           </div>
         </DarkCard>
         <DarkCard>
-          <span className="caps" style={{ color: dimWhite(.5), fontSize: 9 }}>Total spent on AI · since day one</span>
+          <span className="caps" style={{ color: dimWhite(.5), fontSize: 9 }}>Total paid · everything, from real receipts</span>
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: 8 }}>
-            <span className="serif-num" style={{ fontSize: 30, color: '#fff' }}>{d.billing ? money(d.billing.totalUsd) : '—'}</span>
-            <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.5) }}>REAL BILL · EVERY MONTH IN HISTORY BELOW</span>
+            <span className="serif-num" style={{ fontSize: 30, color: '#fff' }}>{money(d.paymentsTotalUsd)}</span>
+            <span className="mono" style={{ fontSize: 9.5, color: dimWhite(.5) }}>SINCE DEC 2025 · EVERY CHARGE IN HISTORY BELOW</span>
           </div>
         </DarkCard>
         <DarkCard>
@@ -432,18 +441,18 @@ export function MoneySurface() {
         </Section>
 
         <Section
-          title="History · month by month"
-          summary={<span className="mono" style={{ fontSize: 12, color: '#fff' }}>{d.billing ? `${money(d.billing.totalUsd)} total` : '—'}</span>}
+          title="History · every real charge, month by month"
+          summary={<span className="mono" style={{ fontSize: 12, color: '#fff' }}>{money(d.paymentsTotalUsd)} total</span>}
         >
           {months.length === 0 ? (
-            <div style={{ fontSize: 11.5, color: dimWhite(.45), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No AI spend recorded yet.</div>
+            <div style={{ fontSize: 11.5, color: dimWhite(.45), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>No payments recorded yet.</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               {months.map(([ym, m]) => (
-                <MonthRow key={ym} month={ym} usd={Math.round(m.usd * 100) / 100} days={m.days} />
+                <MonthRow key={ym} month={ym} usd={Math.round(m.usd * 100) / 100} items={m.items} />
               ))}
-              <div style={{ fontSize: 10.5, color: dimWhite(.4) }}>
-                AI spend only — subscriptions are flat monthly fees (their history is just the monthly total above). Click a month for the day-by-day.
+              <div style={{ fontSize: 10.5, color: dimWhite(.4), lineHeight: 1.5 }}>
+                Built from your actual receipts and kept current by the weekly check. The Anthropic &ldquo;API credits&rdquo; charges here are what FUND the AI-usage section above — usage burns those credits{d.billing ? ` (${money(d.billing.totalUsd)} burned so far)` : ''}, so the two views are the same money at different moments.
               </div>
             </div>
           )}

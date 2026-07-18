@@ -244,8 +244,9 @@ export async function GET(req: NextRequest) {
   const monthStartIso = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 
   // Our own measured meter: map-learning runs this month (mapper.* jobs
-  // record their real per-call Claude cost in claude_cost_micros).
-  const [learnQ, settingsQ] = await Promise.all([
+  // record their real per-call Claude cost in claude_cost_micros) + the
+  // receipt-backed payment history (0320) behind Total paid + History.
+  const [learnQ, settingsQ, paymentsQ] = await Promise.all([
     supabaseAdmin
       .from('workflow_jobs')
       .select('claude_cost_micros')
@@ -256,6 +257,11 @@ export async function GET(req: NextRequest) {
       .select('ai_subscriptions, subscription_audit_requested_at')
       .eq('id', true)
       .maybeSingle(),
+    supabaseAdmin
+      .from('payment_history')
+      .select('paid_on, vendor, description, amount_cents')
+      .order('paid_on', { ascending: false })
+      .limit(500),
   ]);
   if (learnQ.error) return err(learnQ.error.message, { requestId, status: 500, code: 'internal_error' });
 
@@ -267,6 +273,16 @@ export async function GET(req: NextRequest) {
 
   const subscriptions = ((settingsQ.data?.ai_subscriptions ?? []) as SubscriptionLine[])
     .filter((s) => s && typeof s.name === 'string' && typeof s.monthlyUsd === 'number');
+
+  // Real charges from receipts (0320) — what actually left the card.
+  const paymentRows = (paymentsQ.data ?? []) as Array<{ paid_on: string; vendor: string; description: string | null; amount_cents: number }>;
+  const payments = paymentRows.map((p) => ({
+    date: p.paid_on,
+    vendor: p.vendor,
+    description: p.description,
+    amountUsd: Math.round(p.amount_cents) / 100,
+  }));
+  const paymentsTotalUsd = Math.round(paymentRows.reduce((s, p) => s + p.amount_cents, 0)) / 100;
 
   const detected = KNOWN_SERVICES.filter((s) => s.detect()).map(({ key, name, desc }) => ({ key, name, desc }));
 
@@ -282,6 +298,8 @@ export async function GET(req: NextRequest) {
     learning,
     detected,
     subscriptions,
+    payments,
+    paymentsTotalUsd,
     auditRequestedAt: settingsQ.data?.subscription_audit_requested_at ?? null,
   }, { requestId });
 }
