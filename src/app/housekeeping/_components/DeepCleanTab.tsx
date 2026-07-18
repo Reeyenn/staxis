@@ -83,6 +83,11 @@ export function DeepCleanTab() {
   const es = lang === 'es';
 
   const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
+  // True when the config fetch itself failed (distinct from a genuine
+  // no-config-yet null). Saving cadence does a full-row upsert that would
+  // reset minutesPerRoom/targetPerWeek to defaults, so a failed load must
+  // block the save rather than overwrite real settings with guesses.
+  const [configError, setConfigError] = useState(false);
   const [records, setRecords] = useState<Record<string, DeepCleanRecord>>({});
   const [toast, setToast] = useState<string | null>(null);
   const [toastKind, setToastKind] = useState<'success' | 'error'>('success');
@@ -159,15 +164,20 @@ export function DeepCleanTab() {
     setLoaded(false);
     setRecords({});
     setConfigState(null);
+    setConfigError(false);
     let cancelled = false;
     getDeepCleanConfig(uid, pid).then(c => {
       if (cancelled) return;
       setConfigState(c);
+      setConfigError(false);
       if (c?.frequencyDays) setCadenceDraft(c.frequencyDays);
     }).catch(err => {
-      // Config failure is recoverable (we fall back to defaults). Don't toast —
-      // the records-fetch toast already signals if the DB is down.
+      // Config failed to load. Don't toast — the records-fetch toast already
+      // signals if the DB is down — but flag it so a cadence save can't
+      // upsert defaults over the property's real (unloaded) settings.
+      if (cancelled) return;
       console.error('[DeepCleanTab] config fetch failed:', err);
+      setConfigError(true);
     });
     void refreshRecords();
     return () => { cancelled = true; };
@@ -302,6 +312,17 @@ export function DeepCleanTab() {
 
   const handleSaveCadence = async () => {
     if (!uid || !pid) return;
+    // Block the save when the current config never loaded — setDeepCleanConfig
+    // upserts every column, so saving here would overwrite minutesPerRoom /
+    // targetPerWeek with defaults the manager never saw.
+    if (configError) {
+      flashToast(
+        es ? 'No se pudo cargar la configuración actual — recarga antes de guardar'
+           : 'Couldn’t load current settings — reload before saving',
+        'error',
+      );
+      return;
+    }
     setSavingCadence(true);
     try {
       const next: DeepCleanConfig = {
