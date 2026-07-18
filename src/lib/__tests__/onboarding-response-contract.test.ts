@@ -31,10 +31,10 @@ describe('onboarding critical response checks', () => {
     );
   });
 
-  test('requires finalization success before navigating to the dashboard', () => {
+  test('requires finalization success before navigating to the Home hub', () => {
     assert.match(
       source,
-      /requireApiSuccess\(finalizeRes[\s\S]{0,500}window\.location\.href\s*=\s*['"]\/dashboard/,
+      /requireApiSuccess\(finalizeRes[\s\S]{0,500}window\.location\.href\s*=\s*['"]\/home/,
     );
   });
 });

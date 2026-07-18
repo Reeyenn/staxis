@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Eye, NotebookPen, X } from 'lucide-react';
 import { t, type HousekeeperLocale } from '@/lib/translations';
+import { withStaffLinkTokenBody } from '@/lib/staff-link-client';
 import {
   smallBtnStyle,
   smallBtnLabelStyle,
@@ -48,7 +49,10 @@ export function AddNoteButton({
     try {
       const res = await enqueueIfOffline({
         endpoint: '/api/housekeeper/add-note',
-        body: { pid, staffId, roomId, noteText: note.trim() },
+        // The gate authenticates the per-staff link token, not the raw
+        // pid+staffId tuple — and the queued body is replayed verbatim later,
+        // so the token must be captured at enqueue time.
+        body: withStaffLinkTokenBody({ pid, staffId, roomId, noteText: note.trim() }),
         label: `Note · room ${roomId}`,
       });
       if (!res.ok && !res.queued) {
@@ -160,7 +164,7 @@ export function MarkForInspectionButton(props: CommonProps & { markedAt: string 
     try {
       const res = await enqueueIfOffline({
         endpoint: '/api/housekeeper/mark-for-inspection',
-        body: { pid, staffId, roomId, clear: !next },
+        body: withStaffLinkTokenBody({ pid, staffId, roomId, clear: !next }),
         label: `Inspection · room ${roomId}`,
       });
       if (!res.ok && !res.queued) {

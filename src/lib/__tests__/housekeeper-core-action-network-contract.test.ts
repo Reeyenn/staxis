@@ -10,12 +10,20 @@ const source = readFileSync(
   'utf8',
 );
 
-test('guardedPost converts a network rejection into an unsuccessful result', () => {
+test('room-action posts convert a network rejection into an unsuccessful result', () => {
+  // The catch lives in postStaffAction — the single POST scaffold every
+  // room-action write (guardedPost callers AND direct callers like
+  // reset-clean) goes through.
+  const postStaffAction = source.match(
+    /const postStaffAction = useCallback\(([\s\S]*?)\n  \);\n/,
+  )?.[1] ?? '';
+  assert.ok(postStaffAction, 'expected the postStaffAction helper');
+  assert.match(postStaffAction, /catch \{[\s\S]*return \{ ok: false, data: null as unknown \}/);
+
   const guardedPost = source.match(
-    /const guardedPost = useCallback\(([\s\S]*?)\n  \);\n\n  \/\/ Checklist/,
+    /const guardedPost = useCallback\(([\s\S]*?)\n  \);\n/,
   )?.[1] ?? '';
   assert.ok(guardedPost, 'expected the guardedPost helper');
-  assert.match(guardedPost, /catch \{[\s\S]*return \{ ok: false, data: null as unknown \}/);
   assert.match(guardedPost, /finally \{[\s\S]*inFlightRoomActionsRef\.current\.delete\(lockKey\)/);
 });
 

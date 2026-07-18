@@ -366,19 +366,30 @@ describe('completeOfflineActionClaim', () => {
 });
 
 describe('housekeeper replay route integration', () => {
-  const routeFiles = [
-    'add-note',
-    'mark-for-inspection',
-    'structured-issue',
-    'report-found-item',
+  // add-note and mark-for-inspection delegate their whole scaffold to the
+  // shared room-action runner; the guarded-claim contract is enforced on the
+  // runner itself below. The other two routes carry extra pre/post logic and
+  // stay long-hand, so they're checked directly.
+  const guardedSources: Array<{ label: string; path: string[] }> = [
+    { label: 'structured-issue', path: ['src', 'app', 'api', 'housekeeper', 'structured-issue', 'route.ts'] },
+    { label: 'report-found-item', path: ['src', 'app', 'api', 'housekeeper', 'report-found-item', 'route.ts'] },
+    { label: 'room-action-runner', path: ['src', 'lib', 'housekeeper-workflow', 'room-action-runner.ts'] },
   ];
 
-  for (const route of routeFiles) {
-    test(`${route} uses the guarded claim and release helpers`, () => {
+  for (const route of ['add-note', 'mark-for-inspection']) {
+    test(`${route} delegates to the guarded room-action runner`, () => {
       const source = readFileSync(
         join(process.cwd(), 'src', 'app', 'api', 'housekeeper', route, 'route.ts'),
         'utf8',
       );
+      assert.match(source, /runHousekeeperRoomAction</);
+      assert.doesNotMatch(source, /from\(['"]offline_action_replays['"]\)/);
+    });
+  }
+
+  for (const { label, path } of guardedSources) {
+    test(`${label} uses the guarded claim and release helpers`, () => {
+      const source = readFileSync(join(process.cwd(), ...path), 'utf8');
 
       assert.match(source, /claimOfflineAction\(replayContext\)/);
       assert.match(source, /releaseOfflineActionClaim\(replayContext\)/);
