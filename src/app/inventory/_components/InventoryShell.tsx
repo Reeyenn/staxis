@@ -24,7 +24,7 @@ import {
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { generateId } from '@/lib/utils';
-import { groupInventoryCountsByEvent } from '@/lib/inventory-history';
+import { buildHistoryEvents } from './history-events';
 import {
   clearQuickCountAttempt,
   isDefinitiveQuickCountFailure,
@@ -70,6 +70,7 @@ import type { DisplayItem } from './types';
 import type { StockBucket, StockStatus } from './tokens';
 
 import { CountSheet } from './overlays/CountSheet';
+import { ComparePanel } from './overlays/ComparePanel';
 import { ReportsPanel } from './overlays/ReportsPanel';
 import { HistoryPanel } from './overlays/HistoryPanel';
 import { BudgetsPanel } from './overlays/BudgetsPanel';
@@ -86,6 +87,7 @@ type OverlayKey =
   | 'count'
   | 'scan'
   | 'reports'
+  | 'compare'
   | 'history'
   | 'budgets'
   | 'ai'
@@ -93,7 +95,7 @@ type OverlayKey =
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reports', 'history', 'budgets', 'ai', 'add',
+  'count', 'scan', 'reports', 'compare', 'history', 'budgets', 'ai', 'add',
 ];
 
 // Shared container for the full-page loading / load-error notices (identical
@@ -337,7 +339,7 @@ export function InventoryShell() {
     if (action && VALID_QUERY_ACTIONS.includes(action as Exclude<OverlayKey, null>)) {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
-      if ((action === 'reports' || action === 'budgets') && !canViewFinancials) return;
+      if ((action === 'reports' || action === 'compare' || action === 'budgets') && !canViewFinancials) return;
       if (action === 'scan' && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
@@ -502,11 +504,14 @@ export function InventoryShell() {
     return () => ro.disconnect();
   }, [tabStatMounted]);
 
-  // Show distinct count sessions, not raw per-item rows. New atomic saves use
-  // countSessionId; pre-0310 rows retain their exact-timestamp grouping.
-  const historyCount = useMemo(() => {
-    return orders.length + groupInventoryCountsByEvent(counts).length;
-  }, [counts, orders]);
+  // One entry per ACTION (count session, delivery, invoice scan, items added)
+  // — the same grouping the History panel renders, so the rail badge and the
+  // panel can never disagree.
+  const historyEvents = useMemo(
+    () => buildHistoryEvents(counts, orders, display),
+    [counts, orders, display],
+  );
+  const historyCount = historyEvents.length;
 
   // Whole-inventory spend this month, in dollars. (inventory_orders costs are
   // stored as dollars — the old sum here divided by 100 again and showed ~1%
@@ -540,7 +545,7 @@ export function InventoryShell() {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
     if (k === 'scan' && !canManage) return;
-    if ((k === 'reports' || k === 'budgets') && !canViewFinancials) return;
+    if ((k === 'reports' || k === 'compare' || k === 'budgets') && !canViewFinancials) return;
     setOverlay(k as OverlayKey);
   }, [canManage, canViewFinancials]);
 
@@ -1255,12 +1260,17 @@ export function InventoryShell() {
         customNameById={customNameById}
       />
 
+      <ComparePanel
+        lang={L}
+        open={overlay === 'compare' && canViewFinancials}
+        onClose={closeOverlay}
+      />
+
       <HistoryPanel
         lang={L}
         open={overlay === 'history'}
         onClose={closeOverlay}
-        counts={counts}
-        orders={orders}
+        events={historyEvents}
         canViewFinancials={canViewFinancials}
       />
 

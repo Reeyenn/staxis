@@ -162,6 +162,13 @@ jobs:
         working-directory: cua-service
         run: npm run lint
 
+      # The dom-rows self-heal tests drive real Playwright pages; the hosted
+      # runner has no browser cache, so install the chromium shell first or
+      # every browser-backed subtest dies with "Executable doesn't exist".
+      - name: Install Playwright chromium for cua-service tests
+        working-directory: cua-service
+        run: npx playwright install --with-deps chromium
+
       - name: Test cua-service
         working-directory: cua-service
         run: npm test

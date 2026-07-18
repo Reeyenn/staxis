@@ -14,6 +14,7 @@ export type SidebarAction =
   | 'count'
   | 'scan'
   | 'reports'
+  | 'compare'
   | 'history'
   | 'ai'
   | 'budgets';
@@ -70,8 +71,9 @@ export function Sidebar({
       {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('scan')} />}
       <Divider />
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.look}</Caps>
-      {/* Reports + Budgets show budget/spend dollars — money-capability only. */}
+      {/* Reports + Compare + Budgets show budget/spend dollars — money-capability only. */}
       {canViewFinancials && <RailBtn label={tx.reports} onClick={() => onAction('reports')} />}
+      {canViewFinancials && <RailBtn label={tx.compareMonths} onClick={() => onAction('compare')} />}
       <RailBtn label={tx.history} badge={historyCount} onClick={() => onAction('history')} />
       <RailBtn label={tx.aiHelper} onClick={() => onAction('ai')} />
       {canViewFinancials && <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />}

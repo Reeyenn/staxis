@@ -17,7 +17,7 @@ import { Caps } from './Caps';
 import { Btn } from './Btn';
 import { StatusDot } from './StatusPill';
 import { NoItemsPanel } from './NoItemsPanel';
-import { useBucketFilter, daysSortValue } from './list-helpers';
+import { useBucketFilter } from './list-helpers';
 import { fmtMoney, fmtInt } from './format';
 import { useFlipList } from './motion';
 import type { DisplayItem } from './types';
@@ -31,8 +31,17 @@ import { t, statusLabelFor, type Lang, type InvStrings } from './inv-i18n';
 // component stays pure over its `items` prop. See the handoff bundle
 // "Inventory Ledger" and README for the spec.
 
-type SortKey = 'days' | 'stock' | 'name' | 'value';
+// Four plain-English sorts, one per manager job (2026-07-18 rework — the old
+// "Days left" / "Stock vs par" chips read as jargon):
+//   attention — what's running out (default triage order)
+//   name      — find an item
+//   value     — where the money sits (money-gated)
+//   stale     — what hasn't been counted in a while
+type SortKey = 'attention' | 'name' | 'value' | 'stale';
 type SortDir = 1 | -1;
+
+// Worst first: critical < low < good, ties broken by emptiest shelf.
+const STATUS_RANK: Record<StockStatus, number> = { critical: 0, low: 1, good: 2 };
 
 interface LedgerTableProps {
   lang: Lang;
@@ -106,7 +115,7 @@ export function LedgerTable({
   onAdd,
 }: LedgerTableProps) {
   const tx = t(lang);
-  const [sortKey, setSortKey] = useState<SortKey>('days');
+  const [sortKey, setSortKey] = useState<SortKey>('attention');
   const [sortDir, setSortDir] = useState<SortDir>(1);
   // Rows glide when the sort/filter reorders them, and a newly-added item slides
   // in from the left + scrolls into view (same feel as the add-staff board) so
@@ -119,12 +128,17 @@ export function LedgerTable({
   const { counted, uncounted } = useBucketFilter(items, bucket, query);
 
   const rows = useMemo(() => {
+    // Each key's NATURAL direction is what a manager wants on first click:
+    // attention = worst first, name = A→Z, value = highest first, stale =
+    // longest-since-count first. Re-clicking the active chip flips it.
     const cmp = (a: DisplayItem, b: DisplayItem): number => {
       switch (sortKey) {
-        case 'days': return daysSortValue(a) - daysSortValue(b);
-        case 'stock': return stockRatio(a) - stockRatio(b);
+        case 'attention':
+          return (STATUS_RANK[a.status] - STATUS_RANK[b.status]) || (stockRatio(a) - stockRatio(b));
         case 'name': return a.name.localeCompare(b.name);
-        case 'value': return a.estimated * a.unitCost - b.estimated * b.unitCost;
+        case 'value': return b.value - a.value;
+        case 'stale':
+          return (a.lastCountedAt?.getTime() ?? 0) - (b.lastCountedAt?.getTime() ?? 0);
       }
     };
     const sortedCounted = [...counted].sort((a, b) => cmp(a, b) * sortDir);
@@ -152,10 +166,10 @@ export function LedgerTable({
   const dayOne = counted.length === 0 && uncounted.length > 0 && bucket === 'all' && !query.trim();
 
   const SORTS: Array<{ key: SortKey; label: string }> = [
-    { key: 'days', label: tx.sortDays },
-    { key: 'stock', label: tx.sortStock },
+    { key: 'attention', label: tx.sortAttention },
     { key: 'name', label: tx.sortAZ },
     ...(canViewFinancials ? [{ key: 'value' as const, label: tx.sortValue }] : []),
+    { key: 'stale', label: tx.sortStale },
   ];
 
   const clickSort = (key: SortKey) => {
