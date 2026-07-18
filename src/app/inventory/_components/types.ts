@@ -46,15 +46,3 @@ export interface DisplayItem {
   value: number;
   lastCountedAt: Date | null;
 }
-
-export interface ReorderRec {
-  itemId: string;
-  suggestQty: number;
-  packs: string;
-  cost: number;
-  reason: string;
-  urgency: 'now' | 'soon' | 'ok';
-  /** Passed through from DisplayItem so the reorder panel can apply the
-   *  pre-check rule + suffix the reason text by burn source. */
-  burnSource: BurnSource;
-}

@@ -11,15 +11,41 @@
       "port": 4601
     },
     {
+      "name": "purge-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "/Users/reeyen/Projects/staxis-current/.claude/worktrees/dead-code-purge",
+        "--",
+        "--port",
+        "3141"
+      ],
+      "port": 3141
+    },
+    {
       "name": "inventory-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "3123"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "3123"
+      ],
       "port": 3123
     },
     {
       "name": "voice-removal-dev",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "--port", "3197"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--",
+        "--port",
+        "3197"
+      ],
       "port": 3197
     },
     {

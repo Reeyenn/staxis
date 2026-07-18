@@ -13,9 +13,6 @@ import { t, type Lang } from './inv-i18n';
 export type SidebarAction =
   | 'count'
   | 'scan'
-  | 'reorder'
-  | 'orders'
-  | 'ordersettings'
   | 'reports'
   | 'history'
   | 'ai'
@@ -24,11 +21,10 @@ export type SidebarAction =
 interface SidebarProps {
   lang: Lang;
   totalItems: number;
-  reorderCount: number;
   historyCount: number;
   spendSpent: number;
   spendCap: number;
-  /** Management (owner/GM/admin) — gates the Orders + Ordering-settings actions. */
+  /** Management (owner/GM/admin) — gates the Add-delivery action. */
   canManage: boolean;
   /** Money capability (view_financials) — gates the budget/spend surfaces:
    *  the Reports + Budgets actions and the month spend strip. Stock counts and
@@ -37,14 +33,13 @@ interface SidebarProps {
   onAction: (key: SidebarAction) => void;
 }
 
-// The Triage left action rail (224px, sticky). Full action set; Orders +
-// Ordering settings are management-only. The primary "Start count" button is
+// The Triage left action rail (224px, sticky). Add-delivery is
+// management-only. The primary "Start count" button is
 // the brightest thing on the rail (solid brand fill) so the #1 daily action
 // stands out.
 export function Sidebar({
   lang,
   totalItems,
-  reorderCount,
   historyCount,
   spendSpent,
   spendCap,
@@ -74,54 +69,12 @@ export function Sidebar({
       <RailBtn label={tx.startCount} badge={totalItems} primary onClick={() => onAction('count')} />
       {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('scan')} />}
       <Divider />
-      <RailBtn label={tx.reorderList} badge={reorderCount} accent onClick={() => onAction('reorder')} />
-      {canManage && <RailBtn label={tx.orders} onClick={() => onAction('orders')} />}
-      <Divider />
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.look}</Caps>
       {/* Reports + Budgets show budget/spend dollars — money-capability only. */}
       {canViewFinancials && <RailBtn label={tx.reports} onClick={() => onAction('reports')} />}
       <RailBtn label={tx.history} badge={historyCount} onClick={() => onAction('history')} />
       <RailBtn label={tx.aiHelper} onClick={() => onAction('ai')} />
       {canViewFinancials && <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />}
-      {/* Ordering automation is per-hotel (vendors, how orders are placed,
-          who approves) — parked as "coming soon" until the per-hotel setup
-          exists. The panel code stays; only this entry point is retired. */}
-      {canManage && (
-        <div
-          aria-disabled="true"
-          style={{
-            padding: '9px 12px',
-            borderRadius: 9,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 9,
-            fontFamily: fonts.sans,
-            fontSize: 13.5,
-            fontWeight: 500,
-            color: T.dim,
-            cursor: 'default',
-          }}
-        >
-          {tx.orderingSettings}
-          <span
-            style={{
-              padding: '1px 7px',
-              borderRadius: 999,
-              background: T.inkWash,
-              border: `1px solid ${T.rule}`,
-              fontFamily: fonts.mono,
-              fontSize: 9,
-              fontWeight: 600,
-              letterSpacing: '0.06em',
-              textTransform: 'uppercase',
-              color: T.dim,
-            }}
-          >
-            {tx.comingSoon}
-          </span>
-        </div>
-      )}
 
       {/* Month spend vs budget — money-capability only. */}
       {canViewFinancials && (

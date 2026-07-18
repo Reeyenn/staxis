@@ -620,168 +620,27 @@ function RobotLightDetail({ sessions }: { sessions: CuaSession[] }) {
   );
 }
 
-// ── The AI-spend screen (owner ask 2026-07-18): two forms, kept separate.
-//    1. Hotel AI — the REAL Anthropic bill for the hotel product, plus our
-//       own meters as the breakdown (per-robot, Copilot, map learning).
-//    2. Running Staxis — the founder's own AI: flat monthly subscriptions
-//       he enters once (Claude plan, Codex, …), editable inline.
-interface AiSpendData {
-  connected: boolean;
-  billing: {
-    todayUsd: number; monthUsd: number; monthStart: string;
-    byWorkspace: { workspaceId: string | null; name: string; monthUsd: number; todayUsd: number }[];
-  } | null;
-  learning: { monthUsd: number; runs: number };
-  subscriptions: { id: string; name: string; monthlyUsd: number }[];
-}
-
-function SpendRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '2px 0' }}>
-      <span style={{ fontSize: strong ? 12.5 : 12, color: strong ? '#fff' : dimWhite(.65), fontWeight: strong ? 700 : 400, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
-      <span className="mono" style={{ fontSize: strong ? 13 : 11.5, color: strong ? '#fff' : dimWhite(.8), flexShrink: 0 }}>{value}</span>
-    </div>
-  );
-}
-
-function SpendCaps({ children }: { children: React.ReactNode }) {
-  return <div className="mono" style={{ fontSize: 9, letterSpacing: '.12em', textTransform: 'uppercase', color: dimWhite(.45), margin: '2px 0 6px' }}>{children}</div>;
-}
-
+// ── Spend light click-through — a compact live summary; the full
+//    tech-stack spend board lives on the Money tab (owner ask 2026-07-18).
 function SpendDetail({ copilotSpend, robots }: {
   copilotSpend: number; robots: { name: string; usd: number }[];
 }) {
-  const [d, setD] = useState<AiSpendData | null>(null);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
-  // Editable local copy of the subscription lines.
-  const [subs, setSubs] = useState<{ id: string; name: string; monthlyUsd: string }[]>([]);
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveNote, setSaveNote] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      try {
-        const res = await fetchWithAuth('/api/admin/mission/ai-spend');
-        const json = await res.json();
-        if (!alive) return;
-        if (json.ok) {
-          const data = json.data as AiSpendData;
-          setD(data);
-          setSubs(data.subscriptions.map((s) => ({ id: s.id, name: s.name, monthlyUsd: String(s.monthlyUsd) })));
-        } else setLoadErr(json.error ?? 'Could not load spend.');
-      } catch (e) { if (alive) setLoadErr(`Network error: ${(e as Error).message}`); }
-    })();
-    return () => { alive = false; };
-  }, []);
-
-  const save = async () => {
-    setSaving(true); setSaveNote(null);
-    try {
-      const payload = subs
-        .filter((s) => s.name.trim() !== '' || s.monthlyUsd.trim() !== '')
-        .map((s) => ({ id: s.id, name: s.name.trim(), monthlyUsd: parseFloat(s.monthlyUsd) || 0 }));
-      const res = await fetchWithAuth('/api/admin/mission/ai-spend', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ subscriptions: payload }),
-      });
-      const json = await res.json();
-      if (json.ok) { setDirty(false); setSaveNote('Saved.'); }
-      else setSaveNote(json.error ?? 'Could not save.');
-    } catch (e) { setSaveNote(`Network error: ${(e as Error).message}`); }
-    finally { setSaving(false); }
-  };
-
-  const inputStyle: React.CSSProperties = {
-    fontSize: 11.5, padding: '5px 8px', borderRadius: 7, outline: 'none',
-    background: 'rgba(0,0,0,.3)', color: '#fff', border: `1px solid ${dimWhite(.2)}`,
-  };
-  const subsTotal = subs.reduce((s, x) => s + (parseFloat(x.monthlyUsd) || 0), 0);
-  const robotsTotal = robots.reduce((s, r) => s + r.usd, 0);
-
   return (
-    // The parent card toggles open/closed on click — keep clicks inside the
-    // spend screen (inputs, buttons) from collapsing it.
-    <div onClick={(e) => e.stopPropagation()} style={{ display: 'flex', flexDirection: 'column', gap: 14, cursor: 'default' }}>
-
-      {/* ── Form 1 · Hotel AI ── */}
-      <div>
-        <SpendCaps>Hotel AI · what serving hotels costs</SpendCaps>
-        {loadErr && <div style={{ fontSize: 11.5, color: 'var(--terracotta)' }}>{loadErr}</div>}
-        {!d && !loadErr && <span className="spinner" style={{ width: 13, height: 13, display: 'inline-block', borderTopColor: '#fff' }} />}
-        {d && d.connected && d.billing && (
-          <>
-            <SpendRow label="Today (real bill)" value={money(d.billing.todayUsd)} strong />
-            <SpendRow label="This month" value={money(d.billing.monthUsd)} strong />
-            {/* Future buckets (e.g. AI employees) get their own line the
-                moment they exist — $0 until their keys spend something. */}
-            {d.billing.byWorkspace.filter((w) => w.workspaceId !== null).map((w) => (
-              <SpendRow key={w.workspaceId} label={w.name} value={`${money(w.monthUsd)} this month`} />
-            ))}
-          </>
-        )}
-        {d && !d.connected && (
-          <div style={{ fontSize: 11.5, color: 'var(--gold)', lineHeight: 1.5, marginBottom: 4 }}>
-            Real-bill feed not connected yet — showing Staxis&rsquo;s own meters below.
-          </div>
-        )}
-        {d && (
-          <div style={{ marginTop: 8 }}>
-            <SpendCaps>Where it goes</SpendCaps>
-            {robots.map((r) => (
-              <SpendRow key={r.name} label={`${r.name} robot`} value={`${money(r.usd)} today`} />
-            ))}
-            {robots.length > 1 && <SpendRow label="All robots" value={`${money(robotsTotal)} today`} />}
-            <SpendRow label="Copilot & in-app AI" value={`${money(copilotSpend)} today`} />
-            <SpendRow label={`Map learning${d.learning.runs > 0 ? ` (${d.learning.runs} run${d.learning.runs === 1 ? '' : 's'})`: ''}`} value={`${money(d.learning.monthUsd)} this month`} />
-          </div>
-        )}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12, color: dimWhite(.7) }}>
+      {robots.map((r) => (
+        <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+          <span>{r.name} robot</span>
+          <span className="mono" style={{ color: '#fff' }}>{money(r.usd)} / ${ROBOT_CAP_USD} today</span>
+        </div>
+      ))}
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+        <span>Copilot &amp; in-app AI</span>
+        <span className="mono" style={{ color: '#fff' }}>{money(copilotSpend)} today</span>
       </div>
-
-      {/* ── Form 2 · Running Staxis ── */}
-      <div style={{ borderTop: `1px solid ${dimWhite(.1)}`, paddingTop: 12 }}>
-        <SpendCaps>Running Staxis · your own AI</SpendCaps>
-        <div style={{ fontSize: 11, color: dimWhite(.45), marginBottom: 8, lineHeight: 1.45 }}>
-          Subscriptions you pay for personally (Claude plan, Codex, …) — flat monthly fees, not metered. Type the amounts once.
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {subs.map((s, i) => (
-            <div key={s.id} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-              <input
-                value={s.name} placeholder="e.g. Claude Max plan"
-                onChange={(e) => { const next = [...subs]; next[i] = { ...s, name: e.target.value }; setSubs(next); setDirty(true); }}
-                style={{ ...inputStyle, flex: 1, minWidth: 0 }}
-              />
-              <input
-                value={s.monthlyUsd} placeholder="$/mo" inputMode="decimal" className="mono"
-                onChange={(e) => { const next = [...subs]; next[i] = { ...s, monthlyUsd: e.target.value.replace(/[^0-9.]/g, '') }; setSubs(next); setDirty(true); }}
-                style={{ ...inputStyle, width: 64, textAlign: 'right' }}
-              />
-              <button
-                title="Remove this line" aria-label={`Remove ${s.name || 'line'}`}
-                onClick={() => { setSubs(subs.filter((x) => x.id !== s.id)); setDirty(true); }}
-                style={{ background: 'none', border: 'none', color: dimWhite(.4), fontSize: 13, cursor: 'pointer', padding: 2 }}
-              >×</button>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
-          <button
-            onClick={() => { setSubs([...subs, { id: `sub_${Math.random().toString(36).slice(2, 10)}`, name: '', monthlyUsd: '' }]); setDirty(true); }}
-            className="mono"
-            style={{ background: 'none', border: `1px solid ${dimWhite(.2)}`, borderRadius: 7, color: dimWhite(.6), fontSize: 9.5, letterSpacing: '.06em', padding: '4px 10px', cursor: 'pointer' }}
-          >+ ADD</button>
-          {dirty && (
-            <Btn size="sm" variant="forest" onClick={() => void save()} disabled={saving}>{saving ? '…' : 'Save'}</Btn>
-          )}
-          {saveNote && <span style={{ fontSize: 10.5, color: saveNote === 'Saved.' ? 'var(--forest)' : 'var(--terracotta)' }}>{saveNote}</span>}
-          <span className="mono" style={{ marginLeft: 'auto', fontSize: 11, color: '#fff' }}>{money(subsTotal)}/mo</span>
-        </div>
-      </div>
-
-      <div style={{ fontSize: 10.5, color: dimWhite(.35), lineHeight: 1.45 }}>
-        Bill numbers come straight from Anthropic (about 5 minutes behind). Each robot still pauses itself at its ${ROBOT_CAP_USD}/day cap.
+      <div style={{ marginTop: 4 }}>
+        <Btn size="sm" variant="ghost" href="/admin/properties#money" style={{ color: 'var(--gold)', borderColor: 'rgba(201,154,46,.4)' }}>
+          Full bill &amp; tech-stack costs → Money tab
+        </Btn>
       </div>
     </div>
   );

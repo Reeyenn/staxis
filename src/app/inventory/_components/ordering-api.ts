@@ -1,17 +1,15 @@
-// Client helpers for the inventory Ordering API. Thin wrappers over
+// Client helpers for the inventory vendors API. Thin wrappers over
 // fetchWithAuth that unwrap the standard { ok, data } envelope and throw on
 // failure so callers can try/catch. Imports ONLY pure types from
-// @/lib/ordering/types — never the server db/email libs (supabaseAdmin).
+// @/lib/ordering/types — never the server db lib (supabaseAdmin).
+//
+// 2026-07-18: the purchase-order flow (create/send/receive orders, catalog,
+// spend rollup) was removed — every hotel orders differently and the flow is
+// being redesigned as a per-hotel workflow. Vendors survive because inventory
+// items link to a vendor record (AddItemSheet).
 
 import { fetchWithAuth } from '@/lib/api-fetch';
-import type {
-  CartLineInput,
-  CatalogItem,
-  PurchaseOrder,
-  ReceiveLineInput,
-  SpendRollup,
-  Vendor,
-} from '@/lib/ordering/types';
+import type { Vendor } from '@/lib/ordering/types';
 
 export interface VendorFields {
   name?: string;
@@ -42,38 +40,6 @@ const jsonInit = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 });
 
-export async function apiCreateOrders(
-  pid: string,
-  lines: CartLineInput[],
-): Promise<{ orders: PurchaseOrder[] }> {
-  return call('/api/inventory/orders/create', jsonInit({ pid, lines }));
-}
-
-export async function apiSendOrder(
-  pid: string,
-  orderId: string,
-  toEmail: string | undefined,
-  lang: string,
-): Promise<{ order: PurchaseOrder; emailId: string }> {
-  return call('/api/inventory/orders/send', jsonInit({ pid, orderId, toEmail, lang }));
-}
-
-export async function apiReceiveOrder(
-  pid: string,
-  orderId: string,
-  lines: ReceiveLineInput[],
-): Promise<{ order: PurchaseOrder; shortLines: { lineId: string; ordered: number; received: number }[] }> {
-  return call('/api/inventory/orders/receive', jsonInit({ pid, orderId, lines }));
-}
-
-export async function apiListOrders(pid: string): Promise<PurchaseOrder[]> {
-  const data = await call<{ orders: PurchaseOrder[] }>(
-    `/api/inventory/orders/list?pid=${encodeURIComponent(pid)}`,
-    { cache: 'no-store' },
-  );
-  return data.orders;
-}
-
 export async function apiListVendors(pid: string, includeInactive = false): Promise<Vendor[]> {
   const qs = `pid=${encodeURIComponent(pid)}${includeInactive ? '&includeInactive=1' : ''}`;
   const data = await call<{ vendors: Vendor[] }>(`/api/inventory/vendors?${qs}`, { cache: 'no-store' });
@@ -92,24 +58,4 @@ export async function apiUpdateVendor(pid: string, vendorId: string, fields: Ven
     body: JSON.stringify({ pid, vendorId, ...fields }),
   });
   return data.vendor;
-}
-
-export async function apiListCatalog(pid: string): Promise<CatalogItem[]> {
-  const data = await call<{ items: CatalogItem[] }>(
-    `/api/inventory/catalog?pid=${encodeURIComponent(pid)}`,
-    { cache: 'no-store' },
-  );
-  return data.items;
-}
-
-export async function apiImportCatalog(pid: string): Promise<{ imported: number; skipped: number }> {
-  return call('/api/inventory/catalog/import', jsonInit({ pid }));
-}
-
-export async function apiSpendRollup(days = 90): Promise<SpendRollup> {
-  const to = new Date();
-  const from = new Date(to.getTime() - days * 86_400_000);
-  const qs = `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
-  const data = await call<{ rollup: SpendRollup }>(`/api/inventory/spend-rollup?${qs}`, { cache: 'no-store' });
-  return data.rollup;
 }
