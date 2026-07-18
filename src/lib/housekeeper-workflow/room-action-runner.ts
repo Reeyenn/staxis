@@ -32,6 +32,11 @@ import { errToString } from '@/lib/utils';
 import type { RateLimitEndpoint } from '@/lib/api-ratelimit';
 import { gateHousekeeperRequest, loadRoomForStaff } from './auth';
 import type { RoomRowForWorkflow } from './auth';
+import {
+  claimOfflineAction,
+  completeOfflineActionClaim,
+  releaseOfflineActionClaim,
+} from './offline-action-replay';
 import { writeWorkflowFields } from './workflow-store';
 import type { WorkflowPatch } from './workflow-store';
 
@@ -87,41 +92,49 @@ export async function runHousekeeperRoomAction<TBody extends RoomActionBody>(
     });
   }
 
-  // Idempotency — insert-first pattern (see structured-issue/route.ts).
-  if (body.actionId) {
-    const { data: claimed } = await supabaseAdmin
-      .from('offline_action_replays')
-      .insert({
-        action_id: body.actionId,
-        property_id: gate.pid,
-        staff_id: gate.staffId,
+  // Idempotency — insert-first claim (see offline-action-replay.ts). A claim
+  // whose payload is still empty means the original attempt died mid-flight:
+  // answer 503 so the offline queue retries later, never a false "deduped"
+  // success. A claim that cannot be released after a failed write is surfaced
+  // the same way. (Audit fix 2026-06-18; hardened 2026-07-18.)
+  const replayContext = body.actionId
+    ? {
+        actionId: body.actionId,
+        propertyId: gate.pid,
+        staffId: gate.staffId,
         endpoint: replayEndpoint,
-        result_payload: {},
-      })
-      .select('action_id')
-      .maybeSingle();
-    if (!claimed) {
-      const { data: prev } = await supabaseAdmin
-        .from('offline_action_replays')
-        .select('result_payload')
-        .eq('action_id', body.actionId)
-        .maybeSingle();
+        requestId: gate.requestId,
+      }
+    : null;
+
+  if (replayContext) {
+    const claim = await claimOfflineAction(replayContext);
+    if (!claim.ok) {
+      const pending = claim.reason === 'pending';
+      return err(pending ? 'Action is still processing' : 'Internal server error', {
+        requestId: gate.requestId,
+        status: pending ? 503 : 500,
+        code: pending ? ApiErrorCode.IdempotencyConflict : ApiErrorCode.InternalError,
+        headers: pending ? { ...gate.headers, 'Retry-After': '1' } : gate.headers,
+      });
+    }
+    if (claim.duplicate) {
       return ok(
-        { ...((prev?.result_payload as Record<string, unknown> | undefined) ?? {}), deduped: true },
+        { ...claim.resultPayload, deduped: true },
         { requestId: gate.requestId, headers: gate.headers },
       );
     }
   }
 
-  // Release the idempotency claim on any failure path below. Without this a
-  // failed write leaves a claim row with an empty payload; the offline queue's
-  // retry then hits the dedup branch and returns ok({deduped}) — reporting
-  // success while the write never landed (silent data loss). (Audit fix 2026-06-18.)
-  const releaseClaim = async () => {
-    if (!body.actionId) return;
-    try { await supabaseAdmin.from('offline_action_replays').delete().eq('action_id', body.actionId); }
-    catch { /* best-effort */ }
-  };
+  const releaseClaim = () => replayContext
+    ? releaseOfflineActionClaim(replayContext)
+    : Promise.resolve(true);
+  const releaseFailureResponse = () => err('Temporary server error', {
+    requestId: gate.requestId,
+    status: 503,
+    code: ApiErrorCode.UpstreamFailure,
+    headers: { ...gate.headers, 'Retry-After': '1' },
+  });
 
   const roomR = await loadRoomForStaff({
     pid: gate.pid,
@@ -130,11 +143,15 @@ export async function runHousekeeperRoomAction<TBody extends RoomActionBody>(
     requestId: gate.requestId,
     headers: gate.headers,
   });
-  if (!roomR.ok) { await releaseClaim(); return roomR.response; }
+  if (!roomR.ok) {
+    if (!(await releaseClaim())) return releaseFailureResponse();
+    return roomR.response;
+  }
   const room = roomR.room;
 
   const now = new Date();
   const ctx: RoomActionContext<TBody> = { body, room, now };
+  let businessMutationCommitted = false;
 
   try {
     const w = await writeWorkflowFields(gate.pid, body.roomId, buildFields(ctx));
@@ -143,7 +160,7 @@ export async function runHousekeeperRoomAction<TBody extends RoomActionBody>(
         requestId: gate.requestId,
         err: w.error,
       });
-      await releaseClaim();
+      if (!(await releaseClaim())) return releaseFailureResponse();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -151,6 +168,7 @@ export async function runHousekeeperRoomAction<TBody extends RoomActionBody>(
         headers: gate.headers,
       });
     }
+    businessMutationCommitted = true;
 
     // Audit log (best-effort — a failure here must not fail the action).
     try {
@@ -174,15 +192,15 @@ export async function runHousekeeperRoomAction<TBody extends RoomActionBody>(
 
     const result = buildResult(ctx);
 
-    if (body.actionId) {
-      try {
-        await supabaseAdmin
-          .from('offline_action_replays')
-          .update({ result_payload: result })
-          .eq('action_id', body.actionId);
-      } catch (replayErr) {
-        log.warn(`${replayEndpoint}: replay log update failed`, {
-          requestId: gate.requestId, err: errToString(replayErr),
+    if (replayContext) {
+      // The mutation has committed — the claim must never be deleted now.
+      // completeOfflineActionClaim retries once; on double failure the claim
+      // stays pending and later replays get 503 rather than a double-apply.
+      const replayCompleted = await completeOfflineActionClaim(replayContext, result);
+      if (!replayCompleted) {
+        log.warn(`${replayEndpoint}: committed mutation has a pending replay result`, {
+          requestId: gate.requestId,
+          actionId: replayContext.actionId,
         });
       }
     }
@@ -193,7 +211,9 @@ export async function runHousekeeperRoomAction<TBody extends RoomActionBody>(
       requestId: gate.requestId,
       err: errToString(caughtErr),
     });
-    await releaseClaim();
+    if (!businessMutationCommitted && !(await releaseClaim())) {
+      return releaseFailureResponse();
+    }
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,

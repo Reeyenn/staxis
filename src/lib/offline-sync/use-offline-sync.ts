@@ -24,6 +24,7 @@ import {
   drainQueue,
   getQueueLength,
   clearFailures,
+  generateOfflineActionId,
   type QueuedAction,
   type DrainProgress,
 } from './queue';
@@ -119,6 +120,27 @@ export function useOfflineSync() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // A 429 or retryable 503 can arrive while navigator.onLine remains true, so
+  // there may be no future "online" event to restart the drain. Honor the
+  // queue's bounded backoff suggestion and keep retrying pending work.
+  useEffect(() => {
+    const progress = state.lastDrain;
+    if (
+      !state.online
+      || state.draining
+      || state.queueLength === 0
+      || !progress
+      || progress.pending === 0
+      || progress.retryAfterMs === null
+      || (typeof navigator !== 'undefined' && !navigator.onLine)
+    ) return;
+
+    const timer = window.setTimeout(() => {
+      void triggerDrain();
+    }, progress.retryAfterMs);
+    return () => window.clearTimeout(timer);
+  }, [state.online, state.draining, state.queueLength, state.lastDrain, triggerDrain]);
+
   /**
    * Fire a mutating request. If we're online, fetches and returns the
    * server's response. If we're offline, queues the action and returns
@@ -133,15 +155,15 @@ export function useOfflineSync() {
         setState((s) => ({ ...s, queueLength: newLen }));
         return { ok: true, queued: true, data: { actionId: queued.id, queued: true } };
       }
+      // Always send an idempotency key on the FIRST online attempt. The queue
+      // generator includes a UUID fallback for older browsers; leaving this
+      // undefined there would make a response-loss replay a distinct action.
+      const actionId = generateOfflineActionId();
       try {
-        const actionId =
-          typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
-            ? crypto.randomUUID()
-            : undefined;
         const res = await fetch(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(actionId ? { ...body, actionId } : body),
+          body: JSON.stringify({ ...body, actionId }),
         });
         const json = (await res.json().catch(() => null)) as unknown;
         if (!res.ok) {
@@ -150,8 +172,11 @@ export function useOfflineSync() {
         return { ok: true, queued: false, data: json, status: res.status };
       } catch {
         // Network-level fail mid-flight — most likely the connection just
-        // dropped. Queue and let the next online event replay.
-        const queued = await enqueueAction({ endpoint, body, label });
+        // dropped. Queue and let the next online event replay. Reuse the
+        // actionId sent in the failed request: the server may have committed
+        // the mutation before its response was lost, and a newly-minted id
+        // would make the replay look like a distinct action.
+        const queued = await enqueueAction({ endpoint, body, label, id: actionId });
         const newLen = await getQueueLength();
         setState((s) => ({ ...s, queueLength: newLen, online: false }));
         return { ok: true, queued: true, data: { actionId: queued.id, queued: true } };

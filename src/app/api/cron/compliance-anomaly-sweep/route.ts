@@ -82,11 +82,12 @@ async function handle(req: NextRequest) {
   // Only properties that actually configured compliance readings.
   let propertyIds: string[] = [];
   try {
-    const { data } = await supabaseAdmin
+    const { data, error } = await supabaseAdmin
       .from('compliance_reading_types')
       .select('property_id')
       .eq('active', true)
       .limit(5000);
+    if (error) throw error;
     propertyIds = Array.from(new Set((data ?? []).map((r) => String(r.property_id))));
   } catch (e) {
     log.error('[cron/compliance-anomaly-sweep] property list failed', { requestId, msg: errToString(e) });

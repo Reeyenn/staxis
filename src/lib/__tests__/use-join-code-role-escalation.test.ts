@@ -57,6 +57,7 @@ interface MockState {
   /** Drives the properties.onboarding_completed_at lookup in the F-06 gate. */
   propertyOnboardingCompletedAt: string | null;
   insertedEvents: Array<{ event_type: string; metadata: Record<string, unknown> }>;
+  casUpdateCalls: number;
 }
 
 const state: MockState = {
@@ -64,6 +65,7 @@ const state: MockState = {
   casConflict: false,
   propertyOnboardingCompletedAt: null,
   insertedEvents: [],
+  casUpdateCalls: 0,
 };
 
 beforeEach(() => {
@@ -71,6 +73,7 @@ beforeEach(() => {
   state.casConflict = false;
   state.propertyOnboardingCompletedAt = null;
   state.insertedEvents = [];
+  state.casUpdateCalls = 0;
 
   // Mock createUser so any test that gets PAST the F-06 gate returns a
   // clean "Failed to create account" (400) instead of hitting real auth.
@@ -108,7 +111,9 @@ beforeEach(() => {
             maybeSingle: async () => ({ data: state.joinCode, error: null }),
           }),
         }),
-        update: (_vals: Record<string, unknown>) => ({
+        update: (_vals: Record<string, unknown>) => {
+          state.casUpdateCalls += 1;
+          return ({
           eq: (_col1: string, _val1: string) => ({
             eq: (_col2: string, _val2: string) => ({
               select: () => ({
@@ -117,7 +122,8 @@ beforeEach(() => {
               }),
             }),
           }),
-        }),
+          });
+        },
       };
     }
     if (table === 'properties') {
@@ -328,6 +334,7 @@ describe('use-join-code — new-flow role gating', () => {
     assert.match(JSON.stringify(body), /front_desk|housekeeping|maintenance/);
     // Critically — body must NOT silently accept role=admin.
     assert.doesNotMatch(JSON.stringify(body), /trusted":\s*true/);
+    assert.equal(state.casUpdateCalls, 0, 'invalid role must not consume a join-code slot');
   });
 
   test('new-flow code + role=owner in body → 400 (no self-promotion to owner)', async () => {
@@ -351,6 +358,7 @@ describe('use-join-code — new-flow role gating', () => {
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 400);
+    assert.equal(state.casUpdateCalls, 0, 'invalid role must not consume a join-code slot');
   });
 
   test('new-flow code + role=general_manager in body → 400 (no self-promotion to GM)', async () => {
@@ -374,6 +382,7 @@ describe('use-join-code — new-flow role gating', () => {
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 400);
+    assert.equal(state.casUpdateCalls, 0, 'invalid role must not consume a join-code slot');
   });
 
   test('new-flow code + missing role in body → 400 (role is required)', async () => {
@@ -397,5 +406,6 @@ describe('use-join-code — new-flow role gating', () => {
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 400);
+    assert.equal(state.casUpdateCalls, 0, 'missing role must not consume a join-code slot');
   });
 });

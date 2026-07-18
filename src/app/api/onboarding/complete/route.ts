@@ -27,6 +27,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
+import { accountCanForProperty } from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -82,14 +83,21 @@ export async function POST(req: NextRequest) {
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  // Capability — caller owns this property.
-  const { data: property } = await supabaseAdmin
+  // Capability — owner, GM, or admin with explicit access to this property.
+  // GM invitees intentionally receive property_access without becoming the
+  // properties.owner_id, so an owner-id-only gate strands them at Add Team.
+  const { data: property, error: propertyErr } = await supabaseAdmin
     .from('properties')
-    .select('id, owner_id')
+    .select('id')
     .eq('id', pidV.value!)
     .maybeSingle();
+  if (propertyErr) {
+    return err('Could not verify property access', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
   if (!property) return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!property.owner_id || (property.owner_id as string) !== session.userId) {
+  if (!(await accountCanForProperty(session.userId, 'manage_team', pidV.value!))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -101,6 +109,12 @@ export async function POST(req: NextRequest) {
       const v = (body.servicesEnabled as Record<string, unknown>)[k];
       if (typeof v === 'boolean') services[k] = v;
     }
+  }
+  if (
+    Object.keys(services).length > 0
+    && !(await accountCanForProperty(session.userId, 'manage_settings', pidV.value!))
+  ) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   // ─── staff entries ──────────────────────────────────────────────────────

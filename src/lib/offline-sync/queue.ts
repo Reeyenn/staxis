@@ -20,9 +20,11 @@
  *   - clearQueue(): unit-test escape hatch
  *
  * Failure model: a queued action that returns 2xx → remove from queue.
- *   - 4xx (client-side, won't succeed on retry) → mark as failed in
- *     local state, leave in queue with `lastError`. The next online
+ *   - 4xx other than 429 (client-side, won't succeed on retry) → mark as
+ *     failed in local state, leave in queue with `lastError`. The next online
  *     drain will skip it (so we don't loop on 400/422/etc.).
+ *   - 429 (rate limited) → leave retryable and stop this drain. A later
+ *     drain can replay it after the server-side window resets.
  *   - 5xx / network error → leave in queue, exponential backoff.
  */
 
@@ -94,9 +96,16 @@ async function withStore<T>(
   }
 }
 
-function genUuid(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
+export function generateOfflineActionId(
+  randomUuid: (() => string) | null | undefined = undefined,
+): string {
+  const nativeUuid = randomUuid === undefined
+    ? (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+        ? crypto.randomUUID.bind(crypto)
+        : null)
+    : randomUuid;
+  if (nativeUuid) {
+    return nativeUuid();
   }
   // RFC4122 v4-ish fallback for ancient browsers; the housekeeper phones
   // we target all support crypto.randomUUID, so this is belt-and-braces.
@@ -121,32 +130,22 @@ export interface EnqueueInput {
 }
 
 export async function enqueueAction(input: EnqueueInput): Promise<QueuedAction> {
-  if (!isBrowser()) {
-    return {
-      id: input.id ?? genUuid(),
-      endpoint: input.endpoint,
-      method: 'POST',
-      body: input.body,
-      enqueuedAt: Date.now(),
-      label: input.label,
-      attempts: 0,
-      lastError: null,
-      permanentFailure: false,
-    };
-  }
+  const id = input.id ?? generateOfflineActionId();
   const action: QueuedAction = {
-    id: input.id ?? genUuid(),
+    id,
     endpoint: input.endpoint,
     method: 'POST',
-    body: { ...input.body, actionId: input.id ?? genUuid() },
+    body: { ...input.body, actionId: id },
     enqueuedAt: Date.now(),
     label: input.label,
     attempts: 0,
     lastError: null,
     permanentFailure: false,
   };
-  // Use the mint id as actionId so dedup works.
-  (action.body as { actionId: string }).actionId = action.id;
+
+  if (!isBrowser()) {
+    return action;
+  }
   await withStore('readwrite', (store) => {
     store.put(action);
   });
@@ -203,6 +202,8 @@ export interface DrainProgress {
   done: number;
   failed: number;
   pending: number;
+  /** Suggested delay before retrying a transiently blocked queue. */
+  retryAfterMs: number | null;
 }
 
 export interface DrainOptions {
@@ -211,6 +212,23 @@ export interface DrainOptions {
   maxAttempts?: number;
   /** Fetch implementation — defaults to global `fetch`. Tests can stub. */
   fetchImpl?: typeof fetch;
+}
+
+const MAX_RETRY_DELAY_MS = 5 * 60 * 1000;
+
+function retryBackoffMs(attempts: number): number {
+  return Math.min(MAX_RETRY_DELAY_MS, 1000 * (2 ** Math.min(Math.max(attempts - 1, 0), 8)));
+}
+
+function retryAfterHeaderMs(value: string | null): number | null {
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.min(MAX_RETRY_DELAY_MS, Math.ceil(seconds * 1000));
+  }
+  const at = Date.parse(value);
+  if (Number.isNaN(at)) return null;
+  return Math.min(MAX_RETRY_DELAY_MS, Math.max(0, at - Date.now()));
 }
 
 /**
@@ -225,6 +243,7 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
   const eligible = items.filter((a) => !a.permanentFailure);
   let done = 0;
   let failed = 0;
+  let retryAfterMs: number | null = null;
 
   // Compute initial progress so the caller can render a counter.
   const emit = () => {
@@ -233,6 +252,7 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
       done,
       failed,
       pending: eligible.length - done - failed,
+      retryAfterMs,
     });
   };
   emit();
@@ -250,7 +270,27 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
         emit();
         continue;
       }
-      // 4xx — won't succeed on retry. Mark permanent failure.
+      // 429 is explicitly retryable. Do not consume the permanent-failure
+      // budget: a busy server-side rate-limit window says nothing about
+      // whether this action is valid, even after several attempts.
+      if (res.status === 429) {
+        const attempts = action.attempts + 1;
+        const updated: QueuedAction = {
+          ...action,
+          attempts,
+          lastError: 'http 429',
+          permanentFailure: false,
+        };
+        await updateAction(updated);
+        retryAfterMs = Math.max(
+          retryBackoffMs(attempts),
+          retryAfterHeaderMs(res.headers.get('retry-after')) ?? 0,
+        );
+        emit();
+        // Preserve ordering and avoid hammering the same rate-limit window.
+        break;
+      }
+      // Other 4xx responses won't succeed on retry. Mark permanent failure.
       if (res.status >= 400 && res.status < 500) {
         const updated: QueuedAction = {
           ...action,
@@ -263,6 +303,26 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
         emit();
         continue;
       }
+      // A server-supplied Retry-After explicitly marks a 503 as transient.
+      // This includes an idempotency claim that is still being completed.
+      // Keep it retryable and back off instead of turning it permanent after
+      // five rapid drains.
+      if (res.status === 503 && res.headers.has('retry-after')) {
+        const attempts = action.attempts + 1;
+        const updated: QueuedAction = {
+          ...action,
+          attempts,
+          lastError: 'http 503',
+          permanentFailure: false,
+        };
+        await updateAction(updated);
+        retryAfterMs = Math.max(
+          retryBackoffMs(attempts),
+          retryAfterHeaderMs(res.headers.get('retry-after')) ?? 0,
+        );
+        emit();
+        break;
+      }
       // 5xx / unexpected — leave queued, bump attempts.
       const updated: QueuedAction = {
         ...action,
@@ -272,6 +332,7 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
       };
       await updateAction(updated);
       if (updated.permanentFailure) failed += 1;
+      else retryAfterMs = retryBackoffMs(updated.attempts);
       emit();
       // If we've started failing on 5xx we might be flaky — bail out and
       // let the next online tick try again.
@@ -286,6 +347,7 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
       };
       await updateAction(updated);
       if (updated.permanentFailure) failed += 1;
+      else retryAfterMs = retryBackoffMs(updated.attempts);
       emit();
       break;
     }
@@ -296,6 +358,7 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
     done,
     failed,
     pending: eligible.length - done - failed,
+    retryAfterMs,
   };
 }
 

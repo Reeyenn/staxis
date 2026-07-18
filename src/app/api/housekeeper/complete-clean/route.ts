@@ -164,19 +164,20 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (room.number) {
     try {
       type CompRow = { child_room_numbers: unknown };
-      const { data: comp } = await supabaseAdmin
+      const { data: comp, error: compErr } = await supabaseAdmin
         .from('component_rooms')
         .select('child_room_numbers')
         .eq('property_id', gate.pid)
         .eq('parent_room_number', room.number)
         .maybeSingle();
+      if (compErr) throw compErr;
       const children = Array.isArray((comp as CompRow | null)?.child_room_numbers)
         ? ((comp as CompRow).child_room_numbers as unknown[]).filter(
             (x): x is string => typeof x === 'string',
           )
         : [];
       if (children.length > 0 && room.date) {
-        await supabaseAdmin
+        const { error: fanoutWriteErr } = await supabaseAdmin
           .from('pms_housekeeping_assignments')
           .update({
             status: 'completed',
@@ -191,6 +192,14 @@ export async function POST(req: NextRequest): Promise<Response> {
           // Only flip rooms that are still dirty/in-progress — don't
           // accidentally re-clean a sub-room someone already inspected.
           .in('status', ['not_started', 'in_progress']);
+        if (fanoutWriteErr) {
+          log.warn('complete-clean: component-room fanout write failed (non-fatal)', {
+            requestId: gate.requestId,
+            pid: gate.pid,
+            parentRoom: room.number,
+            err: errToString(fanoutWriteErr),
+          });
+        }
       }
     } catch (fanoutErr) {
       log.warn('complete-clean: component-room fanout failed (non-fatal)', {

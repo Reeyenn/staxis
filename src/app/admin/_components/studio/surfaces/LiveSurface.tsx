@@ -48,8 +48,8 @@ import { AIControlCenter } from '../../AIControlCenter';
 import { AccessPopover } from '../../AccessPopover';
 import { TwoFactorSwitch } from '../../TwoFactorSwitch';
 import { APP_SECTIONS, type AppSection } from '@/lib/sections/registry';
+import { FLEET_STALE_SYNC_MINUTES } from '@/lib/admin-property-health';
 
-const STALE_THRESHOLD_MIN = 12 * 60; // 12 hours
 const PAGE_SIZE = 50;
 
 // ── Real API shapes (mirror the prior LiveHotelsTab interfaces) ──────────
@@ -157,13 +157,12 @@ export function LiveSurface() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      // 'no_pms' (unassigned hotels) has no server-side status — request the
-      // broad 'all' set and narrow to pmsType === null client-side below.
-      const serverStatus = statusFilter === 'no_pms' ? 'all' : statusFilter;
+      // Every status — including 'no_pms' and the computed 'stale' /
+      // 'pms_disconnected' — is applied server-side by list-properties.
       const propsParams = new URLSearchParams({
         page: String(page),
         pageSize: String(PAGE_SIZE),
-        status: serverStatus,
+        status: statusFilter,
       });
       if (searchTerm) propsParams.set('search', searchTerm);
       const [propsRes, feedbackRes] = await Promise.all([
@@ -173,11 +172,27 @@ export function LiveSurface() {
       const [propsJson, feedbackJson] = await Promise.all([
         propsRes.json(), feedbackRes.json(),
       ]);
-      if (propsJson.ok) {
-        setProps(propsJson.data.properties);
-        setPagination(propsJson.data.pagination ?? null);
+
+      // Surface a failed response as a visible error instead of leaving the
+      // surface on its spinner forever (the prior behavior when a payload
+      // came back !ok).
+      const loads = [
+        { label: 'hotel list', response: propsRes, payload: propsJson },
+        { label: 'feedback', response: feedbackRes, payload: feedbackJson },
+      ];
+      const failed = loads.find(({ response, payload }) => !response.ok || payload?.ok !== true);
+      if (failed) {
+        const apiMessage = typeof failed.payload?.error?.message === 'string'
+          ? failed.payload.error.message
+          : typeof failed.payload?.error === 'string'
+            ? failed.payload.error
+            : `HTTP ${failed.response.status}`;
+        setError(`Could not load ${failed.label}: ${apiMessage}`);
+        return;
       }
-      if (feedbackJson.ok) setFeedback(feedbackJson.data.feedback);
+      setProps(propsJson.data.properties);
+      setPagination(propsJson.data.pagination ?? null);
+      setFeedback(feedbackJson.data.feedback);
     } catch (err) {
       setError(`Network error: ${(err as Error).message}`);
     }
@@ -211,18 +226,17 @@ export function LiveSurface() {
   // ── Derivations (verbatim from the prior tab) ──────────────────────────
   // "all" view shows hotels that have synced at least once OR are active OR
   // are not-yet-assigned (so "no system detected" hotels surface for an admin
-  // to pick coverage instead of hiding silently). 'no_pms' narrows to just the
-  // unassigned hotels (served as 'all', filtered here). Other filters are
-  // already applied server-side, so trust the list.
-  const live = statusFilter === 'no_pms'
-    ? props.filter((p) => p.pmsType === null)
-    : statusFilter === 'all'
+  // to pick coverage instead of hiding silently). Every explicit status,
+  // including no_pms, is already applied server-side, so trust the list.
+  const live = statusFilter === 'all'
     ? props.filter((p) => p.lastSyncedAt !== null || p.subscriptionStatus === 'active' || p.pmsType === null)
     : props;
 
   const enriched: EnrichedRow[] = live.map((p) => ({
     ...p,
-    isStale12h: p.pmsConnected && p.syncFreshnessMin !== null && p.syncFreshnessMin > STALE_THRESHOLD_MIN,
+    isStale12h: p.pmsConnected
+      && p.syncFreshnessMin !== null
+      && p.syncFreshnessMin > FLEET_STALE_SYNC_MINUTES,
   }));
 
   // Sort priority: past_due → stale → fresh, then newest.

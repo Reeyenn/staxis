@@ -22,6 +22,11 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
+import {
+  claimOfflineAction,
+  completeOfflineActionClaim,
+  releaseOfflineActionClaim,
+} from '@/lib/housekeeper-workflow/offline-action-replay';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -100,49 +105,47 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
   }
 
-  // ── Idempotency: try to claim the action_id first. ───────────────────
-  // Race-safe insert-first pattern: two concurrent replays of the same
-  // actionId would have raced a SELECT-then-INSERT (one passes the
-  // SELECT, then another does the same, both proceed to side effects).
-  // INSERT ... ON CONFLICT DO NOTHING + RETURNING returns the inserted
-  // row to the winner and an empty result to the loser; the loser then
-  // looks up the original result_payload and returns it.
-  if (body.actionId) {
-    const { data: claimed } = await supabaseAdmin
-      .from('offline_action_replays')
-      .insert({
-        action_id: body.actionId,
-        property_id: gate.pid,
-        staff_id: gate.staffId,
+  const replayContext = body.actionId
+    ? {
+        actionId: body.actionId,
+        propertyId: gate.pid,
+        staffId: gate.staffId,
         endpoint: 'structured-issue',
-        // Empty payload — we'll update with the real result below if we
-        // proceed to the side effect.
-        result_payload: {},
-      })
-      .select('action_id')
-      .maybeSingle();
-    if (!claimed) {
-      // We lost the race. Fetch the original result payload and return.
-      const { data: prev } = await supabaseAdmin
-        .from('offline_action_replays')
-        .select('result_payload')
-        .eq('action_id', body.actionId)
-        .maybeSingle();
+        requestId: gate.requestId,
+      }
+    : null;
+
+  if (replayContext) {
+    const claim = await claimOfflineAction(replayContext);
+    if (!claim.ok) {
+      const pending = claim.reason === 'pending';
+      return err(pending ? 'Action is still processing' : 'Internal server error', {
+        requestId: gate.requestId,
+        status: pending ? 503 : 500,
+        code: pending ? ApiErrorCode.IdempotencyConflict : ApiErrorCode.InternalError,
+        headers: pending ? { ...gate.headers, 'Retry-After': '1' } : gate.headers,
+      });
+    }
+    if (claim.duplicate) {
       return ok(
-        { ...((prev?.result_payload as Record<string, unknown> | undefined) ?? {}), deduped: true },
+        { ...claim.resultPayload, deduped: true },
         { requestId: gate.requestId, headers: gate.headers },
       );
     }
   }
 
-  // Release the idempotency claim on failure so the offline queue's retry can
-  // re-file the issue instead of hitting the dedup branch and falsely reporting
-  // success with an empty payload (silent data loss). (Audit fix 2026-06-18.)
-  const releaseClaim = async () => {
-    if (!body.actionId) return;
-    try { await supabaseAdmin.from('offline_action_replays').delete().eq('action_id', body.actionId); }
-    catch { /* best-effort */ }
-  };
+  // Release the idempotency claim when the protected write fails so a later
+  // offline replay can attempt the write again instead of remaining pending.
+  const releaseClaim = () => replayContext
+    ? releaseOfflineActionClaim(replayContext)
+    : Promise.resolve(true);
+  const releaseFailureResponse = () => err('Temporary server error', {
+    requestId: gate.requestId,
+    status: 503,
+    code: ApiErrorCode.UpstreamFailure,
+    headers: { ...gate.headers, 'Retry-After': '1' },
+  });
+  let businessMutationCommitted = false;
 
   try {
     const { data: workOrderId, error: rpcErr } = await supabaseAdmin.rpc(
@@ -163,7 +166,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         requestId: gate.requestId,
         err: errToString(rpcErr ?? 'no work_order_id'),
       });
-      await releaseClaim();
+      if (!(await releaseClaim())) return releaseFailureResponse();
       return err('Internal server error', {
         requestId: gate.requestId,
         status: 500,
@@ -171,6 +174,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         headers: gate.headers,
       });
     }
+    businessMutationCommitted = true;
 
     // If a photoPath was supplied, attach it to the work order's raw blob
     // for the maintenance UI to render. The photo itself lives in the
@@ -231,18 +235,14 @@ export async function POST(req: NextRequest): Promise<Response> {
       photoAttached: !!body.photoPath,
     };
 
-    if (body.actionId) {
-      // Now persist the real result onto the row we claimed above. A
-      // subsequent replay would hit the dedup path and return this
-      // payload instead of re-applying the side effect.
-      try {
-        await supabaseAdmin
-          .from('offline_action_replays')
-          .update({ result_payload: result })
-          .eq('action_id', body.actionId);
-      } catch (replayErr) {
-        log.warn('structured-issue: replay log update failed (non-fatal)', {
-          requestId: gate.requestId, err: errToString(replayErr),
+    if (replayContext) {
+      const replayCompleted = await completeOfflineActionClaim(replayContext, result);
+      if (!replayCompleted) {
+        // The work order already exists. Keep the pending claim so a replay
+        // after response loss cannot create a duplicate.
+        log.warn('structured-issue: committed mutation has a pending replay result', {
+          requestId: gate.requestId,
+          actionId: replayContext.actionId,
         });
       }
     }
@@ -253,7 +253,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       requestId: gate.requestId,
       err: errToString(caughtErr),
     });
-    await releaseClaim();
+    if (!businessMutationCommitted && !(await releaseClaim())) {
+      return releaseFailureResponse();
+    }
     return err('Internal server error', {
       requestId: gate.requestId,
       status: 500,

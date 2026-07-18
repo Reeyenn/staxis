@@ -115,6 +115,7 @@ beforeEach(() => {
         delete: () => {
           const chain = {
             eq: () => chain,
+            neq: () => chain,
             gte: () => chain,
             then: (resolve: (v: unknown) => unknown) => resolve({ error: null }),
           };
@@ -165,13 +166,12 @@ const PROOF_ID = 'pppppppp-pppp-pppp-pppp-pppppppppppp';
 const SESSION_ID = '99999999-8888-7777-6666-555555555555';
 
 function freshJwt(): string {
-  // iat within the 5-min session-age guard; include session_id for the
-  // Phase B mfa_verified_sessions write (otherwise the route logs warn
-  // but still 200s).
+  const now = Math.floor(Date.now() / 1000);
   return mintJwt({
     sub: USER_ID,
-    iat: Math.floor(Date.now() / 1000) - 5,
+    iat: now - 5,
     session_id: SESSION_ID,
+    amr: [{ method: 'otp', timestamp: now - 5 }],
   });
 }
 
@@ -199,6 +199,60 @@ function ok(): void {
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 describe('trust-device — password-proof gate (Hole #1, RPC-based)', () => {
+  test('password-only JWT + valid proof → 403 before the proof is claimed', async () => {
+    ok();
+    state.claimedProofId = PROOF_ID;
+    const now = Math.floor(Date.now() / 1000);
+    const passwordJwt = mintJwt({
+      sub: USER_ID,
+      iat: now - 5,
+      session_id: SESSION_ID,
+      amr: [{ method: 'password', timestamp: now - 5 }],
+    });
+
+    const res = await POST(mockReq({ jwt: passwordJwt }));
+    assert.equal(res.status, 403);
+    assert.equal(state.claimRpcCalls, 0, 'non-OTP JWT must not burn the password proof');
+    assert.equal(state.trustedDevicesInsertCalls, 0);
+    const blocked = state.insertedEvents.find(
+      (e) => e.event_type === 'auth.trust_device_blocked_without_fresh_otp',
+    );
+    assert.equal(blocked?.metadata.reason, 'otp_method_missing');
+  });
+
+  test('missing AMR → 403 before the proof is claimed', async () => {
+    ok();
+    state.claimedProofId = PROOF_ID;
+    const jwt = mintJwt({
+      sub: USER_ID,
+      iat: Math.floor(Date.now() / 1000) - 5,
+      session_id: SESSION_ID,
+    });
+
+    const res = await POST(mockReq({ jwt }));
+    assert.equal(res.status, 403);
+    assert.equal(state.claimRpcCalls, 0);
+    assert.equal(state.trustedDevicesInsertCalls, 0);
+  });
+
+  test('stale or future OTP proof → 403 before the password proof is claimed', async () => {
+    ok();
+    state.claimedProofId = PROOF_ID;
+    const now = Math.floor(Date.now() / 1000);
+    for (const timestamp of [now - 6 * 60, now + 60]) {
+      const jwt = mintJwt({
+        sub: USER_ID,
+        iat: now - 5,
+        session_id: SESSION_ID,
+        amr: [{ method: 'otp', timestamp }],
+      });
+      const res = await POST(mockReq({ jwt }));
+      assert.equal(res.status, 403);
+    }
+    assert.equal(state.claimRpcCalls, 0);
+    assert.equal(state.trustedDevicesInsertCalls, 0);
+  });
+
   test('RPC returns NULL (no proof) → 403, security event logged, no trusted_devices insert', async () => {
     ok();
     state.claimedProofId = null;
@@ -271,17 +325,19 @@ describe('trust-device — password-proof gate (Hole #1, RPC-based)', () => {
     assert.equal(state.releaseRpcCalls, 1, 'release RPC must fire on trusted_devices failure');
   });
 
-  test('stale JWT (iat > 5 min ago) → 401 — existing session-age guard still wins (short-circuits RPC)', async () => {
+  test('stale JWT (iat > 5 min ago) → 403 and short-circuits the proof RPC', async () => {
     ok();
     state.claimedProofId = PROOF_ID;
+    const now = Math.floor(Date.now() / 1000);
     const staleJwt = mintJwt({
       sub: USER_ID,
-      iat: Math.floor(Date.now() / 1000) - 6 * 60,
+      iat: now - 6 * 60,
       session_id: SESSION_ID,
+      amr: [{ method: 'otp', timestamp: now - 6 * 60 }],
     });
 
     const res = await POST(mockReq({ jwt: staleJwt }));
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 403);
     assert.equal(state.trustedDevicesInsertCalls, 0, 'stale-session refusal short-circuits the proof check');
     assert.equal(state.claimRpcCalls, 0, 'RPC should not run for a stale JWT — wastes a single-use claim');
   });

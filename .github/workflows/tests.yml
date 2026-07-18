@@ -152,10 +152,8 @@ jobs:
       # deploy-ci-cron Step 4 (2026-05-22): cua-service had no CI coverage.
       # A TypeScript regression in the Fly worker only surfaced at deploy
       # time, after a hotel onboarding job had already been queued. These
-      # three steps run inside cua-service/ so the lint + build catch the
-      # regression at PR-open time. No tests yet — cua-service has no test
-      # suite — but `tsc --noEmit` (the lint script) and `npm run build`
-      # together prove the TypeScript compiles cleanly.
+      # steps run inside cua-service/ so lint, tests, and build catch
+      # regressions at PR-open time.
       - name: Install cua-service deps
         working-directory: cua-service
         run: npm ci
@@ -164,9 +162,23 @@ jobs:
         working-directory: cua-service
         run: npm run lint
 
+      - name: Test cua-service
+        working-directory: cua-service
+        run: npm test
+
       - name: Build cua-service
         working-directory: cua-service
         run: npm run build
+
+      # The Cloudflare email worker has its own package boundary and
+      # TypeScript config, so the root type-check cannot validate it.
+      - name: Install email-worker deps
+        working-directory: email-worker
+        run: npm ci
+
+      - name: Type-check email-worker
+        working-directory: email-worker
+        run: npm run typecheck
 
       # Codex round-5 META J1.4 (2026-05-13): warn on overgrown ML files.
       # The `_train_single_item` function in inventory_rate.py grew from

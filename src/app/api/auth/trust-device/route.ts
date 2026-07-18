@@ -27,51 +27,85 @@ import { trustedClientIp } from '@/lib/api-ratelimit';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+interface TrustJwtPayload {
+  sub?: unknown;
+  iat?: unknown;
+  session_id?: unknown;
+  amr?: unknown;
+}
+
 /**
- * Decode the `iat` (issued-at) claim from a Supabase JWT without verifying
- * the signature. Used only for session-age comparison after the token has
- * already been verified via supabaseAdmin.auth.getUser — no security
- * boundary here.
+ * Decode claims from a Supabase JWT after `supabaseAdmin.auth.getUser(token)`
+ * has verified it. This decoder never establishes authenticity on its own.
  */
-function decodeJwtIat(token: string): number | null {
+function decodeTrustJwtPayload(token: string): TrustJwtPayload | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   try {
     const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const json = Buffer.from(b64, 'base64').toString('utf8');
-    const obj = JSON.parse(json) as { iat?: unknown };
-    return typeof obj.iat === 'number' ? obj.iat : null;
+    const obj = JSON.parse(json) as unknown;
+    return obj && typeof obj === 'object' ? obj as TrustJwtPayload : null;
   } catch {
     return null;
   }
 }
 
 /**
- * Decode the `session_id` claim from a Supabase JWT. Phase 2B (audit
- * 2026-05-22): trust-device binds the issued staxis_device cookie to
- * the specific auth.sessions row by writing a mfa_verified_sessions
- * row keyed on this session_id. The custom_access_token_hook checks
- * for that row to compute mfa_verified=true. An attacker creating a
- * fresh signInWithPassword session would have a different session_id
- * with no matching row → the hook computes mfa_verified=false → RLS
- * denies via mfa_verified_or_grace().
+ * Verify that an already-authenticated Supabase JWT represents the fresh OTP
+ * session required by this endpoint. A valid password JWT is deliberately not
+ * enough: trust-device is the bridge that mints both durable device trust and
+ * the session-bound MFA claim.
  *
- * Same caveat as decodeJwtIat: no signature verification here. Caller
- * must have already validated the token via supabaseAdmin.auth.getUser.
+ * Supabase documents `iat`, `session_id`, and object-form `amr` claims on its
+ * signed access tokens. The SDK also supports RFC-8176 string AMR entries, so a
+ * signed `"otp"` string is accepted using the fresh JWT iat as its timestamp.
  */
-function decodeJwtSessionId(token: string): string | null {
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  try {
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const json = Buffer.from(b64, 'base64').toString('utf8');
-    const obj = JSON.parse(json) as { session_id?: unknown };
-    return typeof obj.session_id === 'string' && obj.session_id.length > 0
-      ? obj.session_id
-      : null;
-  } catch {
-    return null;
+export function validateFreshOtpSessionClaims(
+  token: string,
+  expectedUserId: string,
+  nowSec = Math.floor(Date.now() / 1000),
+): { ok: true; sessionId: string } | { ok: false; reason: string } {
+  const payload = decodeTrustJwtPayload(token);
+  if (!payload) return { ok: false, reason: 'malformed_jwt_payload' };
+  if (payload.sub !== expectedUserId) return { ok: false, reason: 'subject_mismatch' };
+
+  const MAX_AGE_SEC = 5 * 60;
+  const MAX_FUTURE_SKEW_SEC = 30;
+  if (typeof payload.iat !== 'number' || !Number.isFinite(payload.iat)) {
+    return { ok: false, reason: 'missing_iat' };
   }
+  const sessionAgeSec = nowSec - payload.iat;
+  if (sessionAgeSec > MAX_AGE_SEC) return { ok: false, reason: 'stale_session' };
+  if (sessionAgeSec < -MAX_FUTURE_SKEW_SEC) return { ok: false, reason: 'future_session' };
+
+  if (typeof payload.session_id !== 'string' || payload.session_id.length === 0) {
+    return { ok: false, reason: 'missing_session_id' };
+  }
+  if (!Array.isArray(payload.amr)) return { ok: false, reason: 'missing_amr' };
+
+  let sawOtp = false;
+  for (const entry of payload.amr) {
+    if (entry === 'otp') {
+      sawOtp = true;
+      break;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const method = (entry as { method?: unknown }).method;
+    if (method !== 'otp') continue;
+    sawOtp = true;
+    const timestamp = (entry as { timestamp?: unknown }).timestamp;
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      return { ok: false, reason: 'invalid_otp_timestamp' };
+    }
+    const otpAgeSec = nowSec - timestamp;
+    if (otpAgeSec > MAX_AGE_SEC) return { ok: false, reason: 'stale_otp' };
+    if (otpAgeSec < -MAX_FUTURE_SKEW_SEC) return { ok: false, reason: 'future_otp' };
+    break;
+  }
+
+  if (!sawOtp) return { ok: false, reason: 'otp_method_missing' };
+  return { ok: true, sessionId: payload.session_id };
 }
 
 export async function POST(req: NextRequest) {
@@ -102,26 +136,25 @@ export async function POST(req: NextRequest) {
     // No body / invalid JSON → keep the default (remember = true).
   }
 
-  // Session-age guard. Audit Flow 1 #5: the /signin/verify postSignup=1
-  // path auto-trusts the device without showing the "Trust this device"
-  // checkbox. That's correct UX (user just proved email ownership), but
-  // it means anyone who can replay a captured OTP-session JWT — even
-  // hours later — could mint a trust cookie. Bind trust-device to a
-  // session minted in the last 5 minutes. Real OTP flows are seconds
-  // long; legitimate users never hit this. Replay windows do.
-  const iatClaim = decodeJwtIat(token);
-  const MAX_SESSION_AGE_SEC = 5 * 60;
-  if (iatClaim !== null) {
-    const ageSec = Math.floor(Date.now() / 1000) - iatClaim;
-    if (ageSec > MAX_SESSION_AGE_SEC) {
-      log.warn('[trust-device] stale session — refusing trust', {
-        requestId, userId: userData.user.id, ageSec,
-      });
-      return err(
-        'Session too old to establish device trust. Please sign in again.',
-        { requestId, status: 401, code: ApiErrorCode.Unauthorized },
-      );
-    }
+  // Critical 2FA boundary: require BOTH a password proof (claimed below) and a
+  // freshly OTP-authenticated, session-bound JWT. The old user-scoped password
+  // proof alone let a fresh signInWithPassword JWT call this route directly and
+  // mint its own mfa_verified_sessions row, bypassing the emailed code entirely.
+  const otpSession = validateFreshOtpSessionClaims(token, userData.user.id);
+  if (!otpSession.ok) {
+    log.warn('[trust-device] non-OTP or stale session — refusing trust', {
+      requestId, userId: userData.user.id, reason: otpSession.reason,
+    });
+    await logSecurityEvent({
+      action: 'auth.trust_device_blocked_without_fresh_otp',
+      userId: userData.user.id,
+      requestId,
+      metadata: { reason: otpSession.reason },
+    });
+    return err(
+      'A fresh one-time-code verification is required before this device can be trusted.',
+      { requestId, status: 403, code: ApiErrorCode.Unauthorized },
+    );
   }
 
   // Phase A (Hole #1 fix, audit 2026-05-22): require an atomically-claimed
@@ -186,40 +219,13 @@ export async function POST(req: NextRequest) {
   const ip = trustedClientIp(req) || null;
 
   let newToken: string | null = null;
+  let newTokenHash: string | null = null;
 
   if (remember) {
     newToken = generateDeviceToken();
     const tokenHash = hashDeviceToken(newToken);
+    newTokenHash = tokenHash;
     const expiresAt = new Date(Date.now() + TRUST_DURATION_DB_MS).toISOString();
-
-    // Dedup-by-fingerprint within the last 7 days. The original code only
-    // INSERTed, so every "Trust this device" tap accumulated a new row
-    // (cleared cookies, incognito, browser reset, OS reinstall — all the
-    // common reasons a user re-trusts the "same" device). Audit Flow 1 #1
-    // flagged the unbounded growth: a single account using 3-4 browsers
-    // over a year could rack up 50+ rows. The check-trust path scans them
-    // all on every sign-in, so the lookup degrades silently as rows
-    // accumulate. Deleting matching-fingerprint rows from the last week
-    // before insert keeps the table small without losing legitimate
-    // multi-device entries (a phone vs laptop have different UA + IP).
-    if (ua || ip) {
-      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      const dedup = supabaseAdmin
-        .from('trusted_devices')
-        .delete()
-        .eq('account_id', account.id)
-        .gte('created_at', sevenDaysAgo);
-      if (ua) dedup.eq('user_agent', ua);
-      if (ip) dedup.eq('ip', ip);
-      const { error: dedupErr } = await dedup;
-      if (dedupErr) {
-        // Non-fatal — the insert below will still succeed; we just accept
-        // the row growth for this account. Surface to Sentry via log.warn.
-        log.warn('[trust-device] dedup delete failed (non-fatal)', {
-          requestId, accountId: account.id, err: dedupErr.message,
-        });
-      }
-    }
 
     const { error: insErr } = await supabaseAdmin.from('trusted_devices').insert({
       account_id: account.id,
@@ -244,12 +250,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  // Phase 2B (audit 2026-05-22): bind THIS session to the verification we just
-  // performed. The custom_access_token_hook reads session_id from the JWT event
-  // payload and checks mfa_verified_sessions to compute mfa_verified=true. An
-  // attacker calling supabase.auth.signInWithPassword directly with a stolen
-  // password would get a NEW session_id with no matching row → hook computes
-  // mfa_verified=false → RLS denies via public.mfa_verified_or_grace().
+  // Phase 2B (audit 2026-05-22): bind THIS OTP-authenticated session to the
+  // verification we just performed. The custom_access_token_hook reads
+  // session_id from the JWT event payload and checks mfa_verified_sessions to
+  // compute mfa_verified=true. The fresh-OTP AMR gate above prevents a password
+  // session from writing this row for itself.
   //
   // This ALWAYS runs now (both remember values) — it's the per-session
   // verification that makes the app actually load after OTP (it mints the
@@ -264,47 +269,45 @@ export async function POST(req: NextRequest) {
   // (atomic UPDATE returning the claimed id), so no separate mark-used
   // step is needed here.
   let mfaVerified = false;
-  const sessionId = decodeJwtSessionId(token);
-  if (sessionId) {
-    const insertMfaSession = async (): Promise<boolean> => {
-      const { error: mfaErr } = await supabaseAdmin
-        .from('mfa_verified_sessions')
-        .insert({
-          session_id: sessionId,
-          user_id: userData.user.id,
-          verified_from_ip: ip,
-          verified_from_ua: ua,
-        });
-      // 23505 = duplicate session_id → a repeat call for the same session;
-      // idempotent success, not a failure.
-      if (!mfaErr || mfaErr.code === '23505') return true;
-      log.warn('[trust-device] mfa_verified_sessions insert failed', {
-        requestId, sessionId, userId: userData.user.id, remember,
-        err: mfaErr.message, code: mfaErr.code ?? null,
+  const sessionId = otpSession.sessionId;
+  const insertMfaSession = async (): Promise<boolean> => {
+    const { error: mfaErr } = await supabaseAdmin
+      .from('mfa_verified_sessions')
+      .insert({
+        session_id: sessionId,
+        user_id: userData.user.id,
+        verified_from_ip: ip,
+        verified_from_ua: ua,
       });
-      return false;
-    };
-    mfaVerified = await insertMfaSession();
-    // remember=false has no trusted_devices cookie covering Door B, so the
-    // row is load-bearing — retry once to ride out a transient blip.
-    if (!mfaVerified && !remember) {
-      mfaVerified = await insertMfaSession();
-    }
-  } else {
-    // JWT has no session_id claim — shouldn't happen with current Supabase
-    // versions (added 2024-ish). Log so we notice if Supabase ever changes
-    // the claim shape and the hook stops binding correctly.
-    log.warn('[trust-device] JWT missing session_id claim — mfa_verified_sessions skipped', {
-      requestId, userId: userData.user.id, remember,
+    // 23505 = duplicate session_id → a repeat call for the same session;
+    // idempotent success, not a failure.
+    if (!mfaErr || mfaErr.code === '23505') return true;
+    log.warn('[trust-device] mfa_verified_sessions insert failed', {
+      requestId, sessionId, userId: userData.user.id, remember,
+      err: mfaErr.message, code: mfaErr.code ?? null,
     });
-  }
+    return false;
+  };
+  mfaVerified = await insertMfaSession();
+  if (!mfaVerified) mfaVerified = await insertMfaSession();
 
-  // remember=false depends entirely on the per-session verification row. If we
-  // couldn't write it, fail loudly (release the proof so a fresh sign-in isn't
-  // blocked) instead of returning 200 into an empty app. remember=true still
-  // has the trusted_devices cookie covering Door B, so a missing row there is
-  // non-fatal — the user re-OTPs naturally on the next RLS denial.
-  if (!remember && !mfaVerified) {
+  // Every successful response must have the per-session verification row.
+  // The durable cookie cannot satisfy database RLS by itself; returning 200
+  // without this row sends the user into a blank app after token refresh. Roll
+  // back any durable trust row, release the proof, and fail closed.
+  if (!mfaVerified) {
+    if (newTokenHash) {
+      const { error: rollbackErr } = await supabaseAdmin
+        .from('trusted_devices')
+        .delete()
+        .eq('account_id', account.id)
+        .eq('token_hash', newTokenHash);
+      if (rollbackErr) {
+        log.error('[trust-device] trusted-device rollback failed after MFA-session failure', {
+          requestId, accountId: account.id, err: rollbackErr.message,
+        });
+      }
+    }
     try {
       await supabaseAdmin.rpc('staxis_release_password_signin_proof', { p_id: claimedProofId });
     } catch {
@@ -313,6 +316,30 @@ export async function POST(req: NextRequest) {
     return err('Could not finish securing your session. Please sign in again.', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
+  }
+
+  // Deduplicate matching recent device fingerprints only AFTER the new
+  // session's MFA row is durable. Doing this before MFA persistence could
+  // revoke an already-working cookie and then fail the replacement. Exclude
+  // the new token itself so it remains the canonical row on success.
+  if (remember && newTokenHash && (ua || ip)) {
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const dedup = supabaseAdmin
+      .from('trusted_devices')
+      .delete()
+      .eq('account_id', account.id)
+      .neq('token_hash', newTokenHash)
+      .gte('created_at', sevenDaysAgo);
+    if (ua) dedup.eq('user_agent', ua);
+    if (ip) dedup.eq('ip', ip);
+    const { error: dedupErr } = await dedup;
+    if (dedupErr) {
+      // Non-fatal — trust is established; this only permits temporary row
+      // growth until a later successful trust operation deduplicates it.
+      log.warn('[trust-device] dedup delete failed (non-fatal)', {
+        requestId, accountId: account.id, err: dedupErr.message,
+      });
+    }
   }
 
   const response = NextResponse.json(
