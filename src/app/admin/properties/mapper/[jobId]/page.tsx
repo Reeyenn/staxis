@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
  *
  * Route: /admin/properties/mapper/[jobId]
  *
- * Reeyen opens this from a "learning now" card on /admin/property-sessions
+ * Reeyen opens this from a "learning now" card on Onboarding / Mission Control
  * or the in-flight column on the Onboarding tab. One page, per feed:
  *
  *   - Feed board: one row per mapper target — ✅ found (with the real row
@@ -1024,7 +1024,7 @@ export default function LiveMappingPage() {
         <SurfaceShell glow="forestTR" style={{ padding: '24px 48px 48px' }}>
           <div style={{ maxWidth: 1200, margin: '0 auto', fontFamily: FONT_SANS }}>
             {/* Back link */}
-            <Link href="/admin/property-sessions" style={{
+            <Link href="/admin/properties#system" style={{
               display: 'inline-flex', alignItems: 'center', gap: 6,
               fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.55),
               textDecoration: 'none', letterSpacing: '0.16em',

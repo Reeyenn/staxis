@@ -85,7 +85,7 @@ export default function MfaResumePage() {
         return;
       }
       alert('Resume requested. The supervisor will respawn the driver within 30 seconds.');
-      router.push('/admin/property-sessions');
+      router.push('/admin/properties#system');
     } catch (err) {
       alert(`Resume failed: ${(err as Error).message}`);
       setResuming(false);
@@ -98,7 +98,7 @@ export default function MfaResumePage() {
   return (
     <AppLayout>
       <div className="px-6 py-8 max-w-2xl mx-auto">
-        <Link href="/admin/property-sessions" className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900 mb-4">
+        <Link href="/admin/properties#system" className="inline-flex items-center text-sm text-gray-600 hover:text-gray-900 mb-4">
           <ChevronLeft className="h-4 w-4 mr-1" /> Sessions
         </Link>
 

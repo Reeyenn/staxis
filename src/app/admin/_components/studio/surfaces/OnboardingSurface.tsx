@@ -20,7 +20,7 @@
    Clicking a row expands a mission-control panel (JourneyPanel) fed by
    /api/admin/onboarding-detail — robot status + 5-feed freshness + blocker
    actions for the PMS phase, person/details for the wizard phase. Blocker
-   CTAs deep-link to /admin/mfa-resume/[id], /admin/property-sessions, and
+   CTAs deep-link to /admin/mfa-resume/[id], Mission Control (#system), and
    the live mapper console.
    ─────────────────────────────────────────────────────────────────────── */
 
@@ -52,6 +52,7 @@ interface PropertyRow {
   pmsType: string | null;
   pmsConnected: boolean;
   lastSyncedAt: string | null;
+  totalRooms: number | null;
   staffCount: number;
   createdAt: string;
   sessionStatus: string | null;
@@ -128,15 +129,21 @@ function journeyOf(p: PropertyRow): Journey {
   const propHref = `/admin/properties/${p.id}`;
   switch (p.sessionStatus) {
     case 'paused_mfa':  return { step: 6, label: 'Needs your code', sub: 'Robot hit 2-factor — click to enter the code.', href: `/admin/mfa-resume/${p.id}`, needsYou: true, kind: 'mfa' };
-    case 'paused_no_knowledge_file': return { step: 6, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/property-sessions', needsYou: false, kind: 'mapper' };
-    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/property-sessions', needsYou: false, kind: 'cost' };
+    case 'paused_no_knowledge_file': return { step: 6, label: 'Learning the PMS', sub: 'Robot is learning this PMS for the first time.', href: '/admin/properties#system', needsYou: false, kind: 'mapper' };
+    case 'paused_cost_cap': return { step: 6, label: 'Paused · cost cap', sub: 'Daily AI budget hit — auto-resumes at midnight.', href: '/admin/properties#system', needsYou: false, kind: 'cost' };
     case 'paused_circuit_breaker':
-    case 'failed_restart': return { step: 6, label: 'Login failing', sub: p.sessionPausedReason ?? 'Sign-in keeps failing — check the credentials.', href: '/admin/property-sessions', needsYou: true, kind: 'login' };
-    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Session stopped — click to restart.', href: '/admin/property-sessions', needsYou: true, kind: 'stopped' };
+    case 'failed_restart': return { step: 6, label: 'Login failing', sub: 'Sign-in keeps failing — check the PMS credentials.', href: '/admin/properties#system', needsYou: true, kind: 'login' };
+    case 'stopped': return { step: 6, label: 'Stopped', sub: 'Robot stopped — click to restart.', href: '/admin/properties#system', needsYou: true, kind: 'stopped' };
     case 'starting': return { step: 6, label: 'Robot connecting…', sub: 'Robot is logging into the PMS.', href: propHref, needsYou: false };
   }
   const s = p.onboardingState;
   if (!s || !s.accountCreatedAt) {
+    // Hotels created straight from "+ New hotel" never walk the customer
+    // wizard, so they have no per-step timestamps — infer their real spot
+    // from the data that exists instead of showing "Just landed" forever.
+    if (p.staffCount > 0) return { step: 7, label: 'Team added', sub: 'Set up by you — connect their PMS to go live.', href: propHref, needsYou: false };
+    if (p.pmsType)        return { step: 6, label: 'Needs PMS login', sub: 'Set up by you — PMS picked, login not saved yet.', href: propHref, needsYou: false };
+    if (p.totalRooms != null) return { step: 5, label: 'Pick their PMS', sub: 'Set up by you — details saved, no PMS picked yet.', href: propHref, needsYou: false };
     if (s?.step === 2) return { step: 2, label: 'Creating account', sub: 'Clicked Begin — making their login now.', href: propHref, needsYou: false };
     return { step: 1, label: 'Just landed', sub: 'Opened the invite — not started yet.', href: propHref, needsYou: false };
   }
@@ -162,6 +169,20 @@ const NAME_W = 150;   // left "hotel name" column (px)
 const STATUS_W = 140; // right "current step" column (px)
 const ROW_GAP = 12;   // gap between name · rail · status
 
+// A hotel with no robot, stuck early, and untouched this long gets tucked
+// into the collapsed "Parked" group so the top of the page is only real
+// activity (owner ask 2026-07-17: old test hotels sat as noise for 40 days).
+const PARK_AFTER_DAYS = 14;
+
+// Animated open/close (same pattern as Mission Control's disclosures).
+function Reveal({ open, children }: { open: boolean; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'grid', gridTemplateRows: open ? '1fr' : '0fr', transition: 'grid-template-rows .26s ease' }} aria-hidden={!open}>
+      <div style={{ overflow: 'hidden', opacity: open ? 1 : 0, transition: 'opacity .22s ease' }}>{children}</div>
+    </div>
+  );
+}
+
 export function OnboardingSurface() {
   const [props, setProps] = useState<PropertyRow[] | null>(null);
   const [liveJobs, setLiveJobs] = useState<JobRow[] | null>(null);
@@ -171,6 +192,7 @@ export function OnboardingSurface() {
   const [createOpen, setCreateOpen] = useState(false);
   const [mapsOpen, setMapsOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [parkedOpen, setParkedOpen] = useState(false);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [selPms, setSelPms] = useState<PMSCoverage | null>(null);
@@ -232,11 +254,22 @@ export function OnboardingSurface() {
 
   // Hotels still on the timeline (not yet live), most-recently-active first
   // so the one a customer is actively walking sits at the top.
-  const journeyRows = props
+  const allJourneyRows = props
     .filter((p) => !isLive(p))
     .map((p) => ({ p, j: journeyOf(p), ts: latestStateTs(p.onboardingState) }))
     .sort((a, c) => (c.ts - a.ts) || (Date.parse(c.p.createdAt) - Date.parse(a.p.createdAt)));
+  // Split off long-idle early-stage hotels into the collapsed Parked group.
+  const isParkedRow = (r: (typeof allJourneyRows)[number]) =>
+    !r.p.sessionStatus
+    && (Date.now() - Math.max(r.ts, Date.parse(r.p.createdAt))) > PARK_AFTER_DAYS * 86_400_000;
+  const journeyRows = allJourneyRows.filter((r) => !isParkedRow(r));
+  const parkedRows = allJourneyRows.filter(isParkedRow);
   const liveCount = props.filter(isLive).length;
+  // Any in-flight learning/robot job, keyed by hotel — shown on the hotel's
+  // own row (replaces the old separate "In-flight sessions" section, which
+  // repeated the same event in different words).
+  const jobByProperty = new Map<string, JobRow>();
+  for (const jb of liveJobs) if (jb.propertyId) jobByProperty.set(jb.propertyId, jb);
   // Show every learned PMS, PLUS any family with a freshly-learned map parked
   // for review (even before it has an active map) so the "needs review" signal
   // never hides behind an empty active list.
@@ -264,7 +297,7 @@ export function OnboardingSurface() {
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '4px 12px 4px 11px', borderRadius: 999, background: 'rgba(60,156,104,.15)', border: '1px solid rgba(60,156,104,.4)' }}>
           <Dot tone="forest" size={7} />
           <BayLiveCount n={liveCount} />
-          <span className="mono" style={{ fontSize: 9, color: dim(.6), letterSpacing: '.08em' }}>LIVE · POLLING</span>
+          <span className="mono" style={{ fontSize: 9, color: dim(.6), letterSpacing: '.08em' }}>{liveCount === 1 ? 'HOTEL LIVE' : 'HOTELS LIVE'}</span>
         </span>
       </div>
 
@@ -280,50 +313,49 @@ export function OnboardingSurface() {
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {journeyRows.length === 0
+        {journeyRows.length === 0 && parkedRows.length === 0
           ? <DarkEmpty text="No hotels onboarding right now — “+ New hotel” to start one." />
-          : journeyRows.map(({ p, j }) => (
-            <div
-              key={p.id}
-              style={{ position: 'relative' }}
-              onMouseEnter={() => setHoverId(p.id)}
-              onMouseLeave={() => setHoverId((h) => (h === p.id ? null : h))}
-            >
-              <JourneyRow p={p} j={j} expanded={expandedId === p.id} onClick={() => setExpandedId(expandedId === p.id ? null : p.id)} />
-              {(hoverId === p.id || deletingId === p.id) && (
-                <button
-                  title="Delete this hotel"
-                  aria-label={`Delete ${p.name ?? 'hotel'}`}
-                  onClick={(e) => { e.stopPropagation(); void deleteHotel(p); }}
-                  disabled={deletingId === p.id}
-                  style={{
-                    position: 'absolute', top: 7, right: 7, zIndex: 4,
-                    width: 22, height: 22, borderRadius: 6, padding: 0, lineHeight: 1, fontSize: 14,
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    background: 'rgba(24,12,9,.92)', color: 'var(--terracotta)',
-                    border: '1px solid rgba(194,86,46,.5)',
-                    cursor: deletingId === p.id ? 'wait' : 'pointer',
-                  }}
-                >{deletingId === p.id ? '·' : '×'}</button>
-              )}
-              {expandedId === p.id && <JourneyPanel propertyId={p.id} j={j} />}
-            </div>
+          : journeyRows.map((r) => (
+            <HotelRow
+              key={r.p.id} row={r} job={jobByProperty.get(r.p.id)}
+              hoverId={hoverId} setHoverId={setHoverId}
+              deletingId={deletingId} deleteHotel={deleteHotel}
+              expandedId={expandedId} setExpandedId={setExpandedId}
+            />
           ))}
       </div>
 
-      {/* Sessions · PMS · Prospects */}
+      {/* Long-idle early hotels tucked away — click to reveal, animated. */}
+      {parkedRows.length > 0 && (
+        <div style={{ marginTop: 10 }}>
+          <button
+            onClick={() => setParkedOpen((o) => !o)}
+            aria-expanded={parkedOpen}
+            className="mono"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 9.5, letterSpacing: '.1em', color: dim(.5), background: 'none', border: 'none', cursor: 'pointer', padding: '4px 2px' }}
+          >
+            PARKED · {parkedRows.length} — no activity in {PARK_AFTER_DAYS}+ days {parkedOpen ? '▴' : '▾'}
+          </button>
+          <Reveal open={parkedOpen}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 6 }}>
+              {parkedRows.map((r) => (
+                <HotelRow
+                  key={r.p.id} row={r} job={jobByProperty.get(r.p.id)}
+                  hoverId={hoverId} setHoverId={setHoverId}
+                  deletingId={deletingId} deleteHotel={deleteHotel}
+                  expandedId={expandedId} setExpandedId={setExpandedId}
+                />
+              ))}
+            </div>
+          </Reveal>
+        </div>
+      )}
+
+      {/* PMS maps · Prospects */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(300px,1fr))', gap: 16, marginTop: 26, position: 'relative' }}>
         <div>
-          <span className="caps" style={{ color: dim(.5) }}>In-flight sessions</span>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 10 }}>
-            {liveJobs.length === 0
-              ? <DarkEmpty text="Every hotel is alive and polling ✓" />
-              : liveJobs.map((j) => <BaySession key={j.id} job={j} />)}
-          </div>
-        </div>
-        <div>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <span className="caps" style={{ color: dim(.5) }}>PMS coverage</span>
+            <span className="caps" style={{ color: dim(.5) }}>PMS maps</span>
             <button
               onClick={() => setMapsOpen(true)}
               className="mono"
@@ -357,10 +389,51 @@ export function OnboardingSurface() {
   );
 }
 
+// Row + hover-delete + expandable panel, shared by the active list and the
+// Parked group so both behave identically.
+function HotelRow({ row, job, hoverId, setHoverId, deletingId, deleteHotel, expandedId, setExpandedId }: {
+  row: { p: PropertyRow; j: Journey };
+  job: JobRow | undefined;
+  hoverId: string | null;
+  setHoverId: React.Dispatch<React.SetStateAction<string | null>>;
+  deletingId: string | null;
+  deleteHotel: (p: PropertyRow) => Promise<void>;
+  expandedId: string | null;
+  setExpandedId: React.Dispatch<React.SetStateAction<string | null>>;
+}) {
+  const { p, j } = row;
+  return (
+    <div
+      style={{ position: 'relative' }}
+      onMouseEnter={() => setHoverId(p.id)}
+      onMouseLeave={() => setHoverId((h) => (h === p.id ? null : h))}
+    >
+      <JourneyRow p={p} j={j} job={job} expanded={expandedId === p.id} onClick={() => setExpandedId(expandedId === p.id ? null : p.id)} />
+      {(hoverId === p.id || deletingId === p.id) && (
+        <button
+          title="Delete this hotel"
+          aria-label={`Delete ${p.name ?? 'hotel'}`}
+          onClick={(e) => { e.stopPropagation(); void deleteHotel(p); }}
+          disabled={deletingId === p.id}
+          style={{
+            position: 'absolute', top: 7, right: 7, zIndex: 4,
+            width: 22, height: 22, borderRadius: 6, padding: 0, lineHeight: 1, fontSize: 14,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(24,12,9,.92)', color: 'var(--terracotta)',
+            border: '1px solid rgba(194,86,46,.5)',
+            cursor: deletingId === p.id ? 'wait' : 'pointer',
+          }}
+        >{deletingId === p.id ? '·' : '×'}</button>
+      )}
+      {expandedId === p.id && <JourneyPanel propertyId={p.id} j={j} />}
+    </div>
+  );
+}
+
 // One hotel = one row: name · a 9-node rail that fills to the live step · the
 // current step label. The fill bar + current node animate when the step
 // advances (every poll), so you watch a hotel travel the whole journey.
-function JourneyRow({ p, j, expanded, onClick }: { p: PropertyRow; j: Journey; expanded: boolean; onClick: () => void }) {
+function JourneyRow({ p, j, job, expanded, onClick }: { p: PropertyRow; j: Journey; job?: JobRow; expanded: boolean; onClick: () => void }) {
   const rowRef = useRef<HTMLButtonElement>(null);
   const fillRef = useRef<HTMLDivElement>(null);
   const current = j.step - 1; // 0-based index of the in-progress node
@@ -400,10 +473,14 @@ function JourneyRow({ p, j, expanded, onClick }: { p: PropertyRow; j: Journey; e
           })}
         </div>
       </div>
-      {/* current step */}
+      {/* current step — while a learning job runs, its % lives right here
+          instead of a separate section elsewhere on the page. */}
       <div style={{ width: STATUS_W, flexShrink: 0, textAlign: 'right', minWidth: 0 }}>
         <div style={{ fontSize: 11.5, fontWeight: 600, color: j.needsYou ? 'var(--terracotta)' : '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.label}{j.needsYou ? ' ›' : ''}</div>
-        <div className="mono" style={{ fontSize: 9.5, color: dim(.45), marginTop: 2 }}>{j.step} / {TOTAL_STEPS} · {expanded ? 'close ▴' : 'detail ▾'}</div>
+        <div className="mono" style={{ fontSize: 9.5, color: dim(.45), marginTop: 2 }}>
+          {job?.progressPct != null && <span style={{ color: 'var(--gold)' }}>{Math.max(0, Math.min(100, job.progressPct))}% · </span>}
+          {j.step} / {TOTAL_STEPS} · {expanded ? 'close ▴' : 'detail ▾'}
+        </div>
       </div>
     </button>
   );
@@ -595,6 +672,11 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
   const grid: React.CSSProperties = { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 18 };
   const s = d.session;
   const pmsPhase = j.step === 5 || j.step === 6;
+  // The robot is mid-learning: this is a normal, healthy state — the panel
+  // shows ONE friendly card about it instead of a wall of red "never"s.
+  const learning = !!d.mapperJob || s?.status === 'paused_no_knowledge_file';
+  const robotWorking = s?.status === 'alive' || s?.status === 'starting';
+  const anyFeedData = d.feeds.some((f) => f.lastSyncedAt);
 
   // ── Column: the robot (PMS phase) ──
   const robotCol = (
@@ -606,29 +688,44 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
             <Dot tone={SESSION_DOT[s.status] ?? 'muted'} size={7} />
             <span style={{ fontSize: 12.5, fontWeight: 700 }}>{SESSION_LABEL[s.status] ?? s.status}</span>
           </div>
-          <KV k="Heartbeat" v={s.lastAliveAt ? `${age(s.lastAliveAt)} ago` : 'never'} tone={s.lastAliveAt && (Date.now() - new Date(s.lastAliveAt).getTime()) < 300_000 ? undefined : 'var(--terracotta)'} />
-          <KV k="Last good read" v={s.lastSuccessfulReadAt ? `${age(s.lastSuccessfulReadAt)} ago` : 'none yet'} />
-          <KV k="AI spend today" v={`${usdFromMicros(s.dailySpendMicros)} / ${usdFromMicros(s.capMicros)}`} tone={s.dailySpendMicros > s.capMicros * 0.8 ? 'var(--gold)' : undefined} />
-          <KV k="PMS playbook" v={d.knowledge ? `v${d.knowledge.version} active` : 'not learned yet'} tone={d.knowledge ? undefined : 'var(--teal)'} />
-          <KV k="Restarts · fails" v={`${s.restartCount} · ${s.readFailureStreak}`} tone={s.readFailureStreak > 0 ? 'var(--gold)' : undefined} />
+          {/* Technical vitals only once the robot is actually on duty — a
+              robot that hasn't started yet showing "Heartbeat: never" in red
+              made every normal onboard look broken. */}
+          {robotWorking && (
+            <>
+              <KV k="Last check-in" v={s.lastAliveAt ? `${age(s.lastAliveAt)} ago` : 'starting up'} tone={!s.lastAliveAt || (Date.now() - new Date(s.lastAliveAt).getTime()) < 300_000 ? undefined : 'var(--terracotta)'} />
+              <KV k="Last good read" v={s.lastSuccessfulReadAt ? `${age(s.lastSuccessfulReadAt)} ago` : 'none yet'} />
+              <KV k="AI spend today" v={`${usdFromMicros(s.dailySpendMicros)} / ${usdFromMicros(s.capMicros)}`} tone={s.dailySpendMicros > s.capMicros * 0.8 ? 'var(--gold)' : undefined} />
+              {(s.readFailureStreak > 0 || s.restartCount > 2) && (
+                <KV k="Crashes · bad reads" v={`${s.restartCount} · ${s.readFailureStreak}`} tone="var(--gold)" />
+              )}
+            </>
+          )}
+          {learning && !robotWorking && (
+            <div style={{ fontSize: 11.5, color: dim(.6), lineHeight: 1.5 }}>
+              Standing by while the map is learned — it starts reading the moment learning finishes.
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 6, marginTop: 10, flexWrap: 'wrap' }}>
             {s.status === 'paused_mfa' && <Btn size="sm" variant="terracotta" href={`/admin/mfa-resume/${propertyId}`}>Enter 2FA code</Btn>}
             {s.status === 'paused_cost_cap' && <Btn size="sm" variant="forest" onClick={() => void act('reset_cost_cap')} disabled={busy !== null}>{busy === 'reset_cost_cap' ? '…' : 'Reset cap'}</Btn>}
             {(s.status === 'stopped' || s.status === 'failed_restart' || s.status === 'paused_circuit_breaker') && <Btn size="sm" variant="forest" onClick={() => void act('restart')} disabled={busy !== null}>{busy === 'restart' ? '…' : 'Restart'}</Btn>}
             {(s.status === 'alive' || s.status === 'starting') && <Btn size="sm" variant="ghost" onClick={() => void act('stop')} disabled={busy !== null} style={{ color: '#fff', borderColor: dim(.25) }}>{busy === 'stop' ? '…' : 'Stop'}</Btn>}
-            <Btn size="sm" variant="ghost" href="/admin/property-sessions" style={{ color: dim(.7), borderColor: dim(.2) }}>Robot console</Btn>
+            <Btn size="sm" variant="ghost" href="/admin/properties#system" style={{ color: dim(.7), borderColor: dim(.2) }}>Mission Control</Btn>
           </div>
         </>
       ) : (
         <div style={{ fontSize: 11.5, color: dim(.5), fontFamily: FONT_SERIF, fontStyle: 'italic' }}>
-          No robot yet — it spawns the moment they save their PMS login.
+          No robot yet — it starts the moment they save their PMS login.
         </div>
       )}
     </div>
   );
 
-  // ── Column: the 5 feeds (PMS phase) ──
-  const feedsCol = (
+  // ── Column: the 5 feeds (PMS phase). Hidden until at least one feed has
+  //    real data — five grey "no data yet" rows during learning read like
+  //    failure when nothing is wrong. ──
+  const feedsCol = anyFeedData ? (
     <div>
       <PanelCaps>Feeds · live every ~30s</PanelCaps>
       {d.feeds.map((f) => {
@@ -643,12 +740,12 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
       })}
       {d.feeds.some((f) => f.hasError) && <div style={{ fontSize: 10, color: 'var(--gold)', marginTop: 6 }}>⚠ bad read — kept the last good numbers</div>}
     </div>
-  );
+  ) : null;
 
   // ── Column: needs-you + last hiccup (PMS phase) ──
   const attentionCol = (
     <div>
-      <PanelCaps>Attention</PanelCaps>
+      <PanelCaps>{learning && !j.needsYou ? 'What’s happening' : 'Attention'}</PanelCaps>
       {d.mapperJob?.awaiting2fa && (
         <NoteBox tone="gold">
           <span style={{ fontWeight: 700, color: 'var(--gold)' }}>Waiting on a 2FA code.</span>{' '}
@@ -657,10 +754,12 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
           <MfaCodeBox propertyId={propertyId} onDelivered={() => void fetchDetail()} />
         </NoteBox>
       )}
-      {d.mapperJob && (
+      {learning && (
         <NoteBox tone="teal">
-          Learning this PMS — attempt {d.mapperJob.attempts || 1}/{d.mapperJob.maxAttempts} · {usdFromMicros(d.mapperJob.costMicros)} so far
-          <div style={{ marginTop: 7 }}><Btn size="sm" variant="ghost" href={`/admin/properties/mapper/${d.mapperJob.id}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>Watch it learn →</Btn></div>
+          The robot is learning how to read this PMS — it happens once per PMS, then every hotel on it connects instantly.
+          {d.mapperJob && <span className="mono" style={{ display: 'block', marginTop: 5, fontSize: 9.5, color: 'var(--teal)' }}>attempt {d.mapperJob.attempts || 1}/{d.mapperJob.maxAttempts} · {usdFromMicros(d.mapperJob.costMicros)} so far</span>}
+          {!d.mapperJob?.awaiting2fa && <span style={{ display: 'block', marginTop: 4, color: dim(.6) }}>Nothing needed from you.</span>}
+          {d.mapperJob && <div style={{ marginTop: 7 }}><Btn size="sm" variant="ghost" href={`/admin/properties/mapper/${d.mapperJob.id}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>Watch it learn →</Btn></div>}
         </NoteBox>
       )}
       {j.needsYou && (
@@ -671,7 +770,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
       )}
       {d.lastHiccup
         ? <NoteBox tone="gold"><span className="mono" style={{ fontSize: 9, letterSpacing: '.1em', color: 'var(--gold)' }}>LAST HICCUP · </span>{d.lastHiccup}</NoteBox>
-        : (!j.needsYou && !d.mapperJob && <NoteBox tone="forest">Running clean — no hiccups.</NoteBox>)}
+        : (!j.needsYou && !learning && <NoteBox tone="forest">Running clean — no hiccups.</NoteBox>)}
     </div>
   );
 
@@ -738,24 +837,6 @@ function BayLiveCount({ n }: { n: number }) {
   return <span ref={ref} className="serif-num" style={{ fontSize: 44, color: '#fff', margin: '4px 0' }}>0</span>;
 }
 
-function BaySession({ job }: { job: JobRow }) {
-  const barRef = useRef<HTMLDivElement>(null);
-  const pct = Math.max(0, Math.min(100, job.progressPct ?? 0));
-  useEffect(() => { sweepWidth(barRef.current, pct, { dur: 900 }); }, [pct]);
-  const href = job.kind === 'mapper' ? `/admin/properties/mapper/${job.id}` : `/admin/properties/${job.propertyId}`;
-  return (
-    <a href={href} style={{ textDecoration: 'none', background: dim(.06), border: `1px solid ${dim(.14)}`, borderRadius: 11, padding: '11px 13px', display: 'block' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 7 }}>
-        <span className="spinner" style={{ width: 12, height: 12, display: 'inline-block', borderColor: dim(.2), borderTopColor: 'var(--gold)' }} />
-        <span style={{ fontSize: 12, fontWeight: 600, color: '#fff' }}>{job.propertyName ?? '(deleted)'}</span>
-        <span className="mono" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--gold)' }}>{pct}%</span>
-      </div>
-      <div style={{ fontSize: 11, color: dim(.6), marginBottom: 6 }}>{job.step ?? 'Working…'}</div>
-      <div style={{ height: 3, background: dim(.12), borderRadius: 2, overflow: 'hidden' }}><div ref={barRef} style={{ height: '100%', width: 0, background: 'var(--gold)' }} /></div>
-    </a>
-  );
-}
-
 function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
   const st = pmsState(pms);
   const pr = pms.pendingReview;
@@ -771,15 +852,16 @@ function BayPms({ pms, onClick }: { pms: PMSCoverage; onClick: () => void }) {
       {pr && (
         <span
           className="mono"
-          title={`A new map (v${pr.version}) is waiting for you to review${pr.reason ? ` — ${pr.reason}` : ''}. Open “Manage maps” to make it live.`}
+          title={`A new map (v${pr.version}) is waiting for you to review${pr.reason ? ` — ${pr.reason}` : ''}.`}
           style={{
             flexShrink: 0, fontSize: 9, letterSpacing: '.04em', whiteSpace: 'nowrap',
             color: 'var(--gold)', background: 'rgba(201,154,46,.12)',
             border: '1px solid rgba(201,154,46,.4)', borderRadius: 7, padding: '2px 7px',
           }}
-        >⚠ New map v{pr.version} · review</span>
+        >New map ready · review</span>
       )}
-      <span style={{ fontSize: 11, color: st.tone === 'muted' ? dim(.5) : `var(--${st.tone})` }}>{st.label}</span>
+      {/* Don't stack "New" next to a new-map chip — one message per row. */}
+      {!(pr && !pms.recipe) && <span style={{ fontSize: 11, color: st.tone === 'muted' ? dim(.5) : `var(--${st.tone})` }}>{st.label}</span>}
       <span className="mono" style={{ fontSize: 9, color: dim(.35) }}>manage ›</span>
     </RowButton>
   );
@@ -877,7 +959,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
 
   // Use for all hotels on this PMS → POST /api/admin/coverage/bulk-assign.
   const bulkAssign = async () => {
-    if (!confirm(`Use this map for every hotel on ${title}? Each one's robot reconnects with the saved map.`)) return;
+    if (!confirm(`Use this map for every hotel on ${title}? Their robots start reading with it right away — one learned map works for every hotel on the same PMS.`)) return;
     setActionBusy('bulk'); setMsg(null);
     try {
       const res = await fetchWithAuth('/api/admin/coverage/bulk-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
@@ -956,7 +1038,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
   return (
     <Backdrop onClose={onClose}>
       <div ref={ref} onClick={(e) => e.stopPropagation()} style={{ ...MODAL_CARD, width: 480 }}>
-        <Caps>PMS coverage · {pms.tier ? `Tier ${pms.tier}` : ''}</Caps>
+        <Caps>PMS map</Caps>
 
         {/* Editable display name — pencil to edit, Save to commit. */}
         {editingName ? (
@@ -977,23 +1059,25 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
           </div>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 14px', flexWrap: 'wrap' }}>
-          {typeof pct === 'number' && <Pill tone={pct === 100 ? 'forest' : pct > 0 ? 'gold' : 'neutral'}>{pct}% live</Pill>}
-          {/* feature/coverage-show-draft — with no live recipe but a parked draft,
-              reflect the draft (was a misleading "Not learned · v0"). The
-              "View what the robot captures →" link below now opens the draft for
-              review on the coverage page. */}
+        {/* One plain status line — was three contradictory chips ("0% live" +
+            "Not learned" + "parked draft v19") describing the same state. */}
+        <div style={{ margin: '8px 0 14px' }}>
           {!pms.recipe && pms.pendingReview ? (
-            <span className="mono" style={{ fontSize: 11, color: 'var(--gold)' }}>
-              {pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · ⚠ parked draft v{pms.pendingReview.version} — review
-            </span>
+            <p style={{ fontSize: 13, color: 'var(--gold)', lineHeight: 1.5, margin: 0 }}>
+              A freshly-learned map (v{pms.pendingReview.version}) is ready — review it below, then turn it on for your hotels.
+            </p>
+          ) : pms.recipe ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              {typeof pct === 'number' && <Pill tone={pct === 100 ? 'forest' : pct > 0 ? 'gold' : 'neutral'}>{pct}% live</Pill>}
+              <span className="mono" style={{ fontSize: 11, color: 'var(--dim2)' }}>{pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · map v{pms.recipe.version}</span>
+            </div>
           ) : (
-            <span className="mono" style={{ fontSize: 11, color: 'var(--dim2)' }}>{pms.propertyCount} {pms.propertyCount === 1 ? 'hotel' : 'hotels'} · v{pms.recipe?.version ?? 0}</span>
+            <p style={{ fontSize: 13, color: 'var(--dim)', lineHeight: 1.5, margin: 0 }}>{st.note}</p>
           )}
         </div>
 
         {/* ── Per-feed status — replaces the single "0% captured". ── */}
-        {feeds.length > 0 ? (
+        {feeds.length > 0 && (
           <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14 }}>
             <Caps size={9}>What the robot captures</Caps>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 2, margin: '8px 0 4px' }}>
@@ -1009,20 +1093,26 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
               })}
             </div>
           </div>
-        ) : (
-          <p style={{ fontSize: 13, color: 'var(--dim)', lineHeight: 1.5, marginBottom: 6 }}>{st.note}</p>
         )}
 
-        {/* ── View the rich coverage editor (reuses the existing page). ── */}
+        {/* ── Open the map editor (the page where the map can be adjusted). ── */}
         {propertyId && (
           <div style={{ marginTop: 12 }}>
-            <Btn size="sm" variant="ghost" href={`/admin/properties/coverage/${propertyId}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>View what the robot captures →</Btn>
+            <Btn size="sm" variant="ghost" href={`/admin/properties/coverage/${propertyId}`} style={{ color: 'var(--teal)', borderColor: 'rgba(51,137,160,.4)' }}>Review & adjust the map →</Btn>
           </div>
         )}
 
-        {/* ── Hotels on this coverage — per-hotel attach / detach. ── */}
+        {/* ── Hotels using this map — one learned map fits every hotel on the
+            same PMS, so the headline action applies it to all of them. ── */}
         <div style={{ borderTop: '1px solid var(--rule)', paddingTop: 14, marginTop: 14 }}>
-          <Caps size={9}>Hotels on this coverage</Caps>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+            <Caps size={9}>Hotels using this map</Caps>
+            {pms.recipe && (
+              <Btn size="sm" variant="forest" onClick={() => void bulkAssign()} disabled={anyBusy}>
+                {actionBusy === 'bulk' ? '…' : 'Use for every hotel on this PMS'}
+              </Btn>
+            )}
+          </div>
           {hotelsErr ? (
             <p style={{ fontSize: 12, color: 'var(--terracotta)', margin: '8px 0 0' }}>{hotelsErr}</p>
           ) : hotels === null ? (
@@ -1040,10 +1130,11 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
                   <div key={h.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 0' }}>
                     <Dot tone={h.attached ? 'forest' : 'muted'} size={6} />
                     <span style={{ fontSize: 12.5, color: 'var(--ink)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{h.name ?? '(unnamed)'}</span>
+                    <span className="mono" style={{ fontSize: 9.5, color: h.attached ? 'var(--forest)' : 'var(--dim2)' }}>{h.attached ? 'using it' : 'not using it'}</span>
                     {h.attached ? (
-                      <Btn size="sm" variant="terracotta" onClick={() => void detachOne(h)} disabled={rb || anyBusy}>{rb ? '…' : 'Detach'}</Btn>
+                      <Btn size="sm" variant="ghost" onClick={() => void detachOne(h)} disabled={rb || anyBusy} style={{ color: 'var(--terracotta)', borderColor: 'rgba(194,86,46,.3)' }}>{rb ? '…' : 'Stop'}</Btn>
                     ) : (
-                      <Btn size="sm" variant="forest" onClick={() => void attachOne(h)} disabled={rb || anyBusy}>{rb ? '…' : 'Attach'}</Btn>
+                      <Btn size="sm" variant="forest" onClick={() => void attachOne(h)} disabled={rb || anyBusy}>{rb ? '…' : 'Use map'}</Btn>
                     )}
                   </div>
                 );
@@ -1070,16 +1161,14 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
 
         {msg && <p className="mono" style={{ fontSize: 10.5, color: 'var(--dim)', marginTop: 10, wordBreak: 'break-all' }}>{msg}</p>}
 
-        {/* ── Footer — detach-all · bulk-assign · close. ── */}
+        {/* ── Footer — stop-for-all · close. (The apply-to-all button lives up
+            by the hotel list where it reads naturally.) ── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 18, borderTop: '1px solid var(--rule)', paddingTop: 14, flexWrap: 'wrap' }}>
-          <button onClick={() => void detach()} disabled={anyBusy} title="Free every hotel on this PMS — the map is kept and can be re-matched"
+          <button onClick={() => void detach()} disabled={anyBusy} title="Every hotel stops using this map — the map itself is kept and can be re-applied"
             style={{ background: 'var(--terracotta-dim)', color: 'var(--terracotta-deep)', border: '1px solid rgba(194,86,46,.32)', borderRadius: 999, height: 28, padding: '0 12px', fontFamily: 'var(--sans)', fontSize: 12, fontWeight: 600, cursor: anyBusy ? 'not-allowed' : 'pointer', opacity: anyBusy ? 0.5 : 1 }}>
-            {actionBusy === 'detach' ? '…' : 'Detach all'}
+            {actionBusy === 'detach' ? '…' : 'Stop for all hotels'}
           </button>
-          <div style={{ display: 'flex', gap: 8 }}>
-            {pms.recipe && <Btn size="sm" variant="forest" onClick={() => void bulkAssign()} disabled={anyBusy}>{actionBusy === 'bulk' ? '…' : 'Use for all hotels'}</Btn>}
-            <Btn size="sm" variant="ghost" onClick={onClose} disabled={anyBusy}>Close</Btn>
-          </div>
+          <Btn size="sm" variant="ghost" onClick={onClose} disabled={anyBusy}>Close</Btn>
         </div>
 
         {/* ── Danger zone — soft-delete the whole coverage (backup kept). ── */}

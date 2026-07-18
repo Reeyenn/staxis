@@ -25,7 +25,7 @@ export const GLOW: Record<string, string> = {
 
 /** Full-bleed dark page scope — breaks out of the app's centered column to
  *  paint the ink canvas edge-to-edge under a studio route. The three admin
- *  studio pages (mapper, coverage, property-sessions) each hand-wrote this. */
+ *  studio pages (mapper, coverage) each hand-wrote this. */
 export function DarkScope({ children }: { children: React.ReactNode }) {
   return (
     <div className="admin-studio" style={{

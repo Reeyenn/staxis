@@ -12,9 +12,9 @@
    server-side in src/app/admin/layout.tsx, with a client spinner during
    auth load.
 
-   Five surfaces (Agent is folded into System, per the handoff; Access is a
+   Five surfaces (Mission Control replaced System & Agent 2026-07-17; Access is a
    popover on Live hotels since 2026-07-17):
-     Onboarding · Live hotels · System & Agent · Money · ML
+     Onboarding · Live hotels · Mission Control · Money · ML
 
    Tab selection deep-links via the URL hash (#live etc.) so a refresh keeps
    you on the same surface — matches the prior console's behavior.
@@ -25,7 +25,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { FONT_SERIF, FONT_MONO, FONT_SANS, usd } from './kit';
 import { OnboardingSurface } from './surfaces/OnboardingSurface';
 import { LiveSurface } from './surfaces/LiveSurface';
-import { SystemSurface } from './surfaces/SystemSurface';
+import { MissionControlSurface } from './surfaces/MissionControlSurface';
 import { MoneySurface } from './surfaces/MoneySurface';
 import { MlSurface } from './surfaces/MlSurface';
 
@@ -34,7 +34,7 @@ export type StudioTab = 'onboarding' | 'live' | 'system' | 'money' | 'ml';
 const TABS: { id: StudioTab; label: string }[] = [
   { id: 'onboarding', label: 'Onboarding' },
   { id: 'live', label: 'Live hotels' },
-  { id: 'system', label: 'System & Agent' },
+  { id: 'system', label: 'Mission Control' },
   { id: 'money', label: 'Money' },
   { id: 'ml', label: 'ML' },
 ];
@@ -198,7 +198,7 @@ export function StudioShell() {
       <div style={{ paddingBottom: 64 }}>
         {mounted.has('onboarding') && <div style={{ display: tab === 'onboarding' ? 'block' : 'none' }}><OnboardingSurface /></div>}
         {mounted.has('live') && <div style={{ display: tab === 'live' ? 'block' : 'none' }}><LiveSurface /></div>}
-        {mounted.has('system') && <div style={{ display: tab === 'system' ? 'block' : 'none' }}><SystemSurface /></div>}
+        {mounted.has('system') && <div style={{ display: tab === 'system' ? 'block' : 'none' }}><MissionControlSurface /></div>}
         {mounted.has('money') && <div style={{ display: tab === 'money' ? 'block' : 'none' }}><MoneySurface /></div>}
         {mounted.has('ml') && <div style={{ display: tab === 'ml' ? 'block' : 'none' }}><MlSurface /></div>}
       </div>

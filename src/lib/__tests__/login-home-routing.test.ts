@@ -68,6 +68,7 @@ describe('Home safety boundaries', () => {
   });
 
   test('unfinished onboarding is guarded per property, not globally', () => {
+    assert.match(home, /shouldResumeOnboarding\(user\.role, activeProperty\.onboardingCompletedAt, activeProperty\.onboardingState, activeProperty\.onboardingPromptShownAt\)/);
     assert.match(home, /sessionStorage\.getItem\(RESUME_GUARD_KEY\) !== activeProperty\.id/);
     assert.match(home, /sessionStorage\.setItem\(RESUME_GUARD_KEY, activeProperty\.id\)/);
     assert.match(home, /\/api\/onboard\/resume\?propertyId=/);

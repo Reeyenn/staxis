@@ -62,6 +62,12 @@ export interface Property {
   onboardingCompletedAt?: string | null;
   onboardingState?: OnboardingState | null;
   /**
+   * Set the first time the setup wizard is auto-opened for this hotel (the
+   * resume route stamps it). Once set, the login funnel never re-opens the
+   * wizard — later logins land in the app. Drives `shouldResumeOnboarding`.
+   */
+  onboardingPromptShownAt?: string | null;
+  /**
    * Demo/showcase property (properties.is_test). Real hotels see an honest
    * "learning from your PMS" dashboard until real occupancy/revenue exists;
    * only a demo property shows the full synthetic chart/KPI showcase.
