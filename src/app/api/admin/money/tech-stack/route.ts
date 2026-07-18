@@ -78,16 +78,31 @@ interface WorkspaceSpend {
 interface Billing {
   todayUsd: number;
   monthUsd: number;
+  /** Every real dollar since the org's first day — the "Total spent" number. */
+  totalUsd: number;
   byWorkspace: WorkspaceSpend[];
+  /** One row per day with any spend, since ORG_EPOCH — powers History. */
+  days: Array<{ date: string; usd: number }>;
+  /** Month-to-date per-model lines per workspace — the "where the number
+   *  comes from" drill-down (null workspace = Hotel AI). */
+  byModel: Array<{ workspaceId: string | null; label: string; usd: number }>;
   /** Prepaid credit balance is not exposed by the API — console only. */
   monthStart: string;
 }
+
+/** The org's first possible billing day (account created 2026-05-07) —
+ *  the "since day one" anchor for Total spent and History. */
+const ORG_EPOCH = '2026-05-01T00:00:00Z';
 
 /** One daily bucket from /v1/organizations/cost_report. */
 interface CostBucket {
   starting_at: string;
   ending_at: string;
-  results: Array<{ currency: string; amount: string; workspace_id: string | null }>;
+  results: Array<{
+    currency: string; amount: string; workspace_id: string | null;
+    /** Present when grouping by description. */
+    description?: string | null; model?: string | null;
+  }>;
 }
 
 async function anthropicAdminGet(path: string, adminKey: string): Promise<Response> {
@@ -102,9 +117,33 @@ async function anthropicAdminGet(path: string, adminKey: string): Promise<Respon
   });
 }
 
+/** Paginated cost_report pull; returns all daily buckets in the range. */
+async function fetchCostBuckets(
+  adminKey: string, startingAt: string, endingAt: string, groupBy: string[],
+): Promise<CostBucket[] | null> {
+  const params = new URLSearchParams({ starting_at: startingAt, ending_at: endingAt, limit: '31' });
+  for (const g of groupBy) params.append('group_by[]', g);
+
+  const buckets: CostBucket[] = [];
+  let page: string | null = null;
+  for (let i = 0; i < 12; i++) {
+    const url = `/v1/organizations/cost_report?${params.toString()}${page ? `&page=${encodeURIComponent(page)}` : ''}`;
+    const res = await anthropicAdminGet(url, adminKey);
+    if (!res.ok) return null;
+    const json = (await res.json()) as { data?: CostBucket[]; has_more?: boolean; next_page?: string | null };
+    buckets.push(...(json.data ?? []));
+    if (!json.has_more || !json.next_page) break;
+    page = json.next_page;
+  }
+  return buckets;
+}
+
 /**
- * Pull month-to-date daily cost buckets grouped by workspace and fold them
- * into today/month totals. Amounts arrive as decimal strings in cents.
+ * Two pulls from the Cost Admin API (amounts = decimal-string cents):
+ *   A. Daily buckets since ORG_EPOCH grouped by workspace → today / month /
+ *      TOTAL spent + the per-day History rows.
+ *   B. Month-to-date grouped by workspace+description → per-model lines,
+ *      the "where does this number actually come from" drill-down.
  */
 async function fetchBilling(adminKey: string): Promise<Billing | null> {
   const now = new Date();
@@ -122,38 +161,50 @@ async function fetchBilling(adminKey: string): Promise<Billing | null> {
     }
   } catch { /* names are cosmetic — fall back to ids */ }
 
-  const params = new URLSearchParams({
-    starting_at: monthStart.toISOString(),
-    ending_at: tomorrow.toISOString(),
-    limit: '31',
-  });
-  params.append('group_by[]', 'workspace_id');
-
-  const buckets: CostBucket[] = [];
-  let page: string | null = null;
-  for (let i = 0; i < 5; i++) {
-    const url = `/v1/organizations/cost_report?${params.toString()}${page ? `&page=${encodeURIComponent(page)}` : ''}`;
-    const res = await anthropicAdminGet(url, adminKey);
-    if (!res.ok) return null;
-    const json = (await res.json()) as { data?: CostBucket[]; has_more?: boolean; next_page?: string | null };
-    buckets.push(...(json.data ?? []));
-    if (!json.has_more || !json.next_page) break;
-    page = json.next_page;
-  }
+  const [historyBuckets, detailBuckets] = await Promise.all([
+    fetchCostBuckets(adminKey, ORG_EPOCH, tomorrow.toISOString(), ['workspace_id']),
+    fetchCostBuckets(adminKey, monthStart.toISOString(), tomorrow.toISOString(), ['workspace_id', 'description']),
+  ]);
+  if (!historyBuckets) return null;
 
   const byWs = new Map<string | null, { monthUsd: number; todayUsd: number }>();
+  const byDay = new Map<string, number>();
   let todayUsd = 0;
   let monthUsd = 0;
-  for (const bucket of buckets) {
-    const isToday = new Date(bucket.starting_at).getTime() >= todayStart.getTime();
+  let totalUsd = 0;
+  for (const bucket of historyBuckets) {
+    const t = new Date(bucket.starting_at).getTime();
+    const isToday = t >= todayStart.getTime();
+    const inMonth = t >= monthStart.getTime();
+    const dayKey = bucket.starting_at.slice(0, 10);
     for (const r of bucket.results ?? []) {
       const usd = (parseFloat(r.amount) || 0) / 100; // cents → dollars
-      monthUsd += usd;
-      if (isToday) todayUsd += usd;
-      const entry = byWs.get(r.workspace_id) ?? { monthUsd: 0, todayUsd: 0 };
-      entry.monthUsd += usd;
-      if (isToday) entry.todayUsd += usd;
-      byWs.set(r.workspace_id, entry);
+      totalUsd += usd;
+      if (usd > 0) byDay.set(dayKey, (byDay.get(dayKey) ?? 0) + usd);
+      if (inMonth) {
+        monthUsd += usd;
+        if (isToday) todayUsd += usd;
+        const entry = byWs.get(r.workspace_id) ?? { monthUsd: 0, todayUsd: 0 };
+        entry.monthUsd += usd;
+        if (isToday) entry.todayUsd += usd;
+        byWs.set(r.workspace_id, entry);
+      }
+    }
+  }
+
+  // Per-model MTD lines. "Description" rows parse out a model where the
+  // charge is token usage; other charges (web search, code execution) keep
+  // their plain description as the label.
+  const modelAgg = new Map<string, { workspaceId: string | null; label: string; usd: number }>();
+  for (const bucket of detailBuckets ?? []) {
+    for (const r of bucket.results ?? []) {
+      const usd = (parseFloat(r.amount) || 0) / 100;
+      if (usd === 0) continue;
+      const label = (r.model || r.description || 'Other usage').trim();
+      const key = `${r.workspace_id ?? 'default'}::${label}`;
+      const entry = modelAgg.get(key) ?? { workspaceId: r.workspace_id ?? null, label, usd: 0 };
+      entry.usd += usd;
+      modelAgg.set(key, entry);
     }
   }
 
@@ -162,19 +213,23 @@ async function fetchBilling(adminKey: string): Promise<Billing | null> {
   for (const [id] of wsNames) if (!byWs.has(id)) byWs.set(id, { monthUsd: 0, todayUsd: 0 });
   if (!byWs.has(null)) byWs.set(null, { monthUsd: 0, todayUsd: 0 });
 
+  const round = (n: number) => Math.round(n * 100) / 100;
   const byWorkspace: WorkspaceSpend[] = [...byWs.entries()]
     .map(([workspaceId, v]) => ({
       workspaceId,
       name: workspaceId === null ? 'Hotel AI' : (wsNames.get(workspaceId) ?? workspaceId),
-      monthUsd: Math.round(v.monthUsd * 100) / 100,
-      todayUsd: Math.round(v.todayUsd * 100) / 100,
+      monthUsd: round(v.monthUsd),
+      todayUsd: round(v.todayUsd),
     }))
     .sort((a, b) => b.monthUsd - a.monthUsd);
 
   return {
-    todayUsd: Math.round(todayUsd * 100) / 100,
-    monthUsd: Math.round(monthUsd * 100) / 100,
+    todayUsd: round(todayUsd),
+    monthUsd: round(monthUsd),
+    totalUsd: round(totalUsd),
     byWorkspace,
+    days: [...byDay.entries()].map(([date, usd]) => ({ date, usd: round(usd) })).sort((a, b) => b.date.localeCompare(a.date)),
+    byModel: [...modelAgg.values()].map((m) => ({ ...m, usd: round(m.usd) })).sort((a, b) => b.usd - a.usd),
     monthStart: monthStart.toISOString(),
   };
 }
