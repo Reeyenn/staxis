@@ -1,33 +1,31 @@
 /**
- * /api/admin/mission/ai-spend
+ * /api/admin/money/tech-stack
  *
- * The AI-spend screen behind Mission Control's "AI spend today" light.
- * Two forms of spend, kept strictly separate (owner ask 2026-07-18):
+ * The Money tab's tech-stack spend board (owner ask 2026-07-18: "spend for
+ * my entire tech stack, automated"). Three kinds of rows, honestly labeled:
  *
- *   1. Hotel AI — what Staxis burns serving hotels. The REAL dollars come
- *      from Anthropic's Cost Admin API (never estimated — owner rule),
- *      grouped by workspace: the default workspace is the hotel product
- *      today; the "AI employees" workspace exists for future employee keys
- *      so their spend lands in its own bucket from day one.
- *   2. Running Staxis — the AI the founder pays for personally (Claude
- *      plan, Codex, …). Flat monthly subscriptions, stored on
- *      app_settings.ai_subscriptions (0318), edited via POST here.
+ *   1. LIVE-BILLED — Anthropic is the only vendor with a real billing feed
+ *      we can read: Cost Admin API dollars (never estimated — owner rule),
+ *      split by workspace (Hotel AI vs the "AI employees" bucket).
+ *   2. DETECTED — services the app is literally wired to, discovered from
+ *      its own configuration (a Resend key present ⇒ Resend is in the
+ *      stack). Adding a new integration makes its row appear by itself;
+ *      removing one flags any leftover price line as "not detected". Their
+ *      prices are flat plans the founder types once.
+ *   3. PERSONAL — subscriptions no server can see (Claude plan, Codex, …),
+ *      plain typed lines.
  *
- * GET  → { connected, billing|null, learning, subscriptions }
- *   - connected=false when ANTHROPIC_ADMIN_KEY isn't configured (or the
- *     billing fetch failed) — the UI still renders our own meters and
- *     shows a "billing feed not connected" note instead of fake numbers.
- *   - billing: today / this month in USD, per-workspace month totals.
- *     Anthropic reports amounts as decimal strings in CENTS, daily
- *     buckets (UTC), fresh within ~5 minutes.
- *   - learning: month-to-date map-learning (mapper.*) cost from
- *     workflow_jobs — our own measured meter, shown as a breakdown line.
- *   - Per-robot today + Copilot today are NOT here: the surface already
- *     has both live (cua-sessions + agent metrics feeds).
+ * Flat lines live on app_settings.ai_subscriptions (0318) as
+ * { id, name, monthlyUsd, serviceKey? } — serviceKey ties a line to a
+ * detected service; lines without one are the personal group.
  *
- * POST { subscriptions: [{ name, monthlyUsd }] } → saves the list.
+ * GET  → { connected, billing|null, learning, detected, subscriptions }
+ *   billing: Anthropic cost_report month-to-date (daily UTC buckets,
+ *   amounts = decimal-string CENTS, ~5 min lag); connected=false without
+ *   ANTHROPIC_ADMIN_KEY — the UI says so instead of showing fake numbers.
+ * POST { subscriptions: [...] } → saves the flat lines.
  *
- * Auth + envelope mirror the other /api/admin/mission/* routes.
+ * Auth + envelope mirror the /api/admin/mission/* routes.
  */
 
 import { NextRequest } from 'next/server';
@@ -43,7 +41,25 @@ export const maxDuration = 30;
 
 const ANTHROPIC_BASE = 'https://api.anthropic.com';
 
-interface SubscriptionLine { id: string; name: string; monthlyUsd: number }
+interface SubscriptionLine { id: string; name: string; monthlyUsd: number; serviceKey?: string }
+
+/**
+ * The stack the app can vouch for from its own configuration. `detect`
+ * reads only the canonical env module — a service is "in the stack"
+ * because the app holds its credentials or demonstrably runs on it.
+ * Order = display order on the board.
+ */
+const KNOWN_SERVICES: Array<{ key: string; name: string; desc: string; detect: () => boolean }> = [
+  { key: 'vercel',   name: 'Vercel',        desc: 'Hosts the website and app',                 detect: () => true },
+  { key: 'supabase', name: 'Supabase',      desc: 'The database everything lives in',          detect: () => true },
+  { key: 'fly',      name: 'Fly.io',        desc: 'Computers the robot & forecasts run on',    detect: () => true },
+  { key: 'github',   name: 'GitHub',        desc: 'Stores the code',                           detect: () => true },
+  { key: 'domain',   name: 'getstaxis.com', desc: 'The domain name (billed yearly)',           detect: () => true },
+  { key: 'openai',   name: 'OpenAI',        desc: 'Voice-to-text for mic dictation',           detect: () => Boolean(env.OPENAI_API_KEY) },
+  { key: 'resend',   name: 'Resend',        desc: 'Sends the app’s emails',                    detect: () => Boolean(env.RESEND_API_KEY) },
+  { key: 'sentry',   name: 'Sentry',        desc: 'Catches errors (free plan)',                detect: () => Boolean(env.SENTRY_DSN) },
+  { key: 'stripe',   name: 'Stripe',        desc: 'Payments (when hotels start paying)',       detect: () => Boolean(env.STRIPE_SECRET_KEY) },
+];
 
 interface WorkspaceSpend {
   /** null = the default workspace (the hotel product's key lives there). */
@@ -191,6 +207,8 @@ export async function GET(req: NextRequest) {
   const subscriptions = ((settingsQ.data?.ai_subscriptions ?? []) as SubscriptionLine[])
     .filter((s) => s && typeof s.name === 'string' && typeof s.monthlyUsd === 'number');
 
+  const detected = KNOWN_SERVICES.filter((s) => s.detect()).map(({ key, name, desc }) => ({ key, name, desc }));
+
   const adminKey = env.ANTHROPIC_ADMIN_KEY;
   let billing: Billing | null = null;
   if (adminKey) {
@@ -201,6 +219,7 @@ export async function GET(req: NextRequest) {
     connected: billing !== null,
     billing,
     learning,
+    detected,
     subscriptions,
   }, { requestId });
 }
@@ -221,7 +240,7 @@ export async function POST(req: NextRequest) {
     return err('too many subscription lines (max 20)', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   const cleaned: SubscriptionLine[] = [];
-  for (const raw of body.subscriptions as Array<{ id?: unknown; name?: unknown; monthlyUsd?: unknown }>) {
+  for (const raw of body.subscriptions as Array<{ id?: unknown; name?: unknown; monthlyUsd?: unknown; serviceKey?: unknown }>) {
     const name = typeof raw?.name === 'string' ? raw.name.trim().slice(0, 60) : '';
     const monthlyUsd = typeof raw?.monthlyUsd === 'number' && isFinite(raw.monthlyUsd)
       ? Math.max(0, Math.round(raw.monthlyUsd * 100) / 100)
@@ -229,11 +248,13 @@ export async function POST(req: NextRequest) {
     if (!name || isNaN(monthlyUsd)) {
       return err('each line needs a name and a monthly dollar amount', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
-    cleaned.push({
+    const line: SubscriptionLine = {
       id: typeof raw?.id === 'string' && raw.id ? raw.id.slice(0, 40) : `sub_${Math.random().toString(36).slice(2, 10)}`,
       name,
       monthlyUsd,
-    });
+    };
+    if (typeof raw?.serviceKey === 'string' && raw.serviceKey) line.serviceKey = raw.serviceKey.slice(0, 30);
+    cleaned.push(line);
   }
 
   const { error } = await supabaseAdmin
