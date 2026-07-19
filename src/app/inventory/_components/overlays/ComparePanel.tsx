@@ -31,6 +31,7 @@ import { Caps } from '../Caps';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import { type Lang } from '../inv-i18n';
+import styles from './ComparePanel.module.css';
 
 interface ComparePanelProps {
   lang: Lang;
@@ -453,7 +454,7 @@ export function ComparePanel({ lang, open, onClose, timezone }: ComparePanelProp
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {/* Mode chips */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className={styles.modeRow}>
           {modeChip('months', cm.modeMonths)}
           {modeChip('years', cm.modeYears)}
           {modeChip('custom', cm.modeCustom)}
@@ -499,9 +500,9 @@ export function ComparePanel({ lang, open, onClose, timezone }: ComparePanelProp
         )}
 
         {/* The comparison table */}
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 1fr 1fr', gap: 12, padding: '12px 0 8px' }}>
-            <span />
+        <div className={styles.tableCard} style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
+          <div className={styles.tableHeader}>
+            <span className={styles.desktopSpacer} />
             {/* "· so far" marks a period that isn't over — comparing a partial
                 month/year against a complete one should say so. */}
             <Caps size={9} style={{ textAlign: 'right' }}>
@@ -510,7 +511,7 @@ export function ComparePanel({ lang, open, onClose, timezone }: ComparePanelProp
             <Caps size={9} style={{ textAlign: 'right' }}>
               {periodB.label}{periodB.isCurrent ? ` · ${cm.soFar}` : ''}
             </Caps>
-            <span />
+            <span className={styles.desktopSpacer} />
           </div>
           {rows.map((r, i) => (
             <CompareRow
@@ -641,16 +642,14 @@ function CompareRow({
   }
   return (
     <div
+      className={styles.compareRow}
       style={{
-        display: 'grid',
-        gridTemplateColumns: '1.3fr 1fr 1fr 1fr',
-        gap: 12,
         alignItems: 'center',
         padding: '14px 0',
         borderTop: first ? 'none' : `1px solid ${T.ruleSoft}`,
       }}
     >
-      <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span className={styles.rowLabel} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span style={{ fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 600, color: T.ink }}>
           {row.label}
         </span>
@@ -658,13 +657,13 @@ function CompareRow({
           {row.sub}
         </span>
       </span>
-      <span style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink, textAlign: 'right' }}>
+      <span className={styles.valueCell} style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink, textAlign: 'right' }}>
         {cell(row.a, noDataA, !!row.noRecordA, row.stateA, row.coverageA)}
       </span>
-      <span style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink2, textAlign: 'right' }}>
+      <span className={styles.valueCell} style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink2, textAlign: 'right' }}>
         {cell(row.b, noDataB, !!row.noRecordB, row.stateB, row.coverageB)}
       </span>
-      <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink2, textAlign: 'right', whiteSpace: 'nowrap' }}>
+      <span className={styles.diffCell} style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink2, textAlign: 'right', whiteSpace: 'nowrap' }}>
         {diffText}
       </span>
     </div>

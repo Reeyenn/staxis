@@ -16,9 +16,12 @@ export const T = {
   paper:     '#FFFFFF',
   ink:       '#1F231C',
   ink2:      '#5C625C',
-  ink3:      '#8A9187',   // tertiary / dim (existing code reads T.ink3)
-  dim:       '#8A9187',
-  faint:     '#A6ABA6',   // eyebrows / faintest text
+  // Small inventory labels are operational text, not decoration. Keep every
+  // secondary alias at the AA-safe ink so tabs, placeholders, table headers,
+  // and helper copy remain readable in bright hotel back-office lighting.
+  ink3:      '#5C625C',
+  dim:       '#5C625C',
+  faint:     '#5C625C',
   rule:      'rgba(31,35,28,0.08)',
   ruleSoft:  'rgba(31,35,28,0.06)',
   ruleFaint: 'rgba(31,35,28,0.05)',

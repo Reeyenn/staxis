@@ -21,6 +21,7 @@ import {
 } from '@/lib/db/inventory-month-closes';
 import {
   isMonthKey,
+  inventoryMonthCloseMutationFailure,
   purchaseSource,
   validatePurchaseSelection,
   type InventoryMonthClosePostBody,
@@ -33,22 +34,6 @@ export const dynamic = 'force-dynamic';
 
 function record(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function postErrorStatus(error: unknown): { status: number; code: string; message: string } {
-  const candidate = record(error) ? error : {};
-  const dbCode = typeof candidate.code === 'string' ? candidate.code : '';
-  if (dbCode === 'P0002') {
-    return { status: 404, code: ApiErrorCode.NotFound, message: 'The inventory month was not found.' };
-  }
-  if (dbCode === '22023' || dbCode === '23514' || dbCode === '23505' || dbCode === '40001') {
-    return {
-      status: 409,
-      code: 'month_close_not_ready',
-      message: 'The month close is not ready. Refresh the close checklist and resolve the flagged counts, costs, or activity.',
-    };
-  }
-  return { status: 500, code: ApiErrorCode.InternalError, message: 'The inventory month close could not be saved.' };
 }
 
 export async function GET(req: NextRequest) {
@@ -183,11 +168,8 @@ export async function POST(req: NextRequest) {
         notes: typeof body.notes === 'string' ? body.notes : null,
       });
     }
-
-    const dashboard = await getInventoryMonthCloseDashboard(supabaseAdmin, gate.pid, body.month);
-    return ok(dashboard, { requestId: gate.requestId });
   } catch (error) {
-    const mapped = postErrorStatus(error);
+    const mapped = inventoryMonthCloseMutationFailure(error, body.action);
     log.error('[inventory/month-close] mutation failed', {
       propertyId: gate.pid,
       month: body.month,
@@ -200,5 +182,28 @@ export async function POST(req: NextRequest) {
       status: mapped.status,
       code: mapped.code,
     });
+  }
+
+  // The mutation above is already committed and idempotently tied to the
+  // caller's request UUID. A follow-up read failure must never be described as
+  // “nothing changed,” or the manager may retry with a new request and lose
+  // confidence in a close that actually succeeded.
+  try {
+    const dashboard = await getInventoryMonthCloseDashboard(supabaseAdmin, gate.pid, body.month);
+    return ok(dashboard, { requestId: gate.requestId });
+  } catch (error) {
+    log.error('[inventory/month-close] committed but dashboard hydration failed', {
+      propertyId: gate.pid,
+      month: body.month,
+      action: body.action,
+      requestId: body.requestId,
+      err: errToString(error),
+    });
+    return ok({
+      mutationCommitted: true,
+      dashboard: null,
+      action: body.action,
+      month: body.month,
+    }, { requestId: gate.requestId, status: 202 });
   }
 }

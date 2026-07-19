@@ -20,7 +20,7 @@ export async function listInventoryCounts(
 ): Promise<InventoryCount[]> {
   const columns = includeFinancials
     ? '*'
-    : 'id,property_id,count_session_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes';
+    : 'id,property_id,activity_sequence,count_session_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes';
   // Paged: PostgREST caps every response at 1000 rows, so a bare
   // .limit(2000) would silently return half the requested history
   // (see supabase-paginate.ts).

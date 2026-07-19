@@ -14,17 +14,20 @@
      scan-i18n.ts     — the sheet's bilingual dictionary
    ────────────────────────────────────────────────────────────────────── */
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { resizeImageForVision } from '@/lib/image-resize';
-import { listInventoryOrders } from '@/lib/db';
+import { listEffectiveInventoryDeliveries } from '@/lib/db';
+import { BEFORE_PROPERTY_CHANGE_EVENT } from '@/lib/property-change-guard';
+import { inventoryDateKeyInZone } from '@/lib/inventory-month-close';
 import {
   buildCommitPlan,
   buildNotesTag,
   invoiceDateFromReceivedAt,
   invoiceAlreadyRecorded,
+  isInvoiceCalendarDate,
 } from '@/lib/inventory-invoice-commit';
 
 import { T, fonts } from '../tokens';
@@ -32,13 +35,23 @@ import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import type { DisplayItem } from '../types';
 import { type Lang } from '../inv-i18n';
-import { numGuard } from './form-kit';
+import { inputLg, numGuard } from './form-kit';
+import overlayStyles from './Overlay.module.css';
+import type { InventoryCustomCategory, InventoryTabLayout } from '@/types';
+import {
+  clearInventoryOverlayDraft,
+  loadInventoryOverlayDraft,
+  persistInventoryOverlayDraft,
+} from './inventory-overlay-draft';
 import { ssStrings, scanErrorFor } from './scan-i18n';
 import { StagingStep, foldFiles, fileToBase64, type Staged } from './scan-staging';
 import {
   buildRow,
   effectiveInvoiceUnitCost,
+  invoiceReviewHasUnsavedWork,
   reviewRowHasCompleteCost,
+  reviewRowHasCompleteNewItem,
+  reviewRowIsReady,
   ReviewRowView,
   type RawInvoiceLine,
   type ReviewRow,
@@ -56,6 +69,41 @@ import {
 
 type ScanPhase = 'upload' | 'reading' | 'review' | 'committing' | 'done' | 'error';
 
+interface InvoiceReviewDraft {
+  propertyId: string;
+  vendor: string;
+  invoiceDate: string;
+  invoiceNumber: string | null;
+  rows: ReviewRow[];
+}
+
+function validInvoiceReviewDraft(value: unknown, propertyId: string): InvoiceReviewDraft | null {
+  if (!value || typeof value !== 'object') return null;
+  const draft = value as Partial<InvoiceReviewDraft>;
+  if (
+    draft.propertyId !== propertyId
+    || typeof draft.vendor !== 'string'
+    || typeof draft.invoiceDate !== 'string'
+    || (draft.invoiceNumber !== null && typeof draft.invoiceNumber !== 'string')
+    || !Array.isArray(draft.rows)
+    || draft.rows.length === 0
+    || !draft.rows.every((row) => row && typeof row === 'object'
+      && typeof row.key === 'string' && typeof row.qtyInput === 'string')
+  ) return null;
+  return {
+    ...(draft as InvoiceReviewDraft),
+    // Drafts saved before scan-created items gained full Add Item parity are
+    // upgraded in place instead of being discarded.
+    rows: (draft.rows as ReviewRow[]).map((row) => ({
+      ...row,
+      newCustomCategoryId: typeof row.newCustomCategoryId === 'string'
+        ? row.newCustomCategoryId
+        : null,
+      newSetAside: typeof row.newSetAside === 'string' ? row.newSetAside : '0',
+    })),
+  };
+}
+
 // Warm notice strip used twice in the review phase (dup-invoice warning +
 // partial-failure banner) — identical styling, kept as one const.
 const warmStrip: React.CSSProperties = {
@@ -68,20 +116,23 @@ const warmStrip: React.CSSProperties = {
   color: T.warm,
 };
 
-// "2026-07-14" → "Jul 14, 2026" for the read-only invoice caption. Built from
-// the date parts directly (a bare `new Date('YYYY-MM-DD')` parses as UTC and
-// shows yesterday in western timezones). Non-ISO input passes through as-is.
-function fmtInvoiceDate(iso: string, lang: Lang): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso);
-  if (!m) return iso;
-  return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
-}
-
-export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { lang: Lang; open: boolean; onClose: () => void; display: DisplayItem[]; timezone: string }) {
+export function ScanInvoiceSheet({
+  lang,
+  open,
+  onClose,
+  display,
+  timezone,
+  customCategories = [],
+  tabLayout,
+}: {
+  lang: Lang;
+  open: boolean;
+  onClose: () => void;
+  display: DisplayItem[];
+  timezone: string;
+  customCategories?: InventoryCustomCategory[];
+  tabLayout?: InventoryTabLayout;
+}) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ss = ssStrings(lang);
@@ -108,15 +159,51 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
   // Per-line commit progress, so a retry after a partial failure resumes the
   // failed step and never double-inserts an order / re-creates an item.
   const progressRef = useRef(newCommitProgress());
-  // `buildCommitPlan` falls back to "now" when the invoice has no date. Freeze
-  // that fallback for this sheet session so retries send an identical payload.
-  const commitNowRef = useRef(new Date());
-
   const byId = useMemo(() => {
     const m = new Map<string, DisplayItem>();
     for (const d of display) m.set(d.id, d);
     return m;
   }, [display]);
+  const timezoneRef = useRef(timezone);
+  timezoneRef.current = timezone;
+  const langRef = useRef(lang);
+  langRef.current = lang;
+  const reviewStorageInput = useMemo(() => user?.uid && activePropertyId
+    ? { kind: 'invoice-review' as const, userId: user.uid, propertyId: activePropertyId, scope: 'review' }
+    : null, [activePropertyId, user?.uid]);
+
+  const verifyDuplicateInvoice = useCallback(async (number: string, vendorName: string) => {
+    if (!number) {
+      setDupChecking(false);
+      setDupWarn(false);
+      setDupCheckFailed(false);
+      return 'clear' as const;
+    }
+    if (!user?.uid || !activePropertyId) return 'failed' as const;
+    setDupChecking(true);
+    setDupWarn(false);
+    setDupCheckFailed(false);
+    try {
+      const tag = buildNotesTag(number, vendorName || null);
+      const deliveries = await listEffectiveInventoryDeliveries(user.uid, activePropertyId, 2000, true);
+      // A fully voided invoice may be re-entered through the audited database
+      // replacement path. Any still-effective line keeps the hard duplicate
+      // block, so voiding one line cannot weaken protection for the rest.
+      const duplicate = invoiceAlreadyRecorded(
+        deliveries
+          .filter((delivery) => delivery.status !== 'voided')
+          .map((delivery) => delivery.original.notes),
+        tag,
+      );
+      setDupWarn(duplicate);
+      return duplicate ? 'duplicate' as const : 'clear' as const;
+    } catch {
+      setDupCheckFailed(true);
+      return 'failed' as const;
+    } finally {
+      setDupChecking(false);
+    }
+  }, [activePropertyId, user?.uid]);
 
   // Revoke every thumbnail object-URL currently staged. Called on reset/close
   // and unmount so we never leak blob URLs (esp. across repeated open/close).
@@ -132,28 +219,50 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
     const restored = activePropertyId
       ? loadDeliveryAttempt('scan', activePropertyId)
       : null;
-    setPhase(restored ? 'review' : 'upload');
+    const reviewDraft = !restored && activePropertyId && reviewStorageInput
+      ? validInvoiceReviewDraft(
+          loadInventoryOverlayDraft<InvoiceReviewDraft>(reviewStorageInput),
+          activePropertyId,
+        )
+      : null;
+    setPhase(restored || reviewDraft ? 'review' : 'upload');
     setErrorText('');
     clearStaged();
-    setVendor(restored?.vendorName ?? '');
+    setVendor(restored?.vendorName ?? reviewDraft?.vendor ?? '');
     setInvoiceDate(restored
-      ? (invoiceDateFromReceivedAt(restored.receivedAt, timezone) ?? '')
-      : '');
-    setInvoiceNumber(null);
-    setRows([]);
+      ? (invoiceDateFromReceivedAt(restored.receivedAt, timezoneRef.current) ?? '')
+      : reviewDraft?.invoiceDate ?? '');
+    setInvoiceNumber(reviewDraft?.invoiceNumber ?? null);
+    setRows(reviewDraft?.rows ?? []);
     setDupWarn(false);
     setDupChecking(false);
     setDupCheckFailed(false);
     setBanner(restored
-      ? (lang === 'es'
+      ? (langRef.current === 'es'
           ? 'El resultado anterior no se pudo confirmar. Reintenta exactamente la misma entrega para resolverlo.'
           : 'The previous result could not be confirmed. Retry the exact same delivery to resolve it.')
-      : '');
+      : reviewDraft
+        ? (langRef.current === 'es' ? 'Se recuperó la revisión sin guardar de esta factura.' : 'Your unsaved invoice review was restored.')
+        : '');
     setRetryLocked(!!restored);
     setRecoveredLineCount(restored?.lines.length ?? 0);
     progressRef.current = newCommitProgress(restored);
-    commitNowRef.current = new Date();
-  }, [open, activePropertyId, lang, timezone]);
+    if (reviewDraft?.invoiceNumber) {
+      void verifyDuplicateInvoice(reviewDraft.invoiceNumber, reviewDraft.vendor);
+    }
+  }, [open, activePropertyId, reviewStorageInput, verifyDuplicateInvoice]);
+
+  useEffect(() => {
+    if (!open || !reviewStorageInput || retryLocked) return;
+    if (phase === 'review' && rows.length > 0 && activePropertyId) {
+      persistInventoryOverlayDraft({
+        ...reviewStorageInput,
+        data: { propertyId: activePropertyId, vendor, invoiceDate, invoiceNumber, rows } satisfies InvoiceReviewDraft,
+      });
+    } else if (phase === 'done') {
+      clearInventoryOverlayDraft(reviewStorageInput);
+    }
+  }, [activePropertyId, invoiceDate, invoiceNumber, open, phase, retryLocked, reviewStorageInput, rows, vendor]);
 
   // Belt-and-suspenders: revoke any staged thumbnails if the sheet unmounts
   // while pages are staged (open/close resets already handle the common path).
@@ -195,6 +304,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
       matchedItemId: value,
       // An explicit pick answers the "two close matches" question — clear it.
       ambiguous: false,
+      matchConfirmed: true,
       afterDirty: false,
       afterInput: String(onHandFor(value) + (Number(row.qtyInput) || 0)),
     };
@@ -233,7 +343,14 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
   // closing mid-stage never leaks blob URLs or carries pages into a reopen.
   const handleClose = () => {
     if (phase === 'committing' || retryLocked) return;
+    const unsaved = invoiceReviewHasUnsavedWork({
+      phase,
+      hasStagedFile: stagedRef.current.kind !== 'none',
+      rowCount: rows.length,
+    });
+    if (unsaved && !confirm(ss.discardConfirm)) return;
     clearStaged();
+    if (reviewStorageInput) clearInventoryOverlayDraft(reviewStorageInput);
     onClose();
   };
 
@@ -305,16 +422,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
       // window and hard-block Save on a match OR if history could not be
       // verified. There is deliberately no override during the field test.
       if (num) {
-        setDupChecking(true);
-        try {
-          const tag = buildNotesTag(num, json.vendor_name ?? null);
-          const orders = await listInventoryOrders(user.uid, activePropertyId, 2000);
-          setDupWarn(invoiceAlreadyRecorded(orders.map((o) => o.notes), tag));
-        } catch {
-          setDupCheckFailed(true);
-        } finally {
-          setDupChecking(false);
-        }
+        await verifyDuplicateInvoice(num, (json.vendor_name ?? '').trim());
       }
     } catch (err) {
       console.error('[scan-invoice] failed', err);
@@ -330,12 +438,58 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
     checkFailed: dupCheckFailed,
   });
   const costsComplete = rows.every(reviewRowHasCompleteCost);
+  const rowsReady = rows.every(reviewRowIsReady);
+  const timezoneReady = useMemo(() => {
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
+      return true;
+    } catch {
+      return false;
+    }
+  }, [timezone]);
+  const latestInvoiceDate = timezoneReady
+    ? inventoryDateKeyInZone(new Date(), timezone)
+    : '';
+  const invoiceDateReady = isInvoiceCalendarDate(invoiceDate)
+    && timezoneReady
+    && invoiceDate <= latestInvoiceDate;
+  const unconfirmedMatches = rows.filter((row) => row.decision === 'match' && !row.matchConfirmed).length;
+  const incompleteNewItems = rows.filter((row) => !reviewRowHasCompleteNewItem(row)).length;
+  const hasUnsavedChanges = retryLocked || invoiceReviewHasUnsavedWork({
+    phase,
+    hasStagedFile: staged.kind !== 'none',
+    rowCount: rows.length,
+  });
+
+  // A hotel switch remounts InventoryShell. Protect staged photos and
+  // in-flight/ambiguous delivery work before that remount can discard them.
+  useEffect(() => {
+    if (!open || !hasUnsavedChanges) return;
+    const beforePropertyChange = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent;
+      if (phase === 'committing' || retryLocked) {
+        event.preventDefault();
+        setBanner(ss.propertySwitchBlocked);
+        return;
+      }
+      if (!window.confirm(ss.propertySwitchConfirm)) event.preventDefault();
+    };
+    window.addEventListener(BEFORE_PROPERTY_CHANGE_EVENT, beforePropertyChange);
+    return () => window.removeEventListener(BEFORE_PROPERTY_CHANGE_EVENT, beforePropertyChange);
+  }, [hasUnsavedChanges, open, phase, retryLocked, ss.propertySwitchBlocked, ss.propertySwitchConfirm]);
 
   const handleCommit = async () => {
     if (
       !user || !activePropertyId || phase === 'committing'
-      || (!retryLocked && (duplicateBlocked || !costsComplete))
+      || (!retryLocked && (duplicateBlocked || !rowsReady || !invoiceDateReady))
     ) return;
+    // Recheck the editable identity at the actual save boundary. An onBlur
+    // lookup alone can race the Save click and let a newly typed duplicate
+    // through before React paints the checking state.
+    if (!retryLocked && invoiceNumber) {
+      const result = await verifyDuplicateInvoice(invoiceNumber, vendor);
+      if (result !== 'clear') return;
+    }
     setPhase('committing');
     setBanner('');
 
@@ -350,9 +504,10 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
           invoiceNumber,
           lines: rows.map((r) => ({
             key: r.key,
-            itemName: r.raw.item_name,
+            itemName: r.decision === 'create' ? r.newName : r.raw.item_name,
             decision: r.decision,
             matchedItemId: r.matchedItemId,
+            matchConfirmed: r.decision !== 'match' || r.matchConfirmed,
             qty: r.qtyInput,
             quantityCases: r.raw.quantity_cases,
             unitCost: r.unitCostInput,
@@ -361,9 +516,15 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
             totalCost: r.unitCostDirty ? null : r.raw.total_cost,
             onHandEstimate: onHandFor(r.matchedItemId),
             afterOverride: r.decision === 'match' && r.afterDirty ? r.afterInput : null,
-            newItem: r.decision === 'create' ? { category: r.newCategory, unit: r.newUnit, parLevel: r.newPar } : undefined,
+            newItem: r.decision === 'create' ? {
+              category: r.newCategory,
+              customCategoryId: r.newCustomCategoryId,
+              unit: r.newUnit,
+              parLevel: r.newPar,
+              setAside: r.newSetAside,
+            } : undefined,
           })),
-        }, commitNowRef.current);
+        });
         await executeCommit(plan, progressRef.current, {
           uid: user.uid,
           pid: activePropertyId,
@@ -386,6 +547,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
       return;
     }
     setRetryLocked(false);
+    if (reviewStorageInput) clearInventoryOverlayDraft(reviewStorageInput);
     setPhase('done');
   };
 
@@ -398,11 +560,12 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
     <Overlay
       open={open}
       onClose={handleClose}
+      hasUnsavedChanges={hasUnsavedChanges}
       eyebrow={ss.scanInvoice}
       italic={reviewing ? ss.whatArrived : phase === 'done' ? ss.saved : ss.dropOneIn}
       suffix={reviewing ? undefined : ss.autoUpdateStock}
       accent={T.sageDeep}
-      width={reviewing ? 680 : 640}
+      width={reviewing ? 760 : 640}
       footer={
         reviewing ? (
           <>
@@ -413,7 +576,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
               variant="primary"
               size="md"
               onClick={handleCommit}
-              disabled={phase === 'committing' || (!retryLocked && (actionable === 0 || duplicateBlocked || !costsComplete))}
+              disabled={phase === 'committing' || (!retryLocked && (actionable === 0 || duplicateBlocked || !rowsReady || !invoiceDateReady))}
             >
               {phase === 'committing'
                 ? ss.adding
@@ -425,6 +588,37 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
         ) : undefined
       }
     >
+      <style>{`
+        .scan-new-item-grid {
+          grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(90px, .65fr) minmax(80px, .5fr);
+        }
+        .scan-new-item-name { grid-column: span 2; }
+        @media (max-width: 760px) {
+          .scan-review-main {
+            display: grid !important;
+            grid-template-columns: 44px minmax(72px, 1fr) minmax(84px, 1fr);
+            align-items: end !important;
+          }
+          .scan-review-picker { grid-column: 1; grid-row: 1; }
+          .scan-review-name { grid-column: 2; grid-row: 1; }
+          .scan-review-remove { grid-column: 3; grid-row: 1; justify-self: end; }
+          .scan-review-qty { grid-column: 2; grid-row: 2; }
+          .scan-review-cost { grid-column: 3; grid-row: 2; }
+          .scan-review-qty input,
+          .scan-review-cost input { width: 100% !important; }
+          .scan-new-item-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+          }
+          .scan-new-item-grid input,
+          .scan-new-item-grid button { min-height: 44px !important; }
+        }
+        @media (max-width: 480px) {
+          .scan-new-item-grid { grid-template-columns: minmax(0, 1fr); }
+          .scan-new-item-name { grid-column: auto; }
+        }
+      `}</style>
       {(phase === 'upload' || phase === 'reading') && (
         <StagingStep
           ss={ss}
@@ -508,14 +702,63 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
           {!retryLocked && !costsComplete && (
             <div role="alert" style={warmStrip}>{ss.costsRequired}</div>
           )}
+          {!retryLocked && !invoiceDateReady && (
+            <div role="alert" style={warmStrip}>{ss.invoiceDateRequired}</div>
+          )}
+          {!retryLocked && unconfirmedMatches > 0 && (
+            <div role="alert" style={warmStrip}>{ss.matchesRequired(unconfirmedMatches)}</div>
+          )}
+          {!retryLocked && incompleteNewItems > 0 && (
+            <div role="alert" style={warmStrip}>{ss.newItemsRequired}</div>
+          )}
           {banner && <div style={warmStrip}>{banner}</div>}
 
-          {/* Where it came from — read straight off the invoice, not a form. */}
-          {(vendor || invoiceDate) && (
-            <div style={{ fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.02em' }}>
-              {[vendor, fmtInvoiceDate(invoiceDate, lang)].filter(Boolean).join(' · ')}
-            </div>
-          )}
+          <div className={overlayStyles.formGrid3} style={{ alignItems: 'end' }}>
+            <label>
+              <span className={overlayStyles.fieldLabel}>{ss.vendor}</span>
+              <input
+                className={overlayStyles.formControl}
+                style={{ ...inputLg, minHeight: 44, marginTop: 6 }}
+                value={vendor}
+                disabled={retryLocked || phase === 'committing'}
+                onChange={(event) => {
+                  setVendor(event.target.value);
+                  setDupWarn(false);
+                  setDupCheckFailed(false);
+                }}
+                onBlur={() => { if (invoiceNumber) void verifyDuplicateInvoice(invoiceNumber, vendor); }}
+              />
+            </label>
+            <label>
+              <span className={overlayStyles.fieldLabel}>{ss.invoiceNumber}</span>
+              <input
+                className={overlayStyles.formControl}
+                style={{ ...inputLg, minHeight: 44, marginTop: 6 }}
+                value={invoiceNumber ?? ''}
+                disabled={retryLocked || phase === 'committing'}
+                onChange={(event) => {
+                  const next = event.target.value.trimStart();
+                  setInvoiceNumber(next || null);
+                  setDupWarn(false);
+                  setDupCheckFailed(false);
+                }}
+                onBlur={() => { if (invoiceNumber) void verifyDuplicateInvoice(invoiceNumber.trim(), vendor); }}
+              />
+            </label>
+            <label>
+              <span className={overlayStyles.fieldLabel}>{ss.invoiceDate}</span>
+              <input
+                type="date"
+                max={latestInvoiceDate || undefined}
+                className={overlayStyles.formControl}
+                style={{ ...inputLg, minHeight: 44, marginTop: 6 }}
+                value={invoiceDate}
+                disabled={retryLocked || phase === 'committing'}
+                aria-invalid={!invoiceDateReady}
+                onChange={(event) => setInvoiceDate(event.target.value)}
+              />
+            </label>
+          </div>
 
           {!retryLocked && <div style={{ display: 'flex', flexDirection: 'column' }}>
             {rows.map((row) => (
@@ -524,13 +767,27 @@ export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { l
                 lang={lang}
                 row={row}
                 display={display}
+                customCategories={customCategories}
+                hiddenBuiltins={tabLayout?.hidden ?? []}
                 onDecision={(v) => setDecision(row, v)}
                 onQty={(v) => setQty(row, v)}
                 onUnitCost={(v) => {
                   if (!numGuard(v)) return;
                   patchRow(row.key, { unitCostInput: v, unitCostDirty: true });
                 }}
+                onConfirmMatch={() => patchRow(row.key, { matchConfirmed: true, ambiguous: false })}
+                onNewName={(v) => patchRow(row.key, { newName: v })}
                 onNewCategory={(c) => patchRow(row.key, { newCategory: c })}
+                onNewCustomCategoryId={(id) => patchRow(row.key, { newCustomCategoryId: id })}
+                onNewUnit={(v) => patchRow(row.key, { newUnit: v })}
+                onNewPar={(v) => {
+                  if (!numGuard(v)) return;
+                  patchRow(row.key, { newPar: v });
+                }}
+                onNewSetAside={(v) => {
+                  if (!/^\d*$/.test(v)) return;
+                  patchRow(row.key, { newSetAside: v });
+                }}
                 onSkip={() => patchRow(row.key, { decision: 'skip' })}
                 onUnskip={() =>
                   patchRow(row.key, {

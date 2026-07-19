@@ -8,6 +8,7 @@ import {
   inventoryCloseWindow,
   inventoryMonthEndDateKey,
   inventoryMonthKeyInZone,
+  inventoryMonthCloseMutationFailure,
   inventoryOpeningPosition,
   inventoryUsageCents,
   isMonthKey,
@@ -18,6 +19,11 @@ import {
   validatePurchaseSelection,
   type InventoryMonthCloseHistoryRow,
 } from '../inventory-month-close';
+import {
+  inventoryBaselineConflictsWithCount,
+  inventoryCorrectionEffectAppliedToItem,
+  inventoryMovementConflictsWithCount,
+} from '../db/inventory-month-closes';
 
 describe('inventory month-close calendar windows', () => {
   it('uses property-local calendar midnights across spring DST', () => {
@@ -72,6 +78,151 @@ describe('inventory month-close purchase confirmation', () => {
     assert.equal(purchaseSource('manual_total'), 'manual_total');
     assert.equal(purchaseSource('zero'), 'zero');
     assert.equal(purchaseSource('none'), null);
+  });
+});
+
+describe('inventory month-close recovery errors', () => {
+  it('makes timezone changes explicit and requires a safe rebaseline', () => {
+    assert.deepEqual(inventoryMonthCloseMutationFailure({
+      code: '23514',
+      message: 'property timezone changed after this period opened; rebaseline the current month',
+    }), {
+      status: 409,
+      code: 'month_close_timezone_changed',
+      message: 'The property timezone changed after this period opened. Nothing was closed. An administrator must rebaseline the current month before usage can be recorded safely.',
+    });
+  });
+
+  it('distinguishes missed count evidence from activity that requires a recount', () => {
+    const missing = inventoryMonthCloseMutationFailure({
+      code: '22023',
+      message: 'one complete physical-count session must cover every active period-end item in the ending-count window',
+    });
+    assert.equal(missing.code, 'month_close_ending_count_required');
+    assert.match(missing.message, /remains unclosed/i);
+
+    const moved = inventoryMonthCloseMutationFailure({
+      code: '22023',
+      message: 'next-month activity occurred before a grace-period ending count',
+    });
+    assert.equal(moved.code, 'month_close_recount_required');
+    assert.match(moved.message, /new complete count/i);
+  });
+
+  it('never presents an unknown dependency failure as a valid close result', () => {
+    const failure = inventoryMonthCloseMutationFailure(new Error('connection reset'));
+    assert.equal(failure.status, 500);
+    assert.equal(failure.code, 'internal_error');
+    assert.match(failure.message, /nothing was changed/i);
+  });
+});
+
+describe('inventory month-close durable movement eligibility', () => {
+  const base = {
+    activityStartAt: '2026-06-01T00:00:00Z',
+    endAt: '2026-07-01T00:00:00Z',
+    discards: [],
+    laterCounts: [],
+  };
+
+  it('rejects a backdated stock event committed after an in-month count', () => {
+    assert.equal(inventoryMovementConflictsWithCount({
+      ...base,
+      countedAt: '2026-06-30T12:00:00Z',
+      countActivitySequence: 100,
+      orders: [{
+        occurredAt: '2026-06-15T12:00:00Z',
+        activitySequence: 101,
+        changedLiveStock: true,
+      }],
+    }), true);
+  });
+
+  it('ignores unapplied correction evidence and legitimate next-period work', () => {
+    assert.equal(inventoryMovementConflictsWithCount({
+      ...base,
+      countedAt: '2026-06-30T12:00:00Z',
+      countActivitySequence: 100,
+      orders: [
+        { occurredAt: '2026-06-15T12:00:00Z', activitySequence: 101, changedLiveStock: false },
+        { occurredAt: '2026-07-01T12:00:00Z', activitySequence: 102, changedLiveStock: true },
+      ],
+    }), false);
+  });
+
+  it('rejects a later same-period one-item recount', () => {
+    assert.equal(inventoryMovementConflictsWithCount({
+      ...base,
+      countedAt: '2026-06-30T12:00:00Z',
+      countActivitySequence: 100,
+      orders: [],
+      laterCounts: [{ countedAt: '2026-06-30T13:00:00Z', activitySequence: 105 }],
+    }), true);
+  });
+
+  it('keeps a grace count valid after later next-period work but rejects pre-count work', () => {
+    const grace = {
+      ...base,
+      countedAt: '2026-07-01T12:00:00Z',
+      countActivitySequence: 100,
+    };
+    assert.equal(inventoryMovementConflictsWithCount({
+      ...grace,
+      orders: [{
+        occurredAt: '2026-07-02T12:00:00Z',
+        activitySequence: 101,
+        changedLiveStock: true,
+      }],
+    }), false);
+    assert.equal(inventoryMovementConflictsWithCount({
+      ...grace,
+      orders: [{
+        occurredAt: '2026-07-01T10:00:00Z',
+        activitySequence: 101,
+        changedLiveStock: true,
+      }],
+    }), true);
+  });
+
+  it('uses durable ordering for the opening baseline and ignores cost-only corrections', () => {
+    const opening = {
+      countedAt: '2026-07-19T12:00:00Z',
+      countActivitySequence: 100,
+      discards: [],
+      laterCounts: [],
+    };
+    assert.equal(inventoryBaselineConflictsWithCount({
+      ...opening,
+      orders: [{
+        occurredAt: '2026-07-18T12:00:00Z',
+        activitySequence: 101,
+        changedLiveStock: true,
+      }],
+    }), true, 'a backdated stock write committed after the count requires recount');
+    assert.equal(inventoryBaselineConflictsWithCount({
+      ...opening,
+      orders: [{
+        occurredAt: '2026-07-18T12:00:00Z',
+        activitySequence: 101,
+        changedLiveStock: false,
+      }],
+    }), false, 'cost-only correction evidence does not invalidate stock');
+    assert.equal(inventoryBaselineConflictsWithCount({
+      ...opening,
+      orders: [],
+      laterCounts: [{ activitySequence: 102 }],
+    }), true, 'a later count supersedes the selected complete session');
+  });
+
+  it('treats an audited empty correction effect as cost-only and malformed evidence as unknown', () => {
+    assert.equal(inventoryCorrectionEffectAppliedToItem([], 'item-a'), false);
+    assert.equal(inventoryCorrectionEffectAppliedToItem([
+      { itemId: 'item-b', applied: false },
+    ], 'item-a'), false);
+    assert.equal(inventoryCorrectionEffectAppliedToItem([
+      { itemId: 'item-a', applied: true },
+    ], 'item-a'), true);
+    assert.equal(inventoryCorrectionEffectAppliedToItem([{ itemId: 'item-a' }], 'item-a'), null);
   });
 });
 

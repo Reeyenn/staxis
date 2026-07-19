@@ -82,11 +82,23 @@ describe('matchInvoiceLine', () => {
     assert.equal(r.autoSelect, true);
   });
 
-  it('auto-selects a strong, non-risky vendor variant', () => {
+  it('suggests but never auto-confirms a strong vendor variant', () => {
     const r = matchInvoiceLine('Bounty Paper Towels 12pk', [{ id: '1', name: 'Paper Towels' }]);
     assert.equal(r.best?.id, '1');
     assert.equal(r.best?.tier, 'strong');
-    assert.equal(r.autoSelect, true);
+    assert.equal(r.autoSelect, false);
+  });
+
+  it('does not auto-confirm material color, size, grade, or model differences', () => {
+    for (const [invoiceName, savedName] of [
+      ['Pool Towel White', 'Pool Towel Blue'],
+      ['Bath Towel 24x48', 'Bath Towel 27x54'],
+      ['Trash Bag 1 mil', 'Trash Bag 2 mil'],
+      ['Filter Model A12', 'Filter Model A13'],
+    ]) {
+      const result = matchInvoiceLine(invoiceName, [{ id: 'candidate', name: savedName }]);
+      assert.equal(result.autoSelect, false, `${invoiceName} must not auto-confirm ${savedName}`);
+    }
   });
 
   it('does NOT auto-select an ambiguous near-tie', () => {

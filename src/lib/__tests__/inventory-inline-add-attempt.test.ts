@@ -31,6 +31,10 @@ const attempt = createFrozenInlineAddAttempt({
   quantityInput: '05.0',
   parInput: '20',
   costInput: '1.25',
+  setAsideInput: '2',
+  vendorInput: 'Hotel Supply Co.',
+  category: 'maintenance',
+  customCategoryId: 'engineering-parts',
   openingAdjustmentConfirmed: true,
 });
 
@@ -42,8 +46,11 @@ describe('CountSheet durable inline add', () => {
     assert.equal(attempt.quantity, 5);
     assert.equal(attempt.parLevel, 20);
     assert.equal(attempt.unitCost, 1.25);
+    assert.equal(attempt.setAside, 2);
+    assert.equal(attempt.vendorName, 'Hotel Supply Co.');
     assert.equal(attempt.openingAdjustmentConfirmed, true);
-    assert.equal(attempt.category, 'housekeeping');
+    assert.equal(attempt.category, 'maintenance');
+    assert.equal(attempt.customCategoryId, 'engineering-parts');
     assert.equal(inlineAddAttemptMarker(attempt.requestId), 'staxis:inline-count-add:request-a');
   });
 
@@ -52,6 +59,8 @@ describe('CountSheet durable inline add', () => {
       propertyId: 'property-a', requestId: 'request-b',
       startedAt: '2026-07-15T19:00:00.000Z', scope: 'all' as const,
       nameInput: 'Soap', quantityInput: '3', parInput: '5', costInput: '2',
+      setAsideInput: '0', vendorInput: '', category: 'housekeeping' as const,
+      customCategoryId: null,
     };
     assert.throws(
       () => createFrozenInlineAddAttempt({ ...base, openingAdjustmentConfirmed: false }),
@@ -64,6 +73,18 @@ describe('CountSheet durable inline add', () => {
         openingAdjustmentConfirmed: true,
       }),
       /unit cost/i,
+    );
+  });
+
+  test('rejects set-aside stock larger than the physical count', () => {
+    assert.throws(
+      () => createFrozenInlineAddAttempt({
+        ...attempt,
+        requestId: 'request-set-aside',
+        quantityInput: '1',
+        setAsideInput: '2',
+      }),
+      /set-aside quantity/i,
     );
   });
 

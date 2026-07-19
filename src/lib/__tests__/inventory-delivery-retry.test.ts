@@ -17,6 +17,8 @@ import {
 function memoryStorage() {
   const values = new Map<string, string>();
   return {
+    get length() { return values.size; },
+    key: (index: number) => [...values.keys()][index] ?? null,
     getItem: (key: string) => values.get(key) ?? null,
     setItem: (key: string, value: string) => { values.set(key, value); },
     removeItem: (key: string) => { values.delete(key); },
@@ -73,6 +75,26 @@ describe('delivery retry envelope', () => {
 
     clearDeliveryAttempt('scan', 'property-a', storage);
     assert.equal(loadDeliveryAttempt('scan', 'property-a', storage), null);
+  });
+
+  test('keeps concurrent same-property tabs in separate request-keyed envelopes', () => {
+    const storage = memoryStorage();
+    const first = retainOrCreateDeliveryAttempt(null, {
+      kind: 'scan', propertyId: 'property-a', requestId: 'request-first',
+      receivedAt: new Date('2026-07-15T18:30:00.000Z'),
+      lines: [{ lineKey: 'line-1', itemId: 'soap', quantity: 1 }],
+    });
+    const second = retainOrCreateDeliveryAttempt(null, {
+      kind: 'scan', propertyId: 'property-a', requestId: 'request-second',
+      receivedAt: new Date('2026-07-15T18:31:00.000Z'),
+      lines: [{ lineKey: 'line-2', itemId: 'towels', quantity: 2 }],
+    });
+    persistDeliveryAttempt(first, storage);
+    persistDeliveryAttempt(second, storage);
+
+    assert.equal(loadDeliveryAttempt('scan', 'property-a', storage)?.requestId, 'request-first');
+    clearDeliveryAttempt('scan', 'property-a', 'request-first', storage);
+    assert.equal(loadDeliveryAttempt('scan', 'property-a', storage)?.requestId, 'request-second');
   });
 
   test('fails closed when durable storage is unavailable, throws, or drops the write', () => {
@@ -140,6 +162,9 @@ describe('delivery retry envelope', () => {
     assert.equal(isDefinitiveDeliveryFailure({ code: '23505', message: 'duplicate' }), true);
     assert.equal(isDefinitiveDeliveryFailure({ code: 'P0001' }), true);
     assert.equal(isDefinitiveDeliveryFailure({ code: 'PGRST202' }), true);
+    assert.equal(isDefinitiveDeliveryFailure({ code: '23505' }, true), false);
+    assert.equal(isDefinitiveDeliveryFailure({ code: '42501' }, true), false);
+    assert.equal(isDefinitiveDeliveryFailure({ code: 'PGRST202' }, true), false);
     assert.equal(isDefinitiveDeliveryFailure({ code: 'ECONNRESET' }), false);
     assert.equal(isDefinitiveDeliveryFailure({ code: 'EPIPE' }), false);
     assert.equal(isDefinitiveDeliveryFailure({ code: 'NETWORK_ERROR' }), false);
@@ -207,11 +232,22 @@ describe('numbered invoice hard block', () => {
     assert.match(deliverySource, /if \(saving \|\| retryLocked\) return;/);
     assert.match(deliverySource, /disabled=\{saving \|\| retryLocked\}/);
     assert.match(scanSource, /if \(phase === 'committing' \|\| retryLocked\) return;/);
-    assert.match(scanSource, /listInventoryOrders\(user\.uid, activePropertyId, 2000\)/);
+    assert.match(scanSource, /listEffectiveInventoryDeliveries\(user\.uid, activePropertyId, 2000, true\)/);
     assert.match(scanSource, /actionable === 0 \|\| duplicateBlocked/);
     assert.match(scanSource, /await retryCommit\(progressRef\.current/);
-    assert.match(scanSource, /invoiceDateFromReceivedAt\(restored\.receivedAt, timezone\)/);
+    assert.match(scanSource, /invoiceDateFromReceivedAt\(restored\.receivedAt, timezoneRef\.current\)/);
     assert.match(scanSource, /propertyTimezone: timezone/);
     assert.doesNotMatch(scanSource, /restored\?\.receivedAt\.slice\(0, 10\)/);
+  });
+
+  test('nonfinancial delivery entry hides invoice OCR and records unknown cost explicitly', () => {
+    const deliverySource = readFileSync(fileURLToPath(new URL(
+      '../../app/inventory/_components/overlays/DeliverySheet.tsx', import.meta.url,
+    )), 'utf8');
+
+    assert.match(deliverySource, /mode === 'scan' && canViewFinancials/);
+    assert.match(deliverySource, /\{canViewFinancials && <OptionRow title=\{ds\.scanOption\}/);
+    assert.match(deliverySource, /unitCost: canViewFinancials \? values\.totalCost \/ values\.quantity : null/);
+    assert.match(deliverySource, /!canViewFinancials && <div role="note"/);
   });
 });

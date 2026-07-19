@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { fetchAllRows } from '@/lib/supabase-paginate';
+import { validPropertyTimezone } from '@/lib/property-timezone';
+import { summarizeEffectivePurchasesForProperty } from './inventory-effective-purchases';
 import {
   inventoryCloseWindow,
   inventoryOpeningPosition,
@@ -99,6 +101,7 @@ interface LiveItemRow {
 interface CountRow {
   id: string;
   item_id: string;
+  activity_sequence: number | string;
   count_session_id: string | null;
   counted_stock: number | string;
   unit_cost: number | string | null;
@@ -108,15 +111,32 @@ interface CountRow {
 interface OrderRow {
   id: string;
   item_id: string;
+  activity_sequence: number | string;
   quantity: number | string;
   unit_cost: number | string | null;
   total_cost: number | string | null;
+  entry_kind?: 'receipt' | 'correction' | string | null;
+  corrects_order_id?: string | null;
+  correction_event_id?: string | null;
   received_at: string;
 }
 
 interface DiscardRow {
+  id: string;
   item_id: string;
+  activity_sequence: number | string;
   discarded_at: string;
+}
+
+interface CorrectionStockEffectRow {
+  id: string;
+  stock_effect: unknown;
+}
+
+interface ArchiveReadinessRow {
+  itemId: string;
+  valid: boolean;
+  evidenceKind: string;
 }
 
 interface OpeningAdjustmentRow {
@@ -262,15 +282,6 @@ function historyRow(row: CloseRow): InventoryMonthCloseHistoryRow {
   };
 }
 
-function orderValueCents(row: Pick<OrderRow, 'quantity' | 'unit_cost' | 'total_cost'>): number | null {
-  const quantity = finite(row.quantity);
-  const total = finite(row.total_cost);
-  const unit = finite(row.unit_cost);
-  if (quantity == null || quantity <= 0) return null;
-  const dollars = total ?? (unit == null ? null : quantity * unit);
-  return dollars == null || dollars < 0 ? null : Math.round(dollars * 100);
-}
-
 /** Finance-gated callers use this for budgets, reports, and comparisons. */
 export async function listInventoryMonthCloseHistory(
   client: SupabaseClient,
@@ -298,7 +309,7 @@ export async function listInventoryMonthCloseHistory(
     );
     const orders = await fetchAllRows<OrderRow>((from, to) => client
       .from('inventory_orders')
-      .select('id,item_id,quantity,unit_cost,total_cost,received_at')
+      .select('id,item_id,activity_sequence,quantity,unit_cost,total_cost,entry_kind,corrects_order_id,correction_event_id,received_at')
       .eq('property_id', propertyId)
       .gte('received_at', start)
       .lt('received_at', end)
@@ -308,11 +319,11 @@ export async function listInventoryMonthCloseHistory(
       const periodOrders = orders.filter(
         (order) => order.received_at >= row.activity_start_at && order.received_at < row.end_at,
       );
-      const values = periodOrders.map(orderValueCents);
-      row.known_logged_purchase_cents = values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-      row.logged_purchase_cents = values.some((value) => value == null)
-        ? null
-        : row.known_logged_purchase_cents;
+      const purchases = await summarizeEffectivePurchasesForProperty(client, propertyId, periodOrders);
+      row.known_logged_purchase_cents = purchases.knownLoggedPurchaseCents;
+      row.logged_purchase_cents = purchases.loggedPurchaseCents;
+      row.logged_delivery_count = purchases.loggedDeliveryCount;
+      row.uncosted_delivery_count = purchases.uncostedDeliveryCount;
     }
   }
   return rows.map(historyRow);
@@ -480,7 +491,7 @@ async function loadCounts(
 ): Promise<CountRow[]> {
   return fetchAllRows<CountRow>((from, to) => client
     .from('inventory_counts')
-    .select('id,item_id,count_session_id,counted_stock,unit_cost,counted_at')
+    .select('id,item_id,activity_sequence,count_session_id,counted_stock,unit_cost,counted_at')
     .eq('property_id', propertyId)
     .gte('counted_at', start)
     .lt('counted_at', end)
@@ -496,7 +507,7 @@ async function loadOrders(
 ): Promise<OrderRow[]> {
   return fetchAllRows<OrderRow>((from, to) => client
     .from('inventory_orders')
-    .select('id,item_id,quantity,unit_cost,total_cost,received_at')
+    .select('id,item_id,activity_sequence,quantity,unit_cost,total_cost,entry_kind,corrects_order_id,correction_event_id,received_at')
     .eq('property_id', propertyId)
     .gte('received_at', start)
     .lt('received_at', end)
@@ -512,12 +523,179 @@ async function loadDiscards(
 ): Promise<DiscardRow[]> {
   return fetchAllRows<DiscardRow>((from, to) => client
     .from('inventory_discards')
-    .select('item_id,discarded_at')
+    .select('id,item_id,activity_sequence,discarded_at')
     .eq('property_id', propertyId)
     .gte('discarded_at', start)
     .lt('discarded_at', end)
     .order('discarded_at', { ascending: true })
     .range(from, to));
+}
+
+function activitySequence(value: number | string | null | undefined): number {
+  const parsed = finite(value);
+  return parsed == null ? -1 : parsed;
+}
+
+export function inventoryMovementConflictsWithCount(args: {
+  countedAt: string;
+  countActivitySequence: number;
+  activityStartAt: string;
+  endAt: string;
+  orders: Array<{ occurredAt: string; activitySequence: number; changedLiveStock: boolean }>;
+  discards: Array<{ occurredAt: string; activitySequence: number }>;
+  laterCounts: Array<{ countedAt: string; activitySequence: number }>;
+}): boolean {
+  const inMonthCount = args.countedAt < args.endAt;
+  if (inMonthCount) {
+    return args.orders.some((order) => order.changedLiveStock && (
+      (order.occurredAt >= args.activityStartAt
+        && order.occurredAt < args.endAt
+        && order.occurredAt >= args.countedAt)
+      || (order.activitySequence > args.countActivitySequence && order.occurredAt < args.endAt)
+    )) || args.discards.some((discard) => (
+      (discard.occurredAt >= args.activityStartAt
+        && discard.occurredAt < args.endAt
+        && discard.occurredAt >= args.countedAt)
+      || (discard.activitySequence > args.countActivitySequence && discard.occurredAt < args.endAt)
+    )) || args.laterCounts.some((count) => count.activitySequence > args.countActivitySequence
+      && count.countedAt < args.endAt);
+  }
+  return args.orders.some((order) => order.changedLiveStock && (
+    (order.occurredAt >= args.endAt && order.occurredAt < args.countedAt)
+    || (order.activitySequence > args.countActivitySequence && order.occurredAt <= args.countedAt)
+  )) || args.discards.some((discard) => (
+    (discard.occurredAt >= args.endAt && discard.occurredAt < args.countedAt)
+    || (discard.activitySequence > args.countActivitySequence && discard.occurredAt <= args.countedAt)
+  )) || args.laterCounts.some((count) => count.activitySequence > args.countActivitySequence
+    && count.countedAt <= args.countedAt);
+}
+
+export function inventoryBaselineConflictsWithCount(args: {
+  countedAt: string;
+  countActivitySequence: number;
+  orders: Array<{ occurredAt: string; activitySequence: number; changedLiveStock: boolean }>;
+  discards: Array<{ occurredAt: string; activitySequence: number }>;
+  laterCounts: Array<{ activitySequence: number }>;
+}): boolean {
+  return args.orders.some((order) => order.changedLiveStock && (
+    order.occurredAt >= args.countedAt
+    || order.activitySequence > args.countActivitySequence
+  )) || args.discards.some((discard) => (
+    discard.occurredAt >= args.countedAt
+    || discard.activitySequence > args.countActivitySequence
+  )) || args.laterCounts.some(
+    (count) => count.activitySequence > args.countActivitySequence,
+  );
+}
+
+async function loadActivityAfterSequence(
+  client: SupabaseClient,
+  propertyId: string,
+  afterSequence: number,
+): Promise<{ counts: CountRow[]; orders: OrderRow[]; discards: DiscardRow[] }> {
+  const [counts, orders, discards] = await Promise.all([
+    fetchAllRows<CountRow>((from, to) => client
+      .from('inventory_counts')
+      .select('id,item_id,activity_sequence,count_session_id,counted_stock,unit_cost,counted_at')
+      .eq('property_id', propertyId)
+      .gt('activity_sequence', afterSequence)
+      .order('activity_sequence', { ascending: true })
+      .range(from, to)),
+    fetchAllRows<OrderRow>((from, to) => client
+      .from('inventory_orders')
+      .select('id,item_id,activity_sequence,quantity,unit_cost,total_cost,entry_kind,corrects_order_id,correction_event_id,received_at')
+      .eq('property_id', propertyId)
+      .gt('activity_sequence', afterSequence)
+      .order('activity_sequence', { ascending: true })
+      .range(from, to)),
+    fetchAllRows<DiscardRow>((from, to) => client
+      .from('inventory_discards')
+      .select('id,item_id,activity_sequence,discarded_at')
+      .eq('property_id', propertyId)
+      .gt('activity_sequence', afterSequence)
+      .order('activity_sequence', { ascending: true })
+      .range(from, to)),
+  ]);
+  return { counts, orders, discards };
+}
+
+function mergeRowsById<T extends { id: string }>(first: T[], second: T[]): T[] {
+  return [...new Map([...first, ...second].map((row) => [row.id, row])).values()];
+}
+
+async function loadCorrectionStockEffects(
+  client: SupabaseClient,
+  correctionIds: readonly string[],
+): Promise<Map<string, unknown>> {
+  const uniqueIds = [...new Set(correctionIds.filter(Boolean))];
+  const result = new Map<string, unknown>();
+  for (let index = 0; index < uniqueIds.length; index += 400) {
+    const { data, error } = await client
+      .from('inventory_delivery_corrections')
+      .select('id,stock_effect')
+      .in('id', uniqueIds.slice(index, index + 400));
+    if (error) throw error;
+    for (const row of (data ?? []) as unknown as CorrectionStockEffectRow[]) {
+      result.set(row.id, row.stock_effect);
+    }
+  }
+  return result;
+}
+
+export function inventoryCorrectionEffectAppliedToItem(value: unknown, itemId: string): boolean | null {
+  if (!Array.isArray(value)) return null;
+  if (value.some((entry) => !entry || typeof entry !== 'object' || Array.isArray(entry))) return null;
+  const entries = value.map((entry) => entry as JsonRecord);
+  if (entries.some((entry) => typeof entry.itemId !== 'string' || typeof entry.applied !== 'boolean')) {
+    return null;
+  }
+  const matches = entries.filter((entry) => entry.itemId === itemId);
+  // A valid empty/no-match effect array is how the audited correction records
+  // a cost-only paperwork repair. Only absent or malformed evidence fails
+  // closed; a valid array with no effect for this item did not move its stock.
+  if (matches.length === 0) return false;
+  return matches.some((entry) => entry.applied === true);
+}
+
+function orderChangedLiveStock(
+  order: OrderRow,
+  effects: Map<string, unknown>,
+): boolean {
+  if (order.entry_kind !== 'correction') return true;
+  if (!order.correction_event_id) return true;
+  // Missing/malformed audit evidence fails closed in the preview.
+  return inventoryCorrectionEffectAppliedToItem(
+    effects.get(order.correction_event_id),
+    order.item_id,
+  ) ?? true;
+}
+
+async function loadArchiveReadiness(
+  client: SupabaseClient,
+  propertyId: string,
+  itemIds: readonly string[],
+): Promise<Map<string, ArchiveReadinessRow>> {
+  const uniqueIds = [...new Set(itemIds)];
+  const result = new Map<string, ArchiveReadinessRow>();
+  for (let index = 0; index < uniqueIds.length; index += 400) {
+    const { data, error } = await client.rpc('staxis_list_inventory_archive_readiness', {
+      p_property_id: propertyId,
+      p_item_ids: uniqueIds.slice(index, index + 400),
+    });
+    if (error) throw error;
+    if (!Array.isArray(data)) throw new Error('Inventory archive readiness returned an invalid result.');
+    for (const value of data) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const row = value as JsonRecord;
+      if (typeof row.itemId !== 'string') continue;
+      result.set(row.itemId, {
+        itemId: row.itemId,
+        valid: row.valid === true,
+        evidenceKind: typeof row.evidenceKind === 'string' ? row.evidenceKind : 'invalid',
+      });
+    }
+  }
+  return result;
 }
 
 async function loadOpeningAdjustments(
@@ -696,7 +874,6 @@ async function buildNotStartedDashboard(
     loadDimensions(client, propertyId),
   ]);
   const liveItems = allItems.filter((item) => item.archived_at == null);
-  const itemById = new Map(liveItems.map((item) => [item.id, item]));
   const session = selectCompleteSession(counts, liveItems.map((item) => item.id), (sessionRows) =>
     liveItems.every((item) => numeric(sessionRows.get(item.id)?.counted_stock, Number.NaN) === numeric(item.current_stock, Number.NaN))
   );
@@ -716,15 +893,54 @@ async function buildNotStartedDashboard(
   if (missingCost.length > 0) {
     blockers.push(issue('baseline_cost_missing', 'Every active item needs a saved unit cost.', { count: missingCost.length }));
   }
-  const movementAfterBaseline = session
-    ? orders.filter((order) => order.received_at >= session.countedAt).length
-      + discards.filter((discard) => discard.discarded_at >= session.countedAt).length
-    : 0;
-  if (movementAfterBaseline > 0) {
+
+  let movementCounts = counts;
+  let movementOrders = orders;
+  let movementDiscards = discards;
+  let correctionEffects = new Map<string, unknown>();
+  if (session && session.rows.size > 0) {
+    const minimumCountSequence = Math.min(
+      ...[...session.rows.values()].map((count) => activitySequence(count.activity_sequence)),
+    );
+    const laterActivity = await loadActivityAfterSequence(client, propertyId, minimumCountSequence);
+    movementCounts = mergeRowsById(movementCounts, laterActivity.counts);
+    movementOrders = mergeRowsById(movementOrders, laterActivity.orders);
+    movementDiscards = mergeRowsById(movementDiscards, laterActivity.discards);
+    correctionEffects = await loadCorrectionStockEffects(
+      client,
+      movementOrders.flatMap((order) => order.entry_kind === 'correction' && order.correction_event_id
+        ? [order.correction_event_id]
+        : []),
+    );
+  }
+  const movementItems = new Set<string>();
+  if (session) {
+    for (const item of liveItems) {
+      const count = session.rows.get(item.id);
+      if (!count) continue;
+      if (inventoryBaselineConflictsWithCount({
+        countedAt: count.counted_at,
+        countActivitySequence: activitySequence(count.activity_sequence),
+        orders: movementOrders.filter((order) => order.item_id === item.id).map((order) => ({
+          occurredAt: order.received_at,
+          activitySequence: activitySequence(order.activity_sequence),
+          changedLiveStock: orderChangedLiveStock(order, correctionEffects),
+        })),
+        discards: movementDiscards.filter((discard) => discard.item_id === item.id).map((discard) => ({
+          occurredAt: discard.discarded_at,
+          activitySequence: activitySequence(discard.activity_sequence),
+        })),
+        laterCounts: movementCounts.filter((laterCount) => laterCount.item_id === item.id).map((laterCount) => ({
+          activitySequence: activitySequence(laterCount.activity_sequence),
+        })),
+      })) movementItems.add(item.id);
+    }
+  }
+  if (movementItems.size > 0) {
     blockers.push(issue(
       'activity_after_baseline_count',
       'Inventory activity occurred after the complete count. Count again before starting.',
-      { count: movementAfterBaseline },
+      { count: movementItems.size },
     ));
   }
   const warnings: InventoryCloseIssue[] = [];
@@ -780,10 +996,13 @@ async function buildNotStartedDashboard(
     : null;
   const canStart = month === propertyCurrentMonth(timezone) && blockers.length === 0 && beginningCents != null;
   const activityStart = session?.countedAt ?? window.monthStart.toISOString();
-  const orderValues = orders.map((order) => orderValueCents(order));
-  const knownLoggedPurchaseCents = orderValues.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-  const uncostedDeliveryCount = orderValues.filter((value) => value == null).length;
-  const loggedPurchaseCents = uncostedDeliveryCount > 0 ? null : knownLoggedPurchaseCents;
+  const purchaseSummary = await summarizeEffectivePurchasesForProperty(client, propertyId, orders);
+  const {
+    knownLoggedPurchaseCents,
+    loggedPurchaseCents,
+    uncostedDeliveryCount,
+    loggedDeliveryCount,
+  } = purchaseSummary;
   return {
     propertyId,
     month,
@@ -815,7 +1034,7 @@ async function buildNotStartedDashboard(
     purchase: {
       source: null,
       allocationMode: null,
-      loggedDeliveryCount: orders.length,
+      loggedDeliveryCount,
       loggedPurchaseCents,
       knownLoggedPurchaseCents,
       uncostedDeliveryCount,
@@ -852,7 +1071,7 @@ async function buildOpenDashboard(
   const countStart = row.count_window_start_at > row.activity_start_at
     ? row.count_window_start_at
     : row.activity_start_at;
-  const [allItems, counts, movementOrders, discards, dimensions, openingAdjustments] = await Promise.all([
+  const [allItems, counts, loadedOrders, loadedDiscards, dimensions, openingAdjustments] = await Promise.all([
     loadLiveItems(client, row.property_id),
     loadCounts(client, row.property_id, countStart, row.grace_end_at),
     loadOrders(client, row.property_id, row.activity_start_at, row.grace_end_at),
@@ -860,6 +1079,9 @@ async function buildOpenDashboard(
     loadDimensions(client, row.property_id),
     loadOpeningAdjustments(client, row.property_id, row.activity_start_at, row.grace_end_at),
   ]);
+  let movementOrders = loadedOrders;
+  let movementDiscards = loadedDiscards;
+  let movementCounts = counts;
   const adjustmentsByItem = new Map<string, {
     quantity: number;
     valueCents: number;
@@ -885,7 +1107,9 @@ async function buildOpenDashboard(
     adjustmentsByItem.set(adjustment.item_id, current);
   }
   const liveById = new Map(allItems.map((item) => [item.id, item]));
-  const periodOrders = movementOrders.filter((order) => order.received_at < row.end_at);
+  const periodOrders = loadedOrders.filter(
+    (order) => order.received_at >= row.activity_start_at && order.received_at < row.end_at,
+  );
   const universeIds = new Set<string>(opening.keys());
   for (const item of allItems) {
     const createdBeforeEnd = item.created_at == null || item.created_at < row.end_at;
@@ -927,22 +1151,56 @@ async function buildOpenDashboard(
     ));
   }
 
+  let correctionEffects = new Map<string, unknown>();
+  if (session && session.rows.size > 0) {
+    const minimumCountSequence = Math.min(
+      ...[...session.rows.values()].map((count) => activitySequence(count.activity_sequence)),
+    );
+    const laterActivity = await loadActivityAfterSequence(
+      client,
+      row.property_id,
+      minimumCountSequence,
+    );
+    movementCounts = mergeRowsById(movementCounts, laterActivity.counts);
+    movementOrders = mergeRowsById(movementOrders, laterActivity.orders);
+    movementDiscards = mergeRowsById(movementDiscards, laterActivity.discards);
+    correctionEffects = await loadCorrectionStockEffects(
+      client,
+      movementOrders.flatMap((order) => order.entry_kind === 'correction' && order.correction_event_id
+        ? [order.correction_event_id]
+        : []),
+    );
+  }
+
   const movementItems = new Set<string>();
   if (session) {
     for (const item of requiresCount) {
       const count = session.rows.get(item.id);
       if (!count) continue;
-      if (count.counted_at < row.end_at) {
-        if (movementOrders.some((order) => order.item_id === item.id
-          && order.received_at >= count.counted_at && order.received_at < row.end_at)
-          || discards.some((discard) => discard.item_id === item.id
-            && discard.discarded_at >= count.counted_at && discard.discarded_at < row.end_at)) {
-          movementItems.add(item.id);
-        }
-      } else if (movementOrders.some((order) => order.item_id === item.id
-        && order.received_at >= row.end_at && order.received_at < count.counted_at)
-        || discards.some((discard) => discard.item_id === item.id
-          && discard.discarded_at >= row.end_at && discard.discarded_at < count.counted_at)) {
+      const countSequence = activitySequence(count.activity_sequence);
+      const itemOrders = movementOrders.filter((order) => order.item_id === item.id
+      );
+      const itemDiscards = movementDiscards.filter((discard) => discard.item_id === item.id);
+      if (inventoryMovementConflictsWithCount({
+        countedAt: count.counted_at,
+        countActivitySequence: countSequence,
+        activityStartAt: row.activity_start_at,
+        endAt: row.end_at,
+        orders: itemOrders.map((order) => ({
+          occurredAt: order.received_at,
+          activitySequence: activitySequence(order.activity_sequence),
+          changedLiveStock: orderChangedLiveStock(order, correctionEffects),
+        })),
+        discards: itemDiscards.map((discard) => ({
+          occurredAt: discard.discarded_at,
+          activitySequence: activitySequence(discard.activity_sequence),
+        })),
+        laterCounts: movementCounts.filter((laterCount) => laterCount.item_id === item.id)
+          .map((laterCount) => ({
+            countedAt: laterCount.counted_at,
+            activitySequence: activitySequence(laterCount.activity_sequence),
+          })),
+      })) {
         movementItems.add(item.id);
       }
       if (adjustmentsByItem.get(item.id)?.events.some(
@@ -960,23 +1218,37 @@ async function buildOpenDashboard(
     ));
   }
 
-  const orderValues = periodOrders.map((order) => ({ order, cents: orderValueCents(order) }));
-  const knownLoggedPurchaseCents = orderValues.reduce<number>((sum, value) => sum + (value.cents ?? 0), 0);
-  const uncostedDeliveryCount = orderValues.filter((value) => value.cents == null).length;
-  const loggedPurchaseCents = uncostedDeliveryCount > 0 ? null : knownLoggedPurchaseCents;
-  const purchaseByItem = new Map<string, { quantity: number; cents: number }>();
-  for (const value of orderValues) {
-    if (value.cents == null) continue;
-    const current = purchaseByItem.get(value.order.item_id) ?? { quantity: 0, cents: 0 };
-    current.quantity += numeric(value.order.quantity);
-    current.cents += value.cents;
-    purchaseByItem.set(value.order.item_id, current);
-  }
+  const purchaseSummary = await summarizeEffectivePurchasesForProperty(client, row.property_id, periodOrders);
+  const {
+    knownLoggedPurchaseCents,
+    loggedPurchaseCents,
+    uncostedDeliveryCount,
+    loggedDeliveryCount,
+    byItem: purchaseByItem,
+  } = purchaseSummary;
 
-  const archivedIds = new Set(universe.filter((item) => item.archived_at != null && item.archived_at < row.end_at).map((item) => item.id));
+  const archivedIds = new Set(universe.filter(
+    (item) => item.archived_at != null && item.archived_at < row.end_at,
+  ).map((item) => item.id));
+  const archiveReadiness = await loadArchiveReadiness(
+    client,
+    row.property_id,
+    [...archivedIds],
+  );
+  const invalidArchivedIds = new Set([...archivedIds].filter(
+    (itemId) => archiveReadiness.get(itemId)?.valid !== true,
+  ));
+  if (invalidArchivedIds.size > 0) {
+    blockers.push(issue(
+      'archived_zero_evidence_required',
+      'An archived item lacks verified zero-stock evidence. Have a manager verify or repair it before closing.',
+      { count: invalidArchivedIds.size },
+    ));
+  }
   const valueFor = (item: LiveItemRow, source: 'logged' | 'zero' | 'physical'): PreviewValue | null => {
     const first = opening.get(item.id);
     const archived = archivedIds.has(item.id);
+    if (archived && invalidArchivedIds.has(item.id)) return null;
     const count = archived ? null : session?.rows.get(item.id) ?? null;
     if (!archived && !count) return null;
     const endingQuantity = archived ? 0 : numeric(count?.counted_stock);
@@ -1024,10 +1296,10 @@ async function buildOpenDashboard(
     }
     return values;
   };
-  const loggedValues = uncostedDeliveryCount === 0 && periodOrders.length > 0 ? optionValues('logged') : null;
+  const loggedValues = uncostedDeliveryCount === 0 && loggedDeliveryCount > 0 ? optionValues('logged') : null;
   const loggedEligible = loggedValues != null
     && [...loggedValues.values()].every((value) => value.actualUsageCents == null || value.actualUsageCents >= 0);
-  const zeroValues = periodOrders.length === 0 ? optionValues('zero') : null;
+  const zeroValues = loggedDeliveryCount === 0 ? optionValues('zero') : null;
   const zeroEligible = zeroValues != null
     && [...zeroValues.values()].every((value) => value.actualUsageCents == null || value.actualUsageCents >= 0);
   const physicalValues = optionValues('physical');
@@ -1062,8 +1334,8 @@ async function buildOpenDashboard(
   }
   if (archivedIds.size > 0) {
     warnings.push(issue(
-      'archived_item_zero_ending',
-      'Items archived during the period will close at zero ending on-hand.',
+      'archived_item_evidenced_zero',
+      'Archived items close at zero only from saved count, loss/correction, or verified never-stocked evidence.',
       { count: archivedIds.size },
     ));
   }
@@ -1159,7 +1431,7 @@ async function buildOpenDashboard(
     purchase: {
       source: null,
       allocationMode: null,
-      loggedDeliveryCount: periodOrders.length,
+      loggedDeliveryCount,
       loggedPurchaseCents,
       knownLoggedPurchaseCents,
       uncostedDeliveryCount,
@@ -1201,11 +1473,12 @@ export async function getInventoryMonthCloseDashboard(
     .maybeSingle();
   if (propertyError) throw propertyError;
   if (!property) throw new Error('Property not found.');
-  const timezone = typeof property.timezone === 'string' && property.timezone
-    ? property.timezone
-    : 'America/Chicago';
-  // Throws on an invalid stored timezone instead of silently assigning money
-  // to UTC calendar boundaries.
+  const timezone = validPropertyTimezone(
+    typeof property.timezone === 'string' ? property.timezone : null,
+  );
+  if (!timezone) {
+    throw new Error('Property timezone is missing or invalid. Set a valid IANA timezone before month close.');
+  }
   const currentMonth = propertyCurrentMonth(timezone);
   let selectedMonth = requestedMonth ?? currentMonth;
   let closeRow: CloseRow | null = null;

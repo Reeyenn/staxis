@@ -35,7 +35,7 @@ import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { toDisplayItem } from '../adapter';
 import { Overlay } from './Overlay';
-import { numGuard, warnBannerStyle } from './form-kit';
+import { intGuard, numGuard, warnBannerStyle } from './form-kit';
 import {
   clearInlineAddAttempt,
   createFrozenInlineAddAttempt,
@@ -48,7 +48,13 @@ import {
   type InlineAddScope,
 } from './count-save';
 import type { DisplayItem } from '../types';
-import { catLabelFor, type Lang } from '../inv-i18n';
+import { catLabelFor, setAsideTip, type Lang } from '../inv-i18n';
+import {
+  clearInventoryOverlayDraft,
+  loadInventoryOverlayDraft,
+  persistInventoryOverlayDraft,
+} from './inventory-overlay-draft';
+import overlayStyles from './Overlay.module.css';
 
 interface CountSheetProps {
   lang: Lang;
@@ -81,6 +87,61 @@ type Entry = { value: string; source: FillSource; confidence?: 'high' | 'medium'
 // touches the count.
 type ReviewFill = { itemId: string; name: string; value: string; confidence?: 'high' | 'medium' | 'low' };
 
+interface CountOverlayDraft {
+  scope: StockBucket | null;
+  entries: Record<string, Entry>;
+  baselines: Record<string, number>;
+  review: ReviewFill[] | null;
+  reviewMissing: number;
+  addOpen: boolean;
+  addName: string;
+  addQty: string;
+  addPar: string;
+  addCost: string;
+  addSetAside: string;
+  addVendor: string;
+  addCategory: InvCat;
+  addCustomCategoryId: string | null;
+  addOpeningAdjustmentConfirmed: boolean;
+  createdIds: string[];
+}
+
+function validCountDraft(value: unknown): CountOverlayDraft | null {
+  if (!value || typeof value !== 'object') return null;
+  const draft = value as Partial<CountOverlayDraft>;
+  const validScope = draft.scope === null
+    || draft.scope === 'all'
+    || draft.scope === 'general'
+    || draft.scope === 'breakfast'
+    || (typeof draft.scope === 'string' && /^custom:.+/.test(draft.scope));
+  if (
+    !validScope
+    || !draft.entries || typeof draft.entries !== 'object'
+    || !draft.baselines || typeof draft.baselines !== 'object'
+    || (draft.review !== null && !Array.isArray(draft.review))
+    || typeof draft.reviewMissing !== 'number'
+    || typeof draft.addOpen !== 'boolean'
+    || typeof draft.addName !== 'string'
+    || typeof draft.addQty !== 'string'
+    || typeof draft.addPar !== 'string'
+    || typeof draft.addCost !== 'string'
+    || typeof draft.addSetAside !== 'string'
+    || typeof draft.addVendor !== 'string'
+    || !draft.addCategory || !['housekeeping', 'maintenance', 'breakfast'].includes(draft.addCategory)
+    || (draft.addCustomCategoryId !== null && typeof draft.addCustomCategoryId !== 'string')
+    || typeof draft.addOpeningAdjustmentConfirmed !== 'boolean'
+    || !Array.isArray(draft.createdIds)
+    || !draft.createdIds.every((id) => typeof id === 'string')
+  ) return null;
+  for (const entry of Object.values(draft.entries)) {
+    if (!entry || typeof entry.value !== 'string' || (entry.source !== 'manual' && entry.source !== 'photo')) return null;
+  }
+  for (const baseline of Object.values(draft.baselines)) {
+    if (typeof baseline !== 'number' || !Number.isFinite(baseline) || baseline < 0) return null;
+  }
+  return draft as CountOverlayDraft;
+}
+
 // Co-located strings for the count sheet (too specific for inv-i18n).
 function csStrings(lang: Lang) {
   return {
@@ -98,6 +159,7 @@ function csStrings(lang: Lang) {
       retryCount: 'Retry exact count',
       retryPending: 'The result could not be confirmed. This exact count is locked until it is retried, so its history cannot be duplicated.',
       changeWhatToCount: 'Change what to count',
+      changeScopeConfirm: 'Changing what to count will discard the counts already entered. Continue?',
       countByPhoto: '📷 Count by photo',
       reading: 'Reading photo…',
       photoCheck: 'Check the photo counts',
@@ -106,6 +168,7 @@ function csStrings(lang: Lang) {
       saveFailed: 'Saving the count failed. Please try again.',
       stockChanged: 'Inventory changed while this count was open. Nothing was saved—close, refresh, and recount so a newer count or delivery is not overwritten.',
       discardConfirm: 'You have unsaved counts. Close and discard them?',
+      draftRestored: 'Your unsaved count was restored.',
       noItemsInGroup: 'No items to count.',
       errTooMany: 'Too many items for one photo — snap one shelf at a time.',
       errBadImage: 'Couldn’t read that image. Try a clearer, well-lit photo.',
@@ -120,9 +183,14 @@ function csStrings(lang: Lang) {
       fCount: 'Count',
       fPar: 'Par level',
       fCost: 'Unit cost',
+      fSetAside: 'Set aside',
+      fVendor: 'Vendor',
+      fCategory: 'Category',
       optional: 'optional',
       addBtn: 'Add',
       addFailed: 'Couldn’t add the item. Please try again.',
+      discardInlineAddConfirm: 'Discard the new item fields?',
+      setAsideTooHigh: 'Set aside cannot be greater than the count.',
       addUnsafe: 'This item was not sent because its recovery copy could not be saved safely. Your fields are still here.',
       addUnconfirmed: 'The result could not be confirmed. These exact item fields are saved, and another insert is blocked while inventory checks for the tagged row.',
       addChecking: 'Checking exact item…',
@@ -147,6 +215,7 @@ function csStrings(lang: Lang) {
       retryCount: 'Reintentar el mismo conteo',
       retryPending: 'No se pudo confirmar el resultado. Este conteo exacto está bloqueado hasta reintentarlo para que no se duplique el historial.',
       changeWhatToCount: 'Cambiar qué contar',
+      changeScopeConfirm: 'Cambiar qué contar descartará los conteos ya ingresados. ¿Continuar?',
       countByPhoto: '📷 Contar por foto',
       reading: 'Leyendo foto…',
       photoCheck: 'Revisa los conteos de la foto',
@@ -155,6 +224,7 @@ function csStrings(lang: Lang) {
       saveFailed: 'No se pudo guardar el conteo. Inténtalo de nuevo.',
       stockChanged: 'El inventario cambió mientras este conteo estaba abierto. No se guardó nada—cierra, actualiza y vuelve a contar para no sobrescribir un conteo o una entrega más reciente.',
       discardConfirm: 'Tienes conteos sin guardar. ¿Cerrar y descartarlos?',
+      draftRestored: 'Se restauró tu conteo sin guardar.',
       noItemsInGroup: 'No hay artículos para contar.',
       errTooMany: 'Demasiados artículos para una foto — toma un estante a la vez.',
       errBadImage: 'No se pudo leer la imagen. Intenta una foto más clara y bien iluminada.',
@@ -169,9 +239,14 @@ function csStrings(lang: Lang) {
       fCount: 'Conteo',
       fPar: 'Nivel par',
       fCost: 'Costo unitario',
+      fSetAside: 'Apartado',
+      fVendor: 'Proveedor',
+      fCategory: 'Categoría',
       optional: 'opcional',
       addBtn: 'Agregar',
       addFailed: 'No se pudo agregar el artículo. Inténtalo de nuevo.',
+      discardInlineAddConfirm: '¿Descartar los datos del artículo nuevo?',
+      setAsideTooHigh: 'La cantidad apartada no puede ser mayor que el conteo.',
       addUnsafe: 'Este artículo no se envió porque no se pudo guardar una copia segura para recuperarlo. Tus datos siguen aquí.',
       addUnconfirmed: 'No se pudo confirmar el resultado. Estos datos exactos están guardados y se bloqueó otra inserción mientras el inventario busca la fila marcada.',
       addChecking: 'Verificando el artículo…',
@@ -219,9 +294,17 @@ export function CountSheet({
   const [addQty, setAddQty] = useState('');
   const [addPar, setAddPar] = useState('');
   const [addCost, setAddCost] = useState('');
+  const [addSetAside, setAddSetAside] = useState('0');
+  const [addVendor, setAddVendor] = useState('');
+  const [addCategory, setAddCategory] = useState<InvCat>('housekeeping');
+  const [addCustomCategoryId, setAddCustomCategoryId] = useState<string | null>(null);
   const [addOpeningAdjustmentConfirmed, setAddOpeningAdjustmentConfirmed] = useState(false);
   const [addBusy, setAddBusy] = useState(false);
   const [addRetryLocked, setAddRetryLocked] = useState(false);
+  const [addError, setAddError] = useState('');
+  const [saveError, setSaveError] = useState('');
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [draftReadyContext, setDraftReadyContext] = useState('');
   const createdIdsRef = useRef<Set<string>>(new Set());
   // Freeze each item's authoritative stock when its count scope begins. A
   // realtime delivery arriving after the employee starts counting must make
@@ -247,17 +330,58 @@ export function CountSheet({
   // by a render, so a fast double-click / Enter would otherwise create two rows.
   const addLockRef = useRef(false);
 
+  const draftContext = user?.uid && activePropertyId ? `${user.uid}:${activePropertyId}` : '';
+  const draftStorageInput = useMemo(() => user?.uid && activePropertyId
+    ? { kind: 'count' as const, userId: user.uid, propertyId: activePropertyId }
+    : null, [activePropertyId, user?.uid]);
+
+  const defaultAddPlacement = useCallback((nextScope: StockBucket | null) => {
+    if (nextScope === 'breakfast') return { category: 'breakfast' as InvCat, customCategoryId: null };
+    if (nextScope?.startsWith('custom:')) {
+      return { category: 'housekeeping' as InvCat, customCategoryId: nextScope.slice(7) };
+    }
+    if (nextScope === 'general') return { category: 'housekeeping' as InvCat, customCategoryId: null };
+    const hidden = new Set(tabLayout.hidden);
+    if (!hidden.has('general')) return { category: 'housekeeping' as InvCat, customCategoryId: null };
+    if (!hidden.has('breakfast')) return { category: 'breakfast' as InvCat, customCategoryId: null };
+    return {
+      category: 'housekeeping' as InvCat,
+      customCategoryId: customCategories[0]?.id ?? null,
+    };
+  }, [customCategories, tabLayout.hidden]);
+
   // Collapse + clear the inline add form. Does NOT clear `extra`/`createdIds`
   // (those persist for the whole count session; only a fresh open resets them),
   // so a created item survives a scope change instead of vanishing before the
   // realtime echo lands.
-  const resetAddForm = () => {
+  const resetAddForm = (nextScope: StockBucket | null = scope) => {
+    const placement = defaultAddPlacement(nextScope);
     setAddOpen(false);
     setAddName('');
     setAddQty('');
     setAddPar('');
     setAddCost('');
+    setAddSetAside('0');
+    setAddVendor('');
+    setAddCategory(placement.category);
+    setAddCustomCategoryId(placement.customCategoryId);
     setAddOpeningAdjustmentConfirmed(false);
+    setAddError('');
+  };
+
+  const openAddForm = () => {
+    const placement = defaultAddPlacement(scope);
+    setAddCategory(placement.category);
+    setAddCustomCategoryId(placement.customCategoryId);
+    setAddError('');
+    setAddOpen(true);
+  };
+
+  const cancelAddForm = () => {
+    const addDirty = addName.trim() !== '' || addQty !== '' || addPar !== '' || addCost !== ''
+      || addSetAside !== '0' || addVendor.trim() !== '' || addOpeningAdjustmentConfirmed;
+    if (addDirty && !confirm(cs.discardInlineAddConfirm)) return;
+    resetAddForm();
   };
 
   // Resolve an inline add exactly once. A successful direct response supplies
@@ -287,6 +411,11 @@ export function CountSheet({
     setAddQty('');
     setAddPar('');
     setAddCost('');
+    setAddSetAside('0');
+    setAddVendor('');
+    const placement = defaultAddPlacement(scope);
+    setAddCategory(placement.category);
+    setAddCustomCategoryId(placement.customCategoryId);
     setAddOpeningAdjustmentConfirmed(false);
 
     // The marker is only a recovery key. Clearing it is an idempotent metadata
@@ -295,55 +424,83 @@ export function CountSheet({
       void updateInventoryItem(user.uid, attempt.propertyId, raw.id, { notes: '' })
         .catch((err) => console.error('[count-sheet] inline add marker cleanup failed', err));
     }
-  }, [user]);
+  }, [defaultAddPlacement, scope, user]);
 
   // Show a fresh chooser, unless a prior response was ambiguous. In that case
   // restore the immutable UUID + payload and expose only an exact retry.
   useEffect(() => {
     if (open) {
+      setAddError('');
+      setSaveError('');
       const restored = activePropertyId
         ? loadInventoryCountAttempt(activePropertyId)
         : null;
       const restoredAdd = activePropertyId
         ? loadInlineAddAttempt(activePropertyId)
         : null;
-      const beginFullCount = (startWithAll || requireComplete) && !restored && !restoredAdd;
+      const savedDraft = !restored && draftStorageInput
+        ? validCountDraft(loadInventoryOverlayDraft<CountOverlayDraft>(draftStorageInput))
+        : null;
+      const beginFullCount = (startWithAll || requireComplete) && !restored && !restoredAdd && !savedDraft;
       const freshDisplay = displayRef.current;
-      setScope(restored || beginFullCount ? 'all' : restoredAdd?.scope ?? null);
-      setEntries(beginFullCount
-        ? Object.fromEntries(freshDisplay.map((d) => [d.id, { value: '', source: 'manual' as const }]))
-        : {});
-      setReview(null);
-      setReviewMissing(0);
+      const nextScope = restored || beginFullCount
+        ? 'all'
+        : restoredAdd?.scope ?? savedDraft?.scope ?? null;
+      const placement = defaultAddPlacement(nextScope);
+      setScope(nextScope);
+      setEntries(restored
+        ? Object.fromEntries(restored.rows.map((row) => [
+            row.itemId,
+            { value: String(row.countedStock), source: 'manual' as const },
+          ]))
+        : savedDraft?.entries
+          ?? (beginFullCount
+            ? Object.fromEntries(freshDisplay.map((d) => [d.id, { value: '', source: 'manual' as const }]))
+            : {}));
+      setReview(savedDraft?.review ?? null);
+      setReviewMissing(savedDraft?.reviewMissing ?? 0);
       setPhotoBusy(false);
       setPhotoErr('');
+      setDraftRestored(!!savedDraft);
       progRef.current = restored;
       setRetryLocked(!!restored);
       inlineAddAttemptRef.current = restoredAdd;
       setAddRetryLocked(!!restoredAdd);
       setExtra([]);
-      setAddOpen(!!restoredAdd);
-      setAddName(restoredAdd?.nameInput ?? '');
-      setAddQty(restoredAdd?.quantityInput ?? '');
-      setAddPar(restoredAdd?.parInput ?? '');
-      setAddCost(restoredAdd?.costInput ?? '');
-      setAddOpeningAdjustmentConfirmed(restoredAdd?.openingAdjustmentConfirmed ?? false);
-      createdIdsRef.current = new Set();
+      setAddOpen(!!restoredAdd || (savedDraft?.addOpen ?? false));
+      setAddName(restoredAdd?.nameInput ?? savedDraft?.addName ?? '');
+      setAddQty(restoredAdd?.quantityInput ?? savedDraft?.addQty ?? '');
+      setAddPar(restoredAdd?.parInput ?? savedDraft?.addPar ?? '');
+      setAddCost(restoredAdd?.costInput ?? savedDraft?.addCost ?? '');
+      setAddSetAside(restoredAdd?.setAsideInput ?? savedDraft?.addSetAside ?? '0');
+      setAddVendor(restoredAdd?.vendorInput ?? savedDraft?.addVendor ?? '');
+      setAddCategory(restoredAdd?.category ?? savedDraft?.addCategory ?? placement.category);
+      setAddCustomCategoryId(
+        restoredAdd
+          ? restoredAdd.customCategoryId
+          : savedDraft
+            ? savedDraft.addCustomCategoryId
+            : placement.customCategoryId,
+      );
+      setAddOpeningAdjustmentConfirmed(
+        restoredAdd?.openingAdjustmentConfirmed
+          ?? savedDraft?.addOpeningAdjustmentConfirmed
+          ?? false,
+      );
+      createdIdsRef.current = new Set(savedDraft?.createdIds ?? []);
       stockBaselineRef.current = new Map(
         restored?.rows.map((row) => [row.itemId, row.expectedStock])
+          ?? (savedDraft ? Object.entries(savedDraft.baselines) : undefined)
           ?? (beginFullCount
             ? freshDisplay.map((d) => [d.id, d.raw.currentStock ?? 0] as const)
             : []),
       );
-      if (restored) {
-        setScope('all');
-        setEntries(Object.fromEntries(restored.rows.map((row) => [
-          row.itemId,
-          { value: String(row.countedStock), source: 'manual' as const },
-        ])));
-      }
+      setDraftReadyContext(draftContext);
     }
-  }, [open, activePropertyId, startWithAll, requireComplete]);
+  }, [
+    open, activePropertyId, startWithAll, requireComplete, draftContext,
+    draftStorageInput, defaultAddPlacement,
+  ]);
 
   // A committed insert with a dropped response is identified by its unique
   // marker as soon as the authoritative inventory subscription includes it.
@@ -359,13 +516,72 @@ export function CountSheet({
   // Cancel/✕ buttons must not silently throw away a count in progress —
   // entries live only in local state and reopen resets them. An unapplied
   // photo review counts as dirty too.
+  const dirty = Object.values(entries).some((e) => e.value !== '')
+    || review != null
+    || (addOpen && (
+      addName.trim() !== '' || addQty !== '' || addPar !== '' || addCost !== ''
+      || addSetAside !== '0' || addVendor.trim() !== '' || addOpeningAdjustmentConfirmed
+    ));
+
+  const currentCountDraft = useMemo<CountOverlayDraft>(() => ({
+    scope,
+    entries,
+    baselines: Object.fromEntries(stockBaselineRef.current),
+    review,
+    reviewMissing,
+    addOpen,
+    addName,
+    addQty,
+    addPar,
+    addCost,
+    addSetAside,
+    addVendor,
+    addCategory,
+    addCustomCategoryId,
+    addOpeningAdjustmentConfirmed,
+    createdIds: [...createdIdsRef.current],
+  }), [
+    scope, entries, review, reviewMissing, addOpen, addName, addQty, addPar,
+    addCost, addSetAside, addVendor, addCategory, addCustomCategoryId,
+    addOpeningAdjustmentConfirmed,
+  ]);
+
+  useEffect(() => {
+    if (!open || !draftStorageInput || draftReadyContext !== draftContext) return;
+    if (dirty || retryLocked || addRetryLocked) {
+      persistInventoryOverlayDraft({ ...draftStorageInput, data: currentCountDraft });
+    } else {
+      clearInventoryOverlayDraft(draftStorageInput);
+    }
+  }, [
+    open, draftStorageInput, draftReadyContext, draftContext, dirty,
+    retryLocked, addRetryLocked, currentCountDraft,
+  ]);
+
+  useEffect(() => {
+    setAddError('');
+  }, [
+    addName, addQty, addPar, addCost, addSetAside, addVendor,
+    addCategory, addCustomCategoryId, addOpeningAdjustmentConfirmed,
+  ]);
+
   const requestClose = () => {
     if (saving || retryLocked || addRetryLocked) return;
-    const dirty = Object.values(entries).some((e) => e.value !== '')
-      || review != null
-      || (addOpen && (addName.trim() !== '' || addQty !== '' || addPar !== '' || addCost !== ''));
     if (dirty && !confirm(cs.discardConfirm)) return;
+    if (draftStorageInput) clearInventoryOverlayDraft(draftStorageInput);
     onClose();
+  };
+
+  const requestScopeChange = () => {
+    if (saving || retryLocked || addRetryLocked) return;
+    if (dirty && !confirm(cs.changeScopeConfirm)) return;
+    setEntries({});
+    setReview(null);
+    setReviewMissing(0);
+    setSaveError('');
+    setDraftRestored(false);
+    resetAddForm(null);
+    setScope(null);
   };
 
   // The items in the chosen scope. Empty until a scope is picked. Items created
@@ -413,7 +629,7 @@ export function CountSheet({
     for (const d of extra) {
       if (inBucket(d, s)) next[d.id] = entries[d.id] ?? { value: '', source: 'manual' };
     }
-    resetAddForm();
+    resetAddForm(s);
     setEntries(next);
     setScope(s);
   };
@@ -425,20 +641,26 @@ export function CountSheet({
   const handleAdd = async () => {
     if (!user || !activePropertyId || retryLocked || addRetryLocked
       || inlineAddAttemptRef.current || addBusy || addLockRef.current) return;
+    setAddError('');
     if (!addName.trim()) return;
     const startingQuantity = Math.max(0, Number(addQty) || 0);
+    const setAsideQuantity = Math.max(0, Math.round(Number(addSetAside) || 0));
+    if (setAsideQuantity > startingQuantity) {
+      setAddError(cs.setAsideTooHigh);
+      return;
+    }
     if (startingQuantity > 0) {
       if (!canViewFinancials) {
-        alert(cs.openingAdjustmentPermission);
+        setAddError(cs.openingAdjustmentPermission);
         return;
       }
       const startingCost = addCost.trim() === '' ? Number.NaN : Number(addCost);
       if (!Number.isFinite(startingCost) || startingCost < 0) {
-        alert(cs.openingAdjustmentCost);
+        setAddError(cs.openingAdjustmentCost);
         return;
       }
       if (!addOpeningAdjustmentConfirmed) {
-        alert(cs.openingAdjustmentConfirm);
+        setAddError(cs.openingAdjustmentConfirm);
         return;
       }
     }
@@ -450,17 +672,6 @@ export function CountSheet({
       : scope === 'all'
         ? 'all'
         : 'general';
-    // Counting a custom tab files the new item into that tab. Counting
-    // "Everything" on a hotel that removed both built-in tabs must ALSO pick
-    // a custom tab (the first one) — the base-category default would file the
-    // item into hidden Housekeeping, leaving it under no named tab.
-    const bothHidden =
-      (tabLayout?.hidden ?? []).includes('general') && (tabLayout?.hidden ?? []).includes('breakfast');
-    const customCategoryId = typeof scope === 'string' && scope.startsWith('custom:')
-      ? scope.slice(7)
-      : scope === 'all' && bothHidden && customCategories.length > 0
-        ? customCategories[0].id
-        : null;
     const attempt = createFrozenInlineAddAttempt({
       propertyId: activePropertyId,
       requestId: generateId(),
@@ -470,6 +681,10 @@ export function CountSheet({
       quantityInput: addQty,
       parInput: addPar,
       costInput: addCost,
+      setAsideInput: addSetAside,
+      vendorInput: addVendor,
+      category: addCategory,
+      customCategoryId: addCustomCategoryId,
       openingAdjustmentConfirmed: addOpeningAdjustmentConfirmed,
     });
     addLockRef.current = true;
@@ -482,17 +697,19 @@ export function CountSheet({
         console.error('[count-sheet] inline add recovery persistence failed', err);
         inlineAddAttemptRef.current = null;
         setAddRetryLocked(false);
-        alert(cs.addUnsafe);
+        setAddError(cs.addUnsafe);
         return;
       }
       setAddRetryLocked(true);
       const id = await addInventoryItem(user.uid, activePropertyId, {
         name: attempt.name,
         category: attempt.category,
-        customCategoryId,
+        customCategoryId: attempt.customCategoryId,
         currentStock: attempt.quantity,
+        setAside: attempt.setAside,
         parLevel: attempt.parLevel,
         unitCost: attempt.unitCost ?? undefined,
+        vendorName: attempt.vendorName ?? undefined,
         unit: 'each',
         reorderLeadDays: 3,
         notes: inlineAddAttemptMarker(attempt.requestId),
@@ -508,12 +725,14 @@ export function CountSheet({
         propertyId: activePropertyId,
         name: attempt.name,
         category: attempt.category,
-        customCategoryId,
+        customCategoryId: attempt.customCategoryId,
         currentStock: attempt.quantity,
+        setAside: attempt.setAside,
         parLevel: attempt.parLevel,
         unit: 'each',
         reorderLeadDays: 3,
         unitCost: attempt.unitCost ?? undefined,
+        vendorName: attempt.vendorName ?? undefined,
         notes: inlineAddAttemptMarker(attempt.requestId),
         updatedAt: null,
         lastCountedAt: attempt.quantity > 0 ? new Date(attempt.startedAt) : null,
@@ -533,12 +752,12 @@ export function CountSheet({
         clearInlineAddAttempt(attempt.propertyId);
         inlineAddAttemptRef.current = null;
         setAddRetryLocked(false);
-        alert(cs.addFailed);
+        setAddError(cs.addFailed);
       } else {
         // Unknown outcome: preserve the exact fields and marker, and never send
         // another insert. Realtime will call finishInlineAdd if it committed.
         setAddRetryLocked(true);
-        alert(cs.addUnconfirmed);
+        setAddError(cs.addUnconfirmed);
       }
     } finally {
       addLockRef.current = false;
@@ -548,6 +767,7 @@ export function CountSheet({
 
   const setEntry = (id: string, val: string) => {
     if (retryLocked || addRetryLocked) return;
+    setSaveError('');
     setEntries((prev) => ({ ...prev, [id]: { value: val, source: 'manual' } }));
   };
 
@@ -638,7 +858,8 @@ export function CountSheet({
     const showEverything = scopeOptions.length !== 1
       || display.some((d) => !inBucket(d, scopeOptions[0].bucket));
     return (
-      <Overlay open onClose={requestClose} width={560} title={cs.title}>
+      <Overlay open onClose={requestClose} hasUnsavedChanges={dirty} width={560} title={cs.title}>
+        {draftRestored && <div role="status" style={restoredDraftStyle}>{cs.draftRestored}</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {scopeOptions.map((o) => (
             <ScopeOption
@@ -666,8 +887,51 @@ export function CountSheet({
 
   const scopeLabel = bucketLabel(scope);
 
+  const hiddenCategoryTabs = new Set(tabLayout.hidden);
+  const inlineCategoryOptions: Array<{
+    key: string;
+    label: string;
+    category: InvCat;
+    customCategoryId: string | null;
+  }> = (() => {
+    if (scope === 'breakfast') {
+      return [{ key: 'breakfast', label: catLabelFor(lang, 'breakfast'), category: 'breakfast', customCategoryId: null }];
+    }
+    if (scope.startsWith('custom:')) {
+      const id = scope.slice(7);
+      const custom = customCategories.find((entry) => entry.id === id);
+      return [{ key: `custom:${id}`, label: custom?.name ?? cs.otherGroup, category: 'housekeeping', customCategoryId: id }];
+    }
+    const builtins: Array<{ key: string; label: string; category: InvCat; customCategoryId: null }> = [];
+    if (!hiddenCategoryTabs.has('general') && (scope === 'all' || scope === 'general')) {
+      builtins.push(
+        { key: 'housekeeping', label: catLabelFor(lang, 'housekeeping'), category: 'housekeeping', customCategoryId: null },
+        { key: 'maintenance', label: catLabelFor(lang, 'maintenance'), category: 'maintenance', customCategoryId: null },
+      );
+    }
+    if (!hiddenCategoryTabs.has('breakfast') && scope === 'all') {
+      builtins.push({ key: 'breakfast', label: catLabelFor(lang, 'breakfast'), category: 'breakfast', customCategoryId: null });
+    }
+    const custom = scope === 'all'
+      ? customCategories.map((entry) => ({
+          key: `custom:${entry.id}`,
+          label: entry.name,
+          category: 'housekeeping' as InvCat,
+          customCategoryId: entry.id,
+        }))
+      : [];
+    const options = [...builtins, ...custom];
+    return options.length > 0 ? options : [{
+      key: 'housekeeping-fallback',
+      label: catLabelFor(lang, 'housekeeping'),
+      category: 'housekeeping' as InvCat,
+      customCategoryId: null,
+    }];
+  })();
+
   const handleSave = async () => {
     if (!user || !activePropertyId || saving || addRetryLocked) return;
+    setSaveError('');
     setSaving(true);
     let submittedPropertyId = activePropertyId;
     let submittedRequestId: string | null = null;
@@ -754,6 +1018,7 @@ export function CountSheet({
       if (progRef.current?.requestId === attempt.requestId) {
         progRef.current = null;
         setRetryLocked(false);
+        if (draftStorageInput) clearInventoryOverlayDraft(draftStorageInput);
         if (onSaved) onSaved();
         else onClose();
       }
@@ -768,7 +1033,7 @@ export function CountSheet({
       } else if (progRef.current?.requestId === submittedRequestId) {
         setRetryLocked(true);
       }
-      alert((err as { code?: unknown })?.code === '40001' ? cs.stockChanged : cs.saveFailed);
+      setSaveError((err as { code?: unknown })?.code === '40001' ? cs.stockChanged : cs.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -781,6 +1046,7 @@ export function CountSheet({
       <Overlay
         open
         onClose={requestClose}
+        hasUnsavedChanges={dirty}
         accent={statusColor.good}
         italic={cs.photoCheck}
         width={480}
@@ -796,6 +1062,7 @@ export function CountSheet({
           </>
         }
       >
+        {draftRestored && <div role="status" style={restoredDraftStyle}>{cs.draftRestored}</div>}
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           {review.map((r) => {
             const low = r.confidence === 'low';
@@ -823,13 +1090,15 @@ export function CountSheet({
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, flex: 'none' }}>
                   <StepBtn label="−" onClick={() => bumpReview(r.itemId, -1)} />
                   <input
+                    className={overlayStyles.formControl}
+                    aria-label={`${r.name} ${cs.fCount}`}
                     type="number"
                     min="0"
                     inputMode="decimal"
                     value={r.value}
                     onChange={(e) => { const v = e.target.value; if (numGuard(v)) setReviewValue(r.itemId, v); }}
                     style={{
-                      width: 64, height: 34, borderRadius: 8, boxSizing: 'border-box',
+                      width: 72, height: 44, borderRadius: 8, boxSizing: 'border-box',
                       textAlign: 'center', outline: 'none',
                       background: low ? T.warmDim : T.bg,
                       border: `1px solid ${low ? `${T.warm}55` : T.rule}`,
@@ -892,6 +1161,7 @@ export function CountSheet({
     <Overlay
       open
       onClose={requestClose}
+      hasUnsavedChanges={dirty}
       accent={statusColor.good}
       italic={scopeLabel}
       width={520}
@@ -906,14 +1176,17 @@ export function CountSheet({
             size="md"
             onClick={handleSave}
             disabled={saving || addRetryLocked || (!retryLocked && (filled === 0 || (requireComplete && filled !== total)))}
+            aria-busy={saving}
           >
             {saving ? cs.saving : retryLocked ? cs.retryCount : `${cs.saveCount} · ${filled}/${total}`}
           </Btn>
         </>
       }
     >
+      {draftRestored && <div role="status" style={restoredDraftStyle}>{cs.draftRestored}</div>}
       {retryLocked && <div style={warnBannerStyle}>{cs.retryPending}</div>}
       {addRetryLocked && !addBusy && <div style={warnBannerStyle}>{cs.addUnconfirmed}</div>}
+      {saveError && <div role="alert" style={countErrorStyle}>{saveError}</div>}
       {requireComplete && !retryLocked && filled !== total && (
         <div style={warnBannerStyle}>{cs.completeRequired}</div>
       )}
@@ -921,12 +1194,13 @@ export function CountSheet({
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
         <button
           type="button"
-          onClick={() => { setScope(null); resetAddForm(); }}
+          className={overlayStyles.compactButton}
+          onClick={requestScopeChange}
           disabled={retryLocked || addRetryLocked || requireComplete}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
-            padding: '5px 11px 5px 8px', borderRadius: 8, cursor: 'pointer',
-            background: T.bg, border: `1px solid ${T.rule}`, color: T.ink2,
+            minHeight: 44, padding: '5px 11px 5px 8px', borderRadius: 8, cursor: 'pointer',
+            background: T.bg, border: `1px solid ${T.controlBorder}`, color: T.ink,
             fontFamily: fonts.sans, fontSize: 12, fontWeight: 600,
           }}
         >
@@ -950,14 +1224,21 @@ export function CountSheet({
         />
       </div>
       {photoErr && (
-        <div style={{ marginBottom: 10, fontFamily: fonts.sans, fontSize: 12.5, color: T.warm }}>
+        <div role="alert" style={{ marginBottom: 10, fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600, color: T.warm }}>
           {photoErr}
         </div>
       )}
 
       {/* Slim progress */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
-        <span style={{ flex: 1, display: 'block', height: 5, borderRadius: 5, background: T.ruleSoft, overflow: 'hidden' }}>
+        <span
+          role="progressbar"
+          aria-label={cs.title}
+          aria-valuemin={0}
+          aria-valuemax={Math.max(1, total)}
+          aria-valuenow={filled}
+          style={{ flex: 1, display: 'block', height: 5, borderRadius: 5, background: T.ruleSoft, overflow: 'hidden' }}
+        >
           <span
             style={{
               display: 'block', height: '100%', width: `${pct}%`,
@@ -977,11 +1258,12 @@ export function CountSheet({
         {!addOpen ? (
           <button
             type="button"
-            onClick={() => setAddOpen(true)}
+            className={overlayStyles.compactButton}
+            onClick={openAddForm}
             style={{
-              width: '100%', height: 38, borderRadius: 10, cursor: 'pointer',
-              background: T.bg, border: `1px dashed ${T.rule}`, color: T.ink2,
-              fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600,
+              width: '100%', minHeight: 44, borderRadius: 10, cursor: 'pointer',
+              background: T.bg, border: `1px dashed ${T.controlBorder}`, color: T.ink,
+              fontFamily: fonts.sans, fontSize: 13, fontWeight: 700,
               display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
             }}
           >
@@ -994,8 +1276,11 @@ export function CountSheet({
               border: `1px solid ${T.rule}`, display: 'flex', flexDirection: 'column', gap: 10,
             }}
           >
+            {addError && <div role="alert" style={countErrorStyle}>{addError}</div>}
             <AddField label={cs.fName}>
               <input
+                className={overlayStyles.formControl}
+                aria-label={cs.fName}
                 autoFocus={!addRetryLocked}
                 type="text"
                 value={addName}
@@ -1006,9 +1291,46 @@ export function CountSheet({
                 style={addInputStyle}
               />
             </AddField>
-            <div style={{ display: 'flex', gap: 8 }}>
+            <AddField label={cs.fCategory}>
+              <div className={overlayStyles.categoryRow} role="group" aria-label={cs.fCategory}>
+                {inlineCategoryOptions.map((option) => {
+                  const active = addCategory === option.category
+                    && addCustomCategoryId === option.customCategoryId;
+                  return (
+                    <button
+                      key={option.key}
+                      type="button"
+                      className={overlayStyles.categoryChip}
+                      aria-pressed={active}
+                      disabled={addRetryLocked}
+                      onClick={() => {
+                        setAddCategory(option.category);
+                        setAddCustomCategoryId(option.customCategoryId);
+                      }}
+                      style={{
+                        padding: '0 12px',
+                        minHeight: 40,
+                        borderRadius: 8,
+                        border: `1px solid ${active ? T.ink : T.controlBorder}`,
+                        background: active ? T.ink : T.bg,
+                        color: active ? T.bg : T.ink,
+                        fontFamily: fonts.sans,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </AddField>
+            <div className={overlayStyles.formGrid2}>
               <AddField label={cs.fCount}>
                 <input
+                  className={overlayStyles.formControl}
+                  aria-label={cs.fCount}
                   type="number" min="0" inputMode="decimal" value={addQty}
                   disabled={addRetryLocked}
                   onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddQty(v); }}
@@ -1017,23 +1339,51 @@ export function CountSheet({
               </AddField>
               <AddField label={cs.fPar} hint={cs.optional}>
                 <input
+                  className={overlayStyles.formControl}
+                  aria-label={cs.fPar}
                   type="number" min="0" inputMode="decimal" value={addPar}
                   disabled={addRetryLocked}
                   onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddPar(v); }}
                   placeholder="—" style={addInputStyle}
                 />
               </AddField>
-              {canViewFinancials && (
+            </div>
+            <div className={overlayStyles.formGrid2}>
+              <AddField label={cs.fSetAside} hint={cs.optional} tip={setAsideTip(lang)}>
+                <input
+                  className={overlayStyles.formControl}
+                  aria-label={cs.fSetAside}
+                  type="number" min="0" step="1" inputMode="numeric" value={addSetAside}
+                  disabled={addRetryLocked}
+                  onChange={(e) => { const v = e.target.value; if (intGuard(v)) setAddSetAside(v); }}
+                  placeholder="0" style={addInputStyle}
+                />
+              </AddField>
+              {canViewFinancials ? (
                 <AddField label={cs.fCost} hint={(Number(addQty) || 0) > 0 ? undefined : cs.optional}>
                   <input
+                    className={overlayStyles.formControl}
+                    aria-label={cs.fCost}
                     type="number" min="0" step="0.01" inputMode="decimal" value={addCost}
                     disabled={addRetryLocked}
                     onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddCost(v); }}
                     placeholder="0.00" style={addInputStyle}
                   />
                 </AddField>
-              )}
+              ) : <span />}
             </div>
+            <AddField label={cs.fVendor} hint={cs.optional}>
+              <input
+                className={overlayStyles.formControl}
+                aria-label={cs.fVendor}
+                type="text"
+                value={addVendor}
+                disabled={addRetryLocked}
+                onChange={(event) => setAddVendor(event.target.value)}
+                placeholder={cs.fVendor}
+                style={addInputStyle}
+              />
+            </AddField>
             {(Number(addQty) || 0) > 0 && (
               <div
                 style={{
@@ -1054,11 +1404,12 @@ export function CountSheet({
                 {canViewFinancials && (
                   <label style={{ display: 'flex', alignItems: 'flex-start', gap: 7, marginTop: 8, cursor: 'pointer' }}>
                     <input
+                      aria-label={cs.openingAdjustmentConfirm}
                       type="checkbox"
                       checked={addOpeningAdjustmentConfirmed}
                       disabled={addRetryLocked}
                       onChange={(event) => setAddOpeningAdjustmentConfirmed(event.target.checked)}
-                      style={{ marginTop: 2 }}
+                      style={{ marginTop: 2, width: 18, height: 18, flex: 'none' }}
                     />
                     <span>{cs.openingAdjustmentConfirm}</span>
                   </label>
@@ -1066,14 +1417,24 @@ export function CountSheet({
               </div>
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <Btn variant="ghost" size="sm" onClick={resetAddForm} disabled={addBusy || addRetryLocked}>{cs.cancel}</Btn>
-              <Btn variant="primary" size="sm" onClick={() => void handleAdd()} disabled={addBusy || addRetryLocked || !addName.trim()}>
+              <Btn variant="ghost" size="sm" onClick={cancelAddForm} disabled={addBusy || addRetryLocked}>{cs.cancel}</Btn>
+              <Btn
+                variant="primary"
+                size="sm"
+                onClick={() => void handleAdd()}
+                disabled={addBusy || addRetryLocked || !addName.trim()}
+                aria-busy={addBusy}
+              >
                 {addRetryLocked ? cs.addChecking : addBusy ? cs.saving : cs.addBtn}
               </Btn>
             </div>
           </div>
         )}
       </div>}
+
+      {total === 0 && (
+        <div role="status" style={emptyCountStyle}>{cs.noItemsInGroup}</div>
+      )}
 
       {groups.map((group) => (
         <div key={group.key}>
@@ -1099,21 +1460,57 @@ export function CountSheet({
   );
 }
 
+const restoredDraftStyle: React.CSSProperties = {
+  marginBottom: 12,
+  padding: '10px 12px',
+  borderRadius: 9,
+  background: T.tealDim,
+  color: T.tealText,
+  fontFamily: fonts.sans,
+  fontSize: 12.5,
+  fontWeight: 600,
+};
+
+const countErrorStyle: React.CSSProperties = {
+  marginBottom: 12,
+  padding: '10px 12px',
+  border: `1px solid ${T.warm}55`,
+  borderRadius: 9,
+  background: T.warmDim,
+  color: T.warm,
+  fontFamily: fonts.sans,
+  fontSize: 12.5,
+  fontWeight: 600,
+};
+
+const emptyCountStyle: React.CSSProperties = {
+  marginTop: 14,
+  padding: '28px 18px',
+  border: `1px dashed ${T.controlBorder}`,
+  borderRadius: 12,
+  color: T.ink2,
+  fontFamily: fonts.sans,
+  fontSize: 13,
+  fontWeight: 600,
+  textAlign: 'center',
+};
+
 // Compact input for the inline add-item form (matches the sheet's density).
 const addInputStyle: React.CSSProperties = {
-  width: '100%', height: 36, padding: '0 11px', borderRadius: 8, boxSizing: 'border-box',
+  width: '100%', height: 44, padding: '0 11px', borderRadius: 8, boxSizing: 'border-box',
   background: T.bg, border: `1px solid ${T.controlBorder}`, outline: 'none',
-  fontFamily: fonts.sans, fontSize: 13.5, color: T.ink,
+  fontFamily: fonts.sans, fontSize: 14, color: T.ink,
 };
 
 // A tiny labelled field for the inline add-item form: a caps label (with an
 // optional "optional" hint) stacked over its input.
-function AddField({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+function AddField({ label, hint, tip, children }: { label: string; hint?: string; tip?: string; children: React.ReactNode }) {
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-        <Caps size={10}>{label}</Caps>
+        <Caps size={11} weight={700} className={overlayStyles.fieldLabel}>{label}</Caps>
         {hint && <span style={{ fontFamily: fonts.sans, fontSize: 10, fontWeight: 500, color: T.ink2 }}>{hint}</span>}
+        {tip && <span title={tip} aria-label={tip} style={{ color: T.ink2, fontSize: 12 }}>ⓘ</span>}
       </span>
       {children}
     </div>
@@ -1159,6 +1556,8 @@ function CountLine({
         <SetAsideTag count={d.setAside} lang={lang} />
       </span>
       <input
+        className={overlayStyles.formControl}
+        aria-label={`${d.name} ${lang === 'es' ? 'conteo' : 'count'}`}
         type="number"
         min="0"
         inputMode="decimal"
@@ -1169,7 +1568,7 @@ function CountLine({
         onChange={(e) => { const v = e.target.value; if (numGuard(v)) onChange(v); }}
         placeholder="—"
         style={{
-          width: 88, height: 34, borderRadius: 8, boxSizing: 'border-box',
+          width: 92, height: 44, borderRadius: 8, boxSizing: 'border-box',
           flex: 'none', textAlign: 'center', outline: 'none',
           background: fill.bg,
           border: `1px solid ${fill.border}`,
@@ -1186,9 +1585,10 @@ function StepBtn({ label, onClick, solid = false }: { label: string; onClick: ()
   return (
     <button
       type="button"
+      className={overlayStyles.compactButton}
       onClick={onClick}
       style={{
-        width: 26, height: 26, borderRadius: 8, padding: 0, lineHeight: 1, fontSize: 14,
+        width: 44, height: 44, borderRadius: 8, padding: 0, lineHeight: 1, fontSize: 16,
         fontFamily: fonts.sans, cursor: 'pointer', flex: 'none',
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
         border: solid ? '1px solid rgba(92,122,96,.35)' : `1px solid rgba(31,35,28,.12)`,

@@ -156,6 +156,142 @@ export interface InventoryMonthClosePostBody {
   notes?: unknown;
 }
 
+export interface InventoryMonthCloseMutationFailure {
+  status: number;
+  code: string;
+  message: string;
+}
+
+function monthCloseErrorText(error: unknown): { dbCode: string; text: string } {
+  if (!error || typeof error !== 'object') {
+    return { dbCode: '', text: typeof error === 'string' ? error : '' };
+  }
+  const record = error as Record<string, unknown>;
+  const dbCode = typeof record.code === 'string' ? record.code : '';
+  const text = [record.message, record.details, record.hint]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ')
+    .trim();
+  return { dbCode, text };
+}
+
+/** Convert Postgres close failures into stable, safe, actionable API errors.
+ * The database remains the authority; this mapping prevents the UI from
+ * collapsing every recovery case into a generic retry message. */
+export function inventoryMonthCloseMutationFailure(
+  error: unknown,
+  action?: 'start' | 'close',
+): InventoryMonthCloseMutationFailure {
+  const { dbCode, text } = monthCloseErrorText(error);
+  const normalized = text.toLowerCase();
+
+  if (dbCode === 'P0002') {
+    return { status: 404, code: 'not_found', message: 'The inventory month was not found. Refresh month close before trying again.' };
+  }
+  if (/timezone changed after this period opened/.test(normalized)) {
+    return {
+      status: 409,
+      code: 'month_close_timezone_changed',
+      message: 'The property timezone changed after this period opened. Nothing was closed. An administrator must rebaseline the current month before usage can be recorded safely.',
+    };
+  }
+  if (/cannot close before the property-local month boundary/.test(normalized)) {
+    return {
+      status: 409,
+      code: 'month_close_too_early',
+      message: 'This period cannot close before the hotel’s local month boundary. No values were saved.',
+    };
+  }
+  if (
+    /complete physical-count session/.test(normalized)
+    || /ending-count window/.test(normalized)
+    || /every period item needs a physical count/.test(normalized)
+  ) {
+    if (action === 'start') {
+      return {
+        status: 409,
+        code: 'month_close_baseline_count_required',
+        message: 'No current complete physical count can start this baseline. Run one full count, then start monthly tracking again. Nothing was saved.',
+      };
+    }
+    return {
+      status: 409,
+      code: 'month_close_ending_count_required',
+      message: 'No eligible complete ending count was found. Run a full count in the period’s ending-count window and retry. If that window has passed, refresh to start a fresh current baseline; the missed period remains unclosed.',
+    };
+  }
+  if (
+    /activity occurred after the selected ending count/.test(normalized)
+    || /delivery or discard occurred after the selected ending count/.test(normalized)
+    || /next-month activity occurred before a grace-period ending count/.test(normalized)
+    || /opening stock was recorded after the selected ending count/.test(normalized)
+    || /activity occurred after the complete opening count/.test(normalized)
+  ) {
+    return {
+      status: 409,
+      code: 'month_close_recount_required',
+      message: 'Inventory changed around the selected count. Nothing was closed. Run one new complete count, then retry the same action.',
+    };
+  }
+  if (
+    /no usable cost/.test(normalized)
+    || /unit cost is required/.test(normalized)
+    || /unit cost for a manual-total close/.test(normalized)
+    || /complete valuation cost/.test(normalized)
+  ) {
+    return {
+      status: 409,
+      code: 'month_close_costs_incomplete',
+      message: 'Month close is missing required cost evidence. Complete the flagged item or received-line costs, then retry. No values were saved.',
+    };
+  }
+  if (/negative actual usage|actual usage is negative/.test(normalized)) {
+    return {
+      status: 409,
+      code: 'month_close_negative_usage',
+      message: 'Estimated usage would be negative. Verify the ending count and purchase source before closing. No values were saved.',
+    };
+  }
+  if (
+    /no logged deliveries exist/.test(normalized)
+    || /zero purchases cannot be confirmed/.test(normalized)
+    || /manual total/.test(normalized)
+    || /purchase_source/.test(normalized)
+  ) {
+    return {
+      status: 409,
+      code: 'month_close_purchase_selection_invalid',
+      message: 'The selected purchase source does not match the period evidence. Review the purchase choice and try again. No values were saved.',
+    };
+  }
+  if (/request id is already bound/.test(normalized)) {
+    return {
+      status: 409,
+      code: 'month_close_request_conflict',
+      message: 'This saved retry belongs to different month-close values. Refresh the checklist before trying again.',
+    };
+  }
+  if (/already closed|closed inventory months are immutable/.test(normalized)) {
+    return {
+      status: 409,
+      code: 'month_close_already_closed',
+      message: 'This inventory month is already closed and locked. Refresh to view the final record.',
+    };
+  }
+  if (dbCode === '22023' || dbCode === '23514' || dbCode === '23505' || dbCode === '40001') {
+    return {
+      status: 409,
+      code: 'month_close_not_ready',
+      message: 'The month close is not ready. Refresh the checklist and resolve the flagged counts, costs, or activity. No values were saved.',
+    };
+  }
+  return {
+    status: 500,
+    code: 'internal_error',
+    message: 'Month close is temporarily unavailable. Nothing was changed; retry the same action when the connection is restored.',
+  };
+}
+
 export interface InventoryCloseWindow {
   month: string;
   timezone: string;

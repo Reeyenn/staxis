@@ -30,6 +30,8 @@ export interface MobileInventoryTriageProps {
   canViewFinancials: boolean;
   onAction: (action: SidebarAction) => void;
   onQuickCount: (itemId: string, nextValue: number) => void;
+  /** Opens the same complete Add/Edit sheet used on desktop. */
+  onEdit?: (item: DisplayItem) => void;
   onAdd?: () => void;
 }
 
@@ -66,6 +68,7 @@ export function MobileInventoryTriage({
   canViewFinancials,
   onAction,
   onQuickCount,
+  onEdit,
   onAdd,
 }: MobileInventoryTriageProps) {
   const tx = t(lang);
@@ -220,6 +223,7 @@ export function MobileInventoryTriage({
               lang={lang}
               emptyLabel={tx.nothingHere}
               onQuickCount={onQuickCount}
+              onEdit={onEdit}
             />
             <TriageGroup
               label={tx.colOrderSoon}
@@ -228,6 +232,7 @@ export function MobileInventoryTriage({
               lang={lang}
               emptyLabel={tx.nothingHere}
               onQuickCount={onQuickCount}
+              onEdit={onEdit}
             />
             <TriageGroup
               label={tx.colStocked}
@@ -236,6 +241,7 @@ export function MobileInventoryTriage({
               lang={lang}
               emptyLabel={tx.nothingHere}
               onQuickCount={onQuickCount}
+              onEdit={onEdit}
             />
             {partition.uncounted.length > 0 ? (
               <TriageGroup
@@ -245,6 +251,7 @@ export function MobileInventoryTriage({
                 lang={lang}
                 emptyLabel={tx.nothingHere}
                 onQuickCount={onQuickCount}
+                onEdit={onEdit}
               />
             ) : null}
           </>
@@ -334,6 +341,7 @@ function TriageGroup({
   lang,
   emptyLabel,
   onQuickCount,
+  onEdit,
 }: {
   label: string;
   status: StockStatus | 'neutral';
@@ -341,6 +349,7 @@ function TriageGroup({
   lang: Lang;
   emptyLabel: string;
   onQuickCount: (itemId: string, nextValue: number) => void;
+  onEdit?: (item: DisplayItem) => void;
 }) {
   const statusClass = status === 'neutral' ? styles.statusNeutral : STATUS_CLASS[status];
   return (
@@ -356,7 +365,7 @@ function TriageGroup({
         <ul className={styles.cardList}>
           {items.map((item) => (
             <li key={item.id}>
-              <InventoryCard item={item} lang={lang} onQuickCount={onQuickCount} />
+              <InventoryCard item={item} lang={lang} onQuickCount={onQuickCount} onEdit={onEdit} />
             </li>
           ))}
         </ul>
@@ -369,10 +378,12 @@ function InventoryCard({
   item,
   lang,
   onQuickCount,
+  onEdit,
 }: {
   item: DisplayItem;
   lang: Lang;
   onQuickCount: (itemId: string, nextValue: number) => void;
+  onEdit?: (item: DisplayItem) => void;
 }) {
   // Real last count, not the occupancy estimate — the +/− steppers save a new
   // physical count, so stepping off the estimate would silently rewrite the
@@ -393,6 +404,7 @@ function InventoryCard({
   const increase = lang === 'es'
     ? `Aumentar existencias de ${item.name}`
     : `Increase ${item.name} on hand`;
+  const editLabel = lang === 'es' ? `Editar ${item.name}` : `Edit ${item.name}`;
 
   return (
     <article
@@ -429,7 +441,18 @@ function InventoryCard({
           <span className={styles.stockCaption}>{stockLabel}</span>
         </div>
       </div>
-      <div className={styles.stepper} role="group" aria-label={lang === 'es' ? `Conteo rápido de ${item.name}` : `Quick count ${item.name}`}>
+      <div className={styles.cardControls}>
+        {onEdit ? (
+          <button
+            type="button"
+            className={styles.editButton}
+            onClick={() => onEdit(item)}
+            aria-label={editLabel}
+          >
+            {t(lang).edit}
+          </button>
+        ) : null}
+        <div className={styles.stepper} role="group" aria-label={lang === 'es' ? `Conteo rápido de ${item.name}` : `Quick count ${item.name}`}>
         <button
           type="button"
           className={styles.stepButton}
@@ -448,6 +471,7 @@ function InventoryCard({
         >
           <span aria-hidden="true">+</span>
         </button>
+        </div>
       </div>
     </article>
   );

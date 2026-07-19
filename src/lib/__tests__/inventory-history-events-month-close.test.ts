@@ -134,7 +134,7 @@ describe('inventory History delivery cost completeness', () => {
   it('represents an entirely uncosted delivery as an incomplete zero known subtotal', () => {
     const event = buildHistoryEvents([], [deliveryRow('missing')], [])[0];
 
-    assert.equal(event.amount, 0);
+    assert.equal(event.amount, null);
     assert.deepEqual(event.deliveryCost, { knownSubtotal: 0, complete: false });
   });
 });

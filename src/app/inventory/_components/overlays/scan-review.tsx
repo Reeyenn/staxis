@@ -12,6 +12,7 @@ import { StaxisMenu, type MenuGroup } from './menu-kit';
 import type { DisplayItem } from '../types';
 import { catLabelFor, type Lang } from '../inv-i18n';
 import { ssStrings } from './scan-i18n';
+import type { InventoryCustomCategory } from '@/types';
 
 export interface RawInvoiceLine {
   item_name: string;
@@ -31,15 +32,21 @@ export interface ReviewRow {
   matchedItemId: string | null;
   candidates: MatchCandidate[];
   ambiguous: boolean;
+  /** Unsafe matcher suggestions remain blocked until a manager explicitly
+   * confirms the suggested SKU or chooses another one. */
+  matchConfirmed: boolean;
   qtyInput: string;
   unitCostInput: string;
   /** True once the manager edits cost; hidden OCR totals must no longer win. */
   unitCostDirty: boolean;
   afterInput: string;   // resulting on-hand for a matched line (editable)
   afterDirty: boolean;  // operator overrode the resulting stock
+  newName: string;
   newCategory: InvCat;
+  newCustomCategoryId: string | null;
   newUnit: string;
   newPar: string;
+  newSetAside: string;
   saved: boolean;
   error?: string;
 }
@@ -58,14 +65,20 @@ export function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[])
     matchedItemId,
     candidates: m.candidates,
     ambiguous: m.ambiguous,
+    matchConfirmed: m.autoSelect,
     qtyInput: String(qty),
     unitCostInput: effectiveInvoiceUnitCost(raw, qty),
     unitCostDirty: false,
     afterInput: String(onHand + qty),
     afterDirty: false,
+    newName: raw.item_name.trim(),
     newCategory: 'housekeeping',
+    newCustomCategoryId: null,
     newUnit: 'each',
-    newPar: '0',
+    // A silent par=0 makes the new SKU look complete while disabling its low-
+    // stock signal. Require the manager to provide the operational par.
+    newPar: '',
+    newSetAside: '0',
     saved: false,
   };
 }
@@ -86,6 +99,46 @@ export function reviewRowHasCompleteCost(row: ReviewRow): boolean {
   return Number.isFinite(value) && value >= 0;
 }
 
+export function reviewRowHasCompleteNewItem(row: ReviewRow): boolean {
+  if (row.decision !== 'create') return true;
+  const par = Number(row.newPar);
+  const setAside = Number(row.newSetAside);
+  const quantity = Number(row.qtyInput);
+  return row.newName.trim().length > 0
+    && row.newUnit.trim().length > 0
+    && row.newPar.trim().length > 0
+    && Number.isFinite(par)
+    && par >= 0
+    && row.newSetAside.trim().length > 0
+    && Number.isInteger(setAside)
+    && setAside >= 0
+    && Number.isFinite(quantity)
+    && setAside <= quantity;
+}
+
+/** One fail-closed predicate controls both the Save button and the submit
+ * handler. A skipped line is intentionally resolved; every other line needs a
+ * positive quantity, a visible cost, and either a confirmed match or complete
+ * new-item fields. */
+export function reviewRowIsReady(row: ReviewRow): boolean {
+  if (row.decision === 'skip') return true;
+  const quantity = Number(row.qtyInput);
+  if (!Number.isFinite(quantity) || quantity <= 0 || !reviewRowHasCompleteCost(row)) return false;
+  if (row.decision === 'match') return Boolean(row.matchedItemId) && row.matchConfirmed;
+  return reviewRowHasCompleteNewItem(row);
+}
+
+export function invoiceReviewHasUnsavedWork(input: {
+  phase: 'upload' | 'reading' | 'review' | 'committing' | 'done' | 'error';
+  hasStagedFile: boolean;
+  rowCount: number;
+}): boolean {
+  if (input.phase === 'done') return false;
+  return input.hasStagedFile
+    || input.phase === 'reading'
+    || ((input.phase === 'review' || input.phase === 'committing') && input.rowCount > 0);
+}
+
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
 // Receipt-style line: [⇄ full-catalog picker] [name] ………… [qty] [✕].
@@ -100,20 +153,36 @@ export function ReviewRowView({
   lang,
   row,
   display,
+  customCategories = [],
+  hiddenBuiltins = [],
   onDecision,
   onQty,
   onUnitCost,
+  onConfirmMatch,
+  onNewName,
   onNewCategory,
+  onNewCustomCategoryId,
+  onNewUnit,
+  onNewPar,
+  onNewSetAside,
   onSkip,
   onUnskip,
 }: {
   lang: Lang;
   row: ReviewRow;
   display: DisplayItem[];
+  customCategories?: InventoryCustomCategory[];
+  hiddenBuiltins?: readonly string[];
   onDecision: (v: string) => void;
   onQty: (v: string) => void;
   onUnitCost: (v: string) => void;
+  onConfirmMatch: () => void;
+  onNewName: (v: string) => void;
   onNewCategory: (c: InvCat) => void;
+  onNewCustomCategoryId: (id: string | null) => void;
+  onNewUnit: (v: string) => void;
+  onNewPar: (v: string) => void;
+  onNewSetAside: (v: string) => void;
   onSkip: () => void;
   onUnskip: () => void;
 }) {
@@ -121,8 +190,10 @@ export function ReviewRowView({
   const creating = row.decision === 'create';
   const skipped = row.decision === 'skip';
   const costComplete = reviewRowHasCompleteCost(row);
+  const newItemComplete = reviewRowHasCompleteNewItem(row);
   const chosen = creating ? null : row.candidates.find((c) => c.id === row.matchedItemId);
-  const warn = row.ambiguous && !creating;
+  const needsMatchConfirmation = !creating && !row.matchConfirmed;
+  const warn = needsMatchConfirmation;
   const hasPicker = display.length > 0;
   const norm = (s: string) => s.trim().toLowerCase();
   // Echo the invoice's own wording only when it differs from the matched item
@@ -132,6 +203,24 @@ export function ReviewRowView({
   const caseCaption =
     row.raw.quantity_cases && row.raw.pack_size ? ss.cases(row.raw.quantity_cases, row.raw.pack_size) : null;
   const caption = [rawEcho, caseCaption].filter(Boolean).join(' · ');
+  const visibleBuiltins = CAT_ORDER.filter((category) => (
+    category === 'breakfast'
+      ? !hiddenBuiltins.includes('breakfast')
+      : !hiddenBuiltins.includes('general')
+  ));
+  const categoryOptions = [
+    ...visibleBuiltins.map((category) => ({ value: category, label: catLabelFor(lang, category) })),
+    ...customCategories.map((category) => ({ value: `custom:${category.id}`, label: category.name })),
+  ];
+  if (categoryOptions.length === 0) {
+    categoryOptions.push(...CAT_ORDER.map((category) => ({ value: category, label: catLabelFor(lang, category) })));
+  }
+  const categoryValue = row.newCustomCategoryId
+    ? `custom:${row.newCustomCategoryId}`
+    : row.newCategory;
+  const categoryLabel = row.newCustomCategoryId
+    ? customCategories.find((category) => category.id === row.newCustomCategoryId)?.name ?? ss.category
+    : catLabelFor(lang, row.newCategory);
 
   const nameGroups: MenuGroup[] = [
     {
@@ -148,8 +237,8 @@ export function ReviewRowView({
 
   if (skipped) {
     return (
-      <div style={{ ...lineShell, display: 'flex', alignItems: 'center', gap: 10 }}>
-        {hasPicker && <span style={{ width: 26, flex: 'none' }} />}
+      <div className="scan-review-main" style={{ ...lineShell, display: 'flex', alignItems: 'center', gap: 10 }}>
+        {hasPicker && <span style={{ width: 44, flex: 'none' }} />}
         <span
           style={{
             flex: '1 1 0',
@@ -173,21 +262,23 @@ export function ReviewRowView({
   }
 
   return (
-    <div style={{ ...lineShell, background: row.saved ? T.sageDim : undefined }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+    <div className="scan-review-row" style={{ ...lineShell, background: row.saved ? T.sageDim : undefined }}>
+      <div className="scan-review-main" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         {hasPicker && (
-          <StaxisMenu
-            groups={catalogGroups}
-            selected={creating ? null : row.matchedItemId}
-            onPick={onDecision}
-            title={ss.pickDifferent}
-            menuWidth={280}
-            triggerStyle={pickerShell}
-            triggerLabel={<span aria-hidden style={{ fontSize: 12, color: T.ink3, lineHeight: 1 }}>⇄</span>}
-          />
+          <div className="scan-review-picker">
+            <StaxisMenu
+              groups={catalogGroups}
+              selected={creating ? null : row.matchedItemId}
+              onPick={onDecision}
+              title={ss.pickDifferent}
+              menuWidth={280}
+              triggerStyle={pickerShell}
+              triggerLabel={<span aria-hidden style={{ fontSize: 12, color: T.ink3, lineHeight: 1 }}>⇄</span>}
+            />
+          </div>
         )}
 
-        <div style={{ flex: '1 1 0', minWidth: 0 }}>
+        <div className="scan-review-name" style={{ flex: '1 1 0', minWidth: 0 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', maxWidth: '100%' }}>
             {row.saved && <span style={{ color: T.forestText, marginRight: 5, fontSize: 13 }}>✓</span>}
             <StaxisMenu
@@ -216,51 +307,29 @@ export function ReviewRowView({
           </span>
           {caption && <div style={captionStyle}>{caption}</div>}
           {warn && (
-            <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.caramel, marginTop: 3 }}>{ss.twoCloseMatches}</div>
+            <div role="alert" style={matchWarningStyle}>
+              <span>{row.ambiguous ? ss.twoCloseMatches : ss.reviewSuggestedMatch}</span>
+              <button type="button" onClick={onConfirmMatch} style={confirmMatchBtn}>
+                {ss.confirmMatch}
+              </button>
+            </div>
           )}
           {row.error && (
             <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.warm, marginTop: 3 }}>{row.error}</div>
           )}
-          {creating && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 }}>
-              <span style={goesInLabel}>{ss.goesIn}</span>
-              <StaxisMenu
-                groups={[{ options: CAT_ORDER.map((c) => ({ value: c, label: catLabelFor(lang, c) })) }]}
-                selected={row.newCategory}
-                onPick={(v) => onNewCategory(v as InvCat)}
-                menuWidth={200}
-                triggerStyle={catTrigger}
-                triggerLabel={
-                  <>
-                    <span
-                      style={{
-                        textDecoration: 'underline',
-                        textDecorationStyle: 'dotted',
-                        textDecorationColor: T.faint,
-                        textUnderlineOffset: 3,
-                      }}
-                    >
-                      {catLabelFor(lang, row.newCategory)}
-                    </span>
-                    <span aria-hidden style={{ marginLeft: 4, fontSize: 7.5, color: T.faint }}>▾</span>
-                  </>
-                }
-              />
-            </div>
-          )}
         </div>
 
-        <label style={compactField}>
+        <label className="scan-review-qty" style={compactField}>
           <span style={compactLabel}>{ss.qty}</span>
           <input
             value={row.qtyInput}
             inputMode="decimal"
             onChange={(e) => onQty(e.target.value)}
             aria-label={ss.qtyReceived}
-            style={{ ...inputSm, width: 58, minHeight: 40, textAlign: 'center', flex: 'none' }}
+            style={{ ...inputSm, width: 58, minHeight: 44, textAlign: 'center', flex: 'none' }}
           />
         </label>
-        <label style={compactField}>
+        <label className="scan-review-cost" style={compactField}>
           <span style={{ ...compactLabel, color: costComplete ? T.ink3 : T.warm }}>{ss.unitCost}</span>
           <input
             value={row.unitCostInput}
@@ -272,17 +341,120 @@ export function ReviewRowView({
             style={{
               ...inputSm,
               width: 72,
-              minHeight: 40,
+              minHeight: 44,
               textAlign: 'right',
               flex: 'none',
               borderColor: costComplete ? T.rule : T.warm,
             }}
           />
         </label>
-        <button type="button" onClick={onSkip} aria-label={ss.skipLine} style={removeBtn}>
+        <button className="scan-review-remove" type="button" onClick={onSkip} aria-label={ss.skipLine} style={removeBtn}>
           ✕
         </button>
       </div>
+      {creating && (
+        <div className="scan-new-item-grid" style={newItemGrid}>
+          <label className="scan-new-item-name" style={newItemField}>
+            <span style={newItemLabel}>{ss.newItemName}</span>
+            <input
+              value={row.newName}
+              onChange={(event) => onNewName(event.target.value)}
+              aria-invalid={row.newName.trim().length === 0}
+              style={{
+                ...inputSm,
+                minHeight: 44,
+                width: '100%',
+                borderColor: row.newName.trim().length > 0 ? T.rule : T.warm,
+              }}
+            />
+          </label>
+          <div style={newItemField}>
+            <span style={newItemLabel}>{ss.category}</span>
+            <StaxisMenu
+              groups={[{ options: categoryOptions }]}
+              selected={categoryValue}
+              onPick={(value) => {
+                if (value.startsWith('custom:')) {
+                  onNewCustomCategoryId(value.slice('custom:'.length));
+                } else {
+                  onNewCustomCategoryId(null);
+                  onNewCategory(value as InvCat);
+                }
+              }}
+              menuWidth={200}
+              triggerStyle={newItemSelect}
+              title={ss.category}
+              triggerLabel={
+                <>
+                  <span>{categoryLabel}</span>
+                  <span aria-hidden style={{ marginLeft: 6, fontSize: 8, color: T.ink3 }}>▾</span>
+                </>
+              }
+            />
+          </div>
+          <label style={newItemField}>
+            <span style={newItemLabel}>{ss.unit}</span>
+            <input
+              value={row.newUnit}
+              onChange={(event) => onNewUnit(event.target.value)}
+              aria-invalid={row.newUnit.trim().length === 0}
+              style={{
+                ...inputSm,
+                minHeight: 44,
+                width: '100%',
+                borderColor: row.newUnit.trim().length > 0 ? T.rule : T.warm,
+              }}
+            />
+          </label>
+          <label style={newItemField}>
+            <span style={newItemLabel}>{ss.parLevel}</span>
+            <input
+              value={row.newPar}
+              inputMode="decimal"
+              onChange={(event) => onNewPar(event.target.value)}
+              aria-invalid={row.newPar.trim() === '' || !Number.isFinite(Number(row.newPar)) || Number(row.newPar) < 0}
+              placeholder="0"
+              style={{
+                ...inputSm,
+                minHeight: 44,
+                width: '100%',
+                borderColor: row.newPar.trim() !== '' && Number.isFinite(Number(row.newPar)) && Number(row.newPar) >= 0
+                  ? T.rule
+                  : T.warm,
+              }}
+            />
+          </label>
+          <label style={newItemField}>
+            <span style={newItemLabel}>{ss.setAside}</span>
+            <input
+              value={row.newSetAside}
+              inputMode="numeric"
+              onChange={(event) => onNewSetAside(event.target.value)}
+              aria-invalid={
+                row.newSetAside.trim() === ''
+                || !Number.isInteger(Number(row.newSetAside))
+                || Number(row.newSetAside) < 0
+                || Number(row.newSetAside) > Number(row.qtyInput)
+              }
+              placeholder="0"
+              style={{
+                ...inputSm,
+                minHeight: 44,
+                width: '100%',
+                borderColor: row.newSetAside.trim() !== ''
+                  && Number.isInteger(Number(row.newSetAside))
+                  && Number(row.newSetAside) >= 0
+                  && Number(row.newSetAside) <= Number(row.qtyInput)
+                  ? T.rule
+                  : T.warm,
+              }}
+            />
+          </label>
+          {!newItemComplete && (
+            <div role="alert" style={newItemError}>{ss.completeNewItem}</div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -332,6 +504,7 @@ const nameTrigger: React.CSSProperties = {
   fontWeight: 600,
   color: T.ink,
   cursor: 'pointer',
+  minHeight: 44,
   maxWidth: '100%',
   overflow: 'hidden',
   textOverflow: 'ellipsis',
@@ -339,30 +512,87 @@ const nameTrigger: React.CSSProperties = {
   textAlign: 'left',
 };
 
-const catTrigger: React.CSSProperties = {
-  border: 'none',
-  background: 'transparent',
-  padding: 0,
+const matchWarningStyle: React.CSSProperties = {
+  alignItems: 'center',
+  color: T.caramel,
+  display: 'flex',
+  flexWrap: 'wrap',
   fontFamily: fonts.sans,
-  fontSize: 12,
-  fontWeight: 500,
-  color: T.ink2,
-  cursor: 'pointer',
+  fontSize: 11.5,
+  fontWeight: 600,
+  gap: 6,
+  lineHeight: 1.4,
+  marginTop: 5,
 };
 
-const goesInLabel: React.CSSProperties = {
-  fontFamily: fonts.mono,
-  fontSize: 9.5,
-  letterSpacing: '0.06em',
-  textTransform: 'uppercase',
-  color: T.ink3,
+const confirmMatchBtn: React.CSSProperties = {
+  background: 'transparent',
+  border: `1px solid ${T.caramel}66`,
+  borderRadius: 8,
+  color: T.caramel,
+  cursor: 'pointer',
+  fontFamily: fonts.sans,
+  fontSize: 11.5,
+  fontWeight: 650,
+  minHeight: 44,
+  padding: '4px 9px',
+};
+
+const newItemGrid: React.CSSProperties = {
+  background: T.paper,
+  border: `1px solid ${T.rule}`,
+  borderRadius: 12,
+  display: 'grid',
+  gap: 10,
+  margin: '10px 36px 2px',
+  padding: 12,
+};
+
+const newItemField: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 5,
+  minWidth: 0,
+};
+
+const newItemLabel: React.CSSProperties = {
+  color: T.ink2,
+  fontFamily: fonts.sans,
+  fontSize: 12,
+  fontWeight: 650,
+  lineHeight: 1.3,
+};
+
+const newItemSelect: React.CSSProperties = {
+  alignItems: 'center',
+  background: T.bg,
+  border: `1px solid ${T.rule}`,
+  borderRadius: 8,
+  color: T.ink,
+  cursor: 'pointer',
+  display: 'inline-flex',
+  fontFamily: fonts.sans,
+  fontSize: 13,
   fontWeight: 600,
+  justifyContent: 'space-between',
+  minHeight: 44,
+  padding: '0 10px',
+  width: '100%',
+};
+
+const newItemError: React.CSSProperties = {
+  color: T.warm,
+  fontFamily: fonts.sans,
+  fontSize: 11.5,
+  fontWeight: 600,
+  gridColumn: '1 / -1',
+  lineHeight: 1.4,
 };
 
 const pickerShell: React.CSSProperties = {
   flex: 'none',
-  width: 26,
-  height: 26,
+  width: 44,
+  height: 44,
   display: 'inline-flex',
   alignItems: 'center',
   justifyContent: 'center',
@@ -375,8 +605,8 @@ const pickerShell: React.CSSProperties = {
 
 const removeBtn: React.CSSProperties = {
   flex: 'none',
-  width: 26,
-  height: 26,
+  width: 44,
+  height: 44,
   border: 'none',
   background: 'transparent',
   color: T.ink3,
@@ -397,5 +627,6 @@ const putBackBtn: React.CSSProperties = {
   fontWeight: 500,
   textDecoration: 'underline',
   cursor: 'pointer',
-  padding: '4px 2px',
+  minHeight: 44,
+  padding: '4px 10px',
 };

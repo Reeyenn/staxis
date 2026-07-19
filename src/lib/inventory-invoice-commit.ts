@@ -33,6 +33,10 @@ export interface ReviewLineInput {
   itemName: string;
   decision: LineDecision;
   matchedItemId: string | null;
+  /** Required for matched lines. The review UI sets this automatically only
+   * for conservative high-confidence matches; every other suggestion requires
+   * an explicit manager action. */
+  matchConfirmed?: boolean;
   /** Qty received (UI holds a string; coerced here). */
   qty: number | string;
   quantityCases?: number | null;
@@ -46,7 +50,13 @@ export interface ReviewLineInput {
   /** Matched lines: operator override of the resulting stock (absolute). */
   afterOverride?: number | string | null;
   /** Create lines: new-item fields. */
-  newItem?: { category: InvCategory; unit: string; parLevel: number | string };
+  newItem?: {
+    category: InvCategory;
+    customCategoryId?: string | null;
+    unit: string;
+    parLevel: number | string;
+    setAside?: number | string;
+  };
 }
 
 export interface ReviewDraftInput {
@@ -82,8 +92,10 @@ export interface CommitCreate {
   createKey: string;
   name: string;
   category: InvCategory;
+  customCategoryId: string | null;
   unit: string;
   parLevel: number;
+  setAside: number;
   unitCost: number | undefined;
   initialStock: number;
 }
@@ -95,6 +107,13 @@ export interface CommitPlan {
   orders: CommitOrder[];
   stockUpdates: CommitStockUpdate[];
   creates: CommitCreate[];
+}
+
+export class InvoiceCommitValidationError extends Error {
+  constructor(public readonly code: string, message: string) {
+    super(message);
+    this.name = 'InvoiceCommitValidationError';
+  }
 }
 
 function toFiniteNumber(x: unknown): number | undefined {
@@ -129,7 +148,7 @@ export function invoiceAlreadyRecorded(existingNotes: readonly (string | null | 
   return existingNotes.some((n) => typeof n === 'string' && n.includes(notesTag));
 }
 
-function isCalendarDate(value: string): boolean {
+export function isInvoiceCalendarDate(value: string): boolean {
   if (!/^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/.test(value)) return false;
   const [year, month, day] = value.split('-').map(Number);
   return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10) === value;
@@ -153,17 +172,36 @@ function parseReceivedAt(
   now: Date,
 ): Date {
   const raw = (invoiceDate ?? '').trim();
-  if (isCalendarDate(raw)) {
-    // Noon is an unambiguous civil time on DST transition days. The shared
-    // converter asks Intl for the offset at this hotel-local date, so the
-    // result is independent of both the browser timezone and DST season.
-    const receivedAt = localDateTimeToUtc(raw, '12:00:00', propertyTimezone);
-    if (
-      receivedAt
-      && invoiceDateFromReceivedAt(receivedAt, propertyTimezone) === raw
-    ) return receivedAt;
+  if (!isInvoiceCalendarDate(raw)) {
+    throw new InvoiceCommitValidationError(
+      'invoice_date_required',
+      'Confirm a valid invoice date before saving.',
+    );
   }
-  return now;
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: propertyTimezone }).format(new Date());
+  } catch {
+    throw new InvoiceCommitValidationError(
+      'invoice_timezone_invalid',
+      'The hotel timezone is invalid, so the invoice date cannot be saved safely.',
+    );
+  }
+  const hotelToday = propertyLocalDate(now, propertyTimezone);
+  if (raw > hotelToday) {
+    throw new InvoiceCommitValidationError(
+      'invoice_date_future',
+      'The invoice date cannot be later than today at this hotel.',
+    );
+  }
+  // Noon is an unambiguous civil time on DST transition days. The shared
+  // converter asks Intl for the offset at this hotel-local date, so the
+  // result is independent of both the browser timezone and DST season.
+  const receivedAt = localDateTimeToUtc(raw, '12:00:00', propertyTimezone);
+  if (receivedAt && invoiceDateFromReceivedAt(receivedAt, propertyTimezone) === raw) return receivedAt;
+  throw new InvoiceCommitValidationError(
+    'invoice_date_invalid',
+    'The invoice date could not be placed in the hotel timezone. Check it and try again.',
+  );
 }
 
 /**
@@ -182,34 +220,76 @@ export function buildCommitPlan(draft: ReviewDraftInput, now: Date = new Date())
 
   for (const line of draft.lines) {
     if (line.decision === 'skip') continue;
+    if (line.decision === 'match' && line.matchConfirmed !== true) {
+      throw new InvoiceCommitValidationError(
+        'invoice_match_confirmation_required',
+        `Confirm or rematch “${line.itemName.trim() || 'invoice line'}” before saving.`,
+      );
+    }
     const qty = toPositiveQty(line.qty);
-    if (qty === null) continue; // can't receive a non-positive quantity
+    if (qty === null) {
+      throw new InvoiceCommitValidationError(
+        'invoice_quantity_invalid',
+        `Enter a quantity greater than zero for “${line.itemName.trim() || 'invoice line'}.”`,
+      );
+    }
     const unitCost = (() => {
       const lineTotal = toFiniteNumber(line.totalCost);
       if (lineTotal !== undefined && lineTotal >= 0) return lineTotal / qty;
       const n = toFiniteNumber(line.unitCost);
       return n !== undefined && n >= 0 ? n : undefined;
     })();
+    if (unitCost === undefined) {
+      throw new InvoiceCommitValidationError(
+        'invoice_cost_required',
+        `Enter a unit cost for “${line.itemName.trim() || 'invoice line'}.”`,
+      );
+    }
     const quantityCases = toCases(line.quantityCases);
 
     if (line.decision === 'create') {
-      if (!line.newItem) continue;
-      const parLevel = toFiniteNumber(line.newItem.parLevel) ?? 0;
+      const name = line.itemName.trim();
+      const unit = line.newItem?.unit.trim() ?? '';
+      const parLevel = toFiniteNumber(line.newItem?.parLevel);
+      const setAside = toFiniteNumber(line.newItem?.setAside ?? 0);
+      if (
+        !line.newItem
+        || !name
+        || !unit
+        || parLevel === undefined
+        || parLevel < 0
+        || setAside === undefined
+        || !Number.isInteger(setAside)
+        || setAside < 0
+        || setAside > qty
+      ) {
+        throw new InvoiceCommitValidationError(
+          'invoice_new_item_incomplete',
+          'Complete the new item name, category, unit, non-negative par level, and whole-number set-aside amount before saving.',
+        );
+      }
       creates.push({
         createKey: line.key,
-        name: line.itemName.trim(),
+        name,
         category: line.newItem.category,
-        unit: line.newItem.unit.trim() || 'each',
-        parLevel: Math.max(0, parLevel),
+        customCategoryId: line.newItem.customCategoryId?.trim() || null,
+        unit,
+        parLevel,
+        setAside,
         unitCost,
         initialStock: qty,
       });
-      orders.push({ lineKey: line.key, itemId: null, createKey: line.key, itemName: line.itemName.trim(), quantity: qty, quantityCases, unitCost });
+      orders.push({ lineKey: line.key, itemId: null, createKey: line.key, itemName: name, quantity: qty, quantityCases, unitCost });
       continue;
     }
 
     // decision === 'match'
-    if (!line.matchedItemId) continue; // defensive: a match line must have an id
+    if (!line.matchedItemId) {
+      throw new InvoiceCommitValidationError(
+        'invoice_match_item_required',
+        `Choose an inventory item for “${line.itemName.trim() || 'invoice line'}” before saving.`,
+      );
+    }
     orders.push({ lineKey: line.key, itemId: line.matchedItemId, itemName: line.itemName.trim(), quantity: qty, quantityCases, unitCost });
 
     const prev = byItem.get(line.matchedItemId);

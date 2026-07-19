@@ -156,7 +156,7 @@ export async function monthToDateSpendDetail(
     data = await fetchAllRows(
       (from, to) => supabase
         .from('inventory_orders')
-        .select('total_cost, quantity, unit_cost, item_id, inventory(category)')
+        .select('total_cost, quantity, unit_cost, entry_kind, item_id, inventory(category)')
         .eq('property_id', pid)
         .gte('received_at', monthStart.toISOString())
         .lt('received_at', monthEndExclusive.toISOString())
@@ -181,6 +181,7 @@ export async function monthToDateSpendDetail(
     total_cost: number | null;
     quantity: number | null;
     unit_cost: number | null;
+    entry_kind: string | null;
     item_id: string | null;
     inventory: { category: InventoryCategory } | null | Array<{ category: InventoryCategory }>;
   }>) {
@@ -228,7 +229,7 @@ export async function monthlySpendHistory(
         .from('inventory_orders')
         // LEFT join — deleted-item orders still count toward each month's total
         // (see monthToDateSpendDetail).
-        .select('received_at, total_cost, quantity, unit_cost, item_id, inventory(category)')
+        .select('received_at, total_cost, quantity, unit_cost, entry_kind, item_id, inventory(category)')
         .eq('property_id', pid)
         .gte('received_at', earliestMonthStart.toISOString())
         .lt('received_at', endExclusive.toISOString())
@@ -246,6 +247,7 @@ export async function monthlySpendHistory(
     total_cost: number | null;
     quantity: number | null;
     unit_cost: number | null;
+    entry_kind: string | null;
     item_id: string | null;
     inventory: { category: InventoryCategory } | null | Array<{ category: InventoryCategory }>;
   }>) {

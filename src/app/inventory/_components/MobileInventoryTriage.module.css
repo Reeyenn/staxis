@@ -467,7 +467,8 @@
 }
 
 .itemCard {
-  display: flex;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
   min-width: 0;
   gap: 11px;
@@ -527,6 +528,52 @@
 .itemBody {
   flex: 1;
   min-width: 0;
+}
+
+.cardControls {
+  display: flex;
+  grid-column: 2;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  gap: 10px;
+  margin-top: 5px;
+}
+
+.editButton {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  height: 44px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--mi-ink);
+  background: transparent;
+  cursor: pointer;
+  font: 700 12px/16px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.editButton {
+  border: 1px solid var(--mi-control-border);
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), transform 100ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.editButton:hover {
+  background: var(--mi-rule-soft);
+}
+
+.editButton:active {
+  transform: scale(0.98);
+}
+
+.editButton:focus-visible {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: 2px;
 }
 
 .itemName {
@@ -802,13 +849,18 @@
   .filterChipActive,
   .itemCard,
   .stockFill,
-  .stepButton::before {
+  .stepButton::before,
+  .editButton {
     transition: none;
   }
 
   .actionButton:active::before,
   .filterTarget:active > span,
   .stepButton:active::before {
+    transform: none;
+  }
+
+  .editButton:active {
     transform: none;
   }
 }

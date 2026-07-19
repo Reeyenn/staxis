@@ -19,6 +19,7 @@ import { getDefaultPublicAreas, getDefaultLaundryCategories } from '@/lib/defaul
 import { isOnboardingInProgress } from '@/lib/onboarding/state';
 import type { Property, StaffMember, PublicArea, LaundryCategory } from '@/types';
 import { generateId } from '@/lib/utils';
+import { propertyChangeAllowed } from '@/lib/property-change-guard';
 
 interface PropertyContextType {
   properties: Property[];
@@ -127,6 +128,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     : false;
 
   const setActivePropertyId = (id: string) => {
+    if (activePropertyId && !propertyChangeAllowed({
+      fromPropertyId: activePropertyId,
+      toPropertyId: id,
+      source: 'selector',
+    })) return;
     setActivePropertyIdState(id);
     localStorage.setItem('hotelops-active-property', id);
   };
@@ -140,6 +146,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       if (e.key !== 'hotelops-active-property') return;
       const next = e.newValue;
       if (next && next !== activePropertyId) {
+        if (activePropertyId && !propertyChangeAllowed({
+          fromPropertyId: activePropertyId,
+          toPropertyId: next,
+          source: 'cross-tab',
+        })) return;
         setActivePropertyIdState(next);
       }
     };

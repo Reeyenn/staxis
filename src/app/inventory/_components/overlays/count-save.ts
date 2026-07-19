@@ -28,7 +28,7 @@ export function entriesFingerprint(entries: Record<string, { value: string }>): 
 export type InlineAddScope = 'general' | 'breakfast' | 'all';
 
 export interface FrozenInlineAddAttempt {
-  version: 2;
+  version: 3;
   propertyId: string;
   requestId: string;
   startedAt: string;
@@ -37,12 +37,17 @@ export interface FrozenInlineAddAttempt {
   quantityInput: string;
   parInput: string;
   costInput: string;
+  setAsideInput: string;
+  vendorInput: string;
   openingAdjustmentConfirmed: boolean;
   name: string;
   quantity: number;
   parLevel: number;
   unitCost: number | null;
-  category: 'housekeeping' | 'breakfast';
+  setAside: number;
+  vendorName: string | null;
+  category: 'housekeeping' | 'maintenance' | 'breakfast';
+  customCategoryId: string | null;
 }
 
 type StorageLike = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -66,6 +71,11 @@ function finiteNonnegativeOrZero(raw: string): number {
   return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+function finiteNonnegativeIntegerOrZero(raw: string): number {
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
 export function inlineAddAttemptMarker(requestId: string): string {
   return `staxis:inline-count-add:${requestId}`;
 }
@@ -83,6 +93,10 @@ export function createFrozenInlineAddAttempt(input: {
   quantityInput: string;
   parInput: string;
   costInput: string;
+  setAsideInput: string;
+  vendorInput: string;
+  category: 'housekeeping' | 'maintenance' | 'breakfast';
+  customCategoryId: string | null;
   openingAdjustmentConfirmed: boolean;
 }): FrozenInlineAddAttempt {
   const propertyId = input.propertyId.trim();
@@ -98,6 +112,16 @@ export function createFrozenInlineAddAttempt(input: {
     ? costNumber
     : null;
   const quantity = finiteNonnegativeOrZero(input.quantityInput);
+  const setAside = finiteNonnegativeIntegerOrZero(input.setAsideInput);
+  if (!['housekeeping', 'maintenance', 'breakfast'].includes(input.category)) {
+    throw new Error('Inventory category is invalid.');
+  }
+  if (input.customCategoryId !== null && !input.customCategoryId.trim()) {
+    throw new Error('Custom inventory category is invalid.');
+  }
+  if (setAside > quantity) {
+    throw new Error('Set-aside quantity cannot exceed on-hand stock.');
+  }
   if (quantity > 0 && !input.openingAdjustmentConfirmed) {
     throw new Error('Positive starting stock must be confirmed as pre-existing opening inventory.');
   }
@@ -105,7 +129,7 @@ export function createFrozenInlineAddAttempt(input: {
     throw new Error('A unit cost is required to value pre-existing opening inventory.');
   }
   return {
-    version: 2,
+    version: 3,
     propertyId,
     requestId,
     startedAt: input.startedAt,
@@ -114,19 +138,25 @@ export function createFrozenInlineAddAttempt(input: {
     quantityInput: input.quantityInput,
     parInput: input.parInput,
     costInput: input.costInput,
+    setAsideInput: input.setAsideInput,
+    vendorInput: input.vendorInput,
     openingAdjustmentConfirmed: quantity > 0 && input.openingAdjustmentConfirmed,
     name,
     quantity,
     parLevel: finiteNonnegativeOrZero(input.parInput),
     unitCost,
-    category: input.scope === 'breakfast' ? 'breakfast' : 'housekeeping',
+    setAside,
+    vendorName: input.vendorInput.trim() || null,
+    category: input.category,
+    customCategoryId: input.customCategoryId,
   };
 }
 
-function isFrozenInlineAddAttempt(value: unknown): value is FrozenInlineAddAttempt {
-  if (!value || typeof value !== 'object') return false;
-  const x = value as Partial<FrozenInlineAddAttempt>;
-  if (x.version !== 2
+function normalizeFrozenInlineAddAttempt(value: unknown): FrozenInlineAddAttempt | null {
+  if (!value || typeof value !== 'object') return null;
+  const x = value as Record<string, unknown>;
+  const version = x.version;
+  if ((version !== 2 && version !== 3)
     || typeof x.propertyId !== 'string'
     || typeof x.requestId !== 'string'
     || typeof x.startedAt !== 'string'
@@ -135,15 +165,34 @@ function isFrozenInlineAddAttempt(value: unknown): value is FrozenInlineAddAttem
     || typeof x.quantityInput !== 'string'
     || typeof x.parInput !== 'string'
     || typeof x.costInput !== 'string'
+    || (version === 3 && typeof x.setAsideInput !== 'string')
+    || (version === 3 && typeof x.vendorInput !== 'string')
     || typeof x.openingAdjustmentConfirmed !== 'boolean'
     || typeof x.name !== 'string'
     || typeof x.quantity !== 'number'
     || typeof x.parLevel !== 'number'
     || (x.unitCost !== null && typeof x.unitCost !== 'number')
-    || (x.category !== 'housekeeping' && x.category !== 'breakfast')) return false;
+    || (version === 3 && typeof x.setAside !== 'number')
+    || (version === 3 && x.vendorName !== null && typeof x.vendorName !== 'string')
+    || (x.category !== 'housekeeping' && x.category !== 'maintenance' && x.category !== 'breakfast')
+    || (version === 3 && x.customCategoryId !== null && typeof x.customCategoryId !== 'string')) return null;
   try {
-    const canonical = createFrozenInlineAddAttempt(x as FrozenInlineAddAttempt);
-    return canonical.propertyId === x.propertyId
+    const canonical = createFrozenInlineAddAttempt({
+      propertyId: x.propertyId,
+      requestId: x.requestId,
+      startedAt: x.startedAt,
+      scope: x.scope,
+      nameInput: x.nameInput,
+      quantityInput: x.quantityInput,
+      parInput: x.parInput,
+      costInput: x.costInput,
+      setAsideInput: version === 3 ? x.setAsideInput as string : '0',
+      vendorInput: version === 3 ? x.vendorInput as string : '',
+      category: x.category,
+      customCategoryId: version === 3 ? x.customCategoryId as string | null : null,
+      openingAdjustmentConfirmed: x.openingAdjustmentConfirmed,
+    });
+    const valid = canonical.propertyId === x.propertyId
       && canonical.requestId === x.requestId
       && canonical.startedAt === x.startedAt
       && canonical.scope === x.scope
@@ -151,14 +200,20 @@ function isFrozenInlineAddAttempt(value: unknown): value is FrozenInlineAddAttem
       && canonical.quantityInput === x.quantityInput
       && canonical.parInput === x.parInput
       && canonical.costInput === x.costInput
+      && (version === 2 || canonical.setAsideInput === x.setAsideInput)
+      && (version === 2 || canonical.vendorInput === x.vendorInput)
       && canonical.openingAdjustmentConfirmed === x.openingAdjustmentConfirmed
       && canonical.name === x.name
       && canonical.quantity === x.quantity
       && canonical.parLevel === x.parLevel
       && canonical.unitCost === x.unitCost
-      && canonical.category === x.category;
+      && (version === 2 || canonical.setAside === x.setAside)
+      && (version === 2 || canonical.vendorName === x.vendorName)
+      && canonical.category === x.category
+      && (version === 2 || canonical.customCategoryId === x.customCategoryId);
+    return valid ? canonical : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -166,7 +221,7 @@ export function persistInlineAddAttempt(
   attempt: FrozenInlineAddAttempt,
   storage: StorageLike | null = browserStorage(),
 ): void {
-  if (!storage) throw new InlineAddAttemptPersistenceError();
+  if (!storage || !normalizeFrozenInlineAddAttempt(attempt)) throw new InlineAddAttemptPersistenceError();
   const key = inlineAddAttemptStorageKey(attempt.propertyId);
   const serialized = JSON.stringify(attempt);
   try {
@@ -190,7 +245,8 @@ export function loadInlineAddAttempt(
     const raw = storage.getItem(inlineAddAttemptStorageKey(propertyId));
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isFrozenInlineAddAttempt(parsed) && parsed.propertyId === propertyId ? parsed : null;
+    const normalized = normalizeFrozenInlineAddAttempt(parsed);
+    return normalized?.propertyId === propertyId ? normalized : null;
   } catch {
     return null;
   }

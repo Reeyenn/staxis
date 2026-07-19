@@ -1989,6 +1989,10 @@ export type Database = {
           created_by: string | null
           custom_category_id: string | null
           current_stock: number
+          delivery_baseline_last_ordered_at: string | null
+          delivery_baseline_unit_cost: number | null
+          delivery_baseline_vendor_name: string | null
+          delivery_cache_active: boolean
           id: string
           last_alerted_at: string | null
           last_counted_at: string | null
@@ -2021,6 +2025,10 @@ export type Database = {
           created_by?: string | null
           custom_category_id?: string | null
           current_stock?: number
+          delivery_baseline_last_ordered_at?: string | null
+          delivery_baseline_unit_cost?: number | null
+          delivery_baseline_vendor_name?: string | null
+          delivery_cache_active?: boolean
           id?: string
           last_alerted_at?: string | null
           last_counted_at?: string | null
@@ -2053,6 +2061,10 @@ export type Database = {
           created_by?: string | null
           custom_category_id?: string | null
           current_stock?: number
+          delivery_baseline_last_ordered_at?: string | null
+          delivery_baseline_unit_cost?: number | null
+          delivery_baseline_vendor_name?: string | null
+          delivery_cache_active?: boolean
           id?: string
           last_alerted_at?: string | null
           last_counted_at?: string | null
@@ -2129,6 +2141,7 @@ export type Database = {
       }
       inventory_counts: {
         Row: {
+          activity_sequence: number
           count_session_id: string | null
           counted_at: string
           counted_by: string | null
@@ -2145,6 +2158,7 @@ export type Database = {
           variance_value: number | null
         }
         Insert: {
+          activity_sequence?: number
           count_session_id?: string | null
           counted_at?: string
           counted_by?: string | null
@@ -2161,6 +2175,7 @@ export type Database = {
           variance_value?: number | null
         }
         Update: {
+          activity_sequence?: number
           count_session_id?: string | null
           counted_at?: string
           counted_by?: string | null
@@ -2195,10 +2210,12 @@ export type Database = {
       }
       inventory_discards: {
         Row: {
+          activity_sequence: number
           cost_value: number | null
           created_at: string
           discarded_at: string
           discarded_by: string | null
+          expected_stock: number | null
           id: string
           item_id: string
           item_name: string
@@ -2206,13 +2223,19 @@ export type Database = {
           property_id: string
           quantity: number
           reason: string
+          recorded_by_user_id: string | null
+          request_id: string | null
+          stock_after: number | null
+          stock_before: number | null
           unit_cost: number | null
         }
         Insert: {
+          activity_sequence?: number
           cost_value?: number | null
           created_at?: string
           discarded_at?: string
           discarded_by?: string | null
+          expected_stock?: number | null
           id?: string
           item_id: string
           item_name: string
@@ -2220,13 +2243,19 @@ export type Database = {
           property_id: string
           quantity: number
           reason: string
+          recorded_by_user_id?: string | null
+          request_id?: string | null
+          stock_after?: number | null
+          stock_before?: number | null
           unit_cost?: number | null
         }
         Update: {
+          activity_sequence?: number
           cost_value?: number | null
           created_at?: string
           discarded_at?: string
           discarded_by?: string | null
+          expected_stock?: number | null
           id?: string
           item_id?: string
           item_name?: string
@@ -2234,6 +2263,10 @@ export type Database = {
           property_id?: string
           quantity?: number
           reason?: string
+          recorded_by_user_id?: string | null
+          request_id?: string | null
+          stock_after?: number | null
+          stock_before?: number | null
           unit_cost?: number | null
         }
         Relationships: [
@@ -2253,9 +2286,130 @@ export type Database = {
           },
         ]
       }
+      inventory_delivery_corrections: {
+        Row: {
+          activity_sequence: number
+          corrected_at: string
+          corrected_by: string | null
+          corrected_by_user_id: string | null
+          corrected_item_id: string | null
+          corrected_item_name: string | null
+          corrected_quantity: number
+          corrected_total_cost: number | null
+          corrected_unit_cost: number | null
+          correction_kind: string
+          created_at: string
+          id: string
+          line_key: string
+          original_order_id: string
+          previous_item_id: string
+          previous_item_name: string
+          previous_quantity: number
+          previous_total_cost: number | null
+          previous_unit_cost: number | null
+          prior_correction_id: string | null
+          property_id: string
+          reason: string
+          request_id: string
+          stock_effect: Json
+        }
+        Insert: {
+          activity_sequence?: number
+          corrected_at: string
+          corrected_by?: string | null
+          corrected_by_user_id?: string | null
+          corrected_item_id?: string | null
+          corrected_item_name?: string | null
+          corrected_quantity: number
+          corrected_total_cost?: number | null
+          corrected_unit_cost?: number | null
+          correction_kind: string
+          created_at?: string
+          id?: string
+          line_key: string
+          original_order_id: string
+          previous_item_id: string
+          previous_item_name: string
+          previous_quantity: number
+          previous_total_cost?: number | null
+          previous_unit_cost?: number | null
+          prior_correction_id?: string | null
+          property_id: string
+          reason: string
+          request_id: string
+          stock_effect?: Json
+        }
+        Update: {
+          activity_sequence?: number
+          corrected_at?: string
+          corrected_by?: string | null
+          corrected_by_user_id?: string | null
+          corrected_item_id?: string | null
+          corrected_item_name?: string | null
+          corrected_quantity?: number
+          corrected_total_cost?: number | null
+          corrected_unit_cost?: number | null
+          correction_kind?: string
+          created_at?: string
+          id?: string
+          line_key?: string
+          original_order_id?: string
+          previous_item_id?: string
+          previous_item_name?: string
+          previous_quantity?: number
+          previous_total_cost?: number | null
+          previous_unit_cost?: number | null
+          prior_correction_id?: string | null
+          property_id?: string
+          reason?: string
+          request_id?: string
+          stock_effect?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_delivery_correction_corrected_item_id_property_i_fkey"
+            columns: ["corrected_item_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_delivery_correction_original_order_id_property_i_fkey"
+            columns: ["original_order_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_orders"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_delivery_correction_previous_item_id_property_id_fkey"
+            columns: ["previous_item_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_delivery_correction_prior_correction_id_property_fkey"
+            columns: ["prior_correction_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_delivery_corrections"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_delivery_corrections_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       inventory_orders: {
         Row: {
+          activity_sequence: number
+          correction_event_id: string | null
+          corrects_order_id: string | null
           created_at: string
+          entry_kind: string
           id: string
           item_id: string
           item_name: string
@@ -2270,7 +2424,11 @@ export type Database = {
           vendor_name: string | null
         }
         Insert: {
+          activity_sequence?: number
+          correction_event_id?: string | null
+          corrects_order_id?: string | null
           created_at?: string
+          entry_kind?: string
           id?: string
           item_id: string
           item_name: string
@@ -2285,7 +2443,11 @@ export type Database = {
           vendor_name?: string | null
         }
         Update: {
+          activity_sequence?: number
+          correction_event_id?: string | null
+          corrects_order_id?: string | null
           created_at?: string
+          entry_kind?: string
           id?: string
           item_id?: string
           item_name?: string
@@ -2300,6 +2462,20 @@ export type Database = {
           vendor_name?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "inventory_orders_correction_event_property_fkey"
+            columns: ["correction_event_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_delivery_corrections"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_orders_corrects_order_property_fkey"
+            columns: ["corrects_order_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_orders"
+            referencedColumns: ["id", "property_id"]
+          },
           {
             foreignKeyName: "inventory_orders_item_property_fkey"
             columns: ["item_id", "property_id"]
@@ -2342,6 +2518,190 @@ export type Database = {
             isOneToOne: false
             referencedRelation: "properties"
             referencedColumns: ["id"]
+          },
+        ]
+      }
+      inventory_delivery_reentries: {
+        Row: {
+          created_at: string
+          delivery_key: string
+          id: string
+          prior_request_id: string | null
+          property_id: string
+          reentered_by_user_id: string | null
+          replacement_request_id: string
+        }
+        Insert: {
+          created_at?: string
+          delivery_key: string
+          id?: string
+          prior_request_id?: string | null
+          property_id: string
+          reentered_by_user_id?: string | null
+          replacement_request_id: string
+        }
+        Update: {
+          created_at?: string
+          delivery_key?: string
+          id?: string
+          prior_request_id?: string | null
+          property_id?: string
+          reentered_by_user_id?: string | null
+          replacement_request_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_delivery_reentries_property_id_delivery_key_fkey"
+            columns: ["property_id", "delivery_key"]
+            isOneToOne: false
+            referencedRelation: "inventory_delivery_keys"
+            referencedColumns: ["property_id", "delivery_key"]
+          },
+          {
+            foreignKeyName: "inventory_delivery_reentries_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "inventory_delivery_reentries_property_id_replacement_reque_fkey"
+            columns: ["property_id", "replacement_request_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_write_receipts"
+            referencedColumns: ["property_id", "request_id"]
+          },
+        ]
+      }
+      inventory_month_close_snapshot_items: {
+        Row: {
+          actual_usage_cents: number | null
+          archived_at: string | null
+          budget_key: string
+          budget_section_ids: string[]
+          category: string
+          counted_at: string | null
+          created_at: string
+          custom_category_id: string | null
+          custom_category_name: string | null
+          inventory_count_id: string | null
+          inventory_delivery_correction_id: string | null
+          inventory_discard_id: string | null
+          item_id: string
+          item_name: string
+          multiple_budget_sections: boolean
+          opening_adjustment_at: string | null
+          opening_adjustment_quantity: number
+          opening_adjustment_unit_cost_cents: number | null
+          opening_adjustment_value_cents: number
+          physical_unit_cost_cents: number | null
+          property_id: string
+          purchase_quantity: number | null
+          purchase_value_cents: number | null
+          quantity: number
+          set_aside: number
+          snapshot_id: string
+          unit_cost_cents: number | null
+          valuation_method: string
+          value_cents: number | null
+        }
+        Insert: {
+          actual_usage_cents?: number | null
+          archived_at?: string | null
+          budget_key: string
+          budget_section_ids?: string[]
+          category: string
+          counted_at?: string | null
+          created_at?: string
+          custom_category_id?: string | null
+          custom_category_name?: string | null
+          inventory_count_id?: string | null
+          inventory_delivery_correction_id?: string | null
+          inventory_discard_id?: string | null
+          item_id: string
+          item_name: string
+          multiple_budget_sections?: boolean
+          opening_adjustment_at?: string | null
+          opening_adjustment_quantity?: number
+          opening_adjustment_unit_cost_cents?: number | null
+          opening_adjustment_value_cents?: number
+          physical_unit_cost_cents?: number | null
+          property_id: string
+          purchase_quantity?: number | null
+          purchase_value_cents?: number | null
+          quantity: number
+          set_aside?: number
+          snapshot_id: string
+          unit_cost_cents?: number | null
+          valuation_method: string
+          value_cents?: number | null
+        }
+        Update: {
+          actual_usage_cents?: number | null
+          archived_at?: string | null
+          budget_key?: string
+          budget_section_ids?: string[]
+          category?: string
+          counted_at?: string | null
+          created_at?: string
+          custom_category_id?: string | null
+          custom_category_name?: string | null
+          inventory_count_id?: string | null
+          inventory_delivery_correction_id?: string | null
+          inventory_discard_id?: string | null
+          item_id?: string
+          item_name?: string
+          multiple_budget_sections?: boolean
+          opening_adjustment_at?: string | null
+          opening_adjustment_quantity?: number
+          opening_adjustment_unit_cost_cents?: number | null
+          opening_adjustment_value_cents?: number
+          physical_unit_cost_cents?: number | null
+          property_id?: string
+          purchase_quantity?: number | null
+          purchase_value_cents?: number | null
+          quantity?: number
+          set_aside?: number
+          snapshot_id?: string
+          unit_cost_cents?: number | null
+          valuation_method?: string
+          value_cents?: number | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_month_close_snapsho_inventory_count_id_property__fkey"
+            columns: ["inventory_count_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_counts"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_month_close_snapshot_ite_snapshot_id_property_id_fkey"
+            columns: ["snapshot_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_month_close_snapshots"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_month_close_snapshot_items_correction_property_fkey"
+            columns: ["inventory_delivery_correction_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_delivery_corrections"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_month_close_snapshot_items_discard_property_fkey"
+            columns: ["inventory_discard_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory_discards"
+            referencedColumns: ["id", "property_id"]
+          },
+          {
+            foreignKeyName: "inventory_month_close_snapshot_items_item_id_property_id_fkey"
+            columns: ["item_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "inventory"
+            referencedColumns: ["id", "property_id"]
           },
         ]
       }
@@ -5314,6 +5674,43 @@ export type Database = {
         Args: { p_patch: Json; p_property_id: string }
         Returns: Json
       }
+      staxis_correct_inventory_delivery: {
+        Args: {
+          p_corrected_at: string
+          p_corrected_by: string
+          p_lines: Json
+          p_property_id: string
+          p_reason: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
+      staxis_inventory_archive_zero_evidence: {
+        Args: { p_item_id: string; p_property_id: string }
+        Returns: {
+          activity_sequence: number
+          evidence_at: string
+          evidence_id: string
+          evidence_kind: string
+          unit_cost: number
+        }[]
+      }
+      staxis_inventory_has_stock_evidence: {
+        Args: { p_item_id: string; p_property_id: string }
+        Returns: boolean
+      }
+      staxis_list_inventory_archive_readiness: {
+        Args: { p_item_ids: string[]; p_property_id: string }
+        Returns: Json
+      }
+      staxis_list_inventory_delivery_corrections: {
+        Args: {
+          p_include_financials?: boolean
+          p_property_id: string
+          p_root_order_ids: string[]
+        }
+        Returns: Json
+      }
       staxis_parse_finite_numeric: {
         Args: { p_label: string; p_value: string }
         Returns: number
@@ -5348,6 +5745,28 @@ export type Database = {
         }
         Returns: undefined
       }
+      staxis_record_inventory_loss: {
+        Args: {
+          p_expected_stock: number
+          p_item_id: string
+          p_notes: string | null
+          p_property_id: string
+          p_quantity: number
+          p_reason: string
+          p_recorded_at: string
+          p_recorded_by: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
+      staxis_refresh_inventory_delivery_metadata: {
+        Args: {
+          p_changed_root_id: string
+          p_item_id: string
+          p_property_id: string
+        }
+        Returns: undefined
+      }
       staxis_receive_inventory_delivery: {
         Args: {
           p_lines: Json
@@ -5356,6 +5775,21 @@ export type Database = {
           p_received_at: string
           p_request_id: string
           p_vendor_name: string | null
+        }
+        Returns: Json
+      }
+      staxis_user_can_view_inventory_financials: {
+        Args: { p_property_id: string }
+        Returns: boolean
+      }
+      staxis_verify_legacy_archived_inventory_zero: {
+        Args: {
+          p_expected_archived_at: string
+          p_item_id: string
+          p_property_id: string
+          p_reason: string
+          p_request_id: string
+          p_verified_by: string
         }
         Returns: Json
       }

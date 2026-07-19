@@ -235,6 +235,45 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
   return memoized;
 }
 
+/** Isolated, non-memoized runner for rollout regressions that must seed the
+ * exact pre-migration schema before one production migration is applied. */
+export async function applyMigrationsToPgliteWithHook(
+  beforeMigration: (args: {
+    pg: PGlite;
+    file: string;
+    report: MigrationReport;
+  }) => Promise<void>,
+): Promise<PgliteMigratedFixture> {
+  const pg = new PGlite({ extensions: { pgcrypto, pg_trgm } });
+  await applyStubs(pg);
+  const files = readdirSync(MIGRATIONS)
+    .filter((file) => file.endsWith('.sql'))
+    .sort();
+  const report: MigrationReport = {
+    applied: [],
+    skippedClassC: [],
+    failedAtRuntime: [],
+  };
+
+  for (const file of files) {
+    const sql = readFileSync(join(MIGRATIONS, file), 'utf8');
+    const { skip, reason } = classify(sql);
+    if (skip) {
+      report.skippedClassC.push(`${file} (${reason})`);
+      continue;
+    }
+    try {
+      await beforeMigration({ pg, file, report });
+      await pg.exec(preprocess(sql));
+      report.applied.push(file);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      report.failedAtRuntime.push({ file, error: message.split('\n')[0] });
+    }
+  }
+  return { pg, report };
+}
+
 /**
  * Discover per-property tables (column == property_id + RLS enabled +
  * at least one policy mentioning user_owns_property). Used by the

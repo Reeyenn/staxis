@@ -38,6 +38,7 @@ export * from './db/inventory';
 export * from './db/inventory-atomic';
 export * from './db/inventory-counts';
 export * from './db/inventory-orders';
+export * from './db/inventory-discards';
 export * from './db/inventory-budgets';
 export * from './db/inventory-custom-categories';
 export * from './db/inventory-accounting';

@@ -8,7 +8,8 @@ import { useLang } from '@/contexts/LanguageContext';
 import {
   subscribeToInventory,
   listInventoryCounts,
-  listInventoryOrders,
+  listEffectiveInventoryDeliveries,
+  listInventoryDiscards,
   listInventoryBudgets,
   listInventoryBudgetSections,
   listInventoryCustomCategories,
@@ -42,7 +43,7 @@ import {
   resolveInventoryBudgetActual,
   type InventoryBudgetActualPeriod,
 } from '@/lib/inventory-budget-actual';
-import { propertyTimezoneOrUTC } from '@/lib/property-timezone';
+import { propertyTimezoneOrUTC, validPropertyTimezone } from '@/lib/property-timezone';
 import {
   fetchDailyAverages,
   type DailyAverages,
@@ -51,7 +52,8 @@ import { useCan } from '@/lib/capabilities/useCan';
 import type {
   InventoryItem,
   InventoryCount,
-  InventoryOrder,
+  EffectiveInventoryDelivery,
+  InventoryDiscard,
   InventoryBudget,
   InventoryBudgetMode,
   InventoryBudgetSection,
@@ -86,6 +88,8 @@ import { DeliverySheet } from './overlays/DeliverySheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
 import { AiReportSheet } from './overlays/AiReportSheet';
 import { MonthClosePanel } from './overlays/MonthClosePanel';
+import { StockLossSheet } from './overlays/StockLossSheet';
+import { DeliveryCorrectionSheet } from './overlays/DeliveryCorrectionSheet';
 import { t, invLang, dateLocale } from './inv-i18n';
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
@@ -102,6 +106,8 @@ type OverlayKey =
   | 'close'
   | 'ai'
   | 'add'
+  | 'stock-loss'
+  | 'delivery-correction'
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
@@ -162,6 +168,8 @@ export function InventoryShell() {
   // if a legacy row is invalid), use deterministic UTC — never the browser or
   // a different hotel's hard-coded calendar.
   const propertyTimezone = propertyTimezoneOrUTC(activeProperty?.timezone);
+  const financialTimezoneValid = !canViewFinancials
+    || validPropertyTimezone(activeProperty?.timezone) != null;
 
   // ── Core data state ────────────────────────────────────────────────
   // No ML state here on purpose. The manual inventory tab never fetches ML
@@ -175,7 +183,8 @@ export function InventoryShell() {
   const [occupancy, setOccupancy] = useState<OccupancyBundle | null>(null);
   const [averages, setAverages] = useState<DailyAverages | null>(null);
   const [counts, setCounts] = useState<InventoryCount[]>([]);
-  const [orders, setOrders] = useState<InventoryOrder[]>([]);
+  const [deliveries, setDeliveries] = useState<EffectiveInventoryDelivery[]>([]);
+  const [discards, setDiscards] = useState<InventoryDiscard[]>([]);
   const [budgets, setBudgets] = useState<InventoryBudget[]>([]);
   const [budgetSections, setBudgetSections] = useState<InventoryBudgetSection[]>([]);
   // Hotel-defined custom category tabs (0307).
@@ -191,6 +200,7 @@ export function InventoryShell() {
     total: 0,
     complete: true,
   });
+  const [spendDataAvailable, setSpendDataAvailable] = useState(false);
   // The finance-gated, immutable monthly usage ledger. Purchases remain a
   // separate live flow (`spendDetail`) until a period is explicitly closed.
   const [monthCloseDashboard, setMonthCloseDashboard] = useState<InventoryMonthCloseDashboard | null>(null);
@@ -236,6 +246,8 @@ export function InventoryShell() {
   const [overlay, setOverlay] = useState<OverlayKey>(null);
   const [countForMonthClose, setCountForMonthClose] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
+  const [stockLossItem, setStockLossItem] = useState<InventoryItem | null>(null);
+  const [deliveryCorrection, setDeliveryCorrection] = useState<EffectiveInventoryDelivery | null>(null);
   // Initial-load gate: the page reveals ONCE, after both the first items
   // snapshot AND the stats bundle have landed. Without this, the 3-4 fetch
   // waves each reshuffled/re-animated the freshly-mounted board — the
@@ -243,6 +255,7 @@ export function InventoryShell() {
   const [itemsLoaded, setItemsLoaded] = useState(false);
   const [bundleLoaded, setBundleLoaded] = useState(false);
   const [itemsLoadError, setItemsLoadError] = useState(false);
+  const [bundleLoadError, setBundleLoadError] = useState(false);
   const [inventoryReload, setInventoryReload] = useState(0);
   const [quickCountError, setQuickCountError] = useState(false);
   const [quickCountLockedIds, setQuickCountLockedIds] = useState<Set<string>>(() => new Set());
@@ -262,9 +275,26 @@ export function InventoryShell() {
   useEffect(() => {
     if (!uid || !activePropertyId) return;
     setItems([]);
+    setOccupancy(null);
+    setAverages(null);
+    setCounts([]);
+    setDeliveries([]);
+    setDiscards([]);
+    setBudgets([]);
+    setBudgetSections([]);
+    setSpendDetail({
+      byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
+      byItem: {},
+      total: 0,
+      complete: false,
+    });
+    setSpendDataAvailable(false);
+    setMonthCloseDashboard(null);
+    setCustomCategories([]);
     setItemsLoaded(false);
     setBundleLoaded(false);
     setItemsLoadError(false);
+    setBundleLoadError(false);
     let settled = false;
     const timeout = window.setTimeout(() => {
       if (settled) return;
@@ -297,79 +327,104 @@ export function InventoryShell() {
   // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
   // no auto-fill map, no ai-status/ai-mode call.
   const fetchBoardData = useCallback(async (uid: string, pid: string) => {
-    // Property-local calendar boundaries keep a remote manager on the hotel's
-    // month rather than the browser's month.
-    const currentMonth = inventoryMonthKeyInZone(new Date(), propertyTimezone);
-    const monthWindow = inventoryCloseWindow(currentMonth, propertyTimezone);
-    const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = canViewFinancials
+    const safe = async <T,>(label: string, promise: Promise<T>): Promise<T | null> => {
+      try {
+        return await promise;
+      } catch (error) {
+        console.error(`[inventory] ${label} load failed`, error);
+        return null;
+      }
+    };
+    const financialDataReady = !canViewFinancials || financialTimezoneValid;
+    // Never calculate hotel money in a UTC fallback when its stored timezone
+    // is invalid. Physical inventory remains available; finance sources are
+    // marked unavailable and can be retried after configuration is fixed.
+    const monthWindow = financialDataReady
+      ? inventoryCloseWindow(
+          inventoryMonthKeyInZone(new Date(), propertyTimezone),
+          propertyTimezone,
+        )
+      : null;
+    const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = canViewFinancials && financialDataReady
       ? fetchWithAuth(`/api/inventory/month-close?propertyId=${encodeURIComponent(pid)}`, { cache: 'no-store' })
           .then(async (response) => {
             if (!response.ok) throw new Error(`month close load failed (${response.status})`);
-            return monthCloseDashboardFromPayload(await response.json());
+            const dashboard = monthCloseDashboardFromPayload(await response.json());
+            if (!dashboard) throw new Error('month close response was invalid');
+            return dashboard;
           })
-          .catch((error) => {
-            // The board and physical-count workflow remain available if the
-            // finance ledger is temporarily unavailable. Budget status then
-            // stays pending; purchases are never promoted to actual usage.
-            console.error('[inventory] month close load failed', error);
-            return null;
-          })
-      : Promise.resolve(null);
-    const [occ, avg, ct, od, bd, sec, spend, closeDashboard, cats] = await Promise.all([
-      fetchOccupancyBundle(pid, daysAgo(14)),
-      fetchDailyAverages(pid, 14),
+      : canViewFinancials
+        ? Promise.reject(new Error('month close financial data is unavailable'))
+        : Promise.resolve(null);
+    const [occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats] = await Promise.all([
+      safe('occupancy', fetchOccupancyBundle(pid, daysAgo(14))),
+      safe('daily averages', fetchDailyAverages(pid, 14)),
       // A 40-item hotel counting daily generates 1,120 rows in four weeks.
       // Keep enough local history for a full field-test month rather than
       // silently truncating the reconciliation timeline after five saves.
-      listInventoryCounts(uid, pid, 2000, canViewFinancials),
-      listInventoryOrders(uid, pid, 200, canViewFinancials),
+      safe('counts', listInventoryCounts(uid, pid, 2000, canViewFinancials)),
+      safe('delivery history', listEffectiveInventoryDeliveries(uid, pid, 200, canViewFinancials)),
+      safe('loss history', listInventoryDiscards(uid, pid, 2_000, canViewFinancials)),
       // Budget + spend are money — only fetch them for the money capability
       // so the dollar figures never reach a line-staff browser.
-      canViewFinancials
-        ? listInventoryBudgets(uid, pid)
-        : Promise.resolve([] as InventoryBudget[]),
-      canViewFinancials
-        ? listInventoryBudgetSections(uid, pid)
-        : Promise.resolve([] as InventoryBudgetSection[]),
-      canViewFinancials
-        ? monthToDateSpendDetail(uid, pid, monthWindow.monthStart, monthWindow.endExclusive)
-        : Promise.resolve({
+      canViewFinancials && financialDataReady
+        ? safe('budgets', listInventoryBudgets(uid, pid))
+        : Promise.resolve(canViewFinancials ? null : [] as InventoryBudget[]),
+      canViewFinancials && financialDataReady
+        ? safe('budget sections', listInventoryBudgetSections(uid, pid))
+        : Promise.resolve(canViewFinancials ? null : [] as InventoryBudgetSection[]),
+      canViewFinancials && financialDataReady && monthWindow
+        ? safe('purchase totals', monthToDateSpendDetail(uid, pid, monthWindow.monthStart, monthWindow.endExclusive))
+        : Promise.resolve(canViewFinancials ? null : {
             byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
             byItem: {},
             total: 0,
             complete: true,
           } as MonthSpendDetail),
-      closeDashboardPromise,
+      canViewFinancials ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
       // Custom category tabs are not money — everyone who can see inventory
       // sees the tabs.
-      listInventoryCustomCategories(uid, pid),
+      safe('custom categories', listInventoryCustomCategories(uid, pid)),
     ]);
-    return { occ, avg, ct, od, bd, sec, spend, closeDashboard, cats };
-  }, [canViewFinancials, propertyTimezone]);
+    const requiredResults = [occ, avg, ct, deliveryRows, lossRows, cats];
+    const financialResults = canViewFinancials ? [bd, sec, spend, closeDashboard] : [];
+    return {
+      occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats,
+      partialFailure: [...requiredResults, ...financialResults].some((value) => value == null),
+    };
+  }, [canViewFinancials, financialTimezoneValid, propertyTimezone]);
 
   const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
-    setOccupancy(d.occ);
-    setAverages(d.avg);
-    setCounts(d.ct);
-    setOrders(d.od);
-    setBudgets(d.bd);
-    setBudgetSections(d.sec);
-    setSpendDetail(d.spend);
-    setMonthCloseDashboard(d.closeDashboard);
-    setCustomCategories(d.cats);
+    if (d.occ != null) setOccupancy(d.occ);
+    if (d.avg != null) setAverages(d.avg);
+    if (d.ct != null) setCounts(d.ct);
+    if (d.deliveryRows != null) setDeliveries(d.deliveryRows);
+    if (d.lossRows != null) setDiscards(d.lossRows);
+    if (d.bd != null) setBudgets(d.bd);
+    if (d.sec != null) setBudgetSections(d.sec);
+    if (d.spend != null) {
+      setSpendDetail(d.spend);
+      setSpendDataAvailable(true);
+    }
+    if (d.closeDashboard != null) setMonthCloseDashboard(d.closeDashboard);
+    if (d.cats != null) setCustomCategories(d.cats);
   }, []);
 
   useEffect(() => {
     if (!uid || !activePropertyId) return;
     let cancelled = false;
+    setBundleLoaded(false);
+    setBundleLoadError(false);
 
     void (async () => {
       try {
         const d = await fetchBoardData(uid, activePropertyId);
         if (cancelled) return;
         applyBoardData(d);
+        setBundleLoadError(d.partialFailure);
       } catch (err) {
         console.error('[inventory] data load failed', err);
+        if (!cancelled) setBundleLoadError(true);
       } finally {
         if (!cancelled) setBundleLoaded(true);
       }
@@ -569,12 +624,13 @@ export function InventoryShell() {
   const historyEvents = useMemo(
     () => buildHistoryEvents(
       counts,
-      orders,
+      deliveries,
       items,
       canViewFinancials ? (monthCloseDashboard?.history ?? []) : [],
       propertyTimezone,
+      discards,
     ),
-    [counts, orders, items, canViewFinancials, monthCloseDashboard, propertyTimezone],
+    [counts, deliveries, items, canViewFinancials, monthCloseDashboard, propertyTimezone, discards],
   );
   const historyCount = historyEvents.length;
 
@@ -653,6 +709,18 @@ export function InventoryShell() {
     setEditItem(d.raw);
     setOverlay('add');
   }, []);
+
+  const onRecordStockLoss = useCallback((item: InventoryItem) => {
+    if (!canManage) return;
+    setStockLossItem(item);
+    setOverlay('stock-loss');
+  }, [canManage]);
+
+  const onCorrectDelivery = useCallback((delivery: EffectiveInventoryDelivery) => {
+    if (!canManage || !canViewFinancials) return;
+    setDeliveryCorrection(delivery);
+    setOverlay('delivery-correction');
+  }, [canManage, canViewFinancials]);
 
   // ── Quick count (ledger −/+ steppers) ──────────────────────────────────
   // Optimistic + debounced single-item counts. Refs let the debounced save and
@@ -989,10 +1057,15 @@ export function InventoryShell() {
 
   const refreshData = useCallback(async () => {
     if (!uid || !activePropertyId) return;
+    const requestedPropertyId = activePropertyId;
     try {
-      applyBoardData(await fetchBoardData(uid, activePropertyId));
+      const data = await fetchBoardData(uid, requestedPropertyId);
+      if (activePropertyIdRef.current !== requestedPropertyId) return;
+      applyBoardData(data);
+      setBundleLoadError(data.partialFailure);
     } catch (err) {
       console.error('[inventory] refresh failed', err);
+      if (activePropertyIdRef.current === requestedPropertyId) setBundleLoadError(true);
     }
   }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
 
@@ -1132,6 +1205,38 @@ export function InventoryShell() {
     >
       <InvFx />
 
+      {bundleLoadError && (
+        <div
+          role="alert"
+          style={{
+            margin: '0 4px 14px',
+            padding: '10px 14px',
+            borderRadius: 10,
+            border: `1px solid ${T.gold}66`,
+            background: T.goldDim,
+            color: T.ink,
+            fontSize: 13,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 12,
+          }}
+        >
+          <span>{tx.loadFailed}</span>
+          <button
+            type="button"
+            onClick={() => setInventoryReload((n) => n + 1)}
+            style={{
+              flex: 'none', minHeight: 44, border: `1px solid ${T.gold}88`, borderRadius: 8,
+              padding: '6px 10px', background: T.bg, color: T.ink,
+              fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {tx.retry}
+          </button>
+        </div>
+      )}
+
       {quickCountError && (
         <div
           role="alert"
@@ -1180,6 +1285,7 @@ export function InventoryShell() {
         canViewFinancials={canViewFinancials}
         onAction={openOverlay}
         onQuickCount={onQuickCount}
+        onEdit={onEditItem}
         onAdd={() => { setEditItem(null); setOverlay('add'); }}
       />
 
@@ -1288,6 +1394,7 @@ export function InventoryShell() {
           historyCount={historyCount}
           purchasesThisMonth={purchasesThisMonth}
           purchasesComplete={purchasesComplete}
+          purchasesAvailable={spendDataAvailable}
           actualUsedThisMonth={currentActual.value}
           actualState={currentActual.state}
           budgetCap={totalCap}
@@ -1387,6 +1494,19 @@ export function InventoryShell() {
         events={historyEvents}
         canViewFinancials={canViewFinancials}
         timezone={propertyTimezone}
+        canCorrectDeliveries={canManage && canViewFinancials}
+        onCorrectDelivery={onCorrectDelivery}
+        onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('scan'); }}
+      />
+
+      <DeliveryCorrectionSheet
+        lang={L}
+        open={overlay === 'delivery-correction' && canManage && canViewFinancials}
+        delivery={deliveryCorrection}
+        items={items}
+        onClose={() => setOverlay('history')}
+        onSaved={() => { setOverlay('history'); void refreshData(); }}
+        onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('scan'); }}
       />
 
       <BudgetsPanel
@@ -1426,6 +1546,7 @@ export function InventoryShell() {
         timezone={propertyTimezone}
         customCategories={customCategories}
         tabLayout={tabLayout}
+        canViewFinancials={canViewFinancials}
       />
 
       <AddItemSheet
@@ -1438,6 +1559,15 @@ export function InventoryShell() {
         customCategories={customCategories}
         defaultCustomCategoryId={addDefaultCustomId}
         hiddenBuiltins={tabLayout.hidden}
+        onRecordStockLoss={canManage ? onRecordStockLoss : undefined}
+      />
+
+      <StockLossSheet
+        lang={L}
+        open={overlay === 'stock-loss' && canManage}
+        item={stockLossItem}
+        onClose={closeOverlay}
+        onSaved={() => { closeOverlay(); void refreshData(); }}
       />
     </div>
   );

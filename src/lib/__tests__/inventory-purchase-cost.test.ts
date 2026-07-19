@@ -18,4 +18,16 @@ describe('inventory purchase cost completeness', () => {
     assert.equal(inventoryPurchaseRowValue({ quantity: 0, unit_cost: 2.5, total_cost: null }), null);
     assert.equal(inventoryPurchaseRowValue({ quantity: 4, unit_cost: -1, total_cost: null }), null);
   });
+
+  it('accepts an explicit signed compensating correction total', () => {
+    assert.equal(inventoryPurchaseRowValue({
+      entry_kind: 'correction', quantity: -4, unit_cost: 2.5, total_cost: -10,
+    }), -10);
+    assert.equal(inventoryPurchaseRowValue({
+      entry_kind: 'correction', quantity: 4, unit_cost: 2.5, total_cost: 10,
+    }), 10);
+    assert.equal(inventoryPurchaseRowValue({
+      entry_kind: 'correction', quantity: -4, unit_cost: 2.5, total_cost: null,
+    }), null);
+  });
 });

@@ -64,11 +64,18 @@ export async function GET(req: NextRequest) {
       .eq('id', gate.pid)
       .maybeSingle();
     if (propertyError) throw propertyError;
-    let tz = (property as { timezone?: string | null } | null)?.timezone ?? 'UTC';
+    const storedTimezone = (property as { timezone?: string | null } | null)?.timezone;
+    if (typeof storedTimezone !== 'string' || !storedTimezone.trim()) {
+      throw new Error('property timezone is unavailable');
+    }
+    const tz = storedTimezone.trim();
     try {
       new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
     } catch {
-      tz = 'UTC';
+      // Never move hotel accounting into UTC just because configuration is
+      // invalid; that could shift deliveries across month boundaries while
+      // still returning plausible totals.
+      throw new Error('property timezone is invalid');
     }
 
     const nowParts = new Intl.DateTimeFormat('en-US', {
@@ -97,8 +104,8 @@ export async function GET(req: NextRequest) {
     // Log the detail server-side; don't leak PostgREST table/column/constraint
     // names to the client (matches scan-invoice's hardening). (Audit fix 2026-06-18.)
     log.error('[inventory/accounting-summary] aggregation failed', { err: errToString(e) });
-    return err('aggregation_failed', {
-      requestId: gate.requestId, status: 500, code: ApiErrorCode.InternalError,
+    return err('Inventory accounting is unavailable. No totals were calculated.', {
+      requestId: gate.requestId, status: 503, code: 'inventory_accounting_unavailable',
     });
   }
 }

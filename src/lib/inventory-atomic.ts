@@ -38,8 +38,10 @@ export type InventoryDeliveryLine =
       itemId: null;
       itemName: string;
       category: 'housekeeping' | 'maintenance' | 'breakfast';
+      customCategoryId?: string | null;
       unit: string;
       parLevel: number;
+      setAside?: number;
       quantity: number;
       quantityCases?: number | null;
       unitCost?: number | null;
@@ -58,12 +60,57 @@ export type InventoryDeliveryRpcLine =
       item_id: null;
       item_name: string;
       category: 'housekeeping' | 'maintenance' | 'breakfast';
+      custom_category_id: string | null;
       unit: string;
       par_level: number;
+      set_aside: number;
       quantity: number;
       quantity_cases?: number | null;
       unit_cost?: number | null;
     };
+
+export type InventoryStockLossReason =
+  | 'missing'
+  | 'lost'
+  | 'damaged'
+  | 'stained'
+  | 'theft'
+  | 'other';
+
+export interface InventoryStockLossInput {
+  itemId: string;
+  /** On-hand value displayed when the loss form opened. Postgres rejects a
+   * stale form instead of subtracting from a newer count or delivery. */
+  expectedStock: number;
+  quantity: number;
+  reason: InventoryStockLossReason;
+  notes?: string | null;
+}
+
+export interface InventoryDeliveryCorrectionLine {
+  lineKey: string;
+  /** Root/original inventory_orders id. Correction rows are never targets. */
+  orderId: string;
+  /** Effective state displayed when History opened the correction form. */
+  expectedItemId: string;
+  expectedQuantity: number;
+  expectedUnitCost: number | null;
+  /** Null item + zero quantity means void. */
+  correctedItemId: string | null;
+  correctedQuantity: number;
+  correctedUnitCost: number | null;
+}
+
+export interface InventoryDeliveryCorrectionRpcLine {
+  line_key: string;
+  order_id: string;
+  expected_item_id: string;
+  expected_quantity: number;
+  expected_unit_cost: number | null;
+  corrected_item_id: string | null;
+  corrected_quantity: number;
+  corrected_unit_cost: number | null;
+}
 
 function requireFinite(name: string, value: number, min: number, inclusive: boolean): void {
   if (!Number.isFinite(value) || (inclusive ? value < min : value <= min)) {
@@ -110,7 +157,10 @@ export function toInventoryDeliveryRpcLines(lines: readonly InventoryDeliveryLin
       line_key: line.lineKey,
       quantity: line.quantity,
       ...(line.quantityCases == null ? {} : { quantity_cases: line.quantityCases }),
-      ...(line.unitCost == null ? {} : { unit_cost: line.unitCost }),
+      // Explicit null means the actual receipt cost is unknown. Omitting this
+      // key let the legacy RPC substitute a catalog estimate and create a fake
+      // invoice total.
+      unit_cost: line.unitCost ?? null,
     };
     if (line.itemId !== null) {
       if (!line.itemId.trim()) throw new Error('Inventory item id cannot be blank.');
@@ -119,13 +169,72 @@ export function toInventoryDeliveryRpcLines(lines: readonly InventoryDeliveryLin
     if (!line.itemName.trim()) throw new Error('A new delivery item needs a name.');
     if (!line.unit.trim()) throw new Error('A new delivery item needs a unit.');
     requireFinite('Par level', line.parLevel, 0, true);
+    const setAside = line.setAside ?? 0;
+    requireFinite('Set aside', setAside, 0, true);
+    if (!Number.isInteger(setAside)) throw new Error('Set aside must be a whole number.');
+    if (setAside > line.quantity) throw new Error('Set aside cannot exceed the received quantity.');
     return {
       ...common,
       item_id: null,
       item_name: line.itemName.trim(),
       category: line.category,
+      custom_category_id: line.customCategoryId?.trim() || null,
       unit: line.unit.trim(),
       par_level: line.parLevel,
+      set_aside: setAside,
+    };
+  });
+}
+
+export function validateInventoryStockLoss(input: InventoryStockLossInput): InventoryStockLossInput {
+  if (!input.itemId.trim()) throw new Error('Inventory item id cannot be blank.');
+  requireFinite('Expected stock', input.expectedStock, 0, true);
+  requireFinite('Loss quantity', input.quantity, 0, false);
+  if (!Number.isInteger(input.quantity)) throw new Error('Loss quantity must be a whole number.');
+  if (input.quantity > input.expectedStock) throw new Error('Loss quantity cannot exceed current stock.');
+  const reasons: readonly InventoryStockLossReason[] = [
+    'missing', 'lost', 'damaged', 'stained', 'theft', 'other',
+  ];
+  if (!reasons.includes(input.reason)) throw new Error('Inventory loss reason is invalid.');
+  return {
+    ...input,
+    itemId: input.itemId.trim(),
+    notes: input.notes?.trim() || null,
+  };
+}
+
+export function toInventoryDeliveryCorrectionRpcLines(
+  lines: readonly InventoryDeliveryCorrectionLine[],
+): InventoryDeliveryCorrectionRpcLine[] {
+  if (lines.length === 0) throw new Error('At least one delivery correction line is required.');
+  requireUniqueKeys(lines.map((line) => line.lineKey), 'delivery correction line key');
+  requireUniqueKeys(lines.map((line) => line.orderId), 'delivery order id');
+  return lines.map((line) => {
+    const lineKey = line.lineKey.trim();
+    const orderId = line.orderId.trim();
+    const expectedItemId = line.expectedItemId.trim();
+    if (!orderId) throw new Error('Delivery order id cannot be blank.');
+    if (!expectedItemId) throw new Error('Expected inventory item id cannot be blank.');
+    requireFinite('Expected delivery quantity', line.expectedQuantity, 0, true);
+    requireFinite('Corrected delivery quantity', line.correctedQuantity, 0, true);
+    if (line.expectedUnitCost != null) requireFinite('Expected unit cost', line.expectedUnitCost, 0, true);
+    if (line.correctedUnitCost != null) requireFinite('Corrected unit cost', line.correctedUnitCost, 0, true);
+    const correctedItemId = line.correctedItemId?.trim() || null;
+    if (line.correctedQuantity === 0) {
+      if (correctedItemId != null) throw new Error('A voided delivery cannot have a corrected item.');
+      if (line.correctedUnitCost != null) throw new Error('A voided delivery cannot have a corrected unit cost.');
+    } else if (correctedItemId == null) {
+      throw new Error('A corrected delivery with stock needs an item.');
+    }
+    return {
+      line_key: lineKey,
+      order_id: orderId,
+      expected_item_id: expectedItemId,
+      expected_quantity: line.expectedQuantity,
+      expected_unit_cost: line.expectedUnitCost,
+      corrected_item_id: correctedItemId,
+      corrected_quantity: line.correctedQuantity,
+      corrected_unit_cost: line.correctedUnitCost,
     };
   });
 }
@@ -153,8 +262,10 @@ export function deliveryLinesFromCommitPlan(plan: CommitPlan): InventoryDelivery
       itemId: null,
       itemName: create.name,
       category: create.category,
+      customCategoryId: create.customCategoryId,
       unit: create.unit,
       parLevel: create.parLevel,
+      setAside: create.setAside,
       quantity: order.quantity,
       quantityCases: order.quantityCases,
       unitCost: order.unitCost,

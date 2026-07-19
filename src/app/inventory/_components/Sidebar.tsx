@@ -28,6 +28,8 @@ interface SidebarProps {
   purchasesThisMonth: number;
   /** False means purchasesThisMonth is only the known-cost subtotal. */
   purchasesComplete: boolean;
+  /** False means the purchase source failed; do not render a fake-looking $0. */
+  purchasesAvailable: boolean;
   /** Closed month usage actual; null until the month is closed. */
   actualUsedThisMonth: number | null;
   actualState: InventoryBudgetActualState;
@@ -51,6 +53,7 @@ export function Sidebar({
   historyCount,
   purchasesThisMonth,
   purchasesComplete,
+  purchasesAvailable,
   actualUsedThisMonth,
   actualState,
   budgetCap,
@@ -100,6 +103,7 @@ export function Sidebar({
               actual={actualUsedThisMonth}
               purchases={purchasesThisMonth}
               purchasesComplete={purchasesComplete}
+              purchasesAvailable={purchasesAvailable}
               cap={budgetCap}
               state={actualState}
               lang={lang}
@@ -186,6 +190,7 @@ function UsageStrip({
   actual,
   purchases,
   purchasesComplete,
+  purchasesAvailable,
   cap,
   state,
   lang,
@@ -193,6 +198,7 @@ function UsageStrip({
   actual: number | null;
   purchases: number;
   purchasesComplete: boolean;
+  purchasesAvailable: boolean;
   cap: number;
   state: InventoryBudgetActualState;
   lang: Lang;
@@ -229,8 +235,9 @@ function UsageStrip({
           {state === 'partial' ? tx.partialUsage : tx.usagePending}
         </span>
         <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink2 }}>
-          {purchasesComplete ? fmtMoney(purchases) : `≥ ${fmtMoney(purchases)}`} {tx.purchasesLogged}
-          {!purchasesComplete ? ` · ${tx.purchaseCostsMissing}` : ''}
+          {purchasesAvailable
+            ? <>{purchasesComplete ? fmtMoney(purchases) : `≥ ${fmtMoney(purchases)}`} {tx.purchasesLogged}{!purchasesComplete ? ` · ${tx.purchaseCostsMissing}` : ''}</>
+            : <>— · {tx.purchasesUnavailable}</>}
         </span>
         <span style={{ fontFamily: fonts.sans, fontSize: 10.5, lineHeight: 1.35, color: T.ink3 }}>
           {tx.budgetAfterClose}
@@ -279,8 +286,9 @@ function UsageStrip({
           : tx.noBudgetSet}
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 10.5, color: T.ink3 }}>
-        {purchasesComplete ? fmtMoney(purchases) : `≥ ${fmtMoney(purchases)}`} {tx.purchasesLogged}
-        {!purchasesComplete ? ` · ${tx.purchaseCostsMissing}` : ''} · {tx.actualUsed}
+        {purchasesAvailable
+          ? <>{purchasesComplete ? fmtMoney(purchases) : `≥ ${fmtMoney(purchases)}`} {tx.purchasesLogged}{!purchasesComplete ? ` · ${tx.purchaseCostsMissing}` : ''}</>
+          : <>— · {tx.purchasesUnavailable}</>} · {tx.actualUsed}
       </span>
     </div>
   );

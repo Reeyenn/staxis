@@ -32,9 +32,16 @@ const capsSource = readFileSync(
 );
 
 describe('desktop inventory contrast contract', () => {
-  test('secondary text meets WCAG AA contrast on the inventory background', () => {
-    const ratio = contrastRatio(T.ink2, T.bg);
-    assert.ok(ratio >= 4.5, `T.ink2 contrast is ${ratio.toFixed(2)}:1; expected at least 4.5:1`);
+  test('every secondary text alias meets WCAG AA contrast on the inventory background', () => {
+    for (const [name, color] of Object.entries({
+      ink2: T.ink2,
+      ink3: T.ink3,
+      dim: T.dim,
+      faint: T.faint,
+    })) {
+      const ratio = contrastRatio(color, T.bg);
+      assert.ok(ratio >= 4.5, `${name} contrast is ${ratio.toFixed(2)}:1; expected at least 4.5:1`);
+    }
   });
 
   test('control boundaries meet non-text contrast on the inventory background', () => {

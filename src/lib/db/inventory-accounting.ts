@@ -22,6 +22,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { logErr } from './_common';
 import { fetchAllRows } from '../supabase-paginate';
 import { listInventoryMonthCloseHistory } from './inventory-month-closes';
+import { summarizeEffectivePurchasesForProperty } from './inventory-effective-purchases';
 import type { InventoryMonthCloseHistoryRow } from '../inventory-month-close';
 
 export type InventoryActualStatus = 'pending' | 'complete' | 'partial' | 'unallocated';
@@ -267,20 +268,18 @@ export async function getInventoryAccountingSummary(
   const paged = async <T,>(
     label: string,
     makePage: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: unknown }>,
-    bestEffort = false,
   ): Promise<T[]> => {
     try {
       return await fetchAllRows(makePage);
     } catch (e) {
       logErr(label, e);
-      if (bestEffort) return [];
       throw e;
     }
   };
 
   const ordersRaw = await paged('accounting/orders', (a, b) => client
     .from('inventory_orders')
-    .select('total_cost, quantity, unit_cost, received_at, item_id, inventory!inner(category)')
+    .select('id,total_cost,quantity,unit_cost,received_at,item_id,entry_kind,corrects_order_id,correction_event_id,inventory!inner(category)')
     .eq('property_id', pid)
     .gte('received_at', monthStart.toISOString())
     .lt('received_at', monthEndExclusive.toISOString())
@@ -428,9 +427,14 @@ export async function getInventoryAccountingSummary(
   // Audit M5: include `received_at` in the row type so the YTD loop below
   // doesn't have to double-cast `(o as unknown as { received_at: string })`.
   type OrderRow = {
+    id: string;
+    item_id: string;
     total_cost: number | null;
     quantity: number | null;
     unit_cost: number | null;
+    entry_kind?: 'receipt' | 'correction' | string | null;
+    corrects_order_id?: string | null;
+    correction_event_id?: string | null;
     inventory: { category: InventoryCategory } | Array<{ category: InventoryCategory }> | null;
     received_at?: string | null;
   };
@@ -441,15 +445,21 @@ export async function getInventoryAccountingSummary(
       rows[purchase.category].receiptsValue += Number(purchase.value_cents) / 100;
     }
   } else {
-    for (const o of (ordersRaw ?? []) as OrderRow[]) {
-      const cat = Array.isArray(o.inventory) ? o.inventory[0]?.category : o.inventory?.category;
-      if (!cat || !cats.includes(cat)) continue;
-      const hasCost = o.total_cost != null || (o.unit_cost != null && o.quantity != null);
-      if (!hasCost) hasUncostedOrder = true;
-      const total = o.total_cost != null
-        ? Number(o.total_cost)
-        : (o.unit_cost != null && o.quantity != null ? Number(o.unit_cost) * Number(o.quantity) : 0);
-      rows[cat].receiptsValue += total;
+    const sourceOrders = (ordersRaw ?? []) as OrderRow[];
+    const purchaseSummary = await summarizeEffectivePurchasesForProperty(client, pid, sourceOrders);
+    const categoryByItem = new Map<string, InventoryCategory>();
+    for (const order of sourceOrders) {
+      const category = Array.isArray(order.inventory) ? order.inventory[0]?.category : order.inventory?.category;
+      if (category && cats.includes(category)) categoryByItem.set(order.item_id, category);
+    }
+    hasUncostedOrder = purchaseSummary.uncostedDeliveryCount > 0;
+    for (const receipt of purchaseSummary.receipts) {
+      if (receipt.voided || !receipt.itemId) continue;
+      const category = categoryByItem.get(receipt.itemId);
+      if (!category) {
+        throw new Error(`Effective inventory receipt ${receipt.rootOrderId} has no category evidence.`);
+      }
+      rows[category].receiptsValue += (receipt.valueCents ?? 0) / 100;
     }
   }
 
@@ -542,7 +552,7 @@ export async function getInventoryAccountingSummary(
     : ytdAnchor;
   const ytdOrders = await paged('accounting/ytd-orders', (a, b) => client
     .from('inventory_orders')
-    .select('total_cost, quantity, unit_cost, received_at, inventory!inner(category)')
+    .select('id,total_cost,quantity,unit_cost,received_at,item_id,entry_kind,corrects_order_id,correction_event_id,inventory!inner(category)')
     .eq('property_id', pid)
     .gte('received_at', ytdStart.toISOString())
     .lt('received_at', monthEndExclusive.toISOString())
@@ -589,18 +599,18 @@ export async function getInventoryAccountingSummary(
       byCategory: null,
     });
   }
-  for (const o of (ytdOrders ?? []) as OrderRow[]) {
-    const cat = Array.isArray(o.inventory) ? o.inventory[0]?.category : o.inventory?.category;
-    if (!cat || !cats.includes(cat)) continue;
-    if (!o.received_at) continue;  // skip rows without a usable receipt timestamp
-    const at = new Date(o.received_at);
+  const ytdPurchaseSummary = await summarizeEffectivePurchasesForProperty(
+    client,
+    pid,
+    (ytdOrders ?? []) as OrderRow[],
+  );
+  for (const receipt of ytdPurchaseSummary.receipts) {
+    if (!receipt.receivedAt) continue;  // skip rows without a usable receipt timestamp
+    const at = new Date(receipt.receivedAt);
     const key = monthKeyForInstant(at, window?.timeZone ?? 'UTC');
     const bucket = ytdBuckets.get(key);
     if (!bucket) continue;
-    const total = o.total_cost != null
-      ? Number(o.total_cost)
-      : (o.unit_cost != null && o.quantity != null ? Number(o.unit_cost) * Number(o.quantity) : 0);
-    bucket.receiptsValue += total;
+    bucket.receiptsValue += (receipt.valueCents ?? 0) / 100;
   }
   type YtdDiscardRow = {
     cost_value: number | null;
@@ -714,8 +724,9 @@ export async function getInventoryAccountingSummary(
     unit_cost: number | string | null;
     inventory: { name: string } | Array<{ name: string }> | null;
   };
-  // Best-effort (matches the old no-error-check reads): a failure logs and
-  // yields an empty problem list rather than failing the whole summary.
+  // These rankings are part of the financial summary. Fail the whole request
+  // when either dependency fails; an empty list would look like a real
+  // "nothing lost" result and is not distinguishable from missing data.
   const discardsByItemRaw = await paged('accounting/problem-discards', (a, b) => client
     .from('inventory_discards')
     .select('item_id, cost_value, quantity, unit_cost, inventory!inner(name)')
@@ -723,7 +734,7 @@ export async function getInventoryAccountingSummary(
     .gte('discarded_at', monthStart.toISOString())
     .lt('discarded_at', monthEndExclusive.toISOString())
     .order('discarded_at', { ascending: true })
-    .range(a, b), true);
+    .range(a, b));
   const recsByItemRaw = await paged('accounting/problem-recs', (a, b) => client
     .from('inventory_reconciliations')
     .select('item_id, unaccounted_variance_value, unaccounted_variance, unit_cost, inventory!inner(name)')
@@ -731,7 +742,7 @@ export async function getInventoryAccountingSummary(
     .gte('reconciled_at', monthStart.toISOString())
     .lt('reconciled_at', monthEndExclusive.toISOString())
     .order('reconciled_at', { ascending: true })
-    .range(a, b), true);
+    .range(a, b));
 
   type MutableProblemItem = {
     itemId: string;
@@ -841,12 +852,16 @@ export async function getInventoryAccountingSummary(
   const thisStartStr = `${monthKey}-01`;
   const endStr = `${nextMonthKey}-01`;
 
-  const { data: occRows } = await client
+  const { data: occRows, error: occupancyError } = await client
     .from('daily_logs')
     .select('date, occupied')
     .eq('property_id', pid)
     .gte('date', startStr)
     .lt('date', endStr);
+  if (occupancyError) {
+    logErr('accounting/occupancy', occupancyError);
+    throw occupancyError;
+  }
   let nightsThis = 0;
   let nightsLast = 0;
   for (const r of (occRows ?? []) as Array<{ date: string; occupied: number | null }>) {

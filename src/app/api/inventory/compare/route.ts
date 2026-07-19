@@ -32,6 +32,8 @@ import { fetchAllRows } from '@/lib/supabase-paginate';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
 import { listInventoryMonthCloseHistory } from '@/lib/db/inventory-month-closes';
+import { summarizeEffectivePurchasesForProperty } from '@/lib/db/inventory-effective-purchases';
+import type { EffectivePurchaseOrderInput } from '@/lib/inventory-effective-purchases';
 import {
   resolveInventoryCompareActual,
   type InventoryCompareBasis,
@@ -68,9 +70,9 @@ function monthKeyInZone(iso: string, timeZone: string): string {
   return year && month ? `${year}-${month}` : iso.slice(0, 7);
 }
 
-// Same delivery/discard valuation as getInventoryAccountingSummary: prefer the
-// stored total, fall back to unit × quantity so Compare and Reports can never
-// disagree about what the same row cost.
+// Discards are not append-only correction chains, so their row valuation can
+// stay local. Deliveries must use summarizeEffectivePurchasesForProperty below
+// so Compare, Reports, and Month Close agree after a correction or full void.
 function rowValue(r: { total: number | null; quantity: number | null; unit_cost: number | null }): number {
   if (r.total != null) return Number(r.total);
   if (r.unit_cost != null && r.quantity != null) return Number(r.unit_cost) * Number(r.quantity);
@@ -99,7 +101,7 @@ export async function GET(req: NextRequest) {
     ? basisParam
     : 'custom';
 
-  let tz = 'UTC';
+  let tz: string;
   try {
     const { data: property, error: propertyError } = await supabaseAdmin
       .from('properties')
@@ -107,13 +109,10 @@ export async function GET(req: NextRequest) {
       .eq('id', gate.pid)
       .maybeSingle();
     if (propertyError) throw propertyError;
-    const propertyTimezone = (property as { timezone?: string | null } | null)?.timezone;
-    if (propertyTimezone) {
-      try {
-        new Intl.DateTimeFormat('en-US', { timeZone: propertyTimezone }).format(new Date());
-        tz = propertyTimezone;
-      } catch { /* invalid stored zone → UTC */ }
-    }
+    const propertyTimezone = (property as { timezone?: string | null } | null)?.timezone?.trim();
+    if (!propertyTimezone) throw new Error('property timezone is unavailable');
+    new Intl.DateTimeFormat('en-US', { timeZone: propertyTimezone }).format(new Date());
+    tz = propertyTimezone;
   } catch (e) {
     log.error('[inventory/compare] property timezone failed', { err: errToString(e) });
     return err('aggregation_failed', {
@@ -136,10 +135,10 @@ export async function GET(req: NextRequest) {
     const startIso = start.toISOString();
     const endIso = endExclusive.toISOString();
     const [orderRows, discardRows, countRows, firstItemQ, firstCountQ, firstOrderQ, closeHistory] = await Promise.all([
-      fetchAllRows<{ total_cost: number | null; quantity: number | null; unit_cost: number | null }>(
+      fetchAllRows<EffectivePurchaseOrderInput>(
         (a, b) => supabaseAdmin
           .from('inventory_orders')
-          .select('total_cost, quantity, unit_cost')
+          .select('id,item_id,total_cost,quantity,unit_cost,received_at,entry_kind,corrects_order_id,correction_event_id')
           .eq('property_id', gate.pid)
           .gte('received_at', startIso)
           .lt('received_at', endIso)
@@ -191,15 +190,16 @@ export async function GET(req: NextRequest) {
     const firstErr = firstItemQ.error ?? firstCountQ.error ?? firstOrderQ.error;
     if (firstErr) throw firstErr;
 
-    const knownReceiptsValue = orderRows.reduce(
-      (s: number, r: { total_cost: number | null; quantity: number | null; unit_cost: number | null }) =>
-        s + rowValue({ total: r.total_cost, quantity: r.quantity, unit_cost: r.unit_cost }), 0,
+    const purchaseSummary = await summarizeEffectivePurchasesForProperty(
+      supabaseAdmin,
+      gate.pid,
+      orderRows,
     );
-    const purchasesComplete = orderRows.every(
-      (r: { total_cost: number | null; quantity: number | null; unit_cost: number | null }) =>
-        r.total_cost != null || (r.unit_cost != null && r.quantity != null),
-    );
-    const receiptsValue = purchasesComplete ? knownReceiptsValue : null;
+    const knownReceiptsValue = purchaseSummary.knownLoggedPurchaseCents / 100;
+    const purchasesComplete = purchaseSummary.uncostedDeliveryCount === 0;
+    const receiptsValue = purchaseSummary.loggedPurchaseCents == null
+      ? null
+      : purchaseSummary.loggedPurchaseCents / 100;
     const knownDiscardsValue = discardRows.reduce(
       (s: number, r: { cost_value: number | null; quantity: number | null; unit_cost: number | null }) =>
         s + rowValue({ total: r.cost_value, quantity: r.quantity, unit_cost: r.unit_cost }), 0,

@@ -13,7 +13,8 @@ describe('inventory Set Aside create/edit contract', () => {
   test('main Add Item restores, freezes, and inserts Set Aside', () => {
     const sheet = source('src', 'app', 'inventory', '_components', 'overlays', 'AddItemSheet.tsx');
 
-    assert.match(sheet, /setSetAsideInput\(restored\?\.setAsideInput \?\? '0'\)/);
+    assert.match(sheet, /setAsideInput:\s*restored\.setAsideInput/);
+    assert.match(sheet, /setSetAsideInput\(next\.setAsideInput\)/);
     assert.match(sheet, /createFrozenInventoryItemAttempt\(\{[\s\S]*?setAsideInput,[\s\S]*?\}\)/);
     assert.match(sheet, /currentStock: attempt\.currentStock,[\s\S]*?setAside: attempt\.setAside,/);
     assert.match(sheet, /if \(setAsideNum > onHandForSubset\)/);

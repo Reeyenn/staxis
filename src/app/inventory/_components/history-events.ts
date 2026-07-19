@@ -11,7 +11,13 @@
 // deliveries carry free-text UI copy and simply fall through to the generic
 // 'delivery' kind, as do legacy/unknown notes — never dropped.
 
-import type { InventoryCount, InventoryItem, InventoryOrder } from '@/types';
+import type {
+  EffectiveInventoryDelivery,
+  InventoryCount,
+  InventoryDiscard,
+  InventoryItem,
+  InventoryOrder,
+} from '@/types';
 import type {
   InventoryCloseAllocationMode,
   InventoryMonthCloseHistoryRow,
@@ -33,6 +39,7 @@ export type HistoryEventKind =
   | 'scan'        // delivery added by scanning an invoice
   | 'delivery'    // delivery typed in by hand (or legacy/unknown stock-in)
   | 'assistant'   // AI assistant marked an item ordered
+  | 'loss'        // missing / damaged / stained / stolen stock recorded
   | 'itemsAdded'  // new items created that day
   | 'monthClose'; // finance-only immutable monthly accounting snapshot
 
@@ -70,6 +77,8 @@ export interface HistoryLine {
   delta?: number;
   /** $ for the line — delivery line total, or count variance value. */
   amount?: number;
+  /** Stable effective delivery state; present only on delivery lines. */
+  delivery?: EffectiveInventoryDelivery;
 }
 
 export interface HistoryEvent {
@@ -86,6 +95,8 @@ export interface HistoryEvent {
   amount: number | null;
   /** Present only for delivery/scan/assistant events. */
   deliveryCost?: HistoryDeliveryCost;
+  /** Present only for one immutable stock-loss event. */
+  loss?: Pick<InventoryDiscard, 'reason' | 'notes' | 'stockBefore' | 'stockAfter'>;
   /** Present only for a finance-gated immutable month-close event. */
   monthClose?: HistoryMonthClose;
 }
@@ -97,10 +108,11 @@ function parseInvoiceNumber(notes: string): string | null {
 
 export function buildHistoryEvents(
   counts: InventoryCount[],
-  orders: InventoryOrder[],
+  deliveries: Array<InventoryOrder | EffectiveInventoryDelivery>,
   items: InventoryItem[],
   monthCloses: readonly InventoryMonthCloseHistoryRow[] = [],
   propertyTimezone: string = 'UTC',
+  discards: readonly InventoryDiscard[] = [],
 ): HistoryEvent[] {
   const out: HistoryEvent[] = [];
 
@@ -138,16 +150,38 @@ export function buildHistoryEvents(
   // ── Deliveries: group ledger rows written by one save ────────────────────
   // One scan/typed-in delivery writes all its rows atomically with the same
   // received_at + vendor + notes — that triple is the event key.
-  const deliveryGroups = new Map<string, InventoryOrder[]>();
-  for (const o of orders) {
+  const effectiveDeliveries: EffectiveInventoryDelivery[] = deliveries.map((entry) => {
+    if ('rootOrderId' in entry) return entry;
+    const total = inventoryPurchaseRowValue({
+      total_cost: entry.totalCost ?? null,
+      quantity: entry.quantity,
+      unit_cost: entry.unitCost ?? null,
+    });
+    return {
+      rootOrderId: entry.id,
+      original: entry,
+      status: 'active',
+      effectiveItemId: entry.itemId,
+      effectiveItemName: entry.itemName,
+      effectiveQuantity: entry.quantity,
+      effectiveUnitCost: entry.unitCost ?? null,
+      effectiveTotalCost: total,
+      correctionCount: 0,
+      lastCorrection: null,
+    };
+  });
+  const deliveryGroups = new Map<string, EffectiveInventoryDelivery[]>();
+  for (const delivery of effectiveDeliveries) {
+    const o = delivery.original;
     const when = o.receivedAt ?? o.orderedAt ?? null;
     const key = `${when ? when.getTime() : 'na'}|${o.vendorName ?? ''}|${o.notes ?? ''}`;
     const g = deliveryGroups.get(key);
-    if (g) g.push(o);
-    else deliveryGroups.set(key, [o]);
+    if (g) g.push(delivery);
+    else deliveryGroups.set(key, [delivery]);
   }
   for (const [key, group] of deliveryGroups) {
-    const notes = group[0].notes ?? '';
+    const original = group[0].original;
+    const notes = original.notes ?? '';
     const kind: HistoryEventKind = notes.startsWith(INVOICE_SCAN_NOTE_PREFIX)
       ? 'scan'
       : notes === ASSISTANT_ORDER_NOTE
@@ -155,31 +189,55 @@ export function buildHistoryEvents(
         : 'delivery'; // typed-in + legacy/unknown
     let knownSubtotal = 0;
     let complete = true;
-    const lines: HistoryLine[] = group.map((o) => {
-      const value = inventoryPurchaseRowValue({
-        total_cost: o.totalCost ?? null,
-        quantity: o.quantity,
-        unit_cost: o.unitCost ?? null,
-      });
+    const lines: HistoryLine[] = group.map((delivery) => {
+      const value = delivery.status === 'voided' ? 0 : delivery.effectiveTotalCost;
       if (value != null) knownSubtotal += value;
       else complete = false;
       return {
-        name: o.itemName,
-        qty: o.quantity,
-        cases: o.quantityCases ?? null,
+        name: delivery.effectiveItemName ?? delivery.original.itemName,
+        qty: delivery.effectiveQuantity,
+        cases: delivery.status === 'active' ? delivery.original.quantityCases ?? null : null,
         amount: value ?? undefined,
+        delivery,
       };
     });
     out.push({
       id: `delivery:${key}`,
       kind,
-      date: group[0].receivedAt ?? group[0].orderedAt ?? new Date(0),
-      who: group[0].vendorName || null,
+      date: original.receivedAt ?? original.orderedAt ?? new Date(0),
+      who: original.vendorName || null,
       byAssistant: kind === 'assistant',
       invoiceNumber: kind === 'scan' ? parseInvoiceNumber(notes) : null,
       lines,
-      amount: knownSubtotal,
+      // With no known line cost, null means “unavailable.” Returning numeric 0
+      // here would make a completely uncosted delivery look like a real $0.
+      amount: complete || knownSubtotal > 0 ? knownSubtotal : null,
       deliveryCost: { knownSubtotal, complete },
+    });
+  }
+
+  // ── Missing / damaged stock: one immutable event per atomic loss ────────
+  for (const loss of discards) {
+    const amount = loss.costValue != null && Number.isFinite(loss.costValue)
+      ? loss.costValue
+      : loss.unitCost != null && Number.isFinite(loss.unitCost)
+        ? loss.quantity * loss.unitCost
+        : null;
+    out.push({
+      id: `loss:${loss.requestId ?? loss.id}`,
+      kind: 'loss',
+      date: loss.discardedAt ?? new Date(0),
+      who: loss.discardedBy || null,
+      byAssistant: false,
+      invoiceNumber: null,
+      lines: [{ name: loss.itemName, qty: loss.quantity, amount: amount ?? undefined }],
+      amount,
+      loss: {
+        reason: loss.reason,
+        notes: loss.notes,
+        stockBefore: loss.stockBefore,
+        stockAfter: loss.stockAfter,
+      },
     });
   }
 

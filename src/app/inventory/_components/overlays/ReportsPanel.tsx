@@ -10,6 +10,11 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import {
+  isInventoryAccountingSummaryPayload,
+  type InventoryAccountingSummaryContract,
+  type InventoryAccountingYtdContract,
+} from '@/lib/inventory-accounting-contract';
 
 import { shortDateFromDate, shortMonthFromYmd } from '@/lib/format-date';
 import { formatInventoryMonthKey } from '@/lib/inventory-month-close';
@@ -17,9 +22,11 @@ import { inventoryReportMonthKey } from '@/lib/reports/property-report-range';
 import { T, fonts, statusColor, type InvCat } from '../tokens';
 import { catLabelFor, type Lang } from '../inv-i18n';
 import { Caps } from '../Caps';
+import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import type { DisplayItem } from '../types';
+import styles from './ReportsPanel.module.css';
 
 interface ReportsPanelProps {
   lang: Lang;
@@ -78,6 +85,9 @@ function rpStrings(lang: Lang) {
       occNights: 'occupied room-nights',
       loading: 'Loading…',
       loadFailed: 'Couldn’t load monthly accounting. Try again.',
+      unavailableTitle: 'Monthly accounting unavailable',
+      unavailableBody: 'Purchases, usage, loss, and occupancy metrics are unavailable because a required data source failed. No $0 or empty result is being shown.',
+      retry: 'Retry accounting',
     },
     es: {
       eyebrow: 'Informes · esta propiedad',
@@ -124,52 +134,18 @@ function rpStrings(lang: Lang) {
       occNights: 'noches-hab. ocupadas',
       loading: 'Cargando…',
       loadFailed: 'No se pudo cargar la contabilidad mensual. Intente de nuevo.',
+      unavailableTitle: 'Contabilidad mensual no disponible',
+      unavailableBody: 'Las compras, el uso, las pérdidas y las métricas de ocupación no están disponibles porque falló una fuente de datos requerida. No se muestra un resultado vacío ni de $0.',
+      retry: 'Reintentar contabilidad',
     },
   }[lang];
 }
 
-interface YtdRow {
-  monthStart: string;
-  receiptsValue: number;
-  purchasesValue: number | null;
-  actualUsageValue: number | null;
-  actualStatus: 'pending' | 'complete' | 'partial' | 'unallocated';
-  isPartial: boolean;
-  discardsValue: number | null;
-  knownDiscardsValue: number;
-  discardsComplete: boolean;
-}
+type YtdRow = InventoryAccountingYtdContract;
+type SummaryShape = InventoryAccountingSummaryContract;
 
-interface SummaryShape {
-  monthKey: string;
-  monthStart: string;
-  totals: {
-    openingValue: number | null;
-    receiptsValue: number;
-    loggedPurchasesValue: number | null;
-    knownLoggedPurchasesValue: number;
-    purchasesValue: number | null;
-    actualUsageValue: number | null;
-    actualStatus: 'pending' | 'complete' | 'partial' | 'unallocated';
-    allocation: 'pending' | 'itemized' | 'total_only';
-    isPartial: boolean;
-    budgetComparisonAvailable: boolean;
-    discardsValue: number | null;
-    knownDiscardsValue: number;
-    discardsComplete: boolean;
-    closingValue: number | null;
-    unaccountedShrinkageValue: number | null;
-    knownUnaccountedShrinkageValue: number;
-    shrinkageComplete: boolean;
-    budgetCents: number | null;
-    spendCents: number | null;
-  };
-  byCategory: Array<{ reconciliationsThisMonth: number }>;
-  ytd: YtdRow[];
-  costPerOccupiedRoom: {
-    thisMonth: number | null;
-    occupiedNightsThisMonth: number;
-  };
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function ReportsPanel({ lang, open, onClose, display, customNameById, timezone }: ReportsPanelProps) {
@@ -179,6 +155,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
   const [summary, setSummary] = useState<SummaryShape | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [reloadSequence, setReloadSequence] = useState(0);
 
   useEffect(() => {
     if (!open || !user || !activePropertyId) return;
@@ -196,10 +173,17 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
           if (!cancelled) setLoadFailed(true);
           return;
         }
-        const json = (await res.json()) as { ok: boolean; data: SummaryShape };
+        const json: unknown = await res.json();
         if (cancelled) return;
-        if (json.ok) setSummary(json.data);
-        else setLoadFailed(true);
+        if (
+          isRecord(json)
+          && json.ok === true
+          && isInventoryAccountingSummaryPayload(json.data)
+        ) {
+          setSummary(json.data);
+        } else {
+          setLoadFailed(true);
+        }
       } catch (err) {
         console.error('[reports] load failed', err);
         if (!cancelled) setLoadFailed(true);
@@ -208,7 +192,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
       }
     })();
     return () => { cancelled = true; };
-  }, [open, user, activePropertyId]);
+  }, [open, user, activePropertyId, reloadSequence]);
 
   // ── Day-one stats — computed from the live item list, always real ────────
   // Memoized: this panel stays mounted while closed (the Overlay needs `open`
@@ -241,7 +225,9 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
       if ((d.raw.currentStock ?? 0) > 0 && d.raw.unitCost == null) cur.complete = false;
       byKey.set(key, cur);
     }
-    for (const [key, v] of byKey) if (v.value > 0) catRows.push({ key, ...v });
+    for (const [key, v] of byKey) {
+      if (v.value > 0 || !v.complete) catRows.push({ key, ...v });
+    }
     catRows.sort((a, b) => b.value - a.value);
     return { totalValue, valueComplete, pricedCount, uncountedCount, countedCount: display.length - uncountedCount, criticalCount, lowCount, lastCountAt, catRows };
   }, [display, customNameById, lang]);
@@ -256,7 +242,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
     ?? summary?.totals.receiptsValue
     ?? 0;
   const loggedPurchaseText = loggedPurchases == null
-    ? `≥ ${fmtMoney(knownLoggedPurchases)} · ${rp.purchaseCostsMissing}`
+    ? `${knownLoggedPurchases > 0 ? `≥ ${fmtMoney(knownLoggedPurchases)}` : '—'} · ${rp.purchaseCostsMissing}`
     : fmtMoney(loggedPurchases);
   // The aggregate can include a live purchase preview for an open period.
   // Only a period with a persisted usage actual has confirmed close purchases.
@@ -275,7 +261,9 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
     ?? summary?.totals.discardsValue
     ?? 0;
   const discardsComplete = summary?.totals.discardsComplete ?? true;
-  const discardText = `${discardsComplete ? '' : '≥ '}${fmtMoney(knownDiscards)}`;
+  const discardText = discardsComplete
+    ? fmtMoney(knownDiscards)
+    : `${knownDiscards > 0 ? `≥ ${fmtMoney(knownDiscards)}` : '—'} · ${rp.lossCostsMissing}`;
   const hasDiscards = knownDiscards > 0 || !discardsComplete;
   const ytd = (summary?.ytd ?? []).slice().sort((a, b) => a.monthStart.localeCompare(b.monthStart));
   const closedMonths = ytd.filter((r) => r.actualUsageValue != null && r.actualStatus !== 'pending');
@@ -319,10 +307,12 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         {/* Row 1 — always-real, day-one stats */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+        <div className={styles.kpiGrid}>
           <KPI
             eyebrow={rp.inventoryValue}
-            value={`${valueComplete ? '' : '≥ '}${fmtMoney(totalValue)}`}
+            value={valueComplete
+              ? fmtMoney(totalValue)
+              : totalValue > 0 ? `≥ ${fmtMoney(totalValue)}` : '—'}
             cohort={{
               left: `${display.length} ${rp.skus}`,
               right: pricedCount < display.length
@@ -352,8 +342,34 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
           />
         </div>
 
+        {loading && !summary ? (
+          <Card title={rp.thisMonth}>
+            <div role="status" aria-live="polite">
+              <EmptyText>{rp.loading}</EmptyText>
+            </div>
+          </Card>
+        ) : loadFailed && !summary ? (
+          <div role="alert">
+            <Card title={rp.unavailableTitle}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 12 }}>
+                <div style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.55 }}>
+                  {rp.unavailableBody}
+                </div>
+                <Btn
+                  variant="ghost"
+                  size="md"
+                  style={{ minHeight: 44 }}
+                  onClick={() => setReloadSequence((value) => value + 1)}
+                >
+                  {rp.retry}
+                </Btn>
+              </div>
+            </Card>
+          </div>
+        ) : summary ? (
+          <>
         {/* Row 2 — shelf value by category + monthly actual/purchases */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 10 }}>
+        <div className={styles.primaryGrid}>
           <Card title={rp.valueByCategory}>
             {catRows.length === 0 ? (
               <EmptyText>{rp.noCountsYet}</EmptyText>
@@ -369,7 +385,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
                       }}>
                         <span>{c.label}</span>
                         <span style={{ fontFamily: fonts.mono, fontSize: 12, color: T.ink2 }}>
-                          {c.complete ? fmtMoney(c.value) : `≥ ${fmtMoney(c.value)}`}
+                          {c.complete ? fmtMoney(c.value) : c.value > 0 ? `≥ ${fmtMoney(c.value)}` : '—'}
                         </span>
                       </div>
                       <div style={{ height: 6, borderRadius: 6, background: T.ruleSoft, overflow: 'hidden' }}>
@@ -435,13 +451,15 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
         )}
 
         {/* Row 4 — shrinkage + cost/occ-room: real when computable, honest otherwise */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div className={styles.secondaryGrid}>
           {shrinkageReady ? (
             <KPI
               eyebrow={rp.shrinkageRate}
               value={shrinkagePct != null
                 ? `${shrinkagePct.toFixed(1)}%`
-                : `${shrinkageComplete ? '' : '≥ '}${fmtMoney(knownShrinkage)}`}
+                : shrinkageComplete
+                  ? fmtMoney(knownShrinkage)
+                  : knownShrinkage > 0 ? `≥ ${fmtMoney(knownShrinkage)}` : '—'}
               cohort={shrinkagePct != null
                 ? { left: fmtMoney(knownShrinkage), right: rp.mtdLoss }
                 : { left: rp.mtdLoss, right: shrinkageComplete ? '' : rp.lossCostsMissing }}
@@ -459,6 +477,8 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
             <ComingSoonCard title={rp.costPerOccRoom} note={rp.costSoon} soon={rp.comingSoon} />
           )}
         </div>
+          </>
+        ) : null}
       </div>
     </Overlay>
   );
@@ -467,6 +487,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div
+      className={styles.card}
       style={{
         background: T.paper,
         border: `1px solid ${T.rule}`,
@@ -495,6 +516,7 @@ function EmptyText({ children }: { children: React.ReactNode }) {
 function ComingSoonCard({ title, note, soon }: { title: string; note: string; soon: string }) {
   return (
     <div
+      className={styles.card}
       style={{
         border: `1.5px dashed ${T.rule}`,
         borderRadius: 16,
@@ -545,6 +567,7 @@ function KPI({
 }) {
   return (
     <div
+      className={styles.kpiCard}
       style={{
         background: T.paper,
         border: `1px solid ${T.rule}`,
@@ -558,6 +581,7 @@ function KPI({
     >
       <Caps>{eyebrow}</Caps>
       <div
+        className={styles.kpiValue}
         style={{
           fontFamily: fonts.sans,
           fontSize: 42,
@@ -571,6 +595,7 @@ function KPI({
       </div>
       {cohort && (
         <div
+          className={styles.kpiCohort}
           style={{
             paddingTop: 10,
             borderTop: `1px solid ${T.ruleSoft}`,
@@ -597,6 +622,7 @@ function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof 
   const hasPartial = data.some((d) => d.actualStatus === 'partial' || d.isPartial);
   return (
     <div
+      className={styles.chartCard}
       style={{
         background: T.paper,
         border: `1px solid ${T.rule}`,
@@ -622,15 +648,10 @@ function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof 
           </h3>
         </div>
       </div>
+      <div className={styles.chartScroller} tabIndex={0} aria-label={rp.usageByMonth}>
       <div
-        style={{
-          display: 'flex',
-          alignItems: 'flex-end',
-          gap: 22,
-          height: 160,
-          borderBottom: `1px solid ${T.rule}`,
-          paddingBottom: 8,
-        }}
+        className={styles.chartBars}
+        style={{ borderBottom: `1px solid ${T.rule}` }}
       >
         {data.map((d, i) => {
           const value = d.actualUsageValue;
@@ -679,6 +700,7 @@ function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof 
             </div>
           );
         })}
+      </div>
       </div>
       {hasPartial && (
         <div style={{ marginTop: 10, fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>

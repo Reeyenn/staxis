@@ -1,0 +1,110 @@
+.eventButton:focus-visible {
+  outline: 2px solid #3e5c48;
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+
+.lineAction {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid #5c625c;
+  border-radius: 999px;
+  background: #fff;
+  color: #1f231c;
+  font: 600 12px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.lineAction:hover {
+  border-color: #1f231c;
+}
+
+.lineAction:focus-visible {
+  outline: 2px solid #3e5c48;
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .eventList {
+    padding: 4px 12px !important;
+  }
+
+  .eventButton {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 6px 12px !important;
+    min-height: 44px;
+    padding: 14px 0 !important;
+  }
+
+  .eventDate {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .eventPill {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end !important;
+  }
+
+  .eventTitle {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .eventSubtitle {
+    grid-column: 1 / -1;
+    grid-row: 3;
+  }
+
+  .eventAmount {
+    grid-column: 1;
+    grid-row: 4;
+    align-items: flex-start !important;
+    text-align: left !important;
+  }
+
+  .eventArrow {
+    grid-column: 2;
+    grid-row: 4;
+    min-width: 24px;
+    justify-self: end !important;
+  }
+
+  .eventDetail {
+    padding: 0 0 14px !important;
+  }
+
+  .lineRow {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    gap: 5px 12px !important;
+    min-height: 44px;
+  }
+
+  .lineName {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .lineQuantity {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .lineDelta {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .lineAmount {
+    grid-column: 2;
+    grid-row: 3;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .eventArrow {
+    transition: none !important;
+  }
+}

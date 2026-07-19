@@ -26,6 +26,9 @@ const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : use
 interface OverlayProps {
   open: boolean;
   onClose: () => void;
+  /** Warn before a browser refresh/navigation while local form work exists.
+   *  The caller still owns in-app close confirmation through `onClose`. */
+  hasUnsavedChanges?: boolean;
   title?: React.ReactNode;
   italic?: React.ReactNode;
   suffix?: React.ReactNode;
@@ -65,6 +68,7 @@ function isMobileViewport() {
 export function Overlay({
   open,
   onClose,
+  hasUnsavedChanges = false,
   title,
   italic,
   suffix,
@@ -146,6 +150,17 @@ export function Overlay({
       document.body.style.overflow = prev;
     };
   }, [open, onClose]);
+
+  useEffect(() => {
+    if (!open || !hasUnsavedChanges) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      // Required by Chromium and older Safari to trigger the native warning.
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [hasUnsavedChanges, open]);
 
   useIsoLayoutEffect(() => {
     if (!open || !render) return;

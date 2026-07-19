@@ -1,0 +1,62 @@
+.modeRow {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tableCard {
+  min-width: 0;
+}
+
+.tableHeader,
+.compareRow {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .tableCard {
+    padding-left: 14px !important;
+    padding-right: 14px !important;
+  }
+
+  .tableHeader {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding-top: 14px !important;
+  }
+
+  .desktopSpacer {
+    display: none;
+  }
+
+  .compareRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px 12px;
+  }
+
+  .rowLabel,
+  .diffCell {
+    grid-column: 1 / -1;
+  }
+
+  .rowLabel {
+    padding-right: 8px;
+  }
+
+  .valueCell {
+    font-size: clamp(17px, 6vw, 21px) !important;
+    overflow-wrap: anywhere;
+    text-align: left !important;
+  }
+
+  .valueCell > span {
+    align-items: flex-start !important;
+  }
+
+  .diffCell {
+    min-height: 18px;
+    text-align: left !important;
+  }
+}

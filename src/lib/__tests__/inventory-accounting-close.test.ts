@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { getInventoryAccountingSummary, localMonthWindowUTC } from '../db/inventory-accounting';
 
-type Result = { data: unknown[] | Record<string, unknown> | null; error: null };
+type Result = { data: unknown[] | Record<string, unknown> | null; error: unknown };
 
 const closedManualTotal = {
   id: 'close-1',
@@ -49,6 +49,8 @@ let closedPurchaseRows: unknown[] = [];
 let closedDimensionRows: unknown[] = [];
 let discardRows: unknown[] = [];
 let reconciliationRows: unknown[] = [];
+let failProblemItemRead = false;
+let failOccupancyRead = false;
 
 function rowsFor(table: string, selected: string): unknown[] {
   if (table === 'inventory_month_closes') return [activeClose];
@@ -61,9 +63,13 @@ function rowsFor(table: string, selected: string): unknown[] {
   }
   if (table === 'inventory_orders' && selected.includes('inventory!inner(category)')) {
     return [{
+      id: 'order-1',
       total_cost: 9.99,
       quantity: 1,
       unit_cost: 9.99,
+      entry_kind: 'receipt',
+      corrects_order_id: null,
+      correction_event_id: null,
       received_at: '2026-06-10T12:00:00.000Z',
       item_id: 'item-1',
       inventory: { category: 'housekeeping', name: 'Bath towels' },
@@ -103,7 +109,13 @@ class FakeQuery implements PromiseLike<Result> {
     onfulfilled?: ((value: Result) => TResult1 | PromiseLike<TResult1>) | null,
     onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
   ): PromiseLike<TResult1 | TResult2> {
-    const result: Result = { data: rowsFor(this.table, this.selected), error: null };
+    const problemRead = this.selected.includes('inventory!inner(name)')
+      && (this.table === 'inventory_discards' || this.table === 'inventory_reconciliations');
+    const result: Result = failProblemItemRead && problemRead
+      ? { data: null, error: new Error('problem item dependency unavailable') }
+      : failOccupancyRead && this.table === 'daily_logs'
+        ? { data: null, error: new Error('occupancy dependency unavailable') }
+        : { data: rowsFor(this.table, this.selected), error: null };
     return Promise.resolve(result).then(onfulfilled, onrejected);
   }
 }
@@ -113,6 +125,23 @@ const client = {
 } as unknown as SupabaseClient;
 
 describe('inventory accounting monthly close', () => {
+  it('fails the summary instead of turning an occupancy read error into zero nights', async () => {
+    failOccupancyRead = true;
+    try {
+      const window = localMonthWindowUTC(2026, 6, 'America/Chicago');
+      await assert.rejects(
+        getInventoryAccountingSummary(client, 'property-1', window.start, {
+          endExclusive: window.endExclusive,
+          budgetMonthKey: window.budgetMonthKey,
+          timeZone: 'America/Chicago',
+        }),
+        /occupancy dependency unavailable/,
+      );
+    } finally {
+      failOccupancyRead = false;
+    }
+  });
+
   it('keeps shelf value and purchases separate from closed actual usage', async () => {
     activeClose = closedManualTotal;
     closedPurchaseRows = [];
@@ -354,5 +383,27 @@ describe('inventory accounting monthly close', () => {
       { id: 'larger', combined: 40, rank: 1 },
       { id: 'smaller', combined: 15, rank: 2 },
     ]);
+  });
+
+  it('fails the summary when a loss-detail dependency fails instead of returning a fake empty list', async () => {
+    activeClose = closedManualTotal;
+    closedPurchaseRows = [];
+    closedDimensionRows = [];
+    discardRows = [];
+    reconciliationRows = [];
+    failProblemItemRead = true;
+    const window = localMonthWindowUTC(2026, 6, 'America/Chicago');
+    try {
+      await assert.rejects(
+        () => getInventoryAccountingSummary(client, 'property-1', window.start, {
+          endExclusive: window.endExclusive,
+          budgetMonthKey: window.budgetMonthKey,
+          timeZone: 'America/Chicago',
+        }),
+        /problem item dependency unavailable/i,
+      );
+    } finally {
+      failProblemItemRead = false;
+    }
   });
 });

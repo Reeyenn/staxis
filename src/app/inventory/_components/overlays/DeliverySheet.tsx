@@ -12,7 +12,7 @@
        received, matching the invoice commit (inventory-invoice-commit.ts).
    ────────────────────────────────────────────────────────────────────── */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import type { InventoryDeliveryLine } from '@/lib/inventory-atomic';
@@ -36,6 +36,12 @@ import {
 import type { DisplayItem } from '../types';
 import { catLabelFor, t as invT, type Lang } from '../inv-i18n';
 import type { InventoryCustomCategory, InventoryTabLayout } from '@/types';
+import {
+  clearInventoryOverlayDraft,
+  loadInventoryOverlayDraft,
+  persistInventoryOverlayDraft,
+} from './inventory-overlay-draft';
+import overlayStyles from './Overlay.module.css';
 
 interface DeliverySheetProps {
   lang: Lang;
@@ -49,6 +55,9 @@ interface DeliverySheetProps {
    *  hotel's VISIBLE tabs, not by built-in categories it may have hidden. */
   customCategories?: InventoryCustomCategory[];
   tabLayout?: InventoryTabLayout;
+  /** Costs and invoice OCR are financial evidence and stay out of browsers
+   * whose hotel role lacks view_financials. */
+  canViewFinancials: boolean;
 }
 
 // Delivery rows and stock increments commit in one database transaction. A
@@ -64,13 +73,20 @@ function dsStrings(lang: Lang) {
       selectItem: 'Select an item…',
       qtyPh: 'Qty',
       costPh: 'Unit $',
-      costRequired: 'Enter the actual unit cost for every delivered item.',
+      costRequired: 'Complete the item, quantity, and actual unit cost on every started row.',
+      fieldsRequired: 'Complete the item and quantity on every started row.',
+      costsHidden: 'Costs are hidden for your role. A manager can add the verified invoice cost later.',
       addAnother: '+ Add another item',
       remove: 'Remove',
       back: 'Back',
       saving: 'Saving…',
       addBtn: '✓ Add to inventory',
       discardConfirm: 'You have an unsaved delivery. Close and discard it?',
+      draftRestored: 'Your unsaved delivery was restored.',
+      noItems: 'There are no active inventory items to receive. Add an item first.',
+      itemLabel: 'Item',
+      quantityLabel: 'Quantity received',
+      unitCostLabel: 'Actual unit cost',
       saveFailed: 'Saving the delivery failed. Please try again.',
       retryPending: 'The result could not be confirmed. This exact delivery is locked until you retry it successfully.',
       retryBtn: 'Retry exact delivery',
@@ -84,13 +100,20 @@ function dsStrings(lang: Lang) {
       selectItem: 'Elige un artículo…',
       qtyPh: 'Cant.',
       costPh: '$ unidad',
-      costRequired: 'Ingresa el costo unitario real de cada artículo entregado.',
+      costRequired: 'Completa el artículo, la cantidad y el costo unitario real en cada fila iniciada.',
+      fieldsRequired: 'Completa el artículo y la cantidad en cada fila iniciada.',
+      costsHidden: 'Los costos están ocultos para tu función. Un gerente puede agregar después el costo verificado de la factura.',
       addAnother: '+ Agregar otro artículo',
       remove: 'Quitar',
       back: 'Atrás',
       saving: 'Guardando…',
       addBtn: '✓ Agregar al inventario',
       discardConfirm: 'Tienes una entrega sin guardar. ¿Cerrar y descartarla?',
+      draftRestored: 'Se restauró tu entrega sin guardar.',
+      noItems: 'No hay artículos activos para recibir. Agrega un artículo primero.',
+      itemLabel: 'Artículo',
+      quantityLabel: 'Cantidad recibida',
+      unitCostLabel: 'Costo unitario real',
       saveFailed: 'No se pudo guardar la entrega. Inténtalo de nuevo.',
       retryPending: 'No se pudo confirmar el resultado. Esta entrega exacta está bloqueada hasta que la reintentes correctamente.',
       retryBtn: 'Reintentar la misma entrega',
@@ -103,9 +126,27 @@ function dsStrings(lang: Lang) {
 type Mode = null | 'manual' | 'scan';
 type Row = { key: number; itemId: string; qty: string; cost: string };
 
+interface DeliveryOverlayDraft {
+  mode: null | 'manual';
+  rows: Row[];
+}
+
+function validDeliveryDraft(value: unknown): DeliveryOverlayDraft | null {
+  if (!value || typeof value !== 'object') return null;
+  const draft = value as Partial<DeliveryOverlayDraft>;
+  if ((draft.mode !== null && draft.mode !== 'manual') || !Array.isArray(draft.rows) || draft.rows.length === 0) return null;
+  if (!draft.rows.every((row) => row
+    && Number.isInteger(row.key)
+    && row.key >= 0
+    && typeof row.itemId === 'string'
+    && typeof row.qty === 'string'
+    && typeof row.cost === 'string')) return null;
+  return draft as DeliveryOverlayDraft;
+}
+
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-export function DeliverySheet({ lang, open, onClose, display, timezone, customCategories = [], tabLayout }: DeliverySheetProps) {
+export function DeliverySheet({ lang, open, onClose, display, timezone, customCategories = [], tabLayout, canViewFinancials }: DeliverySheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ds = dsStrings(lang);
@@ -115,14 +156,26 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
   const [saving, setSaving] = useState(false);
   const saveAttempt = useRef<FrozenDeliveryAttempt | null>(null);
   const [retryLocked, setRetryLocked] = useState(false);
+  const [formError, setFormError] = useState('');
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [draftReadyContext, setDraftReadyContext] = useState('');
+  const draftContext = user?.uid && activePropertyId ? `${user.uid}:${activePropertyId}` : '';
+  const draftStorageInput = useMemo(() => user?.uid && activePropertyId
+    ? { kind: 'delivery' as const, userId: user.uid, propertyId: activePropertyId }
+    : null, [activePropertyId, user?.uid]);
 
   const resetRows = () => { setRows([{ key: 0, itemId: '', qty: '', cost: '' }]); rowSeq.current = 1; };
 
   // Fresh chooser on every open.
   useEffect(() => {
     if (!open) return;
+    setFormError('');
+    setDraftRestored(false);
     const restored = activePropertyId
       ? loadDeliveryAttempt('manual', activePropertyId)
+      : null;
+    const savedDraft = !restored && draftStorageInput
+      ? validDeliveryDraft(loadInventoryOverlayDraft<DeliveryOverlayDraft>(draftStorageInput))
       : null;
     saveAttempt.current = restored;
     setRetryLocked(!!restored);
@@ -132,29 +185,65 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
           key: index,
           itemId: line.itemId,
           qty: String(line.quantity),
-          cost: line.unitCost == null ? '' : String(line.unitCost),
+          cost: canViewFinancials && line.unitCost != null ? String(line.unitCost) : '',
         }] : [],
       );
       setRows(restoredRows.length > 0 ? restoredRows : [{ key: 0, itemId: '', qty: '', cost: '' }]);
-      rowSeq.current = Math.max(1, restoredRows.length);
+      rowSeq.current = Math.max(1, ...restoredRows.map((row) => row.key + 1));
       setMode('manual');
+    } else if (savedDraft) {
+      setRows(canViewFinancials
+        ? savedDraft.rows
+        : savedDraft.rows.map((row) => ({ ...row, cost: '' })));
+      rowSeq.current = Math.max(1, ...savedDraft.rows.map((row) => row.key + 1));
+      setMode(savedDraft.mode);
+      setDraftRestored(true);
     } else {
-      setMode(null);
+      setMode(canViewFinancials ? null : 'manual');
       resetRows();
     }
-  }, [open, activePropertyId]);
+    setDraftReadyContext(draftContext);
+  }, [open, activePropertyId, canViewFinancials, draftContext, draftStorageInput]);
+
+  const dirty = rows.some((r) => r.itemId !== '' || r.qty !== '' || r.cost !== '');
+  const currentDraft = useMemo<DeliveryOverlayDraft>(() => ({
+    mode: mode === 'manual' ? 'manual' : null,
+    rows,
+  }), [mode, rows]);
+
+  useEffect(() => {
+    if (!open || mode === 'scan' || !draftStorageInput || draftReadyContext !== draftContext) return;
+    if (dirty || retryLocked) {
+      persistInventoryOverlayDraft({ ...draftStorageInput, data: currentDraft });
+    } else {
+      clearInventoryOverlayDraft(draftStorageInput);
+    }
+  }, [
+    open, mode, draftStorageInput, draftReadyContext, draftContext,
+    dirty, retryLocked, currentDraft,
+  ]);
 
   if (!open) return null;
 
   // Scan path — the existing invoice flow, whole. Its close exits the sheet.
-  if (mode === 'scan') {
-    return <ScanInvoiceSheet lang={lang} open onClose={onClose} display={display} timezone={timezone} />;
+  if (mode === 'scan' && canViewFinancials) {
+    return (
+      <ScanInvoiceSheet
+        lang={lang}
+        open
+        onClose={onClose}
+        display={display}
+        timezone={timezone}
+        customCategories={customCategories}
+        tabLayout={tabLayout}
+      />
+    );
   }
 
-  const dirty = rows.some((r) => r.itemId !== '' || r.qty !== '' || r.cost !== '');
   const requestClose = () => {
     if (saving || retryLocked) return;
     if (dirty && !confirm(ds.discardConfirm)) return;
+    if (draftStorageInput) clearInventoryOverlayDraft(draftStorageInput);
     onClose();
   };
 
@@ -164,13 +253,15 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
   if (mode === null) {
     const pickScan = () => {
       if (dirty && !confirm(ds.discardConfirm)) return;
+      if (draftStorageInput) clearInventoryOverlayDraft(draftStorageInput);
       resetRows();
       setMode('scan');
     };
     return (
-      <Overlay open onClose={requestClose} width={520} title={ds.title}>
+      <Overlay open onClose={requestClose} hasUnsavedChanges={dirty} width={520} title={ds.title}>
+        {draftRestored && <div role="status" style={deliveryDraftStyle}>{ds.draftRestored}</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <OptionRow title={ds.scanOption} onPick={pickScan} />
+          {canViewFinancials && <OptionRow title={ds.scanOption} onPick={pickScan} />}
           <OptionRow title={ds.manualOption} onPick={() => setMode('manual')} />
         </div>
       </Overlay>
@@ -178,8 +269,10 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
   }
 
   // ── Manual path — dropdown rows ────────────────────────────────────
-  const updateRow = (key: number, patch: Partial<Row>) =>
+  const updateRow = (key: number, patch: Partial<Row>) => {
+    setFormError('');
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  };
   const addRow = () =>
     setRows((prev) => [...prev, { key: rowSeq.current++, itemId: '', qty: '', cost: '' }]);
   const removeRow = (key: number) =>
@@ -193,11 +286,12 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
     if (!r.itemId) continue;
     const n = Math.round(Number(r.qty));
     const unitCost = Number(r.cost);
-    if (!Number.isFinite(n) || n < 1 || r.cost.trim() === '' || !Number.isFinite(unitCost) || unitCost < 0) continue;
+    if (!Number.isFinite(n) || n < 1) continue;
+    if (canViewFinancials && (r.cost.trim() === '' || !Number.isFinite(unitCost) || unitCost < 0)) continue;
     const prior = picked.get(r.itemId) ?? { quantity: 0, totalCost: 0 };
     picked.set(r.itemId, {
       quantity: prior.quantity + n,
-      totalCost: prior.totalCost + (n * unitCost),
+      totalCost: prior.totalCost + (canViewFinancials ? n * unitCost : 0),
     });
   }
   const entered = [...picked].flatMap(([itemId, values]) => {
@@ -205,7 +299,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
     return d ? [{
       d,
       n: values.quantity,
-      unitCost: values.totalCost / values.quantity,
+      unitCost: canViewFinancials ? values.totalCost / values.quantity : null,
     }] : [];
   });
   const hasIncompleteLine = rows.some((r) => {
@@ -213,7 +307,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
     const qty = Number(r.qty);
     const cost = Number(r.cost);
     return !r.itemId || !Number.isFinite(qty) || qty < 1
-      || r.cost.trim() === '' || !Number.isFinite(cost) || cost < 0;
+      || (canViewFinancials && (r.cost.trim() === '' || !Number.isFinite(cost) || cost < 0));
   });
   const canSubmit = entered.length > 0 && !hasIncompleteLine;
 
@@ -222,6 +316,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving || (!saveAttempt.current && !canSubmit)) return;
+    setFormError('');
     setSaving(true);
     try {
       if (!saveAttempt.current) {
@@ -249,7 +344,8 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
       persistDeliveryAttempt(attempt);
       setRetryLocked(true);
       await submitFrozenDeliveryAttempt(attempt, { uid: user.uid, pid: activePropertyId });
-      clearDeliveryAttempt('manual', activePropertyId);
+      clearDeliveryAttempt('manual', activePropertyId, attempt.requestId);
+      if (draftStorageInput) clearInventoryOverlayDraft(draftStorageInput);
       saveAttempt.current = null;
       setRetryLocked(false);
 
@@ -257,7 +353,9 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
     } catch (err) {
       console.error('[delivery-sheet] save failed', err);
       if (isDefinitiveDeliveryFailure(err, retryLocked)) {
-        clearDeliveryAttempt('manual', activePropertyId);
+        if (saveAttempt.current) {
+          clearDeliveryAttempt('manual', activePropertyId, saveAttempt.current.requestId);
+        }
         saveAttempt.current = null;
         setRetryLocked(false);
       } else if (saveAttempt.current) {
@@ -267,7 +365,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
         // to edit because there is no uncertain database result to replay.
         setRetryLocked(false);
       }
-      alert(ds.saveFailed);
+      setFormError(ds.saveFailed);
     } finally {
       setSaving(false);
     }
@@ -277,15 +375,24 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
     <Overlay
       open
       onClose={requestClose}
+      hasUnsavedChanges={dirty}
       italic={ds.title}
       width={520}
       footer={
         <>
           <span style={{ marginRight: 'auto' }} />
-          <Btn variant="ghost" size="md" onClick={() => setMode(null)} disabled={saving || retryLocked}>
-            {ds.back}
-          </Btn>
-          <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || (!retryLocked && !canSubmit)}>
+          {canViewFinancials && (
+            <Btn variant="ghost" size="md" onClick={() => setMode(null)} disabled={saving || retryLocked}>
+              {ds.back}
+            </Btn>
+          )}
+          <Btn
+            variant="primary"
+            size="md"
+            onClick={handleSave}
+            disabled={saving || (!retryLocked && !canSubmit)}
+            aria-busy={saving}
+          >
             {saving
               ? ds.saving
               : retryLocked
@@ -295,11 +402,15 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
         </>
       }
     >
+      {draftRestored && <div role="status" style={deliveryDraftStyle}>{ds.draftRestored}</div>}
       {retryLocked && <div style={warnBannerStyle}>{ds.retryPending}</div>}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {!canViewFinancials && <div role="note" style={deliveryDraftStyle}>{ds.costsHidden}</div>}
+      {formError && <div role="alert" style={deliveryErrorStyle}>{formError}</div>}
+      {display.length === 0 && <div role="status" style={deliveryEmptyStyle}>{ds.noItems}</div>}
+      <div className={overlayStyles.deliveryRows} aria-busy={saving}>
         {hasIncompleteLine && (
-          <div role="status" style={{ fontFamily: fonts.sans, fontSize: 12, color: T.warm }}>
-            {ds.costRequired}
+          <div role="alert" style={{ fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600, color: T.warm }}>
+            {canViewFinancials ? ds.costRequired : ds.fieldsRequired}
           </div>
         )}
         {rows.map((r) => {
@@ -331,85 +442,98 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
           const availableFor = (g: { match: (d: DisplayItem) => boolean }) =>
             display.filter((d) => g.match(d) && (d.id === r.itemId || !selectedIds.has(d.id)));
           return (
-            <div key={r.key} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <select
-                value={r.itemId}
-                disabled={saving || retryLocked}
-                onChange={(e) => {
-                  const itemId = e.target.value;
-                  const selected = display.find((d) => d.id === itemId);
-                  updateRow(r.key, {
-                    itemId,
-                    cost: selected?.raw.unitCost == null ? '' : String(selected.raw.unitCost),
-                  });
-                }}
-                style={{
-                  flex: 1, minWidth: 0, height: 40, padding: '0 12px', borderRadius: 9,
-                  boxSizing: 'border-box', cursor: 'pointer', outline: 'none',
-                  background: T.bg, border: `1px solid ${T.controlBorder}`,
-                  fontFamily: fonts.sans, fontSize: 14, fontWeight: 600,
-                  color: r.itemId ? T.ink : T.ink2,
-                }}
-              >
-                <option value="" style={{ color: T.ink2, fontWeight: 600 }}>{ds.selectItem}</option>
-                {groupDefs.map((g) => {
-                  const opts = availableFor(g);
-                  if (opts.length === 0) return null;
-                  return (
-                    <optgroup key={g.key} label={g.label} style={{ color: T.ink2, fontWeight: 600 }}>
-                      {opts.map((d) => (
-                        <option key={d.id} value={d.id} style={{ color: T.ink, fontWeight: 500 }}>{d.name}</option>
-                      ))}
-                    </optgroup>
-                  );
-                })}
-              </select>
-              <input
-                type="number"
-                min="1"
-                step="1"
-                inputMode="numeric"
-                value={r.qty}
-                disabled={saving || retryLocked}
-                onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { qty: v }); }}
-                placeholder={ds.qtyPh}
-                aria-label={ds.qtyPh}
-                style={{
-                  width: 76, height: 40, borderRadius: 9, boxSizing: 'border-box',
-                  flex: 'none', textAlign: 'center', outline: 'none',
-                  background: T.bg, border: `1px solid ${T.controlBorder}`,
-                  fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink,
-                  letterSpacing: '-0.02em',
-                }}
-              />
-              <input
-                type="number"
-                min="0"
-                step="0.01"
-                inputMode="decimal"
-                value={r.cost}
-                disabled={saving || retryLocked}
-                onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { cost: v }); }}
-                placeholder={ds.costPh}
-                aria-label={ds.costPh}
-                style={{
-                  width: 82, height: 40, borderRadius: 9, boxSizing: 'border-box',
-                  flex: 'none', textAlign: 'center', outline: 'none',
-                  background: T.bg, border: `1px solid ${T.controlBorder}`,
-                  fontFamily: fonts.sans, fontSize: 14, fontWeight: 600, color: T.ink,
-                  letterSpacing: '-0.02em',
-                }}
-              />
+            <div key={r.key} className={`${overlayStyles.deliveryRow} ${!canViewFinancials ? overlayStyles.deliveryRowNoCost : ''}`}>
+              <label className={overlayStyles.deliveryItemField} style={deliveryFieldStyle}>
+                <span className={overlayStyles.fieldLabel}>{ds.itemLabel}</span>
+                <select
+                  className={overlayStyles.formControl}
+                  value={r.itemId}
+                  disabled={saving || retryLocked}
+                  onChange={(e) => {
+                    const itemId = e.target.value;
+                    const selected = display.find((d) => d.id === itemId);
+                    updateRow(r.key, {
+                      itemId,
+                      cost: canViewFinancials && selected?.raw.unitCost != null ? String(selected.raw.unitCost) : '',
+                    });
+                  }}
+                  style={{
+                    width: '100%', minWidth: 0, height: 44, padding: '0 12px', borderRadius: 9,
+                    boxSizing: 'border-box', cursor: 'pointer', outline: 'none',
+                    background: T.bg, border: `1px solid ${T.controlBorder}`,
+                    fontFamily: fonts.sans, fontSize: 14, fontWeight: 600,
+                    color: r.itemId ? T.ink : T.ink2,
+                  }}
+                >
+                  <option value="" style={{ color: T.ink2, fontWeight: 600 }}>{ds.selectItem}</option>
+                  {groupDefs.map((g) => {
+                    const opts = availableFor(g);
+                    if (opts.length === 0) return null;
+                    return (
+                      <optgroup key={g.key} label={g.label} style={{ color: T.ink2, fontWeight: 600 }}>
+                        {opts.map((d) => (
+                          <option key={d.id} value={d.id} style={{ color: T.ink, fontWeight: 500 }}>{d.name}</option>
+                        ))}
+                      </optgroup>
+                    );
+                  })}
+                </select>
+              </label>
+              <label style={deliveryFieldStyle}>
+                <span className={overlayStyles.fieldLabel}>{ds.quantityLabel}</span>
+                <input
+                  className={overlayStyles.formControl}
+                  type="number"
+                  min="1"
+                  step="1"
+                  inputMode="numeric"
+                  value={r.qty}
+                  disabled={saving || retryLocked}
+                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { qty: v }); }}
+                  placeholder={ds.qtyPh}
+                  style={{
+                    width: '100%', height: 44, borderRadius: 9, boxSizing: 'border-box',
+                    textAlign: 'center', outline: 'none',
+                    background: T.bg, border: `1px solid ${T.controlBorder}`,
+                    fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink,
+                    letterSpacing: '-0.02em',
+                  }}
+                />
+              </label>
+              {canViewFinancials && (
+                <label style={deliveryFieldStyle}>
+                  <span className={overlayStyles.fieldLabel}>{ds.unitCostLabel}</span>
+                  <input
+                    className={overlayStyles.formControl}
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    inputMode="decimal"
+                    value={r.cost}
+                    disabled={saving || retryLocked}
+                    onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { cost: v }); }}
+                    placeholder={ds.costPh}
+                    style={{
+                      width: '100%', height: 44, borderRadius: 9, boxSizing: 'border-box',
+                      textAlign: 'center', outline: 'none',
+                      background: T.bg, border: `1px solid ${T.controlBorder}`,
+                      fontFamily: fonts.sans, fontSize: 14, fontWeight: 600, color: T.ink,
+                      letterSpacing: '-0.02em',
+                    }}
+                  />
+                </label>
+              )}
               <button
                 type="button"
+                className={overlayStyles.deliveryRemove}
                 onClick={() => removeRow(r.key)}
                 aria-label={ds.remove}
                 disabled={rows.length === 1 || saving || retryLocked}
                 style={{
-                  width: 30, height: 30, flex: 'none', borderRadius: 8, padding: 0,
+                  width: 44, height: 44, flex: 'none', borderRadius: 8, padding: 0,
                   cursor: rows.length === 1 ? 'default' : 'pointer',
-                  background: 'transparent', border: 'none',
-                  color: rows.length === 1 ? T.ruleFaint : T.dim,
+                  background: T.bg, border: `1px solid ${rows.length === 1 ? T.rule : T.controlBorder}`,
+                  color: rows.length === 1 ? T.faint : T.ink2,
                   fontFamily: fonts.sans, fontSize: 18, lineHeight: 1,
                 }}
               >
@@ -422,12 +546,13 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
 
       <button
         type="button"
+        className={overlayStyles.compactButton}
         onClick={addRow}
         disabled={!canAddRow || saving || retryLocked}
         style={{
           marginTop: 12,
           display: 'inline-flex', alignItems: 'center', gap: 6,
-          padding: '8px 14px', borderRadius: 999,
+          minHeight: 44, padding: '8px 14px', borderRadius: 999,
           cursor: canAddRow ? 'pointer' : 'not-allowed',
           background: canAddRow ? T.tealDim : 'transparent',
           color: canAddRow ? T.tealText : T.faint,
@@ -441,6 +566,48 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
   );
 }
 
+const deliveryFieldStyle: React.CSSProperties = {
+  display: 'flex',
+  minWidth: 0,
+  flexDirection: 'column',
+  gap: 6,
+};
+
+const deliveryDraftStyle: React.CSSProperties = {
+  marginBottom: 12,
+  padding: '10px 12px',
+  borderRadius: 9,
+  background: T.tealDim,
+  color: T.tealText,
+  fontFamily: fonts.sans,
+  fontSize: 12.5,
+  fontWeight: 600,
+};
+
+const deliveryErrorStyle: React.CSSProperties = {
+  marginBottom: 12,
+  padding: '10px 12px',
+  borderRadius: 9,
+  border: `1px solid ${T.warm}55`,
+  background: T.warmDim,
+  color: T.warm,
+  fontFamily: fonts.sans,
+  fontSize: 12.5,
+  fontWeight: 600,
+};
+
+const deliveryEmptyStyle: React.CSSProperties = {
+  marginBottom: 12,
+  padding: '28px 18px',
+  border: `1px dashed ${T.controlBorder}`,
+  borderRadius: 12,
+  color: T.ink2,
+  fontFamily: fonts.sans,
+  fontSize: 13,
+  fontWeight: 600,
+  textAlign: 'center',
+};
+
 // One chooser row: serif label + arrow (CountSheet's ScopeOption idiom).
 function OptionRow({ title, onPick }: { title: string; onPick: () => void }) {
   const ref = useRef<HTMLButtonElement>(null);
@@ -448,6 +615,7 @@ function OptionRow({ title, onPick }: { title: string; onPick: () => void }) {
     <button
       ref={ref}
       type="button"
+      className={overlayStyles.compactButton}
       onClick={() => { Motion.pop(ref.current, 0.98); onPick(); }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.ink; e.currentTarget.style.background = T.inkWash; }}
       onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.controlBorder; e.currentTarget.style.background = T.bg; }}
@@ -456,6 +624,7 @@ function OptionRow({ title, onPick }: { title: string; onPick: () => void }) {
         alignItems: 'center',
         justifyContent: 'space-between',
         gap: 15,
+        minHeight: 56,
         padding: '18px 20px',
         borderRadius: 13,
         cursor: 'pointer',

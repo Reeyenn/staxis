@@ -318,6 +318,8 @@ export interface InventoryItem {
 export interface InventoryCount {
   id: string;
   propertyId: string;
+  /** Durable database stock-event order; timestamps may be backdated. */
+  activitySequence?: number;
   /** Shared request UUID for every row written by one atomic Count Mode save. */
   countSessionId?: string;
   itemId: string;
@@ -336,6 +338,8 @@ export interface InventoryCount {
 export interface InventoryOrder {
   id: string;
   propertyId: string;
+  /** Durable database stock-event order; timestamps may be backdated. */
+  activitySequence?: number;
   itemId: string;
   itemName: string;
   quantity: number;             // resolved units (cases * pack_size when received in case form)
@@ -346,16 +350,66 @@ export interface InventoryOrder {
   orderedAt?: Date | null;
   receivedAt: Date | null;
   notes?: string;
+  /** Original saved deliveries are receipts. Compensating correction rows are
+   * kept in the raw ledger but hidden from the ordinary delivery list. */
+  entryKind?: 'receipt' | 'correction';
+  correctsOrderId?: string | null;
+  correctionEventId?: string | null;
+}
+
+export interface InventoryDeliveryCorrection {
+  id: string;
+  propertyId: string;
+  /** Durable database correction-event order. */
+  activitySequence?: number;
+  requestId: string;
+  lineKey: string;
+  /** Stable root/original inventory_orders id. */
+  originalOrderId: string;
+  priorCorrectionId?: string | null;
+  kind: 'correction' | 'void';
+  reason: string;
+  correctedAt: Date | null;
+  correctedBy?: string;
+  correctedByUserId?: string | null;
+  previousItemId: string;
+  previousItemName: string;
+  previousQuantity: number;
+  previousUnitCost?: number | null;
+  previousTotalCost?: number | null;
+  correctedItemId?: string | null;
+  correctedItemName?: string | null;
+  correctedQuantity: number;
+  correctedUnitCost?: number | null;
+  correctedTotalCost?: number | null;
+  stockEffect: unknown[];
+  createdAt: Date | null;
+}
+
+export interface EffectiveInventoryDelivery {
+  rootOrderId: string;
+  original: InventoryOrder;
+  status: 'active' | 'corrected' | 'voided';
+  effectiveItemId: string | null;
+  effectiveItemName: string | null;
+  effectiveQuantity: number;
+  effectiveUnitCost: number | null;
+  effectiveTotalCost: number | null;
+  correctionCount: number;
+  /** Reason, actor, and date come from this immutable audit event. */
+  lastCorrection: InventoryDeliveryCorrection | null;
 }
 
 // One row per discard event (stained linen, damaged goods, theft, lost). Tracked
 // separately from normal consumption so shrinkage shows up in $-terms and we can
 // flag anomalies (e.g. "you replaced 152 last month, only 18 this month").
-export type InventoryDiscardReason = 'stained' | 'damaged' | 'lost' | 'theft' | 'other';
+export type InventoryDiscardReason = 'missing' | 'stained' | 'damaged' | 'lost' | 'theft' | 'other';
 
 export interface InventoryDiscard {
   id: string;
   propertyId: string;
+  /** Durable database stock-event order; timestamps may be backdated. */
+  activitySequence?: number;
   itemId: string;
   itemName: string;             // snapshotted
   quantity: number;
@@ -365,6 +419,11 @@ export interface InventoryDiscard {
   discardedAt: Date | null;
   discardedBy?: string;
   notes?: string;
+  requestId?: string | null;
+  expectedStock?: number | null;
+  stockBefore?: number | null;
+  stockAfter?: number | null;
+  recordedByUserId?: string | null;
 }
 
 export type InventoryBudgetBasis = 'purchases' | 'usage';

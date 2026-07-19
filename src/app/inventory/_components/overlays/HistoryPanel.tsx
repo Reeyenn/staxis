@@ -7,10 +7,12 @@
 // classification live in ../history-events.ts; this file owns display and UI.
 
 import React, { useMemo, useState } from 'react';
+import type { EffectiveInventoryDelivery } from '@/types';
 import { T, fonts, statusColor } from '../tokens';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import { type Lang } from '../inv-i18n';
+import styles from './HistoryPanel.module.css';
 import {
   historyEventsForViewer,
   type HistoryEvent,
@@ -27,6 +29,9 @@ interface HistoryPanelProps {
   canViewFinancials: boolean;
   /** IANA timezone from the authorized property row. Invalid/missing → UTC. */
   timezone: string;
+  canCorrectDeliveries?: boolean;
+  onCorrectDelivery?: (delivery: EffectiveInventoryDelivery) => void;
+  onAddDelivery?: () => void;
 }
 
 function hpStrings(lang: Lang) {
@@ -42,6 +47,7 @@ function hpStrings(lang: Lang) {
       quickCount: (item: string) => `Quick count · ${item}`,
       scannedInvoice: 'Scanned an invoice',
       addedDelivery: 'Added a delivery',
+      recordedLoss: 'Recorded stock loss',
       aiMarkedOrdered: 'AI assistant · marked as ordered',
       addedItems: (n: number) => (n === 1 ? 'Added a new item' : `Added ${n} new items`),
       closedMonth: (month: string) => `Closed ${month}`,
@@ -50,6 +56,7 @@ function hpStrings(lang: Lang) {
       pillQuick: 'Quick count',
       pillScan: 'Invoice',
       pillDelivery: 'Delivery',
+      pillLoss: 'Stock loss',
       pillAssistant: 'AI',
       pillItems: 'New items',
       pillMonthClose: 'Month close',
@@ -61,6 +68,14 @@ function hpStrings(lang: Lang) {
       items: 'items',
       counted: 'counted',
       received: 'received',
+      removed: 'removed',
+      corrected: 'Corrected',
+      voided: 'Voided',
+      correctDelivery: 'Correct delivery',
+      addNewDelivery: 'Add new delivery',
+      correctionReason: 'Reason',
+      lossReasons: { missing: 'Missing', stained: 'Stained', damaged: 'Damaged', lost: 'Lost', theft: 'Theft', other: 'Other' },
+      stockChange: (before: number, after: number) => `On hand ${before} → ${after}`,
       cases: (n: number) => `${n} ${n === 1 ? 'case' : 'cases'}`,
       asExpected: 'as expected',
       monthlyActualFinalized: 'Monthly actual finalized',
@@ -93,6 +108,7 @@ function hpStrings(lang: Lang) {
       quickCount: (item: string) => `Conteo rápido · ${item}`,
       scannedInvoice: 'Factura escaneada',
       addedDelivery: 'Entrega agregada',
+      recordedLoss: 'Pérdida de existencias registrada',
       aiMarkedOrdered: 'Asistente IA · marcado como pedido',
       addedItems: (n: number) => (n === 1 ? 'Artículo nuevo agregado' : `${n} artículos nuevos agregados`),
       closedMonth: (month: string) => `Cierre de ${month}`,
@@ -100,6 +116,7 @@ function hpStrings(lang: Lang) {
       pillQuick: 'Conteo rápido',
       pillScan: 'Factura',
       pillDelivery: 'Entrega',
+      pillLoss: 'Pérdida',
       pillAssistant: 'IA',
       pillItems: 'Artículos',
       pillMonthClose: 'Cierre mensual',
@@ -110,6 +127,14 @@ function hpStrings(lang: Lang) {
       items: 'artículos',
       counted: 'contado',
       received: 'recibido',
+      removed: 'retirado',
+      corrected: 'Corregida',
+      voided: 'Anulada',
+      correctDelivery: 'Corregir entrega',
+      addNewDelivery: 'Agregar nueva entrega',
+      correctionReason: 'Motivo',
+      lossReasons: { missing: 'Faltante', stained: 'Manchado', damaged: 'Dañado', lost: 'Perdido', theft: 'Robo', other: 'Otro' },
+      stockChange: (before: number, after: number) => `Existencias ${before} → ${after}`,
       cases: (n: number) => `${n} ${n === 1 ? 'caja' : 'cajas'}`,
       asExpected: 'como se esperaba',
       monthlyActualFinalized: 'Uso real mensual finalizado',
@@ -135,7 +160,17 @@ function hpStrings(lang: Lang) {
   }[lang];
 }
 
-export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, timezone }: HistoryPanelProps) {
+export function HistoryPanel({
+  lang,
+  open,
+  onClose,
+  events,
+  canViewFinancials,
+  timezone,
+  canCorrectDeliveries = false,
+  onCorrectDelivery,
+  onAddDelivery,
+}: HistoryPanelProps) {
   const hp = useMemo(() => hpStrings(lang), [lang]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const visibleEvents = useMemo(
@@ -179,6 +214,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
     quickcount: { label: hp.pillQuick, color: T.purple, bg: T.purpleDim },
     scan: { label: hp.pillScan, color: T.tealText, bg: T.tealDim },
     delivery: { label: hp.pillDelivery, color: T.sageDeep, bg: T.sageDim },
+    loss: { label: hp.pillLoss, color: T.terra, bg: T.terraDim },
     assistant: { label: hp.pillAssistant, color: T.goldText, bg: T.goldDim },
     itemsAdded: { label: hp.pillItems, color: T.ink2, bg: T.inkWash },
     monthClose: { label: hp.pillMonthClose, color: T.forestText, bg: T.sageDim },
@@ -196,6 +232,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
       case 'quickcount': return hp.quickCount(e.lines[0]?.name ?? '');
       case 'scan': return hp.scannedInvoice;
       case 'delivery': return hp.addedDelivery;
+      case 'loss': return hp.recordedLoss;
       case 'assistant': return hp.aiMarkedOrdered;
       case 'itemsAdded': return hp.addedItems(e.lines.length);
       case 'monthClose': return hp.closedMonth(closeMonthLabel(e.monthClose?.month ?? ''));
@@ -216,6 +253,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
     const parts: string[] = [];
     if (e.byAssistant) parts.push(hp.byAI);
     else if (e.who) parts.push(e.who);
+    if (e.kind === 'loss' && e.loss) parts.push(hp.lossReasons[e.loss.reason]);
     if (e.kind === 'scan' && e.invoiceNumber) parts.push(hp.invoiceNo(e.invoiceNumber));
     if (e.kind !== 'quickcount') {
       parts.push(`${e.lines.length} ${e.lines.length === 1 ? hp.item : hp.items}`);
@@ -232,7 +270,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
       suffix={`${visibleEvents.length} ${visibleEvents.length === 1 ? hp.event : hp.events}`}
       width={860}
     >
-      <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
+      <div className={styles.eventList} style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
         {visibleEvents.length === 0 ? (
           <div
             style={{
@@ -255,15 +293,17 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
             // the old panel carried; losing it was a review finding).
             const isCountKind = e.kind === 'count' || e.kind === 'quickcount';
             const isDeliveryKind = e.kind === 'scan' || e.kind === 'delivery' || e.kind === 'assistant';
+            const isLossKind = e.kind === 'loss';
             const deliveryCostIncomplete = isDeliveryKind && e.deliveryCost?.complete === false;
             const showAmount = canViewFinancials && e.amount != null &&
-              (isDeliveryKind || e.kind === 'monthClose' ||
+              (isDeliveryKind || isLossKind || e.kind === 'monthClose' ||
                 (isCountKind && e.amount !== 0));
-            const amountColor = isCountKind && (e.amount ?? 0) < 0 ? statusColor.critical : T.ink;
+            const amountColor = isLossKind || (isCountKind && (e.amount ?? 0) < 0) ? statusColor.critical : T.ink;
             return (
               <div key={e.id} style={{ borderTop: i === 0 ? 'none' : `1px solid ${T.ruleSoft}` }}>
                 <button
                   type="button"
+                  className={styles.eventButton}
                   onClick={() => toggle(e.id)}
                   aria-expanded={isOpen}
                   title={isOpen ? hp.close : hp.showDetails}
@@ -282,7 +322,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
                     textAlign: 'left',
                   }}
                 >
-                  <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                  <span className={styles.eventDate} style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                     <span style={{ fontFamily: fonts.sans, fontSize: 15, color: T.ink, fontWeight: 600, letterSpacing: '-0.01em' }}>
                       {dateFmt.format(e.date)}
                     </span>
@@ -291,6 +331,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
                     </span>
                   </span>
                   <span
+                    className={styles.eventPill}
                     style={{
                       display: 'inline-flex',
                       alignItems: 'center',
@@ -309,14 +350,15 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
                     <span style={{ display: 'inline-block', width: 5, height: 5, borderRadius: '50%', background: k.color }} />
                     {k.label}
                   </span>
-                  <span style={{ fontFamily: fonts.sans, fontSize: 13.5, color: T.ink, fontWeight: 600 }}>
+                  <span className={styles.eventTitle} style={{ fontFamily: fonts.sans, fontSize: 13.5, color: T.ink, fontWeight: 600 }}>
                     {titleFor(e)}
                   </span>
-                  <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
+                  <span className={styles.eventSubtitle} style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
                     {subFor(e)}
                   </span>
                   {canViewFinancials && (
                     <span
+                      className={styles.eventAmount}
                       style={{
                         display: 'flex',
                         flexDirection: 'column',
@@ -337,6 +379,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
                     </span>
                   )}
                   <span
+                    className={styles.eventArrow}
                     aria-hidden="true"
                     style={{
                       color: T.dim,
@@ -351,21 +394,34 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, t
                 </button>
 
                 {isOpen && (
-                  <div style={{ padding: '0 0 14px 106px' }}>
+                  <div className={styles.eventDetail} style={{ padding: '0 0 14px 106px' }}>
                     <div style={{ background: T.bg, border: `1px solid ${T.ruleSoft}`, borderRadius: 10, padding: '4px 14px' }}>
                       {e.kind === 'monthClose' && e.monthClose ? (
                         <MonthCloseDetail close={e.monthClose} hp={hp} />
                       ) : (
-                        e.lines.map((line, j) => (
-                          <LineRow
-                            key={j}
-                            line={line}
-                            kind={e.kind}
-                            hp={hp}
-                            canViewFinancials={canViewFinancials}
-                            first={j === 0}
-                          />
-                        ))
+                        <>
+                          {e.kind === 'loss' && e.loss && (
+                            <div style={{ padding: '10px 0', fontFamily: fonts.sans, fontSize: 12, color: T.ink2, lineHeight: 1.5 }}>
+                              {e.loss.stockBefore != null && e.loss.stockAfter != null && (
+                                <div>{hp.stockChange(e.loss.stockBefore, e.loss.stockAfter)}</div>
+                              )}
+                              {e.loss.notes && <div><strong style={{ color: T.ink }}>{hp.correctionReason}:</strong> {e.loss.notes}</div>}
+                            </div>
+                          )}
+                          {e.lines.map((line, j) => (
+                            <LineRow
+                              key={line.delivery?.rootOrderId ?? j}
+                              line={line}
+                              kind={e.kind}
+                              hp={hp}
+                              canViewFinancials={canViewFinancials}
+                              canCorrectDeliveries={canCorrectDeliveries}
+                              onCorrectDelivery={onCorrectDelivery}
+                              onAddDelivery={onAddDelivery}
+                              first={j === 0 && e.kind !== 'loss'}
+                            />
+                          ))}
+                        </>
                       )}
                     </div>
                   </div>
@@ -464,20 +520,27 @@ function LineRow({
   kind,
   hp,
   canViewFinancials,
+  canCorrectDeliveries,
+  onCorrectDelivery,
+  onAddDelivery,
   first,
 }: {
   line: HistoryLine;
   kind: HistoryEventKind;
   hp: ReturnType<typeof hpStrings>;
   canViewFinancials: boolean;
+  canCorrectDeliveries: boolean;
+  onCorrectDelivery?: (delivery: EffectiveInventoryDelivery) => void;
+  onAddDelivery?: () => void;
   first: boolean;
 }) {
   const isCount = kind === 'count' || kind === 'quickcount';
+  const isLoss = kind === 'loss';
   // Counts: "Queen sheets — counted 11" + change chip when we knew what to
   // expect. Deliveries: "Bath towels — received 24 (2 cases)" + line $.
   let qtyLabel = '';
   if (line.qty != null) {
-    qtyLabel = isCount ? `${hp.counted} ${line.qty}` : `${hp.received} ${line.qty}`;
+    qtyLabel = isCount ? `${hp.counted} ${line.qty}` : isLoss ? `${hp.removed} ${line.qty}` : `${hp.received} ${line.qty}`;
     if (!isCount && line.cases) qtyLabel += ` (${hp.cases(line.cases)})`;
   }
   const delta = line.delta;
@@ -491,6 +554,7 @@ function LineRow({
       : null;
   return (
     <div
+      className={styles.lineRow}
       style={{
         display: 'grid',
         gridTemplateColumns: canViewFinancials ? '1.4fr 1fr 90px 80px' : '1.4fr 1fr 90px',
@@ -500,19 +564,39 @@ function LineRow({
         borderTop: first ? 'none' : `1px solid ${T.ruleSoft}`,
       }}
     >
-      <span style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink, fontWeight: 500 }}>
+      <span className={styles.lineName} style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink, fontWeight: 500 }}>
         {line.name}
       </span>
-      <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>
+      <span className={styles.lineQuantity} style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2 }}>
         {qtyLabel}
       </span>
-      <span style={{ fontFamily: fonts.mono, fontSize: 11, fontWeight: 600, color: deltaChip?.color ?? T.ink3, textAlign: 'right' }}>
+      <span className={styles.lineDelta} style={{ fontFamily: fonts.mono, fontSize: 11, fontWeight: 600, color: deltaChip?.color ?? T.ink3, textAlign: 'right' }}>
         {deltaChip ? deltaChip.text : ''}
       </span>
       {canViewFinancials && (
-        <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2, textAlign: 'right' }}>
+        <span className={styles.lineAmount} style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2, textAlign: 'right' }}>
           {typeof line.amount === 'number' && !isCount ? fmtMoney(line.amount) : ''}
         </span>
+      )}
+      {line.delivery && (
+        <div style={{ gridColumn: '1 / -1', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap', paddingTop: 2 }}>
+          <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink2, lineHeight: 1.4 }}>
+            {line.delivery.status !== 'active' && (
+              <strong style={{ color: line.delivery.status === 'voided' ? T.terra : T.forestText }}>
+                {line.delivery.status === 'voided' ? hp.voided : hp.corrected}
+              </strong>
+            )}
+            {line.delivery.lastCorrection?.reason && (
+              <span>{line.delivery.status !== 'active' ? ' · ' : ''}{hp.correctionReason}: {line.delivery.lastCorrection.reason}</span>
+            )}
+          </div>
+          {canCorrectDeliveries && line.delivery.status !== 'voided' && onCorrectDelivery && (
+            <button type="button" className={styles.lineAction} onClick={() => onCorrectDelivery(line.delivery!)}>{hp.correctDelivery}</button>
+          )}
+          {canCorrectDeliveries && line.delivery.status === 'voided' && onAddDelivery && (
+            <button type="button" className={styles.lineAction} onClick={onAddDelivery}>{hp.addNewDelivery}</button>
+          )}
+        </div>
       )}
     </div>
   );

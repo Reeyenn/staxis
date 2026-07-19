@@ -27,15 +27,16 @@ test('inventory item removal is a verified soft archive, never a hard delete', (
   assert.match(db, /if \(!archived\)/);
 });
 
-test('inventory UI calls the archive action and explains that history is kept', () => {
+test('inventory UI calls the archive action behind plain-language Delete copy and explains that history is kept', () => {
   const sheet = source('src', 'app', 'inventory', '_components', 'overlays', 'AddItemSheet.tsx');
 
   assert.match(sheet, /archiveInventoryItem/);
   assert.doesNotMatch(sheet, /deleteInventoryItem/);
   assert.match(sheet, /all count and delivery history will be kept/);
   assert.match(sheet, /todo el historial de conteos y entregas/);
-  assert.match(sheet, /archive:\s*'Archive'/);
-  assert.match(sheet, /archive:\s*'Archivar'/);
+  assert.match(sheet, /archive:\s*'Delete item'/);
+  assert.match(sheet, /archive:\s*'Eliminar artículo'/);
+  assert.match(sheet, /disappear from active inventory and totals/);
 });
 
 test('active inventory subscriptions and summaries exclude archived rows', () => {

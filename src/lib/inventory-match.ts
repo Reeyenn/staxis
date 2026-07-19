@@ -138,20 +138,6 @@ function hasUnitConflict(a: string, b: string): boolean {
   return true;
 }
 
-/** Names too weak to safely auto-apply to a stock write. */
-function isRiskyName(name: string): boolean {
-  const norm = normalizeName(name);
-  if (!norm) return true;
-  const toks = tokenize(norm);
-  if (toks.length === 0) return true;
-  if (toks.length === 1 && (toks[0].length <= 4 || GENERIC_TOKENS.has(toks[0]) || UNIT_TOKENS.has(toks[0]))) {
-    return true;
-  }
-  const nonSpace = norm.replace(/\s/g, '');
-  const digits = norm.replace(/[^0-9]/g, '').length;
-  return nonSpace.length > 0 && digits / nonSpace.length > 0.5;
-}
-
 function tierFor(invoiceName: string, item: MatchableItem, score: number): MatchTier {
   const ni = normalizeName(invoiceName);
   const nm = normalizeName(item.name);
@@ -193,7 +179,7 @@ export function matchInvoiceLine(
     !!best &&
     !ambiguous &&
     !hasUnitConflict(invoiceName, best.name) &&
-    (exactish || (best.tier === 'strong' && !isRiskyName(invoiceName)));
+    exactish;
 
   return { best, candidates, autoSelect, ambiguous };
 }

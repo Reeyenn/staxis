@@ -76,4 +76,152 @@
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
   }
+
+  .footer button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+.close:focus-visible,
+.formControl:focus-visible,
+.categoryChip:focus-visible,
+.compactButton:focus-visible,
+.deliveryRemove:focus-visible {
+  outline: 2px solid #3e5c48 !important;
+  outline-offset: 2px;
+}
+
+.formStack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.formGrid2,
+.formGrid3 {
+  display: grid;
+  gap: 12px;
+}
+
+.formGrid2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.formGrid3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.formControl {
+  min-width: 0;
+  transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1), box-shadow 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.formControl:hover:not(:disabled) {
+  border-color: #1f231c !important;
+}
+
+.formControl:focus-visible {
+  border-color: #3e5c48 !important;
+  box-shadow: 0 0 0 2px rgba(62, 92, 72, 0.16);
+}
+
+.categoryRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.categoryChip,
+.deliveryRemove {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.categoryChip,
+.compactButton,
+.deliveryRemove {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.fieldLabel {
+  color: #1f231c;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.deliveryRows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.deliveryRow {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 96px 44px;
+  align-items: end;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(31, 35, 28, 0.08);
+  border-radius: 12px;
+  background: rgba(31, 35, 28, 0.025);
+}
+
+.deliveryRowNoCost {
+  grid-template-columns: minmax(0, 1fr) 88px 44px;
+}
+
+@media (max-width: 760px) {
+  .formGrid2,
+  .formGrid3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .formControl {
+    height: 48px !important;
+    min-height: 48px;
+    font-size: 16px !important;
+  }
+
+  .categoryChip {
+    min-height: 44px;
+    padding: 0 14px !important;
+  }
+
+  .compactButton {
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
+
+  .deliveryRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 14px;
+  }
+
+  .deliveryRowNoCost {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .deliveryItemField {
+    grid-column: 1 / -1;
+  }
+
+  .deliveryRemove {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+  }
+
+  .deliveryItemField select {
+    padding-right: 52px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .formControl {
+    transition: none;
+  }
 }

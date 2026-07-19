@@ -5,8 +5,10 @@ import {
   decideQuickCountWrite,
   deliveryLinesFromCommitPlan,
   inventoryPayloadFingerprint,
+  toInventoryDeliveryCorrectionRpcLines,
   toInventoryCountRpcRows,
   toInventoryDeliveryRpcLines,
+  validateInventoryStockLoss,
 } from '../inventory-atomic';
 import { buildCommitPlan } from '../inventory-invoice-commit';
 
@@ -58,7 +60,8 @@ describe('atomic inventory delivery payload', () => {
       { line_key: 'existing', item_id: 'item-a', quantity: 12, quantity_cases: 2, unit_cost: 1.25 },
       {
         line_key: 'new', item_id: null, item_name: 'New Mop', category: 'housekeeping',
-        unit: 'each', par_level: 20, quantity: 4,
+        custom_category_id: null, unit: 'each', par_level: 20, set_aside: 0,
+        quantity: 4, unit_cost: null,
       },
     ]);
   });
@@ -72,6 +75,10 @@ describe('atomic inventory delivery payload', () => {
     assert.throws(() => toInventoryDeliveryRpcLines([{
       lineKey: 'new', itemId: null, itemName: '', category: 'housekeeping', unit: 'each', parLevel: 0, quantity: 1,
     }]));
+    assert.throws(() => toInventoryDeliveryRpcLines([{
+      lineKey: 'new', itemId: null, itemName: 'Mop', category: 'housekeeping',
+      unit: 'each', parLevel: 0, quantity: 1, setAside: 2,
+    }]), /cannot exceed/i);
   });
 
   test('invoice commit becomes additive lines and ignores stale absolute-stock projections', () => {
@@ -82,21 +89,22 @@ describe('atomic inventory delivery payload', () => {
       lines: [
         {
           key: 'existing', itemName: 'Towel', decision: 'match', matchedItemId: 'item-a',
-          qty: 5, onHandEstimate: 8, afterOverride: 999,
+          matchConfirmed: true, qty: 5, unitCost: 2, onHandEstimate: 8, afterOverride: 999,
         },
         {
-          key: 'new', itemName: 'Mop', decision: 'create', matchedItemId: null, qty: 3,
+          key: 'new', itemName: 'Mop', decision: 'create', matchedItemId: null, qty: 3, unitCost: 3,
           newItem: { category: 'maintenance', unit: 'each', parLevel: 8 },
         },
       ],
     });
     const lines = deliveryLinesFromCommitPlan(plan);
     assert.deepEqual(lines[0], {
-      lineKey: 'existing', itemId: 'item-a', quantity: 5, quantityCases: null, unitCost: undefined,
+      lineKey: 'existing', itemId: 'item-a', quantity: 5, quantityCases: null, unitCost: 2,
     });
     assert.deepEqual(lines[1], {
       lineKey: 'new', itemId: null, itemName: 'Mop', category: 'maintenance', unit: 'each',
-      parLevel: 8, quantity: 3, quantityCases: null, unitCost: undefined,
+      customCategoryId: null, parLevel: 8, setAside: 0,
+      quantity: 3, quantityCases: null, unitCost: 3,
     });
     assert.equal('finalStock' in lines[0], false);
   });
@@ -108,5 +116,70 @@ describe('atomic inventory delivery payload', () => {
       inventoryPayloadFingerprint(a),
       inventoryPayloadFingerprint([{ ...a[0], quantity: 3 }]),
     );
+  });
+});
+
+describe('atomic inventory loss payload', () => {
+  test('normalizes an explicit hotel stock-loss reason without inventing a count', () => {
+    assert.deepEqual(validateInventoryStockLoss({
+      itemId: ' item-a ', expectedStock: 8, quantity: 2, reason: 'missing', notes: ' Closet checked ',
+    }), {
+      itemId: 'item-a', expectedStock: 8, quantity: 2, reason: 'missing', notes: 'Closet checked',
+    });
+  });
+
+  test('rejects fractions, stale overdraws, and non-finite values', () => {
+    assert.throws(() => validateInventoryStockLoss({
+      itemId: 'item-a', expectedStock: 8, quantity: 1.5, reason: 'damaged',
+    }), /whole number/i);
+    assert.throws(() => validateInventoryStockLoss({
+      itemId: 'item-a', expectedStock: 1, quantity: 2, reason: 'lost',
+    }), /cannot exceed/i);
+    assert.throws(() => validateInventoryStockLoss({
+      itemId: 'item-a', expectedStock: 8, quantity: Number.POSITIVE_INFINITY, reason: 'lost',
+    }), /finite/i);
+  });
+});
+
+describe('atomic inventory delivery correction payload', () => {
+  test('maps a correction and a void with explicit expected effective state', () => {
+    assert.deepEqual(toInventoryDeliveryCorrectionRpcLines([
+      {
+        lineKey: 'line-a', orderId: 'order-a', expectedItemId: 'item-a',
+        expectedQuantity: 5, expectedUnitCost: 2,
+        correctedItemId: 'item-b', correctedQuantity: 3, correctedUnitCost: 2.5,
+      },
+      {
+        lineKey: 'line-b', orderId: 'order-b', expectedItemId: 'item-b',
+        expectedQuantity: 2, expectedUnitCost: null,
+        correctedItemId: null, correctedQuantity: 0, correctedUnitCost: null,
+      },
+    ]), [
+      {
+        line_key: 'line-a', order_id: 'order-a', expected_item_id: 'item-a',
+        expected_quantity: 5, expected_unit_cost: 2,
+        corrected_item_id: 'item-b', corrected_quantity: 3, corrected_unit_cost: 2.5,
+      },
+      {
+        line_key: 'line-b', order_id: 'order-b', expected_item_id: 'item-b',
+        expected_quantity: 2, expected_unit_cost: null,
+        corrected_item_id: null, corrected_quantity: 0, corrected_unit_cost: null,
+      },
+    ]);
+  });
+
+  test('rejects duplicate roots and inconsistent voids', () => {
+    const base = {
+      lineKey: 'a', orderId: 'order-a', expectedItemId: 'item-a',
+      expectedQuantity: 1, expectedUnitCost: 2,
+      correctedItemId: null, correctedQuantity: 0, correctedUnitCost: null,
+    } as const;
+    assert.throws(() => toInventoryDeliveryCorrectionRpcLines([
+      base,
+      { ...base, lineKey: 'b' },
+    ]), /duplicate delivery order id/i);
+    assert.throws(() => toInventoryDeliveryCorrectionRpcLines([{
+      ...base, correctedItemId: 'item-a', correctedQuantity: 0,
+    }]), /voided delivery/i);
   });
 });

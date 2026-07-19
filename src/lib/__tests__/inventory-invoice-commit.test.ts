@@ -22,7 +22,9 @@ function draft(lines: Line[], extra: Record<string, unknown> = {}) {
     vendorName: 'Acme Supply',
     invoiceDate: '2026-05-01',
     invoiceNumber: '5567',
-    lines,
+    lines: lines.map((line) => line.decision === 'match'
+      ? { ...line, unitCost: line.unitCost ?? '1', matchConfirmed: line.matchConfirmed ?? true }
+      : line),
     ...extra,
   };
 }
@@ -35,22 +37,19 @@ describe('buildCommitPlan — validation', () => {
     assert.equal(p.creates.length, 0);
   });
 
-  it('drops lines with non-positive / non-numeric qty', () => {
-    const p = buildCommitPlan(draft([
-      { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '0' },
-      { key: 'b', itemName: 'Y', decision: 'match', matchedItemId: '2', qty: 'abc' },
-      { key: 'c', itemName: 'Z', decision: 'match', matchedItemId: '3', qty: '-4' },
-    ]), NOW);
-    assert.equal(p.orders.length, 0);
+  it('fails the whole invoice for a non-positive or non-numeric quantity', () => {
+    for (const qty of ['0', 'abc', '-4']) {
+      assert.throws(() => buildCommitPlan(draft([
+        { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty },
+      ]), NOW), /quantity greater than zero/i);
+    }
   });
 
-  it('coerces blank unit cost to undefined and parses a real one', () => {
-    const p = buildCommitPlan(draft([
+  it('fails the whole invoice for a blank cost instead of saving a partial ledger', () => {
+    assert.throws(() => buildCommitPlan(draft([
       { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '5', unitCost: '', onHandEstimate: 0 },
       { key: 'b', itemName: 'Y', decision: 'match', matchedItemId: '2', qty: '2', unitCost: '3.50', onHandEstimate: 0 },
-    ]), NOW);
-    assert.equal(p.orders[0].unitCost, undefined);
-    assert.equal(p.orders[1].unitCost, 3.5);
+    ]), NOW), /unit cost/i);
   });
 
   it('uses the invoice line total as the authoritative purchase amount', () => {
@@ -62,6 +61,18 @@ describe('buildCommitPlan — validation', () => {
     ]), NOW);
     assert.equal(p.orders[0].unitCost, 1.8);
     assert.equal(p.orders[0].quantity * (p.orders[0].unitCost ?? 0), 21.6);
+  });
+
+  it('fails closed when a suggested SKU was not explicitly or safely confirmed', () => {
+    assert.throws(
+      () => buildCommitPlan(draft([{
+        key: 'a', itemName: 'Towel-ish line', decision: 'match', matchedItemId: 'item-1',
+        matchConfirmed: false, qty: '2', unitCost: '4', onHandEstimate: 0,
+      }]), NOW),
+      (error: unknown) => error instanceof Error
+        && error.name === 'InvoiceCommitValidationError'
+        && /confirm or rematch/i.test(error.message),
+    );
   });
 });
 
@@ -90,21 +101,37 @@ describe('buildCommitPlan — dates & tag', () => {
   it('uses the correct DST offset on transition dates', () => {
     const line: Line = { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 };
     const spring = buildCommitPlan(draft([line], { invoiceDate: '2026-03-08' }), NOW);
-    const fall = buildCommitPlan(draft([line], { invoiceDate: '2026-11-01' }), NOW);
+    const fall = buildCommitPlan(
+      draft([line], { invoiceDate: '2026-11-01' }),
+      new Date('2026-12-01T12:00:00.000Z'),
+    );
     assert.equal(spring.receivedAt.toISOString(), '2026-03-08T17:00:00.000Z');
     assert.equal(fall.receivedAt.toISOString(), '2026-11-01T18:00:00.000Z');
   });
 
-  it('falls back to now for a blank or invalid calendar date', () => {
+  it('requires correction for a blank, malformed, or impossible calendar date', () => {
+    for (const invoiceDate of [null, 'not-a-date', '2026-02-31']) {
+      assert.throws(() => buildCommitPlan(draft([
+        { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 },
+      ], { invoiceDate }), NOW), /valid invoice date/i);
+    }
+    assert.throws(() => buildCommitPlan(draft([
+      { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 },
+    ], { propertyTimezone: 'Not/A_Zone' }), NOW), /timezone is invalid/i);
+  });
 
-    const blank = buildCommitPlan(draft([{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }], { invoiceDate: null }), NOW);
-    assert.equal(blank.receivedAt.getTime(), NOW.getTime());
+  it('rejects a future invoice date using the hotel calendar at UTC extremes', () => {
+    const boundaryNow = new Date('2026-05-30T00:30:00.000Z');
+    const create = (propertyTimezone: string, invoiceDate: string) => buildCommitPlan(draft(
+      [{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }],
+      { propertyTimezone, invoiceDate },
+    ), boundaryNow);
 
-    const garbage = buildCommitPlan(draft([{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }], { invoiceDate: 'not-a-date' }), NOW);
-    assert.equal(garbage.receivedAt.getTime(), NOW.getTime());
-
-    const impossible = buildCommitPlan(draft([{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }], { invoiceDate: '2026-02-31' }), NOW);
-    assert.equal(impossible.receivedAt.getTime(), NOW.getTime());
+    // It is already May 30 at UTC+14, but still May 29 at UTC-11.
+    assert.doesNotThrow(() => create('Pacific/Kiritimati', '2026-05-30'));
+    assert.throws(() => create('Pacific/Kiritimati', '2026-05-31'), /later than today/i);
+    assert.doesNotThrow(() => create('Pacific/Pago_Pago', '2026-05-29'));
+    assert.throws(() => create('Pacific/Pago_Pago', '2026-05-30'), /later than today/i);
   });
 
   it('builds the dedupe tag with and without an invoice number', () => {
@@ -122,7 +149,10 @@ describe('buildCommitPlan — shapes', () => {
     assert.equal(p.creates.length, 1);
     assert.deepEqual(
       { ...p.creates[0] },
-      { createKey: 'c1', name: 'New Mop', category: 'housekeeping', unit: 'each', parLevel: 20, unitCost: 4, initialStock: 12 },
+      {
+        createKey: 'c1', name: 'New Mop', category: 'housekeeping', customCategoryId: null,
+        unit: 'each', parLevel: 20, setAside: 0, unitCost: 4, initialStock: 12,
+      },
     );
     assert.equal(p.orders.length, 1);
     assert.equal(p.orders[0].itemId, null);
@@ -131,12 +161,41 @@ describe('buildCommitPlan — shapes', () => {
     assert.equal(p.stockUpdates.length, 0);
   });
 
-  it('drops a create line with an invalid qty', () => {
-    const p = buildCommitPlan(draft([
+  it('rejects a create line with an invalid qty', () => {
+    assert.throws(() => buildCommitPlan(draft([
       { key: 'c1', itemName: 'New Mop', decision: 'create', matchedItemId: null, qty: '0', newItem: { category: 'housekeeping', unit: 'each', parLevel: '0' } },
-    ]), NOW);
-    assert.equal(p.creates.length, 0);
-    assert.equal(p.orders.length, 0);
+    ]), NOW), /quantity greater than zero/i);
+  });
+
+  it('rejects an incomplete invoice-created item instead of applying hidden defaults', () => {
+    assert.throws(
+      () => buildCommitPlan(draft([{
+        key: 'c1', itemName: 'New Mop', decision: 'create', matchedItemId: null,
+        qty: '2', unitCost: '4', newItem: { category: 'housekeeping', unit: '', parLevel: '' },
+      }]), NOW),
+      /complete the new item name, category, unit, non-negative par level/i,
+    );
+  });
+
+  it('preserves custom category and set-aside fields for an invoice-created item', () => {
+    const p = buildCommitPlan(draft([{
+      key: 'c1', itemName: 'Pool towels', decision: 'create', matchedItemId: null,
+      qty: '12', unitCost: '4',
+      newItem: {
+        category: 'housekeeping', customCategoryId: 'custom-pool',
+        unit: 'each', parLevel: '20', setAside: '3',
+      },
+    }]), NOW);
+    assert.equal(p.creates[0].customCategoryId, 'custom-pool');
+    assert.equal(p.creates[0].setAside, 3);
+  });
+
+  it('rejects set aside above the received quantity', () => {
+    assert.throws(() => buildCommitPlan(draft([{
+      key: 'c1', itemName: 'Pool towels', decision: 'create', matchedItemId: null,
+      qty: '2', unitCost: '4',
+      newItem: { category: 'housekeeping', unit: 'each', parLevel: '4', setAside: '3' },
+    }]), NOW), /set-aside/i);
   });
 
   it('preserves quantity_cases', () => {

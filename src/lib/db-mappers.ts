@@ -713,6 +713,7 @@ export function fromInventoryCountRow(r: Record<string, unknown>): InventoryCoun
   return {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
+    activitySequence: r.activity_sequence == null ? undefined : Number(r.activity_sequence),
     countSessionId: parseStringField(r.count_session_id),
     itemId: String(r.item_id ?? ''),
     itemName: String(r.item_name ?? ''),
@@ -749,6 +750,7 @@ export function fromInventoryOrderRow(r: Record<string, unknown>): InventoryOrde
   return {
     id: String(r.id),
     propertyId: String(r.property_id ?? ''),
+    activitySequence: r.activity_sequence == null ? undefined : Number(r.activity_sequence),
     itemId: String(r.item_id ?? ''),
     itemName: String(r.item_name ?? ''),
     quantity: Number(r.quantity ?? 0),
@@ -759,6 +761,9 @@ export function fromInventoryOrderRow(r: Record<string, unknown>): InventoryOrde
     orderedAt: toDate(r.ordered_at),
     receivedAt: toDate(r.received_at),
     notes: parseStringField(r.notes),
+    entryKind: r.entry_kind === 'correction' ? 'correction' : 'receipt',
+    correctsOrderId: parseStringField(r.corrects_order_id) ?? null,
+    correctionEventId: parseStringField(r.correction_event_id) ?? null,
   };
 }
 

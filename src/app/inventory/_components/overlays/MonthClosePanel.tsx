@@ -3,13 +3,18 @@
 import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { inventoryMonthKeyInZone } from '@/lib/inventory-month-close';
+import {
+  normalizeMonthCloseDashboard,
+  type MonthCloseDashboardView,
+  type MonthCloseIssue,
+  type MonthClosePurchaseSource,
+} from '@/lib/inventory-month-close-contract';
 
 import { Btn } from '../Btn';
 import type { Lang } from '../inv-i18n';
 import { T, fonts } from '../tokens';
 import { Overlay } from './Overlay';
-
-export type MonthClosePurchaseSource = 'logged_deliveries' | 'manual_total' | 'zero';
 
 export interface MonthClosePanelProps {
   lang: Lang;
@@ -21,217 +26,14 @@ export interface MonthClosePanelProps {
   onChanged?: () => void;
 }
 
-type MonthCloseStatus = 'not_started' | 'open' | 'closed';
-
-interface MonthCloseIssue {
-  code: string;
-  message: string;
-  itemId: string | null;
-  itemName: string | null;
-  count: number | null;
-}
-
-interface MonthCloseItemView {
-  itemId: string;
-  itemName: string;
-  archivedAt: string | null;
-  endingQuantity: number | null;
-  beginningUnitCostCents: number | null;
-  endingUnitCostCents: number | null;
-  physicalUnitCostCents: number | null;
-  endingCountedAt: string | null;
-}
-
-/**
- * Small UI-facing projection of InventoryMonthCloseDashboard. Keeping the
- * projection local means the panel can tolerate a direct dashboard response,
- * `{ data: dashboard }`, or `{ data: { dashboard } }` while the API settles.
- * All monetary values stay in integer cents.
- */
-export interface MonthCloseDashboardView {
-  propertyId: string;
-  month: string;
-  timezone: string | null;
-  status: MonthCloseStatus;
-  canStart: boolean;
-  canClose: boolean;
-  closeAvailableOn: string | null;
-  closeId: string | null;
-  isPartial: boolean;
-  budgetComparisonAvailable: boolean;
-  baselineAt: string | null;
-  activityStartAt: string | null;
-  closedAt: string | null;
-  closedByName: string | null;
-  totals: {
-    beginningCents: number | null;
-    openingAdjustmentCents: number;
-    purchasesCents: number | null;
-    endingCents: number | null;
-    actualUsageCents: number | null;
-  };
-  purchase: {
-    source: MonthClosePurchaseSource | null;
-    allocationMode: 'itemized' | 'total_only' | null;
-    loggedDeliveryCount: number;
-    loggedPurchaseCents: number | null;
-    knownLoggedPurchaseCents: number;
-    uncostedDeliveryCount: number;
-    manualPurchaseCents: number | null;
-    confirmedPurchaseCents: number | null;
-  };
-  completeness: {
-    complete: boolean;
-    readyToClose: boolean;
-    blockers: MonthCloseIssue[];
-    warnings: MonthCloseIssue[];
-  };
-  items: MonthCloseItemView[];
-}
-
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
-function recordAt(record: UnknownRecord, key: string): UnknownRecord | null {
-  return isRecord(record[key]) ? record[key] as UnknownRecord : null;
-}
-
 function asText(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function asNullableText(value: unknown): string | null {
-  return value == null ? null : asText(value);
-}
-
-function asFiniteNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function asCents(value: unknown): number | null {
-  const number = asFiniteNumber(value);
-  return number == null ? null : Math.round(number);
-}
-
-function asCount(value: unknown): number {
-  const number = asFiniteNumber(value);
-  return number == null ? 0 : Math.max(0, Math.round(number));
-}
-
-function asPurchaseSource(value: unknown): MonthClosePurchaseSource | null {
-  return value === 'logged_deliveries' || value === 'manual_total' || value === 'zero'
-    ? value
-    : null;
-}
-
-function normalizeIssue(value: unknown): MonthCloseIssue | null {
-  if (typeof value === 'string') {
-    return { code: value, message: value, itemId: null, itemName: null, count: null };
-  }
-  if (!isRecord(value)) return null;
-  const code = asText(value.code) ?? 'month_close_blocked';
-  return {
-    code,
-    message: asText(value.message) ?? code,
-    itemId: asNullableText(value.itemId),
-    itemName: asNullableText(value.itemName),
-    count: asFiniteNumber(value.count),
-  };
-}
-
-function normalizeIssues(value: unknown): MonthCloseIssue[] {
-  if (!Array.isArray(value)) return [];
-  return value.map(normalizeIssue).filter((issue): issue is MonthCloseIssue => issue != null);
-}
-
-function normalizeItems(value: unknown): MonthCloseItemView[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((row, index) => {
-    if (!isRecord(row)) return [];
-    return [{
-      itemId: asText(row.itemId) ?? `item-${index}`,
-      itemName: asText(row.itemName) ?? `Item ${index + 1}`,
-      archivedAt: asNullableText(row.archivedAt),
-      endingQuantity: asFiniteNumber(row.endingQuantity),
-      beginningUnitCostCents: asCents(row.beginningUnitCostCents),
-      endingUnitCostCents: asCents(row.endingUnitCostCents),
-      physicalUnitCostCents: asCents(row.physicalUnitCostCents),
-      endingCountedAt: asNullableText(row.endingCountedAt),
-    }];
-  });
-}
-
-/** Defensive API-boundary normalizer; exported for a focused contract test. */
-export function normalizeMonthCloseDashboard(payload: unknown): MonthCloseDashboardView | null {
-  if (!isRecord(payload)) return null;
-  const data = recordAt(payload, 'data');
-  const candidate = (data && recordAt(data, 'dashboard'))
-    ?? data
-    ?? recordAt(payload, 'dashboard')
-    ?? payload;
-
-  const rawStatus = asText(candidate.status);
-  if (rawStatus !== 'not_started' && rawStatus !== 'open' && rawStatus !== 'closed') return null;
-  const month = asText(candidate.month);
-  if (!month || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)) return null;
-
-  const totals = recordAt(candidate, 'totals') ?? {};
-  const purchase = recordAt(candidate, 'purchase') ?? {};
-  const completeness = recordAt(candidate, 'completeness') ?? {};
-  const window = recordAt(candidate, 'window') ?? {};
-  const allocationMode = purchase.allocationMode === 'itemized' || purchase.allocationMode === 'total_only'
-    ? purchase.allocationMode
-    : null;
-
-  return {
-    propertyId: asText(candidate.propertyId) ?? '',
-    month,
-    timezone: asNullableText(candidate.timezone),
-    status: rawStatus,
-    canStart: typeof candidate.canStart === 'boolean'
-      ? candidate.canStart
-      : rawStatus === 'not_started'
-        && asCents(totals.beginningCents) != null
-        && normalizeIssues(completeness.blockers).length === 0,
-    canClose: typeof candidate.canClose === 'boolean'
-      ? candidate.canClose
-      : completeness.readyToClose === true,
-    closeAvailableOn: asNullableText(candidate.closeAvailableOn),
-    closeId: asNullableText(candidate.closeId),
-    isPartial: candidate.isPartial === true,
-    budgetComparisonAvailable: candidate.budgetComparisonAvailable === true,
-    baselineAt: asNullableText(candidate.baselineAt),
-    activityStartAt: asNullableText(window.activityStartAt) ?? asNullableText(candidate.activityStartAt),
-    closedAt: asNullableText(candidate.closedAt),
-    closedByName: asNullableText(candidate.closedByName),
-    totals: {
-      beginningCents: asCents(totals.beginningCents),
-      openingAdjustmentCents: asCents(totals.openingAdjustmentCents) ?? 0,
-      purchasesCents: asCents(totals.purchasesCents),
-      endingCents: asCents(totals.endingCents),
-      actualUsageCents: asCents(totals.actualUsageCents),
-    },
-    purchase: {
-      source: asPurchaseSource(purchase.source),
-      allocationMode,
-      loggedDeliveryCount: asCount(purchase.loggedDeliveryCount),
-      loggedPurchaseCents: asCents(purchase.loggedPurchaseCents),
-      knownLoggedPurchaseCents: asCents(purchase.knownLoggedPurchaseCents) ?? 0,
-      uncostedDeliveryCount: asCount(purchase.uncostedDeliveryCount),
-      manualPurchaseCents: asCents(purchase.manualPurchaseCents),
-      confirmedPurchaseCents: asCents(purchase.confirmedPurchaseCents),
-    },
-    completeness: {
-      complete: completeness.complete === true,
-      readyToClose: completeness.readyToClose === true,
-      blockers: normalizeIssues(completeness.blockers),
-      warnings: normalizeIssues(completeness.warnings),
-    },
-    items: normalizeItems(candidate.items),
-  };
 }
 
 function monthCloseStrings(lang: Lang) {
@@ -322,6 +124,18 @@ function monthCloseStrings(lang: Lang) {
       closed: 'Month closed successfully.',
       actionFailed: 'The month close was not saved. Review the information and try again.',
       actionFailedTitle: 'Could not save month close',
+      networkActionFailed: 'The connection failed, so we could not confirm the result. Retry this same safe action or reload the month status; its saved request ID prevents a duplicate.',
+      timezoneChangedAction: 'The property timezone changed after this period opened. Nothing was closed. An administrator must rebaseline the current month before usage can be recorded safely.',
+      endingCountAction: 'No eligible complete ending count was found. Run a full count in the allowed window. If the window has passed, reload the current month; the missed period remains unclosed.',
+      baselineCountAction: 'No current full count can start this baseline. Run one complete count, then start monthly tracking again. Nothing was saved.',
+      recountAction: 'Inventory changed around the selected count. Nothing was closed. Run one new complete count, then retry.',
+      tooEarlyAction: 'This period cannot close before the hotel’s local month boundary. No values were saved.',
+      costsAction: 'Required cost evidence is missing. Complete the flagged item or received-line costs, then retry. No values were saved.',
+      purchaseAction: 'The purchase choice does not match this period’s evidence. Review the source and try again. No values were saved.',
+      requestConflictAction: 'This saved retry belongs to different close values. Reload the checklist before trying again.',
+      missedWindowTitle: 'The previous close window was missed',
+      missedWindowBody: 'That period remains unclosed and excluded; no $0 usage was invented. Run a fresh complete count, then start a new baseline for the current month.',
+      loadCurrentMonth: 'Reload current month',
       partialTitle: 'First period is partial',
       partialPreviewBody: (date: string) => `Tracking starts ${date}. This preview covers only from that baseline through close—not the full month—and should not be treated as a full-month budget actual.`,
       partialBody: (date: string) => `Tracking starts ${date}. Actual used covers only from that baseline through close—not the full month—and should not be treated as a full-month budget actual.`,
@@ -419,6 +233,18 @@ function monthCloseStrings(lang: Lang) {
       closed: 'El mes se cerró correctamente.',
       actionFailed: 'No se guardó el cierre mensual. Revisa la información e inténtalo de nuevo.',
       actionFailedTitle: 'No se pudo guardar el cierre mensual',
+      networkActionFailed: 'Falló la conexión y no se pudo confirmar el resultado. Reintenta esta misma acción segura o vuelve a cargar el estado del mes; el ID guardado evita duplicados.',
+      timezoneChangedAction: 'La zona horaria de la propiedad cambió después de abrir este período. No se cerró nada. Un administrador debe restablecer la base del mes actual antes de registrar el uso de forma segura.',
+      endingCountAction: 'No se encontró un conteo final completo y elegible. Realiza un conteo total dentro del período permitido. Si ya pasó, vuelve a cargar el mes actual; el período omitido seguirá sin cerrar.',
+      baselineCountAction: 'No hay un conteo total actual para iniciar esta base. Realiza un conteo completo y vuelve a iniciar el seguimiento mensual. No se guardó nada.',
+      recountAction: 'El inventario cambió alrededor del conteo elegido. No se cerró nada. Realiza un nuevo conteo completo y vuelve a intentarlo.',
+      tooEarlyAction: 'Este período no puede cerrarse antes del límite mensual local del hotel. No se guardaron valores.',
+      costsAction: 'Falta evidencia de costos requerida. Completa los costos señalados del artículo o de la línea recibida y vuelve a intentarlo. No se guardaron valores.',
+      purchaseAction: 'La fuente de compras no coincide con la evidencia del período. Revísala y vuelve a intentarlo. No se guardaron valores.',
+      requestConflictAction: 'Este reintento guardado corresponde a otros valores de cierre. Vuelve a cargar la lista antes de intentarlo.',
+      missedWindowTitle: 'Se perdió el período de cierre anterior',
+      missedWindowBody: 'Ese período sigue sin cerrar y está excluido; no se inventó un uso de $0. Realiza un nuevo conteo completo e inicia una base para el mes actual.',
+      loadCurrentMonth: 'Volver a cargar el mes actual',
       partialTitle: 'El primer período es parcial',
       partialPreviewBody: (date: string) => `El seguimiento comienza el ${date}. Esta vista previa cubre solo desde esa base hasta el cierre, no el mes completo, y no debe tratarse como un resultado presupuestario mensual completo.`,
       partialBody: (date: string) => `El seguimiento comienza el ${date}. El uso real cubre solo desde esa base hasta el cierre, no el mes completo, y no debe tratarse como un resultado presupuestario mensual completo.`,
@@ -431,6 +257,29 @@ function monthCloseStrings(lang: Lang) {
       budgetUnavailable: 'Las comparaciones por categoría y sección presupuestaria no están disponibles porque las compras se ingresaron como un solo total.',
     },
   }[lang];
+}
+
+function localizedActionFailure(
+  failure: MonthCloseActionFailure,
+  copy: ReturnType<typeof monthCloseStrings>,
+): MonthCloseActionFailure {
+  const message = (() => {
+    switch (failure.code) {
+      case 'month_close_timezone_changed': return copy.timezoneChangedAction;
+      case 'month_close_ending_count_required': return copy.endingCountAction;
+      case 'month_close_baseline_count_required': return copy.baselineCountAction;
+      case 'month_close_recount_required': return copy.recountAction;
+      case 'month_close_too_early': return copy.tooEarlyAction;
+      case 'month_close_costs_incomplete': return copy.costsAction;
+      case 'month_close_purchase_selection_invalid': return copy.purchaseAction;
+      case 'month_close_request_conflict': return copy.requestConflictAction;
+      case 'month_close_network_error': return copy.networkActionFailed;
+      case 'internal_error': return copy.networkActionFailed;
+      case 'month_close_negative_usage': return copy.negativeBody;
+      default: return failure.message;
+    }
+  })();
+  return { ...failure, message };
 }
 
 function money(cents: number | null, lang: Lang): string {
@@ -557,6 +406,18 @@ function apiMessage(payload: unknown): string | null {
   if (typeof payload.error === 'string') return payload.error;
   if (isRecord(payload.error) && typeof payload.error.message === 'string') return payload.error.message;
   return null;
+}
+
+interface MonthCloseActionFailure {
+  code: string;
+  message: string;
+}
+
+function apiFailure(payload: unknown, fallback: string): MonthCloseActionFailure {
+  if (!isRecord(payload)) return { code: 'month_close_network_error', message: fallback };
+  const nested = isRecord(payload.error) ? payload.error : null;
+  const code = asText(payload.code) ?? (nested ? asText(nested.code) : null) ?? 'month_close_not_ready';
+  return { code, message: apiMessage(payload) ?? fallback };
 }
 
 function isCountIssue(code: string): boolean {
@@ -793,7 +654,7 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<MonthCloseActionFailure | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [purchaseSource, setPurchaseSource] = useState<MonthClosePurchaseSource>('logged_deliveries');
   const [manualPurchase, setManualPurchase] = useState('');
@@ -845,6 +706,7 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
       if (!response.ok) throw new Error(apiMessage(payload) ?? `HTTP ${response.status}`);
       const next = normalizeMonthCloseDashboard(payload);
       if (!next) throw new Error('INVALID_MONTH_CLOSE_DASHBOARD');
+      if (next.propertyId !== activePropertyId) throw new Error('WRONG_PROPERTY_MONTH_CLOSE_DASHBOARD');
       if (sequence === requestSequence.current) applyDashboard(next);
       return next;
     } catch {
@@ -986,6 +848,23 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
       ? item.endingCountedAt
       : latest;
   }, null) ?? null;
+  const missedWindowWarning = dashboard?.completeness.warnings.find(
+    (issue) => issue.code === 'expired_prior_period_rebaseline_required',
+  ) ?? null;
+  const setupWarnings = dashboard?.completeness.warnings.filter(
+    (issue) => issue.code !== 'expired_prior_period_rebaseline_required',
+  ) ?? [];
+  const hotelCurrentMonth = (() => {
+    if (!dashboard?.timezone) return null;
+    try { return inventoryMonthKeyInZone(new Date(), dashboard.timezone); } catch { return null; }
+  })();
+  const recoveryNeedsCount = mutationError?.code === 'month_close_recount_required'
+    || mutationError?.code === 'month_close_ending_count_required'
+    || mutationError?.code === 'month_close_baseline_count_required';
+  const recoveryNeedsCurrentMonth = mutationError?.code === 'month_close_ending_count_required'
+    && hotelCurrentMonth != null
+    && dashboard != null
+    && dashboard.month < hotelCurrentMonth;
   const countReady = countBlockers.length === 0 && (itemCount === 0 || countedItems === itemCount);
   const costsReady = costBlockers.length === 0;
   const baselineBlocked = !dashboard
@@ -1015,6 +894,11 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
     onStartCount();
   };
 
+  const reloadRecovery = async () => {
+    setMutationError(null);
+    await loadDashboard(true);
+  };
+
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!dashboard || !activePropertyId || saving) return;
@@ -1038,7 +922,7 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
     if (!attempt || attempt.signature !== signature) {
       const requestId = newRequestId();
       if (!requestId) {
-        setMutationError(copy.actionFailed);
+        setMutationError({ code: 'month_close_network_error', message: copy.networkActionFailed });
         return;
       }
       attempt = {
@@ -1071,17 +955,18 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
           && response.status !== 408
           && response.status !== 429;
         if (definitiveClientFailure) clearAttempt();
-        throw new Error(apiMessage(payload) ?? `HTTP ${response.status}`);
+        setMutationError(localizedActionFailure(apiFailure(payload, copy.actionFailed), copy));
+        return;
       }
       clearAttempt();
 
       const returned = normalizeMonthCloseDashboard(payload);
-      if (returned) applyDashboard(returned);
+      if (returned && returned.propertyId === activePropertyId) applyDashboard(returned);
       else await loadDashboard(false);
       setStatusMessage(action === 'start' ? copy.started : copy.closed);
       onChanged?.();
     } catch {
-      setMutationError(copy.actionFailed);
+      setMutationError({ code: 'month_close_network_error', message: copy.networkActionFailed });
     } finally {
       setSaving(false);
     }
@@ -1193,7 +1078,23 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
             <Notice tone="success" title={statusMessage} role="status">{dashboard?.status === 'closed' ? copy.closedBody : copy.openIntro}</Notice>
           </div>
         )}
-        {mutationError && <Notice tone="error" title={copy.actionFailedTitle} role="alert">{mutationError}</Notice>}
+        {mutationError && (
+          <Notice tone="error" title={copy.actionFailedTitle} role="alert">
+            <div>{mutationError.message}</div>
+            {recoveryNeedsCount && (
+              <div style={{ marginTop: 10 }}>
+                <Btn
+                  className="mc-button"
+                  variant="ghost"
+                  style={button44}
+                  onClick={recoveryNeedsCurrentMonth ? () => void reloadRecovery() : handleStartCount}
+                >
+                  {recoveryNeedsCurrentMonth ? copy.loadCurrentMonth : copy.startCount}
+                </Btn>
+              </div>
+            )}
+          </Notice>
+        )}
 
         {!activePropertyId ? (
           <Notice tone="info" title={copy.noPropertyTitle}>{copy.noPropertyBody}</Notice>
@@ -1209,6 +1110,16 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
           </div>
         ) : dashboard.status === 'not_started' ? (
           <>
+            {missedWindowWarning && (
+              <Notice tone="warn" title={copy.missedWindowTitle} role="status">
+                <div>{copy.missedWindowBody}</div>
+                <div style={{ marginTop: 10 }}>
+                  <Btn className="mc-button" variant="ghost" style={button44} onClick={handleStartCount}>
+                    {copy.startCount}
+                  </Btn>
+                </div>
+              </Notice>
+            )}
             <section className="mc-section mc-stack" aria-labelledby={`${formId}-setup-title`}>
               <div>
                 <StatusBadge tone="warn">{copy.statusSetup}</StatusBadge>
@@ -1236,7 +1147,7 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
               countReady={countReady}
               costsReady={costsReady}
               blockers={dashboard.completeness.blockers}
-              warnings={dashboard.completeness.warnings}
+              warnings={setupWarnings}
               onStartCount={handleStartCount}
             />
           </>

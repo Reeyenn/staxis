@@ -169,6 +169,7 @@ export function StaxisMenu({
                     style={{
                       display: 'flex',
                       alignItems: 'center',
+                      minHeight: 44,
                       gap: 7,
                       width: '100%',
                       padding: '8px 10px',
