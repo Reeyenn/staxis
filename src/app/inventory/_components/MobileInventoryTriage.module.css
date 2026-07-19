@@ -8,6 +8,7 @@
   --mi-faint: #5c625c;
   --mi-rule: rgba(31, 35, 28, 0.08);
   --mi-rule-soft: rgba(31, 35, 28, 0.06);
+  --mi-control-border: #8a9187;
   --mi-focus: #3e5c48;
   --mi-brand: #3e5c48;
   --mi-brand-hover: #5c7a60;
@@ -211,7 +212,7 @@
 .actionButton::before {
   position: absolute;
   inset: 3px 0;
-  border: 1px solid var(--mi-rule);
+  border: 1px solid var(--mi-control-border);
   border-radius: 10px;
   background: var(--mi-surface);
   content: '';
@@ -328,7 +329,7 @@
   height: 34px;
   gap: 7px;
   padding: 0 13px;
-  border: 1px solid var(--mi-rule);
+  border: 1px solid var(--mi-control-border);
   border-radius: 999px;
   color: var(--mi-ink-2);
   background: transparent;

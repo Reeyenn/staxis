@@ -954,7 +954,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
         <div key={group.key}>
           {showDividers && (
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '14px 0 2px' }}>
-              <Caps size={8.5}>{group.label}</Caps>
+              <Caps size={9.5}>{group.label}</Caps>
               <span style={{ flex: 1, height: 1, background: T.ruleSoft }} />
             </div>
           )}
@@ -977,7 +977,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
 // Compact input for the inline add-item form (matches the sheet's density).
 const addInputStyle: React.CSSProperties = {
   width: '100%', height: 36, padding: '0 11px', borderRadius: 8, boxSizing: 'border-box',
-  background: T.bg, border: `1px solid ${T.rule}`, outline: 'none',
+  background: T.bg, border: `1px solid ${T.controlBorder}`, outline: 'none',
   fontFamily: fonts.sans, fontSize: 13.5, color: T.ink,
 };
 
@@ -987,8 +987,8 @@ function AddField({ label, hint, children }: { label: string; hint?: string; chi
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-        <Caps size={8.5}>{label}</Caps>
-        {hint && <span style={{ fontFamily: fonts.sans, fontSize: 9, color: T.faint }}>{hint}</span>}
+        <Caps size={10}>{label}</Caps>
+        {hint && <span style={{ fontFamily: fonts.sans, fontSize: 10, fontWeight: 500, color: T.ink2 }}>{hint}</span>}
       </span>
       {children}
     </div>
@@ -1087,7 +1087,7 @@ function fillStyle(entry: Entry): FillVisual {
     if (entry.confidence === 'medium') return { bg: `${T.caramel}14`, border: `${T.caramel}55` };
     return { bg: T.warmDim, border: `${T.warm}55` };
   }
-  return { bg: T.bg, border: T.rule };
+  return { bg: T.bg, border: T.controlBorder };
 }
 
 function photoCountErrorFor(lang: Lang, status: number, detail?: string): string {
@@ -1108,7 +1108,7 @@ function ScopeOption({ title, n, itemsLabel, onPick }: { title: string; n: numbe
       type="button"
       onClick={() => { Motion.pop(ref.current, 0.98); onPick(); }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.ink; e.currentTarget.style.background = T.inkWash; }}
-      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.background = T.bg; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.controlBorder; e.currentTarget.style.background = T.bg; }}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -1118,7 +1118,7 @@ function ScopeOption({ title, n, itemsLabel, onPick }: { title: string; n: numbe
         borderRadius: 13,
         cursor: 'pointer',
         background: T.bg,
-        border: `1px solid ${T.rule}`,
+        border: `1px solid ${T.controlBorder}`,
         textAlign: 'left',
         width: '100%',
       }}
@@ -1126,8 +1126,8 @@ function ScopeOption({ title, n, itemsLabel, onPick }: { title: string; n: numbe
       <Serif size={23} style={{ letterSpacing: '-0.01em', whiteSpace: 'nowrap' }}>{title}</Serif>
       <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 8, flex: 'none' }}>
         <Serif size={22} color={T.ink2}>{n}</Serif>
-        <Caps size={9} color={T.dim}>{itemsLabel}</Caps>
-        <Serif size={20} color={T.dim} style={{ marginLeft: 4 }}>→</Serif>
+        <Caps size={9} color={T.ink2}>{itemsLabel}</Caps>
+        <Serif size={20} color={T.ink2} style={{ marginLeft: 4 }}>→</Serif>
       </span>
     </button>
   );

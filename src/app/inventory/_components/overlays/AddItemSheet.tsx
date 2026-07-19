@@ -506,7 +506,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
                 style={inputStyle}
               />
             </Field>
-            <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.dim, paddingBottom: 10 }}>
+            <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 500, color: T.ink2, paddingBottom: 10 }}>
               {ais.usableNow(Math.max(0, (Number(currentStock) || 0) - (Number(setAsideInput) || 0)))}
             </span>
           </div>
@@ -573,10 +573,10 @@ function CatChip({ active, label, onClick }: { active: boolean; label: string; o
         cursor: 'pointer',
         background: active ? T.ink : 'transparent',
         color: active ? T.bg : T.ink2,
-        border: `1px solid ${active ? T.ink : T.rule}`,
+        border: `1px solid ${active ? T.ink : T.controlBorder}`,
         fontFamily: fonts.sans,
         fontSize: 13,
-        fontWeight: 500,
+        fontWeight: 600,
         maxWidth: 200,
         overflow: 'hidden',
         textOverflow: 'ellipsis',
@@ -629,9 +629,9 @@ function InfoTip({ text }: { text: string }) {
           height: 15,
           flex: 'none',
           borderRadius: 999,
-          border: `1px solid ${T.rule}`,
+          border: `1px solid ${T.controlBorder}`,
           background: 'transparent',
-          color: T.ink3,
+          color: T.ink2,
           cursor: 'help',
           padding: 0,
           fontFamily: fonts.serif ?? fonts.sans,

@@ -4,7 +4,9 @@ import React from 'react';
 import { fonts, T } from './tokens';
 
 // Uppercase mono caps eyebrow used above every section title.
-// Concourse eyebrow spec: Geist Mono 9.5px, tracking 0.14em, faint ink.
+// Inventory crews scan these labels at a distance, so the default uses the
+// AA-safe secondary ink rather than the decorative faint token. Individual
+// tertiary metadata can still opt into T.faint explicitly.
 
 interface CapsProps extends React.HTMLAttributes<HTMLSpanElement> {
   size?: number;
@@ -15,10 +17,10 @@ interface CapsProps extends React.HTMLAttributes<HTMLSpanElement> {
 
 export function Caps({
   children,
-  size = 9.5,
+  size = 10,
   tracking = '0.14em',
   color,
-  weight = 500,
+  weight = 600,
   style,
   ...rest
 }: CapsProps) {
@@ -31,7 +33,7 @@ export function Caps({
         fontWeight: weight,
         letterSpacing: tracking,
         textTransform: 'uppercase',
-        color: color ?? T.faint,
+        color: color ?? T.ink2,
         ...style,
       }}
     >

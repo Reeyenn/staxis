@@ -22,6 +22,9 @@ export const T = {
   rule:      'rgba(31,35,28,0.08)',
   ruleSoft:  'rgba(31,35,28,0.06)',
   ruleFaint: 'rgba(31,35,28,0.05)',
+  // Interactive boundaries need 3:1 contrast against the white surface.
+  // Keep the softer rules for layout dividers; use this for fields/chips.
+  controlBorder: '#8A9187',
   inkWash:   'rgba(31,35,28,0.05)',
   brand:     '#3E5C48',   // primary action / active sage
   forest:    '#5C7A60',   // accent / ok sage

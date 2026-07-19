@@ -28,7 +28,7 @@ const input = (
   borderRadius: radius,
   boxSizing: 'border-box',
   background: T.bg,
-  border: `1px solid ${T.rule}`,
+  border: `1px solid ${T.controlBorder}`,
   fontFamily: fonts.sans,
   fontSize,
   color: T.ink,

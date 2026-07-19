@@ -416,16 +416,16 @@ function SelectChip({
       style={{
         display: 'inline-flex', alignItems: 'center', gap: 8, height: 34, padding: '0 14px',
         background: active ? T.ink : 'transparent',
-        border: `1px solid ${active ? T.ink : T.rule}`,
+        border: `1px solid ${active ? T.ink : T.controlBorder}`,
         borderRadius: 999, cursor: 'pointer',
         color: active ? T.bg : T.ink2,
-        fontFamily: fonts.sans, fontSize: 12.5, fontWeight: active ? 600 : 500,
+        fontFamily: fonts.sans, fontSize: 12.5, fontWeight: 600,
         opacity: dim ? 0.6 : 1,
         transition: 'opacity .16s ease',
       }}
     >
       {label}
-      <span style={{ fontFamily: fonts.mono, fontSize: 10, fontWeight: 700, color: active ? 'rgba(255,255,255,0.6)' : T.dim }}>
+      <span style={{ fontFamily: fonts.mono, fontSize: 10, fontWeight: 700, color: active ? 'rgba(255,255,255,0.72)' : T.ink2 }}>
         <TickNum>{count}</TickNum>
       </span>
     </button>

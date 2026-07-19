@@ -203,7 +203,7 @@ const groupHdr: React.CSSProperties = {
   fontSize: 9.5,
   letterSpacing: '0.06em',
   textTransform: 'uppercase',
-  color: T.ink3,
+  color: T.ink2,
   fontWeight: 600,
   padding: '7px 10px 3px',
 };

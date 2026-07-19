@@ -337,11 +337,11 @@ function HeaderCell({
     <span
       style={{
         fontFamily: fonts.mono,
-        fontSize: 8.5,
+        fontSize: 9.5,
         fontWeight: 600,
         letterSpacing: '0.14em',
         textTransform: 'uppercase',
-        color: T.faint,
+        color: T.ink2,
         textAlign: align,
       }}
     >

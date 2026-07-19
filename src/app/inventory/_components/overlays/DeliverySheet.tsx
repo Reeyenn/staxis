@@ -304,19 +304,19 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
                 style={{
                   flex: 1, minWidth: 0, height: 40, padding: '0 12px', borderRadius: 9,
                   boxSizing: 'border-box', cursor: 'pointer', outline: 'none',
-                  background: T.bg, border: `1px solid ${T.rule}`,
+                  background: T.bg, border: `1px solid ${T.controlBorder}`,
                   fontFamily: fonts.sans, fontSize: 14, fontWeight: 600,
-                  color: r.itemId ? T.ink : T.dim,
+                  color: r.itemId ? T.ink : T.ink2,
                 }}
               >
-                <option value="">{ds.selectItem}</option>
+                <option value="" style={{ color: T.ink2, fontWeight: 600 }}>{ds.selectItem}</option>
                 {groupDefs.map((g) => {
                   const opts = availableFor(g);
                   if (opts.length === 0) return null;
                   return (
-                    <optgroup key={g.key} label={g.label}>
+                    <optgroup key={g.key} label={g.label} style={{ color: T.ink2, fontWeight: 600 }}>
                       {opts.map((d) => (
-                        <option key={d.id} value={d.id}>{d.name}</option>
+                        <option key={d.id} value={d.id} style={{ color: T.ink, fontWeight: 500 }}>{d.name}</option>
                       ))}
                     </optgroup>
                   );
@@ -334,7 +334,7 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
                 style={{
                   width: 76, height: 40, borderRadius: 9, boxSizing: 'border-box',
                   flex: 'none', textAlign: 'center', outline: 'none',
-                  background: T.bg, border: `1px solid ${T.rule}`,
+                  background: T.bg, border: `1px solid ${T.controlBorder}`,
                   fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink,
                   letterSpacing: '-0.02em',
                 }}
@@ -389,7 +389,7 @@ function OptionRow({ title, onPick }: { title: string; onPick: () => void }) {
       type="button"
       onClick={() => { Motion.pop(ref.current, 0.98); onPick(); }}
       onMouseEnter={(e) => { e.currentTarget.style.borderColor = T.ink; e.currentTarget.style.background = T.inkWash; }}
-      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.rule; e.currentTarget.style.background = T.bg; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = T.controlBorder; e.currentTarget.style.background = T.bg; }}
       style={{
         display: 'flex',
         alignItems: 'center',
@@ -399,13 +399,13 @@ function OptionRow({ title, onPick }: { title: string; onPick: () => void }) {
         borderRadius: 13,
         cursor: 'pointer',
         background: T.bg,
-        border: `1px solid ${T.rule}`,
+        border: `1px solid ${T.controlBorder}`,
         textAlign: 'left',
         width: '100%',
       }}
     >
       <Serif size={23} style={{ letterSpacing: '-0.01em', whiteSpace: 'nowrap' }}>{title}</Serif>
-      <Serif size={20} color={T.dim}>→</Serif>
+      <Serif size={20} color={T.ink2}>→</Serif>
     </button>
   );
 }
