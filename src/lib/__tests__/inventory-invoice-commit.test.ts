@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import {
   buildCommitPlan,
   buildNotesTag,
+  invoiceDateFromReceivedAt,
   invoiceAlreadyRecorded,
 } from '../inventory-invoice-commit';
 
@@ -16,7 +17,14 @@ const NOW = new Date('2026-05-29T12:00:00');
 
 type Line = Parameters<typeof buildCommitPlan>[0]['lines'][number];
 function draft(lines: Line[], extra: Record<string, unknown> = {}) {
-  return { vendorName: 'Acme Supply', invoiceDate: '2026-05-01', invoiceNumber: '5567', lines, ...extra };
+  return {
+    propertyTimezone: 'America/Chicago',
+    vendorName: 'Acme Supply',
+    invoiceDate: '2026-05-01',
+    invoiceNumber: '5567',
+    lines,
+    ...extra,
+  };
 }
 
 describe('buildCommitPlan — validation', () => {
@@ -44,18 +52,59 @@ describe('buildCommitPlan — validation', () => {
     assert.equal(p.orders[0].unitCost, undefined);
     assert.equal(p.orders[1].unitCost, 3.5);
   });
+
+  it('uses the invoice line total as the authoritative purchase amount', () => {
+    const p = buildCommitPlan(draft([
+      {
+        key: 'a', itemName: 'Towels', decision: 'match', matchedItemId: '1',
+        qty: '12', unitCost: '2.00', totalCost: '21.60', onHandEstimate: 0,
+      },
+    ]), NOW);
+    assert.equal(p.orders[0].unitCost, 1.8);
+    assert.equal(p.orders[0].quantity * (p.orders[0].unitCost ?? 0), 21.6);
+  });
 });
 
 describe('buildCommitPlan — dates & tag', () => {
-  it('parses the invoice date and falls back to now', () => {
+  it('converts the hotel-local invoice date using that property timezone', () => {
     const valid = buildCommitPlan(draft([{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }]), NOW);
-    assert.equal(valid.receivedAt.toISOString().slice(0, 10), '2026-05-01');
+    assert.equal(valid.receivedAt.toISOString(), '2026-05-01T17:00:00.000Z');
+
+    const winter = buildCommitPlan(draft(
+      [{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }],
+      { invoiceDate: '2026-01-15' },
+    ), NOW);
+    assert.equal(winter.receivedAt.toISOString(), '2026-01-15T18:00:00.000Z');
+  });
+
+  it('preserves dates east of UTC and restores them in hotel time', () => {
+    const plan = buildCommitPlan(draft(
+      [{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }],
+      { propertyTimezone: 'Pacific/Kiritimati', invoiceDate: '2026-05-01' },
+    ), NOW);
+    assert.equal(plan.receivedAt.toISOString(), '2026-04-30T22:00:00.000Z');
+    assert.equal(invoiceDateFromReceivedAt(plan.receivedAt, 'Pacific/Kiritimati'), '2026-05-01');
+    assert.equal(invoiceDateFromReceivedAt('not-an-instant', 'Pacific/Kiritimati'), null);
+  });
+
+  it('uses the correct DST offset on transition dates', () => {
+    const line: Line = { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 };
+    const spring = buildCommitPlan(draft([line], { invoiceDate: '2026-03-08' }), NOW);
+    const fall = buildCommitPlan(draft([line], { invoiceDate: '2026-11-01' }), NOW);
+    assert.equal(spring.receivedAt.toISOString(), '2026-03-08T17:00:00.000Z');
+    assert.equal(fall.receivedAt.toISOString(), '2026-11-01T18:00:00.000Z');
+  });
+
+  it('falls back to now for a blank or invalid calendar date', () => {
 
     const blank = buildCommitPlan(draft([{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }], { invoiceDate: null }), NOW);
     assert.equal(blank.receivedAt.getTime(), NOW.getTime());
 
     const garbage = buildCommitPlan(draft([{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }], { invoiceDate: 'not-a-date' }), NOW);
     assert.equal(garbage.receivedAt.getTime(), NOW.getTime());
+
+    const impossible = buildCommitPlan(draft([{ key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1', onHandEstimate: 0 }], { invoiceDate: '2026-02-31' }), NOW);
+    assert.equal(impossible.receivedAt.getTime(), NOW.getTime());
   });
 
   it('builds the dedupe tag with and without an invoice number', () => {

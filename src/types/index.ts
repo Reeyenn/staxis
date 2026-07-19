@@ -300,6 +300,15 @@ export interface InventoryItem {
   unitCost?: number;            // dollars per unit (drives Total Inventory Value + variance $)
   lastAlertedAt?: Date | null;  // when this item last triggered a critical SMS alert (24h dedupe)
   lastCountedAt?: Date | null;  // when current_stock was last manually changed (only bumps on count, NOT on metadata edits)
+  /**
+   * Immutable provenance for stock that was already on the shelf when a new
+   * catalog item was discovered. This is opening inventory, never a delivery
+   * or purchase. Postgres freezes these fields and writes an audit event.
+   */
+  openingAdjustmentQuantity?: number | null;
+  openingAdjustmentUnitCost?: number | null;
+  openingAdjustmentAt?: Date | null;
+  openingAdjustmentRequestId?: string | null;
   // Pack-size (cases ↔ units): null = sold individually
   packSize?: number;            // units per case/box
   caseUnit?: string;            // display label ("case", "box", "dozen") — purely cosmetic
@@ -358,8 +367,11 @@ export interface InventoryDiscard {
   notes?: string;
 }
 
-// One row per (property, budget key, month). Drives the budget headroom badge
-// on the Smart Reorder List and the Budget vs Actual block in the accounting view.
+export type InventoryBudgetBasis = 'purchases' | 'usage';
+
+// One row per (property, budget key, month, basis). Legacy rows budget the
+// purchase ledger; new Inventory budgets cap closed monthly usage. Keeping the
+// basis durable prevents a purchase cap from silently becoming a usage cap.
 export interface InventoryBudget {
   propertyId: string;
   /**
@@ -369,6 +381,7 @@ export interface InventoryBudget {
    * sections). Migration 0306.
    */
   category: string;
+  basis: InventoryBudgetBasis;
   monthStart: Date | null;       // first day of the budget month (always normalised to UTC midnight)
   budgetCents: number;
   notes?: string;
@@ -376,8 +389,8 @@ export interface InventoryBudget {
 }
 
 // A hotel-defined budget section ("Pool supplies"): a name plus the inventory
-// item ids whose orders count toward its spend. Budget dollars live in
-// inventory_budgets keyed 'section:<id>'.
+// item ids whose usage is attributed to it at month close. Budget dollars live
+// in inventory_budgets keyed 'section:<id>' with basis='usage'.
 export interface InventoryBudgetSection {
   id: string;
   propertyId: string;

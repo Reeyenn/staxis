@@ -1,8 +1,8 @@
 // Builds the History panel's event feed from the raw count + delivery ledgers
 // (2026-07-18 rework). One event = one thing a person (or the AI) actually DID
 // in the app — a count walk, a quick count, an invoice scan, a typed-in
-// delivery, an AI-assistant action, or adding new items — with the per-item
-// lines kept for the expandable detail view.
+// delivery, an AI-assistant action, adding new items, or an immutable monthly
+// close — with detail kept for the expandable view.
 //
 // Lang-agnostic on purpose: this module classifies and groups; HistoryPanel
 // owns every display string. Classification keys off the shared note-tag
@@ -12,12 +12,20 @@
 // 'delivery' kind, as do legacy/unknown notes — never dropped.
 
 import type { InventoryCount, InventoryItem, InventoryOrder } from '@/types';
+import type {
+  InventoryCloseAllocationMode,
+  InventoryMonthCloseHistoryRow,
+  InventoryPurchaseSource,
+} from '@/lib/inventory-month-close';
 import { groupInventoryCountsByEvent } from '@/lib/inventory-history';
 import {
   ASSISTANT_COUNT_NOTE,
   ASSISTANT_ORDER_NOTE,
   INVOICE_SCAN_NOTE_PREFIX,
 } from '@/lib/inventory-note-tags';
+import { inventoryPurchaseRowValue } from '@/lib/inventory-purchase-cost';
+import { inventoryDateKeyInZone } from '@/lib/inventory-month-close';
+import { propertyTimezoneOrUTC } from '@/lib/property-timezone';
 
 export type HistoryEventKind =
   | 'count'       // full count walk (2+ items)
@@ -25,7 +33,32 @@ export type HistoryEventKind =
   | 'scan'        // delivery added by scanning an invoice
   | 'delivery'    // delivery typed in by hand (or legacy/unknown stock-in)
   | 'assistant'   // AI assistant marked an item ordered
-  | 'itemsAdded'; // new items created that day
+  | 'itemsAdded'  // new items created that day
+  | 'monthClose'; // finance-only immutable monthly accounting snapshot
+
+export interface HistoryMonthClose {
+  month: string;
+  isPartial: boolean;
+  budgetComparisonAvailable: boolean;
+  allocationMode: InventoryCloseAllocationMode;
+  purchaseSource: InventoryPurchaseSource;
+  beginningAmount: number | null;
+  /** Pre-existing shelf stock discovered after the opening baseline. */
+  openingAdjustmentAmount: number;
+  purchasesAmount: number | null;
+  /** Null means at least one logged delivery had no usable cost. */
+  loggedPurchaseAmount: number | null;
+  knownLoggedPurchaseAmount: number;
+  endingAmount: number | null;
+  actualUsageAmount: number | null;
+}
+
+export interface HistoryDeliveryCost {
+  /** Sum of every delivery line whose stored total cost is finite. */
+  knownSubtotal: number;
+  /** False when one or more lines have no usable total cost. */
+  complete: boolean;
+}
 
 export interface HistoryLine {
   name: string;
@@ -49,8 +82,12 @@ export interface HistoryEvent {
   byAssistant: boolean;
   invoiceNumber: string | null;
   lines: HistoryLine[];
-  /** Σ delivery cost, or Σ count variance $. Null when no row had a $ figure. */
+  /** Known delivery subtotal, count variance $, or closed-month actual. */
   amount: number | null;
+  /** Present only for delivery/scan/assistant events. */
+  deliveryCost?: HistoryDeliveryCost;
+  /** Present only for a finance-gated immutable month-close event. */
+  monthClose?: HistoryMonthClose;
 }
 
 function parseInvoiceNumber(notes: string): string | null {
@@ -62,6 +99,8 @@ export function buildHistoryEvents(
   counts: InventoryCount[],
   orders: InventoryOrder[],
   items: InventoryItem[],
+  monthCloses: readonly InventoryMonthCloseHistoryRow[] = [],
+  propertyTimezone: string = 'UTC',
 ): HistoryEvent[] {
   const out: HistoryEvent[] = [];
 
@@ -114,15 +153,21 @@ export function buildHistoryEvents(
       : notes === ASSISTANT_ORDER_NOTE
         ? 'assistant'
         : 'delivery'; // typed-in + legacy/unknown
-    let costSum = 0;
-    let sawCost = false;
+    let knownSubtotal = 0;
+    let complete = true;
     const lines: HistoryLine[] = group.map((o) => {
-      if (typeof o.totalCost === 'number') { costSum += o.totalCost; sawCost = true; }
+      const value = inventoryPurchaseRowValue({
+        total_cost: o.totalCost ?? null,
+        quantity: o.quantity,
+        unit_cost: o.unitCost ?? null,
+      });
+      if (value != null) knownSubtotal += value;
+      else complete = false;
       return {
         name: o.itemName,
         qty: o.quantity,
         cases: o.quantityCases ?? null,
-        amount: typeof o.totalCost === 'number' ? o.totalCost : undefined,
+        amount: value ?? undefined,
       };
     });
     out.push({
@@ -133,7 +178,8 @@ export function buildHistoryEvents(
       byAssistant: kind === 'assistant',
       invoiceNumber: kind === 'scan' ? parseInvoiceNumber(notes) : null,
       lines,
-      amount: sawCost ? costSum : null,
+      amount: knownSubtotal,
+      deliveryCost: { knownSubtotal, complete },
     });
   }
 
@@ -141,10 +187,11 @@ export function buildHistoryEvents(
   // (Archived items drop out of the active item list, so their creation events
   // disappear with them — acceptable; the count/delivery history survives.)
   const addsByDay = new Map<string, InventoryItem[]>();
+  const historyTimezone = propertyTimezoneOrUTC(propertyTimezone);
   for (const d of items) {
     const created = d.createdAt;
     if (!created) continue; // legacy rows predate authorship tracking
-    const dayKey = `${created.getFullYear()}-${created.getMonth()}-${created.getDate()}`;
+    const dayKey = inventoryDateKeyInZone(created, historyTimezone);
     const g = addsByDay.get(dayKey);
     if (g) g.push(d);
     else addsByDay.set(dayKey, [d]);
@@ -169,6 +216,53 @@ export function buildHistoryEvents(
     });
   }
 
+  // ── Monthly accounting closes: immutable, finance-only facts ────────
+  // The caller passes these only for finance viewers, and HistoryPanel also
+  // filters defensively. Open periods are workflow state, not history.
+  const dollars = (cents: number | null): number | null =>
+    cents == null || !Number.isFinite(cents) ? null : cents / 100;
+  for (const close of monthCloses) {
+    if (
+      close.status !== 'closed' || !close.closedAt ||
+      close.allocationMode == null || close.purchaseSource == null
+    ) continue;
+    const date = new Date(close.closedAt);
+    if (!Number.isFinite(date.getTime())) continue;
+    const actualUsageAmount = dollars(close.actualUsageCents);
+    out.push({
+      id: `month-close:${close.closeId}`,
+      kind: 'monthClose',
+      date,
+      who: null,
+      byAssistant: false,
+      invoiceNumber: null,
+      lines: [],
+      amount: actualUsageAmount,
+      monthClose: {
+        month: close.month,
+        isPartial: close.isPartial,
+        budgetComparisonAvailable: close.budgetComparisonAvailable,
+        allocationMode: close.allocationMode,
+        purchaseSource: close.purchaseSource,
+        beginningAmount: dollars(close.beginningCents),
+        openingAdjustmentAmount: dollars(close.openingAdjustmentCents) ?? 0,
+        purchasesAmount: dollars(close.purchasesCents),
+        loggedPurchaseAmount: dollars(close.loggedPurchaseCents),
+        knownLoggedPurchaseAmount: dollars(close.knownLoggedPurchaseCents) ?? 0,
+        endingAmount: dollars(close.endingCents),
+        actualUsageAmount,
+      },
+    });
+  }
+
   out.sort((a, b) => b.date.getTime() - a.date.getTime());
   return out;
+}
+
+/** Defense in depth: month-close money must never enter a non-finance feed. */
+export function historyEventsForViewer(
+  events: readonly HistoryEvent[],
+  canViewFinancials: boolean,
+): HistoryEvent[] {
+  return canViewFinancials ? [...events] : events.filter((event) => event.kind !== 'monthClose');
 }

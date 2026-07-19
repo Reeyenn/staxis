@@ -19,11 +19,17 @@ import {
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
+import { useProperty } from '@/contexts/PropertyContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { exportBlob, filenameFromDisposition } from '@/lib/export-blob';
 import { T, fonts, Btn, Caps } from '@/app/staff/_components/_tokens';
 import { formatCell } from '@/lib/reports/catalog/format';
+import {
+  propertyReportRange,
+  type PropertyReportRangeKey,
+} from '@/lib/reports/property-report-range';
+import { propertyTimezoneOrUTC } from '@/lib/property-timezone';
 import type { Bilingual, ColumnKind, ReportCategory } from '@/lib/reports/catalog/types';
 
 type Lang = 'en' | 'es';
@@ -62,29 +68,11 @@ const CATEGORY_ORDER: ReportCategory[] = [
   'housekeeping', 'inspections', 'maintenance', 'inventory', 'occupancy', 'activity', 'lost_found',
 ];
 
-type RangeKey = 'last7' | 'last30' | 'mtd' | 'custom';
-
-function ymd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-function rangeFor(key: RangeKey, customFrom?: string, customTo?: string): { from: string; to: string } {
-  const today = new Date();
-  const to = ymd(today);
-  if (key === 'custom') {
-    return { from: customFrom || ymd(new Date(today.getTime() - 6 * 86400000)), to: customTo || to };
-  }
-  if (key === 'mtd') {
-    return { from: ymd(new Date(today.getFullYear(), today.getMonth(), 1)), to };
-  }
-  const days = key === 'last30' ? 29 : 6;
-  return { from: ymd(new Date(today.getTime() - days * 86400000)), to };
-}
+type RangeKey = PropertyReportRangeKey;
 
 export default function ReportsPage() {
   const { uid, pid } = useScope();
+  const { activeProperty } = useProperty();
   const { lang } = useLang();
   const can = useCan();
 
@@ -113,12 +101,16 @@ export default function ReportsPage() {
 
   return (
     <AppLayout>
-      <ReportsBody pid={pid ?? ''} lang={lang} />
+      <ReportsBody
+        pid={pid ?? ''}
+        lang={lang}
+        timezone={propertyTimezoneOrUTC(activeProperty?.timezone)}
+      />
     </AppLayout>
   );
 }
 
-function ReportsBody({ pid, lang }: { pid: string; lang: Lang }) {
+function ReportsBody({ pid, lang, timezone }: { pid: string; lang: Lang; timezone: string }) {
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -169,6 +161,7 @@ function ReportsBody({ pid, lang }: { pid: string; lang: Lang }) {
       <ReportRunner
         pid={pid}
         lang={lang}
+        timezone={timezone}
         entry={selected}
         favorited={favorites.has(selected.key)}
         onToggleFavorite={() => toggleFavorite(selected.key)}
@@ -267,8 +260,8 @@ function ReportCard({ entry, lang, favorited, onOpen, onStar }: {
   );
 }
 
-function ReportRunner({ pid, lang, entry, favorited, onToggleFavorite, onBack }: {
-  pid: string; lang: Lang; entry: CatalogEntry; favorited: boolean;
+function ReportRunner({ pid, lang, timezone, entry, favorited, onToggleFavorite, onBack }: {
+  pid: string; lang: Lang; timezone: string; entry: CatalogEntry; favorited: boolean;
   onToggleFavorite: () => void; onBack: () => void;
 }) {
   const [rangeKey, setRangeKey] = useState<RangeKey>(entry.defaultRange);
@@ -278,7 +271,10 @@ function ReportRunner({ pid, lang, entry, favorited, onToggleFavorite, onBack }:
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const bounds = useMemo(() => rangeFor(rangeKey, customFrom, customTo), [rangeKey, customFrom, customTo]);
+  const bounds = useMemo(
+    () => propertyReportRange(rangeKey, timezone, customFrom, customTo),
+    [rangeKey, timezone, customFrom, customTo],
+  );
 
   // Race guard: the effect below refires run() on every range change
   // (including each keystroke in the custom date inputs) without cancelling

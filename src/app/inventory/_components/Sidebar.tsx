@@ -8,10 +8,12 @@ import { Motion, EASE } from './motion';
 import { CountUp, TickNum } from './fx';
 import { fmtMoney } from './format';
 import { t, type Lang } from './inv-i18n';
+import type { InventoryBudgetActualState } from '@/lib/inventory-budget-actual';
 
 export type SidebarAction =
   | 'count'
   | 'scan'
+  | 'close'
   | 'reports'
   | 'compare'
   | 'history'
@@ -22,8 +24,14 @@ interface SidebarProps {
   lang: Lang;
   totalItems: number;
   historyCount: number;
-  spendSpent: number;
-  spendCap: number;
+  /** Purchases received this month. Shown separately from usage. */
+  purchasesThisMonth: number;
+  /** False means purchasesThisMonth is only the known-cost subtotal. */
+  purchasesComplete: boolean;
+  /** Closed month usage actual; null until the month is closed. */
+  actualUsedThisMonth: number | null;
+  actualState: InventoryBudgetActualState;
+  budgetCap: number;
   /** Management (owner/GM/admin) — gates the Add-delivery action. */
   canManage: boolean;
   /** Money capability (view_financials) — gates the budget/spend surfaces:
@@ -41,8 +49,11 @@ export function Sidebar({
   lang,
   totalItems,
   historyCount,
-  spendSpent,
-  spendCap,
+  purchasesThisMonth,
+  purchasesComplete,
+  actualUsedThisMonth,
+  actualState,
+  budgetCap,
   canManage,
   canViewFinancials,
   onAction,
@@ -68,6 +79,7 @@ export function Sidebar({
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.do}</Caps>
       <RailBtn label={tx.startCount} badge={totalItems} primary onClick={() => onAction('count')} />
       {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('scan')} />}
+      {canManage && canViewFinancials && <RailBtn label={tx.monthClose} onClick={() => onAction('close')} />}
       <Divider />
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.look}</Caps>
       {/* Reports + Compare + Budgets show budget/spend dollars — money-capability only. */}
@@ -77,13 +89,21 @@ export function Sidebar({
       <RailBtn label={tx.aiHelper} onClick={() => onAction('ai')} />
       {canViewFinancials && <RailBtn label={tx.budgets} onClick={() => onAction('budgets')} />}
 
-      {/* Month spend vs budget — money-capability only. */}
+      {/* Closed usage vs budget — purchases stay visible but never masquerade
+          as the month's P&L actual. Money-capability only. */}
       {canViewFinancials && (
         <>
           <div style={{ height: 1, background: T.rule, margin: '10px 8px 6px' }} />
           <div style={{ padding: '4px 10px 6px' }}>
             <Caps size={9}>{tx.thisMonth}</Caps>
-            <SpendStrip spent={spendSpent} cap={spendCap} lang={lang} />
+            <UsageStrip
+              actual={actualUsedThisMonth}
+              purchases={purchasesThisMonth}
+              purchasesComplete={purchasesComplete}
+              cap={budgetCap}
+              state={actualState}
+              lang={lang}
+            />
           </div>
         </>
       )}
@@ -162,13 +182,29 @@ function RailBtn({ label, badge, primary, tone, onClick }: RailBtnProps) {
   );
 }
 
-function SpendStrip({ spent, cap, lang }: { spent: number; cap: number; lang: Lang }) {
+function UsageStrip({
+  actual,
+  purchases,
+  purchasesComplete,
+  cap,
+  state,
+  lang,
+}: {
+  actual: number | null;
+  purchases: number;
+  purchasesComplete: boolean;
+  cap: number;
+  state: InventoryBudgetActualState;
+  lang: Lang;
+}) {
   const tx = t(lang);
-  const pct = cap > 0 ? Math.min(1, spent / cap) : 0;
-  const remaining = Math.max(0, cap - spent);
+  const complete = state === 'complete' && actual != null;
+  const used = complete ? actual : 0;
+  const pct = cap > 0 ? Math.min(1, used / cap) : 0;
+  const remaining = cap - used;
   // Honest utilization color: comfortably inside budget = forest, past 80% of
   // the cap = gold, at/over the cap = terra. (Same family as stock statuses.)
-  const barColor = pct >= 1 ? T.terra : pct >= 0.8 ? T.gold : T.forest;
+  const barColor = used > cap && cap > 0 ? T.terra : pct >= 0.8 ? T.gold : T.forest;
 
   // The fill inks in from its previous level, like the stock bars.
   const fillRef = useRef<HTMLSpanElement>(null);
@@ -177,20 +213,37 @@ function SpendStrip({ spent, cap, lang }: { spent: number; cap: number; lang: La
     const el = fillRef.current;
     if (!el) return;
     const from = prevPct.current;
-    if (from !== pct) {
+    if (complete && from !== pct) {
       el.animate(
         [{ width: `${from * 100}%` }, { width: `${pct * 100}%` }],
         { duration: 900, easing: EASE.settle, fill: 'none' },
       );
     }
     prevPct.current = pct;
-  }, [pct]);
+  }, [complete, pct]);
+
+  if (!complete) {
+    return (
+      <div role="status" style={{ display: 'flex', flexDirection: 'column', gap: 5, marginTop: 7 }}>
+        <span style={{ fontFamily: fonts.sans, fontSize: 14, fontWeight: 650, color: T.ink }}>
+          {state === 'partial' ? tx.partialUsage : tx.usagePending}
+        </span>
+        <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink2 }}>
+          {purchasesComplete ? fmtMoney(purchases) : `≥ ${fmtMoney(purchases)}`} {tx.purchasesLogged}
+          {!purchasesComplete ? ` · ${tx.purchaseCostsMissing}` : ''}
+        </span>
+        <span style={{ fontFamily: fonts.sans, fontSize: 10.5, lineHeight: 1.35, color: T.ink3 }}>
+          {tx.budgetAfterClose}
+        </span>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 0, marginTop: 6 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 6 }}>
         <Serif size={22}>
-          <CountUp value={spent} format={(n) => fmtMoney(n)} />
+          <CountUp value={used} format={(n) => fmtMoney(n)} />
         </Serif>
         {cap > 0 && (
           <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.dim }}>{tx.of} {fmtMoney(cap)}</span>
@@ -219,7 +272,15 @@ function SpendStrip({ spent, cap, lang }: { spent: number; cap: number; lang: La
         />
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink2 }}>
-        {cap > 0 ? `${fmtMoney(remaining)} ${tx.stillToSpend}` : tx.noBudgetSet}
+        {cap > 0
+          ? remaining >= 0
+            ? `${fmtMoney(remaining)} ${tx.leftInBudget}`
+            : `${fmtMoney(Math.abs(remaining))} ${tx.overBudget}`
+          : tx.noBudgetSet}
+      </span>
+      <span style={{ fontFamily: fonts.sans, fontSize: 10.5, color: T.ink3 }}>
+        {purchasesComplete ? fmtMoney(purchases) : `≥ ${fmtMoney(purchases)}`} {tx.purchasesLogged}
+        {!purchasesComplete ? ` · ${tx.purchaseCostsMissing}` : ''} · {tx.actualUsed}
       </span>
     </div>
   );

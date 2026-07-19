@@ -15,5 +15,7 @@ export const INVOICE_SCAN_NOTE_PREFIX = 'Invoice scan';
 /** Count rows written by the AI assistant's update-item-count tool. */
 export const ASSISTANT_COUNT_NOTE = 'Counted via Staxis assistant';
 
-/** Order rows written by the AI assistant's mark-ordered tool. */
+/** Legacy delivery-ledger rows previously written by the AI assistant.
+ * Retained unchanged so existing History entries still classify correctly.
+ * Current `markOrdered` only stamps `inventory.last_ordered_at`. */
 export const ASSISTANT_ORDER_NOTE = 'Marked ordered via assistant';

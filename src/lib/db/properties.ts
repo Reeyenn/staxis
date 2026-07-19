@@ -17,7 +17,7 @@ export const PROPERTY_COLS =
   'stayover_minutes, stayover_day1_minutes, stayover_day2_minutes, ' +
   'prep_minutes_per_activity, shift_minutes, total_staff_on_roster, ' +
   'weekly_budget, morning_briefing_time, evening_forecast_time, ' +
-  'pms_type, pms_url, pms_connected, last_synced_at, alert_phone, ' +
+  'pms_type, pms_url, pms_connected, last_synced_at, alert_phone, timezone, ' +
   'room_inventory, onboarding_completed_at, onboarding_state, onboarding_prompt_shown_at, enabled_sections, inventory_budget_mode, inventory_tab_layout, is_test, created_at';
 
 export async function getProperties(_uid: string): Promise<Property[]> {

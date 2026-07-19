@@ -27,7 +27,7 @@ import { Caps } from '../Caps';
 import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import { numGuard, intGuard, inputLg as inputStyle } from './form-kit';
-import { apiListVendors } from '../ordering-api';
+import { apiListVendors, apiRecordInventoryOpeningAdjustment } from '../ordering-api';
 import { catLabelFor, setAsideTip, type Lang } from '../inv-i18n';
 
 interface AddItemSheetProps {
@@ -70,6 +70,7 @@ function aisStrings(lang: Lang) {
       category: 'Category',
       onHand: 'On hand',
       setAside: 'Set aside',
+      setAsideTooHigh: 'Set aside cannot be greater than on hand.',
       usableNow: (n: number) => `= ${n} usable`,
       parLevel: 'Par level',
       unitCost: 'Unit cost ($)',
@@ -82,6 +83,17 @@ function aisStrings(lang: Lang) {
       detailsSavedCountConflict: 'The item details were saved, but on-hand stock changed elsewhere. Refresh the inventory and enter the count again; the newer stock was not overwritten.',
       confirmArchive: (n: string) => `Archive "${n}"? It will be hidden from active inventory, but all count and delivery history will be kept.`,
       couldNotArchive: 'Could not archive the item.',
+      archiveStockFirst: 'Count this item down to zero before archiving it. Positive on-hand stock must stay in the month-end inventory value.',
+      openingAdjustmentTitle: 'Already on the shelf',
+      openingAdjustmentBody: 'This starting quantity is pre-existing opening inventory. It is not a delivery or purchase and will adjust beginning inventory for month close.',
+      openingAdjustmentConfirm: 'Yes, this stock was already at the hotel.',
+      openingAdjustmentCost: 'Enter its unit cost so the opening adjustment can be valued.',
+      openingAdjustmentPermission: 'Only a manager who can enter costs can add positive starting stock. Otherwise add the item at zero, then log a delivery.',
+      existingAdjustmentTitle: 'Missed opening stock',
+      existingAdjustmentBody: 'Use this only for units that were already at the hotel before this period’s opening count but were missed. They will be added to beginning inventory—not purchases or usage.',
+      existingAdjustmentConfirm: 'Classify part of this on-hand stock as missed opening inventory.',
+      existingAdjustmentQuantity: 'Missed quantity',
+      existingAdjustmentQuantityError: 'Enter how many of the resulting on-hand units were already at the hotel. The amount must be greater than zero and cannot exceed on hand.',
       // Field tooltips (hover the ⓘ) — one plain line each.
       tipName: 'What you call this item.',
       tipCategory: 'Which team uses it — housekeeping, maintenance, or food & beverage.',
@@ -105,6 +117,7 @@ function aisStrings(lang: Lang) {
       category: 'Categoría',
       onHand: 'Disponible',
       setAside: 'Apartado',
+      setAsideTooHigh: 'La cantidad apartada no puede ser mayor que la cantidad disponible.',
       usableNow: (n: number) => `= ${n} utilizables`,
       parLevel: 'Nivel par',
       unitCost: 'Costo unitario ($)',
@@ -117,6 +130,17 @@ function aisStrings(lang: Lang) {
       detailsSavedCountConflict: 'Los detalles se guardaron, pero el inventario disponible cambió en otro lugar. Actualiza el inventario y vuelve a ingresar el conteo; no se sobrescribió el valor más reciente.',
       confirmArchive: (n: string) => `¿Archivar "${n}"? Se ocultará del inventario activo, pero se conservará todo el historial de conteos y entregas.`,
       couldNotArchive: 'No se pudo archivar el artículo.',
+      archiveStockFirst: 'Cuenta este artículo hasta cero antes de archivarlo. El inventario positivo debe permanecer en el valor de inventario de fin de mes.',
+      openingAdjustmentTitle: 'Ya estaba en el hotel',
+      openingAdjustmentBody: 'Esta cantidad inicial es inventario de apertura preexistente. No es una entrega ni una compra y ajustará el inventario inicial del cierre mensual.',
+      openingAdjustmentConfirm: 'Sí, este inventario ya estaba en el hotel.',
+      openingAdjustmentCost: 'Ingresa el costo unitario para valorar el ajuste de apertura.',
+      openingAdjustmentPermission: 'Solo un gerente que pueda ingresar costos puede agregar inventario inicial positivo. Si no, agrega el artículo en cero y luego registra una entrega.',
+      existingAdjustmentTitle: 'Inventario inicial omitido',
+      existingAdjustmentBody: 'Úsalo solo para unidades que ya estaban en el hotel antes del conteo inicial de este período, pero se omitieron. Se agregarán al inventario inicial, no a compras ni uso.',
+      existingAdjustmentConfirm: 'Clasificar parte de este inventario como inventario inicial omitido.',
+      existingAdjustmentQuantity: 'Cantidad omitida',
+      existingAdjustmentQuantityError: 'Ingresa cuántas unidades resultantes ya estaban en el hotel. La cantidad debe ser mayor que cero y no puede superar el inventario disponible.',
       // Tooltips de cada campo (pasa el cursor sobre la ⓘ) — una línea simple.
       tipName: 'Cómo llamas a este artículo.',
       tipCategory: 'Qué equipo lo usa — limpieza, mantenimiento o alimentos y bebidas.',
@@ -169,6 +193,15 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
     requestId: string;
     countedAt: Date;
   } | null>(null);
+  const openingAdjustmentAttemptRef = useRef<{
+    itemId: string;
+    expectedStock: number;
+    resultingStock: number;
+    adjustmentQuantity: number;
+    unitCost: number;
+    requestId: string;
+    effectiveAt: string;
+  } | null>(null);
   const [parLevel, setParLevel] = useState<string>('0');
   // Set-aside units (0321) — owned but unusable right now. Hotels onboarding
   // existing stock may already have stained/damaged units, so create and edit
@@ -179,6 +212,8 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
   // quantity saved by another staff member while this sheet was open.
   const setAsideBaselineRef = useRef<number>(0);
   const [unitCost, setUnitCost] = useState<string>('');
+  const [openingAdjustmentConfirmed, setOpeningAdjustmentConfirmed] = useState(false);
+  const [openingAdjustmentQuantity, setOpeningAdjustmentQuantity] = useState('');
   const [vendor, setVendor] = useState('');
   const [vendorId, setVendorId] = useState<string | null>(null);
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -201,6 +236,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
   useEffect(() => {
     if (!open) return;
     stockCountAttemptRef.current = null;
+    openingAdjustmentAttemptRef.current = null;
     if (item) {
       createAttemptRef.current = null;
       setCreateRetryLocked(false);
@@ -216,6 +252,8 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
       setUnitCost(item.unitCost != null ? String(item.unitCost) : '');
       setVendor(item.vendorName || '');
       setVendorId(item.vendorId ?? null);
+      setOpeningAdjustmentConfirmed(false);
+      setOpeningAdjustmentQuantity('');
     } else {
       const restored = activePropertyId
         ? loadInventoryItemCreateAttempt(activePropertyId)
@@ -233,12 +271,58 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
       setUnitCost(restored?.unitCostInput ?? '');
       setVendor(restored?.vendorInput ?? '');
       setVendorId(restored?.vendorId ?? null);
+      setOpeningAdjustmentConfirmed(restored?.openingAdjustmentConfirmed ?? false);
+      setOpeningAdjustmentQuantity('');
     }
   }, [open, item, activePropertyId, defaultCategory, defaultCustomCategoryId]);
 
   const handleSave = async () => {
     if (!user || !activePropertyId || saving) return;
     if (!name.trim()) return;
+    const startingStock = Math.max(0, Number(currentStock) || 0);
+    const resultingStock = isEdit && currentStock.trim() === ''
+      ? stockBaselineRef.current
+      : startingStock;
+    const setAsideNum = Math.max(0, Math.round(Number(setAsideInput) || 0));
+    const onHandForSubset = isEdit && currentStock.trim() === ''
+      ? stockBaselineRef.current
+      : resultingStock;
+    if (setAsideNum > onHandForSubset) {
+      alert(ais.setAsideTooHigh);
+      return;
+    }
+    if (!isEdit && startingStock > 0) {
+      if (!canViewFinancials) {
+        alert(ais.openingAdjustmentPermission);
+        return;
+      }
+      const startingCost = unitCost.trim() === '' ? Number.NaN : Number(unitCost);
+      if (!Number.isFinite(startingCost) || startingCost < 0) {
+        alert(ais.openingAdjustmentCost);
+        return;
+      }
+      if (!openingAdjustmentConfirmed) {
+        alert(ais.openingAdjustmentConfirm);
+        return;
+      }
+    }
+    const editOpeningAdjustment = isEdit && openingAdjustmentConfirmed;
+    const adjustmentQuantity = Number(openingAdjustmentQuantity);
+    if (editOpeningAdjustment) {
+      if (!canViewFinancials) {
+        alert(ais.openingAdjustmentPermission);
+        return;
+      }
+      if (!Number.isFinite(adjustmentQuantity) || adjustmentQuantity <= 0 || adjustmentQuantity > resultingStock) {
+        alert(ais.existingAdjustmentQuantityError);
+        return;
+      }
+      const adjustmentCost = unitCost.trim() === '' ? Number.NaN : Number(unitCost);
+      if (!Number.isFinite(adjustmentCost) || adjustmentCost < 0) {
+        alert(ais.openingAdjustmentCost);
+        return;
+      }
+    }
     setSaving(true);
     let metadataSaved = false;
     let createAttemptUsed: FrozenInventoryItemCreateAttempt | null = null;
@@ -264,19 +348,42 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
         const stockNum = currentStock.trim() === '' ? NaN : Number(currentStock);
         const stockChanged =
           Number.isFinite(stockNum) && stockNum !== stockBaselineRef.current;
-        const setAsideNum = Math.max(0, Math.round(Number(setAsideInput) || 0));
         const setAsideChanged = setAsideNum !== setAsideBaselineRef.current;
         await updateInventoryItem(user.uid, activePropertyId, item.id, {
           ...base,
           ...(setAsideChanged ? { setAside: setAsideNum } : {}),
-          ...(canViewFinancials
+          ...(canViewFinancials && !editOpeningAdjustment
             ? { unitCost: unitCost ? Number(unitCost) : null }
             : {}),
           vendorName: vendor.trim() || null,
         });
         if (setAsideChanged) setAsideBaselineRef.current = setAsideNum;
         metadataSaved = true;
-        if (stockChanged) {
+        if (editOpeningAdjustment) {
+          const adjustmentCost = Number(unitCost);
+          let attempt = openingAdjustmentAttemptRef.current;
+          if (!attempt
+              || attempt.itemId !== item.id
+              || attempt.expectedStock !== stockBaselineRef.current
+              || attempt.resultingStock !== resultingStock
+              || attempt.adjustmentQuantity !== adjustmentQuantity
+              || attempt.unitCost !== adjustmentCost) {
+            attempt = {
+              itemId: item.id,
+              expectedStock: stockBaselineRef.current,
+              resultingStock,
+              adjustmentQuantity,
+              unitCost: adjustmentCost,
+              requestId: generateId(),
+              effectiveAt: new Date().toISOString(),
+            };
+            openingAdjustmentAttemptRef.current = attempt;
+          }
+          await apiRecordInventoryOpeningAdjustment({
+            propertyId: activePropertyId,
+            ...attempt,
+          });
+        } else if (stockChanged) {
           let attempt = stockCountAttemptRef.current;
           if (!attempt || attempt.itemId !== item.id || attempt.value !== stockNum) {
             attempt = {
@@ -318,6 +425,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
             vendorInput: vendor,
             vendorId,
             includeUnitCost: canViewFinancials,
+            openingAdjustmentConfirmed,
           });
         }
         createAttemptUsed = attempt;
@@ -348,6 +456,10 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
           setAside: attempt.setAside,
           notes: inventoryItemCreateMarker(attempt.requestId),
           lastCountedAt: attempt.currentStock > 0 ? new Date(attempt.startedAt) : null,
+          openingAdjustmentQuantity: attempt.openingAdjustmentConfirmed ? attempt.currentStock : null,
+          openingAdjustmentUnitCost: attempt.openingAdjustmentConfirmed ? attempt.unitCost : null,
+          openingAdjustmentAt: attempt.openingAdjustmentConfirmed ? new Date(attempt.startedAt) : null,
+          openingAdjustmentRequestId: attempt.openingAdjustmentConfirmed ? attempt.requestId : null,
           propertyId: attempt.propertyId,
         }, attempt.itemId);
         clearInventoryItemCreateAttempt(attempt.propertyId, attempt.requestId);
@@ -389,6 +501,10 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
 
   const handleArchive = async () => {
     if (!user || !activePropertyId || !item || saving) return;
+    if ((item.currentStock ?? 0) > 0) {
+      alert(ais.archiveStockFirst);
+      return;
+    }
     if (!confirm(ais.confirmArchive(item.name))) return;
     setSaving(true);
     try {
@@ -568,6 +684,89 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
             />
           </Field>
         </div>
+
+        {!isEdit && (Number(currentStock) || 0) > 0 && (
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 10,
+              background: T.warmDim,
+              border: `1px solid ${T.rule}`,
+              color: T.ink,
+              fontFamily: fonts.sans,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>{ais.openingAdjustmentTitle}</div>
+            <div style={{ color: T.ink2, marginTop: 3 }}>
+              {canViewFinancials ? ais.openingAdjustmentBody : ais.openingAdjustmentPermission}
+            </div>
+            {canViewFinancials && (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, cursor: 'pointer' }}>
+                <input
+                  type="checkbox"
+                  checked={openingAdjustmentConfirmed}
+                  onChange={(event) => setOpeningAdjustmentConfirmed(event.target.checked)}
+                  style={{ marginTop: 2 }}
+                />
+                <span>{ais.openingAdjustmentConfirm}</span>
+              </label>
+            )}
+          </div>
+        )}
+
+        {isEdit && canViewFinancials && (
+          <div
+            style={{
+              padding: 12,
+              borderRadius: 10,
+              background: openingAdjustmentConfirmed ? T.warmDim : 'rgba(31,35,28,0.025)',
+              border: `1px solid ${T.rule}`,
+              color: T.ink,
+              fontFamily: fonts.sans,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            <div style={{ fontWeight: 700 }}>{ais.existingAdjustmentTitle}</div>
+            <div style={{ color: T.ink2, marginTop: 3 }}>{ais.existingAdjustmentBody}</div>
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={openingAdjustmentConfirmed}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setOpeningAdjustmentConfirmed(checked);
+                  if (checked && openingAdjustmentQuantity.trim() === '') {
+                    const increase = Math.max(0, (Number(currentStock) || 0) - stockBaselineRef.current);
+                    setOpeningAdjustmentQuantity(increase > 0 ? String(increase) : '');
+                  }
+                }}
+                style={{ marginTop: 2 }}
+              />
+              <span>{ais.existingAdjustmentConfirm}</span>
+            </label>
+            {openingAdjustmentConfirmed && (
+              <div style={{ marginTop: 10, maxWidth: 220 }}>
+                <Field label={ais.existingAdjustmentQuantity}>
+                  <input
+                    type="number"
+                    min="0"
+                    inputMode="decimal"
+                    value={openingAdjustmentQuantity}
+                    onChange={(event) => {
+                      const value = event.target.value;
+                      if (numGuard(value)) setOpeningAdjustmentQuantity(value);
+                    }}
+                    placeholder="0"
+                    style={inputStyle}
+                  />
+                </Field>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       </fieldset>
     </Overlay>

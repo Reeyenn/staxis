@@ -18,6 +18,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { INVOICE_SCAN_NOTE_PREFIX } from '@/lib/inventory-note-tags';
+import {
+  localDateTimeToUtc,
+  propertyLocalDate,
+} from '@/lib/rules-engine/time-utils';
 
 export type LineDecision = 'match' | 'create' | 'skip';
 export type InvCategory = 'housekeeping' | 'maintenance' | 'breakfast';
@@ -33,6 +37,10 @@ export interface ReviewLineInput {
   qty: number | string;
   quantityCases?: number | null;
   unitCost?: number | string | null;
+  /** Invoice line total. When present this is the authoritative purchase
+   * amount; the per-unit cost is derived from it so discounts/rounding on the
+   * invoice are not lost when inventory_orders stores quantity × unit_cost. */
+  totalCost?: number | string | null;
   /** Matched lines: current estimated on-hand, for the re-baseline. */
   onHandEstimate?: number;
   /** Matched lines: operator override of the resulting stock (absolute). */
@@ -42,6 +50,9 @@ export interface ReviewLineInput {
 }
 
 export interface ReviewDraftInput {
+  /** IANA timezone for the hotel receiving the inventory. Invoice dates are
+   * hotel calendar dates, never dates in the manager's browser timezone. */
+  propertyTimezone: string;
   vendorName?: string | null;
   invoiceDate?: string | null; // YYYY-MM-DD
   invoiceNumber?: string | null;
@@ -118,11 +129,39 @@ export function invoiceAlreadyRecorded(existingNotes: readonly (string | null | 
   return existingNotes.some((n) => typeof n === 'string' && n.includes(notesTag));
 }
 
-function parseReceivedAt(invoiceDate: string | null | undefined, now: Date): Date {
+function isCalendarDate(value: string): boolean {
+  if (!/^\d{4}-(0[1-9]|1[0-2])-([0-2]\d|3[01])$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).toISOString().slice(0, 10) === value;
+}
+
+/** Recover the hotel-local calendar date from a persisted delivery instant.
+ * This deliberately does not slice the UTC ISO timestamp: hotels east of UTC
+ * can have a local invoice date that is one day ahead of that UTC date. */
+export function invoiceDateFromReceivedAt(
+  receivedAt: Date | string,
+  propertyTimezone: string,
+): string | null {
+  const instant = receivedAt instanceof Date ? receivedAt : new Date(receivedAt);
+  if (Number.isNaN(instant.getTime())) return null;
+  return propertyLocalDate(instant, propertyTimezone);
+}
+
+function parseReceivedAt(
+  invoiceDate: string | null | undefined,
+  propertyTimezone: string,
+  now: Date,
+): Date {
   const raw = (invoiceDate ?? '').trim();
-  if (raw) {
-    const d = new Date(raw.length === 10 ? `${raw}T12:00:00` : raw); // noon avoids tz day-flip
-    if (!Number.isNaN(d.getTime())) return d;
+  if (isCalendarDate(raw)) {
+    // Noon is an unambiguous civil time on DST transition days. The shared
+    // converter asks Intl for the offset at this hotel-local date, so the
+    // result is independent of both the browser timezone and DST season.
+    const receivedAt = localDateTimeToUtc(raw, '12:00:00', propertyTimezone);
+    if (
+      receivedAt
+      && invoiceDateFromReceivedAt(receivedAt, propertyTimezone) === raw
+    ) return receivedAt;
   }
   return now;
 }
@@ -133,7 +172,7 @@ function parseReceivedAt(invoiceDate: string | null | undefined, now: Date): Dat
  */
 export function buildCommitPlan(draft: ReviewDraftInput, now: Date = new Date()): CommitPlan {
   const vendorName = (draft.vendorName ?? '').trim() || undefined;
-  const receivedAt = parseReceivedAt(draft.invoiceDate, now);
+  const receivedAt = parseReceivedAt(draft.invoiceDate, draft.propertyTimezone, now);
   const notesTag = buildNotesTag(draft.invoiceNumber, vendorName);
 
   const orders: CommitOrder[] = [];
@@ -146,6 +185,8 @@ export function buildCommitPlan(draft: ReviewDraftInput, now: Date = new Date())
     const qty = toPositiveQty(line.qty);
     if (qty === null) continue; // can't receive a non-positive quantity
     const unitCost = (() => {
+      const lineTotal = toFiniteNumber(line.totalCost);
+      if (lineTotal !== undefined && lineTotal >= 0) return lineTotal / qty;
       const n = toFiniteNumber(line.unitCost);
       return n !== undefined && n >= 0 ? n : undefined;
     })();

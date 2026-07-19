@@ -138,10 +138,25 @@ export async function archiveInventoryItem(uid: string, pid: string, iid: string
     .eq('id', iid)
     .eq('property_id', pid)
     .is('archived_at', null)
+    .lte('current_stock', 0)
     .select('id')
     .maybeSingle();
   if (error) { logErr('archiveInventoryItem', error); throw error; }
   if (!archived) {
+    const { data: active, error: lookupError } = await supabase
+      .from('inventory')
+      .select('id, current_stock')
+      .eq('id', iid)
+      .eq('property_id', pid)
+      .is('archived_at', null)
+      .maybeSingle();
+    if (lookupError) { logErr('archiveInventoryItem', lookupError); throw lookupError; }
+    if (active && Number(active.current_stock ?? 0) > 0) {
+      const stockError = new Error('Count this inventory item to zero before archiving it.') as Error & { code: string };
+      stockError.code = 'INVENTORY_STOCK_MUST_BE_ZERO';
+      logErr('archiveInventoryItem', stockError);
+      throw stockError;
+    }
     const missing = new Error('Inventory item was not found in active inventory for this property. Refresh and try again.');
     logErr('archiveInventoryItem', missing);
     throw missing;

@@ -1,19 +1,16 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Inventory Budgets — per-property × per-category × per-month spend cap.
+// Inventory Budgets — per-property × key × month × durable basis.
 //
-// Drives:
-//   • Smart Reorder List headroom badge ("$500 left in linen this month")
-//   • Accounting page "Budget vs Actual" block
-//
-// Tara at Home2 thinks about her inventory order budget per category per month
-// (M3 cap on linen / supplies / breakfast). We mirror that model: one row per
-// (property, category, monthStart). monthStart is always the first of the
-// month so MTD aggregation is a clean equality match.
+// The live purchase ledger stays separate. Only a completed full-month
+// inventory usage actual may be compared with these caps: beginning inventory
+// + confirmed purchases - ending inventory. Migration 0323 preserves legacy
+// purchase caps alongside new usage caps instead of reinterpreting them.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { InventoryBudget, InventoryBudgetSection, InventoryCategory } from '@/types';
 import { supabase, logErr, asRecordRows } from './_common';
 import { fetchAllRows } from '../supabase-paginate';
+import { inventoryPurchaseRowValue } from '../inventory-purchase-cost';
 import {
   toInventoryBudgetRow,
   fromInventoryBudgetRow,
@@ -58,19 +55,21 @@ export async function upsertInventoryBudget(
     ...toInventoryBudgetRow({
       ...budget,
       propertyId: pid,
+      basis: 'usage',
       monthStart,
     }),
     property_id: pid,
   };
   const { error } = await supabase
     .from('inventory_budgets')
-    .upsert(row, { onConflict: 'property_id,category,month_start' });
+    .upsert(row, { onConflict: 'property_id,category,month_start,basis' });
   if (error) { logErr('upsertInventoryBudget', error); throw error; }
 }
 
 // ─── Custom budget sections (0306) ─────────────────────────────────────────
 // A hotel-defined section = name + the item ids whose orders count toward it.
-// Budget dollars for a section live in inventory_budgets keyed 'section:<id>'.
+// Usage-budget dollars for a section live in inventory_budgets keyed
+// 'section:<id>' with basis='usage'.
 
 export function sectionBudgetKey(sectionId: string): string {
   return `section:${sectionId}`;
@@ -109,18 +108,13 @@ export async function upsertInventoryBudgetSection(
   return String((data as { id: string }).id);
 }
 
-/** Delete a custom section AND its budget rows (they'd orphan otherwise). */
+/** Remove the live section mapping. Historical month budget rows deliberately
+ * remain: a later configuration cleanup must not erase past budget evidence. */
 export async function deleteInventoryBudgetSection(
   _uid: string,
   pid: string,
   sectionId: string,
 ): Promise<void> {
-  const { error: budgetErr } = await supabase
-    .from('inventory_budgets')
-    .delete()
-    .eq('property_id', pid)
-    .eq('category', sectionBudgetKey(sectionId));
-  if (budgetErr) { logErr('deleteInventoryBudgetSection/budgets', budgetErr); throw budgetErr; }
   const { error } = await supabase
     .from('inventory_budget_sections')
     .delete()
@@ -130,20 +124,19 @@ export async function deleteInventoryBudgetSection(
 }
 
 export interface MonthSpendDetail {
-  /** Dollars spent per app category. Always has all three keys. */
+  /** Known purchase dollars per app category. Always has all three keys. */
   byCat: Record<InventoryCategory, number>;
-  /** Dollars spent per inventory item id (for custom-section sums). */
+  /** Known purchase dollars per inventory item id. */
   byItem: Record<string, number>;
-  /** Dollars spent across ALL orders this month (incl. category-less rows). */
+  /** Known purchase subtotal across all received lines this month. */
   total: number;
+  /** False when any received line has no usable cost/quantity. */
+  complete: boolean;
 }
 
 /**
- * Sum month-to-date inventory_orders spend, broken down by inventory category
- * AND by item (custom budget sections sum the items mapped to them). Used to
- * compute remaining budget for the Smart Reorder List, the month strip, and
- * the Accounting page. We join inventory_orders → inventory to read the
- * item's category at order time.
+ * Sum month-to-date received purchases, broken down by inventory category and
+ * item. This is a live ledger diagnostic, never the monthly usage actual.
  *
  * Returns dollars (numeric); byCat defaults to 0 for missing buckets.
  */
@@ -182,6 +175,7 @@ export async function monthToDateSpendDetail(
   };
   const byItem: Record<string, number> = {};
   let total = 0;
+  let complete = true;
 
   for (const r of (data ?? []) as Array<{
     total_cost: number | null;
@@ -195,15 +189,15 @@ export async function monthToDateSpendDetail(
     const cat = Array.isArray(r.inventory)
       ? r.inventory[0]?.category
       : r.inventory?.category;
-    const totalCost = r.total_cost != null
-      ? Number(r.total_cost)
-      : (r.unit_cost != null && r.quantity != null ? Number(r.unit_cost) * Number(r.quantity) : 0);
+    const value = inventoryPurchaseRowValue(r);
+    if (value == null) complete = false;
+    const totalCost = value ?? 0;
     total += totalCost;
     if (r.item_id) byItem[r.item_id] = (byItem[r.item_id] ?? 0) + totalCost;
     if (cat && cat in byCat) byCat[cat] += totalCost;
   }
 
-  return { byCat, byItem, total };
+  return { byCat, byItem, total, complete };
 }
 
 /** One month's spend detail, tagged with the (local) first-of-month it covers. */
@@ -212,7 +206,7 @@ export interface MonthlySpend extends MonthSpendDetail {
 }
 
 /**
- * Per-month inventory spend across a window, for the Budgets timeline / history.
+ * Per-month received-purchase history across a window.
  * One `inventory_orders` query over [earliestMonthStart, endExclusive), bucketed
  * into calendar months by each order's `received_at` (read in LOCAL time, to match
  * the month windows the rest of the inventory UI uses). Same MonthSpendDetail
@@ -265,13 +259,14 @@ export async function monthlySpendHistory(
         byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
         byItem: {},
         total: 0,
+        complete: true,
       };
       buckets.set(key, bucket);
     }
     const cat = Array.isArray(r.inventory) ? r.inventory[0]?.category : r.inventory?.category;
-    const totalCost = r.total_cost != null
-      ? Number(r.total_cost)
-      : (r.unit_cost != null && r.quantity != null ? Number(r.unit_cost) * Number(r.quantity) : 0);
+    const value = inventoryPurchaseRowValue(r);
+    if (value == null) bucket.complete = false;
+    const totalCost = value ?? 0;
     bucket.total += totalCost;
     if (r.item_id) bucket.byItem[r.item_id] = (bucket.byItem[r.item_id] ?? 0) + totalCost;
     if (cat && cat in bucket.byCat) bucket.byCat[cat] += totalCost;

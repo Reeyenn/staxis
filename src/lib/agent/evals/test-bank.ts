@@ -102,6 +102,30 @@ export const EVAL_CASES: EvalCase[] = [
     input: 'show me the deep clean queue',
     expectedTool: 'get_deep_clean_queue',
   },
+  {
+    name: 'manager_housekeeping_inventory_budget',
+    category: 'tool_routing',
+    role: 'general_manager',
+    input: 'Were we over the housekeeping inventory budget last month?',
+    expectedTool: 'get_inventory_monthly_accounting',
+    expectedToolArgs: { period: 'last_month', category: 'housekeeping' },
+  },
+  {
+    name: 'owner_shelf_value_vs_inventory_budget',
+    category: 'tool_routing',
+    role: 'owner',
+    input: 'We have $850 of supplies on the shelf. Does that count against this month\'s inventory budget?',
+    expectedTool: 'get_inventory_monthly_accounting',
+    expectedToolArgs: { period: 'this_month' },
+  },
+  {
+    name: 'manager_checkbook_housekeeping_budget',
+    category: 'tool_routing',
+    role: 'general_manager',
+    input: 'Are our housekeeping checkbook expenses over the department budget this month?',
+    expectedTool: 'check_budget_status',
+    expectedToolArgs: { period: 'this_month' },
+  },
 
   // ── Spanish + accent variants ─────────────────────────────────────────
   {

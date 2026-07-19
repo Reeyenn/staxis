@@ -1,7 +1,7 @@
 'use client';
 
-// Budgets — set the hotel's monthly inventory spend caps, and see this month's
-// spend against them.
+// Budgets — set the hotel's monthly inventory usage caps, and compare them
+// with completed month-close actuals.
 //
 // Two ways to budget (properties.inventory_budget_mode, migration 0306):
 //   • One total budget — a single whole-inventory number per month.
@@ -11,10 +11,8 @@
 // Numbers are always per-month; "Copy to the whole year" fills a year. A year
 // switcher covers planning next year in the fall. An empty box = no cap.
 //
-// Spend vs budget: when the panel is showing the CURRENT calendar month, each
-// row shows what's been spent against its cap (green under, amber near, red
-// over) and the footer rolls it up — a GM opening Budgets sees where they
-// stand at a glance. Other months (planning ahead) just show the caps.
+// Only completed, full-month usage can produce a budget status. Purchases and
+// current shelf value remain visible inputs but never count as the actual.
 //
 // Values are held as strings so an empty field stays empty (not "0") and typing
 // never leaves a stray leading zero.
@@ -27,10 +25,21 @@ import {
   upsertInventoryBudgetSection,
   deleteInventoryBudgetSection,
   sectionBudgetKey,
-  type MonthSpendDetail,
-  type MonthlySpend,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import {
+  inventoryBudgetComparisonCap,
+  inventoryBudgetBand,
+  inventoryPurchaseEvidence,
+  resolveInventoryBudgetActual,
+  type InventoryBudgetActualPeriod,
+  type InventoryBudgetActualState,
+} from '@/lib/inventory-budget-actual';
+import {
+  inventoryCalendarDateInZone,
+  shiftInventoryMonthKey,
+} from '@/lib/inventory-month-close';
+import { propertyTimezoneOrUTC } from '@/lib/property-timezone';
 import type { InventoryBudget, InventoryBudgetMode, InventoryBudgetSection } from '@/types';
 
 import { T, fonts, type InvCat } from '../tokens';
@@ -40,7 +49,6 @@ import { Btn } from '../Btn';
 import { Overlay } from './Overlay';
 import { numGuard } from './form-kit';
 import { fmtMoney } from '../format';
-import { startOfLocalMonth, addLocalMonths } from '../month';
 import type { DisplayItem } from '../types';
 import { catLabelFor, monthsFor, type Lang } from '../inv-i18n';
 
@@ -51,12 +59,12 @@ interface BudgetsPanelProps {
   budgets: InventoryBudget[];
   sections: InventoryBudgetSection[];
   mode: InventoryBudgetMode;
+  /** Property IANA timezone; planning follows the hotel's calendar. */
+  timezone?: string | null;
   /** Full catalog — the custom-section item picker. */
   display: DisplayItem[];
-  /** Month-to-date spend (dollars) — total, per category, per item. */
-  spendDetail: MonthSpendDetail;
-  /** Per-month spend for the last 6 months (dollars) — drives the timeline. */
-  spendHistory: MonthlySpend[];
+  /** Closed usage actuals plus the current open period, in dollars. */
+  actualPeriods: InventoryBudgetActualPeriod[];
   /**
    * Fired after any persisted change so the parent refetches. `mode` is set
    * ONLY when Save wrote it to the property — section add/remove must not
@@ -90,7 +98,7 @@ function bpStrings(lang: Lang) {
       sectionsTitle: 'By category or section',
       sectionsSub: 'Housekeeping, maintenance, food & beverage — plus your own sections.',
       setLimitsTitle: 'Set monthly budget limits',
-      setLimitsSub: 'Choose a month and year, then enter the most you plan to spend. Leave an amount blank for no limit.',
+      setLimitsSub: 'Choose a month and year, then enter the maximum inventory cost the hotel plans to use. Leave an amount blank for no limit.',
       month: 'Month',
       year: 'Year',
       wholeInventory: 'Whole inventory',
@@ -104,6 +112,7 @@ function bpStrings(lang: Lang) {
       pickerEmpty: 'No inventory items yet.',
       createSection: 'Create section',
       saveSection: 'Save section',
+      sectionMoveHint: 'An item can belong to one budget section. Selecting it here moves it from another custom section.',
       items: (n: number) => `${n} item${n === 1 ? '' : 's'}`,
       noItemsYet: 'no items yet',
       edit: 'Edit',
@@ -113,29 +122,42 @@ function bpStrings(lang: Lang) {
       saveFailed: 'Saving the budgets failed. Please try again.',
       noCapHint: 'Leave an amount blank for no budget limit.',
       copyMonthToYear: (m: string, y: number) => `Copy ${m} to every month in ${y}`,
-      // Spend
-      spentOf: (spent: string, cap: string) => `${spent} spent of ${cap}`,
+      // Actual usage
+      usedOf: (used: string, cap: string) => `${used} used of ${cap}`,
       left: (v: string) => `${v} left`,
       over: (v: string) => `${v} over`,
-      noBudget: (spent: string) => `${spent} spent · no budget set`,
-      thisMonthSpend: 'This month’s spend',
+      noBudget: (used: string) => `${used} used · no budget set`,
+      thisMonthActual: 'Actual inventory used',
+      actualPending: 'Budget check pending until month close.',
+      partialActual: 'This first tracking period is partial, so it is not compared with a full-month budget.',
+      unallocatedActual: 'Only the whole-inventory actual is available because purchases were entered as one monthly total.',
+      comparisonUnavailable: 'Budget comparison unavailable — this older close did not save a budget snapshot.',
+      actualComparisonUnavailable: (v: string) => `${v} used · budget comparison unavailable`,
+      purchasesLogged: (v: string) => `${v} in purchases logged`,
+      purchasesConfirmed: (v: string) => `${v} in purchases confirmed at close`,
+      purchasesIncomplete: (v: string) => `At least ${v} in purchases logged · some delivery costs are missing`,
+      trackingNotStarted: 'Start monthly tracking to calculate actual usage.',
       totalBudget: 'Total budget',
       summaryOf: (cap: string) => `of ${cap}`,
-      noBudgetsYet: 'No budgets set for this month. Add limits above to track spend against them.',
-      overBanner: (names: string) => `Over budget: ${names}.`,
-      nearBanner: (names: string) => `Close to budget: ${names}.`,
-      planningNote: (m: string, y: number) => `Planning ${m} ${y} — spend shows on the current month.`,
+      noBudgetsYet: 'No budgets set for this month. Add limits above to compare with closed usage.',
+      overBanner: (names: string) => `Over budget based on closed usage: ${names}.`,
+      nearBanner: (names: string) => `Close to budget based on closed usage: ${names}.`,
+      planningNote: (m: string, y: number) => `Planning ${m} ${y} — actual usage appears after that month closes.`,
       reviewCurrentTitle: 'Review this month',
       reviewSelectedTitle: 'Review the selected month',
-      reviewCurrentSub: 'See spend from received orders against the budget limits you set above.',
-      reviewSelectedSub: 'See the combined budget limit for the month you selected.',
+      reviewCurrentSub: 'Budget status uses inventory actually consumed, never purchases or shelf value.',
+      reviewSelectedSub: 'Closed months compare actual usage with the budget limit you selected.',
       // History timeline
       compareMonthsTitle: 'Compare recent months',
-      compareMonthsSub: 'Compare budget with spend from received orders for each of the last six months.',
+      compareMonthsSub: 'Compare budget with closed inventory usage for each of the last six months.',
       thisMonthTag: 'NOW',
       monthNoData: 'no activity',
-      noBudgetShort: (v: string) => `${v} · no budget`,
-      historyEmpty: 'Your month-by-month budget vs spend appears here as you set budgets and log received orders.',
+      noBudgetShort: (v: string) => `${v} used · no budget`,
+      pendingShort: 'usage pending',
+      partialShort: 'partial period',
+      historyEmpty: 'Your month-by-month budget vs actual appears here after the first full month closes.',
+      legacyPurchaseCapsNotice: 'Older purchase budgets are kept for reference and are not compared with inventory usage.',
+      archivedSection: 'Archived section',
     },
     es: {
       eyebrow: 'Presupuestos',
@@ -150,7 +172,7 @@ function bpStrings(lang: Lang) {
       sectionsTitle: 'Por categoría o sección',
       sectionsSub: 'Limpieza, mantenimiento, alimentos y bebidas — más tus propias secciones.',
       setLimitsTitle: 'Establece límites mensuales',
-      setLimitsSub: 'Elige un mes y un año, luego ingresa el máximo que planeas gastar. Deja un monto en blanco si no deseas fijar un límite.',
+      setLimitsSub: 'Elige un mes y un año, luego ingresa el costo máximo de inventario que el hotel planea usar. Deja el monto en blanco si no deseas fijar un límite.',
       month: 'Mes',
       year: 'Año',
       wholeInventory: 'Todo el inventario',
@@ -164,6 +186,7 @@ function bpStrings(lang: Lang) {
       pickerEmpty: 'Aún no hay artículos de inventario.',
       createSection: 'Crear sección',
       saveSection: 'Guardar sección',
+      sectionMoveHint: 'Un artículo solo puede pertenecer a una sección de presupuesto. Seleccionarlo aquí lo mueve de otra sección personalizada.',
       items: (n: number) => `${n} artículo${n === 1 ? '' : 's'}`,
       noItemsYet: 'sin artículos',
       edit: 'Editar',
@@ -173,29 +196,42 @@ function bpStrings(lang: Lang) {
       saveFailed: 'No se pudieron guardar los presupuestos. Inténtalo de nuevo.',
       noCapHint: 'Deja un monto en blanco si no deseas fijar un límite.',
       copyMonthToYear: (m: string, y: number) => `Copiar ${m} a todos los meses de ${y}`,
-      // Spend
-      spentOf: (spent: string, cap: string) => `${spent} gastado de ${cap}`,
+      // Uso real
+      usedOf: (used: string, cap: string) => `${used} usado de ${cap}`,
       left: (v: string) => `${v} disponible`,
       over: (v: string) => `${v} sobre`,
-      noBudget: (spent: string) => `${spent} gastado · sin presupuesto`,
-      thisMonthSpend: 'Gasto de este mes',
+      noBudget: (used: string) => `${used} usado · sin presupuesto`,
+      thisMonthActual: 'Inventario realmente usado',
+      actualPending: 'La revisión del presupuesto queda pendiente hasta el cierre mensual.',
+      partialActual: 'Este primer período es parcial y no se compara con un presupuesto mensual completo.',
+      unallocatedActual: 'Solo está disponible el total porque las compras se ingresaron como un monto mensual único.',
+      comparisonUnavailable: 'La comparación no está disponible porque este cierre anterior no guardó una copia del presupuesto.',
+      actualComparisonUnavailable: (v: string) => `${v} usado · comparación no disponible`,
+      purchasesLogged: (v: string) => `${v} en compras registradas`,
+      purchasesConfirmed: (v: string) => `${v} en compras confirmadas al cierre`,
+      purchasesIncomplete: (v: string) => `Al menos ${v} en compras registradas · faltan costos de algunas entregas`,
+      trackingNotStarted: 'Inicia el seguimiento mensual para calcular el uso real.',
       totalBudget: 'Presupuesto total',
       summaryOf: (cap: string) => `de ${cap}`,
-      noBudgetsYet: 'Sin presupuestos este mes. Agrega límites arriba para seguir el gasto.',
-      overBanner: (names: string) => `Sobre presupuesto: ${names}.`,
-      nearBanner: (names: string) => `Cerca del límite: ${names}.`,
-      planningNote: (m: string, y: number) => `Planeando ${m} ${y} — el gasto se muestra en el mes actual.`,
+      noBudgetsYet: 'Sin presupuestos este mes. Agrega límites arriba para compararlos con el uso cerrado.',
+      overBanner: (names: string) => `Sobre presupuesto según el uso cerrado: ${names}.`,
+      nearBanner: (names: string) => `Cerca del límite según el uso cerrado: ${names}.`,
+      planningNote: (m: string, y: number) => `Planeando ${m} ${y} — el uso real aparece después del cierre.`,
       reviewCurrentTitle: 'Revisa este mes',
       reviewSelectedTitle: 'Revisa el mes seleccionado',
-      reviewCurrentSub: 'Compara el gasto de los pedidos recibidos con los límites que fijaste arriba.',
-      reviewSelectedSub: 'Consulta el límite combinado del presupuesto para el mes que seleccionaste.',
+      reviewCurrentSub: 'El estado usa inventario realmente consumido, nunca compras ni valor en estante.',
+      reviewSelectedSub: 'Los meses cerrados comparan el uso real con el límite seleccionado.',
       // History timeline
       compareMonthsTitle: 'Compara los meses recientes',
-      compareMonthsSub: 'Compara el presupuesto con el gasto de los pedidos recibidos en cada uno de los últimos seis meses.',
+      compareMonthsSub: 'Compara el presupuesto con el uso de inventario cerrado en los últimos seis meses.',
       thisMonthTag: 'AHORA',
       monthNoData: 'sin actividad',
-      noBudgetShort: (v: string) => `${v} · sin presupuesto`,
-      historyEmpty: 'Tu presupuesto vs gasto mes a mes aparece aquí a medida que fijas presupuestos y registras pedidos recibidos.',
+      noBudgetShort: (v: string) => `${v} usado · sin presupuesto`,
+      pendingShort: 'uso pendiente',
+      partialShort: 'período parcial',
+      historyEmpty: 'Tu presupuesto vs uso real aparece aquí después del primer cierre mensual completo.',
+      legacyPurchaseCapsNotice: 'Los presupuestos anteriores de compras se conservan como referencia y no se comparan con el uso de inventario.',
+      archivedSection: 'Sección archivada',
     },
   }[lang];
 }
@@ -209,18 +245,32 @@ function spendColor(s: SpendStatus): string {
   return s === 'over' ? T.warm : s === 'near' ? T.caramel : s === 'ok' ? T.forestText : T.ink3;
 }
 
-export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: savedMode, display, spendDetail, spendHistory, onChanged }: BudgetsPanelProps) {
+function calendarMonthInZone(now: Date, timezone?: string | null): { year: number; month: number } {
+  const calendar = inventoryCalendarDateInZone(now, propertyTimezoneOrUTC(timezone));
+  return { year: calendar.year, month: calendar.month - 1 };
+}
+
+export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: savedMode, timezone, display, actualPeriods, onChanged }: BudgetsPanelProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const bp = bpStrings(lang);
   const MONTHS = monthsFor(lang);
-  // LOCAL now — "this month" is the hotel's calendar month, and it's the only
-  // month spendDetail covers.
+  // LOCAL now drives the planning picker. Month-close availability itself is
+  // returned by the API in the property's timezone.
   const now = useMemo(() => new Date(), []);
-  const curMonth = now.getMonth();
-  const curYear = now.getFullYear();
+  const propertyCalendar = useMemo(() => calendarMonthInZone(now, timezone), [now, timezone]);
+  const curMonth = propertyCalendar.month;
+  const curYear = propertyCalendar.year;
   const thisYear = curYear;
   const YEARS = [thisYear, thisYear + 1];
+  const usageBudgets = useMemo(
+    () => budgets.filter((budget) => budget.basis === 'usage'),
+    [budgets],
+  );
+  const hasLegacyPurchaseCaps = useMemo(
+    () => budgets.some((budget) => budget.basis === 'purchases' && budget.budgetCents > 0),
+    [budgets],
+  );
 
   const [mode, setMode] = useState<InventoryBudgetMode>(savedMode);
   const [year, setYear] = useState<number>(thisYear);
@@ -238,8 +288,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
   const [formBusy, setFormBusy] = useState(false);
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
 
-  // Whether the panel is showing the live month (the only one with spend).
-  const showSpend = year === curYear && month === curMonth;
+  const isCurrentMonth = year === curYear && month === curMonth;
 
   // Hydration. closed→open: full reset. Mid-edit `budgets` refresh: merge only
   // if the GM has no unsaved edits, so typed money is never wiped.
@@ -256,7 +305,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     if (!firstOpen && dirtyRef.current.size > 0) return;
 
     const next: Record<string, string[]> = {};
-    for (const b of budgets) {
+    for (const b of usageBudgets) {
       if (!b.monthStart) continue;
       const y = b.monthStart.getUTCFullYear();
       if (!YEARS.includes(y)) continue;
@@ -275,7 +324,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
       setConfirmingRemove(null);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- YEARS/thisYear/curMonth derived; savedMode read on open
-  }, [open, budgets]);
+  }, [open, usageBudgets]);
 
   useEffect(() => {
     setLocalSections(sections);
@@ -299,23 +348,21 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     [mode, localSections],
   );
 
-  // Spend against a budget key (only meaningful for the live month).
-  const spentFor = (budgetKey: string): number => {
-    if (budgetKey === 'total') return spendDetail.total;
-    if (budgetKey.startsWith('section:')) {
-      const sec = localSections.find((s) => sectionBudgetKey(s.id) === budgetKey);
-      if (!sec) return 0;
-      return sec.itemIds.reduce((s, id) => s + (spendDetail.byItem[id] ?? 0), 0);
-    }
-    return spendDetail.byCat[budgetKey as InvCat] ?? 0;
-  };
-
-  const statusFor = (cap: number, spent: number): SpendStatus => {
-    if (cap <= 0) return 'nocap';
-    if (spent > cap) return 'over';
-    if (spent >= cap * 0.8) return 'near';
-    return 'ok';
-  };
+  const periodByMonth = useMemo(() => {
+    const map = new Map<string, InventoryBudgetActualPeriod>();
+    for (const period of actualPeriods) map.set(period.monthStart.slice(0, 7), period);
+    return map;
+  }, [actualPeriods]);
+  const selectedMonthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const selectedPeriod = periodByMonth.get(selectedMonthKey) ?? null;
+  const actualFor = (budgetKey: string) => resolveInventoryBudgetActual(selectedPeriod, budgetKey);
+  const statusFor = inventoryBudgetBand;
+  const selectedHasBudgetSnapshot = selectedPeriod?.status === 'closed'
+    && selectedPeriod.usageBudgetMode != null;
+  const selectedComparisonUnavailable = selectedPeriod?.status === 'closed'
+    && !selectedHasBudgetSnapshot;
+  const comparisonCapOf = (budgetKey: string): number | null =>
+    inventoryBudgetComparisonCap(selectedPeriod, budgetKey, capOf(budgetKey));
 
   const copyToYear = () => {
     setVals((p) => {
@@ -339,72 +386,99 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     // eslint-disable-next-line react-hooks/exhaustive-deps -- capOf reads vals/year/month
     [activeKeys, vals, year, month],
   );
-  const monthSpentTotal = spendDetail.total;
+  const comparisonMonthBudgetTotal = inventoryBudgetComparisonCap(
+    selectedPeriod,
+    'total',
+    monthBudgetTotal,
+  );
+  const totalActual = actualFor('total');
+  const monthActualTotal = totalActual.value;
+  const selectedPurchaseEvidence = inventoryPurchaseEvidence(selectedPeriod);
+  const selectedPurchaseCopy = selectedPurchaseEvidence == null
+    ? null
+    : selectedPurchaseEvidence.state === 'confirmed'
+      ? bp.purchasesConfirmed(fmtMoney(selectedPurchaseEvidence.value))
+      : selectedPurchaseEvidence.state === 'incomplete'
+        ? bp.purchasesIncomplete(fmtMoney(selectedPurchaseEvidence.value))
+        : bp.purchasesLogged(fmtMoney(selectedPurchaseEvidence.value));
 
-  // GM alerts for the live month: which rows are over / near their cap.
+  // GM alerts only use completed full-month actuals. Open/partial months and
+  // total-only purchase imports cannot produce an over-budget warning.
   const alerts = useMemo(() => {
-    if (!showSpend) return { over: [] as string[], near: [] as string[] };
     const over: string[] = [];
     const near: string[] = [];
-    for (const key of activeKeys) {
-      const cap = capOf(key);
-      if (cap <= 0) continue;
-      const st = statusFor(cap, spentFor(key));
+    const comparisonKeys = selectedPeriod?.status === 'closed'
+      ? selectedHasBudgetSnapshot
+        ? selectedPeriod.usageBudgetMode === 'total'
+        ? ['total']
+          : Object.keys(selectedPeriod.usageBudgetByKey ?? {}).filter((key) => key !== 'total')
+        : []
+      : activeKeys;
+    for (const key of comparisonKeys) {
+      const cap = comparisonCapOf(key);
+      if (cap == null || cap <= 0) continue;
+      const resolved = resolveInventoryBudgetActual(selectedPeriod, key);
+      if (resolved.state !== 'complete' || resolved.value == null) continue;
+      const st = statusFor(cap, resolved.value);
       const label = key === 'total' ? bp.wholeInventory
-        : key.startsWith('section:') ? (localSections.find((s) => sectionBudgetKey(s.id) === key)?.name ?? '')
+        : key.startsWith('section:') ? (localSections.find((s) => sectionBudgetKey(s.id) === key)?.name ?? bp.archivedSection)
         : catLabelFor(lang, key as InvCat);
       if (st === 'over') over.push(label);
       else if (st === 'near') near.push(label);
     }
     return { over, near };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reads vals via capOf
-  }, [showSpend, activeKeys, vals, year, month, spendDetail, localSections, lang]);
+  }, [activeKeys, vals, year, month, selectedPeriod, localSections, lang, selectedHasBudgetSnapshot]);
 
-  // ── Budget-vs-spend timeline (last 6 months) ─────────────────────────
+  // ── Budget-vs-actual timeline (last 6 months) ─────────────────────────
   // Read-only, backward-looking. For each of the last 6 calendar months:
-  //   • budget = sum of the STORED caps (dollars) for that month over the active
-  //     keys (mode-aware). Read straight from the `budgets` prop (all months) —
-  //     matched by UTC year/month, the same way hydration buckets them.
-  //   • spent  = that month's total received-order spend (from spendHistory).
-  // Newest month first. A month with no budget AND no spend reads as "no activity".
+  //   • closed month = the usage caps frozen on that close, independent of
+  //     later edits to mode, sections, or live budget rows.
+  //   • open month = current usage caps (including unsaved edits for NOW).
+  //   • actual = completed full-month usage. Open and partial periods stay
+  //              visibly pending and never receive a red/green budget state.
   const timeline = useMemo(() => {
     const activeSet = new Set(activeKeys);
-    const spendByKey = new Map<string, MonthlySpend>();
-    for (const h of spendHistory) spendByKey.set(`${h.monthStart.getFullYear()}-${h.monthStart.getMonth()}`, h);
-    const base = startOfLocalMonth(now);
+    // Only the year/month fields matter here. Seeding from the property month
+    // keeps labels correct when the manager is viewing from another timezone.
+    const baseMonthKey = `${curYear}-${String(curMonth + 1).padStart(2, '0')}`;
     const out: Array<{
-      y: number; m: number; label: string; budget: number; spent: number;
-      status: SpendStatus; isCurrent: boolean; hasAny: boolean;
+      y: number; m: number; label: string; budget: number | null; actual: number | null;
+      actualState: InventoryBudgetActualState; status: SpendStatus | null;
+      isCurrent: boolean; hasAny: boolean;
     }> = [];
     for (let i = 0; i < 6; i++) {
-      const d = addLocalMonths(base, -i);
-      const y = d.getFullYear();
-      const mo = d.getMonth();
-      let budget = 0;
-      for (const b of budgets) {
+      const periodMonthKey = shiftInventoryMonthKey(baseMonthKey, -i);
+      const [y, month1] = periodMonthKey.split('-').map(Number);
+      const mo = month1 - 1;
+      let planningBudget = 0;
+      for (const b of usageBudgets) {
         if (!b.monthStart) continue;
         if (b.monthStart.getUTCFullYear() === y && b.monthStart.getUTCMonth() === mo && activeSet.has(b.category)) {
-          budget += b.budgetCents / 100;
+          planningBudget += b.budgetCents / 100;
         }
       }
-      let spent = spendByKey.get(`${y}-${mo}`)?.total ?? 0;
+      const period = periodByMonth.get(periodMonthKey) ?? null;
+      const resolved = resolveInventoryBudgetActual(period, 'total');
       const isCurrent = y === curYear && mo === curMonth;
-      // The current-month row mirrors the live footer (edited caps + MTD spend)
-      // rather than the last-saved budget, so the two "this month" figures on
-      // screen can never disagree while a cap is being typed.
-      if (isCurrent) { budget = monthBudgetTotal; spent = monthSpentTotal; }
+      if (isCurrent) planningBudget = monthBudgetTotal;
+      const budget = inventoryBudgetComparisonCap(period, 'total', planningBudget);
       out.push({
         y, m: mo,
         label: `${MONTHS[mo]} ’${String(y).slice(2)}`,
-        budget, spent,
-        status: statusFor(budget, spent),
+        budget,
+        actual: resolved.value,
+        actualState: resolved.state,
+        status: resolved.state === 'complete' && resolved.value != null && budget != null
+          ? statusFor(budget, resolved.value)
+          : null,
         isCurrent,
-        hasAny: budget > 0 || spent > 0,
+        hasAny: planningBudget > 0 || period != null,
       });
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- statusFor/MONTHS stable per render
-  }, [spendHistory, budgets, activeKeys, now, curYear, curMonth, monthBudgetTotal, monthSpentTotal]);
+  }, [usageBudgets, activeKeys, periodByMonth, curYear, curMonth, monthBudgetTotal, MONTHS]);
   const historyHasData = timeline.some((t) => t.hasAny);
 
   // ── Section create / edit / remove (persist immediately) ────────────
@@ -417,17 +491,35 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     if (!name) return;
     setFormBusy(true);
     try {
+      const selectedItemIds = [...formItems];
       const id = await upsertInventoryBudgetSection(user.uid, activePropertyId, {
         ...(formId ? { id: formId } : {}),
         name,
-        itemIds: [...formItems],
+        itemIds: selectedItemIds,
         sort: formId ? (localSections.find((s) => s.id === formId)?.sort ?? 0) : localSections.length,
       });
-      setLocalSections((p) =>
-        formId
-          ? p.map((s) => (s.id === formId ? { ...s, name, itemIds: [...formItems] } : s))
-          : [...p, { id, propertyId: activePropertyId, name, itemIds: [...formItems], sort: p.length }],
+
+      // One item may feed only one custom-section budget. Moving it here
+      // removes it from other sections so a closed actual cannot be counted
+      // twice. The built-in category allocation is resolved by month close.
+      const selected = new Set(selectedItemIds);
+      const conflictingSections = localSections.filter(
+        (s) => s.id !== id && s.itemIds.some((itemId) => selected.has(itemId)),
       );
+      await Promise.all(conflictingSections.map((s) => upsertInventoryBudgetSection(
+        user.uid,
+        activePropertyId,
+        { ...s, itemIds: s.itemIds.filter((itemId) => !selected.has(itemId)) },
+      )));
+
+      setLocalSections((p) => {
+        const withoutMovedItems = p.map((s) => (
+          s.id === id ? s : { ...s, itemIds: s.itemIds.filter((itemId) => !selected.has(itemId)) }
+        ));
+        return formId
+          ? withoutMovedItems.map((s) => (s.id === id ? { ...s, name, itemIds: selectedItemIds } : s))
+          : [...withoutMovedItems, { id, propertyId: activePropertyId, name, itemIds: selectedItemIds, sort: p.length }];
+      });
       setFormOpen(false);
       onChanged();
     } catch (err) {
@@ -530,7 +622,9 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
     return q ? display.filter((d) => d.name.toLowerCase().includes(q)) : display;
   }, [display, formQuery]);
 
-  const summarySt = statusFor(monthBudgetTotal, monthSpentTotal);
+  const summarySt = monthActualTotal == null || comparisonMonthBudgetTotal == null
+    ? null
+    : statusFor(comparisonMonthBudgetTotal, monthActualTotal);
 
   return (
     <Overlay
@@ -549,14 +643,32 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
       }
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-        {/* GM alerts — over / near budget on the live month. */}
-        {showSpend && alerts.over.length > 0 && (
+        {hasLegacyPurchaseCaps && (
+          <div role="note" style={bannerStyle(T.ink2)}>{bp.legacyPurchaseCapsNotice}</div>
+        )}
+        {/* Over/near alerts exist only for a completed full-month actual. */}
+        {alerts.over.length > 0 && (
           <div style={bannerStyle(T.warm)}>{bp.overBanner(alerts.over.join(', '))}</div>
         )}
-        {showSpend && alerts.over.length === 0 && alerts.near.length > 0 && (
+        {alerts.over.length === 0 && alerts.near.length > 0 && (
           <div style={bannerStyle(T.caramel)}>{bp.nearBanner(alerts.near.join(', '))}</div>
         )}
-        {!showSpend && (
+        {alerts.over.length === 0 && alerts.near.length === 0 && totalActual.state === 'pending' && isCurrentMonth && (
+          <div role="status" style={bannerStyle(T.ink2)}>
+            {selectedPeriod ? bp.actualPending : bp.trackingNotStarted}
+            {selectedPurchaseCopy ? ` ${selectedPurchaseCopy}.` : ''}
+          </div>
+        )}
+        {alerts.over.length === 0 && alerts.near.length === 0 && totalActual.state === 'partial' && (
+          <div role="status" style={bannerStyle(T.caramel)}>{bp.partialActual}</div>
+        )}
+        {mode === 'sections' && selectedPeriod?.allocation === 'total_only' && selectedPeriod.status === 'closed' && !selectedPeriod.isPartial && (
+          <div role="status" style={bannerStyle(T.caramel)}>{bp.unallocatedActual}</div>
+        )}
+        {selectedComparisonUnavailable && totalActual.state === 'complete' && (
+          <div role="status" style={bannerStyle(T.ink2)}>{bp.comparisonUnavailable}</div>
+        )}
+        {!isCurrentMonth && !selectedPeriod && (
           <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>{bp.planningNote(MONTHS[month], year)}</div>
         )}
 
@@ -593,9 +705,10 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
           {/* Budget rows — fixed height + internal scroll (same size in both modes). */}
           <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 18px', height: ROWS_PANEL_H, overflowY: 'auto' }}>
           {rows.map((row, i) => {
-            const cap = capOf(row.key);
-            const spent = spentFor(row.key);
-            const st = statusFor(cap, spent);
+            const cap = comparisonCapOf(row.key);
+            const resolved = actualFor(row.key);
+            const actual = resolved.value;
+            const st = actual == null || cap == null ? null : statusFor(cap, actual);
             return (
               <div
                 key={row.key}
@@ -613,18 +726,30 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                   <span style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                     {row.label}
                   </span>
-                  {/* Spend line (live month) or the plain "for month" caption. */}
-                  {showSpend ? (
+                  {/* Only a closed, allocatable actual receives budget color. */}
+                  {resolved.state === 'complete' && actual != null && cap != null && st ? (
                     <>
                       <span style={{ fontFamily: fonts.sans, fontSize: 11.5, color: spendColor(st), fontWeight: 500 }}>
                         {cap > 0
-                          ? `${bp.spentOf(fmtMoney(spent), fmtMoney(cap))} · ${st === 'over' ? bp.over(fmtMoney(spent - cap)) : bp.left(fmtMoney(Math.max(0, cap - spent)))}`
-                          : bp.noBudget(fmtMoney(spent))}
+                          ? `${bp.usedOf(fmtMoney(actual), fmtMoney(cap))} · ${st === 'over' ? bp.over(fmtMoney(actual - cap)) : bp.left(fmtMoney(Math.max(0, cap - actual)))}`
+                          : bp.noBudget(fmtMoney(actual))}
                       </span>
-                      {cap > 0 && <MiniBar spent={spent} cap={cap} status={st} />}
+                      {cap > 0 && <MiniBar spent={actual} cap={cap} status={st} />}
                     </>
                   ) : (
-                    <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3 }}>{bp.forMonth(MONTHS[month], year)}</span>
+                    <span style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, lineHeight: 1.35 }}>
+                      {resolved.state === 'partial'
+                        ? bp.partialActual
+                        : resolved.state === 'unallocated'
+                          ? bp.unallocatedActual
+                          : resolved.state === 'complete' && actual != null
+                            ? bp.actualComparisonUnavailable(fmtMoney(actual))
+                          : selectedPeriod
+                            ? `${bp.actualPending}${selectedPurchaseCopy ? ` ${selectedPurchaseCopy}.` : ''}`
+                            : isCurrentMonth
+                              ? bp.trackingNotStarted
+                              : bp.forMonth(MONTHS[month], year)}
+                    </span>
                   )}
                   {/* Section controls */}
                   {row.section && (
@@ -665,6 +790,9 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
               <input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder={bp.sectionNamePh} maxLength={60} style={textInput} />
               <div>
                 <Caps size={9}>{bp.whichItems}</Caps>
+                <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, lineHeight: 1.4, marginTop: 4 }}>
+                  {bp.sectionMoveHint}
+                </div>
                 <input value={formQuery} onChange={(e) => setFormQuery(e.target.value)} placeholder={bp.searchItems} style={{ ...textInput, height: 32, fontSize: 12.5, margin: '6px 0' }} />
                 <div style={{ maxHeight: 180, overflowY: 'auto', border: `1px solid ${T.ruleSoft}`, borderRadius: 10, padding: 6 }}>
                   {pickerItems.length === 0 && (
@@ -710,24 +838,46 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
           </div>
         </BudgetSection>
 
-        {/* Footer summary — spend vs budget (live month) or just the total cap. */}
+        {/* Footer summary — closed usage vs budget, or a clear pending state. */}
         <BudgetSection
           contained
-          title={showSpend ? bp.reviewCurrentTitle : bp.reviewSelectedTitle}
-          description={showSpend ? bp.reviewCurrentSub : bp.reviewSelectedSub}
+          title={isCurrentMonth ? bp.reviewCurrentTitle : bp.reviewSelectedTitle}
+          description={selectedComparisonUnavailable
+            ? bp.comparisonUnavailable
+            : isCurrentMonth ? bp.reviewCurrentSub : bp.reviewSelectedSub}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <div>
-              <Caps>{showSpend ? bp.thisMonthSpend : bp.totalBudget}</Caps>
-              {showSpend ? (
+              <Caps>{selectedPeriod ? bp.thisMonthActual : bp.totalBudget}</Caps>
+              {monthActualTotal != null ? (
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginTop: 4, flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: fonts.sans, fontSize: 30, color: spendColor(summarySt), letterSpacing: '-0.02em', fontWeight: 600, lineHeight: 1.05 }}>
-                    {fmtMoney(monthSpentTotal)}
+                  <span style={{ fontFamily: fonts.sans, fontSize: 30, color: summarySt ? spendColor(summarySt) : T.ink, letterSpacing: '-0.02em', fontWeight: 600, lineHeight: 1.05 }}>
+                    {fmtMoney(monthActualTotal)}
                   </span>
-                  {monthBudgetTotal > 0 && (
+                  {summarySt && comparisonMonthBudgetTotal != null && comparisonMonthBudgetTotal > 0 && (
                     <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
-                      {bp.summaryOf(fmtMoney(monthBudgetTotal))} · {summarySt === 'over' ? bp.over(fmtMoney(monthSpentTotal - monthBudgetTotal)) : bp.left(fmtMoney(Math.max(0, monthBudgetTotal - monthSpentTotal)))}
+                      {bp.summaryOf(fmtMoney(comparisonMonthBudgetTotal))} · {summarySt === 'over' ? bp.over(fmtMoney(monthActualTotal - comparisonMonthBudgetTotal)) : bp.left(fmtMoney(Math.max(0, comparisonMonthBudgetTotal - monthActualTotal)))}
                     </span>
+                  )}
+                  {comparisonMonthBudgetTotal == null && (
+                    <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
+                      {bp.comparisonUnavailable}
+                    </span>
+                  )}
+                </div>
+              ) : selectedPeriod || isCurrentMonth ? (
+                <div role="status" style={{ marginTop: 5 }}>
+                  <div style={{ fontFamily: fonts.sans, fontSize: 20, color: T.ink, fontWeight: 650 }}>
+                    {totalActual.state === 'partial'
+                      ? bp.partialActual
+                      : totalActual.state === 'unallocated'
+                        ? bp.unallocatedActual
+                        : bp.actualPending}
+                  </div>
+                  {selectedPurchaseCopy && (
+                    <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2, marginTop: 4 }}>
+                      {selectedPurchaseCopy}
+                    </div>
                   )}
                 </div>
               ) : (
@@ -736,14 +886,16 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                 </div>
               )}
               <div style={{ fontFamily: fonts.sans, fontSize: 11, color: T.ink3, marginTop: 4 }}>
-                {showSpend && monthBudgetTotal === 0 ? bp.noBudgetsYet : bp.noCapHint}
+                {isCurrentMonth && monthBudgetTotal === 0 ? bp.noBudgetsYet : bp.noCapHint}
               </div>
             </div>
           </div>
-          {showSpend && monthBudgetTotal > 0 && <MiniBar spent={monthSpentTotal} cap={monthBudgetTotal} status={summarySt} height={7} />}
+          {comparisonMonthBudgetTotal != null && comparisonMonthBudgetTotal > 0 && monthActualTotal != null && summarySt && (
+            <MiniBar spent={monthActualTotal} cap={comparisonMonthBudgetTotal} status={summarySt} height={7} />
+          )}
         </BudgetSection>
 
-        {/* Budget history — month-by-month spent vs budget (newest first). */}
+        {/* Budget history — month-by-month closed usage vs budget. */}
         <BudgetSection contained title={bp.compareMonthsTitle} description={bp.compareMonthsSub}>
           {historyHasData ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 13, maxHeight: HISTORY_PANEL_H, overflowY: 'auto' }}>
@@ -753,13 +905,23 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                     {t.label}
                     {t.isCurrent && <span style={{ fontFamily: fonts.mono, fontSize: 8, letterSpacing: '0.08em', color: T.faint, marginLeft: 5 }}>{bp.thisMonthTag}</span>}
                   </span>
-                  <MiniBar spent={t.spent} cap={t.budget} status={t.status} height={7} />
-                  <span style={{ fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 500, textAlign: 'right', color: !t.hasAny ? T.faint : t.budget > 0 ? spendColor(t.status) : T.ink3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {t.actual != null && t.status && t.budget != null ? (
+                    <MiniBar spent={t.actual} cap={t.budget} status={t.status} height={7} />
+                  ) : (
+                    <span style={{ display: 'block', height: 7, borderRadius: 7, background: T.ruleSoft }} />
+                  )}
+                  <span style={{ fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 500, textAlign: 'right', color: !t.hasAny ? T.faint : t.status ? spendColor(t.status) : T.ink3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                     {!t.hasAny
                       ? bp.monthNoData
-                      : t.budget > 0
-                        ? `${fmtMoney(t.spent)} / ${fmtMoney(t.budget)}`
-                        : bp.noBudgetShort(fmtMoney(t.spent))}
+                      : t.actualState === 'partial'
+                        ? bp.partialShort
+                        : t.actual == null
+                          ? bp.pendingShort
+                          : t.budget == null
+                            ? bp.actualComparisonUnavailable(fmtMoney(t.actual))
+                          : t.budget > 0
+                            ? `${fmtMoney(t.actual)} / ${fmtMoney(t.budget)}`
+                            : bp.noBudgetShort(fmtMoney(t.actual))}
                   </span>
                 </div>
               ))}

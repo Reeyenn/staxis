@@ -521,6 +521,7 @@ function LedgerRow({
           which values the same counted stock. */}
       {canViewFinancials && (
         <span
+          title={d.raw.unitCost == null && onHand > 0 ? tx.shelfCostsMissing : undefined}
           style={{
             fontFamily: fonts.sans,
             fontSize: 12,
@@ -528,7 +529,7 @@ function LedgerRow({
             textAlign: 'right',
           }}
         >
-          {fmtMoney(onHand * d.unitCost)}
+          {d.raw.unitCost == null && onHand > 0 ? `≥ ${fmtMoney(0)}` : fmtMoney(onHand * d.unitCost)}
         </span>
       )}
     </div>

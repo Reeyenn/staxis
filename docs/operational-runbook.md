@@ -25,6 +25,26 @@ prod state.
 
 ---
 
+## 2026-07-19 — Inventory monthly accounting
+
+### Migrations applied to prod (via `scripts/apply-migration.ts`)
+
+| File | What | How to verify |
+|---|---|---|
+| `0322_inventory_month_close.sql` | Adds immutable inventory baselines, ending snapshots, purchase evidence, opening adjustments, and the monthly close workflow (`beginning + purchases - ending = actual usage`). | `select version from applied_migrations where version = '0322'` returns one row; `inventory_month_closes` exists. |
+| `0323_inventory_budget_integrity.sql` | Separates purchase budgets from usage budgets and freezes the usage-budget snapshot on each closed month. | `select version from applied_migrations where version = '0323'` returns one row; `inventory_budgets.basis` exists. |
+
+Applied in order with:
+
+```text
+npx tsx scripts/apply-migration.ts supabase/migrations/0322_inventory_month_close.sql
+npx tsx scripts/apply-migration.ts supabase/migrations/0323_inventory_budget_integrity.sql
+```
+
+Post-apply verification: `npx tsx scripts/check-migrations-applied.ts` reported all repository migrations applied. Roll back only after deploying code that does not use month-close accounting; preserve/export close evidence first, then reverse the 0323 budget columns/key/trigger and 0322 tables, functions, triggers, and inventory columns in dependency order. A database restore is safer once close data exists.
+
+---
+
 ## 2026-05-15 — Round 18 hardening session
 
 ### Migrations applied to prod (via `scripts/apply-migration.ts`)

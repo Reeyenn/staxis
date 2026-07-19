@@ -1,20 +1,30 @@
 'use client';
 
-// Compare (2026-07-18): two time periods of inventory, side by side, in
-// layman's terms — months, whole years, or any custom date range. Rows:
-// what you spent, thrown out, (months only) shelf value at start/end, and
-// counts done, each with the difference spelled out ("▲ $120 more").
+// Compare (2026-07-19): two time periods of inventory, side by side. Purchases
+// and actual usage are deliberately separate. Actual usage is shown only from
+// closed monthly snapshots; an arbitrary partial date range never fabricates
+// usage from deliveries. Month snapshots also provide honest beginning and
+// ending shelf values.
 //
 // Honesty rule: a period that ends before the hotel's first inventory
 // activity shows "No data" — never a $0 that reads like a real number.
-// Flow numbers come from /api/inventory/compare (one call per side);
-// months mode adds /api/inventory/accounting-summary for the two shelf-value
-// rows. Both endpoints are money-gated server-side (requireFinanceAccess).
+// Flow numbers come from /api/inventory/compare (one call per side); months
+// mode adds /api/inventory/accounting-summary for the two shelf-value rows.
+// Both endpoints are money-gated server-side (requireFinanceAccess).
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import {
+  formatInventoryDateKey,
+  formatInventoryMonthKey,
+  inventoryDateKeyInZone,
+  inventoryMonthEndDateKey,
+  propertyLocalDayStartUTC,
+  shiftInventoryDateKey,
+  shiftInventoryMonthKey,
+} from '@/lib/inventory-month-close';
 
 import { T, fonts } from '../tokens';
 import { Caps } from '../Caps';
@@ -26,6 +36,7 @@ interface ComparePanelProps {
   lang: Lang;
   open: boolean;
   onClose: () => void;
+  timezone: string;
 }
 
 function cmStrings(lang: Lang) {
@@ -39,12 +50,23 @@ function cmStrings(lang: Lang) {
       vs: 'vs',
       from: 'From',
       to: 'to',
-      spent: 'What you spent',
-      spentSub: 'deliveries received',
+      actualUsed: 'Actual used',
+      actualUsedSub: 'beginning + purchases − ending',
+      purchases: 'Purchases',
+      purchasesSub: 'logged deliveries received in the selected period',
+      closedMonthCoverage: (closed: number, ended: number) =>
+        `${closed} of ${ended} ended ${ended === 1 ? 'month' : 'months'} covered`,
+      missingCost: 'Missing cost',
+      pendingClose: 'Pending close',
+      partial: 'Partial month',
+      unavailable: 'Not available',
+      customUsageHint: 'Actual usage is monthly, so it is not estimated for custom date ranges.',
       thrownOut: 'Thrown out',
       thrownOutSub: 'damaged, stained, lost',
-      shelfValue: 'Shelf value',
-      shelfValueSub: 'what your inventory is worth',
+      beginningInventory: 'Beginning inventory',
+      beginningInventorySub: 'shelf value at the monthly start count',
+      endingInventory: 'Ending inventory',
+      endingInventorySub: 'shelf value at the monthly ending count',
       countsDone: 'Counts done',
       countsDoneSub: 'times someone counted',
       soFar: 'so far',
@@ -54,7 +76,7 @@ function cmStrings(lang: Lang) {
       noData: 'No data',
       noDataHint: 'Staxis wasn’t tracking inventory here yet.',
       noRecord: 'No record',
-      noRecordHint: 'Staxis only knows today’s shelf value — it wasn’t saving month-end values back then.',
+      noRecordHint: 'No closed monthly inventory snapshot exists for that month.',
       loadFailed: 'Couldn’t load one of the periods — try again.',
     },
     es: {
@@ -66,12 +88,23 @@ function cmStrings(lang: Lang) {
       vs: 'vs',
       from: 'Desde',
       to: 'hasta',
-      spent: 'Lo que gastó',
-      spentSub: 'entregas recibidas',
+      actualUsed: 'Uso real',
+      actualUsedSub: 'inicial + compras − final',
+      purchases: 'Compras',
+      purchasesSub: 'entregas registradas recibidas en el período elegido',
+      closedMonthCoverage: (closed: number, ended: number) =>
+        `${closed} de ${ended} ${ended === 1 ? 'mes terminado cubierto' : 'meses terminados cubiertos'}`,
+      missingCost: 'Falta costo',
+      pendingClose: 'Cierre pendiente',
+      partial: 'Mes parcial',
+      unavailable: 'No disponible',
+      customUsageHint: 'El uso real es mensual, por lo que no se estima para fechas personalizadas.',
       thrownOut: 'Desechado',
       thrownOutSub: 'dañado, manchado, perdido',
-      shelfValue: 'Valor del inventario',
-      shelfValueSub: 'lo que vale su inventario',
+      beginningInventory: 'Inventario inicial',
+      beginningInventorySub: 'valor al conteo inicial del mes',
+      endingInventory: 'Inventario final',
+      endingInventorySub: 'valor al conteo final del mes',
       countsDone: 'Conteos hechos',
       countsDoneSub: 'veces que se contó',
       soFar: 'hasta hoy',
@@ -81,7 +114,7 @@ function cmStrings(lang: Lang) {
       noData: 'Sin datos',
       noDataHint: 'Staxis aún no llevaba el inventario aquí.',
       noRecord: 'Sin registro',
-      noRecordHint: 'Staxis solo conoce el valor de hoy — antes no guardaba el valor al cierre de cada mes.',
+      noRecordHint: 'No existe un cierre mensual de inventario para ese mes.',
       loadFailed: 'No se pudo cargar uno de los períodos — intente de nuevo.',
     },
   }[lang];
@@ -90,15 +123,28 @@ function cmStrings(lang: Lang) {
 type Mode = 'months' | 'years' | 'custom';
 
 interface FlowTotals {
-  receiptsValue: number;
-  discardsValue: number;
+  receiptsValue: number | null;
+  knownReceiptsValue: number;
+  purchasesComplete: boolean;
+  actualUsageValue: number | null;
+  confirmedPurchasesValue: number | null;
+  actualUsageStatus: 'complete' | 'partial' | 'pending' | 'unavailable';
+  closedMonths: number;
+  expectedMonths: number;
+  windowMonths: number;
+  discardsValue: number | null;
+  knownDiscardsValue: number;
+  discardsComplete: boolean;
   countSessions: number;
   firstActivityAt: string | null;
 }
 
+type CompareCellState = FlowTotals['actualUsageStatus'] | 'incomplete';
+
 interface ValueTotals {
-  openingValue: number;
-  closingValue: number;
+  openingValue: number | null;
+  closingValue: number | null;
+  actualStatus: 'pending' | 'complete' | 'partial' | 'unallocated';
 }
 
 /** One side's resolved period: inclusive local dates + display label. */
@@ -110,34 +156,32 @@ interface Period {
   isCurrent?: boolean;
 }
 
-const pad = (n: number) => String(n).padStart(2, '0');
-const dateStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const monthKeyOf = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
-const addMonths = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth() + n, 1);
-const addDays = (d: Date, n: number) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-
-export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
+export function ComparePanel({ lang, open, onClose, timezone }: ComparePanelProps) {
   const cm = cmStrings(lang);
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const locale = lang === 'es' ? 'es' : 'en';
+  // Re-resolve "today" each time the panel opens. A remote manager therefore
+  // sees the hotel's current month/day, not the browser's calendar.
+  const todayKey = inventoryDateKeyInZone(new Date(), timezone);
+  const currentMonthKey = todayKey.slice(0, 7);
+  const previousMonthKey = shiftInventoryMonthKey(currentMonthKey, -1);
+  const thisYear = Number(todayKey.slice(0, 4));
 
   const [mode, setMode] = useState<Mode>('months');
 
   // Months mode — last 12 calendar months.
   const monthOptions = useMemo(() => {
-    const now = new Date();
-    const fmt = new Intl.DateTimeFormat(lang === 'es' ? 'es' : 'en', { month: 'long', year: 'numeric' });
     return Array.from({ length: 12 }, (_, i) => {
-      const d = addMonths(now, -i);
-      const label = fmt.format(d);
-      return { key: monthKeyOf(d), label: label.charAt(0).toUpperCase() + label.slice(1) };
+      const key = shiftInventoryMonthKey(currentMonthKey, -i);
+      const label = formatInventoryMonthKey(key, locale);
+      return { key, label: label.charAt(0).toUpperCase() + label.slice(1) };
     });
-  }, [lang]);
-  const [monthA, setMonthA] = useState(() => monthKeyOf(new Date()));
-  const [monthB, setMonthB] = useState(() => monthKeyOf(addMonths(new Date(), -1)));
+  }, [currentMonthKey, locale]);
+  const [monthA, setMonthA] = useState(currentMonthKey);
+  const [monthB, setMonthB] = useState(previousMonthKey);
 
   // Years mode — last 6 years.
-  const thisYear = new Date().getFullYear();
   const yearOptions = useMemo(
     () => Array.from({ length: 6 }, (_, i) => thisYear - i),
     [thisYear],
@@ -147,29 +191,41 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
 
   // Custom mode — defaults: last 30 days vs the 30 days before that.
   const [customA, setCustomA] = useState(() => ({
-    from: dateStr(addDays(new Date(), -29)), to: dateStr(new Date()),
+    from: shiftInventoryDateKey(todayKey, -29), to: todayKey,
   }));
   const [customB, setCustomB] = useState(() => ({
-    from: dateStr(addDays(new Date(), -59)), to: dateStr(addDays(new Date(), -30)),
+    from: shiftInventoryDateKey(todayKey, -59), to: shiftInventoryDateKey(todayKey, -30),
   }));
 
+  const wasOpenRef = useRef(false);
+  useEffect(() => {
+    if (!open) {
+      wasOpenRef.current = false;
+      return;
+    }
+    if (wasOpenRef.current) return;
+    wasOpenRef.current = true;
+    setMonthA(currentMonthKey);
+    setMonthB(previousMonthKey);
+    setYearA(thisYear);
+    setYearB(thisYear - 1);
+    setCustomA({ from: shiftInventoryDateKey(todayKey, -29), to: todayKey });
+    setCustomB({
+      from: shiftInventoryDateKey(todayKey, -59),
+      to: shiftInventoryDateKey(todayKey, -30),
+    });
+  }, [open, currentMonthKey, previousMonthKey, thisYear, todayKey]);
+
   // Resolve each side to a concrete period.
-  const rangeFmt = useMemo(
-    () => new Intl.DateTimeFormat(lang === 'es' ? 'es' : 'en', { month: 'short', day: 'numeric' }),
-    [lang],
-  );
   const periodFor = (side: 'A' | 'B'): Period => {
     if (mode === 'months') {
       const key = side === 'A' ? monthA : monthB;
-      const [y, m] = key.split('-').map(Number);
-      const first = new Date(y, m - 1, 1);
-      const last = new Date(y, m, 0); // day 0 of next month = last day
       return {
-        from: dateStr(first),
-        to: dateStr(last),
+        from: `${key}-01`,
+        to: inventoryMonthEndDateKey(key),
         label: monthOptions.find((o) => o.key === key)?.label ?? key,
         monthKey: key,
-        isCurrent: key === monthKeyOf(new Date()),
+        isCurrent: key === currentMonthKey,
       };
     }
     if (mode === 'years') {
@@ -177,16 +233,13 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
       const isCurrent = y === thisYear;
       return {
         from: `${y}-01-01`,
-        to: isCurrent ? dateStr(new Date()) : `${y}-12-31`,
+        to: isCurrent ? todayKey : `${y}-12-31`,
         label: String(y),
         isCurrent,
       };
     }
     const c = side === 'A' ? customA : customB;
-    const lbl = (s: string) => {
-      const [y, m, d] = s.split('-').map(Number);
-      return rangeFmt.format(new Date(y, m - 1, d));
-    };
+    const lbl = (s: string) => formatInventoryDateKey(s, locale);
     return { from: c.from, to: c.to, label: `${lbl(c.from)} – ${lbl(c.to)}` };
   };
   const periodA = periodFor('A');
@@ -200,7 +253,7 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 
-  const fetchKey = `${mode}|${periodA.from}|${periodA.to}|${periodB.from}|${periodB.to}`;
+  const fetchKey = `${timezone}|${mode}|${periodA.from}|${periodA.to}|${periodB.from}|${periodB.to}`;
   useEffect(() => {
     if (!open || !user || !activePropertyId) return;
     // Custom mode: don't fire on a half-typed backwards range.
@@ -208,12 +261,11 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
     let cancelled = false;
     setLoading(true);
     setFailed(false);
-    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
     const fetchFlow = async (p: Period): Promise<FlowTotals | null> => {
       try {
         const res = await fetchWithAuth(
-          `/api/inventory/compare?propertyId=${activePropertyId}&from=${p.from}&to=${p.to}&tz=${encodeURIComponent(tz)}`,
+          `/api/inventory/compare?propertyId=${activePropertyId}&from=${p.from}&to=${p.to}&basis=${mode}`,
           { cache: 'no-store' },
         );
         if (!res.ok) return null;
@@ -221,15 +273,14 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
         return json.ok ? json.data : null;
       } catch { return null; }
     };
-    // Shelf value is only KNOWN for the current month (the accounting
-    // aggregate prices current stock — for past months that same formula
-    // yields a today-anchored estimate, not a historical fact, so we refuse
-    // to show it; see the noRecord cells).
+    // Beginning/ending shelf values are only shown from the monthly close
+    // snapshot. The accounting endpoint returns null for an unclosed month;
+    // it never back-prices today's stock as a historical month-end value.
     const fetchValues = async (p: Period): Promise<ValueTotals | null> => {
-      if (!p.monthKey || !p.isCurrent) return null;
+      if (!p.monthKey) return null;
       try {
         const res = await fetchWithAuth(
-          `/api/inventory/accounting-summary?propertyId=${activePropertyId}&month=${p.monthKey}&tz=${encodeURIComponent(tz)}`,
+          `/api/inventory/accounting-summary?propertyId=${activePropertyId}&month=${p.monthKey}`,
           { cache: 'no-store' },
         );
         if (!res.ok) return null;
@@ -246,11 +297,9 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
     ]).then(([fa, fb, va, vb]) => {
       if (cancelled) return;
       setFlowA(fa); setFlowB(fb); setValA(va); setValB(vb);
-      // A missing summary only counts as a failure for the current-month side
-      // — past months intentionally skip the shelf-value fetch (noRecord).
       setFailed(
         fa === null || fb === null ||
-        (mode === 'months' && ((!!periodA.isCurrent && va === null) || (!!periodB.isCurrent && vb === null))),
+        (mode === 'months' && (va === null || vb === null)),
       );
       setLoading(false);
     });
@@ -266,8 +315,8 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
   const noDataFor = (p: Period, flow: FlowTotals | null): boolean => {
     if (!flow) return false; // fetch failure is handled separately
     if (!flow.firstActivityAt) return true;
-    const [y, m, d] = p.to.split('-').map(Number);
-    const periodEndExclusive = new Date(y, m - 1, d + 1); // local midnight after the period
+    const [y, m, d] = shiftInventoryDateKey(p.to, 1).split('-').map(Number);
+    const periodEndExclusive = propertyLocalDayStartUTC(y, m, d, timezone);
     return periodEndExclusive.getTime() <= new Date(flow.firstActivityAt).getTime();
   };
   const noDataA = noDataFor(periodA, flowA);
@@ -282,27 +331,80 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
     /** Per-side "we don't have a record of this" (shelf value of past months). */
     noRecordA?: boolean;
     noRecordB?: boolean;
+    /** Actual-usage cells can be pending, unavailable, or a labeled partial. */
+    stateA?: CompareCellState;
+    stateB?: CompareCellState;
+    /** Closed-month coverage for a yearly usage actual. */
+    coverageA?: { closed: number; ended: number };
+    coverageB?: { closed: number; ended: number };
   }
   const rows: RowSpec[] = [
-    { label: cm.spent, sub: cm.spentSub, a: flowA?.receiptsValue ?? null, b: flowB?.receiptsValue ?? null, money: true },
-    { label: cm.thrownOut, sub: cm.thrownOutSub, a: flowA?.discardsValue ?? null, b: flowB?.discardsValue ?? null, money: true },
+    {
+      label: cm.actualUsed,
+      sub: cm.actualUsedSub,
+      a: flowA?.actualUsageValue ?? null,
+      b: flowB?.actualUsageValue ?? null,
+      money: true,
+      stateA: flowA?.actualUsageStatus,
+      stateB: flowB?.actualUsageStatus,
+      coverageA: mode === 'years' && flowA && flowA.windowMonths > 0
+        ? { closed: flowA.closedMonths, ended: flowA.windowMonths }
+        : undefined,
+      coverageB: mode === 'years' && flowB && flowB.windowMonths > 0
+        ? { closed: flowB.closedMonths, ended: flowB.windowMonths }
+        : undefined,
+    },
+    {
+      label: cm.purchases,
+      sub: cm.purchasesSub,
+      // Purchases are the complete selected delivery window. Never replace a
+      // year with the smaller subtotal from only its closed usage months.
+      a: flowA ? flowA.receiptsValue ?? flowA.knownReceiptsValue : null,
+      b: flowB ? flowB.receiptsValue ?? flowB.knownReceiptsValue : null,
+      money: true,
+      stateA: flowA && !flowA.purchasesComplete ? 'incomplete' : undefined,
+      stateB: flowB && !flowB.purchasesComplete ? 'incomplete' : undefined,
+    },
+    {
+      label: cm.thrownOut,
+      sub: cm.thrownOutSub,
+      a: flowA ? flowA.discardsValue ?? flowA.knownDiscardsValue : null,
+      b: flowB ? flowB.discardsValue ?? flowB.knownDiscardsValue : null,
+      money: true,
+      stateA: flowA && !flowA.discardsComplete ? 'incomplete' : undefined,
+      stateB: flowB && !flowB.discardsComplete ? 'incomplete' : undefined,
+    },
     ...(mode === 'months'
-      ? [{
-          label: cm.shelfValue,
-          sub: cm.shelfValueSub,
-          a: valA?.closingValue ?? null,
-          b: valB?.closingValue ?? null,
-          money: true,
-          noRecordA: !periodA.isCurrent,
-          noRecordB: !periodB.isCurrent,
-        }]
+      ? [
+          {
+            label: cm.beginningInventory,
+            sub: cm.beginningInventorySub,
+            a: valA?.openingValue ?? null,
+            b: valB?.openingValue ?? null,
+            money: true,
+            noRecordA: valA?.openingValue == null,
+            noRecordB: valB?.openingValue == null,
+          },
+          {
+            label: cm.endingInventory,
+            sub: cm.endingInventorySub,
+            a: valA?.closingValue ?? null,
+            b: valB?.closingValue ?? null,
+            money: true,
+            noRecordA: valA?.closingValue == null,
+            noRecordB: valB?.closingValue == null,
+          },
+        ]
       : []),
     { label: cm.countsDone, sub: cm.countsDoneSub, a: flowA?.countSessions ?? null, b: flowB?.countSessions ?? null, money: false },
   ];
-  const anyNoRecord = mode === 'months' && (!periodA.isCurrent || !periodB.isCurrent);
+  const anyNoRecord = mode === 'months' && (
+    valA?.openingValue == null || valA?.closingValue == null ||
+    valB?.openingValue == null || valB?.closingValue == null
+  );
 
   const selectStyle: React.CSSProperties = {
-    height: 38,
+    height: 44,
     padding: '0 12px',
     borderRadius: 10,
     border: `1px solid ${T.rule}`,
@@ -322,8 +424,9 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
         key={m}
         type="button"
         onClick={() => setMode(m)}
+        aria-pressed={active}
         style={{
-          height: 30,
+          minHeight: 44,
           padding: '0 13px',
           borderRadius: 999,
           border: `1px solid ${active ? 'rgba(92,122,96,.35)' : 'rgba(31,35,28,.12)'}`,
@@ -430,6 +533,11 @@ export function ComparePanel({ lang, open, onClose }: ComparePanelProps) {
               {cm.noRecord}: {cm.noRecordHint}
             </div>
           )}
+          {mode === 'custom' && !loading && (
+            <div style={{ padding: '10px 0 14px', fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
+              {cm.customUsageHint}
+            </div>
+          )}
         </div>
       </div>
     </Overlay>
@@ -444,14 +552,32 @@ function CompareRow({
   noDataB,
   first,
 }: {
-  row: { label: string; sub: string; a: number | null; b: number | null; money: boolean; noRecordA?: boolean; noRecordB?: boolean };
+  row: {
+    label: string;
+    sub: string;
+    a: number | null;
+    b: number | null;
+    money: boolean;
+    noRecordA?: boolean;
+    noRecordB?: boolean;
+    stateA?: CompareCellState;
+    stateB?: CompareCellState;
+    coverageA?: { closed: number; ended: number };
+    coverageB?: { closed: number; ended: number };
+  };
   cm: ReturnType<typeof cmStrings>;
   loading: boolean;
   noDataA: boolean;
   noDataB: boolean;
   first: boolean;
 }) {
-  const cell = (v: number | null, noData: boolean, noRecord: boolean): React.ReactNode => {
+  const cell = (
+    v: number | null,
+    noData: boolean,
+    noRecord: boolean,
+    state?: CompareCellState,
+    coverage?: { closed: number; ended: number },
+  ): React.ReactNode => {
     if (loading) return '…';
     if (noData || noRecord) {
       return (
@@ -460,12 +586,51 @@ function CompareRow({
         </span>
       );
     }
-    if (v == null) return '—';
-    return row.money ? fmtMoney(v) : String(v);
+    const primary = state === 'pending'
+      ? cm.pendingClose
+      : state === 'unavailable'
+        ? cm.unavailable
+        : v == null
+          ? '—'
+          : `${state === 'incomplete' ? '≥ ' : ''}${row.money ? fmtMoney(v) : String(v)}`;
+    const stateDetail = state === 'incomplete'
+      ? cm.missingCost
+      : state === 'partial'
+        ? cm.partial
+        : null;
+    const coverageDetail = coverage
+      ? cm.closedMonthCoverage(coverage.closed, coverage.ended)
+      : null;
+    if (!stateDetail && !coverageDetail) {
+      return state === 'pending' || state === 'unavailable'
+        ? <span style={{ fontSize: 13, fontWeight: 500, color: T.ink3 }}>{primary}</span>
+        : primary;
+    }
+    return (
+      <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}>
+        <span style={state === 'pending' || state === 'unavailable' ? { fontSize: 13, fontWeight: 500, color: T.ink3 } : undefined}>
+          {primary}
+        </span>
+        {stateDetail && (
+          <span style={{ fontSize: 9.5, fontWeight: 600, color: T.warm, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+            {stateDetail}
+          </span>
+        )}
+        {coverageDetail && (
+          <span style={{ fontSize: 9.5, fontWeight: 600, color: T.ink3, letterSpacing: '0.02em' }}>
+            {coverageDetail}
+          </span>
+        )}
+      </span>
+    );
   };
   // Difference in plain words — only when BOTH sides have real numbers.
   let diffText = '';
-  if (!loading && !noDataA && !noDataB && !row.noRecordA && !row.noRecordB && row.a != null && row.b != null) {
+  if (
+    !loading && !noDataA && !noDataB && !row.noRecordA && !row.noRecordB &&
+    (!row.stateA || row.stateA === 'complete') && (!row.stateB || row.stateB === 'complete') &&
+    row.a != null && row.b != null
+  ) {
     const diff = row.a - row.b;
     if (Math.abs(diff) < (row.money ? 0.005 : 1)) {
       diffText = cm.same;
@@ -494,10 +659,10 @@ function CompareRow({
         </span>
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink, textAlign: 'right' }}>
-        {cell(row.a, noDataA, !!row.noRecordA)}
+        {cell(row.a, noDataA, !!row.noRecordA, row.stateA, row.coverageA)}
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', color: T.ink2, textAlign: 'right' }}>
-        {cell(row.b, noDataB, !!row.noRecordB)}
+        {cell(row.b, noDataB, !!row.noRecordB, row.stateB, row.coverageB)}
       </span>
       <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink2, textAlign: 'right', whiteSpace: 'nowrap' }}>
         {diffText}

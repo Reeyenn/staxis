@@ -16,11 +16,9 @@ import {
   deleteInventoryCustomCategory,
   updateProperty,
   monthToDateSpendDetail,
-  monthlySpendHistory,
   sectionBudgetKey,
   saveInventoryCountAtomic,
   type MonthSpendDetail,
-  type MonthlySpend,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { generateId } from '@/lib/utils';
@@ -34,6 +32,17 @@ import {
   type FrozenQuickCountAttempt,
 } from '@/lib/inventory-quick-count-attempt';
 import { fetchOccupancyBundle, type OccupancyBundle } from '@/lib/inventory-estimate';
+import {
+  inventoryCloseWindow,
+  inventoryMonthKeyInZone,
+  type InventoryMonthCloseDashboard,
+} from '@/lib/inventory-month-close';
+import {
+  inventoryBudgetPeriodsFromDashboard,
+  resolveInventoryBudgetActual,
+  type InventoryBudgetActualPeriod,
+} from '@/lib/inventory-budget-actual';
+import { propertyTimezoneOrUTC } from '@/lib/property-timezone';
 import {
   fetchDailyAverages,
   type DailyAverages,
@@ -51,7 +60,6 @@ import type {
 } from '@/types';
 
 import { T, fonts, inBucket } from './tokens';
-import { startOfLocalMonth, addLocalMonths, isBudgetForLocalMonth } from './month';
 import { Caps } from './Caps';
 import { Serif } from './Serif';
 import { StatusDot } from './StatusPill';
@@ -77,6 +85,7 @@ import { BudgetsPanel } from './overlays/BudgetsPanel';
 import { DeliverySheet } from './overlays/DeliverySheet';
 import { AddItemSheet } from './overlays/AddItemSheet';
 import { AiReportSheet } from './overlays/AiReportSheet';
+import { MonthClosePanel } from './overlays/MonthClosePanel';
 import { t, invLang, dateLocale } from './inv-i18n';
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
@@ -90,12 +99,13 @@ type OverlayKey =
   | 'compare'
   | 'history'
   | 'budgets'
+  | 'close'
   | 'ai'
   | 'add'
   | null;
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
-  'count', 'scan', 'reports', 'compare', 'history', 'budgets', 'ai', 'add',
+  'count', 'scan', 'reports', 'compare', 'history', 'budgets', 'close', 'ai', 'add',
 ];
 
 // Shared container for the full-page loading / load-error notices (identical
@@ -106,6 +116,25 @@ const NOTICE_STYLE: React.CSSProperties = {
   fontFamily: fonts.sans,
   color: T.ink2,
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function monthCloseDashboardFromPayload(payload: unknown): InventoryMonthCloseDashboard | null {
+  if (!isRecord(payload)) return null;
+  const data = isRecord(payload.data) ? payload.data : null;
+  const candidate = data && isRecord(data.dashboard)
+    ? data.dashboard
+    : data ?? (isRecord(payload.dashboard) ? payload.dashboard : payload);
+  if (
+    typeof candidate.propertyId !== 'string'
+    || typeof candidate.month !== 'string'
+    || !['not_started', 'open', 'closed'].includes(String(candidate.status))
+    || !Array.isArray(candidate.history)
+  ) return null;
+  return candidate as unknown as InventoryMonthCloseDashboard;
+}
 
 export function InventoryShell() {
   const router = useRouter();
@@ -129,6 +158,10 @@ export function InventoryShell() {
   // data fetch below, so the figures never reach a line-staff browser. Stock
   // counts + low-stock badges stay visible to everyone. (Access cleanup 2026-06-26.)
   const canViewFinancials = !!stableUser && can('view_financials');
+  // PropertyContext hydrates the stored IANA zone. Until it is available (or
+  // if a legacy row is invalid), use deterministic UTC — never the browser or
+  // a different hotel's hard-coded calendar.
+  const propertyTimezone = propertyTimezoneOrUTC(activeProperty?.timezone);
 
   // ── Core data state ────────────────────────────────────────────────
   // No ML state here on purpose. The manual inventory tab never fetches ML
@@ -156,9 +189,11 @@ export function InventoryShell() {
     byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
     byItem: {},
     total: 0,
+    complete: true,
   });
-  // Per-month spend for the Budgets timeline (last 6 months). Money-gated.
-  const [spendHistory, setSpendHistory] = useState<MonthlySpend[]>([]);
+  // The finance-gated, immutable monthly usage ledger. Purchases remain a
+  // separate live flow (`spendDetail`) until a period is explicitly closed.
+  const [monthCloseDashboard, setMonthCloseDashboard] = useState<InventoryMonthCloseDashboard | null>(null);
   // The property record hydrates after mount — pick up its stored mode when it
   // lands (and on property switch). Post-save the context stays quiet, so this
   // never clobbers a mode the panel just wrote.
@@ -199,6 +234,7 @@ export function InventoryShell() {
   // realtime snapshot catches up (then reconciled away below). Optimistic UI.
   const [draftCounts, setDraftCounts] = useState<Map<string, number>>(() => new Map());
   const [overlay, setOverlay] = useState<OverlayKey>(null);
+  const [countForMonthClose, setCountForMonthClose] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   // Initial-load gate: the page reveals ONCE, after both the first items
   // snapshot AND the stats bundle have landed. Without this, the 3-4 fetch
@@ -261,13 +297,25 @@ export function InventoryShell() {
   // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
   // no auto-fill map, no ai-status/ai-mode call.
   const fetchBoardData = useCallback(async (uid: string, pid: string) => {
-    // LOCAL month window — "this month" means the hotel's calendar month, not
-    // the UTC one (which flips hours early in US timezones).
-    const monthStart = startOfLocalMonth(new Date());
-    const monthEnd = addLocalMonths(new Date(), 1);
-    // Timeline window: the last 6 calendar months through the end of this month.
-    const historyStart = addLocalMonths(monthStart, -5);
-    const [occ, avg, ct, od, bd, sec, spend, hist, cats] = await Promise.all([
+    // Property-local calendar boundaries keep a remote manager on the hotel's
+    // month rather than the browser's month.
+    const currentMonth = inventoryMonthKeyInZone(new Date(), propertyTimezone);
+    const monthWindow = inventoryCloseWindow(currentMonth, propertyTimezone);
+    const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = canViewFinancials
+      ? fetchWithAuth(`/api/inventory/month-close?propertyId=${encodeURIComponent(pid)}`, { cache: 'no-store' })
+          .then(async (response) => {
+            if (!response.ok) throw new Error(`month close load failed (${response.status})`);
+            return monthCloseDashboardFromPayload(await response.json());
+          })
+          .catch((error) => {
+            // The board and physical-count workflow remain available if the
+            // finance ledger is temporarily unavailable. Budget status then
+            // stays pending; purchases are never promoted to actual usage.
+            console.error('[inventory] month close load failed', error);
+            return null;
+          })
+      : Promise.resolve(null);
+    const [occ, avg, ct, od, bd, sec, spend, closeDashboard, cats] = await Promise.all([
       fetchOccupancyBundle(pid, daysAgo(14)),
       fetchDailyAverages(pid, 14),
       // A 40-item hotel counting daily generates 1,120 rows in four weeks.
@@ -284,21 +332,20 @@ export function InventoryShell() {
         ? listInventoryBudgetSections(uid, pid)
         : Promise.resolve([] as InventoryBudgetSection[]),
       canViewFinancials
-        ? monthToDateSpendDetail(uid, pid, monthStart, monthEnd)
+        ? monthToDateSpendDetail(uid, pid, monthWindow.monthStart, monthWindow.endExclusive)
         : Promise.resolve({
             byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
             byItem: {},
             total: 0,
+            complete: true,
           } as MonthSpendDetail),
-      canViewFinancials
-        ? monthlySpendHistory(uid, pid, historyStart, monthEnd)
-        : Promise.resolve([] as MonthlySpend[]),
+      closeDashboardPromise,
       // Custom category tabs are not money — everyone who can see inventory
       // sees the tabs.
       listInventoryCustomCategories(uid, pid),
     ]);
-    return { occ, avg, ct, od, bd, sec, spend, hist, cats };
-  }, [canViewFinancials]);
+    return { occ, avg, ct, od, bd, sec, spend, closeDashboard, cats };
+  }, [canViewFinancials, propertyTimezone]);
 
   const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
     setOccupancy(d.occ);
@@ -308,7 +355,7 @@ export function InventoryShell() {
     setBudgets(d.bd);
     setBudgetSections(d.sec);
     setSpendDetail(d.spend);
-    setSpendHistory(d.hist);
+    setMonthCloseDashboard(d.closeDashboard);
     setCustomCategories(d.cats);
   }, []);
 
@@ -339,8 +386,8 @@ export function InventoryShell() {
     if (action && VALID_QUERY_ACTIONS.includes(action as Exclude<OverlayKey, null>)) {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
-      if ((action === 'reports' || action === 'compare' || action === 'budgets') && !canViewFinancials) return;
-      if (action === 'scan' && !canManage) return;
+      if ((action === 'reports' || action === 'compare' || action === 'budgets' || action === 'close') && !canViewFinancials) return;
+      if ((action === 'scan' || action === 'close') && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
       if (action === 'add') setEditItem(null);
@@ -435,6 +482,10 @@ export function InventoryShell() {
   // counts; it doesn't drift with occupancy). Live-updates as quick counts land,
   // since applyDraft rewrites `value` for drafted items.
   const shelfValue = useMemo(() => effectiveDisplay.reduce((s, d) => s + d.value, 0), [effectiveDisplay]);
+  const shelfValueComplete = useMemo(
+    () => effectiveDisplay.every((d) => (d.raw.currentStock ?? 0) <= 0 || d.raw.unitCost != null),
+    [effectiveDisplay],
+  );
   // Per-tab valuation for the masthead: selecting a tab (General / Breakfast /
   // a custom tab) slides that tab's total value in to the left of "On the
   // shelf"; selecting All slides it back out. Same valuation basis as
@@ -445,6 +496,12 @@ export function InventoryShell() {
       activeTab
         ? effectiveDisplay.filter((d) => inBucket(d, bucket)).reduce((s, d) => s + d.value, 0)
         : 0,
+    [activeTab, bucket, effectiveDisplay],
+  );
+  const activeTabValueComplete = useMemo(
+    () => !activeTab || effectiveDisplay
+      .filter((d) => inBucket(d, bucket))
+      .every((d) => (d.raw.currentStock ?? 0) <= 0 || d.raw.unitCost != null),
     [activeTab, bucket, effectiveDisplay],
   );
   // Defaults for the Add-item sheet, honoring the hotel's visible tabs: an
@@ -510,29 +567,52 @@ export function InventoryShell() {
   // the builder only reads createdAt/name, and display's identity churns on
   // every occupancy/averages tick.
   const historyEvents = useMemo(
-    () => buildHistoryEvents(counts, orders, items),
-    [counts, orders, items],
+    () => buildHistoryEvents(
+      counts,
+      orders,
+      items,
+      canViewFinancials ? (monthCloseDashboard?.history ?? []) : [],
+      propertyTimezone,
+    ),
+    [counts, orders, items, canViewFinancials, monthCloseDashboard, propertyTimezone],
   );
   const historyCount = historyEvents.length;
 
-  // Whole-inventory spend this month, in dollars. (inventory_orders costs are
-  // stored as dollars — the old sum here divided by 100 again and showed ~1%
-  // of true spend on the month strip. Fixed with the 0306 budgets rebuild.)
-  const totalSpent = spendDetail.total;
+  const actualPeriods: InventoryBudgetActualPeriod[] = useMemo(
+    () => monthCloseDashboard
+      ? inventoryBudgetPeriodsFromDashboard(monthCloseDashboard)
+      : [],
+    [monthCloseDashboard],
+  );
+  const propertyCurrentMonth = inventoryMonthKeyInZone(new Date(), propertyTimezone);
+  const currentActualPeriod = actualPeriods.find(
+    (period) => period.monthStart.slice(0, 7) === propertyCurrentMonth,
+  ) ?? null;
+  const currentActual = resolveInventoryBudgetActual(currentActualPeriod, 'total');
+  // "This month" always means the full property-calendar purchase ledger.
+  // A first partial close may start mid-month, but that tracking boundary must
+  // never make earlier received purchases disappear from this live figure.
+  const purchasesThisMonth = spendDetail.total;
+  const purchasesComplete = spendDetail.complete;
 
   // The active month's cap (today's LOCAL month — see month.ts for the
   // UTC-drift fix), respecting the hotel's budget mode: 'total' reads the one
   // whole-inventory row; 'sections' sums the three categories plus custom
   // sections that still exist (stale section keys are ignored).
   const totalCap = useMemo(() => {
-    const now = new Date();
+    const [currentYear, currentMonth1] = propertyCurrentMonth.split('-').map(Number);
     const liveKeys = new Set<string>([
       'housekeeping', 'maintenance', 'breakfast',
       ...budgetSections.map((s) => sectionBudgetKey(s.id)),
     ]);
     let sum = 0;
     for (const b of budgets) {
-      if (!b.monthStart || !isBudgetForLocalMonth(b.monthStart, now)) continue;
+      if (
+        b.basis !== 'usage'
+        || !b.monthStart
+        || b.monthStart.getUTCFullYear() !== currentYear
+        || b.monthStart.getUTCMonth() !== currentMonth1 - 1
+      ) continue;
       if (budgetMode === 'total') {
         if (b.category === 'total') sum += b.budgetCents / 100;
       } else if (liveKeys.has(b.category)) {
@@ -540,14 +620,16 @@ export function InventoryShell() {
       }
     }
     return sum;
-  }, [budgets, budgetSections, budgetMode]);
+  }, [budgets, budgetSections, budgetMode, propertyCurrentMonth]);
 
   // ── Handlers ───────────────────────────────────────────────────────
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
     if (k === 'scan' && !canManage) return;
-    if ((k === 'reports' || k === 'compare' || k === 'budgets') && !canViewFinancials) return;
+    if ((k === 'reports' || k === 'compare' || k === 'budgets' || k === 'close') && !canViewFinancials) return;
+    if (k === 'close' && !canManage) return;
+    if (k === 'count') setCountForMonthClose(false);
     setOverlay(k as OverlayKey);
   }, [canManage, canViewFinancials]);
 
@@ -1093,6 +1175,7 @@ export function InventoryShell() {
         tabs={visibleTabs}
         stockHealth={stockHealth}
         shelfValue={shelfValue}
+        shelfValueComplete={shelfValueComplete}
         canManage={canManage}
         canViewFinancials={canViewFinancials}
         onAction={openOverlay}
@@ -1164,7 +1247,15 @@ export function InventoryShell() {
               {tabStat && (
                 <div ref={tabStatInnerRef} style={{ minWidth: 'max-content' }}>
                   <HStat eyebrow={tabStat.label}>
-                    <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
+                    <span
+                      title={activeTabValueComplete ? undefined : tx.shelfCostsMissing}
+                      aria-label={activeTabValueComplete
+                        ? fmtMoney(tabStat.value, { digits: 0 })
+                        : `${fmtMoney(tabStat.value, { digits: 0 })} minimum; ${tx.shelfCostsMissing}`}
+                    >
+                      {!activeTabValueComplete && <span aria-hidden>≥ </span>}
+                      <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
+                    </span>
                   </HStat>
                 </div>
               )}
@@ -1173,7 +1264,15 @@ export function InventoryShell() {
           {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
           {canViewFinancials && (
             <HStat eyebrow={tx.onTheShelf}>
-              <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
+              <span
+                title={shelfValueComplete ? undefined : tx.shelfCostsMissing}
+                aria-label={shelfValueComplete
+                  ? fmtMoney(shelfValue, { digits: 0 })
+                  : `${fmtMoney(shelfValue, { digits: 0 })} minimum; ${tx.shelfCostsMissing}`}
+              >
+                {!shelfValueComplete && <span aria-hidden>≥ </span>}
+                <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
+              </span>
             </HStat>
           )}
         </div>
@@ -1187,8 +1286,11 @@ export function InventoryShell() {
           lang={L}
           totalItems={totalItems}
           historyCount={historyCount}
-          spendSpent={totalSpent}
-          spendCap={totalCap}
+          purchasesThisMonth={purchasesThisMonth}
+          purchasesComplete={purchasesComplete}
+          actualUsedThisMonth={currentActual.value}
+          actualState={currentActual.state}
+          budgetCap={totalCap}
           canManage={canManage}
           canViewFinancials={canViewFinancials}
           onAction={openOverlay}
@@ -1247,7 +1349,15 @@ export function InventoryShell() {
       <CountSheet
         lang={L}
         open={overlay === 'count'}
-        onClose={() => { closeOverlay(); void refreshData(); }}
+        onClose={() => { setCountForMonthClose(false); closeOverlay(); void refreshData(); }}
+        startWithAll={countForMonthClose}
+        requireComplete={countForMonthClose}
+        canViewFinancials={canViewFinancials}
+        onSaved={() => {
+          setCountForMonthClose(false);
+          setOverlay('close');
+          void refreshData();
+        }}
         items={items}
         display={display}
         customCategories={customCategories}
@@ -1260,12 +1370,14 @@ export function InventoryShell() {
         onClose={closeOverlay}
         display={display}
         customNameById={customNameById}
+        timezone={propertyTimezone}
       />
 
       <ComparePanel
         lang={L}
         open={overlay === 'compare' && canViewFinancials}
         onClose={closeOverlay}
+        timezone={propertyTimezone}
       />
 
       <HistoryPanel
@@ -1274,6 +1386,7 @@ export function InventoryShell() {
         onClose={closeOverlay}
         events={historyEvents}
         canViewFinancials={canViewFinancials}
+        timezone={propertyTimezone}
       />
 
       <BudgetsPanel
@@ -1283,10 +1396,18 @@ export function InventoryShell() {
         budgets={budgets}
         sections={budgetSections}
         mode={budgetMode}
+        timezone={propertyTimezone}
         display={display}
-        spendDetail={spendDetail}
-        spendHistory={spendHistory}
+        actualPeriods={actualPeriods}
         onChanged={(m) => { if (m) setBudgetMode(m); void refreshData(); }}
+      />
+
+      <MonthClosePanel
+        lang={L}
+        open={overlay === 'close' && canManage && canViewFinancials}
+        onClose={closeOverlay}
+        onStartCount={() => { setCountForMonthClose(true); setOverlay('count'); }}
+        onChanged={() => { void refreshData(); }}
       />
 
       <AiReportSheet
@@ -1302,6 +1423,7 @@ export function InventoryShell() {
         open={overlay === 'scan' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         display={display}
+        timezone={propertyTimezone}
         customCategories={customCategories}
         tabLayout={tabLayout}
       />

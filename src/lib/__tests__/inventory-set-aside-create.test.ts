@@ -16,6 +16,7 @@ describe('inventory Set Aside create/edit contract', () => {
     assert.match(sheet, /setSetAsideInput\(restored\?\.setAsideInput \?\? '0'\)/);
     assert.match(sheet, /createFrozenInventoryItemAttempt\(\{[\s\S]*?setAsideInput,[\s\S]*?\}\)/);
     assert.match(sheet, /currentStock: attempt\.currentStock,[\s\S]*?setAside: attempt\.setAside,/);
+    assert.match(sheet, /if \(setAsideNum > onHandForSubset\)/);
     assert.match(sheet, /<Field label=\{ais\.setAside\} tip=\{setAsideTip\(lang\)\}>/);
     assert.doesNotMatch(sheet, /\{isEdit && \([\s\S]{0,300}<Field label=\{ais\.setAside\}/);
   });

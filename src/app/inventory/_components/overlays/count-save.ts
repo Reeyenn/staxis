@@ -28,7 +28,7 @@ export function entriesFingerprint(entries: Record<string, { value: string }>): 
 export type InlineAddScope = 'general' | 'breakfast' | 'all';
 
 export interface FrozenInlineAddAttempt {
-  version: 1;
+  version: 2;
   propertyId: string;
   requestId: string;
   startedAt: string;
@@ -37,6 +37,7 @@ export interface FrozenInlineAddAttempt {
   quantityInput: string;
   parInput: string;
   costInput: string;
+  openingAdjustmentConfirmed: boolean;
   name: string;
   quantity: number;
   parLevel: number;
@@ -82,6 +83,7 @@ export function createFrozenInlineAddAttempt(input: {
   quantityInput: string;
   parInput: string;
   costInput: string;
+  openingAdjustmentConfirmed: boolean;
 }): FrozenInlineAddAttempt {
   const propertyId = input.propertyId.trim();
   const requestId = input.requestId.trim();
@@ -95,8 +97,15 @@ export function createFrozenInlineAddAttempt(input: {
   const unitCost = costNumber != null && Number.isFinite(costNumber) && costNumber >= 0
     ? costNumber
     : null;
+  const quantity = finiteNonnegativeOrZero(input.quantityInput);
+  if (quantity > 0 && !input.openingAdjustmentConfirmed) {
+    throw new Error('Positive starting stock must be confirmed as pre-existing opening inventory.');
+  }
+  if (quantity > 0 && unitCost == null) {
+    throw new Error('A unit cost is required to value pre-existing opening inventory.');
+  }
   return {
-    version: 1,
+    version: 2,
     propertyId,
     requestId,
     startedAt: input.startedAt,
@@ -105,8 +114,9 @@ export function createFrozenInlineAddAttempt(input: {
     quantityInput: input.quantityInput,
     parInput: input.parInput,
     costInput: input.costInput,
+    openingAdjustmentConfirmed: quantity > 0 && input.openingAdjustmentConfirmed,
     name,
-    quantity: finiteNonnegativeOrZero(input.quantityInput),
+    quantity,
     parLevel: finiteNonnegativeOrZero(input.parInput),
     unitCost,
     category: input.scope === 'breakfast' ? 'breakfast' : 'housekeeping',
@@ -116,7 +126,7 @@ export function createFrozenInlineAddAttempt(input: {
 function isFrozenInlineAddAttempt(value: unknown): value is FrozenInlineAddAttempt {
   if (!value || typeof value !== 'object') return false;
   const x = value as Partial<FrozenInlineAddAttempt>;
-  if (x.version !== 1
+  if (x.version !== 2
     || typeof x.propertyId !== 'string'
     || typeof x.requestId !== 'string'
     || typeof x.startedAt !== 'string'
@@ -125,6 +135,7 @@ function isFrozenInlineAddAttempt(value: unknown): value is FrozenInlineAddAttem
     || typeof x.quantityInput !== 'string'
     || typeof x.parInput !== 'string'
     || typeof x.costInput !== 'string'
+    || typeof x.openingAdjustmentConfirmed !== 'boolean'
     || typeof x.name !== 'string'
     || typeof x.quantity !== 'number'
     || typeof x.parLevel !== 'number'
@@ -140,6 +151,7 @@ function isFrozenInlineAddAttempt(value: unknown): value is FrozenInlineAddAttem
       && canonical.quantityInput === x.quantityInput
       && canonical.parInput === x.parInput
       && canonical.costInput === x.costInput
+      && canonical.openingAdjustmentConfirmed === x.openingAdjustmentConfirmed
       && canonical.name === x.name
       && canonical.quantity === x.quantity
       && canonical.parLevel === x.parLevel

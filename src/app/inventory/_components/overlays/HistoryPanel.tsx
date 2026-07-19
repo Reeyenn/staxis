@@ -1,19 +1,23 @@
 'use client';
 
 // History v2 (2026-07-18): the feed reads as WHAT THE PERSON DID — "Started a
-// count", "Scanned an invoice", "Added a delivery", "Added new items" — one
-// row per action, and clicking a row expands the per-item detail (what was
-// counted / what arrived, with the change). Event grouping + classification
-// live in ../history-events.ts; this file owns only the display strings and
-// the accordion UI.
+// count", "Scanned an invoice", "Added a delivery", "Added new items", or a
+// finance-only immutable month close. Clicking expands item detail or the
+// monthly beginning + purchases - ending equation. Event grouping +
+// classification live in ../history-events.ts; this file owns display and UI.
 
 import React, { useMemo, useState } from 'react';
-import { shortDateFromDate } from '@/lib/format-date';
 import { T, fonts, statusColor } from '../tokens';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import { type Lang } from '../inv-i18n';
-import type { HistoryEvent, HistoryEventKind, HistoryLine } from '../history-events';
+import {
+  historyEventsForViewer,
+  type HistoryEvent,
+  type HistoryEventKind,
+  type HistoryLine,
+  type HistoryMonthClose,
+} from '../history-events';
 
 interface HistoryPanelProps {
   lang: Lang;
@@ -21,13 +25,15 @@ interface HistoryPanelProps {
   onClose: () => void;
   events: HistoryEvent[];
   canViewFinancials: boolean;
+  /** IANA timezone from the authorized property row. Invalid/missing → UTC. */
+  timezone: string;
 }
 
 function hpStrings(lang: Lang) {
   return {
     en: {
       eyebrow: 'History',
-      italic: 'What your team did',
+      italic: 'Inventory activity',
       event: 'action',
       events: 'actions',
       noHistory: 'Nothing yet — counts, deliveries and new items will show up here.',
@@ -38,6 +44,7 @@ function hpStrings(lang: Lang) {
       addedDelivery: 'Added a delivery',
       aiMarkedOrdered: 'AI assistant · marked as ordered',
       addedItems: (n: number) => (n === 1 ? 'Added a new item' : `Added ${n} new items`),
+      closedMonth: (month: string) => `Closed ${month}`,
       // Pills
       pillCount: 'Count',
       pillQuick: 'Quick count',
@@ -45,6 +52,7 @@ function hpStrings(lang: Lang) {
       pillDelivery: 'Delivery',
       pillAssistant: 'AI',
       pillItems: 'New items',
+      pillMonthClose: 'Month close',
       // Detail
       byAI: 'Staxis AI',
       team: 'team',
@@ -55,12 +63,29 @@ function hpStrings(lang: Lang) {
       received: 'received',
       cases: (n: number) => `${n} ${n === 1 ? 'case' : 'cases'}`,
       asExpected: 'as expected',
+      monthlyActualFinalized: 'Monthly actual finalized',
+      partialPeriod: 'Partial first period',
+      noFullBudgetComparison: 'not compared with a full-month budget',
+      totalOnly: 'Total only',
+      noCategorySplit: 'no category split',
+      beginningInventory: 'Beginning inventory',
+      openingAdjustment: (amount: string) => `${amount} of pre-existing shelf stock was added after the baseline. It is included in beginning inventory, not purchases or usage.`,
+      purchases: 'Purchases',
+      sourceLogged: 'logged deliveries',
+      sourceManual: 'manual monthly total',
+      sourceZero: 'confirmed zero',
+      loggedDeliveries: 'Logged deliveries',
+      costsIncomplete: 'costs incomplete',
+      costsMissing: 'costs missing',
+      endingInventory: 'Ending inventory',
+      actualUsed: 'Actual used',
+      closeEquation: 'Beginning + purchases − ending = actual used',
       close: 'Hide details',
       showDetails: 'Show details',
     },
     es: {
       eyebrow: 'Historial',
-      italic: 'Lo que hizo su equipo',
+      italic: 'Actividad de inventario',
       event: 'acción',
       events: 'acciones',
       noHistory: 'Nada aún — los conteos, entregas y artículos nuevos aparecerán aquí.',
@@ -70,12 +95,14 @@ function hpStrings(lang: Lang) {
       addedDelivery: 'Entrega agregada',
       aiMarkedOrdered: 'Asistente IA · marcado como pedido',
       addedItems: (n: number) => (n === 1 ? 'Artículo nuevo agregado' : `${n} artículos nuevos agregados`),
+      closedMonth: (month: string) => `Cierre de ${month}`,
       pillCount: 'Conteo',
       pillQuick: 'Conteo rápido',
       pillScan: 'Factura',
       pillDelivery: 'Entrega',
       pillAssistant: 'IA',
       pillItems: 'Artículos',
+      pillMonthClose: 'Cierre mensual',
       byAI: 'Staxis IA',
       team: 'equipo',
       invoiceNo: (n: string) => `factura #${n}`,
@@ -85,15 +112,36 @@ function hpStrings(lang: Lang) {
       received: 'recibido',
       cases: (n: number) => `${n} ${n === 1 ? 'caja' : 'cajas'}`,
       asExpected: 'como se esperaba',
+      monthlyActualFinalized: 'Uso real mensual finalizado',
+      partialPeriod: 'Primer período parcial',
+      noFullBudgetComparison: 'sin comparar con un presupuesto mensual completo',
+      totalOnly: 'Solo total',
+      noCategorySplit: 'sin desglose por categoría',
+      beginningInventory: 'Inventario inicial',
+      openingAdjustment: (amount: string) => `Se agregaron ${amount} de inventario preexistente después de la base. Está incluido en el inventario inicial, no en compras ni uso.`,
+      purchases: 'Compras',
+      sourceLogged: 'entregas registradas',
+      sourceManual: 'total mensual manual',
+      sourceZero: 'cero confirmado',
+      loggedDeliveries: 'Entregas registradas',
+      costsIncomplete: 'costos incompletos',
+      costsMissing: 'faltan costos',
+      endingInventory: 'Inventario final',
+      actualUsed: 'Uso real',
+      closeEquation: 'Inicial + compras − final = uso real',
       close: 'Ocultar detalle',
       showDetails: 'Ver detalle',
     },
   }[lang];
 }
 
-export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }: HistoryPanelProps) {
+export function HistoryPanel({ lang, open, onClose, events, canViewFinancials, timezone }: HistoryPanelProps) {
   const hp = useMemo(() => hpStrings(lang), [lang]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const visibleEvents = useMemo(
+    () => historyEventsForViewer(events, canViewFinancials),
+    [events, canViewFinancials],
+  );
 
   const toggle = (id: string) =>
     setExpanded((prev) => {
@@ -103,9 +151,27 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
       return next;
     });
 
+  const safeTimezone = useMemo(() => {
+    if (!timezone || typeof timezone !== 'string') return 'UTC';
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
+      return timezone;
+    } catch {
+      return 'UTC';
+    }
+  }, [timezone]);
+  const locale = lang === 'es' ? 'es-ES' : 'en-US';
+  const dateFmt = useMemo(
+    () => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', timeZone: safeTimezone }),
+    [locale, safeTimezone],
+  );
   const timeFmt = useMemo(
-    () => new Intl.DateTimeFormat(lang === 'es' ? 'es' : 'en', { hour: 'numeric', minute: '2-digit' }),
-    [lang],
+    () => new Intl.DateTimeFormat(locale, { hour: 'numeric', minute: '2-digit', timeZone: safeTimezone }),
+    [locale, safeTimezone],
+  );
+  const monthFmt = useMemo(
+    () => new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric', timeZone: safeTimezone }),
+    [locale, safeTimezone],
   );
 
   const pill: Record<HistoryEventKind, { label: string; color: string; bg: string }> = {
@@ -115,6 +181,13 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
     delivery: { label: hp.pillDelivery, color: T.sageDeep, bg: T.sageDim },
     assistant: { label: hp.pillAssistant, color: T.goldText, bg: T.goldDim },
     itemsAdded: { label: hp.pillItems, color: T.ink2, bg: T.inkWash },
+    monthClose: { label: hp.pillMonthClose, color: T.forestText, bg: T.sageDim },
+  };
+
+  const closeMonthLabel = (month: string): string => {
+    const [year, month1] = month.split('-').map(Number);
+    if (!Number.isInteger(year) || !Number.isInteger(month1)) return month;
+    return monthFmt.format(new Date(Date.UTC(year, month1 - 1, 15, 12)));
   };
 
   const titleFor = (e: HistoryEvent): string => {
@@ -125,10 +198,21 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
       case 'delivery': return hp.addedDelivery;
       case 'assistant': return hp.aiMarkedOrdered;
       case 'itemsAdded': return hp.addedItems(e.lines.length);
+      case 'monthClose': return hp.closedMonth(closeMonthLabel(e.monthClose?.month ?? ''));
     }
   };
 
   const subFor = (e: HistoryEvent): string => {
+    if (e.kind === 'monthClose' && e.monthClose) {
+      const parts = [hp.monthlyActualFinalized];
+      if (e.monthClose.isPartial) {
+        parts.push(`${hp.partialPeriod} · ${hp.noFullBudgetComparison}`);
+      }
+      if (e.monthClose.allocationMode === 'total_only') {
+        parts.push(`${hp.totalOnly} · ${hp.noCategorySplit}`);
+      }
+      return parts.join(' · ');
+    }
     const parts: string[] = [];
     if (e.byAssistant) parts.push(hp.byAI);
     else if (e.who) parts.push(e.who);
@@ -145,11 +229,11 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
       onClose={onClose}
       eyebrow={hp.eyebrow}
       italic={hp.italic}
-      suffix={`${events.length} ${events.length === 1 ? hp.event : hp.events}`}
+      suffix={`${visibleEvents.length} ${visibleEvents.length === 1 ? hp.event : hp.events}`}
       width={860}
     >
       <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
-        {events.length === 0 ? (
+        {visibleEvents.length === 0 ? (
           <div
             style={{
               padding: '40px 24px',
@@ -163,15 +247,17 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
             {hp.noHistory}
           </div>
         ) : (
-          events.map((e, i) => {
+          visibleEvents.map((e, i) => {
             const k = pill[e.kind];
             const isOpen = expanded.has(e.id);
             // Deliveries show what they cost; counts show their $ variance vs
             // expected (red when stock came up short — the shrinkage signal
             // the old panel carried; losing it was a review finding).
             const isCountKind = e.kind === 'count' || e.kind === 'quickcount';
+            const isDeliveryKind = e.kind === 'scan' || e.kind === 'delivery' || e.kind === 'assistant';
+            const deliveryCostIncomplete = isDeliveryKind && e.deliveryCost?.complete === false;
             const showAmount = canViewFinancials && e.amount != null &&
-              (e.kind === 'scan' || e.kind === 'delivery' || e.kind === 'assistant' ||
+              (isDeliveryKind || e.kind === 'monthClose' ||
                 (isCountKind && e.amount !== 0));
             const amountColor = isCountKind && (e.amount ?? 0) < 0 ? statusColor.critical : T.ink;
             return (
@@ -198,7 +284,7 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
                 >
                   <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
                     <span style={{ fontFamily: fonts.sans, fontSize: 15, color: T.ink, fontWeight: 600, letterSpacing: '-0.01em' }}>
-                      {shortDateFromDate(e.date, lang)}
+                      {dateFmt.format(e.date)}
                     </span>
                     <span style={{ fontFamily: fonts.mono, fontSize: 10, color: T.dim }}>
                       {timeFmt.format(e.date)}
@@ -230,8 +316,24 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
                     {subFor(e)}
                   </span>
                   {canViewFinancials && (
-                    <span style={{ fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, textAlign: 'right', color: showAmount ? amountColor : T.ink3 }}>
-                      {showAmount ? fmtMoney(e.amount!) : '—'}
+                    <span
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'flex-end',
+                        fontFamily: fonts.sans,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        textAlign: 'right',
+                        color: showAmount ? amountColor : T.ink3,
+                      }}
+                    >
+                      <span>{showAmount ? `${deliveryCostIncomplete ? '≥ ' : ''}${fmtMoney(e.amount!)}` : '—'}</span>
+                      {deliveryCostIncomplete && (
+                        <span style={{ color: T.goldText, fontSize: 9.5, fontWeight: 600, lineHeight: 1.2 }}>
+                          {hp.costsMissing}
+                        </span>
+                      )}
                     </span>
                   )}
                   <span
@@ -251,16 +353,20 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
                 {isOpen && (
                   <div style={{ padding: '0 0 14px 106px' }}>
                     <div style={{ background: T.bg, border: `1px solid ${T.ruleSoft}`, borderRadius: 10, padding: '4px 14px' }}>
-                      {e.lines.map((line, j) => (
-                        <LineRow
-                          key={j}
-                          line={line}
-                          kind={e.kind}
-                          hp={hp}
-                          canViewFinancials={canViewFinancials}
-                          first={j === 0}
-                        />
-                      ))}
+                      {e.kind === 'monthClose' && e.monthClose ? (
+                        <MonthCloseDetail close={e.monthClose} hp={hp} />
+                      ) : (
+                        e.lines.map((line, j) => (
+                          <LineRow
+                            key={j}
+                            line={line}
+                            kind={e.kind}
+                            hp={hp}
+                            canViewFinancials={canViewFinancials}
+                            first={j === 0}
+                          />
+                        ))
+                      )}
                     </div>
                   </div>
                 )}
@@ -270,6 +376,86 @@ export function HistoryPanel({ lang, open, onClose, events, canViewFinancials }:
         )}
       </div>
     </Overlay>
+  );
+}
+
+function MonthCloseDetail({
+  close,
+  hp,
+}: {
+  close: HistoryMonthClose;
+  hp: ReturnType<typeof hpStrings>;
+}) {
+  const source = close.purchaseSource === 'logged_deliveries'
+    ? hp.sourceLogged
+    : close.purchaseSource === 'manual_total'
+      ? hp.sourceManual
+      : hp.sourceZero;
+  const rows = [
+    {
+      key: 'beginning',
+      label: hp.beginningInventory,
+      amount: close.beginningAmount,
+      note: close.openingAdjustmentAmount > 0
+        ? hp.openingAdjustment(fmtMoney(close.openingAdjustmentAmount))
+        : '',
+    },
+    { key: 'purchases', label: hp.purchases, amount: close.purchasesAmount, note: source },
+    { key: 'ending', label: hp.endingInventory, amount: close.endingAmount, note: '' },
+    { key: 'actual', label: hp.actualUsed, amount: close.actualUsageAmount, note: '' },
+  ];
+  return (
+    <div style={{ padding: '8px 0 10px' }}>
+      <div style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.04em', marginBottom: 4 }}>
+        {hp.closeEquation}
+      </div>
+      {rows.map((row, index) => {
+        const isActual = row.key === 'actual';
+        return (
+          <div
+            key={row.key}
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr minmax(130px, auto)',
+              gap: 16,
+              alignItems: 'center',
+              minHeight: 40,
+              borderTop: index === 0 ? 'none' : `1px solid ${T.ruleSoft}`,
+              fontFamily: fonts.sans,
+            }}
+          >
+            <span style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <span style={{ fontSize: 12.5, color: isActual ? T.ink : T.ink2, fontWeight: isActual ? 700 : 500 }}>
+                {row.label}
+              </span>
+              {row.note && (
+                <span style={{ fontSize: 10.5, color: T.ink3 }}>{row.note}</span>
+              )}
+            </span>
+            <span style={{ fontSize: isActual ? 15 : 13, color: T.ink, fontWeight: isActual ? 700 : 600, textAlign: 'right' }}>
+              {row.amount == null ? '—' : fmtMoney(row.amount)}
+            </span>
+          </div>
+        );
+      })}
+      {close.loggedPurchaseAmount == null && (
+        <div
+          role="note"
+          style={{
+            marginTop: 8,
+            padding: '8px 10px',
+            borderRadius: 8,
+            background: T.goldDim,
+            color: T.goldText,
+            fontFamily: fonts.sans,
+            fontSize: 11.5,
+            lineHeight: 1.4,
+          }}
+        >
+          {hp.loggedDeliveries}: ≥ {fmtMoney(close.knownLoggedPurchaseAmount)} · {hp.costsIncomplete}
+        </div>
+      )}
+    </div>
   );
 }
 

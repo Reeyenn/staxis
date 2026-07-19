@@ -25,6 +25,7 @@ export interface MobileInventoryTriageProps {
   tabs: InvTab[];
   stockHealth: number | null;
   shelfValue: number;
+  shelfValueComplete: boolean;
   canManage: boolean;
   canViewFinancials: boolean;
   onAction: (action: SidebarAction) => void;
@@ -60,6 +61,7 @@ export function MobileInventoryTriage({
   tabs,
   stockHealth,
   shelfValue,
+  shelfValueComplete,
   canManage,
   canViewFinancials,
   onAction,
@@ -78,6 +80,9 @@ export function MobileInventoryTriage({
   const activeTabValue = activeTab
     ? items.filter((d) => inBucket(d, bucket)).reduce((s, d) => s + d.value, 0)
     : 0;
+  const activeTabValueComplete = !activeTab || items
+    .filter((d) => inBucket(d, bucket))
+    .every((d) => (d.raw.currentStock ?? 0) <= 0 || d.raw.unitCost != null);
 
   const actions = useMemo<MobileAction[]>(() => {
     const next: MobileAction[] = [
@@ -89,11 +94,14 @@ export function MobileInventoryTriage({
         badge: items.length,
       },
     ];
-    // Add-delivery writes stock + spend — management only, same as the
+    // Add-delivery writes stock + the received-purchase ledger — management only, same as the
     // desktop rail. openOverlay already blocks the tap for non-managers;
     // gating here too avoids showing a button that silently does nothing.
     if (canManage) {
       next.push({ key: 'scan', label: tx.addDelivery, variant: 'sage', leading: 'arrow' });
+    }
+    if (canManage && canViewFinancials) {
+      next.push({ key: 'close', label: tx.monthClose });
     }
     next.push({ key: 'ai', label: tx.aiHelper });
     next.push({ key: 'history', label: tx.history });
@@ -126,11 +134,14 @@ export function MobileInventoryTriage({
           {canViewFinancials && activeTab ? (
             <MobileStat
               label={compactTabLabel(activeTab, lang)}
-              value={fmtMoney(activeTabValue, { digits: 0 })}
+              value={`${activeTabValueComplete ? '' : '≥ '}${fmtMoney(activeTabValue, { digits: 0 })}`}
             />
           ) : null}
           {canViewFinancials ? (
-            <MobileStat label={tx.onTheShelf} value={fmtMoney(shelfValue, { digits: 0 })} />
+            <MobileStat
+              label={tx.onTheShelf}
+              value={`${shelfValueComplete ? '' : '≥ '}${fmtMoney(shelfValue, { digits: 0 })}`}
+            />
           ) : null}
         </div>
         <MobileHealthRing lang={lang} value={stockHealth} label={tx.stockHealth} />

@@ -51,7 +51,7 @@ registerTool<{ period?: Period }>({
   name: 'get_finance_summary',
   section: 'financials',
   description:
-    'Get the finance summary for a month: revenue (from the PMS), total expenses, profit, cost per occupied room, and expenses as a % of revenue. Use for "how are we doing financially", "what\'s our profit", "how much have we spent". Period defaults to this month.',
+    'Get the CHECKBOOK finance summary for a month: revenue (from the PMS), total expenses, profit, cost per occupied room, and expenses as a % of revenue. Use for overall financial performance. If the question specifically mentions inventory, supplies, shelf value, deliveries, or inventory usage, use get_inventory_monthly_accounting instead. Period defaults to this month.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -90,7 +90,7 @@ registerTool<{ period?: Period }>({
   name: 'check_budget_status',
   section: 'financials',
   description:
-    'Check whether any department is over (or trending over) its monthly budget, and by how much. Use for "are we over budget anywhere", "how is the housekeeping budget", "which departments are over". Period defaults to this month.',
+    'Check CHECKBOOK EXPENSE budgets by department and whether recorded expenses are over them. Use for general operating-expense questions such as payroll/checkbook housekeeping expenses. Never use for an inventory/supplies/linen budget or "housekeeping inventory budget"; use get_inventory_monthly_accounting because inventory budgets compare closed usage, not expenses or shelf value. Period defaults to this month.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -142,7 +142,7 @@ registerTool<{ department?: string; period?: Period }>({
   name: 'get_department_spend',
   section: 'financials',
   description:
-    'Get how much was spent in a specific department for a month (e.g. "how much did we spend on maintenance last month"). If no department is given, returns the breakdown across all departments. Period defaults to this month.',
+    'Get CHECKBOOK EXPENSES recorded in a department for a month (e.g. a maintenance invoice entered in Financials). If the question mentions inventory, supplies, deliveries, shelf value, or usage, use get_inventory_monthly_accounting instead. If no department is given, returns the checkbook breakdown across all departments. Period defaults to this month.',
   inputSchema: {
     type: 'object',
     properties: {

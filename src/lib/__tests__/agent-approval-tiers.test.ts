@@ -30,6 +30,12 @@ import '@/lib/agent/tools/index'; // register everything
 import { buildActionSummary } from '@/lib/agent/approval';
 
 describe('approval tier completeness', () => {
+  test('adjust_stock order-intent approval copy disclaims delivery and purchase logging', () => {
+    const args = { itemName: 'soap', markOrdered: true };
+    assert.match(buildActionSummary('adjust_stock', args, 'en'), /order intent.*no delivery or purchase logged/i);
+    assert.match(buildActionSummary('adjust_stock', args, 'es'), /intención.*no registra entrega ni compra/i);
+  });
+
   test('every mutation tool has an approval tier (via the registry)', () => {
     const missing = listAllTools()
       .filter((t) => t.mutates === true && (t.approval !== 'quick' && t.approval !== 'card'))

@@ -33,6 +33,8 @@ export interface ReviewRow {
   ambiguous: boolean;
   qtyInput: string;
   unitCostInput: string;
+  /** True once the manager edits cost; hidden OCR totals must no longer win. */
+  unitCostDirty: boolean;
   afterInput: string;   // resulting on-hand for a matched line (editable)
   afterDirty: boolean;  // operator overrode the resulting stock
   newCategory: InvCat;
@@ -57,7 +59,8 @@ export function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[])
     candidates: m.candidates,
     ambiguous: m.ambiguous,
     qtyInput: String(qty),
-    unitCostInput: raw.unit_cost != null ? String(raw.unit_cost) : '',
+    unitCostInput: effectiveInvoiceUnitCost(raw, qty),
+    unitCostDirty: false,
     afterInput: String(onHand + qty),
     afterDirty: false,
     newCategory: 'housekeeping',
@@ -65,6 +68,22 @@ export function buildRow(raw: RawInvoiceLine, i: number, display: DisplayItem[])
     newPar: '0',
     saved: false,
   };
+}
+
+export function effectiveInvoiceUnitCost(raw: RawInvoiceLine, quantity: number): string {
+  const total = Number(raw.total_cost);
+  if (raw.total_cost != null && Number.isFinite(total) && total >= 0 && quantity > 0) {
+    return String(total / quantity);
+  }
+  const unit = Number(raw.unit_cost);
+  return raw.unit_cost != null && Number.isFinite(unit) && unit >= 0 ? String(unit) : '';
+}
+
+export function reviewRowHasCompleteCost(row: ReviewRow): boolean {
+  if (row.decision === 'skip') return true;
+  if (row.unitCostInput.trim() === '') return false;
+  const value = Number(row.unitCostInput);
+  return Number.isFinite(value) && value >= 0;
 }
 
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
@@ -75,14 +94,15 @@ const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 // via the custom StaxisMenu) — the rescue for when the invoice's wording is
 // nothing like the inventory name and the matcher's shortlist missed it
 // entirely. The name itself is also a menu (the matcher's shortlist + "＋ New
-// item") for the quick fix. Unit cost isn't shown — the scanned cost still
-// saves with the delivery, it just isn't a decision made on this screen.
+// item") for the quick fix. Quantity and unit cost are both explicit manager
+// decisions because they become the received-purchase ledger and month close.
 export function ReviewRowView({
   lang,
   row,
   display,
   onDecision,
   onQty,
+  onUnitCost,
   onNewCategory,
   onSkip,
   onUnskip,
@@ -92,6 +112,7 @@ export function ReviewRowView({
   display: DisplayItem[];
   onDecision: (v: string) => void;
   onQty: (v: string) => void;
+  onUnitCost: (v: string) => void;
   onNewCategory: (c: InvCat) => void;
   onSkip: () => void;
   onUnskip: () => void;
@@ -99,6 +120,7 @@ export function ReviewRowView({
   const ss = ssStrings(lang);
   const creating = row.decision === 'create';
   const skipped = row.decision === 'skip';
+  const costComplete = reviewRowHasCompleteCost(row);
   const chosen = creating ? null : row.candidates.find((c) => c.id === row.matchedItemId);
   const warn = row.ambiguous && !creating;
   const hasPicker = display.length > 0;
@@ -228,13 +250,35 @@ export function ReviewRowView({
           )}
         </div>
 
-        <input
-          value={row.qtyInput}
-          inputMode="decimal"
-          onChange={(e) => onQty(e.target.value)}
-          aria-label={ss.qtyReceived}
-          style={{ ...inputSm, width: 58, textAlign: 'center', flex: 'none' }}
-        />
+        <label style={compactField}>
+          <span style={compactLabel}>{ss.qty}</span>
+          <input
+            value={row.qtyInput}
+            inputMode="decimal"
+            onChange={(e) => onQty(e.target.value)}
+            aria-label={ss.qtyReceived}
+            style={{ ...inputSm, width: 58, minHeight: 40, textAlign: 'center', flex: 'none' }}
+          />
+        </label>
+        <label style={compactField}>
+          <span style={{ ...compactLabel, color: costComplete ? T.ink3 : T.warm }}>{ss.unitCost}</span>
+          <input
+            value={row.unitCostInput}
+            inputMode="decimal"
+            onChange={(e) => onUnitCost(e.target.value)}
+            aria-label={ss.unitCost}
+            aria-invalid={!costComplete}
+            placeholder="0.00"
+            style={{
+              ...inputSm,
+              width: 72,
+              minHeight: 40,
+              textAlign: 'right',
+              flex: 'none',
+              borderColor: costComplete ? T.rule : T.warm,
+            }}
+          />
+        </label>
         <button type="button" onClick={onSkip} aria-label={ss.skipLine} style={removeBtn}>
           ✕
         </button>
@@ -248,6 +292,24 @@ const lineShell: React.CSSProperties = {
   padding: '10px 2px',
   minHeight: 50,
   boxSizing: 'border-box',
+};
+
+const compactField: React.CSSProperties = {
+  display: 'inline-flex',
+  flexDirection: 'column',
+  alignItems: 'stretch',
+  gap: 3,
+  flex: 'none',
+};
+
+const compactLabel: React.CSSProperties = {
+  fontFamily: fonts.mono,
+  fontSize: 8.5,
+  lineHeight: 1,
+  letterSpacing: '0.06em',
+  textTransform: 'uppercase',
+  color: T.ink3,
+  textAlign: 'center',
 };
 
 const captionStyle: React.CSSProperties = {

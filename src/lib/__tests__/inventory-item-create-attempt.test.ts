@@ -36,6 +36,7 @@ function attempt() {
     vendorInput: '  Linen Co  ',
     vendorId: 'vendor-a',
     includeUnitCost: true,
+    openingAdjustmentConfirmed: true,
   });
 }
 
@@ -51,6 +52,7 @@ describe('primary Add Item durable retry envelope', () => {
     assert.equal(value.setAsideInput, '03');
     assert.equal(value.setAside, 3);
     assert.equal(value.unitCost, 2.5);
+    assert.equal(value.openingAdjustmentConfirmed, true);
     assert.equal(value.vendorName, 'Linen Co');
     assert.equal(inventoryItemCreateMarker(value.requestId), 'staxis:add-item:request-a');
   });
@@ -108,6 +110,7 @@ describe('primary Add Item durable retry envelope', () => {
       category: 'housekeeping', customCategoryId: null,
       currentStockInput: '.', setAsideInput: '', parLevelInput: '-1', unitCostInput: '99',
       vendorInput: '', vendorId: null, includeUnitCost: false,
+      openingAdjustmentConfirmed: false,
     });
     assert.equal(value.currentStock, 0);
     assert.equal(value.setAside, 0);
@@ -115,42 +118,80 @@ describe('primary Add Item durable retry envelope', () => {
     assert.equal(value.unitCost, null);
   });
 
-  test('allows Set Aside to temporarily exceed On Hand while usable stock clamps elsewhere', () => {
-    const value = createFrozenInventoryItemAttempt({
+  test('requires explicit, costed opening-inventory provenance for positive stock', () => {
+    const base = {
       propertyId: 'property-a', requestId: 'request-a', itemId: 'item-a',
-      startedAt: '2026-07-15T20:00:00.000Z', nameInput: 'Towels',
-      category: 'housekeeping', customCategoryId: null,
-      currentStockInput: '4', setAsideInput: '5', parLevelInput: '8',
-      unitCostInput: '1.25', vendorInput: '', vendorId: null,
-      includeUnitCost: true,
-    });
-    assert.equal(value.currentStock, 4);
-    assert.equal(value.setAside, 5);
+      startedAt: '2026-07-15T20:00:00.000Z', nameInput: 'Soap',
+      category: 'housekeeping' as const, customCategoryId: null,
+      currentStockInput: '5', setAsideInput: '1', parLevelInput: '8', unitCostInput: '1.25',
+      vendorInput: '', vendorId: null, includeUnitCost: true,
+    };
+    assert.throws(
+      () => createFrozenInventoryItemAttempt({ ...base, openingAdjustmentConfirmed: false }),
+      /pre-existing opening inventory/i,
+    );
+    assert.throws(
+      () => createFrozenInventoryItemAttempt({
+        ...base,
+        unitCostInput: '',
+        openingAdjustmentConfirmed: true,
+      }),
+      /unit cost/i,
+    );
   });
 
-  test('upgrades a legacy retry without changing its item or request identity', () => {
+  test('rejects Set Aside above On Hand', () => {
+    assert.throws(() => createFrozenInventoryItemAttempt({
+        propertyId: 'property-a', requestId: 'request-a', itemId: 'item-a',
+        startedAt: '2026-07-15T20:00:00.000Z', nameInput: 'Towels',
+        category: 'housekeeping', customCategoryId: null,
+        currentStockInput: '4', setAsideInput: '5', parLevelInput: '8',
+        unitCostInput: '1.25', vendorInput: '', vendorId: null,
+        includeUnitCost: true, openingAdjustmentConfirmed: true,
+      }),
+      /cannot exceed on-hand/i,
+    );
+  });
+
+  test('upgrades legacy retries without changing their item or request identity', () => {
     const storage = memoryStorage();
     const current = attempt();
     const {
       setAsideInput: _setAsideInput,
       setAside: _setAside,
-      ...withoutSetAside
+      openingAdjustmentConfirmed: _openingAdjustmentConfirmed,
+      ...withoutV3Fields
     } = current;
     void _setAsideInput;
     void _setAside;
-    const v1 = { ...withoutSetAside, version: 1 };
+    void _openingAdjustmentConfirmed;
+    const v1 = { ...withoutV3Fields, version: 1 };
     storage.setItem('staxis:inventory-item-create-attempt:property-a', JSON.stringify(v1));
 
-    const upgraded = loadInventoryItemCreateAttempt('property-a', storage);
-    assert.equal(upgraded?.version, 2);
-    assert.equal(upgraded?.requestId, current.requestId);
-    assert.equal(upgraded?.itemId, current.itemId);
-    assert.equal(upgraded?.startedAt, current.startedAt);
-    assert.equal(upgraded?.setAsideInput, '0');
-    assert.equal(upgraded?.setAside, 0);
+    const upgradedV1 = loadInventoryItemCreateAttempt('property-a', storage);
+    assert.equal(upgradedV1?.version, 3);
+    assert.equal(upgradedV1?.requestId, current.requestId);
+    assert.equal(upgradedV1?.itemId, current.itemId);
+    assert.equal(upgradedV1?.setAsideInput, '0');
+    assert.equal(upgradedV1?.setAside, 0);
+    assert.equal(upgradedV1?.openingAdjustmentConfirmed, false);
+
+    const v2 = {
+      ...withoutV3Fields,
+      version: 2,
+      openingAdjustmentConfirmed: current.openingAdjustmentConfirmed,
+    };
+    storage.setItem('staxis:inventory-item-create-attempt:property-a', JSON.stringify(v2));
+    const upgradedV2 = loadInventoryItemCreateAttempt('property-a', storage);
+    assert.equal(upgradedV2?.version, 3);
+    assert.equal(upgradedV2?.requestId, current.requestId);
+    assert.equal(upgradedV2?.itemId, current.itemId);
+    assert.equal(upgradedV2?.setAsideInput, '0');
+    assert.equal(upgradedV2?.setAside, 0);
+    assert.equal(upgradedV2?.openingAdjustmentConfirmed, true);
 
     storage.setItem('staxis:inventory-item-create-attempt:property-a', JSON.stringify({
-      ...v1,
+      ...v2,
       setAsideInput: '4',
     }));
     assert.equal(loadInventoryItemCreateAttempt('property-a', storage), null);

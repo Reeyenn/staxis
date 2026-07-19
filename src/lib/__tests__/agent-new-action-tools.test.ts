@@ -22,7 +22,7 @@ process.env.ANTHROPIC_API_KEY ??= 'sk-ant-placeholder';
 import { test, describe, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { executeTool, type ToolContext } from '@/lib/agent/tools';
+import { executeTool, getTool, type ToolContext } from '@/lib/agent/tools';
 import '@/lib/agent/tools/index';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
@@ -255,6 +255,12 @@ describe('get_low_stock', () => {
 });
 
 describe('adjust_stock', () => {
+  test('does not expose an order quantity because no purchase-order ledger exists', () => {
+    const tool = getTool('adjust_stock');
+    assert.ok(tool);
+    assert.equal('orderQuantity' in (tool.inputSchema.properties ?? {}), false);
+  });
+
   test('atomically saves the on-hand count and audit row with an idempotency UUID', async () => {
     inventoryRows = [{ id: 'i1', name: 'Towels', category: 'housekeeping', current_stock: 30, par_level: 100, unit: 'ea' }];
     const res = await executeTool('adjust_stock', { itemName: 'Towels', newCount: 120 }, ctx());
@@ -264,9 +270,10 @@ describe('adjust_stock', () => {
       category: 'housekeeping',
       newCount: 120,
       unit: 'ea',
-      markedOrdered: false,
-      orderLogged: false,
-      orderQuantity: null,
+      orderIntentRecorded: false,
+      deliveryLogged: false,
+      purchaseLogged: false,
+      note: null,
     });
     assert.equal(updated.inventory?.length ?? 0, 0, 'count must not use a standalone inventory update');
     assert.equal(rpcCalls.length, 1);
@@ -282,14 +289,24 @@ describe('adjust_stock', () => {
     }]);
   });
 
-  test('records an order when markOrdered is set', async () => {
+  test('marks order intent without writing the received-delivery ledger', async () => {
     inventoryRows = [{ id: 'i1', name: 'Soap', category: 'housekeeping', current_stock: 5, par_level: 50, unit: 'ea' }];
-    const res = await executeTool('adjust_stock', { itemName: 'Soap', markOrdered: true, orderQuantity: 24 }, ctx());
+    const res = await executeTool('adjust_stock', { itemName: 'Soap', markOrdered: true }, ctx());
     assert.equal(res.ok, true);
-    const ord = (inserted['inventory_orders'] ?? [])[0];
-    assert.ok(ord, 'an inventory_orders row was written');
-    assert.equal(ord.item_id, 'i1');
-    assert.equal(ord.quantity, 24);
+    assert.equal(inserted.inventory_orders?.length ?? 0, 0, 'order intent must not create a received delivery');
+    assert.equal(updated.inventory?.length, 1);
+    assert.deepEqual(Object.keys(updated.inventory[0]), ['last_ordered_at']);
+    assert.ok(!Number.isNaN(Date.parse(String(updated.inventory[0].last_ordered_at))));
+    assert.deepEqual(res.data, {
+      itemName: 'Soap',
+      category: 'housekeeping',
+      newCount: null,
+      unit: 'ea',
+      orderIntentRecorded: true,
+      deliveryLogged: false,
+      purchaseLogged: false,
+      note: 'Order intent timestamp saved only. No delivery or purchase was logged.',
+    });
     assert.equal(rpcCalls.length, 0, 'order-only actions do not create a count session');
   });
 
@@ -297,7 +314,7 @@ describe('adjust_stock', () => {
     inventoryRows = [{ id: 'i1', name: 'Soap', category: 'housekeeping', current_stock: 5, par_level: 50, unit: 'ea' }];
     const res = await executeTool('adjust_stock', { itemName: 'Soap' }, ctx());
     assert.equal(res.ok, false);
-    assert.match(res.error ?? '', /count|ordered|nothing/i);
+    assert.match(res.error ?? '', /count|intent|nothing/i);
   });
 
   test('refuses an ambiguous item name', async () => {

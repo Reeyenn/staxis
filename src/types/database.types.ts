@@ -1995,6 +1995,10 @@ export type Database = {
           last_ordered_at: string | null
           name: string
           notes: string | null
+          opening_adjustment_at: string | null
+          opening_adjustment_quantity: number | null
+          opening_adjustment_request_id: string | null
+          opening_adjustment_unit_cost: number | null
           pack_size: number | null
           par_level: number
           property_id: string
@@ -2023,6 +2027,10 @@ export type Database = {
           last_ordered_at?: string | null
           name: string
           notes?: string | null
+          opening_adjustment_at?: string | null
+          opening_adjustment_quantity?: number | null
+          opening_adjustment_request_id?: string | null
+          opening_adjustment_unit_cost?: number | null
           pack_size?: number | null
           par_level?: number
           property_id: string
@@ -2051,6 +2059,10 @@ export type Database = {
           last_ordered_at?: string | null
           name?: string
           notes?: string | null
+          opening_adjustment_at?: string | null
+          opening_adjustment_quantity?: number | null
+          opening_adjustment_request_id?: string | null
+          opening_adjustment_unit_cost?: number | null
           pack_size?: number | null
           par_level?: number
           property_id?: string
@@ -2076,6 +2088,7 @@ export type Database = {
       }
       inventory_budgets: {
         Row: {
+          basis: string
           budget_cents: number
           category: string
           created_at: string
@@ -2085,6 +2098,7 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          basis?: string
           budget_cents: number
           category: string
           created_at?: string
@@ -2094,6 +2108,7 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          basis?: string
           budget_cents?: number
           category?: string
           created_at?: string

@@ -90,7 +90,6 @@ export const EDITABLE_FIELDS: Record<string, FieldSpec[]> = {
   adjust_stock: [
     { key: 'itemName', label: { en: 'Item', es: 'Artículo' }, kind: 'text' },
     { key: 'newCount', label: { en: 'New count', es: 'Nuevo conteo' }, kind: 'number' },
-    { key: 'orderQuantity', label: { en: 'Order quantity', es: 'Cantidad pedida' }, kind: 'number' },
   ],
   create_reminder: [
     { key: 'body', label: { en: 'Reminder', es: 'Recordatorio' }, kind: 'multiline' },

@@ -23,6 +23,7 @@ import { listInventoryOrders } from '@/lib/db';
 import {
   buildCommitPlan,
   buildNotesTag,
+  invoiceDateFromReceivedAt,
   invoiceAlreadyRecorded,
 } from '@/lib/inventory-invoice-commit';
 
@@ -34,7 +35,14 @@ import { type Lang } from '../inv-i18n';
 import { numGuard } from './form-kit';
 import { ssStrings, scanErrorFor } from './scan-i18n';
 import { StagingStep, foldFiles, fileToBase64, type Staged } from './scan-staging';
-import { buildRow, ReviewRowView, type RawInvoiceLine, type ReviewRow } from './scan-review';
+import {
+  buildRow,
+  effectiveInvoiceUnitCost,
+  reviewRowHasCompleteCost,
+  ReviewRowView,
+  type RawInvoiceLine,
+  type ReviewRow,
+} from './scan-review';
 import {
   executeCommit,
   retryCommit,
@@ -73,7 +81,7 @@ function fmtInvoiceDate(iso: string, lang: Lang): string {
   });
 }
 
-export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang; open: boolean; onClose: () => void; display: DisplayItem[] }) {
+export function ScanInvoiceSheet({ lang, open, onClose, display, timezone }: { lang: Lang; open: boolean; onClose: () => void; display: DisplayItem[]; timezone: string }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ss = ssStrings(lang);
@@ -128,7 +136,9 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     setErrorText('');
     clearStaged();
     setVendor(restored?.vendorName ?? '');
-    setInvoiceDate(restored?.receivedAt.slice(0, 10) ?? '');
+    setInvoiceDate(restored
+      ? (invoiceDateFromReceivedAt(restored.receivedAt, timezone) ?? '')
+      : '');
     setInvoiceNumber(null);
     setRows([]);
     setDupWarn(false);
@@ -143,7 +153,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     setRecoveredLineCount(restored?.lines.length ?? 0);
     progressRef.current = newCommitProgress(restored);
     commitNowRef.current = new Date();
-  }, [open, activePropertyId, lang]);
+  }, [open, activePropertyId, lang, timezone]);
 
   // Belt-and-suspenders: revoke any staged thumbnails if the sheet unmounts
   // while pages are staged (open/close resets already handle the common path).
@@ -161,6 +171,10 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
   const setQty = (row: ReviewRow, v: string) => {
     if (!numGuard(v)) return;
     const patch: Partial<ReviewRow> = { qtyInput: v };
+    const quantity = Number(v);
+    if (!row.unitCostDirty && Number.isFinite(quantity) && quantity > 0) {
+      patch.unitCostInput = effectiveInvoiceUnitCost(row.raw, quantity);
+    }
     if (!row.afterDirty && row.decision === 'match') {
       patch.afterInput = String(onHandFor(row.matchedItemId) + (Number(v) || 0));
     }
@@ -315,9 +329,13 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
     duplicate: dupWarn,
     checkFailed: dupCheckFailed,
   });
+  const costsComplete = rows.every(reviewRowHasCompleteCost);
 
   const handleCommit = async () => {
-    if (!user || !activePropertyId || phase === 'committing' || (!retryLocked && duplicateBlocked)) return;
+    if (
+      !user || !activePropertyId || phase === 'committing'
+      || (!retryLocked && (duplicateBlocked || !costsComplete))
+    ) return;
     setPhase('committing');
     setBanner('');
 
@@ -326,6 +344,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
         await retryCommit(progressRef.current, { uid: user.uid, pid: activePropertyId });
       } else {
         const plan = buildCommitPlan({
+          propertyTimezone: timezone,
           vendorName: vendor,
           invoiceDate,
           invoiceNumber,
@@ -337,6 +356,9 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
             qty: r.qtyInput,
             quantityCases: r.raw.quantity_cases,
             unitCost: r.unitCostInput,
+            // A manager-edited unit cost replaces hidden OCR math. Otherwise
+            // the scanned line total remains authoritative for invoice rounding.
+            totalCost: r.unitCostDirty ? null : r.raw.total_cost,
             onHandEstimate: onHandFor(r.matchedItemId),
             afterOverride: r.decision === 'match' && r.afterDirty ? r.afterInput : null,
             newItem: r.decision === 'create' ? { category: r.newCategory, unit: r.newUnit, parLevel: r.newPar } : undefined,
@@ -380,7 +402,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
       italic={reviewing ? ss.whatArrived : phase === 'done' ? ss.saved : ss.dropOneIn}
       suffix={reviewing ? undefined : ss.autoUpdateStock}
       accent={T.sageDeep}
-      width={reviewing ? 560 : 640}
+      width={reviewing ? 680 : 640}
       footer={
         reviewing ? (
           <>
@@ -391,7 +413,7 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
               variant="primary"
               size="md"
               onClick={handleCommit}
-              disabled={phase === 'committing' || (!retryLocked && (actionable === 0 || duplicateBlocked))}
+              disabled={phase === 'committing' || (!retryLocked && (actionable === 0 || duplicateBlocked || !costsComplete))}
             >
               {phase === 'committing'
                 ? ss.adding
@@ -483,6 +505,9 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
                 : 'History could not be verified. Saving is blocked to prevent a duplicate delivery.'}
             </div>
           )}
+          {!retryLocked && !costsComplete && (
+            <div role="alert" style={warmStrip}>{ss.costsRequired}</div>
+          )}
           {banner && <div style={warmStrip}>{banner}</div>}
 
           {/* Where it came from — read straight off the invoice, not a form. */}
@@ -501,6 +526,10 @@ export function ScanInvoiceSheet({ lang, open, onClose, display }: { lang: Lang;
                 display={display}
                 onDecision={(v) => setDecision(row, v)}
                 onQty={(v) => setQty(row, v)}
+                onUnitCost={(v) => {
+                  if (!numGuard(v)) return;
+                  patchRow(row.key, { unitCostInput: v, unitCostDirty: true });
+                }}
                 onNewCategory={(c) => patchRow(row.key, { newCategory: c })}
                 onSkip={() => patchRow(row.key, { decision: 'skip' })}
                 onUnskip={() =>

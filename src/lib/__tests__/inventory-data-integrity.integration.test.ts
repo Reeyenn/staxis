@@ -31,6 +31,7 @@ const NONFINITE_DELIVERY_REQ = '54000000-0000-4000-8000-000000000008';
 const DUPLICATE_INVOICE_REQ = '54000000-0000-4000-8000-000000000009';
 const FOREIGN_COUNT_REQ = '54000000-0000-4000-8000-000000000010';
 const RESTRICTED_DELIVERY_REQ = '54000000-0000-4000-8000-000000000011';
+const ARCHIVE_COUNT_REQ = '54000000-0000-4000-8000-000000000012';
 const PO_ID = '55000000-0000-4000-8000-000000000001';
 const PO_LINE = '56000000-0000-4000-8000-000000000001';
 const PO_UNLINKED = '55000000-0000-4000-8000-000000000002';
@@ -517,6 +518,23 @@ describe('inventory migration 0312 executable integrity', () => {
         pg.query(`update public.inventory set current_stock = 99 where id = $1`, [ITEM_PROVENANCE]),
         /atomic inventory RPC|42501/i,
       );
+      await assert.rejects(
+        pg.query(
+          `update public.inventory
+           set archived_at = '2000-01-01', archived_by = $2
+           where id = $1`,
+          [ITEM_PROVENANCE, USER_B],
+        ),
+        /count inventory stock to zero|23514/i,
+      );
+      await pg.query(
+        `select public.staxis_save_inventory_count($1, $2, now(), 'Archive count', $3::jsonb)`,
+        [
+          PROP_A,
+          ARCHIVE_COUNT_REQ,
+          JSON.stringify([{ item_id: ITEM_PROVENANCE, expected_stock: 2, counted_stock: 0 }]),
+        ],
+      );
       await pg.query(
         `update public.inventory
          set archived_at = '2000-01-01', archived_by = $2
@@ -537,7 +555,7 @@ describe('inventory migration 0312 executable integrity', () => {
     assert.equal(row.archived_by, USER_A);
     assert.notEqual(new Date(String(row.created_at)).getUTCFullYear(), 2000);
     assert.notEqual(new Date(String(row.archived_at)).getUTCFullYear(), 2000);
-    assert.equal(Number(row.current_stock), 2);
+    assert.equal(Number(row.current_stock), 0);
   });
 
   test('history blocks hard item deletion and hotel ownership blocks auth-user deletion', async () => {

@@ -1,24 +1,19 @@
 'use client';
 
-// Reports v2 (2026-07-18): every number on this panel is either computed from
-// real data or explicitly marked "coming soon". The old panel showed a
-// cost-per-occupied-room built on a hard-coded 78% occupancy guess and a
-// "0.0%" shrinkage rate on hotels with no history — both read as real data.
-// Rules now:
-//   • Day-one stats (inventory value, items, needs-attention, value by
-//     category) come straight from the live item list — always real.
-//   • This-month spend comes from the delivery ledger; when the hotel has
-//     never logged a delivery it says so instead of showing $0 as a stat.
-//   • Trend, shrinkage and cost/occupied-room render as "coming soon" cards
-//     until the underlying data actually exists (months of deliveries,
-//     count-vs-delivery reconciliations, real occupancy).
+// Reports v3 (2026-07-19): shelf value, purchases, and actual usage are three
+// different facts. Shelf value comes from today's item list. Purchases come
+// from logged deliveries. Actual usage exists only after a monthly inventory
+// close (beginning + confirmed purchases - ending). An open month therefore
+// says "usage pending" instead of treating deliveries as usage or as $0.
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 
-import { currentMonthLabel, shortDateFromDate, shortMonthFromYmd } from '@/lib/format-date';
+import { shortDateFromDate, shortMonthFromYmd } from '@/lib/format-date';
+import { formatInventoryMonthKey } from '@/lib/inventory-month-close';
+import { inventoryReportMonthKey } from '@/lib/reports/property-report-range';
 import { T, fonts, statusColor, type InvCat } from '../tokens';
 import { catLabelFor, type Lang } from '../inv-i18n';
 import { Caps } from '../Caps';
@@ -33,6 +28,7 @@ interface ReportsPanelProps {
   display: DisplayItem[];
   /** Custom-category id → hotel-chosen tab name (for the value-by-category list). */
   customNameById: Map<string, string>;
+  timezone: string;
 }
 
 function rpStrings(lang: Lang) {
@@ -54,16 +50,26 @@ function rpStrings(lang: Lang) {
       allStocked: 'all items look stocked',
       valueByCategory: 'Value by category',
       thisMonth: 'This month',
-      deliveriesReceived: 'Spent on deliveries',
-      noDeliveriesYet: 'No deliveries logged yet — spend shows up here once a delivery is added.',
+      actualUsed: 'Actual used',
+      usagePending: 'Usage pending',
+      pendingNote: 'Close the month after the ending count to calculate actual usage.',
+      partialActual: 'Partial month actual',
+      totalOnlyActual: 'Total only · no category split',
+      purchasesLogged: 'Purchases logged',
+      purchasesConfirmed: 'Purchases confirmed at close',
+      loggedDeliverySubtotal: 'Logged delivery subtotal',
+      purchaseCostsMissing: 'some delivery costs are missing',
+      lossCostsMissing: 'some loss costs are missing',
+      noDeliveriesYet: 'No purchases logged yet.',
       thrownOut: 'thrown out',
       lastCount: 'Last count',
       noCountsYet: 'No counts yet',
       monthlyTrend: 'Monthly trend',
-      spendByMonth: 'Spend by month',
+      usageByMonth: 'Actual usage by month',
       lastNMonths: (n: number) => ` · last ${n} months`,
       comingSoon: 'Coming soon',
-      trendSoon: 'Fills in automatically after a couple of months of deliveries.',
+      trendSoon: 'Fills in after two monthly inventory closes.',
+      partialTrendNote: '∗ Partial month — not compared with a full-month budget.',
       shrinkageRate: 'Shrinkage',
       shrinkageSoon: 'Needs a few counts and deliveries to compare — fills in automatically.',
       mtdLoss: 'MTD loss',
@@ -71,6 +77,7 @@ function rpStrings(lang: Lang) {
       costSoon: 'Needs real occupancy data from your hotel system.',
       occNights: 'occupied room-nights',
       loading: 'Loading…',
+      loadFailed: 'Couldn’t load monthly accounting. Try again.',
     },
     es: {
       eyebrow: 'Informes · esta propiedad',
@@ -89,16 +96,26 @@ function rpStrings(lang: Lang) {
       allStocked: 'todo se ve abastecido',
       valueByCategory: 'Valor por categoría',
       thisMonth: 'Este mes',
-      deliveriesReceived: 'Gastado en entregas',
-      noDeliveriesYet: 'Aún no hay entregas registradas — el gasto aparecerá aquí al agregar una entrega.',
+      actualUsed: 'Uso real',
+      usagePending: 'Uso pendiente',
+      pendingNote: 'Cierre el mes después del conteo final para calcular el uso real.',
+      partialActual: 'Uso real de mes parcial',
+      totalOnlyActual: 'Solo total · sin desglose por categoría',
+      purchasesLogged: 'Compras registradas',
+      purchasesConfirmed: 'Compras confirmadas al cierre',
+      loggedDeliverySubtotal: 'Subtotal de entregas registradas',
+      purchaseCostsMissing: 'faltan costos de algunas entregas',
+      lossCostsMissing: 'faltan costos de algunas pérdidas',
+      noDeliveriesYet: 'Aún no hay compras registradas.',
       thrownOut: 'desechado',
       lastCount: 'Último conteo',
       noCountsYet: 'Aún no hay conteos',
       monthlyTrend: 'Tendencia mensual',
-      spendByMonth: 'Gasto por mes',
+      usageByMonth: 'Uso real por mes',
       lastNMonths: (n: number) => ` · últimos ${n} meses`,
       comingSoon: 'Próximamente',
-      trendSoon: 'Se completa automáticamente tras un par de meses de entregas.',
+      trendSoon: 'Se completa después de dos cierres mensuales de inventario.',
+      partialTrendNote: '∗ Mes parcial — no se compara con un presupuesto mensual completo.',
       shrinkageRate: 'Merma',
       shrinkageSoon: 'Necesita algunos conteos y entregas para comparar — se completa automáticamente.',
       mtdLoss: 'pérdida del mes',
@@ -106,6 +123,7 @@ function rpStrings(lang: Lang) {
       costSoon: 'Necesita datos reales de ocupación de su sistema hotelero.',
       occNights: 'noches-hab. ocupadas',
       loading: 'Cargando…',
+      loadFailed: 'No se pudo cargar la contabilidad mensual. Intente de nuevo.',
     },
   }[lang];
 }
@@ -113,18 +131,38 @@ function rpStrings(lang: Lang) {
 interface YtdRow {
   monthStart: string;
   receiptsValue: number;
-  discardsValue: number;
+  purchasesValue: number | null;
+  actualUsageValue: number | null;
+  actualStatus: 'pending' | 'complete' | 'partial' | 'unallocated';
+  isPartial: boolean;
+  discardsValue: number | null;
+  knownDiscardsValue: number;
+  discardsComplete: boolean;
 }
 
 interface SummaryShape {
+  monthKey: string;
+  monthStart: string;
   totals: {
-    openingValue: number;
+    openingValue: number | null;
     receiptsValue: number;
-    discardsValue: number;
-    closingValue: number;
-    unaccountedShrinkageValue: number;
+    loggedPurchasesValue: number | null;
+    knownLoggedPurchasesValue: number;
+    purchasesValue: number | null;
+    actualUsageValue: number | null;
+    actualStatus: 'pending' | 'complete' | 'partial' | 'unallocated';
+    allocation: 'pending' | 'itemized' | 'total_only';
+    isPartial: boolean;
+    budgetComparisonAvailable: boolean;
+    discardsValue: number | null;
+    knownDiscardsValue: number;
+    discardsComplete: boolean;
+    closingValue: number | null;
+    unaccountedShrinkageValue: number | null;
+    knownUnaccountedShrinkageValue: number;
+    shrinkageComplete: boolean;
     budgetCents: number | null;
-    spendCents: number;
+    spendCents: number | null;
   };
   byCategory: Array<{ reconciliationsThisMonth: number }>;
   ytd: YtdRow[];
@@ -134,36 +172,42 @@ interface SummaryShape {
   };
 }
 
-export function ReportsPanel({ lang, open, onClose, display, customNameById }: ReportsPanelProps) {
+export function ReportsPanel({ lang, open, onClose, display, customNameById, timezone }: ReportsPanelProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const rp = rpStrings(lang);
   const [summary, setSummary] = useState<SummaryShape | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
 
   useEffect(() => {
     if (!open || !user || !activePropertyId) return;
+    let cancelled = false;
     setLoading(true);
+    setLoadFailed(false);
+    setSummary(null);
     void (async () => {
       try {
-        // Send the viewer's time zone so the server bounds "this month" on the
-        // same local clock the Budgets overlay uses (month.ts) — otherwise a
-        // delivery received the evening of the 31st lands in different months
-        // on the two screens.
-        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
         const res = await fetchWithAuth(
-          `/api/inventory/accounting-summary?propertyId=${activePropertyId}&tz=${encodeURIComponent(tz)}`,
+          `/api/inventory/accounting-summary?propertyId=${activePropertyId}`,
           { cache: 'no-store' },
         );
-        if (!res.ok) return;
+        if (!res.ok) {
+          if (!cancelled) setLoadFailed(true);
+          return;
+        }
         const json = (await res.json()) as { ok: boolean; data: SummaryShape };
+        if (cancelled) return;
         if (json.ok) setSummary(json.data);
+        else setLoadFailed(true);
       } catch (err) {
         console.error('[reports] load failed', err);
+        if (!cancelled) setLoadFailed(true);
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     })();
+    return () => { cancelled = true; };
   }, [open, user, activePropertyId]);
 
   // ── Day-one stats — computed from the live item list, always real ────────
@@ -172,7 +216,10 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
   // tick — don't re-scan the item list each time.
   const stats = useMemo(() => {
     const totalValue = display.reduce((s, d) => s + d.value, 0);
-    const pricedCount = display.filter((d) => d.unitCost > 0).length;
+    const pricedCount = display.filter((d) => d.raw.unitCost != null).length;
+    const valueComplete = display.every(
+      (d) => (d.raw.currentStock ?? 0) <= 0 || d.raw.unitCost != null,
+    );
     const uncountedCount = display.filter((d) => d.uncounted).length;
     const criticalCount = display.filter((d) => !d.uncounted && d.status === 'critical').length;
     const lowCount = display.filter((d) => !d.uncounted && d.status === 'low').length;
@@ -182,46 +229,83 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
     );
     // Value by category — custom tabs by their hotel-chosen name, built-ins by
     // their translated label. Sorted by value, zero-value groups dropped.
-    const catRows: Array<{ key: string; label: string; value: number }> = [];
-    const byKey = new Map<string, { label: string; value: number }>();
+    const catRows: Array<{ key: string; label: string; value: number; complete: boolean }> = [];
+    const byKey = new Map<string, { label: string; value: number; complete: boolean }>();
     for (const d of display) {
       const key = d.customCategoryId ?? d.cat;
       const label = d.customCategoryId
         ? customNameById.get(d.customCategoryId) ?? catLabelFor(lang, d.cat as InvCat)
         : catLabelFor(lang, d.cat as InvCat);
-      const cur = byKey.get(key) ?? { label, value: 0 };
+      const cur = byKey.get(key) ?? { label, value: 0, complete: true };
       cur.value += d.value;
+      if ((d.raw.currentStock ?? 0) > 0 && d.raw.unitCost == null) cur.complete = false;
       byKey.set(key, cur);
     }
     for (const [key, v] of byKey) if (v.value > 0) catRows.push({ key, ...v });
     catRows.sort((a, b) => b.value - a.value);
-    return { totalValue, pricedCount, uncountedCount, countedCount: display.length - uncountedCount, criticalCount, lowCount, lastCountAt, catRows };
+    return { totalValue, valueComplete, pricedCount, uncountedCount, countedCount: display.length - uncountedCount, criticalCount, lowCount, lastCountAt, catRows };
   }, [display, customNameById, lang]);
-  const { totalValue, pricedCount, uncountedCount, countedCount, criticalCount, lowCount, lastCountAt, catRows } = stats;
+  const { totalValue, valueComplete, pricedCount, uncountedCount, countedCount, criticalCount, lowCount, lastCountAt, catRows } = stats;
 
   // ── History-dependent stats — shown only when the data exists ────────────
-  const receipts = summary?.totals.receiptsValue ?? 0;
-  const discards = summary?.totals.discardsValue ?? 0;
+  // Logged receipts are purchases. They are never substituted for actual
+  // usage, and an incomplete cost subtotal is labeled instead of shown as a
+  // complete total.
+  const loggedPurchases = summary ? summary.totals.loggedPurchasesValue : 0;
+  const knownLoggedPurchases = summary?.totals.knownLoggedPurchasesValue
+    ?? summary?.totals.receiptsValue
+    ?? 0;
+  const loggedPurchaseText = loggedPurchases == null
+    ? `≥ ${fmtMoney(knownLoggedPurchases)} · ${rp.purchaseCostsMissing}`
+    : fmtMoney(loggedPurchases);
+  // The aggregate can include a live purchase preview for an open period.
+  // Only a period with a persisted usage actual has confirmed close purchases.
+  const confirmedPurchases = summary?.totals.actualUsageValue != null
+    ? summary.totals.purchasesValue
+    : null;
+  const purchaseText = confirmedPurchases != null ? fmtMoney(confirmedPurchases) : loggedPurchaseText;
+  const purchaseLabel = confirmedPurchases != null ? rp.purchasesConfirmed : rp.purchasesLogged;
+  const showLoggedReconciliation = confirmedPurchases != null && (
+    loggedPurchases == null || Math.abs(confirmedPurchases - loggedPurchases) >= 0.005
+  );
+  const actualUsage = summary?.totals.actualUsageValue ?? null;
+  const actualStatus = summary?.totals.actualStatus ?? 'pending';
+  const allocation = summary?.totals.allocation ?? 'pending';
+  const knownDiscards = summary?.totals.knownDiscardsValue
+    ?? summary?.totals.discardsValue
+    ?? 0;
+  const discardsComplete = summary?.totals.discardsComplete ?? true;
+  const discardText = `${discardsComplete ? '' : '≥ '}${fmtMoney(knownDiscards)}`;
+  const hasDiscards = knownDiscards > 0 || !discardsComplete;
   const ytd = (summary?.ytd ?? []).slice().sort((a, b) => a.monthStart.localeCompare(b.monthStart));
-  const monthsWithActivity = ytd.filter((r) => r.receiptsValue > 0 || r.discardsValue > 0);
-  const anyDeliveryEver = monthsWithActivity.length > 0 || receipts > 0;
-  const trendReady = monthsWithActivity.length >= 2;
+  const closedMonths = ytd.filter((r) => r.actualUsageValue != null && r.actualStatus !== 'pending');
+  const trendReady = closedMonths.length >= 2;
 
   const reconciliations = (summary?.byCategory ?? []).reduce(
     (s, c) => s + (c.reconciliationsThisMonth || 0),
     0,
   );
-  const shrinkage = summary?.totals.unaccountedShrinkageValue ?? 0;
-  const shrinkageReady = reconciliations > 0 || shrinkage > 0;
-  // A % of spend only exists when there IS spend — with $ loss but no
-  // deliveries this month, showing "0.0%" would be the fake number this
-  // rebuild exists to kill. In that case the $ figure becomes the headline.
-  const shrinkagePct = receipts > 0 ? Math.min(100, (shrinkage / receipts) * 100) : null;
+  const knownShrinkage = summary?.totals.knownUnaccountedShrinkageValue
+    ?? summary?.totals.unaccountedShrinkageValue
+    ?? 0;
+  const shrinkageComplete = summary?.totals.shrinkageComplete ?? true;
+  const shrinkageReady = reconciliations > 0 || knownShrinkage > 0 || !shrinkageComplete;
+  // Shrinkage is a percentage of actual usage, not of purchases. Until the
+  // month closes, keep the honest dollar loss instead of inventing a ratio.
+  const shrinkagePct = shrinkageComplete && actualStatus !== 'partial' && actualUsage != null && actualUsage > 0
+    ? Math.min(100, (knownShrinkage / actualUsage) * 100)
+    : null;
 
   // Real cost/occ-room from the server (actual occupancy) — null when the
   // hotel has no occupancy data. Never approximated client-side.
   const costPerOccRoom = summary?.costPerOccupiedRoom?.thisMonth ?? null;
   const occNights = summary?.costPerOccupiedRoom?.occupiedNightsThisMonth ?? 0;
+  const reportMonthKey = inventoryReportMonthKey(
+    summary?.monthKey,
+    summary?.monthStart,
+    timezone,
+  );
+  const reportMonthLabel = formatInventoryMonthKey(reportMonthKey, lang === 'es' ? 'es' : 'en');
 
 
   return (
@@ -230,7 +314,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
       onClose={onClose}
       eyebrow={rp.eyebrow}
       italic={rp.italic}
-      suffix={`${currentMonthLabel(lang)}, ${rp.mtd}`}
+      suffix={`${reportMonthLabel}, ${rp.mtd}`}
       width={1080}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -238,7 +322,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
           <KPI
             eyebrow={rp.inventoryValue}
-            value={fmtMoney(totalValue)}
+            value={`${valueComplete ? '' : '≥ '}${fmtMoney(totalValue)}`}
             cohort={{
               left: `${display.length} ${rp.skus}`,
               right: pricedCount < display.length
@@ -268,7 +352,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
           />
         </div>
 
-        {/* Row 2 — value by category + this-month spend */}
+        {/* Row 2 — shelf value by category + monthly actual/purchases */}
         <div style={{ display: 'grid', gridTemplateColumns: '1.4fr 1fr', gap: 10 }}>
           <Card title={rp.valueByCategory}>
             {catRows.length === 0 ? (
@@ -285,7 +369,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
                       }}>
                         <span>{c.label}</span>
                         <span style={{ fontFamily: fonts.mono, fontSize: 12, color: T.ink2 }}>
-                          {fmtMoney(c.value)}
+                          {c.complete ? fmtMoney(c.value) : `≥ ${fmtMoney(c.value)}`}
                         </span>
                       </div>
                       <div style={{ height: 6, borderRadius: 6, background: T.ruleSoft, overflow: 'hidden' }}>
@@ -303,29 +387,51 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
           <Card title={rp.thisMonth}>
             {loading && !summary ? (
               <EmptyText>{rp.loading}</EmptyText>
-            ) : anyDeliveryEver ? (
+            ) : loadFailed && !summary ? (
+              <EmptyText>{rp.loadFailed}</EmptyText>
+            ) : actualUsage != null ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ fontFamily: fonts.sans, fontSize: 34, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>
-                  {fmtMoney(receipts)}
+                  {fmtMoney(actualUsage)}
                 </div>
                 <div style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-                  {rp.deliveriesReceived}
-                  {discards > 0 ? ` · ${fmtMoney(discards)} ${rp.thrownOut}` : ''}
+                  {actualStatus === 'partial' ? rp.partialActual : rp.actualUsed}
+                  {allocation === 'total_only' ? ` · ${rp.totalOnlyActual}` : ''}
                 </div>
+                <div style={{ paddingTop: 8, borderTop: `1px solid ${T.ruleSoft}`, fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
+                  {purchaseLabel}: {purchaseText}
+                  {hasDiscards ? ` · ${discardText} ${rp.thrownOut}` : ''}
+                </div>
+                {showLoggedReconciliation && (
+                  <div style={{ fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
+                    {rp.loggedDeliverySubtotal}: {loggedPurchaseText}
+                  </div>
+                )}
               </div>
             ) : (
-              <EmptyText>{rp.noDeliveriesYet}</EmptyText>
+              <div role="status" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontFamily: fonts.sans, fontSize: 21, fontWeight: 600, color: T.ink }}>
+                  {rp.usagePending}
+                </div>
+                <EmptyText>{rp.pendingNote}</EmptyText>
+                <div style={{ paddingTop: 8, borderTop: `1px solid ${T.ruleSoft}`, fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
+                  {knownLoggedPurchases > 0 || loggedPurchases == null
+                    ? `${rp.purchasesLogged}: ${loggedPurchaseText}`
+                    : rp.noDeliveriesYet}
+                  {hasDiscards ? ` · ${discardText} ${rp.thrownOut}` : ''}
+                </div>
+              </div>
             )}
           </Card>
         </div>
 
-        {/* Row 3 — spend trend: real chart once ≥2 months have activity.
+        {/* Row 3 — usage trend: real chart once ≥2 months are closed.
             Feed ALL months (zero months included) so gaps show as gaps — two
             spikes five months apart must not render as adjacent bars. */}
         {trendReady ? (
           <MonthlyChart ytd={ytd} rp={rp} lang={lang} />
         ) : (
-          <ComingSoonCard title={rp.spendByMonth} note={rp.trendSoon} soon={rp.comingSoon} />
+          <ComingSoonCard title={rp.usageByMonth} note={rp.trendSoon} soon={rp.comingSoon} />
         )}
 
         {/* Row 4 — shrinkage + cost/occ-room: real when computable, honest otherwise */}
@@ -333,10 +439,12 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById }: R
           {shrinkageReady ? (
             <KPI
               eyebrow={rp.shrinkageRate}
-              value={shrinkagePct != null ? `${shrinkagePct.toFixed(1)}%` : fmtMoney(shrinkage)}
+              value={shrinkagePct != null
+                ? `${shrinkagePct.toFixed(1)}%`
+                : `${shrinkageComplete ? '' : '≥ '}${fmtMoney(knownShrinkage)}`}
               cohort={shrinkagePct != null
-                ? { left: fmtMoney(shrinkage), right: rp.mtdLoss }
-                : { left: rp.mtdLoss, right: '' }}
+                ? { left: fmtMoney(knownShrinkage), right: rp.mtdLoss }
+                : { left: rp.mtdLoss, right: shrinkageComplete ? '' : rp.lossCostsMissing }}
             />
           ) : (
             <ComingSoonCard title={rp.shrinkageRate} note={rp.shrinkageSoon} soon={rp.comingSoon} />
@@ -485,7 +593,8 @@ function KPI({
 
 function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof rpStrings>; lang: Lang }) {
   const data = ytd.slice(-7);
-  const max = data.length > 0 ? Math.max(...data.map((d) => d.receiptsValue || 0), 1) : 1;
+  const max = data.length > 0 ? Math.max(...data.map((d) => d.actualUsageValue ?? 0), 1) : 1;
+  const hasPartial = data.some((d) => d.actualStatus === 'partial' || d.isPartial);
   return (
     <div
       style={{
@@ -508,7 +617,7 @@ function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof 
               fontWeight: 600,
             }}
           >
-            <span>{rp.spendByMonth}</span>
+            <span>{rp.usageByMonth}</span>
             <span style={{ color: T.ink3 }}>{rp.lastNMonths(data.length)}</span>
           </h3>
         </div>
@@ -524,12 +633,17 @@ function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof 
         }}
       >
         {data.map((d, i) => {
-          const sH = (Math.max(0, d.receiptsValue) / max) * 150;
+          const value = d.actualUsageValue;
+          const sH = (Math.max(0, value ?? 0) / max) * 150;
           const cur = i === data.length - 1;
           const monthLabel = shortMonthFromYmd(d.monthStart, lang);
+          const partial = d.actualStatus === 'partial' || d.isPartial;
           return (
             <div
               key={d.monthStart}
+              aria-label={value == null
+                ? `${monthLabel}: ${rp.usagePending}`
+                : `${monthLabel}: ${fmtMoney(value)}${partial ? `, ${rp.partialActual}` : ''}`}
               style={{
                 display: 'flex',
                 flexDirection: 'column',
@@ -543,8 +657,10 @@ function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof 
                 <span
                   style={{
                     width: 28,
-                    height: sH,
-                    background: cur ? T.sageDeep : `${T.sageDeep}66`,
+                    height: value == null ? 2 : Math.max(2, sH),
+                    background: value == null
+                      ? T.rule
+                      : (cur ? T.sageDeep : `${T.sageDeep}66`),
                     borderRadius: '4px 4px 0 0',
                   }}
                 />
@@ -558,12 +674,17 @@ function MonthlyChart({ ytd, rp, lang }: { ytd: YtdRow[]; rp: ReturnType<typeof 
                   textTransform: 'uppercase',
                 }}
               >
-                {monthLabel}
+                {monthLabel}{partial ? '∗' : ''}
               </span>
             </div>
           );
         })}
       </div>
+      {hasPartial && (
+        <div style={{ marginTop: 10, fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3 }}>
+          {rp.partialTrendNote}
+        </div>
+      )}
     </div>
   );
 }

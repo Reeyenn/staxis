@@ -7,7 +7,7 @@
 import type { InventoryCategory } from '@/types';
 
 export interface FrozenInventoryItemCreateAttempt {
-  version: 2;
+  version: 3;
   propertyId: string;
   requestId: string;
   itemId: string;
@@ -19,6 +19,7 @@ export interface FrozenInventoryItemCreateAttempt {
   unitCostInput: string;
   vendorInput: string;
   includeUnitCost: boolean;
+  openingAdjustmentConfirmed: boolean;
   name: string;
   category: InventoryCategory;
   customCategoryId: string | null;
@@ -79,6 +80,7 @@ export function createFrozenInventoryItemAttempt(input: {
   vendorInput: string;
   vendorId: string | null;
   includeUnitCost: boolean;
+  openingAdjustmentConfirmed: boolean;
 }): FrozenInventoryItemCreateAttempt {
   const propertyId = input.propertyId.trim();
   const requestId = input.requestId.trim();
@@ -100,8 +102,19 @@ export function createFrozenInventoryItemAttempt(input: {
     && parsedCost >= 0
     ? parsedCost
     : null;
+  const currentStock = finiteNonnegative(input.currentStockInput);
+  const setAside = finiteNonnegativeInteger(input.setAsideInput);
+  if (setAside > currentStock) {
+    throw new Error('Set-aside quantity cannot exceed on-hand stock.');
+  }
+  if (currentStock > 0 && !input.openingAdjustmentConfirmed) {
+    throw new Error('Positive starting stock must be confirmed as pre-existing opening inventory.');
+  }
+  if (currentStock > 0 && unitCost == null) {
+    throw new Error('A unit cost is required to value pre-existing opening inventory.');
+  }
   return {
-    version: 2,
+    version: 3,
     propertyId,
     requestId,
     itemId,
@@ -113,11 +126,12 @@ export function createFrozenInventoryItemAttempt(input: {
     unitCostInput: input.unitCostInput,
     vendorInput: input.vendorInput,
     includeUnitCost: input.includeUnitCost,
+    openingAdjustmentConfirmed: currentStock > 0 && input.openingAdjustmentConfirmed,
     name,
     category: input.category,
     customCategoryId: input.customCategoryId,
-    currentStock: finiteNonnegative(input.currentStockInput),
-    setAside: finiteNonnegativeInteger(input.setAsideInput),
+    currentStock,
+    setAside,
     parLevel: finiteNonnegative(input.parLevelInput),
     unitCost,
     vendorName: input.vendorInput.trim() || null,
@@ -126,9 +140,10 @@ export function createFrozenInventoryItemAttempt(input: {
 }
 
 /**
- * Upgrade a valid V1 retry in memory instead of dropping it. The original
- * request and item ids must survive: an insert may already have committed even
- * when its response was lost, and reusing those ids keeps the retry idempotent.
+ * Canonicalize every retry envelope that has shipped. V1 predates opening
+ * adjustments and Set Aside; V2 adds opening-adjustment provenance; V3 adds
+ * Set Aside. Migrating in memory preserves the original item/request ids, so
+ * an ambiguous older insert remains safe to retry instead of being dropped.
  */
 function normalizeFrozenAttempt(
   value: unknown,
@@ -138,25 +153,26 @@ function normalizeFrozenAttempt(
   const x = value as Record<string, unknown>;
   const version = x.version;
   if (
-    (version !== 1 && version !== 2)
+    (version !== 1 && version !== 2 && version !== 3)
     || x.propertyId !== propertyId
     || typeof x.requestId !== 'string'
     || typeof x.itemId !== 'string'
     || typeof x.startedAt !== 'string'
     || typeof x.nameInput !== 'string'
     || typeof x.currentStockInput !== 'string'
-    || (version === 2 && typeof x.setAsideInput !== 'string')
+    || (version === 3 && typeof x.setAsideInput !== 'string')
     || typeof x.parLevelInput !== 'string'
     || typeof x.unitCostInput !== 'string'
     || typeof x.vendorInput !== 'string'
     || typeof x.includeUnitCost !== 'boolean'
+    || (version >= 2 && typeof x.openingAdjustmentConfirmed !== 'boolean')
     || typeof x.name !== 'string'
     || !['housekeeping', 'maintenance', 'breakfast'].includes(String(x.category))
     || (x.customCategoryId !== null && typeof x.customCategoryId !== 'string')
     || typeof x.currentStock !== 'number'
     || !Number.isFinite(x.currentStock)
     || x.currentStock < 0
-    || (version === 2 && (
+    || (version === 3 && (
       typeof x.setAside !== 'number'
       || !Number.isInteger(x.setAside)
       || x.setAside < 0
@@ -170,9 +186,11 @@ function normalizeFrozenAttempt(
     || Number.isNaN(new Date(x.startedAt).getTime())
   ) return null;
 
-  // Legacy V1 envelopes had neither Set Aside key. Reject a partially
-  // upgraded payload instead of guessing at a value after an ambiguous write.
-  if (version === 1 && ('setAsideInput' in x || 'setAside' in x)) return null;
+  // Reject hybrid/partially upgraded payloads. A legacy retry had no Set
+  // Aside keys at all, so accepting one key without the other would break the
+  // exact-payload guarantee.
+  if (version < 3 && ('setAsideInput' in x || 'setAside' in x)) return null;
+  if (version === 1 && 'openingAdjustmentConfirmed' in x) return null;
 
   const parsedCost = x.unitCostInput.trim() === '' ? null : Number(x.unitCostInput);
   const canonicalCost = x.includeUnitCost
@@ -181,23 +199,29 @@ function normalizeFrozenAttempt(
     && parsedCost >= 0
     ? parsedCost
     : null;
-  const setAsideInput = version === 2 ? x.setAsideInput as string : '0';
+  const currentStock = finiteNonnegative(x.currentStockInput);
+  const openingAdjustmentConfirmed = version >= 2
+    ? x.openingAdjustmentConfirmed as boolean
+    : false;
+  const setAsideInput = version === 3 ? x.setAsideInput as string : '0';
   const valid = x.requestId === x.requestId.trim()
     && x.requestId.length > 0
     && x.itemId === x.itemId.trim()
     && x.itemId.length > 0
     && x.name === x.nameInput.trim()
     && x.name.length > 0
-    && x.currentStock === finiteNonnegative(x.currentStockInput)
-    && (version === 1 || x.setAside === finiteNonnegativeInteger(setAsideInput))
+    && x.currentStock === currentStock
+    && (version < 3 || x.setAside === finiteNonnegativeInteger(setAsideInput))
     && x.parLevel === finiteNonnegative(x.parLevelInput)
+    && (version === 1 || openingAdjustmentConfirmed === (currentStock > 0))
+    && (version === 1 || currentStock === 0 || canonicalCost != null)
     && x.vendorName === (x.vendorInput.trim() || null)
     && x.unitCost === canonicalCost;
   if (!valid) return null;
 
   return {
-    version: 2,
-    propertyId,
+    version: 3,
+    propertyId: x.propertyId,
     requestId: x.requestId,
     itemId: x.itemId,
     startedAt: x.startedAt,
@@ -208,11 +232,12 @@ function normalizeFrozenAttempt(
     unitCostInput: x.unitCostInput,
     vendorInput: x.vendorInput,
     includeUnitCost: x.includeUnitCost,
+    openingAdjustmentConfirmed,
     name: x.name,
     category: x.category as InventoryCategory,
     customCategoryId: x.customCategoryId,
-    currentStock: x.currentStock,
-    setAside: version === 2 ? x.setAside as number : 0,
+    currentStock,
+    setAside: version === 3 ? x.setAside as number : 0,
     parLevel: x.parLevel,
     unitCost: x.unitCost,
     vendorName: x.vendorName,

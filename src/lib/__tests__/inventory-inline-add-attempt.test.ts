@@ -31,6 +31,7 @@ const attempt = createFrozenInlineAddAttempt({
   quantityInput: '05.0',
   parInput: '20',
   costInput: '1.25',
+  openingAdjustmentConfirmed: true,
 });
 
 describe('CountSheet durable inline add', () => {
@@ -41,8 +42,29 @@ describe('CountSheet durable inline add', () => {
     assert.equal(attempt.quantity, 5);
     assert.equal(attempt.parLevel, 20);
     assert.equal(attempt.unitCost, 1.25);
+    assert.equal(attempt.openingAdjustmentConfirmed, true);
     assert.equal(attempt.category, 'housekeeping');
     assert.equal(inlineAddAttemptMarker(attempt.requestId), 'staxis:inline-count-add:request-a');
+  });
+
+  test('will not classify positive discovered stock without confirmation and cost', () => {
+    const base = {
+      propertyId: 'property-a', requestId: 'request-b',
+      startedAt: '2026-07-15T19:00:00.000Z', scope: 'all' as const,
+      nameInput: 'Soap', quantityInput: '3', parInput: '5', costInput: '2',
+    };
+    assert.throws(
+      () => createFrozenInlineAddAttempt({ ...base, openingAdjustmentConfirmed: false }),
+      /pre-existing opening inventory/i,
+    );
+    assert.throws(
+      () => createFrozenInlineAddAttempt({
+        ...base,
+        costInput: '',
+        openingAdjustmentConfirmed: true,
+      }),
+      /unit cost/i,
+    );
   });
 
   test('survives remount with the same request marker and form values', () => {

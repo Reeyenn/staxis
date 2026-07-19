@@ -1,17 +1,17 @@
 /**
  * /api/inventory/accounting-summary — month-level financial summary for the
- * in-app accounting view. Computes opening / receipts / discards / closing
- * by category, plus YTD trend and budget vs actual.
+ * in-app accounting view. Keeps logged purchases separate from immutable
+ * monthly beginning / ending / actual-usage snapshots.
  *
  * Strategy: replace the email-spreadsheet-to-accountant workflow. Hotels do
  * accounting inside Staxis. M3 stays as a secondary system Hilton-mandated
  * properties still feed; the source-of-truth math lives here.
  *
  * Query: GET ?propertyId=<uuid>&month=YYYY-MM
- *   Defaults month to the current UTC month if missing.
+ *   Defaults to the current month in the authorized property's timezone.
  *
  * Auth: requireFinanceAccess — owner / GM / admin only, per-hotel view_financials
- * honored, plus property scope. This endpoint exposes budget + spend dollars, so
+ * honored, plus property scope. This endpoint exposes budget + inventory dollars, so
  * it rides the SAME money gate as /api/financials/* (line staff are denied here
  * before any aggregation runs). Switched off the old requireSession +
  * userHasPropertyAccess gate, which had no money capability — line staff could
@@ -55,33 +55,44 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // Month boundaries follow the caller's IANA time zone (`tz`, sent by the
-  // Reports panel) so this page and the Budgets overlay agree on which month
-  // an order received near midnight on the 1st belongs to. No/invalid tz →
-  // UTC, the legacy behavior.
-  const tzParam = url.searchParams.get('tz');
-  let tz = 'UTC';
-  if (tzParam && tzParam.length <= 64) {
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: tzParam });
-      tz = tzParam;
-    } catch { /* unknown zone → UTC */ }
-  }
-
-  // Resolve the month: the page sends YYYY-MM; default to "this month" as the
-  // caller's clock sees it, anchored to day 1.
-  const nowParts = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit' })
-    .format(new Date()); // "YYYY-MM"
-  const month = monthParam ?? nowParts;
-  const [yearStr, mStr] = month.split('-');
-  const window = localMonthWindowUTC(Number(yearStr), Number(mStr), tz);
-
   try {
+    // Financial periods belong to the hotel, not to the browser. Never trust
+    // a caller-controlled `tz` query to move a delivery into another month.
+    const { data: property, error: propertyError } = await supabaseAdmin
+      .from('properties')
+      .select('timezone')
+      .eq('id', gate.pid)
+      .maybeSingle();
+    if (propertyError) throw propertyError;
+    let tz = (property as { timezone?: string | null } | null)?.timezone ?? 'UTC';
+    try {
+      new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
+    } catch {
+      tz = 'UTC';
+    }
+
+    const nowParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      year: 'numeric',
+      month: '2-digit',
+    }).formatToParts(new Date());
+    const nowYear = nowParts.find((part) => part.type === 'year')?.value;
+    const nowMonth = nowParts.find((part) => part.type === 'month')?.value;
+    const utcNow = new Date();
+    const fallbackYear = String(utcNow.getUTCFullYear());
+    const fallbackMonth = String(utcNow.getUTCMonth() + 1).padStart(2, '0');
+    const month = monthParam ?? `${nowYear ?? fallbackYear}-${nowMonth ?? fallbackMonth}`;
+    const [yearStr, mStr] = month.split('-');
+    const window = localMonthWindowUTC(Number(yearStr), Number(mStr), tz);
     const summary = await getInventoryAccountingSummary(supabaseAdmin, gate.pid, window.start, {
       endExclusive: window.endExclusive,
       budgetMonthKey: window.budgetMonthKey,
+      timeZone: tz,
     });
-    return ok(summary, { requestId: gate.requestId });
+    // Keep the property's accounting month explicit. `summary.monthStart`
+    // serializes as a UTC timestamp and can be on the prior UTC date for
+    // positive-offset hotels, so clients must not infer the label by slicing.
+    return ok({ ...summary, monthKey: month }, { requestId: gate.requestId });
   } catch (e) {
     // Log the detail server-side; don't leak PostgREST table/column/constraint
     // names to the client (matches scan-invoice's hardening). (Audit fix 2026-06-18.)

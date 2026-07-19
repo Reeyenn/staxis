@@ -21,7 +21,7 @@
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { getInventoryAccountingSummary } from '@/lib/db/inventory-accounting';
+import { getInventoryAccountingSummary, localMonthWindowUTC } from '@/lib/db/inventory-accounting';
 import { ACTIVITY_CATEGORIES } from '@/lib/activity-log/types';
 import type {
   ReportColumn,
@@ -35,11 +35,15 @@ import {
   getPropertyMeta,
   getStaffNameMap,
   groupBy,
-  monthStartUtc,
   round,
   sum,
   utcBoundsForLocalRange,
 } from './helpers';
+import {
+  aggregateInventoryUsageRange,
+  planInventoryUsageRange,
+  type InventoryUsagePeriod,
+} from './inventory-usage-range';
 
 // ─── column helpers ──────────────────────────────────────────────────────────
 const col = (
@@ -369,41 +373,143 @@ const workOrdersSummary: ReportDefinition = {
 
 const inventorySpend: ReportDefinition = {
   key: 'inventory-spend',
-  title: { en: 'Inventory spend', es: 'Gasto de inventario' },
+  title: { en: 'Inventory usage', es: 'Uso de inventario' },
   description: {
-    en: 'Month spend vs budget by category (the accounting summary).',
-    es: 'Gasto mensual vs. presupuesto por categoría (resumen contable).',
+    en: 'Closed monthly usage vs budget, with purchases shown separately.',
+    es: 'Uso mensual cerrado vs. presupuesto, con las compras por separado.',
   },
   category: 'inventory',
   defaultRange: 'mtd',
   run: async (ctx): Promise<ReportRunResult> => {
-    // Month-based report: use the month containing the range end.
-    const monthStart = monthStartUtc(ctx.to);
-    const summary = await getInventoryAccountingSummary(supabaseAdmin, ctx.propertyId, monthStart);
-    const out: ReportRow[] = summary.byCategory.map((c) => ({
-      category: c.category.charAt(0).toUpperCase() + c.category.slice(1),
-      spend: c.spendCents,
-      budget: c.budgetCents,
-      remaining: c.remainingCents,
-      discards: Math.round(c.discardsValue * 100),
+    // Usage is an immutable calendar-month fact. Consume only months fully
+    // enclosed by the selected range; never widen Last 7 / Last 30 / custom to
+    // the entire month containing `to`, and never prorate a monthly close.
+    const plan = planInventoryUsageRange(ctx.from, ctx.to);
+    const periods: InventoryUsagePeriod[] = await Promise.all(plan.fullMonths.map(async (monthKey) => {
+      const [year, month] = monthKey.split('-').map(Number);
+      const window = localMonthWindowUTC(year, month, ctx.timezone);
+      const summary = await getInventoryAccountingSummary(
+        supabaseAdmin,
+        ctx.propertyId,
+        window.start,
+        { ...window, timeZone: ctx.timezone },
+      );
+      const totals = summary.totals;
+      return {
+        month: monthKey,
+        actualStatus: totals.actualStatus,
+        actualCents: totals.actualUsageValue == null ? null : Math.round(totals.actualUsageValue * 100),
+        allocation: totals.allocation,
+        isPartial: totals.isPartial,
+        hasCustomBudgetAllocation: totals.hasCustomBudgetAllocation,
+        budgetComparisonAvailable: totals.budgetComparisonAvailable,
+        purchasesCents: totals.purchasesValue == null ? null : Math.round(totals.purchasesValue * 100),
+        knownPurchasesCents: Math.round(totals.knownLoggedPurchasesValue * 100),
+        budgetCents: totals.budgetCents,
+        discardsCents: totals.discardsValue == null ? null : Math.round(totals.discardsValue * 100),
+        knownDiscardsCents: Math.round(totals.knownDiscardsValue * 100),
+        discardsComplete: totals.discardsComplete,
+        categories: summary.byCategory.map((category) => ({
+          category: category.category,
+          actualCents: category.actualUsageCents,
+          purchasesCents: Math.round(category.receiptsValue * 100),
+          budgetCents: category.budgetCents,
+          discardsCents: category.discardsValue == null ? null : Math.round(category.discardsValue * 100),
+          knownDiscardsCents: Math.round(category.knownDiscardsValue * 100),
+          discardsComplete: category.discardsComplete,
+        })),
+      };
     }));
+    const aggregate = aggregateInventoryUsageRange(plan, periods);
+    const statusParts = aggregate.closedMonths === 0
+      ? [aggregate.expectedMonths === 0 ? 'No full month in range' : 'Pending close']
+      : [`${aggregate.closedMonths} closed ${aggregate.closedMonths === 1 ? 'month' : 'months'}`];
+    if (aggregate.pendingMonths > 0) statusParts.push(`${aggregate.pendingMonths} pending`);
+    if (aggregate.partialTrackingPeriods > 0) statusParts.push('partial tracking included');
+    if (aggregate.totalOnlyPeriods > 0) statusParts.push('total only');
+    if (aggregate.customAllocationPeriods > 0) statusParts.push('custom sections');
+    if (!aggregate.discardsComplete && aggregate.closedMonths > 0) statusParts.push('discard costs incomplete');
+    const status = statusParts.join(' · ');
+    const money = (cents: number | null): string => cents == null ? '—' : `$${(cents / 100).toFixed(2)}`;
+    const out: ReportRow[] = aggregate.categoryRowsAvailable
+      ? aggregate.categories.map((category) => ({
+          category: category.category.charAt(0).toUpperCase() + category.category.slice(1),
+          actualUsed: category.actualCents,
+          purchases: category.purchasesCents,
+          budget: category.budgetCents,
+          remaining: category.remainingCents,
+          discards: category.discardsComplete
+            ? category.discardsCents
+            : `≥ ${money(category.knownDiscardsCents)}`,
+          status,
+        }))
+      : [{
+          category: 'All inventory',
+          actualUsed: aggregate.actualCents,
+          purchases: aggregate.purchasesCents,
+          budget: aggregate.budgetCents,
+          remaining: aggregate.remainingCents,
+          discards: aggregate.discardsComplete
+            ? aggregate.discardsCents
+            : `≥ ${money(aggregate.knownDiscardsCents)}`,
+          status,
+        }];
+    const purchaseStat = aggregate.purchasesCents != null
+      ? money(aggregate.purchasesCents)
+      : aggregate.closedMonths > 0 && aggregate.knownPurchasesCents > 0
+        ? `Incomplete (≥${money(aggregate.knownPurchasesCents)})`
+        : '—';
+    const coverageEn = aggregate.expectedMonths === 0
+      ? `The selected range (${ctx.from} through ${ctx.to}) contains no complete calendar month. Monthly usage is not prorated; intersecting edge months are excluded.`
+      : aggregate.closedMonths === 0
+        ? `No fully covered month in ${ctx.from} through ${ctx.to} has a completed inventory close yet.`
+        : `Includes ${aggregate.closedMonths} closed ${aggregate.closedMonths === 1 ? 'month' : 'months'} fully covered by ${ctx.from} through ${ctx.to}.`;
+    const coverageEs = aggregate.expectedMonths === 0
+      ? `El rango seleccionado (${ctx.from} a ${ctx.to}) no contiene un mes calendario completo. El uso mensual no se prorratea; se excluyen los meses parciales de los extremos.`
+      : aggregate.closedMonths === 0
+        ? `Ningún mes completo dentro de ${ctx.from} a ${ctx.to} tiene todavía un cierre de inventario terminado.`
+        : `Incluye ${aggregate.closedMonths} ${aggregate.closedMonths === 1 ? 'mes cerrado' : 'meses cerrados'} cubiertos por completo entre ${ctx.from} y ${ctx.to}.`;
+    const caveatsEn = [
+      aggregate.pendingMonths > 0 ? `${aggregate.pendingMonths} fully covered ${aggregate.pendingMonths === 1 ? 'month is' : 'months are'} still pending close and omitted.` : '',
+      aggregate.partialEdgeMonths > 0 ? `${aggregate.partialEdgeMonths} edge ${aggregate.partialEdgeMonths === 1 ? 'month was' : 'months were'} partial and omitted.` : '',
+      aggregate.partialTrackingPeriods > 0 ? 'Partial first-period usage is included but is not compared with a full-month budget.' : '',
+      aggregate.customAllocationPeriods > 0 ? 'Custom budget allocation is combined into All inventory rather than forced into app categories.' : '',
+      !aggregate.discardsComplete && aggregate.closedMonths > 0 ? 'Some discard costs are missing; the report shows a known minimum instead of an exact total.' : '',
+      aggregate.closedMonths > 0 ? 'Actual usage = beginning inventory + confirmed purchases − ending inventory.' : '',
+    ].filter(Boolean).join(' ');
+    const caveatsEs = [
+      aggregate.pendingMonths > 0 ? `${aggregate.pendingMonths} ${aggregate.pendingMonths === 1 ? 'mes completo sigue pendiente' : 'meses completos siguen pendientes'} de cierre y se omiten.` : '',
+      aggregate.partialEdgeMonths > 0 ? `Se ${aggregate.partialEdgeMonths === 1 ? 'omitió 1 mes parcial' : `omitieron ${aggregate.partialEdgeMonths} meses parciales`} en los extremos.` : '',
+      aggregate.partialTrackingPeriods > 0 ? 'Se incluye el uso del primer período parcial, pero no se compara con un presupuesto mensual completo.' : '',
+      aggregate.customAllocationPeriods > 0 ? 'La asignación presupuestaria personalizada se combina en Todo el inventario en vez de forzarla a categorías de la aplicación.' : '',
+      !aggregate.discardsComplete && aggregate.closedMonths > 0 ? 'Faltan algunos costos de descartes; el informe muestra un mínimo conocido en vez de un total exacto.' : '',
+      aggregate.closedMonths > 0 ? 'Uso real = inventario inicial + compras confirmadas − inventario final.' : '',
+    ].filter(Boolean).join(' ');
     return {
       columns: [
         col('category', 'Category', 'Categoría'),
-        col('spend', 'Spend', 'Gasto', 'currency'),
+        col('actualUsed', 'Actual used', 'Uso real', 'currency'),
+        col('purchases', 'Purchases', 'Compras', 'currency'),
         col('budget', 'Budget', 'Presupuesto', 'currency'),
         col('remaining', 'Remaining', 'Restante', 'currency'),
         col('discards', 'Discards', 'Descartes', 'currency'),
+        col('status', 'Close status', 'Estado del cierre'),
       ],
       rows: out,
       stats: [
-        { label: { en: 'Total spend', es: 'Gasto total' }, value: `$${(summary.totals.spendCents / 100).toFixed(2)}` },
-        { label: { en: 'Budget', es: 'Presupuesto' }, value: summary.totals.budgetCents == null ? '—' : `$${(summary.totals.budgetCents / 100).toFixed(2)}` },
-        { label: { en: 'Discards', es: 'Descartes' }, value: `$${summary.totals.discardsValue.toFixed(2)}` },
+        { label: { en: 'Actual used', es: 'Uso real' }, value: money(aggregate.actualCents) },
+        { label: { en: 'Purchases', es: 'Compras' }, value: purchaseStat },
+        { label: { en: 'Budget', es: 'Presupuesto' }, value: money(aggregate.budgetCents) },
+        {
+          label: { en: 'Discards', es: 'Descartes' },
+          value: aggregate.discardsComplete
+            ? money(aggregate.discardsCents)
+            : `≥ ${money(aggregate.knownDiscardsCents)}`,
+        },
       ],
       notes: {
-        en: `Covers the calendar month of ${ctx.to.slice(0, 7)} (spend = stock received this month).`,
-        es: `Cubre el mes calendario de ${ctx.to.slice(0, 7)} (gasto = inventario recibido este mes).`,
+        en: `${coverageEn}${caveatsEn ? ` ${caveatsEn}` : ''}`,
+        es: `${coverageEs}${caveatsEs ? ` ${caveatsEs}` : ''}`,
       },
     };
   },

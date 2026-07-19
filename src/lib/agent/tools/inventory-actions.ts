@@ -7,13 +7,14 @@
 //                    with the 70/30-style Good/Low/Critical thresholds the
 //                    Inventory tab uses. Chat + general voice.
 //   adjust_stock   — MUTATION (card): set an item's on-hand count, and
-//                    optionally record that an order was placed for it.
+//                    optionally stamp an order-intent timestamp. The marker is
+//                    not a purchase order, delivery, or accounting entry.
 //
 // Data model (confirmed, do NOT invent tables):
 //   inventory(id, property_id, name, category, current_stock, par_level,
 //             reorder_at, unit, last_counted_at, last_ordered_at, …)
-//   inventory_orders(property_id, item_id, item_name, quantity, ordered_at,
-//                    received_at, notes, …) — the restock ledger (DOLLARS).
+//   inventory_orders is the received-delivery ledger. `markOrdered` must never
+//   write there: purchase cost belongs only to a delivery actually received.
 //
 // Status classification mirrors src/app/inventory/_components/format.ts
 // `ratioStatus`: ratio = current/par; <0.5 critical, <1.0 low, else good.
@@ -28,7 +29,7 @@
 // ADDITIVE + self-registering — add `import './inventory-actions';` to index.ts.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { ASSISTANT_COUNT_NOTE, ASSISTANT_ORDER_NOTE } from '@/lib/inventory-note-tags';
+import { ASSISTANT_COUNT_NOTE } from '@/lib/inventory-note-tags';
 import { registerTool, type ToolResult, type ToolContext } from '../tools';
 
 const INVENTORY_CATEGORIES = ['housekeeping', 'maintenance', 'breakfast'] as const;
@@ -154,23 +155,21 @@ interface AdjustStockArgs {
   itemName: string;
   newCount?: number;
   markOrdered?: boolean;
-  orderQuantity?: number;
 }
 
 registerTool<AdjustStockArgs>({
   name: 'adjust_stock',
   section: 'inventory',
   description:
-    'Update an inventory item\'s on-hand count and/or record that an order was placed for it. Use for "we have 40 rolls of toilet paper now", "set towels to 120", "mark the pillowcases as ordered", "pedí 2 cajas de jabón". ' +
-    'itemName = the item (a partial name is fine if unique). Set newCount to the CURRENT on-hand quantity (not a delta). Set markOrdered=true to log that an order was placed; orderQuantity is how many were ordered. ' +
+    'Update an inventory item\'s on-hand count and/or mark order intent for it. Use for "we have 40 rolls of toilet paper now", "set towels to 120", or "mark the pillowcases as ordered". ' +
+    'itemName = the item (a partial name is fine if unique). Set newCount to the CURRENT on-hand quantity (not a delta). Set markOrdered=true only to stamp last_ordered_at as an operational reminder. It does not create a purchase order, log a delivery, or add purchase cost. ' +
     'At least one of newCount or markOrdered is required. Managers and front desk only.',
   inputSchema: {
     type: 'object',
     properties: {
       itemName: { type: 'string', description: 'Which item — its name (partial is fine if unique).' },
       newCount: { type: 'number', description: 'The new CURRENT on-hand count (absolute, not a change).' },
-      markOrdered: { type: 'boolean', description: 'When true, records that an order was placed for this item.' },
-      orderQuantity: { type: 'number', description: 'How many units were ordered (only used with markOrdered).' },
+      markOrdered: { type: 'boolean', description: 'When true, stamps an order-intent timestamp only. No delivery, purchase, quantity, or cost is logged.' },
     },
     required: ['itemName'],
   },
@@ -178,11 +177,11 @@ registerTool<AdjustStockArgs>({
   requiresCapability: 'manage_inventory_orders',
   mutates: true,
   approval: 'card',
-  handler: async ({ itemName, newCount, markOrdered, orderQuantity }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ itemName, newCount, markOrdered }, ctx: ToolContext): Promise<ToolResult> => {
     const wantsCount = typeof newCount === 'number' && Number.isFinite(newCount);
     const wantsOrder = markOrdered === true;
     if (!wantsCount && !wantsOrder) {
-      return { ok: false, error: 'Tell me the new count, or that the item was ordered — there\'s nothing to change otherwise.' };
+      return { ok: false, error: 'Tell me the new count, or ask me to mark order intent — there\'s nothing to change otherwise.' };
     }
     if (wantsCount && (newCount as number) < 0) {
       return { ok: false, error: 'The stock count can\'t be negative.' };
@@ -199,11 +198,25 @@ registerTool<AdjustStockArgs>({
     }
     const item = res.item;
     const count = wantsCount ? Math.round(Number(newCount)) : null;
-    const orderQty = typeof orderQuantity === 'number' && Number.isFinite(orderQuantity) && orderQuantity > 0
-      ? Math.round(orderQuantity) : null;
+    const orderIntentNote = wantsOrder
+      ? 'Order intent timestamp saved only. No delivery or purchase was logged.'
+      : null;
 
     if (ctx.dryRun) {
-      return { ok: true, data: { dryRun: true, itemName: item.name, newCount: count, markedOrdered: wantsOrder, orderQuantity: orderQty } };
+      return {
+        ok: true,
+        data: {
+          dryRun: true,
+          itemName: item.name,
+          newCount: count,
+          wouldRecordOrderIntent: wantsOrder,
+          deliveryLogged: false,
+          purchaseLogged: false,
+          note: wantsOrder
+            ? 'Would save an order-intent timestamp only. No delivery or purchase would be logged.'
+            : null,
+        },
+      };
     }
 
     const nowIso = new Date().toISOString();
@@ -227,28 +240,23 @@ registerTool<AdjustStockArgs>({
       if (countErr) return { ok: false, error: 'Failed to update the stock count.' };
     }
 
-    // 2) Record an order placed: append to the restock ledger + stamp the item's
-    //    last_ordered_at (mirrors addInventoryOrder). Best-effort ledger row.
-    let orderLogged = false;
+    // 2) Save order intent only. `inventory_orders` is the received-delivery
+    //    ledger and drives purchase accounting, so an intent must never create
+    //    a row there. The removed purchase-order flow has no quantity ledger.
     if (wantsOrder) {
-      const { error: ordErr } = await supabaseAdmin
-        .from('inventory_orders')
-        .insert({
-          property_id: ctx.propertyId,
-          item_id: item.id,
-          item_name: item.name,
-          quantity: orderQty ?? 0,
-          ordered_at: nowIso,
-          notes: ASSISTANT_ORDER_NOTE,
-        });
-      if (!ordErr) {
-        orderLogged = true;
-        await supabaseAdmin
-          .from('inventory')
-          .update({ last_ordered_at: nowIso, updated_at: nowIso })
-          .eq('property_id', ctx.propertyId)
-          .eq('id', item.id)
-          .is('archived_at', null);
+      const { error: intentErr } = await supabaseAdmin
+        .from('inventory')
+        .update({ last_ordered_at: nowIso })
+        .eq('property_id', ctx.propertyId)
+        .eq('id', item.id)
+        .is('archived_at', null);
+      if (intentErr) {
+        return {
+          ok: false,
+          error: wantsCount
+            ? 'The stock count was saved, but the order-intent marker could not be updated.'
+            : 'Failed to update the order-intent marker.',
+        };
       }
     }
 
@@ -259,9 +267,10 @@ registerTool<AdjustStockArgs>({
         category: item.category,
         newCount: wantsCount ? count : null,
         unit: item.unit ?? null,
-        markedOrdered: wantsOrder,
-        orderLogged,
-        orderQuantity: orderQty,
+        orderIntentRecorded: wantsOrder,
+        deliveryLogged: false,
+        purchaseLogged: false,
+        note: orderIntentNote,
       },
     };
   },

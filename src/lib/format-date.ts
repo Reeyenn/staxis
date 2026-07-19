@@ -230,22 +230,17 @@ export function currentMonthLabel(lang: Language, now: Date = new Date()): strin
 }
 
 /**
- * "YYYY-MM-…" → short month name: "Jul" / "jul" ('es-ES' / 'en-US');
- * unparseable month → '—'.
+ * "YYYY-MM" / "YYYY-MM-DD" → short month name: "Jul" / "jul".
  *
- * FAITHFUL QUIRK: the original builds the instant with Date.UTC but renders
- * it WITHOUT timeZone:'UTC', so west of Greenwich the local render of
- * "month-01 00:00 UTC" falls on the last day of the PREVIOUS month (e.g.
- * '2026-07-01' → "Jun" in America/Chicago). That is what ships today and the
- * chart it feeds is self-consistent, so the quirk is preserved, not fixed.
- *
- * Replaces:
- *   - inventory/_components/overlays/ReportsPanel.tsx shortMonthFromYmd()
+ * Month keys describe calendar buckets, not instants. Always format them in
+ * UTC so viewers west of Greenwich cannot see the preceding month.
  */
 export function shortMonthFromYmd(s: string, lang: Language): string {
-  const m = Number(s.slice(5, 7));
-  if (!Number.isFinite(m)) return '—';
+  const match = /^\d{4}-(0[1-9]|1[0-2])(?:-\d{2})?$/.exec(s);
+  if (!match) return '—';
+  const m = Number(match[1]);
   return new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', {
     month: 'short',
+    timeZone: 'UTC',
   });
 }

@@ -97,7 +97,7 @@ Scheduling (the staff schedule / shifts):
 Inventory (stock levels + reordering):
 - "What's running low?" / "Are we low on towels?" → get_low_stock (Critical below half of par, Low below par)
 - "We have 40 rolls of toilet paper now" / "Set towels to 120" → adjust_stock
-- "Mark the pillowcases as ordered" / "I ordered 2 boxes of soap" → adjust_stock with markOrdered
+- "Mark the pillowcases as ordered" → adjust_stock with markOrdered. This saves an order-intent timestamp only; it does not create a purchase order or log a delivery/purchase. The received delivery must be entered through Inventory when it arrives.
 
 Reminders (send a message later) and recurring checklists:
 - "Remind the morning shift about the pool at 8am" → create_reminder (works out the exact time; targets a person or a department)
@@ -183,6 +183,18 @@ const VOICE_MODE_ADDENDA: Partial<Record<VoiceMode, string>> = {
   housekeeper_issue: PROMPT_HOUSEKEEPER_ISSUE_MODE,
 };
 
+/** Code-owned routing invariant appended even when the hotel is using an
+ * active DB-managed prompt. Tool semantics must not depend on an operator
+ * remembering to copy this accounting distinction into every prompt row. */
+export const INVENTORY_ACCOUNTING_ROUTING_PROMPT = `─── Inventory accounting routing ───
+
+- When the user asks about inventory/supply dollars, received deliveries or purchases, month close, actual inventory usage, shelf value, an inventory budget, or a "housekeeping inventory budget", call get_inventory_monthly_accounting.
+- Never answer an inventory money question with get_finance_summary, get_department_spend, or check_budget_status. Those tools read Financials checkbook expenses and department budgets, which are a different ledger.
+- Keep the four inventory numbers distinct: shelf value is what is on hand now; received purchases are what arrived; actual usage is beginning inventory + confirmed purchases - ending inventory; the usage budget is compared only with a complete full-month close.
+- Do not call a month over budget while its actual usage is pending, partial, or unavailable by category.`;
+
+const INVENTORY_ACCOUNTING_ROUTING_VERSION = 'inventory-accounting-v1';
+
 export function maybeVoiceModeAddendum(mode: VoiceMode | undefined): string | null {
   if (!mode) return null;
   return VOICE_MODE_ADDENDA[mode] ?? null;
@@ -230,6 +242,12 @@ export async function buildSystemPrompt(
   memoryBlock?: string,
 ): Promise<SystemPromptBlocks> {
   const { base, role: rolePrompt, versionLabel } = await resolvePrompts(role, conversationId);
+  const hasInventoryAccountingAccess = role === 'admin'
+    || role === 'owner'
+    || role === 'general_manager';
+  const effectiveVersionLabel = hasInventoryAccountingAccess
+    ? `${versionLabel}+${INVENTORY_ACCOUNTING_ROUTING_VERSION}`
+    : versionLabel;
 
   // Feature #11: when a voice mode addendum exists, glue it onto the role
   // prompt. The addendum is part of the STABLE block — it doesn't change
@@ -255,7 +273,10 @@ export async function buildSystemPrompt(
   if (modeAddendum) {
     stableParts.push('', modeAddendum);
   }
-  stableParts.push('', `Prompt version: ${versionLabel}`);
+  if (hasInventoryAccountingAccess) {
+    stableParts.push('', INVENTORY_ACCOUNTING_ROUTING_PROMPT);
+  }
+  stableParts.push('', `Prompt version: ${effectiveVersionLabel}`);
 
   const dynamicParts = [
     '─── Current hotel snapshot ───',
@@ -279,6 +300,6 @@ export async function buildSystemPrompt(
   return {
     stable: stableParts.join('\n'),
     dynamic: dynamicParts.join('\n'),
-    versionLabel,
+    versionLabel: effectiveVersionLabel,
   };
 }

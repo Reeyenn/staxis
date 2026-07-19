@@ -1,0 +1,204 @@
+/**
+ * Finance-gated inventory month close.
+ *
+ * GET  ?propertyId=<uuid>&month=YYYY-MM (month optional)
+ * POST { propertyId, month, action, requestId, ... }
+ *
+ * Finance evidence is service-role-only in Postgres. The route proves property
+ * membership/financial access before every read; mutations additionally honor
+ * the property's manage_inventory_orders capability.
+ */
+
+import { NextRequest } from 'next/server';
+import { requireFinanceAccess, isUuid } from '@/lib/financials/api-gate';
+import { canForProperty } from '@/lib/capabilities/server';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import {
+  closeInventoryMonthClose,
+  getInventoryMonthCloseDashboard,
+  startInventoryMonthClose,
+} from '@/lib/db/inventory-month-closes';
+import {
+  isMonthKey,
+  purchaseSource,
+  validatePurchaseSelection,
+  type InventoryMonthClosePostBody,
+} from '@/lib/inventory-month-close';
+import { log } from '@/lib/log';
+import { errToString } from '@/lib/utils';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+function record(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function postErrorStatus(error: unknown): { status: number; code: string; message: string } {
+  const candidate = record(error) ? error : {};
+  const dbCode = typeof candidate.code === 'string' ? candidate.code : '';
+  if (dbCode === 'P0002') {
+    return { status: 404, code: ApiErrorCode.NotFound, message: 'The inventory month was not found.' };
+  }
+  if (dbCode === '22023' || dbCode === '23514' || dbCode === '23505' || dbCode === '40001') {
+    return {
+      status: 409,
+      code: 'month_close_not_ready',
+      message: 'The month close is not ready. Refresh the close checklist and resolve the flagged counts, costs, or activity.',
+    };
+  }
+  return { status: 500, code: ApiErrorCode.InternalError, message: 'The inventory month close could not be saved.' };
+}
+
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const gate = await requireFinanceAccess(req, url.searchParams.get('propertyId'));
+  if (!gate.ok) return gate.response;
+
+  const month = url.searchParams.get('month');
+  if (month != null && !isMonthKey(month)) {
+    return err('month must be YYYY-MM', {
+      requestId: gate.requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+
+  try {
+    const dashboard = await getInventoryMonthCloseDashboard(
+      supabaseAdmin,
+      gate.pid,
+      month ?? undefined,
+    );
+    return ok(dashboard, { requestId: gate.requestId });
+  } catch (error) {
+    log.error('[inventory/month-close] dashboard failed', {
+      propertyId: gate.pid,
+      err: errToString(error),
+    });
+    return err('The inventory month close could not be loaded.', {
+      requestId: gate.requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
+  }
+}
+
+export async function POST(req: NextRequest) {
+  let body: InventoryMonthClosePostBody;
+  try {
+    const parsed: unknown = await req.json();
+    if (!record(parsed)) throw new Error('body must be an object');
+    body = parsed;
+  } catch {
+    return err('A valid JSON body is required.', {
+      requestId: req.headers.get('x-request-id') ?? crypto.randomUUID(),
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+
+  const propertyId = typeof body.propertyId === 'string' ? body.propertyId : null;
+  const gate = await requireFinanceAccess(req, propertyId);
+  if (!gate.ok) return gate.response;
+
+  if (!(await canForProperty({ role: gate.role }, 'manage_inventory_orders', gate.pid))) {
+    return err('You do not have permission to start or close inventory periods.', {
+      requestId: gate.requestId,
+      status: 403,
+      code: ApiErrorCode.Forbidden,
+    });
+  }
+  if (!isMonthKey(body.month)) {
+    return err('month must be YYYY-MM', {
+      requestId: gate.requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  if (!isUuid(body.requestId)) {
+    return err('requestId must be a UUID', {
+      requestId: gate.requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  if (body.action !== 'start' && body.action !== 'close') {
+    return err('action must be start or close', {
+      requestId: gate.requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  if (body.notes != null && (typeof body.notes !== 'string' || body.notes.length > 2_000)) {
+    return err('notes must be at most 2000 characters', {
+      requestId: gate.requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+
+  try {
+    if (body.action === 'start') {
+      if (body.purchaseSource != null || body.manualPurchaseCents != null) {
+        return err('purchase fields are only valid when closing', {
+          requestId: gate.requestId,
+          status: 400,
+          code: ApiErrorCode.ValidationFailed,
+        });
+      }
+      await startInventoryMonthClose(supabaseAdmin, {
+        propertyId: gate.pid,
+        month: body.month,
+        requestId: body.requestId,
+        actorId: gate.userId,
+        actorName: gate.name,
+      });
+    } else {
+      const source = purchaseSource(body.purchaseSource);
+      if (!source) {
+        return err('purchaseSource must be logged_deliveries, manual_total, or zero', {
+          requestId: gate.requestId,
+          status: 400,
+          code: ApiErrorCode.ValidationFailed,
+        });
+      }
+      const selection = validatePurchaseSelection(source, body.manualPurchaseCents);
+      if (selection.error) {
+        return err(selection.error, {
+          requestId: gate.requestId,
+          status: 400,
+          code: ApiErrorCode.ValidationFailed,
+        });
+      }
+      await closeInventoryMonthClose(supabaseAdmin, {
+        propertyId: gate.pid,
+        month: body.month,
+        requestId: body.requestId,
+        purchaseSource: source,
+        manualPurchaseCents: selection.manualPurchaseCents,
+        actorId: gate.userId,
+        actorName: gate.name,
+        notes: typeof body.notes === 'string' ? body.notes : null,
+      });
+    }
+
+    const dashboard = await getInventoryMonthCloseDashboard(supabaseAdmin, gate.pid, body.month);
+    return ok(dashboard, { requestId: gate.requestId });
+  } catch (error) {
+    const mapped = postErrorStatus(error);
+    log.error('[inventory/month-close] mutation failed', {
+      propertyId: gate.pid,
+      month: body.month,
+      action: body.action,
+      dbCode: record(error) && typeof error.code === 'string' ? error.code : null,
+      err: errToString(error),
+    });
+    return err(mapped.message, {
+      requestId: gate.requestId,
+      status: mapped.status,
+      code: mapped.code,
+    });
+  }
+}

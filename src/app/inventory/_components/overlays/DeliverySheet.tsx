@@ -42,6 +42,9 @@ interface DeliverySheetProps {
   open: boolean;
   onClose: () => void;
   display: DisplayItem[];
+  /** IANA timezone for the active hotel. Scanned invoice dates use the hotel
+   * calendar even when the manager is working remotely. */
+  timezone: string;
   /** Hotel-defined custom tabs + layout — the item dropdown groups by the
    *  hotel's VISIBLE tabs, not by built-in categories it may have hidden. */
   customCategories?: InventoryCustomCategory[];
@@ -60,6 +63,8 @@ function dsStrings(lang: Lang) {
       manualOption: 'Pick items',
       selectItem: 'Select an item…',
       qtyPh: 'Qty',
+      costPh: 'Unit $',
+      costRequired: 'Enter the actual unit cost for every delivered item.',
       addAnother: '+ Add another item',
       remove: 'Remove',
       back: 'Back',
@@ -78,6 +83,8 @@ function dsStrings(lang: Lang) {
       manualOption: 'Elegir artículos',
       selectItem: 'Elige un artículo…',
       qtyPh: 'Cant.',
+      costPh: '$ unidad',
+      costRequired: 'Ingresa el costo unitario real de cada artículo entregado.',
       addAnother: '+ Agregar otro artículo',
       remove: 'Quitar',
       back: 'Atrás',
@@ -94,22 +101,22 @@ function dsStrings(lang: Lang) {
 }
 
 type Mode = null | 'manual' | 'scan';
-type Row = { key: number; itemId: string; qty: string };
+type Row = { key: number; itemId: string; qty: string; cost: string };
 
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-export function DeliverySheet({ lang, open, onClose, display, customCategories = [], tabLayout }: DeliverySheetProps) {
+export function DeliverySheet({ lang, open, onClose, display, timezone, customCategories = [], tabLayout }: DeliverySheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ds = dsStrings(lang);
   const [mode, setMode] = useState<Mode>(null);
-  const [rows, setRows] = useState<Row[]>([{ key: 0, itemId: '', qty: '' }]);
+  const [rows, setRows] = useState<Row[]>([{ key: 0, itemId: '', qty: '', cost: '' }]);
   const rowSeq = useRef(1);
   const [saving, setSaving] = useState(false);
   const saveAttempt = useRef<FrozenDeliveryAttempt | null>(null);
   const [retryLocked, setRetryLocked] = useState(false);
 
-  const resetRows = () => { setRows([{ key: 0, itemId: '', qty: '' }]); rowSeq.current = 1; };
+  const resetRows = () => { setRows([{ key: 0, itemId: '', qty: '', cost: '' }]); rowSeq.current = 1; };
 
   // Fresh chooser on every open.
   useEffect(() => {
@@ -121,9 +128,14 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
     setRetryLocked(!!restored);
     if (restored) {
       const restoredRows = restored.lines.flatMap((line, index) =>
-        line.itemId ? [{ key: index, itemId: line.itemId, qty: String(line.quantity) }] : [],
+        line.itemId ? [{
+          key: index,
+          itemId: line.itemId,
+          qty: String(line.quantity),
+          cost: line.unitCost == null ? '' : String(line.unitCost),
+        }] : [],
       );
-      setRows(restoredRows.length > 0 ? restoredRows : [{ key: 0, itemId: '', qty: '' }]);
+      setRows(restoredRows.length > 0 ? restoredRows : [{ key: 0, itemId: '', qty: '', cost: '' }]);
       rowSeq.current = Math.max(1, restoredRows.length);
       setMode('manual');
     } else {
@@ -136,10 +148,10 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
 
   // Scan path — the existing invoice flow, whole. Its close exits the sheet.
   if (mode === 'scan') {
-    return <ScanInvoiceSheet lang={lang} open onClose={onClose} display={display} />;
+    return <ScanInvoiceSheet lang={lang} open onClose={onClose} display={display} timezone={timezone} />;
   }
 
-  const dirty = rows.some((r) => r.itemId !== '' || r.qty !== '');
+  const dirty = rows.some((r) => r.itemId !== '' || r.qty !== '' || r.cost !== '');
   const requestClose = () => {
     if (saving || retryLocked) return;
     if (dirty && !confirm(ds.discardConfirm)) return;
@@ -169,39 +181,57 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
   const updateRow = (key: number, patch: Partial<Row>) =>
     setRows((prev) => prev.map((r) => (r.key === key ? { ...r, ...patch } : r)));
   const addRow = () =>
-    setRows((prev) => [...prev, { key: rowSeq.current++, itemId: '', qty: '' }]);
+    setRows((prev) => [...prev, { key: rowSeq.current++, itemId: '', qty: '', cost: '' }]);
   const removeRow = (key: number) =>
     setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.key !== key) : prev));
 
-  // Whole units. Coalesce by itemId (a safety net — the dropdowns already hide
-  // an item picked in another row) so a duplicate pick sums instead of racing.
-  const picked = new Map<string, number>();
+  // Whole units + actual per-unit cost. Coalesce by itemId (a safety net — the
+  // dropdowns already hide an item picked in another row) using a weighted
+  // cost so a duplicate pick cannot lose purchase value.
+  const picked = new Map<string, { quantity: number; totalCost: number }>();
   for (const r of rows) {
     if (!r.itemId) continue;
     const n = Math.round(Number(r.qty));
-    if (!Number.isFinite(n) || n < 1) continue;
-    picked.set(r.itemId, (picked.get(r.itemId) ?? 0) + n);
+    const unitCost = Number(r.cost);
+    if (!Number.isFinite(n) || n < 1 || r.cost.trim() === '' || !Number.isFinite(unitCost) || unitCost < 0) continue;
+    const prior = picked.get(r.itemId) ?? { quantity: 0, totalCost: 0 };
+    picked.set(r.itemId, {
+      quantity: prior.quantity + n,
+      totalCost: prior.totalCost + (n * unitCost),
+    });
   }
-  const entered = [...picked].flatMap(([itemId, n]) => {
+  const entered = [...picked].flatMap(([itemId, values]) => {
     const d = display.find((x) => x.id === itemId);
-    return d ? [{ d, n }] : [];
+    return d ? [{
+      d,
+      n: values.quantity,
+      unitCost: values.totalCost / values.quantity,
+    }] : [];
   });
+  const hasIncompleteLine = rows.some((r) => {
+    if (!r.itemId && !r.qty && !r.cost) return false;
+    const qty = Number(r.qty);
+    const cost = Number(r.cost);
+    return !r.itemId || !Number.isFinite(qty) || qty < 1
+      || r.cost.trim() === '' || !Number.isFinite(cost) || cost < 0;
+  });
+  const canSubmit = entered.length > 0 && !hasIncompleteLine;
 
   const selectedIds = new Set(rows.map((r) => r.itemId).filter(Boolean));
   const canAddRow = selectedIds.size < display.length && rows.every((r) => r.itemId !== '');
 
   const handleSave = async () => {
-    if (!user || !activePropertyId || saving || (!saveAttempt.current && entered.length === 0)) return;
+    if (!user || !activePropertyId || saving || (!saveAttempt.current && !canSubmit)) return;
     setSaving(true);
     try {
       if (!saveAttempt.current) {
-        const lines: InventoryDeliveryLine[] = entered.map(({ d, n }, index) => ({
+        const lines: InventoryDeliveryLine[] = entered.map(({ d, n, unitCost }, index) => ({
           // The item id makes this deterministic even if row order changes; the
           // suffix is a defensive guard if future UI allows duplicate item rows.
           lineKey: `${d.id}:${index}`,
           itemId: d.id,
           quantity: n,
-          unitCost: d.unitCost || undefined,
+          unitCost,
         }));
         const vendorNames = new Set(
           entered.map(({ d }) => d.vendor.trim()).filter(Boolean),
@@ -255,7 +285,7 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
           <Btn variant="ghost" size="md" onClick={() => setMode(null)} disabled={saving || retryLocked}>
             {ds.back}
           </Btn>
-          <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || (!retryLocked && entered.length === 0)}>
+          <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || (!retryLocked && !canSubmit)}>
             {saving
               ? ds.saving
               : retryLocked
@@ -267,6 +297,11 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
     >
       {retryLocked && <div style={warnBannerStyle}>{ds.retryPending}</div>}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {hasIncompleteLine && (
+          <div role="status" style={{ fontFamily: fonts.sans, fontSize: 12, color: T.warm }}>
+            {ds.costRequired}
+          </div>
+        )}
         {rows.map((r) => {
           // A row's dropdown offers items not picked in OTHER rows (+ its own).
           // Dropdown groups mirror the hotel's VISIBLE tabs when any built-in
@@ -300,7 +335,14 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
               <select
                 value={r.itemId}
                 disabled={saving || retryLocked}
-                onChange={(e) => updateRow(r.key, { itemId: e.target.value })}
+                onChange={(e) => {
+                  const itemId = e.target.value;
+                  const selected = display.find((d) => d.id === itemId);
+                  updateRow(r.key, {
+                    itemId,
+                    cost: selected?.raw.unitCost == null ? '' : String(selected.raw.unitCost),
+                  });
+                }}
                 style={{
                   flex: 1, minWidth: 0, height: 40, padding: '0 12px', borderRadius: 9,
                   boxSizing: 'border-box', cursor: 'pointer', outline: 'none',
@@ -324,8 +366,9 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
               </select>
               <input
                 type="number"
-                min="0"
-                inputMode="decimal"
+                min="1"
+                step="1"
+                inputMode="numeric"
                 value={r.qty}
                 disabled={saving || retryLocked}
                 onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { qty: v }); }}
@@ -336,6 +379,24 @@ export function DeliverySheet({ lang, open, onClose, display, customCategories =
                   flex: 'none', textAlign: 'center', outline: 'none',
                   background: T.bg, border: `1px solid ${T.controlBorder}`,
                   fontFamily: fonts.sans, fontSize: 15, fontWeight: 600, color: T.ink,
+                  letterSpacing: '-0.02em',
+                }}
+              />
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                inputMode="decimal"
+                value={r.cost}
+                disabled={saving || retryLocked}
+                onChange={(e) => { const v = e.target.value; if (numGuard(v)) updateRow(r.key, { cost: v }); }}
+                placeholder={ds.costPh}
+                aria-label={ds.costPh}
+                style={{
+                  width: 82, height: 40, borderRadius: 9, boxSizing: 'border-box',
+                  flex: 'none', textAlign: 'center', outline: 'none',
+                  background: T.bg, border: `1px solid ${T.controlBorder}`,
+                  fontFamily: fonts.sans, fontSize: 14, fontWeight: 600, color: T.ink,
                   letterSpacing: '-0.02em',
                 }}
               />

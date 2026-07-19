@@ -21,6 +21,7 @@ import './memory';
 import './comms-actions';
 import './schedule-actions';
 import './inventory-actions';
+import './inventory-monthly-accounting';
 import './reminders';
 import './recurring-todos';
 

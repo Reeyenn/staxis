@@ -54,6 +54,15 @@ interface CountSheetProps {
   lang: Lang;
   open: boolean;
   onClose: () => void;
+  /** Month close launches a full count directly; ordinary counts keep the
+   * category chooser. Durable retry attempts always take precedence. */
+  startWithAll?: boolean;
+  /** A month-end count must cover every active item in one atomic session. */
+  requireComplete?: boolean;
+  /** Called after the count transaction commits; cancel still uses onClose. */
+  onSaved?: () => void;
+  /** Controls whether inline item discovery may capture/submit a unit cost. */
+  canViewFinancials?: boolean;
   items: InventoryItem[];
   display: DisplayItem[];
   /** Hotel-defined custom category tabs (0307) — countable scopes. */
@@ -117,6 +126,12 @@ function csStrings(lang: Lang) {
       addUnsafe: 'This item was not sent because its recovery copy could not be saved safely. Your fields are still here.',
       addUnconfirmed: 'The result could not be confirmed. These exact item fields are saved, and another insert is blocked while inventory checks for the tagged row.',
       addChecking: 'Checking exact item…',
+      completeRequired: 'Month close requires a count for every active item. Fill every row before saving.',
+      openingAdjustmentTitle: 'Already on the shelf',
+      openingAdjustmentBody: 'This new item’s count is pre-existing opening inventory, not a delivery or purchase.',
+      openingAdjustmentConfirm: 'Yes, this stock was already at the hotel.',
+      openingAdjustmentCost: 'Enter its unit cost so the opening adjustment can be valued.',
+      openingAdjustmentPermission: 'Only a manager who can enter costs can add positive starting stock. Otherwise add the item at zero, then log a delivery.',
     },
     es: {
       title: 'Conteo de inventario',
@@ -160,11 +175,29 @@ function csStrings(lang: Lang) {
       addUnsafe: 'Este artículo no se envió porque no se pudo guardar una copia segura para recuperarlo. Tus datos siguen aquí.',
       addUnconfirmed: 'No se pudo confirmar el resultado. Estos datos exactos están guardados y se bloqueó otra inserción mientras el inventario busca la fila marcada.',
       addChecking: 'Verificando el artículo…',
+      completeRequired: 'El cierre mensual requiere un conteo de cada artículo activo. Completa todas las filas antes de guardar.',
+      openingAdjustmentTitle: 'Ya estaba en el hotel',
+      openingAdjustmentBody: 'El conteo de este artículo nuevo es inventario de apertura preexistente, no una entrega ni una compra.',
+      openingAdjustmentConfirm: 'Sí, este inventario ya estaba en el hotel.',
+      openingAdjustmentCost: 'Ingresa el costo unitario para valorar el ajuste de apertura.',
+      openingAdjustmentPermission: 'Solo un gerente que pueda ingresar costos puede agregar inventario inicial positivo. Si no, agrega el artículo en cero y luego registra una entrega.',
     },
   }[lang];
 }
 
-export function CountSheet({ lang, open, onClose, items, display, customCategories, tabLayout }: CountSheetProps) {
+export function CountSheet({
+  lang,
+  open,
+  onClose,
+  startWithAll = false,
+  requireComplete = false,
+  onSaved,
+  canViewFinancials = false,
+  items,
+  display,
+  customCategories,
+  tabLayout,
+}: CountSheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const cs = csStrings(lang);
@@ -186,6 +219,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
   const [addQty, setAddQty] = useState('');
   const [addPar, setAddPar] = useState('');
   const [addCost, setAddCost] = useState('');
+  const [addOpeningAdjustmentConfirmed, setAddOpeningAdjustmentConfirmed] = useState(false);
   const [addBusy, setAddBusy] = useState(false);
   const [addRetryLocked, setAddRetryLocked] = useState(false);
   const createdIdsRef = useRef<Set<string>>(new Set());
@@ -207,6 +241,8 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
   // both the count-history inserts and stock updates in one transaction.
   const progRef = useRef<FrozenInventoryCountAttempt | null>(null);
   const inlineAddAttemptRef = useRef<FrozenInlineAddAttempt | null>(null);
+  const displayRef = useRef(display);
+  displayRef.current = display;
   // Synchronous re-entrancy lock for handleAdd — `addBusy` state lags the insert
   // by a render, so a fast double-click / Enter would otherwise create two rows.
   const addLockRef = useRef(false);
@@ -221,6 +257,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
     setAddQty('');
     setAddPar('');
     setAddCost('');
+    setAddOpeningAdjustmentConfirmed(false);
   };
 
   // Resolve an inline add exactly once. A successful direct response supplies
@@ -250,6 +287,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
     setAddQty('');
     setAddPar('');
     setAddCost('');
+    setAddOpeningAdjustmentConfirmed(false);
 
     // The marker is only a recovery key. Clearing it is an idempotent metadata
     // cleanup; a failure merely leaves an internal marker, never a duplicate.
@@ -269,8 +307,12 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
       const restoredAdd = activePropertyId
         ? loadInlineAddAttempt(activePropertyId)
         : null;
-      setScope(restored ? 'all' : restoredAdd?.scope ?? null);
-      setEntries({});
+      const beginFullCount = (startWithAll || requireComplete) && !restored && !restoredAdd;
+      const freshDisplay = displayRef.current;
+      setScope(restored || beginFullCount ? 'all' : restoredAdd?.scope ?? null);
+      setEntries(beginFullCount
+        ? Object.fromEntries(freshDisplay.map((d) => [d.id, { value: '', source: 'manual' as const }]))
+        : {});
       setReview(null);
       setReviewMissing(0);
       setPhotoBusy(false);
@@ -285,9 +327,13 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
       setAddQty(restoredAdd?.quantityInput ?? '');
       setAddPar(restoredAdd?.parInput ?? '');
       setAddCost(restoredAdd?.costInput ?? '');
+      setAddOpeningAdjustmentConfirmed(restoredAdd?.openingAdjustmentConfirmed ?? false);
       createdIdsRef.current = new Set();
       stockBaselineRef.current = new Map(
-        restored?.rows.map((row) => [row.itemId, row.expectedStock]) ?? [],
+        restored?.rows.map((row) => [row.itemId, row.expectedStock])
+          ?? (beginFullCount
+            ? freshDisplay.map((d) => [d.id, d.raw.currentStock ?? 0] as const)
+            : []),
       );
       if (restored) {
         setScope('all');
@@ -297,7 +343,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
         ])));
       }
     }
-  }, [open, activePropertyId]);
+  }, [open, activePropertyId, startWithAll, requireComplete]);
 
   // A committed insert with a dropped response is identified by its unique
   // marker as soon as the authoritative inventory subscription includes it.
@@ -380,6 +426,22 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
     if (!user || !activePropertyId || retryLocked || addRetryLocked
       || inlineAddAttemptRef.current || addBusy || addLockRef.current) return;
     if (!addName.trim()) return;
+    const startingQuantity = Math.max(0, Number(addQty) || 0);
+    if (startingQuantity > 0) {
+      if (!canViewFinancials) {
+        alert(cs.openingAdjustmentPermission);
+        return;
+      }
+      const startingCost = addCost.trim() === '' ? Number.NaN : Number(addCost);
+      if (!Number.isFinite(startingCost) || startingCost < 0) {
+        alert(cs.openingAdjustmentCost);
+        return;
+      }
+      if (!addOpeningAdjustmentConfirmed) {
+        alert(cs.openingAdjustmentConfirm);
+        return;
+      }
+    }
     // The durable helper predates hotel-defined tabs, so freeze their built-in
     // category in its supported scope and keep the selected custom tab id as a
     // separate immutable value for this one insert.
@@ -408,6 +470,7 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
       quantityInput: addQty,
       parInput: addPar,
       costInput: addCost,
+      openingAdjustmentConfirmed: addOpeningAdjustmentConfirmed,
     });
     addLockRef.current = true;
     inlineAddAttemptRef.current = attempt;
@@ -434,6 +497,10 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
         reorderLeadDays: 3,
         notes: inlineAddAttemptMarker(attempt.requestId),
         lastCountedAt: attempt.quantity > 0 ? new Date(attempt.startedAt) : null,
+        openingAdjustmentQuantity: attempt.openingAdjustmentConfirmed ? attempt.quantity : null,
+        openingAdjustmentUnitCost: attempt.openingAdjustmentConfirmed ? attempt.unitCost : null,
+        openingAdjustmentAt: attempt.openingAdjustmentConfirmed ? new Date(attempt.startedAt) : null,
+        openingAdjustmentRequestId: attempt.openingAdjustmentConfirmed ? attempt.requestId : null,
         propertyId: activePropertyId,
       });
       const raw: InventoryItem = {
@@ -450,6 +517,10 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
         notes: inlineAddAttemptMarker(attempt.requestId),
         updatedAt: null,
         lastCountedAt: attempt.quantity > 0 ? new Date(attempt.startedAt) : null,
+        openingAdjustmentQuantity: attempt.openingAdjustmentConfirmed ? attempt.quantity : null,
+        openingAdjustmentUnitCost: attempt.openingAdjustmentConfirmed ? attempt.unitCost : null,
+        openingAdjustmentAt: attempt.openingAdjustmentConfirmed ? new Date(attempt.startedAt) : null,
+        openingAdjustmentRequestId: attempt.openingAdjustmentConfirmed ? attempt.requestId : null,
       };
       finishInlineAdd(attempt, raw);
     } catch (err) {
@@ -604,6 +675,18 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
       const fp = entriesFingerprint(entries);
       let attempt = progRef.current;
       if (!retryLocked && (!attempt || attempt.fingerprint !== fp)) {
+        if (requireComplete && (
+          scope !== 'all'
+          || scopedDisplay.length !== display.length
+          || scopedDisplay.some((d) => {
+            const value = entries[d.id]?.value ?? '';
+            const parsed = Number(value);
+            return value === '' || !Number.isFinite(parsed) || parsed < 0;
+          })
+        )) {
+          alert(cs.completeRequired);
+          return;
+        }
         const countedAt = new Date().toISOString();
         const rows: AtomicInventoryCountRow[] = [];
         for (const d of scopedDisplay) {
@@ -671,7 +754,8 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
       if (progRef.current?.requestId === attempt.requestId) {
         progRef.current = null;
         setRetryLocked(false);
-        onClose();
+        if (onSaved) onSaved();
+        else onClose();
       }
     } catch (err) {
       console.error('[count-sheet] save failed', err);
@@ -817,7 +901,12 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
           <Btn variant="ghost" size="md" onClick={requestClose} disabled={saving || retryLocked || addRetryLocked}>
             {cs.cancel}
           </Btn>
-          <Btn variant="primary" size="md" onClick={handleSave} disabled={saving || addRetryLocked || (!retryLocked && filled === 0)}>
+          <Btn
+            variant="primary"
+            size="md"
+            onClick={handleSave}
+            disabled={saving || addRetryLocked || (!retryLocked && (filled === 0 || (requireComplete && filled !== total)))}
+          >
             {saving ? cs.saving : retryLocked ? cs.retryCount : `${cs.saveCount} · ${filled}/${total}`}
           </Btn>
         </>
@@ -825,12 +914,15 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
     >
       {retryLocked && <div style={warnBannerStyle}>{cs.retryPending}</div>}
       {addRetryLocked && !addBusy && <div style={warnBannerStyle}>{cs.addUnconfirmed}</div>}
+      {requireComplete && !retryLocked && filled !== total && (
+        <div style={warnBannerStyle}>{cs.completeRequired}</div>
+      )}
       {/* Top row: change scope · photo count */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
         <button
           type="button"
           onClick={() => { setScope(null); resetAddForm(); }}
-          disabled={retryLocked || addRetryLocked}
+          disabled={retryLocked || addRetryLocked || requireComplete}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             padding: '5px 11px 5px 8px', borderRadius: 8, cursor: 'pointer',
@@ -931,15 +1023,48 @@ export function CountSheet({ lang, open, onClose, items, display, customCategori
                   placeholder="—" style={addInputStyle}
                 />
               </AddField>
-              <AddField label={cs.fCost} hint={cs.optional}>
-                <input
-                  type="number" min="0" step="0.01" inputMode="decimal" value={addCost}
-                  disabled={addRetryLocked}
-                  onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddCost(v); }}
-                  placeholder="0.00" style={addInputStyle}
-                />
-              </AddField>
+              {canViewFinancials && (
+                <AddField label={cs.fCost} hint={(Number(addQty) || 0) > 0 ? undefined : cs.optional}>
+                  <input
+                    type="number" min="0" step="0.01" inputMode="decimal" value={addCost}
+                    disabled={addRetryLocked}
+                    onChange={(e) => { const v = e.target.value; if (numGuard(v)) setAddCost(v); }}
+                    placeholder="0.00" style={addInputStyle}
+                  />
+                </AddField>
+              )}
             </div>
+            {(Number(addQty) || 0) > 0 && (
+              <div
+                style={{
+                  padding: '9px 10px',
+                  borderRadius: 9,
+                  background: T.warmDim,
+                  border: `1px solid ${T.rule}`,
+                  color: T.ink,
+                  fontFamily: fonts.sans,
+                  fontSize: 12,
+                  lineHeight: 1.45,
+                }}
+              >
+                <div style={{ fontWeight: 700 }}>{cs.openingAdjustmentTitle}</div>
+                <div style={{ color: T.ink2, marginTop: 2 }}>
+                  {canViewFinancials ? cs.openingAdjustmentBody : cs.openingAdjustmentPermission}
+                </div>
+                {canViewFinancials && (
+                  <label style={{ display: 'flex', alignItems: 'flex-start', gap: 7, marginTop: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={addOpeningAdjustmentConfirmed}
+                      disabled={addRetryLocked}
+                      onChange={(event) => setAddOpeningAdjustmentConfirmed(event.target.checked)}
+                      style={{ marginTop: 2 }}
+                    />
+                    <span>{cs.openingAdjustmentConfirm}</span>
+                  </label>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
               <Btn variant="ghost" size="sm" onClick={resetAddForm} disabled={addBusy || addRetryLocked}>{cs.cancel}</Btn>
               <Btn variant="primary" size="sm" onClick={() => void handleAdd()} disabled={addBusy || addRetryLocked || !addName.trim()}>

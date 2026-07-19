@@ -41,6 +41,7 @@ export * from './db/inventory-orders';
 export * from './db/inventory-budgets';
 export * from './db/inventory-custom-categories';
 export * from './db/inventory-accounting';
+export * from './db/inventory-month-closes';
 export * from './db/ml-inventory-cockpit';
 // Plan v4 bridge — both files re-derive the old plan_snapshots /
 // dashboard_by_date shapes live from pms_* tables that the vision CUA

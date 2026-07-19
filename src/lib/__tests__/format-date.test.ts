@@ -3,19 +3,15 @@
  *
  * Run via: npx tsx --test src/lib/__tests__/format-date.test.ts
  *
- * Every function is a faithful port of a private helper duplicated across
- * src/app pages, so the contract under test is byte-identical output with
- * the originals — including the deliberately-preserved quirks (UTC parse +
- * local render in shortMonthFromYmd, future timestamps reading "today" in
- * fmtWhenAgo, etc).
+ * Most functions are faithful ports of private helpers duplicated across
+ * src/app pages. Month-key labels are intentionally UTC-pinned because they
+ * describe reporting buckets rather than viewer-local instants.
  *
  * Timezone strategy — tests must pass on any machine TZ (UTC CI, Chicago
  * dev): inputs for LOCAL-rendering functions are constructed with the local
  * Date constructor (new Date(y, m, d, …)), so the rendered wall-clock parts
  * are the same everywhere. UTC-pinned functions get hardcoded expectations
- * outright. The one helper whose output genuinely varies by machine TZ
- * (shortMonthFromYmd — a shipped quirk) is compared against the original
- * inline expression copied verbatim from ReportsPanel.tsx.
+ * outright.
  */
 
 import { test, describe } from 'node:test';
@@ -250,37 +246,24 @@ describe('currentMonthLabel', () => {
 // ─── shortMonthFromYmd (inventory ReportsPanel) ─────────────────────────────
 
 describe('shortMonthFromYmd', () => {
-  // The original renders a UTC-built instant in LOCAL time (no timeZone
-  // option), so the label shifts a month back west of Greenwich — a shipped
-  // quirk the port must preserve. Machine-TZ-dependent, so compare against
-  // the original expression copied verbatim from ReportsPanel.tsx.
-  function original(s: string, lang: 'en' | 'es'): string {
-    const m = Number(s.slice(5, 7));
-    if (!Number.isFinite(m)) return '—';
-    return new Date(Date.UTC(2000, m - 1, 1)).toLocaleDateString(lang === 'es' ? 'es-ES' : 'en-US', { month: 'short' });
-  }
-
-  test('matches the original ReportsPanel expression for every month', () => {
-    for (let m = 1; m <= 12; m++) {
-      const ymd = `2026-${String(m).padStart(2, '0')}-01`;
-      assert.equal(shortMonthFromYmd(ymd, 'en'), original(ymd, 'en'));
-      assert.equal(shortMonthFromYmd(ymd, 'es'), original(ymd, 'es'));
-    }
+  test('labels every YYYY-MM-DD bucket in its named month', () => {
+    const expected = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    expected.forEach((label, index) => {
+      const month = String(index + 1).padStart(2, '0');
+      assert.equal(shortMonthFromYmd(`2026-${month}-01`, 'en'), label);
+    });
   });
 
-  test('produces a short month name (shape check)', () => {
-    // On UTC boxes '2026-07-01' → 'Jul'; west of UTC → 'Jun'. Both are what
-    // ships today for the respective viewer.
-    assert.match(shortMonthFromYmd('2026-07-01', 'en'), /^(Jun|Jul)$/);
+  test('also accepts a YYYY-MM month key and uses the requested language', () => {
+    assert.equal(shortMonthFromYmd('2026-01', 'en'), 'Jan');
+    assert.equal(shortMonthFromYmd('2026-07', 'en'), 'Jul');
+    assert.match(shortMonthFromYmd('2026-07', 'es'), /^jul\.?$/i);
   });
 
-  test("unparseable month → '—'", () => {
+  test("malformed or out-of-range month → '—'", () => {
     assert.equal(shortMonthFromYmd('garbage', 'en'), '—');
-  });
-
-  test("empty string: Number('') === 0 quirk matches the original (Dec 1999 render)", () => {
-    // ''.slice(5,7) → '' → Number('') is 0, which IS finite, so the original
-    // fell through to Date.UTC(2000, -1, 1) = Dec 1999. Preserved, not fixed.
-    assert.equal(shortMonthFromYmd('', 'en'), original('', 'en'));
+    assert.equal(shortMonthFromYmd('2026-00-01', 'en'), '—');
+    assert.equal(shortMonthFromYmd('2026-13-01', 'en'), '—');
+    assert.equal(shortMonthFromYmd('', 'en'), '—');
   });
 });

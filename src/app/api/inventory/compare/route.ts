@@ -1,11 +1,14 @@
 /**
- * GET /api/inventory/compare?propertyId=&from=YYYY-MM-DD&to=YYYY-MM-DD&tz=
+ * GET /api/inventory/compare?propertyId=&from=YYYY-MM-DD&to=YYYY-MM-DD&basis=
  *
  * Flow totals for ONE arbitrary local-date window, powering the Compare
  * overlay's month / year / custom side-by-side view (the client calls this
  * once per side):
  *
- *   - receiptsValue   — Σ inventory_orders.total_cost received in the window ($)
+ *   - receiptsValue   — complete logged-purchase total, or null when a line
+ *                       lacks cost (knownReceiptsValue remains a subtotal)
+ *   - actualUsageValue/status — immutable monthly close actual, never inferred
+ *                       from purchases. Custom ranges return unavailable.
  *   - discardsValue   — Σ inventory_discards.cost_value discarded in the window ($)
  *   - countSessions   — distinct count saves (count_session_id, legacy rows
  *                       fall back to their exact timestamp) in the window
@@ -28,6 +31,11 @@ import { localDayStartUTC } from '@/lib/db/inventory-accounting';
 import { fetchAllRows } from '@/lib/supabase-paginate';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
+import { listInventoryMonthCloseHistory } from '@/lib/db/inventory-month-closes';
+import {
+  resolveInventoryCompareActual,
+  type InventoryCompareBasis,
+} from '@/lib/inventory-compare-actual';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,6 +48,24 @@ const MAX_WINDOW_DAYS = 750;
 function parseDate(s: string): [number, number, number] {
   const [y, m, d] = s.split('-').map(Number);
   return [y, m, d];
+}
+
+function isCalendarDate(value: string): boolean {
+  if (!DATE_RE.test(value)) return false;
+  const [year, month1, day] = parseDate(value);
+  const date = new Date(Date.UTC(year, month1 - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() + 1 === month1 && date.getUTCDate() === day;
+}
+
+function monthKeyInZone(iso: string, timeZone: string): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(new Date(iso));
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  return year && month ? `${year}-${month}` : iso.slice(0, 7);
 }
 
 // Same delivery/discard valuation as getInventoryAccountingSummary: prefer the
@@ -58,19 +84,41 @@ export async function GET(req: NextRequest) {
 
   const from = url.searchParams.get('from') ?? '';
   const to = url.searchParams.get('to') ?? '';
-  if (!DATE_RE.test(from) || !DATE_RE.test(to) || to < from) {
+  if (!isCalendarDate(from) || !isCalendarDate(to) || to < from) {
     return err('invalid_range', {
       requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
+  const basisParam = url.searchParams.get('basis');
+  if (basisParam != null && basisParam !== 'months' && basisParam !== 'years' && basisParam !== 'custom') {
+    return err('invalid_basis', {
+      requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const basis: InventoryCompareBasis = basisParam === 'months' || basisParam === 'years' || basisParam === 'custom'
+    ? basisParam
+    : 'custom';
 
-  const tzParam = url.searchParams.get('tz');
   let tz = 'UTC';
-  if (tzParam && tzParam.length <= 64) {
-    try {
-      new Intl.DateTimeFormat('en-US', { timeZone: tzParam });
-      tz = tzParam;
-    } catch { /* unknown zone → UTC */ }
+  try {
+    const { data: property, error: propertyError } = await supabaseAdmin
+      .from('properties')
+      .select('timezone')
+      .eq('id', gate.pid)
+      .maybeSingle();
+    if (propertyError) throw propertyError;
+    const propertyTimezone = (property as { timezone?: string | null } | null)?.timezone;
+    if (propertyTimezone) {
+      try {
+        new Intl.DateTimeFormat('en-US', { timeZone: propertyTimezone }).format(new Date());
+        tz = propertyTimezone;
+      } catch { /* invalid stored zone → UTC */ }
+    }
+  } catch (e) {
+    log.error('[inventory/compare] property timezone failed', { err: errToString(e) });
+    return err('aggregation_failed', {
+      requestId: gate.requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
   }
 
   const [fy, fm, fd] = parseDate(from);
@@ -87,7 +135,7 @@ export async function GET(req: NextRequest) {
   try {
     const startIso = start.toISOString();
     const endIso = endExclusive.toISOString();
-    const [orderRows, discardRows, countRows, firstItemQ, firstCountQ, firstOrderQ] = await Promise.all([
+    const [orderRows, discardRows, countRows, firstItemQ, firstCountQ, firstOrderQ, closeHistory] = await Promise.all([
       fetchAllRows<{ total_cost: number | null; quantity: number | null; unit_cost: number | null }>(
         (a, b) => supabaseAdmin
           .from('inventory_orders')
@@ -138,16 +186,29 @@ export async function GET(req: NextRequest) {
         .not('received_at', 'is', null)
         .order('received_at', { ascending: true })
         .limit(1),
+      listInventoryMonthCloseHistory(supabaseAdmin, gate.pid, 120),
     ]);
     const firstErr = firstItemQ.error ?? firstCountQ.error ?? firstOrderQ.error;
     if (firstErr) throw firstErr;
 
-    const receiptsValue = orderRows.reduce(
-      (s, r) => s + rowValue({ total: r.total_cost, quantity: r.quantity, unit_cost: r.unit_cost }), 0,
+    const knownReceiptsValue = orderRows.reduce(
+      (s: number, r: { total_cost: number | null; quantity: number | null; unit_cost: number | null }) =>
+        s + rowValue({ total: r.total_cost, quantity: r.quantity, unit_cost: r.unit_cost }), 0,
     );
-    const discardsValue = discardRows.reduce(
-      (s, r) => s + rowValue({ total: r.cost_value, quantity: r.quantity, unit_cost: r.unit_cost }), 0,
+    const purchasesComplete = orderRows.every(
+      (r: { total_cost: number | null; quantity: number | null; unit_cost: number | null }) =>
+        r.total_cost != null || (r.unit_cost != null && r.quantity != null),
     );
+    const receiptsValue = purchasesComplete ? knownReceiptsValue : null;
+    const knownDiscardsValue = discardRows.reduce(
+      (s: number, r: { cost_value: number | null; quantity: number | null; unit_cost: number | null }) =>
+        s + rowValue({ total: r.cost_value, quantity: r.quantity, unit_cost: r.unit_cost }), 0,
+    );
+    const discardsComplete = discardRows.every(
+      (r: { cost_value: number | null; quantity: number | null; unit_cost: number | null }) =>
+        r.cost_value != null || (r.unit_cost != null && r.quantity != null),
+    );
+    const discardsValue = discardsComplete ? knownDiscardsValue : null;
     const sessions = new Set<string>();
     for (const r of countRows) {
       sessions.add(r.count_session_id ?? `t:${r.counted_at}`);
@@ -159,9 +220,27 @@ export async function GET(req: NextRequest) {
       (firstOrderQ.data?.[0]?.received_at as string | undefined) ?? null,
     ].filter((s): s is string => s != null);
     const firstActivityAt = candidates.length ? candidates.sort()[0] : null;
+    const currentMonth = monthKeyInZone(new Date().toISOString(), tz);
+    const actual = resolveInventoryCompareActual({
+      basis,
+      from,
+      to,
+      currentMonth,
+      closes: closeHistory,
+    });
 
     return ok(
-      { receiptsValue, discardsValue, countSessions: sessions.size, firstActivityAt },
+      {
+        receiptsValue,
+        knownReceiptsValue,
+        purchasesComplete,
+        ...actual,
+        discardsValue,
+        knownDiscardsValue,
+        discardsComplete,
+        countSessions: sessions.size,
+        firstActivityAt,
+      },
       { requestId: gate.requestId },
     );
   } catch (e) {

@@ -210,5 +210,8 @@ describe('numbered invoice hard block', () => {
     assert.match(scanSource, /listInventoryOrders\(user\.uid, activePropertyId, 2000\)/);
     assert.match(scanSource, /actionable === 0 \|\| duplicateBlocked/);
     assert.match(scanSource, /await retryCommit\(progressRef\.current/);
+    assert.match(scanSource, /invoiceDateFromReceivedAt\(restored\.receivedAt, timezone\)/);
+    assert.match(scanSource, /propertyTimezone: timezone/);
+    assert.doesNotMatch(scanSource, /restored\?\.receivedAt\.slice\(0, 10\)/);
   });
 });

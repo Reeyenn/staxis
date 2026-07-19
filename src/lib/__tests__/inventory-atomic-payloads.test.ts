@@ -76,6 +76,7 @@ describe('atomic inventory delivery payload', () => {
 
   test('invoice commit becomes additive lines and ignores stale absolute-stock projections', () => {
     const plan = buildCommitPlan({
+      propertyTimezone: 'America/Chicago',
       vendorName: 'Acme',
       invoiceDate: '2026-07-15',
       lines: [

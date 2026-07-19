@@ -1,8 +1,8 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Inventory Orders — restock log.
 //
-// One row per delivery received. Powers spend-this-month metrics and
-// reorder cadence per item. Write triggered by:
+// One row per delivery received. Powers the live purchase ledger and reorder
+// cadence per item. It remains separate from closed monthly usage. Written by:
 //   1. Count Mode reconciliation if any item's counted stock > previous
 //      stored stock and the user confirms "Yes, I received an order".
 //   2. Manual "Log Order" entry from the item edit modal.

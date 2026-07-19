@@ -85,6 +85,7 @@ describe('Property mapper round-trip', () => {
       prepMinutesPerActivity: 5,
       shiftMinutes: 480,
       totalStaffOnRoster: 8,
+      timezone: 'America/Los_Angeles',
       lastSyncedAt: new Date('2026-04-27T12:00:00Z'),
       createdAt: new Date('2026-04-27T12:00:00Z'),
     };
@@ -96,6 +97,7 @@ describe('Property mapper round-trip', () => {
     assert.equal(reread.totalRooms, original.totalRooms);
     assert.equal(reread.avgOccupancy, original.avgOccupancy);
     assert.equal(reread.hourlyWage, original.hourlyWage);
+    assert.equal(reread.timezone, original.timezone);
   });
 });
 

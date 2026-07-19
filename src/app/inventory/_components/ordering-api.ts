@@ -59,3 +59,16 @@ export async function apiUpdateVendor(pid: string, vendorId: string, fields: Ven
   });
   return data.vendor;
 }
+
+export async function apiRecordInventoryOpeningAdjustment(args: {
+  propertyId: string;
+  itemId: string;
+  requestId: string;
+  effectiveAt: string;
+  expectedStock: number;
+  resultingStock: number;
+  adjustmentQuantity: number;
+  unitCost: number;
+}): Promise<void> {
+  await call<unknown>('/api/inventory/opening-adjustment', jsonInit(args));
+}

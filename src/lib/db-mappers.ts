@@ -199,6 +199,7 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
     pms_connected: p.pmsConnected,
     last_synced_at: toISO(p.lastSyncedAt),
     alert_phone: p.alertPhone,
+    timezone: p.timezone,
     inventory_budget_mode: p.inventoryBudgetMode,
     // JSON tab layout ({order,hidden}). null clears; undefined leaves it be
     // (dropUndefined). Stored as jsonb (0308).
@@ -228,6 +229,7 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     pmsConnected: parseBoolField(r.pms_connected),
     lastSyncedAt: toDate(r.last_synced_at),
     alertPhone: parseStringField(r.alert_phone),
+    timezone: parseStringField(r.timezone) ?? null,
     // room_inventory is a Postgres text[] of every room number in the hotel.
     // Used by the Housekeeping Rooms tab to render all rooms even when the
     // daily CA pull only mentions the dirty/occupied subset. Empty or null
@@ -658,6 +660,14 @@ export function fromInventoryRow(r: Record<string, unknown>): InventoryItem {
     unitCost: r.unit_cost == null ? undefined : Number(r.unit_cost),
     lastAlertedAt: toDate(r.last_alerted_at),
     lastCountedAt: toDate(r.last_counted_at),
+    openingAdjustmentQuantity: r.opening_adjustment_quantity == null
+      ? null
+      : Number(r.opening_adjustment_quantity),
+    openingAdjustmentUnitCost: r.opening_adjustment_unit_cost == null
+      ? null
+      : Number(r.opening_adjustment_unit_cost),
+    openingAdjustmentAt: toDate(r.opening_adjustment_at),
+    openingAdjustmentRequestId: (r.opening_adjustment_request_id as string | null) ?? null,
     packSize: r.pack_size == null ? undefined : Number(r.pack_size),
     caseUnit: parseStringField(r.case_unit),
   };
@@ -688,6 +698,10 @@ export function toInventoryRow(i: Omit<Partial<InventoryItem>, 'unitCost' | 'ven
     unit_cost: i.unitCost,
     last_alerted_at: toISO(i.lastAlertedAt),
     last_counted_at: toISO(i.lastCountedAt),
+    opening_adjustment_quantity: i.openingAdjustmentQuantity,
+    opening_adjustment_unit_cost: i.openingAdjustmentUnitCost,
+    opening_adjustment_at: toISO(i.openingAdjustmentAt),
+    opening_adjustment_request_id: i.openingAdjustmentRequestId,
     pack_size: i.packSize,
     case_unit: i.caseUnit,
   });
@@ -756,6 +770,9 @@ export function fromInventoryBudgetRow(r: Record<string, unknown>): InventoryBud
     // Budget keys are open-ended since 0306 ('total', 'section:<uuid>') — do
     // NOT union-coerce here or custom keys silently become 'housekeeping'.
     category: String(r.category ?? 'housekeeping'),
+    // Migration 0323 backfills every pre-existing budget as a purchase cap.
+    // Default defensively for a mixed-version API response during rollout.
+    basis: r.basis === 'usage' ? 'usage' : 'purchases',
     monthStart: toDate(r.month_start),
     budgetCents: Number(r.budget_cents ?? 0),
     notes: parseStringField(r.notes),
@@ -809,6 +826,7 @@ export function toInventoryBudgetRow(b: Partial<InventoryBudget>): Record<string
   return dropUndefined({
     property_id: b.propertyId,
     category: b.category,
+    basis: b.basis,
     // month_start is a DATE column — serialise as YYYY-MM-DD (UTC) so we don't
     // accidentally drift to the previous day in negative-offset timezones.
     month_start: b.monthStart instanceof Date

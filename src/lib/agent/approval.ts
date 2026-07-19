@@ -134,12 +134,12 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
     if (l === 'es') {
       const parts = [] as string[];
       if (hasCount) parts.push(`ajustar el conteo de ${item} a ${str(a.newCount)}`);
-      if (ordered) parts.push(`marcar ${item} como pedido`);
+      if (ordered) parts.push(`marcar la intención de pedir ${item} (no registra entrega ni compra)`);
       return parts.length ? parts.join(' y ') : `Actualizar el inventario de ${item}`;
     }
     const parts = [] as string[];
     if (hasCount) parts.push(`set ${item} count to ${str(a.newCount)}`);
-    if (ordered) parts.push(`mark ${item} as ordered`);
+    if (ordered) parts.push(`mark order intent for ${item} (no delivery or purchase logged)`);
     return parts.length ? parts.join(' and ') : `Update ${item} inventory`;
   },
 

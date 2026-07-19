@@ -11,6 +11,7 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -53,18 +54,17 @@ function AddItemModal({
 }: {
   open: boolean;
   onClose: () => void;
-  onCreate: (args: { name: string; bin: string; qty: number; reorderAt: number }) => Promise<void>;
+  onCreate: (args: { name: string; bin: string; reorderAt: number }) => Promise<void>;
 }) {
   const { lang } = useLang();
   const es = lang === 'es';
   const [name, setName] = useState('');
   const [bin, setBin] = useState('');
-  const [qty, setQty] = useState('');
   const [reorderAt, setReorderAt] = useState('');
   const [busy, setBusy] = useState(false);
 
-  const reset = () => { setName(''); setBin(''); setQty(''); setReorderAt(''); setBusy(false); };
-  const dirty = name.trim() !== '' || bin.trim() !== '' || qty !== '' || reorderAt !== '';
+  const reset = () => { setName(''); setBin(''); setReorderAt(''); setBusy(false); };
+  const dirty = name.trim() !== '' || bin.trim() !== '' || reorderAt !== '';
   // Guard the eaten-form path: Escape / a stray scrim click used to wipe the
   // half-typed item instantly. Confirm before discarding anything typed.
   const close = () => {
@@ -80,7 +80,7 @@ function AddItemModal({
     if (!can) return;
     setBusy(true);
     try {
-      await onCreate({ name: name.trim(), bin: bin.trim(), qty: parseInt(qty, 10) || 0, reorderAt: parseInt(reorderAt, 10) || 1 });
+      await onCreate({ name: name.trim(), bin: bin.trim(), reorderAt: parseInt(reorderAt, 10) || 1 });
       reset();
       onClose();
     } catch {
@@ -102,9 +102,13 @@ function AddItemModal({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <Field label={es ? 'Artículo' : 'Item'} required><TextInput value={name} onChange={setName} placeholder={es ? 'ej. "Filtro HVAC — 20×25×1 MERV 8"' : 'e.g. "HVAC filter — 20×25×1 MERV 8"'} /></Field>
         <Field label={es ? 'Dónde se guarda' : "Where it's kept"} required><TextInput value={bin} onChange={setBin} placeholder={es ? 'ej. "Cuarto de máquinas · A2"' : 'e.g. "Mechanical · A2"'} /></Field>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-          <Field label={es ? 'Disponibles' : 'On hand'}><TextInput value={qty} onChange={setQty} type="number" min={0} placeholder="0" /></Field>
-          <Field label={es ? 'Reordenar en' : 'Reorder at'}><TextInput value={reorderAt} onChange={setReorderAt} type="number" min={0} placeholder="1" /></Field>
+        <Field label={es ? 'Reordenar en' : 'Reorder at'}>
+          <TextInput value={reorderAt} onChange={setReorderAt} type="number" min={0} placeholder="1" />
+        </Field>
+        <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(31,35,28,0.03)', border: `1px solid ${T.rule}`, fontFamily: FONT_SANS, fontSize: 12.5, lineHeight: 1.5, color: T.ink2 }}>
+          {es
+            ? 'Los artículos nuevos comienzan en 0. Registra el inventario recibido en Inventario → Agregar entrega para guardar su costo de compra.'
+            : 'New items start at 0. Log received stock through Inventory → Add delivery so its purchase cost is recorded.'}
         </div>
       </div>
     </Modal>
@@ -171,7 +175,7 @@ function ItemModal({
       title={part.name} subtitle={part.bin} width={520}
       footer={<>
         <Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>
-        {status !== 'ok' && <Btn variant="primary" onClick={() => { onRestock(part); onClose(); }}>{es ? 'Reabastecer' : 'Restock to full'}</Btn>}
+        {status !== 'ok' && <Btn variant="primary" onClick={() => { onRestock(part); onClose(); }}>{es ? 'Registrar entrega' : 'Log delivery'}</Btn>}
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
@@ -199,6 +203,7 @@ function ItemModal({
 
 // ── root ─────────────────────────────────────────────────────────────────────
 export function EquipmentTab() {
+  const router = useRouter();
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
@@ -306,18 +311,20 @@ export function EquipmentTab() {
     return state.promise;
   };
   const restock = (part: Part) => {
-    const target = part.parLevel > 0 ? part.parLevel : part.reorderAt > 0 ? part.reorderAt * 4 : 1;
-    void setQty(part.id, target);
+    void part;
+    router.push('/inventory?action=scan');
   };
-  const create = async (args: { name: string; bin: string; qty: number; reorderAt: number }) => {
+  const create = async (args: { name: string; bin: string; reorderAt: number }) => {
     if (!user || !activePropertyId) return;
-    const par = args.reorderAt > 0 ? args.reorderAt * 4 : Math.max(args.qty, 1);
+    const par = args.reorderAt > 0 ? args.reorderAt * 4 : 1;
     try {
       await addInventoryItem(user.uid, activePropertyId, {
         propertyId: activePropertyId,
         name: args.name,
         category: 'maintenance',
-        currentStock: args.qty,
+        // Received stock belongs in the purchase ledger. Creating catalog
+        // metadata here must never masquerade as a count or delivery.
+        currentStock: 0,
         parLevel: par,
         reorderAt: args.reorderAt,
         unit: 'units',
