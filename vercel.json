@@ -2,15 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/cron/expire-trials",
-      "schedule": "0 9 * * *"
-    },
-    {
       "path": "/api/cron/expire-help-requests",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/agent/nudges/check",
       "schedule": "*/5 * * * *"
     },
     {
@@ -42,16 +34,8 @@
       "schedule": "*/30 * * * *"
     },
     {
-      "path": "/api/cron/seal-daily",
-      "schedule": "5 * * * *"
-    },
-    {
-      "path": "/api/cron/pms-backfill-missing-feeds",
-      "schedule": "0 10 * * *"
-    },
-    {
       "path": "/api/cron/sweep-orphan-auth-users",
-      "schedule": "*/30 * * * *"
+      "schedule": "0 7 * * *"
     },
     {
       "path": "/api/cron/sweep-mfa-verified-sessions",
@@ -68,18 +52,6 @@
     {
       "path": "/api/cron/vercel-watchdog",
       "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/run-rules-engine",
-      "schedule": "*/5 * * * *"
-    },
-    {
-      "path": "/api/cron/run-auto-assign",
-      "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/cron/lost-found-disposal-check",
-      "schedule": "0 16 * * *"
     }
   ]
 }

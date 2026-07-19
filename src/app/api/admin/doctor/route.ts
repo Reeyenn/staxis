@@ -816,24 +816,27 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // 2026-07-19: run-scheduled-reports / run-daily-report / run-weekly-report
   // removed from this list — the automatic report emails were deleted
   // entirely (owner call), so their heartbeats will never land again.
+  // 2026-07-19 (owner call, pre-launch trim): agent-nudges-check,
+  // compliance-reminders, seal-daily, schedule-auto-fill, expire-trials,
+  // pms-backfill-missing-feeds, run-rules-engine, run-auto-assign, and
+  // lost-found-disposal-check unscheduled — they only matter once a hotel
+  // is live on the PMS robot. Route code kept dormant; re-add here when
+  // re-scheduling (see cron-schedule-registry.ts for the full checklist).
   // Tight cadences
   // Plan v4 (2026-05-24): removed `scraper-health` — Railway scraper cron,
   // service is gone. The new `vercel-watchdog` (5-min, listed at the
   // bottom) replaces it.
-  { name: 'agent-nudges-check',            cadenceHours: 5/60,  description: 'every-5-min nudge engine (Vercel native cron) — Codex 2026-05-13' },
   // 2026-07-19: compliance-reminders + compliance-anomaly-sweep removed —
   // the engineering-compliance section was deleted entirely (owner call).
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
   { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
   { name: 'agent-consolidate-memory',      cadenceHours: 24,    description: 'nightly per-hotel memory consolidation — auto-learns durable facts from conversations (self-learning Move #2)' },
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
-  { name: 'sweep-orphan-auth-users',       cadenceHours: 30/60, description: 'every-30-min orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4)' },
+  { name: 'sweep-orphan-auth-users',       cadenceHours: 24,    description: 'daily orphan auth-user reconciler — deletes auth.users rows with no matching accounts row (audit fix #4; slowed from 30-min 2026-07-19, owner call)' },
   { name: 'sweep-mfa-verified-sessions',   cadenceHours: 6,     description: 'every-6-hour sweep of mfa_verified_sessions rows older than 30 days — Phase 2B Door B fix' },
   // Plan v4 (2026-05-24): removed `seed-rooms-daily` — depended on the
   // legacy `rooms` table (dropped in v4). CUA writes room state to
   // pms_room_status_log (event-sourced, no per-day seeding needed).
-  { name: 'seal-daily',                    cadenceHours: 1,     description: 'hourly per-property daily-seal — sources today_property_counts_v1 (pms_in_house_snapshot)' },
-  { name: 'schedule-auto-fill',            cadenceHours: 24,    description: 'daily schedule auto-build — sources today_room_work_v1 (pms_room_status_log + pms_reservations)' },
   // Daily
   { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
   { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },
@@ -842,13 +845,11 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // makes the cron meaningful. (See route.ts for the matching log demote.)
   { name: 'ml-retention-purge',            cadenceHours: 24,    description: 'daily prediction_log/app_events retention purge (Phase 3.6)' },
   { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },
-  { name: 'expire-trials',                 cadenceHours: 24,    description: 'daily trial-expiration flip' },
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
   { name: 'claude-sessions-purge',         cadenceHours: 24,    description: 'daily 3:30am claude_sessions retention sweep — deletes rows older than 24h so random-sessionId floods can\'t grow the table (security audit M2)' },
   { name: 'agent-heal-counters',           cadenceHours: 24,    description: 'daily 4am counter-drift heal (Round 12 T12.12, invariant doctrine safety net)' },
   { name: 'webhook-dedup-purge',           cadenceHours: 24,    description: 'daily 4:15am purge of expired webhook-dedup keys (auth-storage-cookies-and-middleware)' },
   { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
-  { name: 'pms-backfill-missing-feeds',    cadenceHours: 24,    description: 'daily 10:00 UTC retry of feeds the mapper has not learned yet — enqueues one seeded mapper job per PMS family whose active knowledge file has feedGaps (feat/cua-partial-promotion)' },
   // Weekly
   { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
   { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
@@ -860,15 +861,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'vercel-watchdog',               cadenceHours: 5/60,  description: '5-min Vercel cron that polls /api/admin/doctor and alerts on fail (replaces scraper/vercel-watchdog.js post-v4)' },
   // 2026-05-24: cua-parity-diff retired — shadow gate removed alongside
   // legacy CA normalizers; new generic-table-writer is the only path now.
-  // Migration 0210: cleaning-rules engine that turns live PMS data into
-  // Staxis-side cleaning task records (departure clean, VIP amenity
-  // setup, tight-turnaround priority bump, …).
-  { name: 'run-rules-engine',              cadenceHours: 5/60,  description: '5-min cleaning-rules engine — reads pms_*, writes cleaning_tasks (Vercel native cron)' },
-  // 2026-05-25: auto-assignment cron. Every 15 min, per-property
-  // timezone. Picks up unassigned cleaning_tasks for each property's
-  // "today" and runs the scoring engine. Idempotent (skips already-
-  // assigned tasks via the hk_assignments partial unique index).
-  { name: 'run-auto-assign',               cadenceHours: 15/60, description: '15-min Vercel cron — auto-assigns cleaning_tasks to housekeepers per property timezone' },
   // 2026-05-24: sick-callout coverage flow (feature #6). Sweeps callouts
   // whose redistribute_at has passed (or whose 'after_current_room'
   // gate is now satisfied) and fires the redistribute. Safety net for
@@ -878,9 +870,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // screenshots from the mapping-screenshots storage bucket. Without this
   // the 15-min TTL pending rows accumulate forever.
   { name: 'expire-help-requests',          cadenceHours: 5/60,  description: '5-min Vercel cron that expires stale mapping_help_requests + purges their screenshot storage objects (Plan v8 Phase B)' },
-  // 2026-05-24: feature #17 — daily + weekly housekeeping reports.
-  // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity escalation.
-  { name: 'lost-found-disposal-check',     cadenceHours: 24, description: 'Daily Lost & Found disposal sweep — auto-expires found items past their 90-day hold and nudges owners/GMs about items nearing the deadline' },
 ];
 
 
