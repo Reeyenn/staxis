@@ -81,16 +81,21 @@ function bpStrings(lang: Lang) {
       eyebrow: 'Budgets',
       cancel: 'Cancel',
       saving: 'Saving…',
-      save: 'Save',
-      howBudgetsWork: 'How budgets work',
+      save: 'Save budgets',
+      chooseMethodTitle: 'Choose how to budget',
+      chooseMethodSub: 'Use one monthly limit for all inventory, or set separate limits by category and custom section.',
       totalTitle: 'One total budget',
       totalSub: 'A single number for the whole inventory.',
-      totalCovers: 'This one budget covers every category — housekeeping, maintenance, food & beverage, and any sections.',
-      sectionsTitle: 'By section',
+      totalCovers: 'This one budget covers every category — housekeeping, maintenance, food & beverage, and any custom sections.',
+      sectionsTitle: 'By category or section',
       sectionsSub: 'Housekeeping, maintenance, food & beverage — plus your own sections.',
+      setLimitsTitle: 'Set monthly budget limits',
+      setLimitsSub: 'Choose a month and year, then enter the most you plan to spend. Leave an amount blank for no limit.',
       month: 'Month',
+      year: 'Year',
       wholeInventory: 'Whole inventory',
       forMonth: (m: string, y: number) => `for ${m} ${y}`,
+      budgetLimitLabel: (name: string, m: string, y: number) => `${name} budget limit for ${m} ${y}`,
       addSection: '＋ Add a section',
       sectionNamePh: 'Section name (e.g. Pool supplies)',
       whichItems: 'Which items count toward it',
@@ -106,7 +111,8 @@ function bpStrings(lang: Lang) {
       confirmRemove: 'Remove?',
       sectionFailed: 'Saving the section failed. Please try again.',
       saveFailed: 'Saving the budgets failed. Please try again.',
-      noCapHint: 'Leave a box empty for no cap.',
+      noCapHint: 'Leave an amount blank for no budget limit.',
+      copyMonthToYear: (m: string, y: number) => `Copy ${m} to every month in ${y}`,
       // Spend
       spentOf: (spent: string, cap: string) => `${spent} spent of ${cap}`,
       left: (v: string) => `${v} left`,
@@ -114,12 +120,18 @@ function bpStrings(lang: Lang) {
       noBudget: (spent: string) => `${spent} spent · no budget set`,
       thisMonthSpend: 'This month’s spend',
       totalBudget: 'Total budget',
-      noBudgetsYet: 'No budgets set for this month. Add caps below to track spend against them.',
+      summaryOf: (cap: string) => `of ${cap}`,
+      noBudgetsYet: 'No budgets set for this month. Add limits above to track spend against them.',
       overBanner: (names: string) => `Over budget: ${names}.`,
       nearBanner: (names: string) => `Close to budget: ${names}.`,
       planningNote: (m: string, y: number) => `Planning ${m} ${y} — spend shows on the current month.`,
+      reviewCurrentTitle: 'Review this month',
+      reviewSelectedTitle: 'Review the selected month',
+      reviewCurrentSub: 'See spend from received orders against the budget limits you set above.',
+      reviewSelectedSub: 'See the combined budget limit for the month you selected.',
       // History timeline
-      budgetHistory: 'Budget history',
+      compareMonthsTitle: 'Compare recent months',
+      compareMonthsSub: 'Compare budget with spend from received orders for each of the last six months.',
       thisMonthTag: 'NOW',
       monthNoData: 'no activity',
       noBudgetShort: (v: string) => `${v} · no budget`,
@@ -129,16 +141,21 @@ function bpStrings(lang: Lang) {
       eyebrow: 'Presupuestos',
       cancel: 'Cancelar',
       saving: 'Guardando…',
-      save: 'Guardar',
-      howBudgetsWork: 'Cómo funcionan los presupuestos',
+      save: 'Guardar presupuestos',
+      chooseMethodTitle: 'Elige cómo presupuestar',
+      chooseMethodSub: 'Usa un límite mensual para todo el inventario o fija límites separados por categoría y sección personalizada.',
       totalTitle: 'Un presupuesto total',
       totalSub: 'Un solo número para todo el inventario.',
-      totalCovers: 'Este presupuesto cubre todas las categorías — limpieza, mantenimiento, alimentos y cualquier sección.',
-      sectionsTitle: 'Por sección',
-      sectionsSub: 'Limpieza, mantenimiento, alimentos — más tus propias secciones.',
+      totalCovers: 'Este presupuesto cubre todas las categorías: limpieza, mantenimiento, alimentos y bebidas, además de cualquier sección personalizada.',
+      sectionsTitle: 'Por categoría o sección',
+      sectionsSub: 'Limpieza, mantenimiento, alimentos y bebidas — más tus propias secciones.',
+      setLimitsTitle: 'Establece límites mensuales',
+      setLimitsSub: 'Elige un mes y un año, luego ingresa el máximo que planeas gastar. Deja un monto en blanco si no deseas fijar un límite.',
       month: 'Mes',
+      year: 'Año',
       wholeInventory: 'Todo el inventario',
       forMonth: (m: string, y: number) => `para ${m} ${y}`,
+      budgetLimitLabel: (name: string, m: string, y: number) => `Límite de presupuesto de ${name} para ${m} de ${y}`,
       addSection: '＋ Agregar sección',
       sectionNamePh: 'Nombre de la sección (ej. Artículos de piscina)',
       whichItems: 'Qué artículos cuentan para ella',
@@ -154,7 +171,8 @@ function bpStrings(lang: Lang) {
       confirmRemove: '¿Quitar?',
       sectionFailed: 'No se pudo guardar la sección. Inténtalo de nuevo.',
       saveFailed: 'No se pudieron guardar los presupuestos. Inténtalo de nuevo.',
-      noCapHint: 'Deja una casilla vacía para no poner límite.',
+      noCapHint: 'Deja un monto en blanco si no deseas fijar un límite.',
+      copyMonthToYear: (m: string, y: number) => `Copiar ${m} a todos los meses de ${y}`,
       // Spend
       spentOf: (spent: string, cap: string) => `${spent} gastado de ${cap}`,
       left: (v: string) => `${v} disponible`,
@@ -162,12 +180,18 @@ function bpStrings(lang: Lang) {
       noBudget: (spent: string) => `${spent} gastado · sin presupuesto`,
       thisMonthSpend: 'Gasto de este mes',
       totalBudget: 'Presupuesto total',
-      noBudgetsYet: 'Sin presupuestos este mes. Agrega límites abajo para seguir el gasto.',
+      summaryOf: (cap: string) => `de ${cap}`,
+      noBudgetsYet: 'Sin presupuestos este mes. Agrega límites arriba para seguir el gasto.',
       overBanner: (names: string) => `Sobre presupuesto: ${names}.`,
       nearBanner: (names: string) => `Cerca del límite: ${names}.`,
       planningNote: (m: string, y: number) => `Planeando ${m} ${y} — el gasto se muestra en el mes actual.`,
+      reviewCurrentTitle: 'Revisa este mes',
+      reviewSelectedTitle: 'Revisa el mes seleccionado',
+      reviewCurrentSub: 'Compara el gasto de los pedidos recibidos con los límites que fijaste arriba.',
+      reviewSelectedSub: 'Consulta el límite combinado del presupuesto para el mes que seleccionaste.',
       // History timeline
-      budgetHistory: 'Historial de presupuesto',
+      compareMonthsTitle: 'Compara los meses recientes',
+      compareMonthsSub: 'Compara el presupuesto con el gasto de los pedidos recibidos en cada uno de los últimos seis meses.',
       thisMonthTag: 'AHORA',
       monthNoData: 'sin actividad',
       noBudgetShort: (v: string) => `${v} · sin presupuesto`,
@@ -524,7 +548,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
         </>
       }
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
         {/* GM alerts — over / near budget on the live month. */}
         {showSpend && alerts.over.length > 0 && (
           <div style={bannerStyle(T.warm)}>{bp.overBanner(alerts.over.join(', '))}</div>
@@ -536,32 +560,38 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
           <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>{bp.planningNote(MONTHS[month], year)}</div>
         )}
 
-        {/* Mode: one total number, or per-section */}
-        <div>
-          <Caps>{bp.howBudgetsWork}</Caps>
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+        {/* Mode: one total number, or per-section. */}
+        <BudgetSection title={bp.chooseMethodTitle} description={bp.chooseMethodSub}>
+          <div style={{ display: 'flex', gap: 8 }}>
             <ModeBtn active={mode === 'total'} onClick={() => setMode('total')} title={bp.totalTitle} sub={bp.totalSub} />
             <ModeBtn active={mode === 'sections'} onClick={() => setMode('sections')} title={bp.sectionsTitle} sub={bp.sectionsSub} />
           </div>
-        </div>
+        </BudgetSection>
 
-        {/* Year + month */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <Caps>{bp.month}</Caps>
-          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-            {MONTHS.map((m, i) => (
-              <Chip key={m} active={i === month} onClick={() => setMonth(i)}>{m}</Chip>
-            ))}
+        <BudgetSection title={bp.setLimitsTitle} description={bp.setLimitsSub}>
+          {/* Month + year selectors are kept on distinct labelled rows so the
+              year chips are not mistaken for additional months. */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <Caps>{bp.month}</Caps>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {MONTHS.map((m, i) => (
+                  <Chip key={m} active={i === month} onClick={() => setMonth(i)}>{m}</Chip>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <Caps>{bp.year}</Caps>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {YEARS.map((y) => (
+                  <Chip key={y} active={y === year} onClick={() => setYear(y)}>{String(y)}</Chip>
+                ))}
+              </div>
+            </div>
           </div>
-          <div style={{ display: 'flex', gap: 4, marginLeft: 'auto' }}>
-            {YEARS.map((y) => (
-              <Chip key={y} active={y === year} onClick={() => setYear(y)}>{String(y)}</Chip>
-            ))}
-          </div>
-        </div>
 
-        {/* Budget rows — fixed height + internal scroll (same size in both modes). */}
-        <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 18px', height: ROWS_PANEL_H, overflowY: 'auto' }}>
+          {/* Budget rows — fixed height + internal scroll (same size in both modes). */}
+          <div style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 18px', height: ROWS_PANEL_H, overflowY: 'auto' }}>
           {rows.map((row, i) => {
             const cap = capOf(row.key);
             const spent = spentFor(row.key);
@@ -571,7 +601,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                 key={row.key}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: '40px 1fr 150px',
+                  gridTemplateColumns: '40px minmax(0, 1fr) clamp(112px, 24vw, 150px)',
                   gap: 14,
                   padding: '13px 0',
                   alignItems: 'center',
@@ -609,7 +639,11 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                     </span>
                   )}
                 </div>
-                <DollarInput value={arrFor(row.key)[month]} onChange={(v) => setVal(row.key, v)} />
+                <DollarInput
+                  ariaLabel={bp.budgetLimitLabel(row.label, MONTHS[month], year)}
+                  value={arrFor(row.key)[month]}
+                  onChange={(v) => setVal(row.key, v)}
+                />
               </div>
             );
           })}
@@ -663,10 +697,25 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
               </div>
             </div>
           )}
-        </div>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Btn
+              variant="ghost"
+              size="md"
+              onClick={copyToYear}
+              style={{ maxWidth: '100%', height: 'auto', minHeight: 38, padding: '8px 16px', whiteSpace: 'normal', lineHeight: 1.3, textAlign: 'center' }}
+            >
+              {bp.copyMonthToYear(MONTHS[month], year)}
+            </Btn>
+          </div>
+        </BudgetSection>
 
         {/* Footer summary — spend vs budget (live month) or just the total cap. */}
-        <div style={{ padding: '14px 18px', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <BudgetSection
+          contained
+          title={showSpend ? bp.reviewCurrentTitle : bp.reviewSelectedTitle}
+          description={showSpend ? bp.reviewCurrentSub : bp.reviewSelectedSub}
+        >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <div>
               <Caps>{showSpend ? bp.thisMonthSpend : bp.totalBudget}</Caps>
@@ -677,7 +726,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                   </span>
                   {monthBudgetTotal > 0 && (
                     <span style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2 }}>
-                      of {fmtMoney(monthBudgetTotal)} · {summarySt === 'over' ? bp.over(fmtMoney(monthSpentTotal - monthBudgetTotal)) : bp.left(fmtMoney(Math.max(0, monthBudgetTotal - monthSpentTotal)))}
+                      {bp.summaryOf(fmtMoney(monthBudgetTotal))} · {summarySt === 'over' ? bp.over(fmtMoney(monthSpentTotal - monthBudgetTotal)) : bp.left(fmtMoney(Math.max(0, monthBudgetTotal - monthSpentTotal)))}
                     </span>
                   )}
                 </div>
@@ -690,16 +739,14 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                 {showSpend && monthBudgetTotal === 0 ? bp.noBudgetsYet : bp.noCapHint}
               </div>
             </div>
-            <Btn variant="ghost" size="md" onClick={copyToYear}>{`Copy ${MONTHS[month]} → all of ${year}`}</Btn>
           </div>
           {showSpend && monthBudgetTotal > 0 && <MiniBar spent={monthSpentTotal} cap={monthBudgetTotal} status={summarySt} height={7} />}
-        </div>
+        </BudgetSection>
 
         {/* Budget history — month-by-month spent vs budget (newest first). */}
-        <div style={{ padding: '14px 18px', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14 }}>
-          <Caps>{bp.budgetHistory}</Caps>
+        <BudgetSection contained title={bp.compareMonthsTitle} description={bp.compareMonthsSub}>
           {historyHasData ? (
-            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 13, maxHeight: HISTORY_PANEL_H, overflowY: 'auto' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 13, maxHeight: HISTORY_PANEL_H, overflowY: 'auto' }}>
               {timeline.map((t) => (
                 <div key={`${t.y}-${t.m}`} style={{ display: 'grid', gridTemplateColumns: '82px 1fr 158px', gap: 12, alignItems: 'center' }}>
                   <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: t.isCurrent ? T.ink : T.ink2, whiteSpace: 'nowrap' }}>
@@ -718,13 +765,75 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
               ))}
             </div>
           ) : (
-            <div style={{ marginTop: 10, fontFamily: fonts.sans, fontSize: 12, color: T.ink3, lineHeight: 1.5 }}>
+            <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, lineHeight: 1.5 }}>
               {bp.historyEmpty}
             </div>
           )}
-        </div>
+        </BudgetSection>
       </div>
     </Overlay>
+  );
+}
+
+function BudgetSection({
+  title,
+  description,
+  contained = false,
+  children,
+}: {
+  title: string;
+  description: string;
+  contained?: boolean;
+  children: React.ReactNode;
+}) {
+  const titleId = React.useId();
+  return (
+    <section
+      aria-labelledby={titleId}
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        ...(contained
+          ? {
+              padding: '18px',
+              background: T.paper,
+              border: `1px solid ${T.rule}`,
+              borderRadius: 14,
+            }
+          : {}),
+      }}
+    >
+      <header>
+        <h2
+          id={titleId}
+          style={{
+            margin: 0,
+            fontFamily: fonts.sans,
+            fontSize: 18,
+            fontWeight: 700,
+            lineHeight: 1.25,
+            letterSpacing: '-0.015em',
+            color: T.ink,
+          }}
+        >
+          {title}
+        </h2>
+        <p
+          style={{
+            maxWidth: 620,
+            margin: '4px 0 0',
+            fontFamily: fonts.sans,
+            fontSize: 13,
+            lineHeight: 1.5,
+            color: T.ink2,
+          }}
+        >
+          {description}
+        </p>
+      </header>
+      {children}
+    </section>
   );
 }
 
@@ -764,6 +873,7 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       style={{
         padding: '6px 10px', borderRadius: 7, cursor: 'pointer',
         background: active ? T.ink : 'transparent', color: active ? T.bg : T.ink2,
@@ -787,13 +897,14 @@ function TextBtn({ onClick, children, warm, size = 11 }: { onClick: () => void; 
   );
 }
 
-function DollarInput({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function DollarInput({ ariaLabel, value, onChange }: { ariaLabel: string; value: string; onChange: (v: string) => void }) {
   return (
     <div style={{ position: 'relative' }}>
       <span style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', fontFamily: fonts.sans, fontSize: 18, fontWeight: 600, color: value ? T.ink2 : T.faint }}>$</span>
       <input
         type="text"
         inputMode="decimal"
+        aria-label={ariaLabel}
         value={value}
         onChange={(e) => { const v = e.target.value; if (numGuard(v)) onChange(v); }}
         style={{
@@ -811,6 +922,7 @@ function ModeBtn({ active, onClick, title, sub }: { active: boolean; onClick: ()
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active}
       style={{
         flex: 1, padding: '14px 16px', borderRadius: 12, cursor: 'pointer',
         background: active ? T.ink : 'transparent', color: active ? T.bg : T.ink,
