@@ -328,11 +328,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Writes the one-line takeaway at the top of each emailed report.',
     ['text'], HAIKU_PINNED,
   ),
-  'reports.weekly_insight': defineFeature(
-    'reports.weekly_insight', 'Reports', 'Weekly insights',
-    'Writes the short insight in your Sunday weekly report.',
-    ['text'], HAIKU_PINNED,
-  ),
   'communications.voice_transcription': defineFeature(
     'communications.voice_transcription', 'Communications', 'Voice transcription',
     'Turns staff voice messages into text.',

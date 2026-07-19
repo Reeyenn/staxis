@@ -13,7 +13,7 @@ export const dynamic = 'force-dynamic';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import {
-  Calendar, ChevronLeft, Clock, Download, Mail, Play, Plus, Sparkles, Star, Trash2, X,
+  ChevronLeft, Download, Play, Sparkles, Star,
 } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -46,19 +46,6 @@ interface RunResult {
   stats: ReportStatDTO[];
   notes: Bilingual | null;
   aiSummary: string | null;
-}
-interface ScheduleDTO {
-  id: string;
-  reportKey: string;
-  cadence: 'daily' | 'weekly' | 'monthly';
-  hourLocal: number;
-  dayOfWeek: number | null;
-  dayOfMonth: number | null;
-  rangeKind: 'last7' | 'last30' | 'mtd' | 'prev_month';
-  recipients: string[];
-  enabled: boolean;
-  lastRunDate: string | null;
-  lastRunStatus: string | null;
 }
 
 const CATEGORY_LABEL: Record<ReportCategory, Bilingual> = {
@@ -135,7 +122,6 @@ export default function ReportsPage() {
 function ReportsBody({ pid, lang }: { pid: string; lang: Lang }) {
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
-  const [schedules, setSchedules] = useState<ScheduleDTO[]>([]);
   const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<CatalogEntry | null>(null);
@@ -151,7 +137,6 @@ function ReportsBody({ pid, lang }: { pid: string; lang: Lang }) {
       const data = body?.data ?? body;
       setCatalog(data?.catalog ?? []);
       setFavorites(new Set<string>(data?.favorites ?? []));
-      setSchedules(data?.schedules ?? []);
     } catch (e) {
       setError((e as Error)?.message ?? 'Network error');
     } finally {
@@ -187,9 +172,7 @@ function ReportsBody({ pid, lang }: { pid: string; lang: Lang }) {
         lang={lang}
         entry={selected}
         favorited={favorites.has(selected.key)}
-        schedules={schedules.filter((s) => s.reportKey === selected.key)}
         onToggleFavorite={() => toggleFavorite(selected.key)}
-        onSchedulesChanged={loadCatalog}
         onBack={() => setSelected(null)}
       />
     );
@@ -213,8 +196,8 @@ function ReportsBody({ pid, lang }: { pid: string; lang: Lang }) {
       </div>
       <p style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2, margin: 0, maxWidth: 640 }}>
         {lang === 'es'
-          ? 'Genera cualquier reporte cuando lo necesites, expórtalo, márcalo como favorito o prográmalo para enviarse por correo.'
-          : 'Run any report on demand, export it, star your favorites, or schedule it to auto-email.'}
+          ? 'Genera cualquier reporte cuando lo necesites, expórtalo o márcalo como favorito.'
+          : 'Run any report on demand, export it, or star your favorites.'}
       </p>
 
       {error && (
@@ -285,9 +268,9 @@ function ReportCard({ entry, lang, favorited, onOpen, onStar }: {
   );
 }
 
-function ReportRunner({ pid, lang, entry, favorited, schedules, onToggleFavorite, onSchedulesChanged, onBack }: {
-  pid: string; lang: Lang; entry: CatalogEntry; favorited: boolean; schedules: ScheduleDTO[];
-  onToggleFavorite: () => void; onSchedulesChanged: () => void; onBack: () => void;
+function ReportRunner({ pid, lang, entry, favorited, onToggleFavorite, onBack }: {
+  pid: string; lang: Lang; entry: CatalogEntry; favorited: boolean;
+  onToggleFavorite: () => void; onBack: () => void;
 }) {
   const [rangeKey, setRangeKey] = useState<RangeKey>(entry.defaultRange);
   const [customFrom, setCustomFrom] = useState('');
@@ -295,7 +278,6 @@ function ReportRunner({ pid, lang, entry, favorited, schedules, onToggleFavorite
   const [result, setResult] = useState<RunResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showSchedule, setShowSchedule] = useState(false);
 
   const bounds = useMemo(() => rangeFor(rangeKey, customFrom, customTo), [rangeKey, customFrom, customTo]);
 
@@ -356,7 +338,6 @@ function ReportRunner({ pid, lang, entry, favorited, schedules, onToggleFavorite
           </Btn>
           <Btn variant="ghost" size="sm" onClick={() => handleExport('csv')}><Download size={14} /> CSV</Btn>
           <Btn variant="ghost" size="sm" onClick={() => handleExport('xlsx')}><Download size={14} /> Excel</Btn>
-          <Btn variant="ghost" size="sm" onClick={() => setShowSchedule(true)}><Calendar size={14} /> {lang === 'es' ? 'Programar' : 'Schedule'}</Btn>
         </div>
       </div>
 
@@ -425,18 +406,6 @@ function ReportRunner({ pid, lang, entry, favorited, schedules, onToggleFavorite
       {result?.notes && (
         <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>{result.notes[lang]}</div>
       )}
-
-      {showSchedule && (
-        <ScheduleModal
-          pid={pid}
-          lang={lang}
-          reportKey={entry.key}
-          reportTitle={entry.title[lang]}
-          existing={schedules}
-          onClose={() => setShowSchedule(false)}
-          onChanged={onSchedulesChanged}
-        />
-      )}
     </div>
   );
 }
@@ -469,172 +438,6 @@ function ResultTable({ result, lang }: { result: RunResult; lang: Lang }) {
   );
 }
 
-function ScheduleModal({ pid, lang, reportKey, reportTitle, existing, onClose, onChanged }: {
-  pid: string; lang: Lang; reportKey: string; reportTitle: string; existing: ScheduleDTO[];
-  onClose: () => void; onChanged: () => void;
-}) {
-  const [cadence, setCadence] = useState<'daily' | 'weekly' | 'monthly'>('weekly');
-  const [hourLocal, setHourLocal] = useState(8);
-  const [dayOfWeek, setDayOfWeek] = useState(1);
-  const [dayOfMonth, setDayOfMonth] = useState(1);
-  const [rangeKind, setRangeKind] = useState<'last7' | 'last30' | 'mtd' | 'prev_month'>('last7');
-  const [recipients, setRecipients] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const save = useCallback(async () => {
-    setSaving(true); setError(null);
-    const emails = recipients.split(/[,\s;]+/).map((e) => e.trim()).filter(Boolean);
-    try {
-      const r = await fetchWithAuth('/api/settings/reports/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          propertyId: pid, reportKey, cadence, hourLocal,
-          dayOfWeek: cadence === 'weekly' ? dayOfWeek : null,
-          dayOfMonth: cadence === 'monthly' ? dayOfMonth : null,
-          rangeKind, recipients: emails, enabled: true,
-        }),
-      });
-      const body = await r.json().catch(() => null);
-      if (!r.ok) { setError(body?.error ?? `Failed (${r.status})`); return; }
-      setRecipients('');
-      onChanged();
-    } catch (e) {
-      setError((e as Error)?.message ?? 'Failed to save');
-    } finally {
-      setSaving(false);
-    }
-  }, [pid, reportKey, cadence, hourLocal, dayOfWeek, dayOfMonth, rangeKind, recipients, onChanged]);
-
-  const remove = useCallback(async (id: string) => {
-    setError(null);
-    try {
-      const r = await fetchWithAuth(`/api/settings/reports/schedules?id=${encodeURIComponent(id)}&propertyId=${encodeURIComponent(pid)}`, { method: 'DELETE' });
-      if (!r.ok) {
-        // A failed delete used to be silently ignored — the row stayed in
-        // the list with no error and the report kept emailing.
-        const body = await r.json().catch(() => null);
-        setError(body?.error ?? (lang === 'es' ? `No se pudo eliminar la programación (${r.status})` : `Couldn’t delete the schedule (${r.status})`));
-        return;
-      }
-      onChanged();
-    } catch (e) {
-      console.error('[reports:settings] schedule delete failed', e);
-      setError(lang === 'es' ? 'No se pudo eliminar la programación — revisa tu conexión' : 'Couldn’t delete the schedule — check your connection');
-    }
-  }, [pid, onChanged, lang]);
-
-  const DOW = lang === 'es'
-    ? ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
-    : ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-  return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.18)', zIndex: 50, display: 'flex', justifyContent: 'flex-end' }}>
-      <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(460px, 96vw)', height: '100vh', overflowY: 'auto', background: T.paper, borderLeft: `1px solid ${T.rule}`, padding: 20, display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <Caps>{lang === 'es' ? 'Programar reporte' : 'Schedule report'}</Caps>
-          <button onClick={onClose} style={{ background: 'transparent', border: 'none', cursor: 'pointer' }}><X size={16} color={T.ink2} /></button>
-        </div>
-        <div style={{ fontFamily: fonts.serif, fontSize: 19, color: T.ink }}>{reportTitle}</div>
-
-        {existing.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <Caps>{lang === 'es' ? 'Programaciones activas' : 'Active schedules'}</Caps>
-            {existing.map((s) => (
-              <div key={s.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, border: `1px solid ${T.rule}`, borderRadius: 8, padding: '8px 10px' }}>
-                <div style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.ink2 }}>
-                  <span style={{ color: T.ink }}>{cadenceLabel(s.cadence, lang)}</span>
-                  {' · '}{String(s.hourLocal).padStart(2, '0')}:00
-                  {s.cadence === 'weekly' && s.dayOfWeek != null ? ` · ${DOW[s.dayOfWeek]}` : ''}
-                  {s.cadence === 'monthly' && s.dayOfMonth != null ? ` · ${lang === 'es' ? 'día' : 'day'} ${s.dayOfMonth}` : ''}
-                  <div style={{ color: T.ink3, fontSize: 11 }}>{s.recipients.join(', ')}</div>
-                </div>
-                <button onClick={() => remove(s.id)} style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: T.ink3 }} aria-label="Delete schedule"><Trash2 size={15} /></button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div style={{ height: 1, background: T.rule }} />
-        <Caps>{lang === 'es' ? 'Nueva programación' : 'New schedule'}</Caps>
-
-        <Field label={lang === 'es' ? 'Frecuencia' : 'Frequency'}>
-          <select value={cadence} onChange={(e) => setCadence(e.target.value as typeof cadence)} style={selectStyle}>
-            <option value="daily">{lang === 'es' ? 'Diario' : 'Daily'}</option>
-            <option value="weekly">{lang === 'es' ? 'Semanal' : 'Weekly'}</option>
-            <option value="monthly">{lang === 'es' ? 'Mensual' : 'Monthly'}</option>
-          </select>
-        </Field>
-
-        {cadence === 'weekly' && (
-          <Field label={lang === 'es' ? 'Día de la semana' : 'Day of week'}>
-            <select value={dayOfWeek} onChange={(e) => setDayOfWeek(Number(e.target.value))} style={selectStyle}>
-              {DOW.map((d, i) => <option key={i} value={i}>{d}</option>)}
-            </select>
-          </Field>
-        )}
-        {cadence === 'monthly' && (
-          <Field label={lang === 'es' ? 'Día del mes' : 'Day of month'}>
-            <select value={dayOfMonth} onChange={(e) => setDayOfMonth(Number(e.target.value))} style={selectStyle}>
-              {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => <option key={d} value={d}>{d}</option>)}
-            </select>
-          </Field>
-        )}
-
-        <Field label={lang === 'es' ? 'Hora (local)' : 'Time (local)'}>
-          <select value={hourLocal} onChange={(e) => setHourLocal(Number(e.target.value))} style={selectStyle}>
-            {Array.from({ length: 24 }, (_, i) => i).map((h) => <option key={h} value={h}>{String(h).padStart(2, '0')}:00</option>)}
-          </select>
-        </Field>
-
-        <Field label={lang === 'es' ? 'Periodo de datos' : 'Data window'}>
-          <select value={rangeKind} onChange={(e) => setRangeKind(e.target.value as typeof rangeKind)} style={selectStyle}>
-            <option value="last7">{lang === 'es' ? 'Últimos 7 días' : 'Last 7 days'}</option>
-            <option value="last30">{lang === 'es' ? 'Últimos 30 días' : 'Last 30 days'}</option>
-            <option value="mtd">{lang === 'es' ? 'Mes a la fecha' : 'Month to date'}</option>
-            <option value="prev_month">{lang === 'es' ? 'Mes anterior' : 'Previous month'}</option>
-          </select>
-        </Field>
-
-        <Field label={lang === 'es' ? 'Destinatarios (correos)' : 'Recipients (emails)'}>
-          <textarea
-            value={recipients}
-            onChange={(e) => setRecipients(e.target.value)}
-            placeholder={lang === 'es' ? 'correo@ejemplo.com, otro@ejemplo.com' : 'name@example.com, other@example.com'}
-            rows={2}
-            style={{ ...selectStyle, resize: 'vertical', fontFamily: fonts.sans }}
-          />
-        </Field>
-
-        {error && <div style={{ fontFamily: fonts.sans, fontSize: 12.5, color: T.warm }}>{error}</div>}
-
-        <div style={{ display: 'flex', gap: 8 }}>
-          <Btn variant="primary" size="sm" onClick={() => void save()} disabled={saving}>
-            <Plus size={14} /> {saving ? (lang === 'es' ? 'Guardando…' : 'Saving…') : (lang === 'es' ? 'Agregar' : 'Add schedule')}
-          </Btn>
-        </div>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', color: T.ink3, fontFamily: fonts.sans, fontSize: 11.5 }}>
-          <Mail size={12} /> {lang === 'es' ? 'Se enviará automáticamente por correo.' : 'Sent automatically by email.'}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <Caps>{label}</Caps>
-      {children}
-    </label>
-  );
-}
-
-function cadenceLabel(c: 'daily' | 'weekly' | 'monthly', lang: Lang): string {
-  if (lang === 'es') return c === 'daily' ? 'Diario' : c === 'weekly' ? 'Semanal' : 'Mensual';
-  return c === 'daily' ? 'Daily' : c === 'weekly' ? 'Weekly' : 'Monthly';
-}
 function rangeLabel(k: RangeKey, lang: Lang): string {
   if (lang === 'es') {
     return k === 'last7' ? 'Últimos 7 días' : k === 'last30' ? 'Últimos 30 días' : k === 'mtd' ? 'Mes a la fecha' : 'Personalizado';
@@ -645,8 +448,4 @@ function rangeLabel(k: RangeKey, lang: Lang): string {
 const dateInputStyle: React.CSSProperties = {
   fontFamily: fonts.sans, fontSize: 12, padding: '4px 8px',
   border: `1px solid ${T.rule}`, borderRadius: 6, background: T.paper, color: T.ink,
-};
-const selectStyle: React.CSSProperties = {
-  fontFamily: fonts.sans, fontSize: 13, padding: '7px 10px',
-  border: `1px solid ${T.rule}`, borderRadius: 8, background: T.paper, color: T.ink, width: '100%',
 };

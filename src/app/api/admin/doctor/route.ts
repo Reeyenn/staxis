@@ -813,7 +813,9 @@ async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationM
 export const GH_ACTIONS_SKEW_BUFFER_HOURS = 0.25;
 
 export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; description: string }> = [
-  { name: 'run-scheduled-reports',         cadenceHours: 1,     description: 'hourly self-serve scheduled-report delivery (Vercel native cron)' },
+  // 2026-07-19: run-scheduled-reports / run-daily-report / run-weekly-report
+  // removed from this list — the automatic report emails were deleted
+  // entirely (owner call), so their heartbeats will never land again.
   // Tight cadences
   // Plan v4 (2026-05-24): removed `scraper-health` — Railway scraper cron,
   // service is gone. The new `vercel-watchdog` (5-min, listed at the
@@ -877,13 +879,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // the 15-min TTL pending rows accumulate forever.
   { name: 'expire-help-requests',          cadenceHours: 5/60,  description: '5-min Vercel cron that expires stale mapping_help_requests + purges their screenshot storage objects (Plan v8 Phase B)' },
   // 2026-05-24: feature #17 — daily + weekly housekeeping reports.
-  // 30-min cadence; per-property time-window check in the route picks
-  // the right firing for each hotel's local 4pm/6pm/8pm/10pm slot.
-  { name: 'run-daily-report',              cadenceHours: 30/60, description: '30-min cron that builds the per-property daily housekeeping report and emails it to active GMs/owners at their configured local time' },
-  // Weekly fires the same 30-min cron — the route itself skips non-Sunday
-  // runs early. Cadence is 30/60 because the heartbeat lands every tick
-  // regardless of whether a property got mailed.
-  { name: 'run-weekly-report',             cadenceHours: 30/60, description: 'Sunday-only logic, 30-min cron — same per-property time-window check as run-daily-report; emits the Mon–Sun digest with a Claude-generated AI insight at the top' },
   // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity escalation.
   { name: 'lost-found-disposal-check',     cadenceHours: 24, description: 'Daily Lost & Found disposal sweep — auto-expires found items past their 90-day hold and nudges owners/GMs about items nearing the deadline' },
 ];

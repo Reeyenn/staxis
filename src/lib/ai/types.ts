@@ -42,7 +42,6 @@ export const AI_FEATURE_KEYS = [
   'complaints.classification',
   'complaints.recovery_draft',
   'reports.run_summary',
-  'reports.weekly_insight',
   'communications.voice_transcription',
   'knowledge.embeddings',
   'speech.ask_staxis_dictation',

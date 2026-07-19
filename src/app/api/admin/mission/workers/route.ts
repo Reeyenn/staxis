@@ -61,13 +61,12 @@ interface WorkerRow {
 // import-tracing each cron on 2026-07-17); 'prediction' = classic ML math
 // (learns from numbers, no language model); 'timer' = plain scheduled chore.
 export type WorkerTier = 'ai' | 'prediction' | 'timer';
+// (run-daily-report / run-weekly-report / run-scheduled-reports removed
+// 2026-07-19 — owner cut the automatic report emails entirely.)
 const AI_TIER = new Set([
   'agent-consolidate-memory',
   'agent-summarize-long-conversations',
   'compliance-anomaly-sweep',
-  'run-daily-report',
-  'run-weekly-report',
-  'run-scheduled-reports',
 ]);
 const PREDICTION_TIER = new Set([
   'ml-aggregate-priors',
@@ -84,9 +83,6 @@ function tierOf(name: string): WorkerTier {
 }
 
 const WORKER_META: Record<string, { description: string; group: WorkerGroup }> = {
-  'run-scheduled-reports':               { description: 'Sends the reports you scheduled to their recipients.',       group: 'Reports' },
-  'run-daily-report':                    { description: 'Emails the daily housekeeping report.',                     group: 'Reports' },
-  'run-weekly-report':                   { description: 'Emails the weekly housekeeping summary.',                   group: 'Reports' },
   'agent-nudges-check':                  { description: 'Looks for new things the AI assistant should flag for you.', group: 'Agent' },
   'agent-sweep-reservations':            { description: 'Scans reservations so the AI can spot issues early.',        group: 'Agent' },
   'agent-summarize-long-conversations':  { description: 'Tidies up long AI chats so they stay fast.',                group: 'Agent' },

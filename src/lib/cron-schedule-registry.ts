@@ -27,7 +27,6 @@ export interface ScheduleEntry {
 }
 
 export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
-  { heartbeatName: 'run-scheduled-reports',             source: { kind: 'vercel', cronPath: '/api/cron/run-scheduled-reports' },             cronExpr: '0 * * * *' },
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.
@@ -123,8 +122,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // cron fires every 30 min so it can hit every property's local 4pm/
   // 6pm/8pm/10pm slot regardless of timezone. Weekly cron is the same
   // shape — the route itself skips non-Sunday runs early.
-  { heartbeatName: 'run-daily-report',         source: { kind: 'vercel', cronPath: '/api/cron/run-daily-report' },               cronExpr: '*/30 * * * *' },
-  { heartbeatName: 'run-weekly-report',        source: { kind: 'vercel', cronPath: '/api/cron/run-weekly-report' },              cronExpr: '*/30 * * * *' },
   // 2026-05-30: complaints — satisfaction-callback-due nudges + high-severity
   // escalation SMS. Idempotent via callback_nudged_at / escalation_nudged_at.
   // 2026-05-31: financials — daily overspend-forecast + spend-anomaly sweep.

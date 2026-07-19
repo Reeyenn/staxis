@@ -13,7 +13,8 @@ test('scoped provider attempts forward the runtime signal and reject truncation'
     ['src/lib/comms/translate.ts', 2, 2],
     ['src/lib/notice-translate.ts', 1, 1],
     ['src/lib/reports/catalog/ai-summary.ts', 1, 1],
-    ['src/lib/reports/weekly-insights.ts', 1, 1],
+    // (reports/weekly-insights.ts removed 2026-07-19 with the automatic
+    // report emails.)
     ['src/lib/complaints-ai.ts', 2, 2],
     ['src/lib/compliance/nlp.ts', 1, 1],
   ];
@@ -55,7 +56,6 @@ test('malformed output is rejected before executeAiFeature can accept an attempt
     // Overlong-but-valid outputs are truncated, not rejected (2026-07-17
     // adversarial review): only empty/truncated-generation outputs throw.
     ['src/lib/reports/catalog/ai-summary.ts', ['report summary returned empty output']],
-    ['src/lib/reports/weekly-insights.ts', ['weekly insight exceeded the output schema']],
     ['src/lib/complaints-ai.ts', [
       'complaint classifier returned an invalid category',
       'service-recovery model returned an invalid JSON schema',
@@ -115,7 +115,6 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
     'src/app/api/compliance/setup/route.ts',
     'src/app/api/engineer/voice-log/route.ts',
     'src/app/api/cron/compliance-anomaly-sweep/route.ts',
-    'src/app/api/cron/run-scheduled-reports/route.ts',
   ];
 
   for (const file of routes) {

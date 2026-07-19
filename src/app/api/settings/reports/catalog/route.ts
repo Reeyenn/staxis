@@ -12,7 +12,7 @@ import { err, ok } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
 import { listCatalog } from '@/lib/reports/catalog';
 import { gateReportsAccess } from '@/lib/reports/catalog/gate';
-import { listFavorites, listSchedules } from '@/lib/reports/catalog/store';
+import { listFavorites } from '@/lib/reports/catalog/store';
 import { getOrMintRequestId, log } from '@/lib/log';
 
 export const runtime = 'nodejs';
@@ -28,12 +28,9 @@ export async function GET(req: NextRequest) {
     const gate = await gateReportsAccess(req, propertyId);
     if (!gate.ok) return err(gate.error, { requestId, status: gate.status, code: gate.code });
 
-    const [favorites, schedules] = await Promise.all([
-      listFavorites(gate.caller.accountId, propertyId),
-      listSchedules(propertyId),
-    ]);
+    const favorites = await listFavorites(gate.caller.accountId, propertyId);
 
-    return ok({ catalog: listCatalog(), favorites, schedules }, { requestId });
+    return ok({ catalog: listCatalog(), favorites }, { requestId });
   } catch (e) {
     log.error('reports catalog failed', { requestId, error: e instanceof Error ? e.message : String(e) });
     return err('Failed to load reports.', { requestId, status: 500, code: 'internal_error' });

@@ -21,8 +21,10 @@ describe('AI Control Center feature registry', () => {
   // 2026-07-17: the front-desk surface retirement removed lost-found photo
   // description, lost-found match rerank, and package label scan (28→25);
   // the Recommendations tab added admin.model_recommendations (25→26).
-  test('covers 26 controllable hosted features and 8 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 34);
+  // 2026-07-19: reports.weekly_insight removed with the automatic report
+  // emails (26→25 controllable, 34→33 keys).
+  test('covers 25 controllable hosted features and 8 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 33);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
@@ -79,7 +81,7 @@ describe('AI Control Center feature registry', () => {
     for (const key of haiku) {
       assert.equal(getAiFeatureDefinition(key).defaultConfig.primary.modelId, 'claude-haiku-4-5');
     }
-    for (const key of ['reports.run_summary', 'reports.weekly_insight'] as const) {
+    for (const key of ['reports.run_summary'] as const) {
       assert.equal(getAiFeatureDefinition(key).defaultConfig.primary.modelId, 'claude-haiku-4-5-20251001');
     }
     assert.equal(getAiFeatureDefinition('communications.voice_transcription').defaultConfig.primary.modelId, 'whisper-1');

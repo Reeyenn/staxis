@@ -86,20 +86,8 @@
       "schedule": "*/15 * * * *"
     },
     {
-      "path": "/api/cron/run-daily-report",
-      "schedule": "*/30 * * * *"
-    },
-    {
-      "path": "/api/cron/run-weekly-report",
-      "schedule": "*/30 * * * *"
-    },
-    {
       "path": "/api/cron/lost-found-disposal-check",
       "schedule": "0 16 * * *"
-    },
-    {
-      "path": "/api/cron/run-scheduled-reports",
-      "schedule": "0 * * * *"
     }
   ]
 }
