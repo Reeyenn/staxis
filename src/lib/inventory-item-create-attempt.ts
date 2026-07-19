@@ -7,13 +7,14 @@
 import type { InventoryCategory } from '@/types';
 
 export interface FrozenInventoryItemCreateAttempt {
-  version: 1;
+  version: 2;
   propertyId: string;
   requestId: string;
   itemId: string;
   startedAt: string;
   nameInput: string;
   currentStockInput: string;
+  setAsideInput: string;
   parLevelInput: string;
   unitCostInput: string;
   vendorInput: string;
@@ -22,6 +23,7 @@ export interface FrozenInventoryItemCreateAttempt {
   category: InventoryCategory;
   customCategoryId: string | null;
   currentStock: number;
+  setAside: number;
   parLevel: number;
   unitCost: number | null;
   vendorName: string | null;
@@ -49,6 +51,11 @@ function finiteNonnegative(raw: string): number {
   return Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+function finiteNonnegativeInteger(raw: string): number {
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
 export function inventoryItemCreateMarker(requestId: string): string {
   return `staxis:add-item:${requestId}`;
 }
@@ -66,6 +73,7 @@ export function createFrozenInventoryItemAttempt(input: {
   category: InventoryCategory;
   customCategoryId: string | null;
   currentStockInput: string;
+  setAsideInput: string;
   parLevelInput: string;
   unitCostInput: string;
   vendorInput: string;
@@ -93,13 +101,14 @@ export function createFrozenInventoryItemAttempt(input: {
     ? parsedCost
     : null;
   return {
-    version: 1,
+    version: 2,
     propertyId,
     requestId,
     itemId,
     startedAt: input.startedAt,
     nameInput: input.nameInput,
     currentStockInput: input.currentStockInput,
+    setAsideInput: input.setAsideInput,
     parLevelInput: input.parLevelInput,
     unitCostInput: input.unitCostInput,
     vendorInput: input.vendorInput,
@@ -108,6 +117,7 @@ export function createFrozenInventoryItemAttempt(input: {
     category: input.category,
     customCategoryId: input.customCategoryId,
     currentStock: finiteNonnegative(input.currentStockInput),
+    setAside: finiteNonnegativeInteger(input.setAsideInput),
     parLevel: finiteNonnegative(input.parLevelInput),
     unitCost,
     vendorName: input.vendorInput.trim() || null,
@@ -115,17 +125,27 @@ export function createFrozenInventoryItemAttempt(input: {
   };
 }
 
-function isFrozenAttempt(value: unknown, propertyId: string): value is FrozenInventoryItemCreateAttempt {
-  if (!value || typeof value !== 'object') return false;
-  const x = value as Partial<FrozenInventoryItemCreateAttempt>;
+/**
+ * Upgrade a valid V1 retry in memory instead of dropping it. The original
+ * request and item ids must survive: an insert may already have committed even
+ * when its response was lost, and reusing those ids keeps the retry idempotent.
+ */
+function normalizeFrozenAttempt(
+  value: unknown,
+  propertyId: string,
+): FrozenInventoryItemCreateAttempt | null {
+  if (!value || typeof value !== 'object') return null;
+  const x = value as Record<string, unknown>;
+  const version = x.version;
   if (
-    x.version !== 1
+    (version !== 1 && version !== 2)
     || x.propertyId !== propertyId
     || typeof x.requestId !== 'string'
     || typeof x.itemId !== 'string'
     || typeof x.startedAt !== 'string'
     || typeof x.nameInput !== 'string'
     || typeof x.currentStockInput !== 'string'
+    || (version === 2 && typeof x.setAsideInput !== 'string')
     || typeof x.parLevelInput !== 'string'
     || typeof x.unitCostInput !== 'string'
     || typeof x.vendorInput !== 'string'
@@ -136,6 +156,11 @@ function isFrozenAttempt(value: unknown, propertyId: string): value is FrozenInv
     || typeof x.currentStock !== 'number'
     || !Number.isFinite(x.currentStock)
     || x.currentStock < 0
+    || (version === 2 && (
+      typeof x.setAside !== 'number'
+      || !Number.isInteger(x.setAside)
+      || x.setAside < 0
+    ))
     || typeof x.parLevel !== 'number'
     || !Number.isFinite(x.parLevel)
     || x.parLevel < 0
@@ -143,7 +168,12 @@ function isFrozenAttempt(value: unknown, propertyId: string): value is FrozenInv
     || (x.vendorName !== null && typeof x.vendorName !== 'string')
     || (x.vendorId !== null && typeof x.vendorId !== 'string')
     || Number.isNaN(new Date(x.startedAt).getTime())
-  ) return false;
+  ) return null;
+
+  // Legacy V1 envelopes had neither Set Aside key. Reject a partially
+  // upgraded payload instead of guessing at a value after an ambiguous write.
+  if (version === 1 && ('setAsideInput' in x || 'setAside' in x)) return null;
+
   const parsedCost = x.unitCostInput.trim() === '' ? null : Number(x.unitCostInput);
   const canonicalCost = x.includeUnitCost
     && parsedCost != null
@@ -151,23 +181,50 @@ function isFrozenAttempt(value: unknown, propertyId: string): value is FrozenInv
     && parsedCost >= 0
     ? parsedCost
     : null;
-  return x.requestId === x.requestId.trim()
+  const setAsideInput = version === 2 ? x.setAsideInput as string : '0';
+  const valid = x.requestId === x.requestId.trim()
     && x.requestId.length > 0
     && x.itemId === x.itemId.trim()
     && x.itemId.length > 0
     && x.name === x.nameInput.trim()
     && x.name.length > 0
     && x.currentStock === finiteNonnegative(x.currentStockInput)
+    && (version === 1 || x.setAside === finiteNonnegativeInteger(setAsideInput))
     && x.parLevel === finiteNonnegative(x.parLevelInput)
     && x.vendorName === (x.vendorInput.trim() || null)
     && x.unitCost === canonicalCost;
+  if (!valid) return null;
+
+  return {
+    version: 2,
+    propertyId,
+    requestId: x.requestId,
+    itemId: x.itemId,
+    startedAt: x.startedAt,
+    nameInput: x.nameInput,
+    currentStockInput: x.currentStockInput,
+    setAsideInput,
+    parLevelInput: x.parLevelInput,
+    unitCostInput: x.unitCostInput,
+    vendorInput: x.vendorInput,
+    includeUnitCost: x.includeUnitCost,
+    name: x.name,
+    category: x.category as InventoryCategory,
+    customCategoryId: x.customCategoryId,
+    currentStock: x.currentStock,
+    setAside: version === 2 ? x.setAside as number : 0,
+    parLevel: x.parLevel,
+    unitCost: x.unitCost,
+    vendorName: x.vendorName,
+    vendorId: x.vendorId,
+  };
 }
 
 export function persistInventoryItemCreateAttempt(
   attempt: FrozenInventoryItemCreateAttempt,
   storage: StorageLike | null = browserStorage(),
 ): void {
-  if (!isFrozenAttempt(attempt, attempt.propertyId) || !storage) {
+  if (!normalizeFrozenAttempt(attempt, attempt.propertyId) || !storage) {
     throw new InventoryItemCreatePersistenceError();
   }
   const key = inventoryItemCreateStorageKey(attempt.propertyId);
@@ -192,7 +249,7 @@ export function loadInventoryItemCreateAttempt(
     const raw = storage.getItem(inventoryItemCreateStorageKey(propertyId));
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    return isFrozenAttempt(parsed, propertyId) ? parsed : null;
+    return normalizeFrozenAttempt(parsed, propertyId);
   } catch {
     return null;
   }

@@ -18,7 +18,7 @@ export function subscribeToInventory(
     async () => {
       const columns = includeFinancials
         ? '*'
-        : 'id,property_id,created_at,created_by,archived_at,archived_by,name,category,custom_category_id,current_stock,par_level,reorder_at,unit,notes,updated_at,usage_per_checkout,usage_per_stayover,reorder_lead_days,vendor_name,vendor_id,last_ordered_at,last_alerted_at,last_counted_at,pack_size,case_unit';
+        : 'id,property_id,created_at,created_by,archived_at,archived_by,name,category,custom_category_id,current_stock,set_aside,par_level,reorder_at,unit,notes,updated_at,usage_per_checkout,usage_per_stayover,reorder_lead_days,vendor_name,vendor_id,last_ordered_at,last_alerted_at,last_counted_at,pack_size,case_unit';
       const { data, error } = await supabase
         .from('inventory')
         .select(columns)
@@ -147,4 +147,3 @@ export async function archiveInventoryItem(uid: string, pid: string, iid: string
     throw missing;
   }
 }
-

@@ -170,9 +170,14 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
     countedAt: Date;
   } | null>(null);
   const [parLevel, setParLevel] = useState<string>('0');
-  // Set-aside units (0321) — owned but unusable right now. Edit-only: a
-  // brand-new item starts at 0 (you set things aside after you own them).
+  // Set-aside units (0321) — owned but unusable right now. Hotels onboarding
+  // existing stock may already have stained/damaged units, so create and edit
+  // both expose the field.
   const [setAsideInput, setSetAsideInput] = useState<string>('0');
+  // Metadata updates are last-writer-wins. Omitting an untouched Set Aside
+  // value prevents a name/par/vendor edit from overwriting a newer operational
+  // quantity saved by another staff member while this sheet was open.
+  const setAsideBaselineRef = useRef<number>(0);
   const [unitCost, setUnitCost] = useState<string>('');
   const [vendor, setVendor] = useState('');
   const [vendorId, setVendorId] = useState<string | null>(null);
@@ -204,7 +209,9 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
       setCustomCategoryId(item.customCategoryId ?? null);
       setCurrentStock(String(item.currentStock ?? 0));
       stockBaselineRef.current = item.currentStock ?? 0;
-      setSetAsideInput(String(item.setAside ?? 0));
+      const initialSetAside = Math.max(0, Math.round(item.setAside ?? 0));
+      setSetAsideInput(String(initialSetAside));
+      setAsideBaselineRef.current = initialSetAside;
       setParLevel(String(item.parLevel ?? 0));
       setUnitCost(item.unitCost != null ? String(item.unitCost) : '');
       setVendor(item.vendorName || '');
@@ -220,6 +227,8 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
       setCustomCategoryId(restored ? restored.customCategoryId : defaultCustomCategoryId);
       setCurrentStock(restored?.currentStockInput ?? '0');
       stockBaselineRef.current = 0;
+      setSetAsideInput(restored?.setAsideInput ?? '0');
+      setAsideBaselineRef.current = 0;
       setParLevel(restored?.parLevelInput ?? '0');
       setUnitCost(restored?.unitCostInput ?? '');
       setVendor(restored?.vendorInput ?? '');
@@ -255,14 +264,17 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
         const stockNum = currentStock.trim() === '' ? NaN : Number(currentStock);
         const stockChanged =
           Number.isFinite(stockNum) && stockNum !== stockBaselineRef.current;
+        const setAsideNum = Math.max(0, Math.round(Number(setAsideInput) || 0));
+        const setAsideChanged = setAsideNum !== setAsideBaselineRef.current;
         await updateInventoryItem(user.uid, activePropertyId, item.id, {
           ...base,
-          setAside: Math.max(0, Math.round(Number(setAsideInput) || 0)),
+          ...(setAsideChanged ? { setAside: setAsideNum } : {}),
           ...(canViewFinancials
             ? { unitCost: unitCost ? Number(unitCost) : null }
             : {}),
           vendorName: vendor.trim() || null,
         });
+        if (setAsideChanged) setAsideBaselineRef.current = setAsideNum;
         metadataSaved = true;
         if (stockChanged) {
           let attempt = stockCountAttemptRef.current;
@@ -300,6 +312,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
             category: category as InventoryCategory,
             customCategoryId,
             currentStockInput: currentStock,
+            setAsideInput,
             parLevelInput: parLevel,
             unitCostInput: unitCost,
             vendorInput: vendor,
@@ -332,6 +345,7 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
           unit: 'each',
           reorderLeadDays: 3,
           currentStock: attempt.currentStock,
+          setAside: attempt.setAside,
           notes: inventoryItemCreateMarker(attempt.requestId),
           lastCountedAt: attempt.currentStock > 0 ? new Date(attempt.startedAt) : null,
           propertyId: attempt.propertyId,
@@ -492,25 +506,23 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
           </Field>
         </div>
 
-        {/* Set aside (0321) — edit-only: new items start with nothing set
-            aside. The ⓘ carries the one-line explanation everywhere. */}
-        {isEdit && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'end' }}>
-            <Field label={ais.setAside} tip={setAsideTip(lang)}>
-              <input
-                type="number"
-                min="0"
-                inputMode="numeric"
-                value={setAsideInput}
-                onChange={(e) => { const v = e.target.value; if (intGuard(v)) setSetAsideInput(v); }}
-                style={inputStyle}
-              />
-            </Field>
-            <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 500, color: T.ink2, paddingBottom: 10 }}>
-              {ais.usableNow(Math.max(0, (Number(currentStock) || 0) - (Number(setAsideInput) || 0)))}
-            </span>
-          </div>
-        )}
+        {/* Total on hand includes this pile; the live helper makes the usable
+            quantity explicit before either a create or edit is saved. */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'end' }}>
+          <Field label={ais.setAside} tip={setAsideTip(lang)}>
+            <input
+              type="number"
+              min="0"
+              inputMode="numeric"
+              value={setAsideInput}
+              onChange={(e) => { const v = e.target.value; if (intGuard(v)) setSetAsideInput(v); }}
+              style={inputStyle}
+            />
+          </Field>
+          <span style={{ fontFamily: fonts.sans, fontSize: 12, fontWeight: 500, color: T.ink2, paddingBottom: 10 }}>
+            {ais.usableNow(Math.max(0, (Number(currentStock) || 0) - (Number(setAsideInput) || 0)))}
+          </span>
+        </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: canViewFinancials ? '1fr 1fr' : '1fr', gap: 12 }}>
           {canViewFinancials && (
