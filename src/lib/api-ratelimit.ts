@@ -185,18 +185,6 @@ export type RateLimitEndpoint =
   // anomaly alert fan-out. All three are billing-impacting → fail closed.
   | 'financials-scan-invoice'
   | 'financials-scan-quote'
-  // Engineering Compliance (feature #19, 2026-05-30). ALL keyed on the RAW
-  // property id (a real properties.id) — api_limits.property_id has an FK to
-  // properties(id) (migration 0142), so a hashToRateLimitKey pseudo-UUID
-  // FK-violates → the RPC errors → billing endpoints fail CLOSED (429 on every
-  // call). So these are per-property caps, like laundry-bootstrap / send-shift-
-  // confirmations. Vision + voice + setup + link-send are billing-impacting
-  // (Claude / Twilio) and fail closed.
-  | 'engineer-bootstrap'      // polled read of due readings + PM checks
-  | 'engineer-log'            // tap-to-log a reading or PM check
-  | 'engineer-vision'         // snap-to-log: Claude Vision reads a gauge/strip
-  | 'engineer-voice'          // voice/typed natural-language reading log (Claude)
-  | 'engineer-save-language'  // language switcher
   // Security audit 2026-06-26 #1 — per-staff link-token verification FAILURES
   // on the public mobile surface (housekeeper/laundry/engineer/save-fcm-token).
   // Only failed verifications increment (a legitimate token holder never trips
@@ -206,12 +194,6 @@ export type RateLimitEndpoint =
   // real phone occasionally opening a stale/expired link while still choking a
   // scripted enumeration storm. See src/lib/staff-link-auth.ts.
   | 'staff-link-verify-fail'
-  | 'compliance-read'         // manager overview / summary / report reads
-  | 'compliance-config'       // manager create/edit reading types + PM tasks + templates
-  | 'compliance-log'          // manager logs a reading / PM check from desktop
-  | 'compliance-setup'        // one-line AI setup (Claude)
-  | 'compliance-vision'       // manager snap-to-log (Claude Vision)
-  | 'compliance-anomaly-phrase' // v2: AI-sharpen anomaly alert wording (sweep cron; Claude; raw pid)
   // Equipment (asset) registry (0249). Manager create/edit/delete of assets,
   // keyed on the RAW property UUID (no SMS / Claude — not billing-impacting).
   | 'equipment-config'
@@ -438,27 +420,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Claude-Vision-cost-bounded (a manager scanning a stack of invoices).
   'financials-scan-invoice':      50,
   'financials-scan-quote':        50,
-  // Engineering Compliance (feature #19). All PER-PROPERTY (keyed on raw pid).
-  // Read/log caps sized for several engineers polling one property at once
-  // (bootstrap polls ~80/hr each). Vision/voice/setup are Claude-cost bounded;
-  // send-engineer-links matches the SMS-fan-out cap shape.
-  'engineer-bootstrap':         1200,
-  'engineer-log':                600,
-  'engineer-vision':              50,
-  'engineer-voice':               60,
-  'engineer-save-language':       30,
   // Security audit 2026-06-26 #1 — link-token verification failures per IP.
   // Only failures increment; a real holder never hits it. 60/hr chokes a
   // scripted enumeration/token-spray loop while tolerating a few stale-link
   // taps over flaky cellular.
   'staff-link-verify-fail':       60,
-  'compliance-read':            1800,
-  'compliance-config':           100,
-  'compliance-log':              200,
-  'compliance-setup':             20,
-  'compliance-vision':            50,
-  // v2 anomaly AI phrasing — at most one Claude batch per property per sweep.
-  'compliance-anomaly-phrase':    20,
   // Equipment registry writes — manager-only create/edit/delete; generous.
   'equipment-config':            100,
   // Lost & Found (2026-05-30). Register read is polled (~30s/tab) + the
@@ -640,13 +606,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Claude classify on every call (Codex review #6).
   'complaints-log',
   'complaints-draft',
-  // Engineering Compliance (feature #19) — Claude Vision, Claude text parse,
-  // and Twilio SMS fan-out. Fail closed so a DB blip can't uncap spend.
-  'engineer-vision',
-  'engineer-voice',
-  'compliance-setup',
-  'compliance-vision',
-  'compliance-anomaly-phrase',
   // Lost & Found — vision (describe) + Claude (auto-match). Each call costs
   // money, so fail CLOSED if the rate-limit RPC errors.
   // Communications AI endpoints — each call costs Claude/OpenAI credit.

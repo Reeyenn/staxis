@@ -8,8 +8,6 @@
 
 export type AttentionKind =
   | 'urgentOrders'
-  | 'complianceOverdue'
-  | 'anomalies'
   | 'complaintsOverdue'
   | 'callbacksDue'
   | 'roomsToClean';
@@ -21,14 +19,6 @@ export function attentionText(kind: AttentionKind, n: number, es: boolean): stri
       return es
         ? (one ? 'orden de trabajo urgente' : 'órdenes de trabajo urgentes')
         : (one ? 'urgent work order' : 'urgent work orders');
-    case 'complianceOverdue':
-      return es
-        ? (one ? 'revisión de cumplimiento vencida' : 'revisiones de cumplimiento vencidas')
-        : (one ? 'compliance check overdue' : 'compliance checks overdue');
-    case 'anomalies':
-      return es
-        ? (one ? 'anomalía marcada · Mantenimiento' : 'anomalías marcadas · Mantenimiento')
-        : (one ? 'anomaly flagged · Maintenance' : 'anomalies flagged · Maintenance');
     case 'complaintsOverdue':
       return es
         ? (one ? 'queja atrasada' : 'quejas atrasadas')

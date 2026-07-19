@@ -160,7 +160,6 @@ describe('staffIdFromPathname', () => {
   test('extracts the [id] segment from the three public page shapes', () => {
     assert.equal(staffIdFromPathname(`/housekeeper/${STAFF}`), STAFF);
     assert.equal(staffIdFromPathname(`/laundry/${STAFF}`), STAFF);
-    assert.equal(staffIdFromPathname(`/engineer/${STAFF}`), STAFF);
   });
 
   test('tolerates a trailing slash', () => {

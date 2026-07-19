@@ -253,26 +253,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Reads a contractor/vendor quote photo and pulls out the total and line items.',
     ['text', 'image_input'], SONNET,
   ),
-  'compliance.photo_reading': defineFeature(
-    'compliance.photo_reading', 'Engineering', 'Compliance photo readings',
-    'Reads the number off a gauge, meter, or test strip from an engineer photo.',
-    ['text', 'image_input'], SONNET,
-  ),
-  'compliance.text_reading_parse': defineFeature(
-    'compliance.text_reading_parse', 'Engineering', 'Compliance reading parser',
-    'Turns a typed or spoken engineering reading into a properly logged number.',
-    ['text'], SONNET,
-  ),
-  'compliance.setup_parse': defineFeature(
-    'compliance.setup_parse', 'Engineering', 'Compliance setup parser',
-    'During setup, turns a manager plain-English equipment description into the compliance checklist.',
-    ['text'], SONNET,
-  ),
-  'compliance.anomaly_phrasing': defineFeature(
-    'compliance.anomaly_phrasing', 'Engineering', 'Compliance anomaly phrasing',
-    'Writes the short warning message when an equipment reading looks wrong.',
-    ['text'], SONNET,
-  ),
   'communications.staxis_assistant': defineFeature(
     'communications.staxis_assistant', 'Communications', 'Messaging assistant',
     'Answers when staff type @Staxis in team chat — can check rooms, create work orders, and more.',
@@ -348,16 +328,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   'speech.ask_staxis_dictation': defineFeature(
     'speech.ask_staxis_dictation', 'Speech & input', 'Ask Staxis dictation',
     'The free talk-to-type used when dictating into Ask Staxis. Runs in the browser — costs nothing, nothing to configure.',
-    ['speech_recognition'],
-    {
-      provider: 'browser', modelId: 'web-speech-recognition',
-      displayName: 'Browser Web Speech API', capabilities: ['speech_recognition'], pricing: null,
-    },
-    { editable: false, switchable: false, modelSwitchable: false, fallbackAllowed: false },
-  ),
-  'speech.engineer_dictation': defineFeature(
-    'speech.engineer_dictation', 'Speech & input', 'Engineer reading dictation',
-    'The free talk-to-type engineers use to speak readings aloud. Runs in the browser — costs nothing, nothing to configure.',
     ['speech_recognition'],
     {
       provider: 'browser', modelId: 'web-speech-recognition',

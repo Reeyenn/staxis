@@ -55,12 +55,11 @@ const CATEGORY_LABEL: Record<ReportCategory, Bilingual> = {
   inventory: { en: 'Inventory', es: 'Inventario' },
   occupancy: { en: 'Occupancy', es: 'Ocupación' },
   activity: { en: 'Activity', es: 'Actividad' },
-  compliance: { en: 'Compliance', es: 'Cumplimiento' },
   lost_found: { en: 'Lost & Found', es: 'Objetos perdidos' },
 };
 
 const CATEGORY_ORDER: ReportCategory[] = [
-  'housekeeping', 'inspections', 'maintenance', 'inventory', 'occupancy', 'activity', 'compliance', 'lost_found',
+  'housekeeping', 'inspections', 'maintenance', 'inventory', 'occupancy', 'activity', 'lost_found',
 ];
 
 type RangeKey = 'last7' | 'last30' | 'mtd' | 'custom';

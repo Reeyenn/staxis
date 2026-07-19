@@ -16,8 +16,6 @@ import { attentionText, type AttentionKind } from '@/app/dashboard/_components/a
 
 const KINDS: AttentionKind[] = [
   'urgentOrders',
-  'complianceOverdue',
-  'anomalies',
   'complaintsOverdue',
   'callbacksDue',
   'roomsToClean',
@@ -35,16 +33,6 @@ describe('attentionText — singular vs plural differ on both sides', () => {
 });
 
 describe('attentionText — specific regressions', () => {
-  test('EN anomalies pluralize (was "3 anomaly flagged")', () => {
-    assert.equal(attentionText('anomalies', 3, false), 'anomalies flagged · Maintenance');
-    assert.equal(attentionText('anomalies', 1, false), 'anomaly flagged · Maintenance');
-  });
-
-  test('ES anomaly line carries the Maintenance pointer (was EN-only)', () => {
-    assert.match(attentionText('anomalies', 1, true), /· Mantenimiento$/);
-    assert.match(attentionText('anomalies', 2, true), /· Mantenimiento$/);
-  });
-
   test('ES plural urgent orders carries the accent (órdenes, was "ordenes")', () => {
     assert.equal(attentionText('urgentOrders', 2, true), 'órdenes de trabajo urgentes');
     assert.equal(attentionText('urgentOrders', 1, true), 'orden de trabajo urgente');
@@ -52,7 +40,6 @@ describe('attentionText — specific regressions', () => {
 
   test('ES singulars are grammatical (was always-plural)', () => {
     assert.equal(attentionText('complaintsOverdue', 1, true), 'queja atrasada');
-    assert.equal(attentionText('complianceOverdue', 1, true), 'revisión de cumplimiento vencida');
     assert.equal(attentionText('callbacksDue', 1, true), 'llamada de seguimiento hoy');
     assert.equal(attentionText('roomsToClean', 1, true), 'habitación por limpiar');
   });

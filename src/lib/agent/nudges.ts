@@ -11,7 +11,6 @@
 // available — we don't want to fabricate alerts.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { getOverview } from '@/lib/compliance/store';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
@@ -126,74 +125,7 @@ export async function runNudgeChecksForProperty(propertyId: string): Promise<Nud
     result.errors.push(`revenue_occupancy: ${e instanceof Error ? e.message : String(e)}`);
   }
 
-  // 5. Engineering Compliance — overdue life-safety checks (feature #19).
-  //    Surfaced in-app as an urgent operational nudge; the time-of-day SMS
-  //    reminders + GM escalation live in /api/cron/compliance-reminders.
-  try {
-    const compliance = await checkComplianceAlerts(propertyId);
-    for (const nudge of compliance) {
-      for (const userId of recipients) {
-        const inserted = await insertNudgeIfNew({
-          userId,
-          propertyId,
-          category: 'operational',
-          severity: nudge.severity,
-          payload: nudge.payload,
-          dedupeKey: nudge.dedupeKey,
-        });
-        if (inserted) result.nudgesInserted += 1;
-        else result.skipped += 1;
-      }
-    }
-  } catch (e) {
-    result.errors.push(`compliance: ${e instanceof Error ? e.message : String(e)}`);
-  }
-
   return result;
-}
-
-// ─── 5. Engineering Compliance alerts ──────────────────────────────────────
-
-async function checkComplianceAlerts(propertyId: string): Promise<NudgeDraft[]> {
-  const drafts: NudgeDraft[] = [];
-  const overview = await getOverview(propertyId);
-  // Not configured for this property → nothing to alert on.
-  if (overview.readingsTotal === 0 && overview.pmTotal === 0) return drafts;
-
-  const overdue = overview.pmTasks.filter((p) => p.overdue);
-  if (overdue.length > 0) {
-    const day = new Date().toISOString().slice(0, 10);
-    const names = overdue.slice(0, 3).map((p) => p.task.name).join(', ');
-    drafts.push({
-      severity: 'urgent',
-      payload: {
-        summary: `${overdue.length} life-safety compliance check${overdue.length === 1 ? '' : 's'} overdue (${names}). Inspectors expect a current log — assign maintenance to complete and check off.`,
-        type: 'compliance_pm_overdue',
-        overdueCount: overdue.length,
-        names: overdue.map((p) => p.task.name),
-      },
-      dedupeKey: `compliance_pm_overdue:${day}`,
-    });
-  }
-
-  // v2: leak/spike anomaly alerts (a reading trending abnormal vs its baseline).
-  const anomalies = overview.readings.map((r) => r.anomaly).filter((a): a is NonNullable<typeof a> => a != null);
-  if (anomalies.length > 0) {
-    const day = new Date().toISOString().slice(0, 10);
-    const hasCritical = anomalies.some((a) => a.severity === 'critical');
-    const top = anomalies.slice(0, 3).map((a) => a.reason).join(' ');
-    drafts.push({
-      severity: hasCritical ? 'urgent' : 'warning',
-      payload: {
-        summary: `${anomalies.length} reading${anomalies.length === 1 ? '' : 's'} trending abnormal — ${top}`,
-        type: 'compliance_anomaly',
-        anomalyCount: anomalies.length,
-        critical: hasCritical,
-      },
-      dedupeKey: `compliance_anomaly:${day}`,
-    });
-  }
-  return drafts;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────

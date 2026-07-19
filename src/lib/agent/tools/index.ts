@@ -13,7 +13,6 @@ import './management';
 import './reports';
 import './walkthrough';
 import './complaints';
-import './compliance';
 import './lost-found';
 import './financials';
 import './pms-feeds';

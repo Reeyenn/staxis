@@ -63,10 +63,10 @@ interface WorkerRow {
 export type WorkerTier = 'ai' | 'prediction' | 'timer';
 // (run-daily-report / run-weekly-report / run-scheduled-reports removed
 // 2026-07-19 — owner cut the automatic report emails entirely.)
+// (compliance-anomaly-sweep removed 2026-07-19 with the compliance section.)
 const AI_TIER = new Set([
   'agent-consolidate-memory',
   'agent-summarize-long-conversations',
-  'compliance-anomaly-sweep',
 ]);
 const PREDICTION_TIER = new Set([
   'ml-aggregate-priors',
@@ -89,8 +89,6 @@ const WORKER_META: Record<string, { description: string; group: WorkerGroup }> =
   'agent-consolidate-memory':            { description: "Cleans up the AI assistant's memory overnight.",            group: 'Agent' },
   'agent-archive-stale-conversations':   { description: "Files away old AI chats you're done with.",                 group: 'Agent' },
   'agent-heal-counters':                 { description: 'Fixes the AI usage counters if they drift.',                group: 'Agent' },
-  'compliance-reminders':                { description: 'Sends compliance reminders when they come due.',            group: 'Other' },
-  'compliance-anomaly-sweep':            { description: 'Watches for anything unusual in compliance checks.',         group: 'Other' },
   'walkthrough-heal-stale':              { description: 'Restarts any property walkthrough that got stuck.',          group: 'Other' },
   'sweep-orphan-auth-users':             { description: 'Removes leftover half-finished sign-up accounts.',           group: 'Cleanup' },
   'sweep-mfa-verified-sessions':         { description: 'Clears out expired 2-factor sign-in sessions.',              group: 'Cleanup' },

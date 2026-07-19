@@ -33,7 +33,6 @@ export const THRESHOLDS = {
   complaintsPerRoomCategory: 3, // ≥3 complaints, same room + category, in 30d
   highSeverityComplaints: 2, // OR ≥2 high-severity complaints, same room + category
   weekendNoisePerFloor: 4, // ≥4 weekend noise complaints on one floor in 30d
-  complianceOutOfRange: 3, // ≥3 out-of-range readings for one metric in 30d
   inspectionFailsPerRoom: 3, // ≥3 inspection fails, same room, in 30d
   slowCleanMinSamples: 5, // need ≥5 cleans to judge a room slow
   slowCleanRatio: 1.5, // room median > 1.5× property median
@@ -47,7 +46,7 @@ export interface OperationalSignal {
   /** STABLE deterministic slug = the dedupe key. Encodes pattern identity
    *  (room/category), never the count. ≤80 chars (agent_memory.topic CHECK). */
   topic: string;
-  category: 'maintenance' | 'complaint' | 'noise' | 'compliance' | 'inspection' | 'cleaning';
+  category: 'maintenance' | 'complaint' | 'noise' | 'inspection' | 'cleaning';
   severity: SignalSeverity;
   targetLabel: string | null; // 'Room 305', 'Floor 4', 'Pool pH'
   metric: string; // human evidence: '4 hvac work orders in 30 days'
@@ -96,6 +95,9 @@ function makeTopic(...parts: string[]): string {
 // noticed" card surfaces the 'attention' ones. Returns null for non-operational
 // (conversation-consolidation) topics. Keep in sync with the slug prefixes used
 // by signalsFrom* above.
+// ('op_compliance_' kept for OLD stored memory rows even though the compliance
+// section is gone — existing topics should still rank as attention until they
+// age out.)
 const ATTENTION_PREFIXES = ['op_maint_', 'op_complaint_', 'op_noise_floor_', 'op_compliance_', 'op_inspect_fail_'];
 const INFO_PREFIXES = ['op_clean_slow_'];
 export function insightSeverityFromTopic(topic: string): SignalSeverity | null {
@@ -123,8 +125,6 @@ export function templateContent(sig: OperationalSignal): string {
       return `${where} has had recurring guest complaints (${sig.metric}).`;
     case 'noise':
       return `${where} gets recurring weekend noise complaints (${sig.metric}).`;
-    case 'compliance':
-      return `${sig.targetLabel ?? 'A compliance reading'} has been out of range repeatedly (${sig.metric}).`;
     case 'inspection':
       return `${where} repeatedly fails housekeeping inspection (${sig.metric}).`;
     case 'cleaning':
@@ -230,35 +230,6 @@ export function signalsFromComplaints(rows: ComplaintRow[]): OperationalSignal[]
   return out;
 }
 
-export interface ComplianceRow { reading_type_id: string; out_of_range: boolean }
-export function signalsFromCompliance(
-  rows: ComplianceRow[],
-  typeNames: Map<string, string>,
-): OperationalSignal[] {
-  const bad = new Map<string, number>();
-  for (const r of rows) {
-    if (!r.out_of_range) continue;
-    bad.set(r.reading_type_id, (bad.get(r.reading_type_id) || 0) + 1);
-  }
-  const out: OperationalSignal[] = [];
-  for (const [typeId, n] of bad) {
-    if (n < THRESHOLDS.complianceOutOfRange) continue;
-    const name = typeNames.get(typeId) || 'A reading';
-    out.push({
-      // Topic keyed on the STABLE reading_type_id, never the editable `name` —
-      // renaming a reading type must not fork the memory into a duplicate row.
-      topic: makeTopic('op_compliance', typeId),
-      category: 'compliance',
-      severity: 'attention',
-      targetLabel: name,
-      metric: `out of range ${n} times in ${SIGNAL_WINDOW_DAYS} days`,
-      count: n,
-      windowDays: SIGNAL_WINDOW_DAYS,
-    });
-  }
-  return out;
-}
-
 export interface InspectionRow { room_number: string | null; result: string | null }
 export function signalsFromInspections(rows: InspectionRow[]): OperationalSignal[] {
   const fails = new Map<string, number>();
@@ -346,7 +317,7 @@ export async function gatherOperationalSignals(propertyId: string): Promise<Oper
   const sinceIso = new Date(Date.now() - SIGNAL_WINDOW_DAYS * 86400_000).toISOString();
   const sinceDate = sinceIso.slice(0, 10);
 
-  const [woRes, complaintRes, complianceRes, typeRes, inspRes, cleanRes] = await Promise.all([
+  const [woRes, complaintRes, inspRes, cleanRes] = await Promise.all([
     // Maintenance work orders (PMS-fed; empty until the robot's on → auto-activates).
     supabaseAdmin
       .from('pms_work_orders_v2')
@@ -360,17 +331,6 @@ export async function gatherOperationalSignals(propertyId: string): Promise<Oper
       .eq('property_id', propertyId)
       .gte('created_at', sinceIso)
       .limit(QUERY_ROW_CAP),
-    supabaseAdmin
-      .from('compliance_readings')
-      .select('reading_type_id, out_of_range, logged_at')
-      .eq('property_id', propertyId)
-      .gte('logged_at', sinceIso)
-      .limit(QUERY_ROW_CAP),
-    supabaseAdmin
-      .from('compliance_reading_types')
-      .select('id, name')
-      .eq('property_id', propertyId)
-      .limit(500),
     supabaseAdmin
       .from('inspections')
       .select('room_number, result, started_at')
@@ -392,23 +352,15 @@ export async function gatherOperationalSignals(propertyId: string): Promise<Oper
   for (const [label, res] of [
     ['pms_work_orders_v2', woRes],
     ['complaints', complaintRes],
-    ['compliance_readings', complianceRes],
-    ['compliance_reading_types', typeRes],
     ['inspections', inspRes],
     ['cleaning_events', cleanRes],
   ] as const) {
     if (res.error) console.error(`[operational-signals] ${label} query failed for ${propertyId}: ${res.error.message}`);
   }
 
-  const typeNames = new Map<string, string>();
-  for (const t of (typeRes.data ?? []) as Array<{ id: string; name: string }>) {
-    typeNames.set(t.id, t.name);
-  }
-
   const signals: OperationalSignal[] = [
     ...signalsFromWorkOrders((woRes.data ?? []) as WorkOrderRow[]),
     ...signalsFromComplaints((complaintRes.data ?? []) as ComplaintRow[]),
-    ...signalsFromCompliance((complianceRes.data ?? []) as ComplianceRow[], typeNames),
     ...signalsFromInspections((inspRes.data ?? []) as InspectionRow[]),
     ...signalsFromCleaning((cleanRes.data ?? []) as CleaningRow[]),
   ];

@@ -20,7 +20,7 @@ export const dynamic = 'force-dynamic';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { ChevronLeft, Check, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { ChevronLeft, Check, AlertTriangle } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useScope } from '@/lib/hooks/use-scope';
@@ -199,13 +199,6 @@ function ChecklistsBody({ pid, lang, properties }: {
         ? <CleaningEditor pid={pid} lang={lang} properties={properties} />
         : <InspectionEditor pid={pid} lang={lang} properties={properties} />}
 
-      {/* Compliance note — out of scope for editing; managed by Staxis. */}
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center', color: T.ink3, fontFamily: fonts.sans, fontSize: 12, marginTop: 4 }}>
-        <ShieldCheck size={13} />
-        {lang === 'es'
-          ? 'Las listas de cumplimiento (compliance) las administra Staxis y no se editan aquí.'
-          : 'Compliance checklists are managed by Staxis and aren’t edited here.'}
-      </div>
     </div>
   );
 }

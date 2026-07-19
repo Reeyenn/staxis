@@ -639,79 +639,6 @@ const activitySummary: ReportDefinition = {
 };
 
 // ════════════════════════════════════════════════════════════════════════════
-// COMPLIANCE (0229 — if present)
-// ════════════════════════════════════════════════════════════════════════════
-
-const complianceReadings: ReportDefinition = {
-  key: 'compliance-readings',
-  title: { en: 'Compliance readings', es: 'Lecturas de cumplimiento' },
-  description: {
-    en: 'Logged readings by type, with out-of-range counts.',
-    es: 'Lecturas registradas por tipo, con conteos fuera de rango.',
-  },
-  category: 'compliance',
-  defaultRange: 'last30',
-  run: async (ctx): Promise<ReportRunResult> => {
-    const { data, error } = await supabaseAdmin
-      .from('compliance_readings')
-      .select('value, text_value, unit, out_of_range, reading_date, reading_type_id, compliance_reading_types(name, category)')
-      .eq('property_id', ctx.propertyId)
-      .gte('reading_date', ctx.from)
-      .lte('reading_date', ctx.to)
-      .order('reading_date', { ascending: false })
-      .limit(20_000);
-    if (error) throw error;
-    type Row = {
-      value: number | null;
-      text_value: string | null;
-      unit: string | null;
-      out_of_range: boolean | null;
-      reading_date: string;
-      reading_type_id: string;
-      compliance_reading_types: { name?: string; category?: string } | Array<{ name?: string; category?: string }> | null;
-    };
-    const rows = (data ?? []) as Row[];
-    const typeName = (r: Row): { name: string; category: string } => {
-      const t = Array.isArray(r.compliance_reading_types) ? r.compliance_reading_types[0] : r.compliance_reading_types;
-      return { name: t?.name ?? 'Reading', category: t?.category ?? '' };
-    };
-    const byType = groupBy(rows, (r) => r.reading_type_id);
-    const out: ReportRow[] = [];
-    let oor = 0;
-    for (const [, group] of byType) {
-      const meta = typeName(group[0]);
-      const outOfRange = group.filter((r) => r.out_of_range).length;
-      oor += outOfRange;
-      const latest = group[0];
-      const latestVal = latest.value != null ? `${latest.value}${latest.unit ? ' ' + latest.unit : ''}` : latest.text_value ?? '—';
-      out.push({
-        reading: meta.name,
-        category: meta.category,
-        logged: group.length,
-        outOfRange,
-        latest: latestVal,
-      });
-    }
-    out.sort((a, b) => Number(b.logged) - Number(a.logged));
-    return {
-      columns: [
-        col('reading', 'Reading', 'Lectura'),
-        col('category', 'Category', 'Categoría'),
-        col('logged', 'Logged', 'Registradas', 'number'),
-        col('outOfRange', 'Out of range', 'Fuera de rango', 'number'),
-        col('latest', 'Latest', 'Última'),
-      ],
-      rows: out,
-      stats: [
-        { label: { en: 'Total readings', es: 'Lecturas totales' }, value: String(rows.length) },
-        { label: { en: 'Out of range', es: 'Fuera de rango' }, value: String(oor) },
-        { label: { en: 'Types logged', es: 'Tipos registrados' }, value: String(byType.size) },
-      ],
-    };
-  },
-};
-
-// ════════════════════════════════════════════════════════════════════════════
 // LOST & FOUND (0230 — if present)
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -777,6 +704,5 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
   inventoryLowStock,
   occupancySummary,
   activitySummary,
-  complianceReadings,
   lostAndFoundSummary,
 ];

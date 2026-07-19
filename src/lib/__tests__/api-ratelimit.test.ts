@@ -222,23 +222,23 @@ describe('checkAndIncrementRateLimit — Postgres-backed counter', () => {
 describe('checkAndIncrementRateLimit — per-staff subKey', () => {
   test('subKey folds into p_endpoint while pid stays the RAW property id (FK-safe)', async () => {
     nextRpcResult = { data: 1, error: null };
-    await checkAndIncrementRateLimit('engineer-bootstrap', 'real-pid', { subKey: 'staff-uuid' });
+    await checkAndIncrementRateLimit('housekeeper-rooms', 'real-pid', { subKey: 'staff-uuid' });
     assert.equal(rpcCalls.length, 1);
     assert.equal(rpcCalls[0].args.p_property_id, 'real-pid', 'pid must stay raw (FK to properties)');
-    assert.equal(rpcCalls[0].args.p_endpoint, 'engineer-bootstrap:staff-uuid');
+    assert.equal(rpcCalls[0].args.p_endpoint, 'housekeeper-rooms:staff-uuid');
   });
 
   test('cap still resolves from the BASE endpoint when a subKey is present', async () => {
-    nextRpcResult = { data: 1201, error: null }; // engineer-bootstrap cap = 1200
-    const result = await checkAndIncrementRateLimit('engineer-bootstrap', 'pid', { subKey: 'staff' });
+    nextRpcResult = { data: 3601, error: null }; // housekeeper-rooms cap = 3600
+    const result = await checkAndIncrementRateLimit('housekeeper-rooms', 'pid', { subKey: 'staff' });
     assert.equal(result.allowed, false, 'cap must come from the base endpoint, not the (undefined) composite');
-    if (!result.allowed) assert.equal(result.cap, 1200);
+    if (!result.allowed) assert.equal(result.cap, 3600);
   });
 
   test('billing endpoint still FAILS CLOSED on RPC error even with a subKey', async () => {
     nextRpcResult = { data: null, error: { message: 'connection terminated' } };
-    const result = await checkAndIncrementRateLimit('engineer-vision', 'pid', { subKey: 'staff' });
-    assert.equal(result.allowed, false, 'engineer-vision is billing — subKey must not bypass fail-closed');
+    const result = await checkAndIncrementRateLimit('photo-count', 'pid', { subKey: 'staff' });
+    assert.equal(result.allowed, false, 'photo-count is billing — subKey must not bypass fail-closed');
   });
 
   test('no subKey → p_endpoint is the base string verbatim (backward-compatible)', async () => {

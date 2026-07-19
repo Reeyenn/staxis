@@ -11,7 +11,6 @@ import assert from 'node:assert/strict';
 import {
   signalsFromWorkOrders,
   signalsFromComplaints,
-  signalsFromCompliance,
   signalsFromInspections,
   signalsFromCleaning,
   rankAndCapSignals,
@@ -128,35 +127,6 @@ describe('signalsFromComplaints', () => {
       { room_number: '403', category: 'noise', severity: 'low', created_at: SUN },
     ];
     assert.equal(signalsFromComplaints(rows).some((s) => s.topic === 'op_noise_floor_4'), false);
-  });
-});
-
-describe('signalsFromCompliance', () => {
-  const names = new Map([['t1', 'Pool pH'], ['t2', 'Electric meter']]);
-  test('≥3 out-of-range for a metric fires; in-range ignored', () => {
-    const rows = [
-      { reading_type_id: 't1', out_of_range: true },
-      { reading_type_id: 't1', out_of_range: true },
-      { reading_type_id: 't1', out_of_range: true },
-      { reading_type_id: 't2', out_of_range: false },
-      { reading_type_id: 't2', out_of_range: false },
-      { reading_type_id: 't2', out_of_range: false },
-    ];
-    const sigs = signalsFromCompliance(rows, names);
-    assert.equal(sigs.length, 1);
-    assert.equal(sigs[0].topic, 'op_compliance_t1', 'topic keyed on the stable reading_type_id');
-    assert.equal(sigs[0].targetLabel, 'Pool pH', 'display name carried separately');
-  });
-
-  test('SLUG STABILITY: renaming the reading type does NOT change the topic', () => {
-    const rows = [
-      { reading_type_id: 't1', out_of_range: true },
-      { reading_type_id: 't1', out_of_range: true },
-      { reading_type_id: 't1', out_of_range: true },
-    ];
-    const before = signalsFromCompliance(rows, new Map([['t1', 'Pool pH']]));
-    const after = signalsFromCompliance(rows, new Map([['t1', 'Pool pH (deep end)']]));
-    assert.equal(before[0].topic, after[0].topic, 'a rename must not fork into a duplicate memory row');
   });
 });
 

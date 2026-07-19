@@ -100,9 +100,6 @@ const SUMMARIES: Record<string, SummaryBuilder> = {
     if (l === 'es') return `Registrar una queja${room ? ` de la habitación ${room}` : ''}: ${quoted(a.description)}`;
     return `Log a guest complaint${room ? ` for room ${room}` : ''}: ${quoted(a.description)}`;
   },
-  setup_compliance: (_a, l) =>
-    l === 'es' ? 'Configurar el calendario de cumplimiento de la propiedad' : "Set up the property's compliance schedule",
-
   send_message: (a, l) =>
     l === 'es'
       ? `Enviar a ${str(a.recipient)} este mensaje: ${quoted(a.message)}`
