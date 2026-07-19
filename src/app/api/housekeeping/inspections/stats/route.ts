@@ -19,6 +19,7 @@ import { errToString } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { fromInspectionRow, lookupStaffNames } from '@/lib/db/inspections';
 import { APP_TIMEZONE } from '@/lib/utils';
+import { propertyMidnightIso } from '@/lib/inspections/property-midnight';
 import type { Inspection, InspectionStats } from '@/types/inspections';
 
 export const runtime = 'nodejs';
@@ -172,74 +173,4 @@ async function getPropertyTimezone(pid: string): Promise<string> {
     // fall through to default
   }
   return APP_TIMEZONE;
-}
-
-/**
- * Compute the UTC ISO string for "today at 00:00 in the given IANA
- * timezone." That's the value we compare inspection.startedAt against
- * to decide today vs not-today.
- *
- * Codex M4 follow-up — the original implementation used the *current*
- * wall-clock offset to translate midnight into UTC. That broke on DST
- * transition days: in America/New_York on 2026-03-08, the live offset
- * during the day is EDT (-04:00) but local midnight that same date was
- * still EST (-05:00). The function returned a UTC instant one hour off,
- * mis-attributing the last hour of "yesterday" to "today" and vice
- * versa for fall-back days.
- *
- * The fix uses Intl.DateTimeFormat as an oracle for "what wall-clock
- * time does this UTC instant show in tz?" and converges via a small
- * fixed-point loop on the right UTC instant for midnight on the target
- * local date. Robust to DST and to fractional-hour offsets (e.g.
- * Asia/Kathmandu = UTC+05:45, Australia/Adelaide = UTC+09:30).
- */
-export function propertyMidnightIso(tz: string): string {
-  const now = new Date();
-
-  // 1. Today's YYYY-MM-DD in the target tz.
-  const datePartsFmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  });
-  const dateParts = datePartsFmt.formatToParts(now);
-  const get = (parts: Intl.DateTimeFormatPart[], t: string): number =>
-    Number(parts.find((p) => p.type === t)?.value ?? '0');
-  const y = get(dateParts, 'year');
-  const m = get(dateParts, 'month');
-  const d = get(dateParts, 'day');
-
-  // 2. Resolve the UTC instant that formats to "y-m-d 00:00:00" in tz.
-  //    Start with the naive guess (UTC midnight on the target date),
-  //    then format it in tz and adjust by the observed difference.
-  //    Converges in ≤2 iterations for any IANA tz including DST.
-  const fullFmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false,
-  });
-
-  let utc = Date.UTC(y, m - 1, d, 0, 0, 0);
-  for (let iter = 0; iter < 4; iter++) {
-    const parts = fullFmt.formatToParts(new Date(utc));
-    const oy = get(parts, 'year');
-    const om = get(parts, 'month');
-    const od = get(parts, 'day');
-    let oh = get(parts, 'hour');
-    const omi = get(parts, 'minute');
-    const os = get(parts, 'second');
-    // Some locales emit "24" for the midnight hour in 24-hour format.
-    // Normalize to 0 for consistent arithmetic.
-    if (oh === 24) oh = 0;
-
-    if (oy === y && om === m && od === d && oh === 0 && omi === 0 && os === 0) {
-      return new Date(utc).toISOString();
-    }
-    const observedAsUtc = Date.UTC(oy, om - 1, od, oh, omi, os);
-    const targetAsUtc = Date.UTC(y, m - 1, d, 0, 0, 0);
-    utc += targetAsUtc - observedAsUtc;
-  }
-  // If we didn't converge (shouldn't happen for any real tz), return
-  // the last candidate — better than throwing in a stats endpoint.
-  return new Date(utc).toISOString();
 }

@@ -36,20 +36,16 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { type AppRole } from '@/lib/roles';
 import { canForProperty } from '@/lib/capabilities/server';
+import {
+  callerManagesProperty,
+  validateWage,
+  type WageCaller,
+} from '@/lib/staff-wages';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// North of $10k/hr is not a real hotel wage — almost certainly a fat-finger
-// or an overflow attempt. Cap it so a typo can't poison the numeric column.
-const MAX_WAGE = 10000;
-
-export interface Caller {
-  role: AppRole;
-  propertyAccess: string[];
-}
-
-async function loadCaller(authUserId: string): Promise<Caller | null> {
+async function loadCaller(authUserId: string): Promise<WageCaller | null> {
   const { data, error } = await supabaseAdmin
     .from('accounts')
     .select('role, property_access')
@@ -62,29 +58,6 @@ async function loadCaller(authUserId: string): Promise<Caller | null> {
       ? ((data as { property_access: string[] }).property_access)
       : [],
   };
-}
-
-// Exported for unit tests (mirrors denyRoleChange in /api/settings/users).
-export function callerManagesProperty(caller: Caller, propertyId: string): boolean {
-  if (caller.role === 'admin') return true;
-  if (caller.propertyAccess.includes('*')) return true;
-  return caller.propertyAccess.includes(propertyId);
-}
-
-/**
- * null/absent → clear the wage. Otherwise a finite number in [0, MAX_WAGE],
- * rounded to cents. Exported for unit tests.
- */
-export function validateWage(v: unknown): { error?: string; value?: number | null } {
-  if (v === null || v === undefined) return { value: null };
-  const n =
-    typeof v === 'number' ? v :
-    typeof v === 'string' && v.trim() !== '' ? Number(v) :
-    NaN;
-  if (!Number.isFinite(n)) return { error: 'hourlyWage must be a number or null' };
-  if (n < 0) return { error: 'hourlyWage cannot be negative' };
-  if (n > MAX_WAGE) return { error: `hourlyWage cannot exceed ${MAX_WAGE}` };
-  return { value: Math.round(n * 100) / 100 };
 }
 
 export async function GET(req: NextRequest) {

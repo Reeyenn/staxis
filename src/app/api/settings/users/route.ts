@@ -40,8 +40,9 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { writeRoleChange } from '@/lib/audit-role-changes';
 import { validateUuid } from '@/lib/api-validate';
-import { isAssignableRole, type AppRole, type AssignableRole } from '@/lib/roles';
+import { isAssignableRole, type AppRole } from '@/lib/roles';
 import { canForProperty } from '@/lib/capabilities/server';
+import { denyRoleChange } from '@/lib/settings-user-role-change';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -74,46 +75,6 @@ function callerCanManageProperty(caller: CallerContext, propertyId: string): boo
   if (caller.role === 'admin') return true;
   if (caller.propertyAccess.includes('*')) return true;
   return caller.propertyAccess.includes(propertyId);
-}
-
-/**
- * Permission matrix for role changes within a single hotel.
- * Returns null when allowed; an error string when blocked.
- * Exported for unit tests.
- */
-export function denyRoleChange(args: {
-  caller: CallerContext;
-  targetCurrentRole: AppRole;
-  newRole: AssignableRole;
-  isSelf: boolean;
-}): string | null {
-  const { caller, targetCurrentRole, newRole, isSelf } = args;
-  if (targetCurrentRole === 'admin') return 'Cannot modify admin accounts here';
-  if (newRole === 'owner' as AssignableRole && caller.role !== 'admin' && caller.role !== 'owner') {
-    return 'Only an existing owner can promote someone to owner (use Transfer Ownership)';
-  }
-  if (targetCurrentRole === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
-    return 'Only an admin or another owner can change an owner\'s role';
-  }
-  // GMs can manage non-GM, non-owner, non-admin staff. They can't demote
-  // (or promote) another GM — that's an owner/admin decision so power
-  // doesn't quietly migrate sideways within the GM tier. Same logic
-  // applies to promoting a non-GM to GM: requires owner/admin.
-  if (caller.role === 'general_manager') {
-    if (targetCurrentRole === 'general_manager') {
-      return 'Only an owner or admin can change another General Manager\'s role';
-    }
-    // Target is not currently a GM (early return above). Block promotions
-    // into the GM tier by other GMs — keeps "manage your team" scoped
-    // away from "create new managers."
-    if (newRole === 'general_manager') {
-      return 'Only an owner or admin can promote someone to General Manager';
-    }
-  }
-  if (isSelf && newRole !== caller.role) {
-    return 'Cannot change your own role here — use Transfer Ownership instead';
-  }
-  return null;
 }
 
 interface UserRow {

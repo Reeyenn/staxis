@@ -24,6 +24,15 @@ import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import { useLang } from '@/contexts/LanguageContext';
 import { safeRedirect } from '@/lib/url-redirect';
+import {
+  COMPANY_INVITATION_HANDOFF_PARAM,
+  COMPANY_INVITATION_HANDOFF_VALUE,
+  COMPANY_INVITATION_RESUME_PATH,
+  COMPANY_INVITATION_SIGN_IN_HREF,
+  companyInvitationTokenFromPath,
+  readCompanyInvitationHandoff,
+  storeCompanyInvitationHandoff,
+} from '@/lib/company-access/invitation-handoff';
 import AuthShell, { AuthLabel, AuthError, authBackLinkStyle } from '@/components/AuthShell';
 
 function VerifyInner() {
@@ -36,13 +45,54 @@ function VerifyInner() {
   // so we auto-trust the device and hide the checkbox entirely — Reeyen
   // wants signups to skip the extra "remember this device?" prompt.
   const postSignup = params.get('postSignup') === '1';
-  // OTP completion resolves through the property selector. A single-hotel
-  // account auto-selects and lands on Home; multi-hotel/admin accounts choose
-  // first. Explicit protected deep links are opened only after that selection.
-  const requestedTarget = safeRedirect(params.get('redirect'), '/home');
-  const redirectTarget = postSignup || requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
-    ? '/property-selector'
-    : `/property-selector?redirect=${encodeURIComponent(requestedTarget)}`;
+  // OTP completion normally resolves through the property selector. Company
+  // Hub and company-invitation targets are property-independent: a new
+  // invitee may not have a hotel grant until the invitation itself is
+  // accepted, so routing that target through the selector would strand them
+  // on the zero-property screen.
+  const rawRedirect = params.get('redirect');
+  const ordinaryRequestedTarget = safeRedirect(rawRedirect, '/home');
+  const legacyInvitationToken = companyInvitationTokenFromPath(ordinaryRequestedTarget);
+  const usesCompanyInvitationHandoff = params.get(COMPANY_INVITATION_HANDOFF_PARAM)
+    === COMPANY_INVITATION_HANDOFF_VALUE || legacyInvitationToken !== null;
+  const handoffIdentity = usesCompanyInvitationHandoff
+    ? legacyInvitationToken ?? COMPANY_INVITATION_HANDOFF_VALUE
+    : null;
+  const [resolvedHandoff, setResolvedHandoff] = useState<{
+    identity: string;
+    target: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!handoffIdentity) {
+      setResolvedHandoff(null);
+      return;
+    }
+    if (legacyInvitationToken) {
+      storeCompanyInvitationHandoff(legacyInvitationToken);
+      router.replace(`/signin/verify?email=${encodeURIComponent(email)}&${
+        COMPANY_INVITATION_HANDOFF_PARAM
+      }=${COMPANY_INVITATION_HANDOFF_VALUE}`);
+    }
+    setResolvedHandoff({
+      identity: handoffIdentity,
+      target: readCompanyInvitationHandoff() ? COMPANY_INVITATION_RESUME_PATH : null,
+    });
+  }, [email, handoffIdentity, legacyInvitationToken, router]);
+
+  const handoffResolved = handoffIdentity === null || resolvedHandoff?.identity === handoffIdentity;
+  const requestedTarget = usesCompanyInvitationHandoff
+    ? resolvedHandoff?.identity === handoffIdentity
+      ? resolvedHandoff.target ?? '/company'
+      : '/company'
+    : ordinaryRequestedTarget;
+  const isPropertyIndependentCompanyTarget = requestedTarget === '/company'
+    || requestedTarget.startsWith('/company-invite/');
+  const redirectTarget = isPropertyIndependentCompanyTarget
+    ? requestedTarget
+    : postSignup || requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
+      ? '/property-selector'
+      : `/property-selector?redirect=${encodeURIComponent(requestedTarget)}`;
 
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);
@@ -58,8 +108,9 @@ function VerifyInner() {
   // fetch failure or odd payload leaves the code screen as-is (fail-safe:
   // behave like 2FA is on).
   useEffect(() => {
+    if (!handoffResolved) return;
     if (!email) {
-      router.replace('/signin');
+      router.replace(usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin');
       return;
     }
     let cancelled = false;
@@ -73,17 +124,21 @@ function VerifyInner() {
         if (cancelled || !body?.ok || body.data?.enabled !== false) return;
         const { data } = await supabase.auth.getSession();
         if (cancelled) return;
-        router.replace(data.session ? redirectTarget : '/signin');
+        router.replace(
+          data.session
+            ? redirectTarget
+            : usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin',
+        );
       } catch {
         // Fail-safe: stay on the code screen (2FA-on behavior).
       }
     })();
     return () => { cancelled = true; };
-  }, [email, redirectTarget, router]);
+  }, [email, redirectTarget, router, handoffResolved, usesCompanyInvitationHandoff]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!code.trim()) return;
+    if (!handoffResolved || !code.trim()) return;
     setSubmitting(true);
     setError('');
 
@@ -199,8 +254,8 @@ function VerifyInner() {
 
         <button
           type="submit"
-          disabled={submitting || code.length !== 6}
-          className={`si-btn si-rise si-d-3 ${(submitting || code.length !== 6) ? 'si-btn-off' : 'si-btn-on'}`}
+          disabled={!handoffResolved || submitting || code.length !== 6}
+          className={`si-btn si-rise si-d-3 ${(!handoffResolved || submitting || code.length !== 6) ? 'si-btn-off' : 'si-btn-on'}`}
           style={{ marginTop: 4 }}
         >
           {submitting
@@ -209,7 +264,10 @@ function VerifyInner() {
           }
         </button>
 
-        <Link href="/signin" style={authBackLinkStyle}>
+        <Link
+          href={usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin'}
+          style={authBackLinkStyle}
+        >
           {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
         </Link>
       </form>

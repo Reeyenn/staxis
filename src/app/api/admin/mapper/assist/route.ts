@@ -28,93 +28,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { validateAssistBody, validateCoordinateBounds } from '@/lib/pms/takeover-validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-// feature/cua-assist-board — 'takeover' is live: the admin clicks a spot on
-// the help screenshot, we store responseCoordinate, and the mapper executes
-// that click via executeVisionAction (recorded as a recipe step) before
-// re-entering its loop. Coordinate is validated against the pending row's
-// capture viewport below — keep that rule in sync with the robot-side
-// validateSupervisorCoordinate (cua-service/src/mapper.ts).
-const VALID_ACTIONS = new Set(['guidance', 'unavailable', 'takeover', 'abort'] as const);
-type AssistAction = 'guidance' | 'unavailable' | 'takeover' | 'abort';
-
-/**
- * Pure validation gate (unit-tested in
- * src/lib/__tests__/mapper-assist-takeover.test.ts). Everything except the
- * viewport BOUNDS check, which needs the pending row's stored capture size
- * — that's validateCoordinateBounds below, applied after the row fetch.
- */
-export function validateAssistBody(body: unknown):
-  | {
-      ok: true;
-      requestId: string;
-      actionType: AssistAction;
-      responseText: string | null;
-      coordinate: { x: number; y: number } | null;
-      screenshotPath: string | null;
-    }
-  | { ok: false; reason: string } {
-  const b = body as {
-    requestId?: unknown;
-    actionType?: unknown;
-    responseText?: unknown;
-    responseCoordinate?: unknown;
-    screenshotPath?: unknown;
-  } | null;
-  if (!b || typeof b !== 'object') return { ok: false, reason: 'body must be a JSON object' };
-  if (typeof b.requestId !== 'string' || !/^[0-9a-f-]{36}$/i.test(b.requestId)) {
-    return { ok: false, reason: 'requestId must be a uuid' };
-  }
-  if (typeof b.actionType !== 'string' || !VALID_ACTIONS.has(b.actionType as AssistAction)) {
-    return { ok: false, reason: `actionType must be one of: ${[...VALID_ACTIONS].join(', ')}` };
-  }
-  const actionType = b.actionType as AssistAction;
-  const responseText =
-    typeof b.responseText === 'string' && b.responseText.trim().length > 0
-      ? b.responseText
-      : null;
-  if ((actionType === 'guidance' || actionType === 'unavailable') && responseText === null) {
-    return { ok: false, reason: 'responseText is required for guidance / unavailable' };
-  }
-  let coordinate: { x: number; y: number } | null = null;
-  let screenshotPath: string | null = null;
-  if (actionType === 'takeover') {
-    const c = b.responseCoordinate as { x?: unknown; y?: unknown } | null | undefined;
-    if (!c || typeof c !== 'object' || typeof c.x !== 'number' || typeof c.y !== 'number' ||
-        !Number.isFinite(c.x) || !Number.isFinite(c.y)) {
-      return { ok: false, reason: 'takeover requires responseCoordinate {x, y} (numbers)' };
-    }
-    coordinate = { x: c.x, y: c.y };
-    // Staleness arbiter: the click was chosen against a specific screenshot.
-    // The robot can refresh the row's screenshot in place (worker restart),
-    // so the UPDATE below only commits while the row still points at the
-    // frame the founder actually clicked.
-    if (typeof b.screenshotPath !== 'string' || b.screenshotPath.trim().length === 0) {
-      return { ok: false, reason: 'takeover requires screenshotPath (the screenshot the click was chosen on)' };
-    }
-    screenshotPath = b.screenshotPath;
-  }
-  return { ok: true, requestId: b.requestId, actionType, responseText, coordinate, screenshotPath };
-}
-
-/**
- * Round and bounds-check a takeover coordinate against the screenshot's
- * capture viewport. Click coords are viewport CSS pixels (the screenshot
- * was a viewport-sized, fullPage:false capture). Null = out of bounds.
- */
-export function validateCoordinateBounds(
-  c: { x: number; y: number },
-  viewportW: number,
-  viewportH: number,
-): { x: number; y: number } | null {
-  const x = Math.round(c.x);
-  const y = Math.round(c.y);
-  if (x < 0 || x >= viewportW || y < 0 || y >= viewportH) return null;
-  return { x, y };
-}
 
 export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);

@@ -22,11 +22,11 @@ export async function requireAdmin(req: NextRequest): Promise<
 
   const { data: account } = await supabaseAdmin
     .from('accounts')
-    .select('id, role')
+    .select('id, role, active')
     .eq('data_user_id', session.userId)
     .maybeSingle();
 
-  if (!account || (account.role as string) !== 'admin') {
+  if (!account || (account.role as string) !== 'admin' || account.active !== true) {
     return {
       ok: false,
       response: NextResponse.json(

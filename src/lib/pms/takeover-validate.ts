@@ -9,12 +9,74 @@ const UUID_RE = /^[0-9a-f-]{36}$/i;
 
 export type TakeoverIntent = 'start' | 'skip';
 export type TakeoverCommandKind = 'click' | 'finish' | 'cancel';
+export type AssistAction = 'guidance' | 'unavailable' | 'takeover' | 'abort';
 
 const INTENTS = new Set<TakeoverIntent>(['start', 'skip']);
 const COMMANDS = new Set<TakeoverCommandKind>(['click', 'finish', 'cancel']);
+const ASSIST_ACTIONS = new Set<AssistAction>(['guidance', 'unavailable', 'takeover', 'abort']);
 
 function cleanNote(v: unknown): string | null {
   return typeof v === 'string' && v.trim().length > 0 ? v.trim().slice(0, 500) : null;
+}
+
+/** Pure request validation for POST /api/admin/mapper/assist. Kept outside
+ * the route module because Next.js route files may export only HTTP handlers
+ * and supported route configuration fields. */
+export function validateAssistBody(body: unknown):
+  | {
+      ok: true;
+      requestId: string;
+      actionType: AssistAction;
+      responseText: string | null;
+      coordinate: { x: number; y: number } | null;
+      screenshotPath: string | null;
+    }
+  | { ok: false; reason: string } {
+  const b = body as {
+    requestId?: unknown;
+    actionType?: unknown;
+    responseText?: unknown;
+    responseCoordinate?: unknown;
+    screenshotPath?: unknown;
+  } | null;
+  if (!b || typeof b !== 'object') return { ok: false, reason: 'body must be a JSON object' };
+  if (typeof b.requestId !== 'string' || !UUID_RE.test(b.requestId)) {
+    return { ok: false, reason: 'requestId must be a uuid' };
+  }
+  if (typeof b.actionType !== 'string' || !ASSIST_ACTIONS.has(b.actionType as AssistAction)) {
+    return { ok: false, reason: `actionType must be one of: ${[...ASSIST_ACTIONS].join(', ')}` };
+  }
+  const actionType = b.actionType as AssistAction;
+  const responseText = typeof b.responseText === 'string' && b.responseText.trim().length > 0
+    ? b.responseText
+    : null;
+  if ((actionType === 'guidance' || actionType === 'unavailable') && responseText === null) {
+    return { ok: false, reason: 'responseText is required for guidance / unavailable' };
+  }
+  let coordinate: { x: number; y: number } | null = null;
+  let screenshotPath: string | null = null;
+  if (actionType === 'takeover') {
+    const c = b.responseCoordinate as { x?: unknown; y?: unknown } | null | undefined;
+    if (!c || typeof c !== 'object' || typeof c.x !== 'number' || typeof c.y !== 'number'
+      || !Number.isFinite(c.x) || !Number.isFinite(c.y)) {
+      return { ok: false, reason: 'takeover requires responseCoordinate {x, y} (numbers)' };
+    }
+    coordinate = { x: c.x, y: c.y };
+    if (typeof b.screenshotPath !== 'string' || b.screenshotPath.trim().length === 0) {
+      return { ok: false, reason: 'takeover requires screenshotPath (the screenshot the click was chosen on)' };
+    }
+    screenshotPath = b.screenshotPath;
+  }
+  return { ok: true, requestId: b.requestId, actionType, responseText, coordinate, screenshotPath };
+}
+
+/** Round and bounds-check a mapper-assist coordinate against its capture. */
+export function validateCoordinateBounds(
+  c: { x: number; y: number },
+  viewportW: number,
+  viewportH: number,
+): { x: number; y: number } | null {
+  return validateTakeoverCoordinate(c, viewportW, viewportH);
 }
 
 export function validateTakeoverStart(body: unknown):

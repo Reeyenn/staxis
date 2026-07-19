@@ -61,7 +61,7 @@ function decodeTrustJwtPayload(token: string): TrustJwtPayload | null {
  * signed access tokens. The SDK also supports RFC-8176 string AMR entries, so a
  * signed `"otp"` string is accepted using the fresh JWT iat as its timestamp.
  */
-export function validateFreshOtpSessionClaims(
+function validateFreshOtpSessionClaims(
   token: string,
   expectedUserId: string,
   nowSec = Math.floor(Date.now() / 1000),

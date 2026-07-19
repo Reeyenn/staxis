@@ -2,7 +2,7 @@
 
 
 export const dynamic = 'force-dynamic';
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -10,6 +10,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { safeRedirect } from '@/lib/url-redirect';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import type { Property } from '@/types';
 import { Building2, LogOut } from 'lucide-react';
 import JoinStatusGate from './JoinStatusGate';
@@ -19,6 +20,7 @@ export default function PropertySelectorPage() {
   const { properties, loading: propLoading, setActivePropertyId } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
+  const [companyRouteChecked, setCompanyRouteChecked] = useState(false);
 
   // Redirect unauthenticated users to sign-in
   useEffect(() => {
@@ -64,6 +66,42 @@ export default function PropertySelectorPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authLoading, propLoading, user, properties]);
 
+  // Organization-only leaders intentionally have no inferred legacy hotel
+  // access. On later ordinary sign-ins, distinguish them from pending hotel
+  // staff before showing the zero-property approval gate.
+  useEffect(() => {
+    if (authLoading || propLoading || !user) return;
+    if (properties.length > 0 || user.role === 'admin') {
+      setCompanyRouteChecked(true);
+      return;
+    }
+
+    setCompanyRouteChecked(false);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/api/company-access');
+        const body = await response.json().catch(() => ({})) as {
+          ok?: boolean;
+          data?: { organizations?: Array<{ id: string; type?: string }> };
+        };
+        const hasCustomerOrganization = body.data?.organizations?.some(
+          (organization) => organization.type !== 'single_hotel',
+        ) === true;
+        if (!cancelled && response.ok && body.ok && hasCustomerOrganization) {
+          router.replace('/company');
+          return;
+        }
+      } catch {
+        // The existing join-status screen remains the safe fallback when the
+        // additive organization projection is unavailable.
+      }
+      if (!cancelled) setCompanyRouteChecked(true);
+    })();
+
+    return () => { cancelled = true; };
+  }, [authLoading, propLoading, properties.length, router, user]);
+
   const handleSelect = (id: string) => {
     const p = properties.find(x => x.id === id);
     if (p) enter(p);
@@ -75,7 +113,9 @@ export default function PropertySelectorPage() {
     await signOut();
   };
 
-  const isLoading = authLoading || propLoading;
+  const isLoading = authLoading || propLoading || Boolean(
+    user && properties.length === 0 && user.role !== 'admin' && !companyRouteChecked,
+  );
 
   if (isLoading) {
     return (

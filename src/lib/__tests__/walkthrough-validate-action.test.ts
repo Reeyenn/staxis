@@ -17,7 +17,7 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateAction } from '../../app/api/walkthrough/step/route';
+import { validateAction } from '@/lib/walkthrough-step';
 import type { SnapshotElement } from '../../components/walkthrough/snapshotDom';
 
 function makeElement(id: string, name = 'Test'): SnapshotElement {

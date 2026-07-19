@@ -22,7 +22,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { checkRunOwnership } from '../../app/api/walkthrough/step/route';
+import { checkRunOwnership } from '@/lib/walkthrough-step';
 
 const ACCOUNT_SELF = '00000000-0000-0000-0000-000000000010';
 const ACCOUNT_OTHER = '00000000-0000-0000-0000-000000000020';

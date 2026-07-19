@@ -122,18 +122,45 @@ function HomeHub() {
 
 export default function HomePage() {
   const { user, loading: authLoading } = useAuth();
-  const { activeProperty, loading: propertyLoading } = useProperty();
+  const { properties, activeProperty, loading: propertyLoading } = useProperty();
   const router = useRouter();
 
   // Middleware protects full-page requests, but sign-out happens client-side.
   // Unmount the entire app shell immediately so cached hotel details are never
-  // left visible, then navigate to Sign In. Zero-access accounts return to the
-  // selector's explicit empty state instead of an inert Home shell.
+  // left visible, then navigate to Sign In. Property-less company leaders go
+  // directly to Company Hub; other zero-access accounts keep the selector's
+  // explicit pending/empty state.
   React.useEffect(() => {
     if (authLoading || propertyLoading) return;
-    if (!user) router.replace('/signin');
-    else if (!activeProperty) router.replace('/property-selector');
-  }, [user, authLoading, activeProperty, propertyLoading, router]);
+    if (!user) {
+      router.replace('/signin');
+      return;
+    }
+    if (activeProperty) return;
+    if (user.role === 'admin' || properties.length > 0) {
+      router.replace('/property-selector');
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/api/company-access');
+        const body = await response.json().catch(() => ({})) as {
+          ok?: boolean;
+          data?: { organizations?: Array<{ type?: string }> };
+        };
+        const hasCustomerOrganization = response.ok
+          && body.ok === true
+          && body.data?.organizations?.some((organization) => organization.type !== 'single_hotel') === true;
+        if (!cancelled) router.replace(hasCustomerOrganization ? '/company' : '/property-selector');
+      } catch {
+        if (!cancelled) router.replace('/property-selector');
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [user, authLoading, properties.length, activeProperty, propertyLoading, router]);
 
   if (authLoading || propertyLoading || !user || !activeProperty) return null;
 

@@ -13,8 +13,8 @@
    auth load.
 
    Five surfaces (Mission Control replaced System & Agent 2026-07-17; Access is a
-   popover on Live hotels since 2026-07-17):
-     Onboarding · Live hotels · Mission Control · Money · ML
+   popover on Hotels since 2026-07-17):
+     Onboarding · Hotels · Mission Control · Money · ML
 
    Tab selection deep-links via the URL hash (#live etc.) so a refresh keeps
    you on the same surface — matches the prior console's behavior.
@@ -33,7 +33,7 @@ export type StudioTab = 'onboarding' | 'live' | 'system' | 'money' | 'ml';
 
 const TABS: { id: StudioTab; label: string }[] = [
   { id: 'onboarding', label: 'Onboarding' },
-  { id: 'live', label: 'Live hotels' },
+  { id: 'live', label: 'Hotels' },
   { id: 'system', label: 'Mission Control' },
   { id: 'money', label: 'Money' },
   { id: 'ml', label: 'ML' },
@@ -53,7 +53,7 @@ function readHashTab(): StudioTab {
   if (typeof window === 'undefined') return 'onboarding';
   const h = window.location.hash.replace('#', '');
   if (h === 'agent') return 'system'; // legacy deep-link → folded surface
-  if (h === 'access') return 'live';  // Access is a popover on Live now (2026-07-17)
+  if (h === 'access') return 'live';  // Access is a popover on Hotels now (2026-07-17)
   return VALID.has(h) ? (h as StudioTab) : 'onboarding';
 }
 

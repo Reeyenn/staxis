@@ -34,7 +34,7 @@ import {
   sanitizeItemName,
   canonicalName,
   buildPrompt,
-} from '../../app/api/inventory/photo-count/route';
+} from '@/lib/photo-count-prompt';
 
 describe('sanitizeItemName — natural-language injection blocklist (existing)', () => {
   test('rejects "ignore previous instructions"', () => {

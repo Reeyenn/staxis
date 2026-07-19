@@ -22,7 +22,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validateAssistBody, validateCoordinateBounds } from '@/app/api/admin/mapper/assist/route';
+import { validateAssistBody, validateCoordinateBounds } from '@/lib/pms/takeover-validate';
 
 const REQ_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 

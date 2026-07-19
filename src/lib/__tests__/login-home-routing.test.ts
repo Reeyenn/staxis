@@ -29,7 +29,7 @@ const authContext = source('src', 'contexts', 'AuthContext.tsx');
 
 describe('ordinary hotel login defaults to Home', () => {
   test('trusted/existing sessions use Home as the safe fallback', () => {
-    assert.match(signin, /safeRedirect\(params\.get\('redirect'\), '\/home'\)/);
+    assert.match(signin, /ordinaryRequestedTarget = safeRedirect\(rawRedirect, '\/home'\)/);
     assert.match(signin, /router\.replace\(redirectTarget\)/);
   });
 
@@ -40,12 +40,14 @@ describe('ordinary hotel login defaults to Home', () => {
     assert.match(signin, /\/property-selector/);
   });
 
-  test('OTP keeps a protected redirect and resolves through property selection', () => {
+  test('OTP keeps protected redirects, selecting a hotel except for Company targets', () => {
     assert.match(signin, /rawRedirect = params\.get\('redirect'\)/);
     assert.match(signin, /&redirect=\$\{encodeURIComponent\(rawRedirect\)\}/);
-    assert.match(verify, /safeRedirect\(params\.get\('redirect'\), '\/home'\)/);
+    assert.match(verify, /ordinaryRequestedTarget = safeRedirect\(rawRedirect, '\/home'\)/);
+    assert.match(verify, /requestedTarget\.startsWith\('\/company-invite\/'\)/);
+    assert.match(verify, /isPropertyIndependentCompanyTarget\s*\? requestedTarget/);
     assert.match(verify, /`\/property-selector\?redirect=\$\{encodeURIComponent\(requestedTarget\)\}`/);
-    assert.match(verify, /router\.replace\(data\.session \? redirectTarget : '\/signin'\)/);
+    assert.match(verify, /data\.session\s*\? redirectTarget/);
     assert.match(verify, /router\.replace\(redirectTarget\)/);
   });
 
@@ -61,9 +63,11 @@ describe('ordinary hotel login defaults to Home', () => {
 });
 
 describe('Home safety boundaries', () => {
-  test('signed-out and zero-access sessions are redirected before the shell renders', () => {
-    assert.match(home, /if \(!user\) router\.replace\('\/signin'\)/);
-    assert.match(home, /else if \(!activeProperty\) router\.replace\('\/property-selector'\)/);
+  test('signed-out and property-less sessions are resolved before the shell renders', () => {
+    assert.match(home, /if \(!user\) \{[\s\S]*?router\.replace\('\/signin'\)/);
+    assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
+    assert.match(home, /fetchWithAuth\(['"]\/api\/company-access['"]\)/);
+    assert.match(home, /hasCustomerOrganization \? ['"]\/company['"] : ['"]\/property-selector['"]/);
     assert.match(home, /if \(authLoading \|\| propertyLoading \|\| !user \|\| !activeProperty\) return null/);
   });
 

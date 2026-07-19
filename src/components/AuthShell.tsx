@@ -39,18 +39,19 @@ export const authBackLinkStyle: React.CSSProperties = {
 };
 
 // Uppercase 11px form label.
-export function AuthLabel({ children }: { children: React.ReactNode }) {
-  return <label style={authLabelStyle}>{children}</label>;
+export function AuthLabel({ children, style, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) {
+  return <label {...props} style={{ ...authLabelStyle, ...style }}>{children}</label>;
 }
 
 // Terracotta error pill, matched to the warm palette.
-export function AuthError({ children }: { children: React.ReactNode }) {
+export function AuthError({ children, style, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
   return (
-    <p style={{
+    <p {...props} role="alert" aria-live="assertive" style={{
       fontSize: 13, color: '#B85C3D',
       background: 'rgba(184,92,61,0.10)',
       border: '1px solid rgba(184,92,61,0.25)',
       borderRadius: 10, padding: '10px 12px', margin: 0,
+      ...style,
     }}>
       {children}
     </p>

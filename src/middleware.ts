@@ -42,6 +42,7 @@ const PUBLIC_PREFIXES = [
   '/phone-signin',   // QR phone handoff; all data/auth gates live in /api routes
   '/onboard/',       // unified onboarding wizard sub-steps
   '/invite/',        // /invite/[token]
+  '/company-invite/', // scoped organization invite (token-gated page)
   '/housekeeper/',   // /housekeeper/[id]
   '/laundry/',       // /laundry/[id]
   '/api/',           // every API route does its own auth
@@ -83,7 +84,15 @@ export function middleware(req: NextRequest): NextResponse {
   const { pathname, search } = req.nextUrl;
 
   if (isPublicPath(pathname)) {
-    return NextResponse.next();
+    const response = NextResponse.next();
+    // Organization invite URLs contain a single-use capability in the path.
+    // Suppress Referer entirely (including same-origin navigations to sign-in)
+    // so the raw token cannot be copied into access logs or telemetry there.
+    if (pathname.startsWith('/company-invite/')) {
+      response.headers.set('Referrer-Policy', 'no-referrer');
+      response.headers.set('Cache-Control', 'private, no-store, max-age=0');
+    }
+    return response;
   }
 
   if (hasAuthCookie(req)) {

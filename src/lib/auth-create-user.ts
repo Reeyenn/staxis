@@ -34,12 +34,21 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import type { AuthUser } from '@supabase/supabase-js';
 
+const MIN_INLINE_ORPHAN_AGE_MS = 10 * 60 * 1000;
+
 export interface CreateOrReclaimParams {
   /** Caller is responsible for normalizing (trim + lowercase). */
   email: string;
   password: string;
   /** Passed through to createUser as user_metadata. */
   userMetadata?: Record<string, unknown>;
+  /**
+   * Defaults to true for the established hotel onboarding flows. Capability
+   * invitation registration sets this false: an auth row can legitimately
+   * exist for a few milliseconds before its accounts row is inserted, so
+   * deleting an apparent "orphan" there would race and destroy the winner.
+   */
+  allowOrphanReclaim?: boolean;
 }
 
 export interface CreateOrReclaimResult {
@@ -53,6 +62,13 @@ export interface CreateOrReclaimResult {
    * caller should return a 409 "sign in instead".
    */
   alreadyHasAccount?: boolean;
+  /**
+   * The email belongs to an Auth identity with no account/property link, but
+   * this caller disabled reclaim to avoid racing another registration. The
+   * identity was preserved and must be reconciled rather than treated as an
+   * account that can simply sign in.
+   */
+  unlinkedIdentity?: boolean;
   /**
    * The original createUser error, surfaced when we couldn't — or mustn't —
    * reclaim (no existing login, lookup failed, or delete flaked). The caller
@@ -86,7 +102,7 @@ async function findAuthUserByEmail(email: string): Promise<AuthUser | null> {
 export async function createOrReclaimAuthUser(
   params: CreateOrReclaimParams,
 ): Promise<CreateOrReclaimResult> {
-  const { email, password, userMetadata } = params;
+  const { email, password, userMetadata, allowOrphanReclaim = true } = params;
 
   // 1) Happy path: just create.
   const first = await supabaseAdmin.auth.admin.createUser({
@@ -143,6 +159,28 @@ export async function createOrReclaimAuthUser(
   }
   if (ownedProperty) {
     return { alreadyHasAccount: true };
+  }
+
+  // Every signup flow creates auth.users before accounts. Treat a very recent
+  // unlinked identity as an in-flight registration, even for callers that may
+  // normally reclaim old orphans; otherwise two different signup endpoints
+  // can race and delete each other's freshly-created login.
+  const createdAtMs = new Date(existing.created_at).getTime();
+  if (Number.isFinite(createdAtMs) && Date.now() - createdAtMs < MIN_INLINE_ORPHAN_AGE_MS) {
+    log.warn('[auth-create-user] recent unlinked auth identity preserved for reconciliation', {
+      authUserId: existing.id,
+    });
+    return { alreadyHasAccount: true, unlinkedIdentity: true };
+  }
+
+  if (!allowOrphanReclaim) {
+    // Fail closed for invitation registration. The existing auth identity may
+    // be a legitimate concurrent signup in the auth -> accounts insertion
+    // window; the caller should send the user through sign-in/recovery.
+    log.warn('[auth-create-user] unlinked auth identity preserved because reclaim is disabled', {
+      authUserId: existing.id,
+    });
+    return { alreadyHasAccount: true, unlinkedIdentity: true };
   }
 
   // 4) Orphan login (auth row, no account or owned property). Reclaim it.

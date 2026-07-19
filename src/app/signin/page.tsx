@@ -11,6 +11,15 @@ import { supabase } from '@/lib/supabase';
 import { t } from '@/lib/translations';
 import { parseCheckTrustResponse } from '@/lib/api-validate';
 import { safeRedirect } from '@/lib/url-redirect';
+import {
+  COMPANY_INVITATION_HANDOFF_PARAM,
+  COMPANY_INVITATION_HANDOFF_VALUE,
+  COMPANY_INVITATION_RESUME_PATH,
+  COMPANY_INVITATION_SIGN_IN_HREF,
+  companyInvitationTokenFromPath,
+  readCompanyInvitationHandoff,
+  storeCompanyInvitationHandoff,
+} from '@/lib/company-access/invitation-handoff';
 import AuthShell, { AuthLabel, AuthError, authLinkStyle, AUTH_LINK } from '@/components/AuthShell';
 
 /**
@@ -55,9 +64,50 @@ function SignInInner() {
   const router = useRouter();
   const params = useSearchParams();
 
-  const requestedTarget = safeRedirect(params.get('redirect'), '/home');
+  const rawRedirect = params.get('redirect');
+  const ordinaryRequestedTarget = safeRedirect(rawRedirect, '/home');
+  const legacyInvitationToken = companyInvitationTokenFromPath(ordinaryRequestedTarget);
+  const usesCompanyInvitationHandoff = params.get(COMPANY_INVITATION_HANDOFF_PARAM)
+    === COMPANY_INVITATION_HANDOFF_VALUE || legacyInvitationToken !== null;
+  const handoffIdentity = usesCompanyInvitationHandoff
+    ? legacyInvitationToken ?? COMPANY_INVITATION_HANDOFF_VALUE
+    : null;
+  const [resolvedHandoff, setResolvedHandoff] = useState<{
+    identity: string;
+    target: string | null;
+  } | null>(null);
+
+  // Invitation tokens stay in sessionStorage while auth pages carry only an
+  // opaque marker. Legacy token-bearing sign-in links are cleaned with a
+  // history replacement and are never propagated to the OTP URL.
+  useEffect(() => {
+    if (!handoffIdentity) {
+      setResolvedHandoff(null);
+      return;
+    }
+    if (legacyInvitationToken) {
+      storeCompanyInvitationHandoff(legacyInvitationToken);
+      router.replace(COMPANY_INVITATION_SIGN_IN_HREF);
+    }
+    setResolvedHandoff({
+      identity: handoffIdentity,
+      target: readCompanyInvitationHandoff() ? COMPANY_INVITATION_RESUME_PATH : null,
+    });
+  }, [handoffIdentity, legacyInvitationToken, router]);
+
+  const handoffResolved = handoffIdentity === null || resolvedHandoff?.identity === handoffIdentity;
+  const requestedTarget = usesCompanyInvitationHandoff
+    ? resolvedHandoff?.identity === handoffIdentity
+      ? resolvedHandoff.target ?? '/company'
+      : '/company'
+    : ordinaryRequestedTarget;
+  // Company access is intentionally property-independent during the
+  // normalized-access rollout. Keep this bypass narrow: zero-legacy-property
+  // accounts may open only the Company hub or finish a company invitation.
+  const isPropertyIndependentCompanyTarget = requestedTarget === '/company'
+    || requestedTarget.startsWith('/company-invite/');
   const needsPropertySelection = Boolean(
-    user && (
+    user && !isPropertyIndependentCompanyTarget && (
       user.role === 'admin' ||
       user.propertyAccess.includes('*') ||
       user.propertyAccess.length !== 1
@@ -84,8 +134,8 @@ function SignInInner() {
   // /signin/verify). That race produced the "flash dashboard then bounce
   // back to signin" loop reported on 2026-05-10.
   useEffect(() => {
-    if (!loading && user && !signing) router.replace(redirectTarget);
-  }, [user, loading, router, signing, redirectTarget]);
+    if (handoffResolved && !loading && user && !signing) router.replace(redirectTarget);
+  }, [user, loading, router, signing, redirectTarget, handoffResolved]);
 
   // Sign-in flow (Phase 2 + Resend email):
   //   1. signInWithPassword — verifies the password, issues a session.
@@ -96,7 +146,7 @@ function SignInInner() {
   //      route to /signin/verify?email=… for code entry.
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !password) return;
+    if (!handoffResolved || !email.trim() || !password) return;
 
     setSigning(true);
     setError('');
@@ -166,9 +216,10 @@ function SignInInner() {
       // Preserve a protected deep link through OTP. The verify page routes via
       // the property selector, so multi-hotel users choose the hotel before the
       // target opens; an ordinary login still falls through to Home.
-      const rawRedirect = params.get('redirect');
       const verifyUrl = `/signin/verify?email=${encodeURIComponent(normalizedEmail)}${
-        rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
+        usesCompanyInvitationHandoff
+          ? `&${COMPANY_INVITATION_HANDOFF_PARAM}=${COMPANY_INVITATION_HANDOFF_VALUE}`
+          : rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
       }`;
       router.replace(verifyUrl);
     } catch {
@@ -185,7 +236,7 @@ function SignInInner() {
     );
   }
 
-  const disabled = signing || !email.trim() || !password;
+  const disabled = !handoffResolved || signing || !email.trim() || !password;
 
   return (
     <AuthShell subtitle={t('signInPrompt', lang)}>

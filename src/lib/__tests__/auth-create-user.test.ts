@@ -22,7 +22,7 @@ import assert from 'node:assert/strict';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 
-interface MockUser { id: string; email: string }
+interface MockUser { id: string; email: string; created_at?: string }
 
 interface MockState {
   /** Auth users that currently exist (drives createUser collision + listUsers). */
@@ -229,5 +229,39 @@ describe('createOrReclaimAuthUser', () => {
     assert.equal(res.user, undefined);
     assert.ok(res.error, 'surfaces the original createUser error');
     assert.deepEqual(state.deletedUserIds, [], 'must not delete when owner status is unconfirmed');
+  });
+
+  test('reclaim-disabled caller preserves an unlinked identity for reconciliation', async () => {
+    state.authUsers = [{ id: 'signup-in-flight', email: 'taken@example.com' }];
+
+    const res = await createOrReclaimAuthUser({
+      email: 'taken@example.com',
+      password: 'hunter2pw',
+      allowOrphanReclaim: false,
+    });
+
+    assert.equal(res.user, undefined);
+    assert.equal(res.alreadyHasAccount, true);
+    assert.equal(res.unlinkedIdentity, true);
+    assert.deepEqual(state.deletedUserIds, [], 'a possibly in-flight identity must be preserved');
+    assert.equal(state.createUserCalls, 1, 'reclaim-disabled callers never retry creation');
+  });
+
+  test('default reclaim preserves a recent identity created by another signup flow', async () => {
+    state.authUsers = [{
+      id: 'signup-in-flight',
+      email: 'taken@example.com',
+      created_at: new Date().toISOString(),
+    }];
+
+    const res = await createOrReclaimAuthUser({
+      email: 'taken@example.com',
+      password: 'hunter2pw',
+    });
+
+    assert.equal(res.alreadyHasAccount, true);
+    assert.equal(res.unlinkedIdentity, true);
+    assert.deepEqual(state.deletedUserIds, [], 'fresh identities must never be reclaimed inline');
+    assert.equal(state.createUserCalls, 1);
   });
 });

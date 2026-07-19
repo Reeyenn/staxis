@@ -41,6 +41,15 @@ import { runWithConcurrency } from '@/lib/parallel';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import { countsTrusted, isDataPending } from '@/lib/pms/feed-status';
+import {
+  datesNeedingOccupancyBackfill,
+  hasFreshPmsEvidence,
+  localDatesForProjection,
+  OCCUPANCY_BACKFILL_LOOKBACK_DAYS,
+  preserveSealedOccupancy,
+  type PmsSnapshotEvidence,
+  type SealedOccupancyFields,
+} from '@/lib/seal-daily';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -51,125 +60,11 @@ export const maxDuration = 90;
 // hour to land before we freeze the labels.
 const SEAL_AFTER_HOUR_LOCAL = 1;
 
-// How recent a CUA snapshot must be to count as "positive evidence the robot
-// is actually delivering data for this hotel." A dead robot leaves the last
-// snapshot stale; without this gate the trusted-flags path defaulted to
-// trusted on a lookup miss and sealed fabricated 0s (the incident this fix
-// closes — Comfort Suites had 14 fake-0 days with zero snapshot rows).
-const PMS_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-// Minimal shape of a pms_in_house_snapshot row for the freshness gate.
-export type PmsSnapshotEvidence = {
-  has_error: boolean | null;
-  last_good_at: string | null;
-  captured_at: string | null;
-};
-
-/**
- * Positive-evidence gate: does this property have a CUA snapshot that proves
- * the robot is live and healthy right now? True only when the snapshot exists,
- * is not in an error state, and its last-good time (fallback capture time) is
- * within the last 24h.
- *
- * Pure + exported for unit testing (matches the localDatesForProjection
- * pattern). `now` is injectable so tests don't depend on wall-clock time.
- *
- * A missing snapshot (snap === null) → no evidence → false: the exact
- * dead-robot / manual-no-PMS case that must NOT seal fake 0s.
- */
-export function hasFreshPmsEvidence(
-  snap: PmsSnapshotEvidence | null,
-  now: Date = new Date(),
-): boolean {
-  if (!snap) return false;
-  if (snap.has_error === true) return false;
-  const ts = snap.last_good_at ?? snap.captured_at;
-  if (!ts) return false;
-  const t = Date.parse(ts);
-  if (Number.isNaN(t)) return false;
-  return now.getTime() - t <= PMS_EVIDENCE_MAX_AGE_MS;
-}
-
 type PropertyRow = {
   id: string;
   name: string;
   timezone: string | null;
 };
-
-// How far back the occupancy backfill looks for NULL-checkout days it can
-// repair from pms_reservations history. 14 days ≈ two weekly count cycles —
-// enough to rescue the training windows a typical robot outage voids, small
-// enough that one hourly tick stays cheap (≤14 RPC calls, once; the repaired
-// days drop out of the candidate list on the next tick).
-const OCCUPANCY_BACKFILL_LOOKBACK_DAYS = 14;
-
-// The four daily_logs fields derived from PMS data. These are the fields the
-// stale-evidence gate seals as NULL — and therefore the fields that must
-// never regress from a real value back to NULL on a later tick.
-export type SealedOccupancyFields = {
-  occupied: number | null;
-  checkouts: number | null;
-  stayovers: number | null;
-  recommended_staff: number | null;
-};
-
-/**
- * Last-good preservation for the daily_logs seal. The seal re-runs ~23×/day
- * for the same date; on the tick where CUA evidence crosses the 24h staleness
- * line the newly-computed PMS fields flip to NULL, and an unconditional upsert
- * would overwrite the real values an earlier tick already sealed. NULL here
- * means "no evidence", never "the value is zero" — so a real value always
- * wins over a later NULL for the same date.
- *
- * Pure + exported for unit tests.
- */
-export function preserveSealedOccupancy(
-  next: SealedOccupancyFields,
-  existing: SealedOccupancyFields | null,
-): SealedOccupancyFields {
-  if (!existing) return next;
-  return {
-    occupied: next.occupied ?? existing.occupied,
-    checkouts: next.checkouts ?? existing.checkouts,
-    stayovers: next.stayovers ?? existing.stayovers,
-    recommended_staff: next.recommended_staff ?? existing.recommended_staff,
-  };
-}
-
-/**
- * Which dates in the lookback window still need their checkouts/stayovers
- * backfilled? A date qualifies when its daily_logs row is missing or has a
- * NULL checkouts/stayovers (a robot-outage day the normal seal skipped), AND
- * it is not before `historyFloor` — the first day pms_reservations has any
- * data for this property. Dates before the floor can never be derived (the
- * robot hadn't synced yet), so retrying them every tick is pure waste and
- * a pre-go-live date would backfill a partial undercount.
- *
- * Pure + exported for unit tests. Dates ascend so the oldest gap heals first.
- */
-export function datesNeedingOccupancyBackfill(args: {
-  /** The date the main seal just wrote (yesterday, property-local). */
-  targetDate: string;
-  existing: { date: string; checkouts: number | null; stayovers: number | null }[];
-  /** min(created_at)::date over pms_reservations for the property, or null when the table has no rows. */
-  historyFloor: string | null;
-  lookbackDays?: number;
-}): string[] {
-  const { targetDate, existing, historyFloor } = args;
-  const lookback = args.lookbackDays ?? OCCUPANCY_BACKFILL_LOOKBACK_DAYS;
-  if (!historyFloor) return [];
-  const byDate = new Map(existing.map((r) => [r.date, r]));
-  const out: string[] = [];
-  for (let back = lookback; back >= 1; back--) {
-    const d = new Date(`${targetDate}T12:00:00Z`);
-    d.setUTCDate(d.getUTCDate() - back);
-    const date = d.toISOString().slice(0, 10);
-    if (date < historyFloor) continue;
-    const row = byDate.get(date);
-    if (!row || row.checkouts === null || row.stayovers === null) out.push(date);
-  }
-  return out;
-}
 
 interface SealOutcome {
   property_id: string;
@@ -756,29 +651,6 @@ async function backfillOccupancyGaps(args: {
     });
   }
   return repaired;
-}
-
-/**
- * Compute "today" and "tomorrow" as YYYY-MM-DD in the property's local
- * timezone. Uses the same Intl.DateTimeFormat approach as
- * targetDateForProperty so all three (yesterday/today/tomorrow) key off one
- * consistent notion of the property's local calendar day.
- *
- * Exported for unit testing (cron-seal-daily-projection.test.ts) — the
- * date-arithmetic is the piece most prone to a DST/off-by-one bug.
- */
-export function localDatesForProjection(tz: string): { today: string; tomorrow: string } {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
-  });
-  const parts = fmt.formatToParts(new Date());
-  const get = (t: string) => parts.find((pp) => pp.type === t)?.value ?? '';
-  const today = `${get('year')}-${get('month')}-${get('day')}`;
-  // Add one day via a noon-UTC anchor to dodge DST edge cases.
-  const t = new Date(`${today}T12:00:00Z`);
-  t.setUTCDate(t.getUTCDate() + 1);
-  const tomorrow = t.toISOString().slice(0, 10);
-  return { today, tomorrow };
 }
 
 // Shape returned by the project_property_counts_v1 RPC (migration 0292).

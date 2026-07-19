@@ -27,12 +27,16 @@ interface MobileConcourseNavProps {
   propertyLabel: string;
   languageLabel: string;
   accountMenuLabel: string;
+  companyLabel: string;
   settingsLabel: string;
   signOutLabel: string;
   installLabel: string;
   showInstallAction: boolean;
+  showCompany: boolean;
   settingsActive: boolean;
+  companyActive: boolean;
   onHome: () => void;
+  onCompany: () => void;
   onSettings: () => void;
   onSignOut: () => void;
   onPropertyChange: (propertyId: string) => void;
@@ -71,12 +75,16 @@ export function MobileConcourseNav({
   propertyLabel,
   languageLabel,
   accountMenuLabel,
+  companyLabel,
   settingsLabel,
   signOutLabel,
   installLabel,
   showInstallAction,
+  showCompany,
   settingsActive,
+  companyActive,
   onHome,
+  onCompany,
   onSettings,
   onSignOut,
   onPropertyChange,
@@ -179,6 +187,11 @@ export function MobileConcourseNav({
   const selectSettings = () => {
     closeDrawer();
     onSettings();
+  };
+
+  const selectCompany = () => {
+    closeDrawer();
+    onCompany();
   };
 
   const signOut = () => {
@@ -310,6 +323,21 @@ export function MobileConcourseNav({
           ) : null}
 
           <div className={styles.divider} aria-hidden="true" />
+
+          {showCompany ? (
+            <button
+              type="button"
+              className={`${styles.navRow}${companyActive ? ` ${styles.navRowActive}` : ''}`}
+              onClick={selectCompany}
+              aria-current={companyActive ? 'page' : undefined}
+            >
+              <span className={styles.iconChip} aria-hidden="true">
+                <CxIcon name="company" size={17} />
+              </span>
+              <span className={styles.rowLabel}>{companyLabel}</span>
+              <ChevronRight className={styles.chevron} size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          ) : null}
 
           <button
             type="button"

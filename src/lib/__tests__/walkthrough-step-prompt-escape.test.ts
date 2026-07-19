@@ -20,7 +20,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildSystemPrompt } from '../../app/api/walkthrough/step/route';
+import { buildSystemPrompt } from '@/lib/walkthrough-step';
 
 describe('buildSystemPrompt — user-task wrap and escape', () => {
   test('wraps task in <user-task trust="untrusted">…</user-task>', () => {

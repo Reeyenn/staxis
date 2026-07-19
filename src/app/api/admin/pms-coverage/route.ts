@@ -46,9 +46,9 @@ import { getOrMintRequestId } from '@/lib/log';
 import { PMS_REGISTRY } from '@/lib/pms/registry';
 import type { PMSType } from '@/lib/pms/types';
 import {
-  parseKnowledgeCoverage,
-  LEARNABLE_ACTION_KEYS,
-} from '@/lib/pms/recipe-coverage';
+  computeFamilyCoverage,
+  type PerFeed,
+} from '@/lib/pms/family-coverage';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,73 +63,6 @@ const TARGET_FEEDS = [
   'work_orders',
 ] as const;
 type TargetFeed = (typeof TARGET_FEEDS)[number];
-
-/** Per-feed coverage state surfaced on the studio coverage card. */
-export type FeedState = 'live' | 'learning' | 'unavailable';
-
-export interface PerFeed {
-  key: string;
-  label: string;
-  state: FeedState;
-}
-
-interface FeedGapsShape {
-  missingRequired?: Array<{ target?: unknown }>;
-  missingBusinessCritical?: unknown[];
-}
-
-/** The set of feeds gap-listed in the active knowledge envelope. Gap-listing
- *  WINS over presence (a present-but-dead feed is learning) — mirror of
- *  src/lib/pms/feed-status.ts and /api/admin/mapper/coverage. */
-function extractGappedTargets(knowledge: unknown): Set<string> {
-  const gaps = (knowledge && typeof knowledge === 'object'
-    ? (knowledge as { feedGaps?: FeedGapsShape }).feedGaps
-    : undefined) ?? null;
-  return new Set<string>([
-    ...((gaps?.missingRequired ?? [])
-      .map((g) => (typeof g?.target === 'string' ? g.target : ''))
-      .filter(Boolean)),
-    ...((gaps?.missingBusinessCritical ?? []).filter((t): t is string => typeof t === 'string')),
-  ]);
-}
-
-/**
- * Actions-aware coverage for one family's active knowledge envelope.
- *
- * Returns the per-feed live/learning list and a coveragePct computed over the
- * LEARNABLE feeds present in the map (live / learnable-present). A feed that
- * isn't mapper-learnable (e.g. getDashboardCounts) is reported in perFeed but
- * excluded from the denominator — counting it would peg every newly-learned
- * family below 100% forever.
- *
- * Exported PURE for unit testing (see pms-coverage-pct.test.ts): an actions-
- * shaped Choice Advantage map must report >0%, never the old 0%.
- */
-export function computeFamilyCoverage(knowledge: unknown): {
-  perFeed: PerFeed[];
-  coveragePct: number;
-} {
-  const parsed = parseKnowledgeCoverage(knowledge);
-  const gapped = extractGappedTargets(knowledge);
-
-  const perFeed: PerFeed[] = parsed.feeds.map((f) => {
-    const target = f.actionKey;
-    const state: FeedState = target && gapped.has(target) ? 'learning' : 'live';
-    return { key: f.key, label: f.label, state };
-  });
-
-  // Denominator = learnable feeds present in the map. Numerator = those that
-  // are live (present and not gap-listed).
-  const learnable = parsed.feeds.filter(
-    (f) => f.actionKey != null && LEARNABLE_ACTION_KEYS.has(f.actionKey),
-  );
-  const liveLearnable = learnable.filter((f) => !(f.actionKey && gapped.has(f.actionKey)));
-  const coveragePct = learnable.length === 0
-    ? 0
-    : Math.round((liveLearnable.length / learnable.length) * 100);
-
-  return { perFeed, coveragePct };
-}
 
 interface CoverageRow {
   pmsType: PMSType;
@@ -189,7 +122,7 @@ interface KnowledgeFileRow {
  * (score/threshold) and a short human reason — NEVER selectors or full
  * knowledge. Mirrors the verify-before-live subset the maps route already echoes.
  */
-export interface PendingReview {
+interface PendingReview {
   version: number;
   score?: number;
   threshold?: number;

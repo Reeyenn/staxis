@@ -64,7 +64,7 @@ export default async function AdminLayout({
   // gate independent of RLS drift on the accounts table.
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role')
+    .select('id, role, active')
     .eq('data_user_id', user.id)
     .maybeSingle();
 
@@ -79,7 +79,7 @@ export default async function AdminLayout({
     redirect('/');
   }
 
-  if (!account || (account.role as string) !== 'admin') {
+  if (!account || (account.role as string) !== 'admin' || account.active !== true) {
     // Signed in but not an admin. Redirect to the marketing root so they
     // can navigate to their normal dashboard. We don't render a 403 page
     // because there's no legitimate path for a non-admin user to reach

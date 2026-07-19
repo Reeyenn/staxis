@@ -16,7 +16,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { computeFamilyCoverage } from '@/app/api/admin/pms-coverage/route';
+import { computeFamilyCoverage } from '@/lib/pms/family-coverage';
 
 /** An actions-shaped Choice Advantage map: 6 learnable feeds present, 4 live
  *  and 2 gap-listed (learning). Mirrors the mapper-produced envelope shape. */

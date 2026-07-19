@@ -26,7 +26,6 @@ import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { logSecurityEvent } from '@/lib/audit';
-import { classifyAccountsForPropertyDelete, type LinkedAccount } from '@/lib/property-delete';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -82,51 +81,39 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Figure out which accounts to remove vs keep BEFORE deleting the hotel.
-  // property_access is a uuid[] (not an FK), so the property delete won't
-  // touch these — handle them explicitly so a deleted test hotel frees its
-  // owner's email too. (Classifier is unit-tested for the over-delete
-  // failure modes: never an admin, never a multi-hotel owner.)
-  const { data: linked, error: linkedErr } = await supabaseAdmin
-    .from('accounts')
-    .select('id, data_user_id, role, property_access')
-    .contains('property_access', [propertyId]);
-  if (linkedErr) {
-    return err(`Could not plan account cleanup: ${linkedErr.message}`, {
-      requestId, status: 500,
-    });
+  // Property deletion, hidden-anchor retirement, account pruning, and account
+  // row deletion are one database transaction. If a linked person is still a
+  // final owner in a real organization, the whole operation rolls back.
+  const { data: cleanupData, error: cleanupError } = await supabaseAdmin.rpc(
+    'staxis_delete_property_and_legacy_accounts',
+    {
+      p_actor_account_id: auth.accountId,
+      p_property_id: propertyId,
+      // The database compares this value again after locking the hotel row.
+      // The pre-read above is only for friendly validation/UI messaging.
+      p_confirmed_name: confirmName || null,
+    },
+  );
+  if (cleanupError) {
+    const conflict = cleanupError.code === '23514';
+    const notFound = cleanupError.code === 'P0002';
+    return err(
+      conflict
+        ? 'Hotel or owner access changed while deletion was being confirmed; transfer company ownership or reload and try again.'
+        : notFound ? 'Property not found' : `Delete failed: ${cleanupError.message}`,
+      { requestId, status: conflict ? 409 : notFound ? 404 : 500 },
+    );
   }
-  const plan = classifyAccountsForPropertyDelete((linked ?? []) as LinkedAccount[], propertyId);
+  const cleanup = (cleanupData ?? {}) as {
+    name?: string;
+    authUserIds?: string[];
+    accountsRemoved?: number;
+    accountsPruned?: number;
+  };
 
-  // Delete the hotel — 129 FKs cascade (sessions, staff rows, pms_* data,
-  // join codes, …). Re-assert the live guard at write time UNLESS the admin
-  // confirmed by typing the exact name (that path is allowed to delete a live
-  // hotel, so the null re-assertion would otherwise match zero rows).
-  let delQuery = supabaseAdmin.from('properties').delete().eq('id', propertyId);
-  if (!confirmedByName) delQuery = delQuery.is('onboarding_completed_at', null);
-  const { data: deletedProperty, error: delErr } = await delQuery
-    .select('id')
-    .maybeSingle();
-  if (delErr) return err(`Delete failed: ${delErr.message}`, { requestId, status: 500 });
-  if (!deletedProperty) {
-    // The onboarding state changed after the initial read, or another request
-    // deleted the property first. Crucially, no account mutation has happened.
-    return err('Property changed while deletion was being confirmed; reload and try again.', {
-      requestId, status: 409,
-    });
-  }
-
-  // Accounts that also belong to other hotels: just drop this one. This runs
-  // only after a property row was actually deleted, preventing a concurrent
-  // onboarding completion from stripping otherwise-valid account access.
-  for (const p of plan.prune) {
-    await supabaseAdmin.from('accounts').update({ property_access: p.remaining }).eq('id', p.id);
-  }
-
-  // Remove the accounts that existed ONLY for this hotel + free their
-  // emails. Delete the account row first, then the auth user (both
-  // accounts.data_user_id and properties.owner_id CASCADE from auth.users,
-  // but the property is already gone).
+  // Free auth emails after the database transaction commits. A failed auth
+  // deletion leaves only an orphan login (the account/property authority is
+  // already gone); signup's guarded orphan-reclaim path remains the backstop.
   //
   // Retry the auth deleteUser up to 3 times before giving up. A flaked auth
   // delete here is exactly what leaves an ORPHAN login (auth.users row with
@@ -134,9 +121,8 @@ export async function POST(req: NextRequest) {
   // 7-day sweeper ran. Signup now reclaims orphans in-line
   // (createOrReclaimAuthUser), but retrying here makes them rare in the first
   // place. The orphan-auth sweeper stays the final backstop if all 3 flake.
-  let accountsRemoved = 0;
-  for (const uid of plan.deleteUserIds) {
-    await supabaseAdmin.from('accounts').delete().eq('data_user_id', uid);
+  let authUsersRemoved = 0;
+  for (const uid of cleanup.authUserIds ?? []) {
     let deleted = false;
     for (let attempt = 1; attempt <= 3 && !deleted; attempt++) {
       try {
@@ -148,15 +134,27 @@ export async function POST(req: NextRequest) {
       }
       if (attempt < 3) await new Promise(r => setTimeout(r, 200 * attempt));
     }
-    if (deleted) accountsRemoved += 1;
+    if (deleted) authUsersRemoved += 1;
   }
 
   await logSecurityEvent({
     action: 'admin.property_deleted',
     propertyId,
     requestId,
-    metadata: { name: prop.name, accountsRemoved, accountsPruned: plan.prune.length, wasLive: !!prop.onboarding_completed_at, confirmedByName },
+    metadata: {
+      name: cleanup.name ?? prop.name,
+      accountsRemoved: cleanup.accountsRemoved ?? 0,
+      accountsPruned: cleanup.accountsPruned ?? 0,
+      authUsersRemoved,
+      wasLive: !!prop.onboarding_completed_at,
+      confirmedByName,
+    },
   });
 
-  return ok({ deleted: true, name: prop.name, accountsRemoved }, { requestId });
+  return ok({
+    deleted: true,
+    name: cleanup.name ?? prop.name,
+    accountsRemoved: cleanup.accountsRemoved ?? 0,
+    authUsersRemoved,
+  }, { requestId });
 }

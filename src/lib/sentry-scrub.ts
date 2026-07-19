@@ -57,6 +57,10 @@ const TWILIO_SID_RX = /\b(AC|SM|MM)[a-f0-9]{32}\b/gi;
 // flow clears the fragment in an uninstrumented static bootstrap page first.
 const PHONE_PAIRING_FRAGMENT_RX = /([#&]pair=)[^&#\s"']+/gi;
 const PHONE_PAIRING_FRAGMENT_ENCODED_RX = /(%23pair%3d)[^&#\s"']+/gi;
+// Organization invitations use a 256-bit hex capability in the URL path.
+// Match both literal and percent-encoded slashes because request URLs,
+// transaction names, and breadcrumb data can arrive in either form.
+const COMPANY_INVITE_PATH_RX = /((?:\/|%2f)company-invite(?:\/|%2f))[0-9a-f]{64}/gi;
 
 // Keys we should scrub in tags / contexts / extras / frame-vars even if
 // their VALUE doesn't match a regex (e.g. raw staff name as the value
@@ -69,7 +73,7 @@ const PHONE_PAIRING_FRAGMENT_ENCODED_RX = /(%23pair%3d)[^&#\s"']+/gi;
 const PII_KEYS = new Set([
   'phone', 'phone_number', 'phoneNumber', 'phone164',
   'email', 'from', 'fromnumber', 'fromheader', 'to', 'toPhone',
-  'username', 'password', 'access_token', 'accessToken',
+  'username', 'password', 'token', 'access_token', 'accessToken',
   'authorization', 'cookie',
   'staffname', 'staff_name', 'guestname', 'guest_name',
   // 2026-05-22 monitoring/logging/secrets hardening additions:
@@ -92,6 +96,7 @@ export function scrubString(s: string): string {
   out = out.replace(TWILIO_SID_RX, '<twilio-sid>');
   out = out.replace(PHONE_PAIRING_FRAGMENT_RX, '$1<phone-pairing-token>');
   out = out.replace(PHONE_PAIRING_FRAGMENT_ENCODED_RX, '$1<phone-pairing-token>');
+  out = out.replace(COMPANY_INVITE_PATH_RX, '$1<company-invite-token>');
   out = out.replace(PHONE_RX, '<phone>');
   out = out.replace(EMAIL_RX, '<email>');
   return out;

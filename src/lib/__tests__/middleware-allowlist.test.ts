@@ -82,6 +82,7 @@ describe('middleware — known PUBLIC paths pass through without auth cookie', (
     '/onboard',
     '/onboard/step-1',
     '/invite/abc123',
+    '/company-invite/abc123',
     '/housekeeper',
     '/housekeeper/abc',
     '/laundry',

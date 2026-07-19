@@ -25,7 +25,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { STAFF_COLS } from '@/lib/db/staff';
-import { callerManagesProperty, validateWage } from '@/app/api/staff/wages/route';
+import { callerManagesProperty, validateWage } from '@/lib/staff-wages';
 
 const PID_A = '11111111-1111-1111-1111-111111111111';
 const PID_B = '22222222-2222-2222-2222-222222222222';

@@ -77,6 +77,8 @@ export type RateLimitEndpoint =
   // token-spray attacks matter. (Codex audit 2026-05-12.)
   | 'auth-use-join-code'
   | 'auth-accept-invite'
+  | 'company-invitation-preview'
+  | 'company-invitation-register'
   // Desktop-to-phone QR handoff. Create is keyed per account; the public
   // claim/resend/verify surfaces are keyed per trusted source IP; complete is
   // checked against both IP and account scopes. Claim/resend send Resend email
@@ -322,6 +324,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Invite acceptance — 10/hour per source IP. One-shot per token in
   // normal use; the cap exists to bound token-spray brute force.
   'auth-accept-invite':         10,
+  'company-invitation-preview': 60,
+  'company-invitation-register': 10,
   // QR phone handoff. Database state adds the stronger per-pair limits:
   // three sends (10-second cooldown) and five verification attempts.
   'auth-phone-pairing-create':   10,
@@ -601,6 +605,9 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // api-limit outage from reaching link generation/email at all.
   'auth-phone-pairing-claim',
   'auth-phone-pairing-resend',
+  // Public organization-invite registration creates an auth identity. Treat
+  // its abuse guard as fail-closed even though it is not a billing endpoint.
+  'company-invitation-register',
   // Complaints — Claude service-recovery draft (token cost). Fail CLOSED so a
   // Supabase blip can't uncap spend. complaints-log is here too: it runs a
   // Claude classify on every call (Codex review #6).

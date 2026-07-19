@@ -84,12 +84,33 @@ export function SurfaceHead({ caps, children, right }: { caps: string; children:
 }
 
 // ── Modals — light card on a blurred ink backdrop, click-outside closes ──
-export const MODAL_CARD: React.CSSProperties = { background: '#fff', borderRadius: 18, padding: 26, width: 440, maxWidth: '100%', boxShadow: 'var(--shadow-lg)', color: 'var(--ink)' };
+export const MODAL_CARD: React.CSSProperties = {
+  background: '#fff',
+  borderRadius: 18,
+  padding: 26,
+  width: 440,
+  maxWidth: '100%',
+  maxHeight: 'calc(100dvh - 48px)',
+  overflowY: 'auto',
+  boxShadow: 'var(--shadow-lg)',
+  color: 'var(--ink)',
+};
 
 export function Backdrop({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
   return (
-    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 200, background: 'rgba(24,22,17,.5)', backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-      {children}
+    <div
+      data-studio-modal-backdrop
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 200,
+        background: 'rgba(24,22,17,.5)',
+        backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+        overflowY: 'auto', padding: 24,
+      }}
+    >
+      <div style={{ minHeight: '100%', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {children}
+      </div>
     </div>
   );
 }

@@ -9,7 +9,7 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { propertyMidnightIso } from '@/app/api/housekeeping/inspections/stats/route';
+import { propertyMidnightIso } from '@/lib/inspections/property-midnight';
 
 // Pin "now" so the test is deterministic. We swap globalThis.Date for a
 // proxy that intercepts no-arg construction and Date.now(). All other

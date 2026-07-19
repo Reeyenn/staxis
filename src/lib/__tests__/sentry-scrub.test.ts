@@ -65,6 +65,16 @@ describe('scrubString — value-regex pass', () => {
     assert.match(literal, /<phone-pairing-token>/);
     assert.match(encoded, /<phone-pairing-token>/);
   });
+
+  test('redacts literal and encoded organization invitation paths', () => {
+    const token = 'd'.repeat(64);
+    const literal = scrubString(`https://getstaxis.com/company-invite/${token}`);
+    const encoded = scrubString(`url=https%3A%2F%2Fgetstaxis.com%2Fcompany-invite%2F${token}`);
+    assert.equal(literal.includes(token), false);
+    assert.equal(encoded.includes(token), false);
+    assert.match(literal, /<company-invite-token>/);
+    assert.match(encoded, /<company-invite-token>/);
+  });
 });
 
 describe('phone-pairing telemetry URL defense', () => {

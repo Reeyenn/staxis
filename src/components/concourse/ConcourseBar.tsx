@@ -46,6 +46,12 @@ export function ConcourseBar() {
   const pathname = usePathname();
   const enabled = useEnabledSections();
   const { platform, installed } = useInstallStaxis();
+  const companyOnly = !propertyLoading && !!user && properties.length === 0 && user.role !== 'admin';
+  const homeHref = companyOnly ? '/company' : '/home';
+  const homeLabel = companyOnly
+    ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
+    : (lang === 'es' ? 'Inicio' : 'Home');
+  const showCompanyNavigation = Boolean(user && user.role !== 'admin' && !companyOnly);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [phoneHandoffOpen, setPhoneHandoffOpen] = React.useState(false);
   const [installStaxisOpen, setInstallStaxisOpen] = React.useState(false);
@@ -75,12 +81,15 @@ export function ConcourseBar() {
     if (PREFETCHED_THIS_SESSION) return;
     const idle = window.setTimeout(() => {
       PREFETCHED_THIS_SESSION = true;
-      const hrefs = [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
-      if (roleRef.current === 'admin') hrefs.push('/admin/properties');
+      const hrefs = companyOnly
+        ? ['/company', '/settings']
+        : [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
+      if (!companyOnly && roleRef.current === 'admin') hrefs.push('/admin/properties');
+      else if (!hrefs.includes('/company')) hrefs.push('/company');
       hrefs.forEach((h) => router.prefetch(h));
     }, 2500);
     return () => window.clearTimeout(idle);
-  }, [router]);
+  }, [companyOnly, router]);
   const go = (href: string) => { setPendingHref(href); router.push(href); };
 
   // Pending-decision badge on the Staxis pill. Seeded from the sample queue
@@ -100,7 +109,7 @@ export function ConcourseBar() {
   // Same visibility rules as the old Header: per-hotel section toggles hide
   // pills entirely; Financials additionally needs the view_financials
   // capability (server routes enforce the same gate independently).
-  const items: BarItem[] = (propertyLoading ? [] : SECTION_LIST)
+  const items: BarItem[] = (propertyLoading || !activeProperty ? [] : SECTION_LIST)
     .filter((m) => {
       if (!enabled[m.key]) return false;
       if (m.key === 'financials') return !!user && can('view_financials');
@@ -263,10 +272,12 @@ export function ConcourseBar() {
         userName={userName}
         userMeta={userMeta}
         userInitial={initial}
-        homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
+        homeLabel={homeLabel}
         mobileTitle={pathname === '/inventory' || pathname.startsWith('/inventory/')
           ? (lang === 'es' ? 'Inventario' : 'Inventory')
-          : undefined}
+          : pathname === '/company' || pathname.startsWith('/company/')
+            ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
+            : undefined}
         menuLabel={lang === 'es' ? 'Abrir navegación' : 'Open navigation'}
         closeLabel={lang === 'es' ? 'Cerrar navegación' : 'Close navigation'}
         navigationLabel={lang === 'es' ? 'Navegación principal' : 'Main navigation'}
@@ -277,12 +288,16 @@ export function ConcourseBar() {
         accountMenuLabel={lang === 'es'
           ? `Abrir menú de usuario de ${userName}`
           : `Open user menu for ${userName}`}
+        companyLabel={lang === 'es' ? 'Centro de empresa' : 'Company Hub'}
         settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
         signOutLabel={t('signOut', lang)}
         installLabel={lang === 'es' ? 'Añadir Staxis a la pantalla de inicio' : 'Add Staxis to Home Screen'}
         showInstallAction={showInstallReminder}
+        showCompany={showCompanyNavigation}
         settingsActive={pathname.startsWith('/settings')}
-        onHome={() => go('/home')}
+        companyActive={pathname === '/company' || pathname.startsWith('/company/')}
+        onHome={() => go(homeHref)}
+        onCompany={() => go('/company')}
         onSettings={() => go('/settings')}
         onSignOut={() => { void signOut(); }}
         onPropertyChange={(propertyId) => {
@@ -300,15 +315,18 @@ export function ConcourseBar() {
       />
       <ConcourseBarView
         items={items}
+        companyActive={showCompanyNavigation && (pathname === '/company' || pathname.startsWith('/company/'))}
+        onCompany={showCompanyNavigation ? () => go('/company') : undefined}
+        companyLabel={showCompanyNavigation ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub') : undefined}
         gearActive={pathname.startsWith('/settings')}
         onGear={() => go('/settings')}
-        onLogo={() => go('/home')}
-        homeLabel={lang === 'es' ? 'Inicio' : 'Home'}
+        onLogo={() => go(homeHref)}
+        homeLabel={homeLabel}
         settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
         avatar={avatar}
         // Away from the hub, the leftmost Staxis pill becomes a back-to-Home
         // control without changing the bar's visual language.
-        showHome={pathname !== '/home'}
+        showHome={pathname !== homeHref}
         desktopOnly
       />
       <PhoneHandoffDialog

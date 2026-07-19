@@ -20,7 +20,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validateBody } from '@/app/api/admin/properties/create/route';
+import { validateBody } from '@/lib/admin-property-create-validation';
 import { PLACEHOLDER_HOTEL_NAME } from '@/lib/onboarding/state';
 
 // ─── HAPPY PATH ────────────────────────────────────────────────────────────

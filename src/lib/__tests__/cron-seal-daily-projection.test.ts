@@ -24,7 +24,7 @@ import {
   preserveSealedOccupancy,
   datesNeedingOccupancyBackfill,
   type SealedOccupancyFields,
-} from '@/app/api/cron/seal-daily/route';
+} from '@/lib/seal-daily';
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 

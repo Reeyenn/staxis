@@ -13,7 +13,7 @@
  */
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseArtifact } from '../../app/api/admin/ml/housekeeping/backtest-status/route';
+import { parseArtifact } from '@/lib/housekeeping/backtest-artifact';
 
 describe('parseArtifact', () => {
   it('returns null for non-object inputs', () => {

@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { writeRoleChange } from '@/lib/audit-role-changes';
-import { denyRoleChange } from '@/app/api/settings/users/route';
+import { denyRoleChange } from '@/lib/settings-user-role-change';
 import type { AppRole } from '@/lib/roles';
 
 interface InsertedRow {

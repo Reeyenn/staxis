@@ -23,6 +23,9 @@ export interface BarItem {
 
 export interface ConcourseBarViewProps {
   items: BarItem[];
+  companyActive?: boolean;
+  onCompany?: () => void;
+  companyLabel?: string;
   gearActive: boolean;
   onGear: () => void;
   onLogo: () => void;
@@ -40,7 +43,7 @@ export interface ConcourseBarViewProps {
 }
 
 export function ConcourseBarView({
-  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  items, companyActive = false, onCompany, companyLabel, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
   showHome = false, desktopOnly = false,
 }: ConcourseBarViewProps) {
   return (
@@ -64,7 +67,7 @@ export function ConcourseBarView({
             <span className="cx-lab">{homeLabel}</span>
           </span>
         </button>
-        <span className="cx-divider" aria-hidden />
+        {items.length > 0 ? <span className="cx-divider" aria-hidden /> : null}
         {items.map((it) => (
           <button
             key={it.key}
@@ -85,6 +88,19 @@ export function ConcourseBarView({
           </button>
         ))}
         <span className="cx-divider" aria-hidden />
+        {onCompany && companyLabel ? (
+          <button
+            type="button"
+            className={`cx-pill cx-utility-pill${companyActive ? ' cx-active' : ''}`}
+            onClick={onCompany}
+            title={companyLabel}
+            aria-label={companyLabel}
+            aria-current={companyActive ? 'page' : undefined}
+          >
+            <CxIcon name="company" size={16} />
+            <span className="cx-labw"><span className="cx-lab">{companyLabel}</span></span>
+          </button>
+        ) : null}
         <button
           type="button"
           className={`cx-gear${gearActive ? ' cx-on' : ''}`}
