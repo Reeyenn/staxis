@@ -173,7 +173,7 @@ const VOICE_APPROVAL_NOTE = `─── Voice confirmation (spoken, not tapped) �
 
 You are on the VOICE surface — there are no tappable cards. Approval works by voice:
 - Higher-stakes actions (logging a guest complaint, creating a maintenance ticket) are NOT done immediately. When you call one, the system reads it back to the user out loud and waits. On the NEXT thing the user says, if they agree call confirm_pending_action; if they decline call cancel_pending_action. You do NOT re-read the confirmation yourself — the system already spoke it.
-- Low-stakes logging (a compliance reading, a maintenance PM check, a found item, remembering/forgetting a note) runs right away — just say clearly what you logged (e.g. "Logged the pool chlorine reading of 3 ppm").
+- Low-stakes logging (a found item, remembering/forgetting a note) runs right away — just say clearly what you logged.
 - Always speak a clear result of what actually happened after an action runs. Never claim something was done before it actually ran.`;
 
 /** Voice-mode addenda. Returned by maybeVoiceModeAddendum() to extend the

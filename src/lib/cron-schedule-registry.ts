@@ -42,8 +42,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // scraper service is gone, `vercel-watchdog` (5-min, listed below) is
   // its replacement.
   { heartbeatName: 'agent-nudges-check',                source: { kind: 'vercel', cronPath: '/api/agent/nudges/check' },                     cronExpr: '*/5 * * * *' },
-  { heartbeatName: 'compliance-reminders',              source: { kind: 'vercel', cronPath: '/api/cron/compliance-reminders' },             cronExpr: '0 * * * *' },
-  { heartbeatName: 'compliance-anomaly-sweep',          source: { kind: 'vercel', cronPath: '/api/cron/compliance-anomaly-sweep' },          cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-consolidate-memory',          source: { kind: 'vercel', cronPath: '/api/cron/agent-consolidate-memory' },          cronExpr: '0 5 * * *' },

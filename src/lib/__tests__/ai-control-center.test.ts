@@ -22,16 +22,19 @@ describe('AI Control Center feature registry', () => {
   // description, lost-found match rerank, and package label scan (28→25);
   // the Recommendations tab added admin.model_recommendations (25→26).
   // 2026-07-19: reports.weekly_insight removed with the automatic report
-  // emails (26→25 controllable, 34→33 keys).
-  test('covers 25 controllable hosted features and 8 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 33);
+  // emails (26→25 controllable, 34→33 keys); the compliance section removal
+  // took compliance.photo_reading/text_reading_parse/setup_parse/
+  // anomaly_phrasing + speech.engineer_dictation (25→21 controllable,
+  // display-only 8→7, 33→28 keys).
+  test('covers 21 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 28);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
     const informational = AI_FEATURE_KEYS
       .map((key) => AI_FEATURE_REGISTRY[key])
       .filter((feature) => !feature.editable);
-    assert.equal(informational.length, 8);
+    assert.equal(informational.length, 7);
     for (const feature of informational) {
       assert.equal(feature.switchable, false);
       assert.equal(feature.modelSwitchable, false);
@@ -57,10 +60,6 @@ describe('AI Control Center feature registry', () => {
       'inventory.invoice_scan',
       'financials.invoice_scan',
       'financials.quote_scan',
-      'compliance.photo_reading',
-      'compliance.text_reading_parse',
-      'compliance.setup_parse',
-      'compliance.anomaly_phrasing',
       'communications.staxis_assistant',
     ] as const;
     const haiku = [

@@ -16,7 +16,6 @@ test('scoped provider attempts forward the runtime signal and reject truncation'
     // (reports/weekly-insights.ts removed 2026-07-19 with the automatic
     // report emails.)
     ['src/lib/complaints-ai.ts', 2, 2],
-    ['src/lib/compliance/nlp.ts', 1, 1],
   ];
 
   for (const [file, attemptCount, anthropicCount] of expected) {
@@ -60,10 +59,6 @@ test('malformed output is rejected before executeAiFeature can accept an attempt
       'complaint classifier returned an invalid category',
       'service-recovery model returned an invalid JSON schema',
     ]],
-    ['src/lib/compliance/nlp.ts', ['model returned an invalid JSON schema']],
-    // Missing optional keys are coerced to null (models omit null fields);
-    // only a non-object top level is rejected.
-    ['src/lib/compliance/vision.ts', ['expected an object at top level']],
   ];
 
   for (const [file, markers] of requiredSignals) {
@@ -112,9 +107,6 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
     'src/app/api/settings/reports/run/route.ts',
     'src/app/api/complaints/log/route.ts',
     'src/app/api/complaints/draft/route.ts',
-    'src/app/api/compliance/setup/route.ts',
-    'src/app/api/engineer/voice-log/route.ts',
-    'src/app/api/cron/compliance-anomaly-sweep/route.ts',
   ];
 
   for (const file of routes) {

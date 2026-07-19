@@ -46,10 +46,8 @@ import {
   subscribeToRooms,
   subscribeToWorkOrders,
   subscribeToComplaints,
-  fetchComplianceSummary,
 } from '@/lib/db';
 import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/complaints-shared';
-import type { ComplianceSummary } from '@/lib/compliance/types';
 import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useFeedStatus } from '@/lib/use-feed-status';
@@ -148,7 +146,7 @@ export default function DashboardPage() {
   // below is owned by another section — when that section is off for the hotel
   // it stops both rendering AND subscribing:
   //   • communications → complaints / callbacks / lost-items
-  //   • maintenance    → work orders / compliance
+  //   • maintenance    → work orders
   //   • housekeeping   → dirty-room count
   //   • financials     → the synthetic KPI / chart / month-to-date showcase
   const communicationsEnabled = useSectionEnabled('communications');
@@ -181,7 +179,6 @@ export default function DashboardPage() {
   const [rooms, setRooms] = useState<Room[]>([]);
   const [counts, setCounts] = useState<TodayPropertyCounts | null>(null);
   const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-  const [compliance, setCompliance] = useState<ComplianceSummary | null>(null);
   const [complaints, setComplaints] = useState<Complaint[]>([]);
 
   // The configured room count is the property's true inventory; the PMS
@@ -222,27 +219,6 @@ export default function DashboardPage() {
     if (!user || !activePropertyId || !communicationsEnabled) return;
     return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
   }, [user, activePropertyId, communicationsEnabled]);
-  useEffect(() => {
-    // Property switch / section toggle: never let the previous scope's
-    // compliance lines linger under the new one.
-    setCompliance(null);
-    if (!user || !activePropertyId || !maintenanceEnabled) return;
-    let alive = true;
-    // fetchComplianceSummary maps any HTTP/parse failure to null — treating
-    // that as "no compliance issues" flipped 'Needs attention' to a green
-    // 'All clear' during transient API failures. Hold last-good instead and
-    // let the next 60s tick recover; network-level throws are swallowed for
-    // the same reason (they were an unhandled rejection before).
-    const load = () => {
-      void fetchComplianceSummary(activePropertyId)
-        .then(s => { if (alive && s) setCompliance(s); })
-        .catch(() => { /* transient poll failure — hold last-good, retry next tick */ });
-    };
-    load();
-    const iv = setInterval(load, 60_000);
-    return () => { alive = false; clearInterval(iv); };
-  }, [user, activePropertyId, maintenanceEnabled]);
-
   // ── derived live values ──────────────────────────────────────────────
   const openOrders = useMemo(() => workOrders.filter(o => o.status === 'open'), [workOrders]);
   const urgentOrders = useMemo(() => openOrders.filter(o => o.priority === 'urgent'), [openOrders]);
@@ -443,13 +419,11 @@ export default function DashboardPage() {
     // Each line is filtered by the section that owns it — an off section
     // contributes nothing (and its feed above never subscribed).
     if (maintenanceEnabled && urgentOrders.length) out.push({ n: urgentOrders.length, text: attentionText('urgentOrders', urgentOrders.length, ES) });
-    if (maintenanceEnabled && compliance && compliance.pmOverdueCount > 0) out.push({ n: compliance.pmOverdueCount, text: attentionText('complianceOverdue', compliance.pmOverdueCount, ES) });
-    if (maintenanceEnabled && compliance && compliance.anomalyCount > 0) out.push({ n: compliance.anomalyCount, text: attentionText('anomalies', compliance.anomalyCount, ES) });
     if (communicationsEnabled && overdueComplaints > 0) out.push({ n: overdueComplaints, text: attentionText('complaintsOverdue', overdueComplaints, ES) });
     if (communicationsEnabled && callbacksDueCount > 0) out.push({ n: callbacksDueCount, text: attentionText('callbacksDue', callbacksDueCount, ES) });
     if (housekeepingEnabled && dirtyRooms > 0) out.push({ n: dirtyRooms, text: attentionText('roomsToClean', dirtyRooms, ES) });
     return out.slice(0, 5);
-  }, [urgentOrders.length, compliance, overdueComplaints, callbacksDueCount, dirtyRooms, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
+  }, [urgentOrders.length, overdueComplaints, callbacksDueCount, dirtyRooms, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
   const attnTotal = attention.reduce((a, x) => a + x.n, 0);
 
   // ── chart series ─────────────────────────────────────────────────────

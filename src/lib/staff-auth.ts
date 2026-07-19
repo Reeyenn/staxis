@@ -373,15 +373,5 @@ export function buildHousekeeperLink(
   return buildStaffLink(staffId, pid, 'housekeeper', baseUrl);
 }
 
-/**
- * Mint a one-time magic-link for an ENGINEERING / MAINTENANCE staff member —
- * the Engineering Compliance feature's mobile surface (/engineer/[id]). Same
- * security model as buildHousekeeperLink; only the URL path differs.
- */
-export function buildEngineerLink(
-  staffId: string,
-  pid: string,
-  baseUrl: string = 'https://getstaxis.com',
-): Promise<string> {
-  return buildStaffLink(staffId, pid, 'engineer', baseUrl);
-}
+// (buildEngineerLink removed 2026-07-19 — the engineering-compliance mobile
+// surface was deleted with the compliance section.)

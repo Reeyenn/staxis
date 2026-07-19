@@ -19,7 +19,6 @@ export type ReportCategory =
   | 'inventory'
   | 'occupancy'
   | 'activity'
-  | 'compliance'
   | 'lost_found';
 
 /** Bilingual label. EN + ES per CLAUDE.md. */
