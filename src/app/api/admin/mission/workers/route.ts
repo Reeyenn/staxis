@@ -84,12 +84,12 @@ function tierOf(name: string): WorkerTier {
 
 const WORKER_META: Record<string, { description: string; group: WorkerGroup }> = {
   'agent-nudges-check':                  { description: 'Looks for new things the AI assistant should flag for you.', group: 'Agent' },
-  'agent-sweep-reservations':            { description: 'Scans reservations so the AI can spot issues early.',        group: 'Agent' },
+  'agent-sweep-reservations':            { description: 'Frees up AI budget if a task crashes mid-way.',              group: 'Agent' },
   'agent-summarize-long-conversations':  { description: 'Tidies up long AI chats so they stay fast.',                group: 'Agent' },
   'agent-consolidate-memory':            { description: "Cleans up the AI assistant's memory overnight.",            group: 'Agent' },
   'agent-archive-stale-conversations':   { description: "Files away old AI chats you're done with.",                 group: 'Agent' },
   'agent-heal-counters':                 { description: 'Fixes the AI usage counters if they drift.',                group: 'Agent' },
-  'walkthrough-heal-stale':              { description: 'Restarts any property walkthrough that got stuck.',          group: 'Other' },
+  'walkthrough-heal-stale':              { description: "Cleans up show-me-how tutorials that got interrupted.",      group: 'Other' },
   'sweep-orphan-auth-users':             { description: 'Removes leftover half-finished sign-up accounts.',           group: 'Cleanup' },
   'sweep-mfa-verified-sessions':         { description: 'Clears out expired 2-factor sign-in sessions.',              group: 'Cleanup' },
   'seal-daily':                          { description: "Locks in each hotel's daily room counts.",                  group: 'Other' },
