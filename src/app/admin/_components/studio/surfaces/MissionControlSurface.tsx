@@ -74,7 +74,6 @@ interface AgentMetrics {
   today?: { totalCostUsd?: number; backgroundCostUsd?: number; requestCount?: number };
   toolErrorsToday?: number;
   toolIncompleteToday?: number;
-  pendingNudges?: number;
   topTools?: Array<{ tool: string; calls: number; errors: number; incomplete: number; errorRatePct: number }>;
 }
 
@@ -375,10 +374,9 @@ export function MissionControlSurface() {
   })();
 
   // Inbox — endpoint when live, else derived from reliable cua-sessions data.
-  const pendingNudges = metrics?.pendingNudges ?? 0;
   const inboxCards: InboxCard[] = (inboxRows !== null)
     ? inboxRows.map((it, i) => endpointInboxCard(it, i, runAction, busyKey))
-    : derivedInboxCards(liveRobots, pendingNudges, runAction, busyKey);
+    : derivedInboxCards(liveRobots, runAction, busyKey);
 
   const attentionCount = inboxCards.length;
 
@@ -874,9 +872,10 @@ interface InboxCard {
 
 type ActionRunner = (key: string, propertyId: string, action: string) => void;
 
-// Build inbox cards straight from cua-sessions + pending nudges — always
-// correct, used as the source of truth until mission/inbox lands.
-function derivedInboxCards(sessions: CuaSession[], pendingNudges: number, run: ActionRunner, busyKey: string | null): InboxCard[] {
+// Build inbox cards straight from cua-sessions — always correct, used as
+// the source of truth until mission/inbox lands. Only owner-actionable
+// robot states; hotels' own pending decisions don't belong here.
+function derivedInboxCards(sessions: CuaSession[], run: ActionRunner, busyKey: string | null): InboxCard[] {
   const cards: InboxCard[] = [];
   for (const s of sessions) {
     const status = (s.status || '').toLowerCase();
@@ -906,20 +905,13 @@ function derivedInboxCards(sessions: CuaSession[], pendingNudges: number, run: A
       });
     }
   }
-  if (pendingNudges > 0) {
-    cards.push({
-      key: 'nudges', tone: 'gold',
-      title: `${pendingNudges} suggestion${pendingNudges === 1 ? '' : 's'} waiting for approval`,
-      detail: 'The copilot has changes it wants your okay on before acting.',
-    });
-  }
   return cards;
 }
 
 // Map a mission/inbox row to a card. Consumes the endpoint's own title/detail
 // and structured `action`; tone is inferred from `kind`. Kinds are the real
-// endpoint values (needs_2fa / cost_cap / failed / pending_decisions) plus
-// loose fallbacks so an added kind still renders.
+// endpoint values (needs_2fa / cost_cap / failed) plus loose fallbacks so
+// an added kind still renders.
 function endpointInboxCard(it: InboxRow, i: number, run: ActionRunner, busyKey: string | null): InboxCard {
   const kind = (it.kind || '').toLowerCase();
   const urgent = kind.includes('2fa') || kind.includes('mfa') || kind.includes('fail') || kind.includes('circuit');

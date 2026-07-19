@@ -1,19 +1,17 @@
 /**
  * /api/admin/mission/inbox
  *
- * GET — the "needs your okay" inbox of Mission Control. Aggregates the two
- * things that actually need the owner:
- *   1. Robots that are stuck — waiting on a 2FA code, parked on their daily
- *      cost cap, or in a failed / circuit-broken state.
- *   2. How many AI decisions are still pending across all hotels
- *      (agent_nudges with status='pending').
+ * GET — the "needs your okay" inbox of Mission Control: robots that are
+ * stuck — waiting on a 2FA code, parked on their daily cost cap, or in a
+ * failed / circuit-broken state. Only things the OWNER can act on belong
+ * here; hotels' own pending AI decisions were removed 2026-07-19 (owner:
+ * those wait on the hotel's managers, not him).
  *
  * Auth + service-role reads mirror /api/admin/cua-sessions exactly:
  * requireAdminOrCron gate, supabaseAdmin only, envelope via ok()/err().
  *
  * Each robot item carries an `action` the UI can render as a single button
- * or link. Nudges are a count (+ one summary item), not per-row, so the
- * owner sees "3 decisions waiting" rather than a wall of rows.
+ * or link.
  */
 
 import { NextRequest } from 'next/server';
@@ -34,7 +32,7 @@ const HIT_COST_CAP = 'paused_cost_cap';
 const FAILED_STATES = ['failed', 'failed_restart', 'paused_circuit_breaker'] as const;
 const ATTENTION_STATES = [NEEDS_2FA, HIT_COST_CAP, ...FAILED_STATES];
 
-type InboxKind = 'needs_2fa' | 'cost_cap' | 'failed' | 'pending_decisions';
+type InboxKind = 'needs_2fa' | 'cost_cap' | 'failed';
 
 /** A single action the UI renders as one control. 'link' navigates;
  *  'reset_cost_cap' / 'restart' POST to /api/admin/cua-sessions. */
@@ -63,22 +61,12 @@ export async function GET(req: NextRequest) {
   const auth = await requireAdminOrCron(req);
   if (!auth.ok) return err('Admin sign-in required.', { requestId, status: 401, code: 'unauthorized' });
 
-  const [
-    { data: sessionRows, error: sessErr },
-    { count: nudgeCount, error: nudgeErr },
-  ] = await Promise.all([
-    supabaseAdmin
-      .from('property_sessions')
-      .select('property_id, status')
-      .in('status', ATTENTION_STATES),
-    supabaseAdmin
-      .from('agent_nudges')
-      .select('id', { count: 'exact', head: true })
-      .eq('status', 'pending'),
-  ]);
+  const { data: sessionRows, error: sessErr } = await supabaseAdmin
+    .from('property_sessions')
+    .select('property_id, status')
+    .in('status', ATTENTION_STATES);
 
   if (sessErr) return err(sessErr.message, { requestId, status: 500, code: 'internal_error' });
-  if (nudgeErr) return err(nudgeErr.message, { requestId, status: 500, code: 'internal_error' });
 
   const sessions = (sessionRows ?? []) as SessionRow[];
 
@@ -135,20 +123,6 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  // Pending AI decisions across all hotels — surfaced as one summary line
-  // (with a count) rather than one row per nudge.
-  const pendingNudges = nudgeCount ?? 0;
-  if (pendingNudges > 0) {
-    items.push({
-      kind: 'pending_decisions',
-      propertyId: null,
-      propertyName: null,
-      title: pendingNudges === 1 ? '1 decision is waiting for you' : `${pendingNudges} decisions are waiting for you`,
-      detail: 'The AI assistant has flagged these for a yes/no from a manager.',
-      action: null,
-    });
-  }
-
   return ok(
     {
       items,
@@ -156,7 +130,6 @@ export async function GET(req: NextRequest) {
         needs2fa,
         costCap,
         failed,
-        pendingNudges,
         total: items.length,
       },
     },
