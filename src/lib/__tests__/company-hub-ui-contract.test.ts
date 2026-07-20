@@ -80,13 +80,14 @@ describe('Home management entry', () => {
     assert.match(home, /href: ['"]\/company['"]/);
   });
 
-  test('uses a compact content-width target with one-inch separation and accessible states', () => {
-    assert.match(concourseCss, /\.cx-management\{margin-top:32px/);
+  test('uses a compact content-width target with strong section separation and accessible states', () => {
+    assert.match(concourseCss, /\.cx-management\{margin-top:240px/);
     assert.match(concourseCss, /\.cx-management-link\{[^}]*width:fit-content;[^}]*min-height:52px/);
     assert.doesNotMatch(concourseCss, /\.cx-management-head/);
     assert.doesNotMatch(concourseCss, /\.cx-management-description/);
     assert.match(concourseCss, /\.cx-management-link:focus-visible\{outline:2px solid #3E5C48/);
     const mobile = concourseCss.slice(concourseCss.indexOf('@media (max-width:760px)'));
+    assert.match(mobile, /\.cx-management\{margin-top:160px/);
     assert.match(mobile, /\.cx-management-link\{min-height:48px/);
     const reducedMotion = concourseCss.slice(concourseCss.indexOf('@media (prefers-reduced-motion: reduce)'));
     assert.match(reducedMotion, /\.cx-management-link,[^\n]*\.cx-management-arrow\{transition:none;/);
