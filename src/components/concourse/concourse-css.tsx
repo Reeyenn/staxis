@@ -176,9 +176,9 @@ const CX_CSS = `
 
 /* Management is deliberately one compact destination well below the
    operational board—not a fifth department, page section, or global
-   desktop-nav item. The large 8px-grid gap keeps it visually separate from
+   desktop-nav item. The deliberate 8px-grid gap keeps it visually separate from
    the department tabs without making the destination itself oversized. */
-.cx-management{margin-top:240px;text-align:left;}
+.cx-management{margin-top:120px;text-align:left;}
 .cx-management-link{width:fit-content;max-width:100%;min-height:52px;box-sizing:border-box;display:inline-flex;align-items:center;gap:10px;
   padding:8px 12px;border:1px solid rgba(92,122,96,.24);border-radius:12px;
   background:rgba(255,255,255,.72);color:#1F231C;text-decoration:none;text-align:left;
@@ -275,7 +275,7 @@ const CX_CSS = `
   .cx-tile:active{transform:scale(.985);}
   .cx-tile-lab{font-size:14px;}
   .cx-tile-status{font-size:10px;}
-  .cx-management{margin-top:160px;}
+  .cx-management{margin-top:80px;}
   .cx-management-link{min-height:48px;padding:7px 10px;gap:9px;}
   .cx-management-icon{width:32px;height:32px;}
   .cx-page{padding:18px 16px 130px;}
