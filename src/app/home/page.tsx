@@ -28,6 +28,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 
 interface TileLine { en: string; es: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
+type ManagementHubContext = 'company' | 'hotel';
 
 function greetingFor(lang: 'en' | 'es', name: string | undefined, hour: number): string {
   const who = name ? `, ${name}` : '';
@@ -46,10 +47,14 @@ function HomeHub() {
   const [summaryState, setSummaryState] = React.useState<{
     propertyId: string | null;
     tiles: Summary;
-  }>({ propertyId: null, tiles: {} });
+    managementContext: ManagementHubContext | null;
+  }>({ propertyId: null, tiles: {}, managementContext: null });
   const summary = summaryState.propertyId === activePropertyId
     ? summaryState.tiles
     : {};
+  const managementContext = summaryState.propertyId === activePropertyId
+    ? summaryState.managementContext
+    : null;
 
   // Home is the universal post-login destination. Preserve the onboarding
   // safety net from the old property-selector/dashboard funnel so a returning
@@ -68,7 +73,7 @@ function HomeHub() {
   }, [user, propertyLoading, activeProperty]);
 
   React.useEffect(() => {
-    setSummaryState({ propertyId: activePropertyId, tiles: {} });
+    setSummaryState({ propertyId: activePropertyId, tiles: {}, managementContext: null });
     if (!user || !activePropertyId || propertyLoading) return;
     let cancelled = false;
     void (async () => {
@@ -76,7 +81,15 @@ function HomeHub() {
         const res = await fetchWithAuth(`/api/home/summary?pid=${encodeURIComponent(activePropertyId)}`);
         const body = await res.json().catch(() => null);
         if (!cancelled && body?.ok && body.data?.tiles) {
-          setSummaryState({ propertyId: activePropertyId, tiles: body.data.tiles as Summary });
+          setSummaryState({
+            propertyId: activePropertyId,
+            tiles: body.data.tiles as Summary,
+            managementContext: body.data.managementContext === 'company'
+              ? 'company'
+              : body.data.managementContext === 'hotel'
+                ? 'hotel'
+                : null,
+          });
         }
       } catch {
         // Tiles keep their quiet placeholder line — never block the hub on data.
@@ -116,6 +129,16 @@ function HomeHub() {
       dateline={dateline}
       tiles={tiles}
       ask={<AskHero />}
+      management={user && user.role !== 'admin' && managementContext ? {
+        sectionLabel: lang === 'es' ? 'Gestión' : 'Management',
+        label: managementContext === 'company'
+          ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
+          : (lang === 'es' ? 'Mi hotel' : 'My Hotel'),
+        description: managementContext === 'company'
+          ? (lang === 'es' ? 'Gestiona hoteles, personas y acceso' : 'Manage hotels, people, and access')
+          : (lang === 'es' ? 'Gestiona tu equipo y acceso' : 'Manage your team and access'),
+        href: '/company',
+      } : undefined}
     />
   );
 }

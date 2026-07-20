@@ -9,6 +9,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React from 'react';
+import Link from 'next/link';
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
 
@@ -24,15 +25,24 @@ export interface HubTile {
   onClick: () => void;
 }
 
+export interface HubManagementEntry {
+  sectionLabel: string;
+  label: string;
+  description: string;
+  href: string;
+}
+
 export interface HomeHubViewProps {
   greeting: string;
   dateline: string;
   tiles: HubTile[];
   /** The Ask Staxis hero bar (AskHero in the app, an inert lookalike in the demo). */
   ask?: React.ReactNode;
+  /** Cross-cutting management belongs below, not inside, the department grid. */
+  management?: HubManagementEntry;
 }
 
-export function HomeHubView({ greeting, dateline, tiles, ask }: HomeHubViewProps) {
+export function HomeHubView({ greeting, dateline, tiles, ask, management }: HomeHubViewProps) {
   return (
     <div className="cx-hub cx-swap">
       <CxStyle />
@@ -62,6 +72,19 @@ export function HomeHubView({ greeting, dateline, tiles, ask }: HomeHubViewProps
           );
         })}
       </div>
+      {management ? (
+        <section className="cx-management" aria-labelledby="cx-management-heading">
+          <h2 id="cx-management-heading" className="cx-management-head">{management.sectionLabel}</h2>
+          <Link href={management.href} className="cx-management-link">
+            <span className="cx-management-icon"><CxIcon name="company" size={19} /></span>
+            <span className="cx-management-copy">
+              <span className="cx-management-title">{management.label}</span>
+              <span className="cx-management-description">{management.description}</span>
+            </span>
+            <span className="cx-management-arrow" aria-hidden="true">→</span>
+          </Link>
+        </section>
+      ) : null}
     </div>
   );
 }

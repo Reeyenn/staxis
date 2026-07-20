@@ -172,6 +172,32 @@ const CX_CSS = `
 .cx-tile-status.cx-bad{color:#B85C3D;}
 .cx-tile:hover .cx-tile-status.cx-ok{color:#5C7A60;}
 
+/* Management is deliberately one level below the operational department
+   board: a compact full-width destination, never another department tile. */
+.cx-management{margin-top:22px;text-align:left;}
+.cx-management-head{display:flex;align-items:center;gap:10px;margin:0 2px 9px;
+  font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;font-weight:600;
+  line-height:14px;letter-spacing:.14em;text-transform:uppercase;color:#5C625C;}
+.cx-management-head::after{content:"";height:1px;flex:1;background:rgba(31,35,28,.08);}
+.cx-management-link{width:100%;min-height:68px;box-sizing:border-box;display:flex;align-items:center;gap:13px;
+  padding:12px 16px;border:1px solid rgba(92,122,96,.24);border-radius:14px;
+  background:rgba(255,255,255,.72);color:#1F231C;text-decoration:none;text-align:left;
+  -webkit-tap-highlight-color:transparent;transition:background 200ms ${SPRING},border-color 200ms ${SPRING},transform 200ms ${SPRING};}
+.cx-management-icon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex-shrink:0;
+  color:#3E5C48;background:rgba(92,122,96,.13);transition:background 200ms ${SPRING};}
+.cx-management-copy{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px;}
+.cx-management-title{font-size:14.5px;font-weight:600;line-height:20px;color:#1F231C;}
+.cx-management-description{font-size:12.5px;line-height:18px;color:#5C625C;}
+.cx-management-arrow{font-size:20px;line-height:1;color:#5C7A60;flex-shrink:0;
+  transition:transform 180ms ${SPRING};}
+@media (hover:hover){
+  .cx-management-link:hover{background:rgba(158,183,166,.13);border-color:rgba(92,122,96,.44);transform:translateY(-1px);}
+  .cx-management-link:hover .cx-management-icon{background:rgba(92,122,96,.19);}
+  .cx-management-link:hover .cx-management-arrow{transform:translateX(2px);}
+}
+.cx-management-link:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.cx-management-link:active{background:rgba(158,183,166,.18);transform:scale(.995);}
+
 /* ── Section-page chrome ── */
 .cx-page{max-width:880px;margin:0 auto;padding:22px 24px 130px;width:100%;box-sizing:border-box;
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
@@ -243,6 +269,10 @@ const CX_CSS = `
   .cx-tile:active{transform:scale(.985);}
   .cx-tile-lab{font-size:14px;}
   .cx-tile-status{font-size:10px;}
+  .cx-management{margin-top:20px;}
+  .cx-management-link{min-height:72px;padding:12px;gap:12px;}
+  .cx-management-icon{width:36px;height:36px;}
+  .cx-management-description{white-space:normal;}
   .cx-page{padding:18px 16px 130px;}
   .staxis-feedback-slot,.staxis-ai-activity-slot{display:none;}
 }
@@ -251,6 +281,8 @@ const CX_CSS = `
 @media (prefers-reduced-motion: reduce){
   .cx-swap{animation:none;}
   .cx-tile{transition:none;}
+  .cx-management-link,.cx-management-icon,.cx-management-arrow{transition:none;}
+  .cx-management-link:hover,.cx-management-link:active,.cx-management-link:hover .cx-management-arrow{transform:none;}
   .cx-ask,.cx-capsule{animation:none;}
   .cx-ask .cx-spark,.cx-dot.cx-warn,.cx-dot.cx-bad{animation:none;}
 }

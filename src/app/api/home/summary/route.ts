@@ -51,6 +51,7 @@ export const dynamic = 'force-dynamic';
 // ─── Tile shape ───────────────────────────────────────────────────────────
 
 type TileTone = 'ok' | 'warn' | 'bad' | 'muted';
+type ManagementHubContext = 'company' | 'hotel';
 
 interface TileLine {
   en: string;
@@ -103,6 +104,53 @@ async function guarded(
       err: e instanceof Error ? e.message : String(e),
     });
     return FALLBACK[tile];
+  }
+}
+
+/**
+ * Resolve the Home management entry without loading the full Company Hub
+ * projection. A live membership in a real organization is enough to use the
+ * Company Hub label; legacy single-hotel anchors intentionally stay My Hotel.
+ *
+ * This is presentation metadata only. `/company` independently recomputes and
+ * enforces the caller's exact grants and scope before returning any data.
+ */
+async function managementHubContext(
+  userId: string,
+  requestId: string,
+): Promise<ManagementHubContext | null> {
+  try {
+    const nowIso = new Date().toISOString();
+    const { data: account, error: accountError } = await supabaseAdmin
+      .from('accounts')
+      .select('id, role, active')
+      .eq('data_user_id', userId)
+      .maybeSingle();
+    if (accountError) throw accountError;
+    if (!account || account.active !== true || account.role === 'admin') return null;
+
+    const { data: memberships, error: membershipError } = await supabaseAdmin
+      .from('organization_memberships')
+      .select('organization_id, organizations!inner(organization_type, status)')
+      .eq('account_id', account.id as string)
+      .eq('status', 'active')
+      .lte('starts_at', nowIso)
+      .is('ended_at', null)
+      .eq('organizations.status', 'active')
+      .neq('organizations.organization_type', 'single_hotel')
+      .limit(1);
+    if (membershipError) throw membershipError;
+
+    return (memberships?.length ?? 0) > 0 ? 'company' : 'hotel';
+  } catch (error) {
+    // Do not guess My Hotel when organization data is unavailable: changing an
+    // already-announced link label after recovery is confusing, especially for
+    // assistive technology. The client simply withholds the optional row.
+    log.warn('home-summary: management context failed — omitting management entry', {
+      requestId,
+      err: error instanceof Error ? error.message : String(error),
+    });
+    return null;
   }
 }
 
@@ -349,7 +397,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   // keep their neutral fallback without touching that domain's tables.
   const [
     staxis, dashboard, housekeeping, communications,
-    maintenance, inventory, staff, financials,
+    maintenance, inventory, staff, financials, managementContext,
   ] = await Promise.all([
     runIfEnabled('staxis', 'staxis', () => staxisTile(pid, auth.userId)),
     runIfEnabled('dashboard', 'dashboard', () => dashboardTile(pid, today)),
@@ -361,6 +409,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     canViewFinancials
       ? guarded('financials', requestId, () => financialsTile(pid, today))
       : Promise.resolve(FALLBACK.financials),
+    managementHubContext(auth.userId, requestId),
   ]);
 
   const tiles: HomeSummaryTiles = {
@@ -368,5 +417,5 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     maintenance, inventory, staff, financials,
   };
 
-  return ok({ tiles }, { requestId });
+  return ok({ tiles, managementContext }, { requestId });
 }

@@ -9,6 +9,9 @@ function source(...parts: string[]): string {
 
 const concourse = source('src', 'components', 'concourse', 'ConcourseBar.tsx');
 const home = source('src', 'app', 'home', 'page.tsx');
+const homeHub = source('src', 'components', 'concourse', 'HomeHubView.tsx');
+const homeSummary = source('src', 'app', 'api', 'home', 'summary', 'route.ts');
+const concourseCss = source('src', 'components', 'concourse', 'concourse-css.tsx');
 const liveSurface = source('src', 'app', 'admin', '_components', 'studio', 'surfaces', 'LiveSurface.tsx');
 const invitation = source('src', 'app', 'company-invite', '[token]', 'page.tsx');
 const authShell = source('src', 'components', 'AuthShell.tsx');
@@ -26,6 +29,51 @@ describe('company-only shell routing', () => {
     assert.match(home, /user\.role === ['"]admin['"] \|\| properties\.length > 0/);
     assert.match(home, /body\.data\?\.organizations\?\.some/);
     assert.match(home, /organization\.type !== ['"]single_hotel['"]/);
+  });
+});
+
+describe('Home management entry', () => {
+  test('renders below the department board as a separate management level', () => {
+    const boardIndex = homeHub.indexOf('className={`cx-board');
+    const managementIndex = homeHub.indexOf('className="cx-management"');
+    assert.ok(boardIndex >= 0 && managementIndex > boardIndex);
+    assert.match(homeHub, /<h2[^>]*className="cx-management-head"/);
+    assert.match(homeHub, /<Link href=\{management\.href\} className="cx-management-link">/);
+    assert.match(homeHub, /<CxIcon name="company"/);
+  });
+
+  test('uses real organization membership for Company Hub and keeps admins separate', () => {
+    assert.match(homeSummary, /account\.active !== true \|\| account\.role === ['"]admin['"]/);
+    assert.match(homeSummary, /\.from\(['"]organization_memberships['"]\)/);
+    assert.match(homeSummary, /\.eq\(['"]account_id['"], account\.id as string\)/);
+    assert.match(homeSummary, /\.eq\(['"]status['"], ['"]active['"]\)/);
+    assert.match(homeSummary, /\.lte\(['"]starts_at['"], nowIso\)/);
+    assert.match(homeSummary, /\.is\(['"]ended_at['"], null\)/);
+    assert.match(homeSummary, /\.eq\(['"]organizations\.status['"], ['"]active['"]\)/);
+    assert.match(homeSummary, /\.neq\(['"]organizations\.organization_type['"], ['"]single_hotel['"]\)/);
+    assert.match(homeSummary, /management context failed — omitting management entry/);
+    assert.match(homeSummary, /return null;/);
+    assert.match(homeSummary, /ok\(\{ tiles, managementContext \}/);
+    assert.doesNotMatch(home, /properties\.length > 1 \? ['"]company['"]/);
+    assert.match(home, /management=\{user && user\.role !== ['"]admin['"] && managementContext/);
+  });
+
+  test('localizes both adaptive labels and always opens the Company Hub route', () => {
+    assert.match(home, /['"]Company Hub['"]/);
+    assert.match(home, /['"]My Hotel['"]/);
+    assert.match(home, /['"]Centro de empresa['"]/);
+    assert.match(home, /['"]Mi hotel['"]/);
+    assert.match(home, /href: ['"]\/company['"]/);
+  });
+
+  test('has a full-width mobile target, visible focus, and reduced-motion handling', () => {
+    assert.match(concourseCss, /\.cx-management-link\{[^}]*width:100%;[^}]*min-height:68px/);
+    assert.match(concourseCss, /\.cx-management-link:focus-visible\{outline:2px solid #3E5C48/);
+    const mobile = concourseCss.slice(concourseCss.indexOf('@media (max-width:760px)'));
+    assert.match(mobile, /\.cx-management-link\{min-height:72px/);
+    const reducedMotion = concourseCss.slice(concourseCss.indexOf('@media (prefers-reduced-motion: reduce)'));
+    assert.match(reducedMotion, /\.cx-management-link,[^\n]*\.cx-management-arrow\{transition:none;/);
+    assert.match(reducedMotion, /\.cx-management-link:hover,[^\n]*transform:none;/);
   });
 });
 
