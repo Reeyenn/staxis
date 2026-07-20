@@ -174,23 +174,17 @@ const CX_CSS = `
 .cx-tile-status.cx-bad{color:#B85C3D;}
 .cx-tile:hover .cx-tile-status.cx-ok{color:#5C7A60;}
 
-/* Management is deliberately one level below the operational department
-   board: a compact full-width destination, never another department tile. */
-.cx-management{margin-top:22px;text-align:left;}
-.cx-management-head{display:flex;align-items:center;gap:10px;margin:0 2px 9px;
-  font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:9.5px;font-weight:600;
-  line-height:14px;letter-spacing:.14em;text-transform:uppercase;color:#5C625C;}
-.cx-management-head::after{content:"";height:1px;flex:1;background:rgba(31,35,28,.08);}
-.cx-management-link{width:100%;min-height:68px;box-sizing:border-box;display:flex;align-items:center;gap:13px;
-  padding:12px 16px;border:1px solid rgba(92,122,96,.24);border-radius:14px;
+/* Management is deliberately one compact destination below the operational
+   board—not a fifth department, page section, or global desktop-nav item. */
+.cx-management{margin-top:32px;text-align:left;}
+.cx-management-link{width:fit-content;max-width:100%;min-height:52px;box-sizing:border-box;display:inline-flex;align-items:center;gap:10px;
+  padding:8px 12px;border:1px solid rgba(92,122,96,.24);border-radius:12px;
   background:rgba(255,255,255,.72);color:#1F231C;text-decoration:none;text-align:left;
   -webkit-tap-highlight-color:transparent;transition:background 200ms ${SPRING},border-color 200ms ${SPRING},transform 200ms ${SPRING};}
-.cx-management-icon{width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex-shrink:0;
+.cx-management-icon{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;flex-shrink:0;
   color:#3E5C48;background:rgba(92,122,96,.13);transition:background 200ms ${SPRING};}
-.cx-management-copy{display:flex;min-width:0;flex:1;flex-direction:column;gap:2px;}
-.cx-management-title{font-size:14.5px;font-weight:600;line-height:20px;color:#1F231C;}
-.cx-management-description{font-size:12.5px;line-height:18px;color:#5C625C;}
-.cx-management-arrow{font-size:20px;line-height:1;color:#5C7A60;flex-shrink:0;
+.cx-management-title{font-size:14.5px;font-weight:600;line-height:20px;color:#1F231C;white-space:nowrap;}
+.cx-management-arrow{margin-left:2px;font-size:18px;line-height:1;color:#5C7A60;flex-shrink:0;
   transition:transform 180ms ${SPRING};}
 @media (hover:hover){
   .cx-management-link:hover{background:rgba(158,183,166,.13);border-color:rgba(92,122,96,.44);transform:translateY(-1px);}
@@ -279,10 +273,9 @@ const CX_CSS = `
   .cx-tile:active{transform:scale(.985);}
   .cx-tile-lab{font-size:14px;}
   .cx-tile-status{font-size:10px;}
-  .cx-management{margin-top:20px;}
-  .cx-management-link{min-height:72px;padding:12px;gap:12px;}
-  .cx-management-icon{width:36px;height:36px;}
-  .cx-management-description{white-space:normal;}
+  .cx-management{margin-top:32px;}
+  .cx-management-link{min-height:48px;padding:7px 10px;gap:9px;}
+  .cx-management-icon{width:32px;height:32px;}
   .cx-page{padding:18px 16px 130px;}
   .staxis-feedback-slot,.staxis-ai-activity-slot{display:none;}
 }

@@ -22,9 +22,11 @@ describe('admin workspace navigation', () => {
     assert.match(barView, /className="cx-pill cx-utility-pill cx-view-switch"/);
   });
 
-  test('keeps Company Hub available to an admin in either workspace', () => {
-    assert.match(concourse, /const showCompanyNavigation = Boolean\(user && !companyOnly\)/);
-    assert.match(concourse, /onCompany=\{showCompanyNavigation \? \(\) => go\(['"]\/company['"]\)/);
+  test('keeps Company Hub out of the desktop top bar while retaining the phone destination', () => {
+    assert.match(concourse, /const showCompanyInMobileNavigation = Boolean\(user && !companyOnly\)/);
+    assert.match(concourse, /showCompany=\{showCompanyInMobileNavigation\}/);
+    assert.doesNotMatch(barView, /companyActive|onCompany|companyLabel/);
+    assert.match(mobile, /onCompany/);
     assert.match(concourse, /user\?\.role === ['"]admin['"][\s\S]*?['"]Management['"]/);
   });
 

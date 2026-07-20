@@ -51,7 +51,7 @@ export function ConcourseBar() {
   const homeLabel = companyOnly
     ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
     : (lang === 'es' ? 'Inicio' : 'Home');
-  const showCompanyNavigation = Boolean(user && !companyOnly);
+  const showCompanyInMobileNavigation = Boolean(user && !companyOnly);
   const isAdminWorkspace = pathname.startsWith('/admin');
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [phoneHandoffOpen, setPhoneHandoffOpen] = React.useState(false);
@@ -299,7 +299,7 @@ export function ConcourseBar() {
         signOutLabel={t('signOut', lang)}
         installLabel={lang === 'es' ? 'Añadir Staxis a la pantalla de inicio' : 'Add Staxis to Home Screen'}
         showInstallAction={showInstallReminder}
-        showCompany={showCompanyNavigation}
+        showCompany={showCompanyInMobileNavigation}
         settingsActive={pathname.startsWith('/settings')}
         companyActive={pathname === '/company' || pathname.startsWith('/company/')}
         onHome={() => go(homeHref)}
@@ -321,9 +321,6 @@ export function ConcourseBar() {
       />
       <ConcourseBarView
         items={items}
-        companyActive={showCompanyNavigation && (pathname === '/company' || pathname.startsWith('/company/'))}
-        onCompany={showCompanyNavigation ? () => go('/company') : undefined}
-        companyLabel={showCompanyNavigation ? companyNavigationLabel : undefined}
         viewSwitch={viewSwitch}
         gearActive={pathname.startsWith('/settings')}
         onGear={() => go('/settings')}

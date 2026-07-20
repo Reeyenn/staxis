@@ -30,9 +30,6 @@ export interface ViewSwitchAction {
 
 export interface ConcourseBarViewProps {
   items: BarItem[];
-  companyActive?: boolean;
-  onCompany?: () => void;
-  companyLabel?: string;
   /** Admin-only route switch. The label names the destination workspace. */
   viewSwitch?: ViewSwitchAction;
   gearActive: boolean;
@@ -52,7 +49,7 @@ export interface ConcourseBarViewProps {
 }
 
 export function ConcourseBarView({
-  items, companyActive = false, onCompany, companyLabel, viewSwitch, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  items, viewSwitch, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
   showHome = false, desktopOnly = false,
 }: ConcourseBarViewProps) {
   return (
@@ -109,19 +106,6 @@ export function ConcourseBarView({
           </button>
         ))}
         <span className="cx-divider" aria-hidden />
-        {onCompany && companyLabel ? (
-          <button
-            type="button"
-            className={`cx-pill cx-utility-pill${companyActive ? ' cx-active' : ''}`}
-            onClick={onCompany}
-            title={companyLabel}
-            aria-label={companyLabel}
-            aria-current={companyActive ? 'page' : undefined}
-          >
-            <CxIcon name="company" size={16} />
-            <span className="cx-labw"><span className="cx-lab">{companyLabel}</span></span>
-          </button>
-        ) : null}
         <button
           type="button"
           className={`cx-gear${gearActive ? ' cx-on' : ''}`}

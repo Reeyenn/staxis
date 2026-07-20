@@ -130,17 +130,9 @@ function HomeHub() {
       tiles={tiles}
       ask={<AskHero />}
       management={user && managementContext ? {
-        sectionLabel: lang === 'es' ? 'Gestión' : 'Management',
         label: managementContext === 'company'
           ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
           : (lang === 'es' ? 'Mi hotel' : 'My Hotel'),
-        description: user.role === 'admin'
-          ? managementContext === 'company'
-            ? (lang === 'es' ? 'Revisa hoteles, personas y acceso' : 'Review hotels, people, and access')
-            : (lang === 'es' ? 'Revisa el equipo y acceso del hotel' : 'Review the hotel team and access')
-          : managementContext === 'company'
-            ? (lang === 'es' ? 'Gestiona hoteles, personas y acceso' : 'Manage hotels, people, and access')
-            : (lang === 'es' ? 'Gestiona tu equipo y acceso' : 'Manage your team and access'),
         href: '/company',
       } : undefined}
     />

@@ -34,13 +34,15 @@ describe('company-only shell routing', () => {
 });
 
 describe('Home management entry', () => {
-  test('renders below the department board as a separate management level', () => {
+  test('renders below the department board without a divider heading or subtitle', () => {
     const boardIndex = homeHub.indexOf('className={`cx-board');
     const managementIndex = homeHub.indexOf('className="cx-management"');
     assert.ok(boardIndex >= 0 && managementIndex > boardIndex);
-    assert.match(homeHub, /<h2[^>]*className="cx-management-head"/);
+    assert.doesNotMatch(homeHub, /cx-management-head/);
+    assert.doesNotMatch(homeHub, /cx-management-description/);
     assert.match(homeHub, /<Link href=\{management\.href\} className="cx-management-link">/);
     assert.match(homeHub, /<CxIcon name="company"/);
+    assert.doesNotMatch(home, /Review the hotel team and access/);
   });
 
   test('uses customer membership but selected-hotel topology for the admin preview', () => {
@@ -78,11 +80,14 @@ describe('Home management entry', () => {
     assert.match(home, /href: ['"]\/company['"]/);
   });
 
-  test('has a full-width mobile target, visible focus, and reduced-motion handling', () => {
-    assert.match(concourseCss, /\.cx-management-link\{[^}]*width:100%;[^}]*min-height:68px/);
+  test('uses a compact content-width target with one-inch separation and accessible states', () => {
+    assert.match(concourseCss, /\.cx-management\{margin-top:32px/);
+    assert.match(concourseCss, /\.cx-management-link\{[^}]*width:fit-content;[^}]*min-height:52px/);
+    assert.doesNotMatch(concourseCss, /\.cx-management-head/);
+    assert.doesNotMatch(concourseCss, /\.cx-management-description/);
     assert.match(concourseCss, /\.cx-management-link:focus-visible\{outline:2px solid #3E5C48/);
     const mobile = concourseCss.slice(concourseCss.indexOf('@media (max-width:760px)'));
-    assert.match(mobile, /\.cx-management-link\{min-height:72px/);
+    assert.match(mobile, /\.cx-management-link\{min-height:48px/);
     const reducedMotion = concourseCss.slice(concourseCss.indexOf('@media (prefers-reduced-motion: reduce)'));
     assert.match(reducedMotion, /\.cx-management-link,[^\n]*\.cx-management-arrow\{transition:none;/);
     assert.match(reducedMotion, /\.cx-management-link:hover,[^\n]*transform:none;/);
