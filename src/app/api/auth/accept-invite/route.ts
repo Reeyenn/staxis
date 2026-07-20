@@ -16,7 +16,13 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, clientIpRateLimitKey } from '@/lib/api-ratelimit';
-import { canManageTeam, type AppRole } from '@/lib/roles';
+import { canForProperty } from '@/lib/capabilities/server';
+import {
+  canGrantHotelRole,
+  canManageTeam,
+  isAssignableRole,
+  type AppRole,
+} from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
 
 export const runtime = 'nodejs';
@@ -69,32 +75,33 @@ export async function POST(req: NextRequest) {
     return err('Invite has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
 
-  // Re-validate that the inviter still has authority to grant this role.
-  // Without this, an admin who is later demoted to general_manager could
-  // have an in-flight invite that still grants 'owner' — a time-of-check vs.
-  // time-of-use gap. canManageTeam covers admin / owner / general_manager;
-  // the DB CHECK on account_invites.role already restricts invite.role to
-  // the assignable set, so the only new failure mode is "inviter no longer
-  // a team manager." invited_by is NOT NULL with ON DELETE CASCADE, so the
-  // account row is guaranteed to still exist if the invite does.
+  // Re-validate every mutable part of the inviter's authority at the moment
+  // of acceptance: active account, manager tier, exact hotel scope, current
+  // per-hotel capability override, and the role hierarchy. This closes the
+  // time-of-check/time-of-use gap for invites sent before a manager was
+  // deactivated, moved, restricted, or demoted. `invited_by` is NOT NULL with
+  // ON DELETE CASCADE, but an account row can remain while its authority
+  // changes, so existence alone is not sufficient.
   const { data: inviter } = await supabaseAdmin
     .from('accounts')
-    .select('role, property_access')
+    .select('role, property_access, active')
     .eq('id', invite.invited_by)
     .maybeSingle();
-  if (!inviter || !canManageTeam(inviter.role as AppRole)) {
+  if (!inviter || inviter.active !== true || !canManageTeam(inviter.role as AppRole)) {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
-  // Time-of-use re-checks (audit review 2026-06-18): the inviter must STILL have
-  // access to this invite's hotel (access may have been revoked since sending),
-  // and an owner-role invite requires an admin/owner inviter — a GM can never
-  // mint an owner, even via an invite created before the privilege matrix existed.
+  // Non-admin scope is deliberately exact. The '*' convention belongs to the
+  // platform-admin role and must not let a stale/non-admin account authorize a
+  // hotel that is absent from its explicit property_access list.
   const inviterRole = inviter.role as AppRole;
   const inviterAccess = (inviter.property_access ?? []) as string[];
-  if (inviterRole !== 'admin' && !inviterAccess.includes('*') && !inviterAccess.includes(invite.hotel_id)) {
+  if (inviterRole !== 'admin' && !inviterAccess.includes(invite.hotel_id)) {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
-  if (invite.role === 'owner' && inviterRole !== 'admin' && inviterRole !== 'owner') {
+  if (!(await canForProperty({ role: inviterRole }, 'manage_team', invite.hotel_id))) {
+    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  }
+  if (!isAssignableRole(invite.role) || !canGrantHotelRole(inviterRole, invite.role)) {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
 

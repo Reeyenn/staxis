@@ -1,0 +1,1547 @@
+.root,
+.dialogLayer,
+.dialogLoading {
+  --team-ink: #1f231c;
+  --team-ink-2: #5c625c;
+  --team-ink-3: #687067;
+  --team-muted: #70776f;
+  --team-paper: #ffffff;
+  --team-wash: #f3f6f2;
+  --team-sage: #3e5c48;
+  --team-sage-hover: #356b4c;
+  --team-sage-2: #5c7a60;
+  --team-sage-dim: rgba(92, 122, 96, 0.12);
+  --team-rule: rgba(31, 35, 28, 0.09);
+  --team-rust: #b85c3d;
+  --team-rust-dim: rgba(184, 92, 61, 0.1);
+  --team-caramel: #8c6a33;
+  --team-caramel-dim: rgba(201, 150, 68, 0.14);
+  box-sizing: border-box;
+  color: var(--team-ink);
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.root *,
+.dialogLayer *,
+.dialogLoading * {
+  box-sizing: border-box;
+}
+
+.root {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.headingRow {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.headingCopy {
+  max-width: 680px;
+}
+
+.headingCopy > span,
+.subheading > div > span,
+.dialogHeader > div > span {
+  color: var(--team-muted);
+  font: 600 9.5px/14px var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.headingCopy h2 {
+  margin: 3px 0 0;
+  color: var(--team-ink);
+  font-size: 18px;
+  font-weight: 650;
+  line-height: 24px;
+  letter-spacing: -0.018em;
+}
+
+.headingCopy p {
+  margin: 4px 0 0;
+  color: var(--team-ink-2);
+  font-size: 12.5px;
+  line-height: 19px;
+}
+
+.primaryButton,
+.secondaryButton,
+.dangerButton,
+.approveButton,
+.denyButton,
+.editButton {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  gap: 8px;
+  padding: 0 17px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 18px;
+  text-decoration: none;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out, transform 100ms ease-out;
+}
+
+.primaryButton {
+  border: 1px solid var(--team-sage);
+  color: #ffffff;
+  background: var(--team-sage);
+  box-shadow: 0 8px 18px -12px rgba(62, 92, 72, 0.8);
+}
+
+.primaryButton:hover:not(:disabled) {
+  background: var(--team-sage-hover);
+}
+
+.secondaryButton {
+  border: 1px solid rgba(31, 35, 28, 0.14);
+  color: var(--team-sage);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.secondaryButton:hover:not(:disabled) {
+  border-color: rgba(92, 122, 96, 0.35);
+  background: var(--team-sage-dim);
+}
+
+.dangerButton {
+  border: 1px solid var(--team-rust);
+  color: #ffffff;
+  background: var(--team-rust);
+  box-shadow: 0 8px 18px -12px rgba(184, 92, 61, 0.8);
+}
+
+.dangerButton:hover:not(:disabled) {
+  background: #9e4d34;
+}
+
+.primaryButton:active:not(:disabled),
+.secondaryButton:active:not(:disabled),
+.dangerButton:active:not(:disabled),
+.approveButton:active:not(:disabled),
+.denyButton:active:not(:disabled),
+.editButton:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled,
+.dangerButton:disabled,
+.approveButton:disabled,
+.denyButton:disabled,
+.editButton:disabled {
+  opacity: 0.44;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.primaryButton:focus-visible,
+.secondaryButton:focus-visible,
+.dangerButton:focus-visible,
+.approveButton:focus-visible,
+.denyButton:focus-visible,
+.editButton:focus-visible,
+.removeButton:focus-visible,
+.iconButton:focus-visible,
+.copyField button:focus-visible,
+.codeBlock button:focus-visible,
+.revokeButton:focus-visible,
+.revokeConfirm button:focus-visible,
+.sectionError button:focus-visible,
+.deliveryNotice button:focus-visible,
+.successNotice button:focus-visible,
+.dialogScrim:focus-visible {
+  outline: 2px solid var(--team-sage);
+  outline-offset: 2px;
+}
+
+.readOnlyNotice,
+.permissionState,
+.infoNotice,
+.warningNotice,
+.successNotice,
+.deliveryNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 12px 14px;
+  border-radius: 12px;
+}
+
+.readOnlyNotice,
+.permissionState,
+.infoNotice {
+  border: 1px solid rgba(92, 122, 96, 0.2);
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+}
+
+.readOnlyNotice > div,
+.permissionState > div,
+.deliveryNotice > div,
+.successNotice > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.readOnlyNotice strong,
+.permissionState h3,
+.deliveryNotice strong,
+.successNotice strong {
+  margin: 0;
+  color: var(--team-ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 18px;
+}
+
+.readOnlyNotice span,
+.permissionState p,
+.deliveryNotice span,
+.successNotice span {
+  margin: 0;
+  color: var(--team-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.subsection {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.subheading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.subheading h3 {
+  margin: 2px 0 0;
+  color: var(--team-ink);
+  font-size: 14.5px;
+  font-weight: 650;
+  line-height: 20px;
+}
+
+.subheading > strong,
+.inviteListHeading > span {
+  display: grid;
+  min-width: 26px;
+  height: 26px;
+  place-items: center;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+  font: 650 10px/1 var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.teamList,
+.approvalList,
+.skeletonList,
+.emptyState,
+.errorState,
+.allCaughtUp,
+.compactLoading {
+  overflow: hidden;
+  border: 1px solid var(--team-rule);
+  border-radius: 14px;
+  background: var(--team-paper);
+  box-shadow: 0 9px 24px -22px rgba(31, 42, 32, 0.42);
+}
+
+.teamRow,
+.approvalRow {
+  display: flex;
+  align-items: center;
+  min-height: 68px;
+  gap: 11px;
+  padding: 10px 13px;
+  border-bottom: 1px solid rgba(31, 35, 28, 0.055);
+}
+
+.teamRow:last-child,
+.approvalRow:last-child {
+  border-bottom: 0;
+}
+
+.selfRow {
+  background: linear-gradient(90deg, rgba(92, 122, 96, 0.055), transparent 72%);
+}
+
+.avatar,
+.waitingIcon,
+.pendingInviteIcon,
+.expiredInviteIcon,
+.sectionIcon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(92, 122, 96, 0.18);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.waitingIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: 11px;
+  color: var(--team-caramel);
+  background: var(--team-caramel-dim);
+}
+
+.rowBody {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.rowBody strong {
+  overflow: hidden;
+  color: var(--team-ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowBody strong small {
+  margin-left: 7px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+  font-size: 10.5px;
+  font-weight: 650;
+}
+
+.rowBody > span,
+.rowBody > em {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--team-ink-3);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowBody > em {
+  color: var(--team-caramel);
+}
+
+.linkedBadge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+  font: 650 10px/14px var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.rowActions,
+.approvalActions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+}
+
+.editButton,
+.approveButton,
+.denyButton {
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+.editButton,
+.approveButton {
+  border: 1px solid rgba(92, 122, 96, 0.24);
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+}
+
+.editButton:hover:not(:disabled),
+.approveButton:hover:not(:disabled) {
+  border-color: rgba(92, 122, 96, 0.42);
+  background: rgba(92, 122, 96, 0.17);
+}
+
+.denyButton {
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  color: var(--team-rust);
+  background: var(--team-rust-dim);
+}
+
+.denyButton:hover:not(:disabled) {
+  border-color: rgba(184, 92, 61, 0.38);
+}
+
+.removeButton,
+.revokeButton {
+  display: grid;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 10px;
+  color: var(--team-rust);
+  background: transparent;
+  cursor: pointer;
+}
+
+.removeButton:hover:not(:disabled),
+.revokeButton:hover:not(:disabled) {
+  background: var(--team-rust-dim);
+}
+
+.errorState {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 86px;
+  gap: 12px;
+  padding: 13px 14px;
+  border-color: rgba(184, 92, 61, 0.2);
+  color: var(--team-rust);
+}
+
+.errorState > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.errorState strong {
+  color: var(--team-ink);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.errorState span {
+  color: var(--team-ink-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.errorState button,
+.sectionError button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 9px;
+  color: var(--team-rust);
+  background: var(--team-rust-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.allCaughtUp,
+.compactLoading {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 13px;
+  color: var(--team-sage);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.compactLoading {
+  color: var(--team-ink-2);
+}
+
+.emptyState {
+  display: flex;
+  min-height: 190px;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 20px;
+  text-align: center;
+  flex-direction: column;
+}
+
+.emptyState > span {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 15px;
+  color: var(--team-muted);
+  background: rgba(31, 35, 28, 0.045);
+}
+
+.emptyState h3 {
+  margin: 12px 0 0;
+  color: var(--team-ink);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 20px;
+}
+
+.emptyState p {
+  max-width: 380px;
+  margin: 4px 0 0;
+  color: var(--team-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.emptyState button {
+  margin-top: 14px;
+}
+
+.permissionState {
+  min-height: 92px;
+  align-items: center;
+}
+
+.permissionState > span {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.skeletonList {
+  display: flex;
+  flex-direction: column;
+}
+
+.skeletonList > span {
+  position: relative;
+  display: block;
+  height: 68px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--team-rule);
+  background: linear-gradient(90deg, rgba(31, 35, 28, 0.035) 12%, rgba(31, 35, 28, 0.075) 24%, rgba(31, 35, 28, 0.035) 36%);
+  background-size: 260% 100%;
+  animation: shimmer 1.35s ease-in-out infinite;
+}
+
+.skeletonList > span:last-child {
+  border-bottom: 0;
+}
+
+@keyframes shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+.spinner,
+.buttonSpinner {
+  display: inline-block;
+  width: 17px;
+  height: 17px;
+  flex: none;
+  border: 2px solid rgba(92, 122, 96, 0.22);
+  border-top-color: currentColor;
+  border-radius: 999px;
+  animation: spin 760ms linear infinite;
+}
+
+.buttonSpinner {
+  width: 15px;
+  height: 15px;
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: currentColor;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.dialogLoading {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--team-ink-2);
+  background: rgba(31, 35, 28, 0.3);
+  font-size: 12px;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.dialogLoading .spinner {
+  color: #ffffff;
+  border-color: rgba(255, 255, 255, 0.35);
+  border-top-color: #ffffff;
+}
+
+.dialogLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.dialogScrim {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: rgba(31, 35, 28, 0.38);
+  cursor: default;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: scrimEnter 180ms ease-out both;
+}
+
+.dialog {
+  position: relative;
+  z-index: 1;
+  width: min(560px, calc(100vw - 40px));
+  max-height: min(800px, calc(100dvh - 40px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid rgba(255, 255, 255, 0.88);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 28px 70px -24px rgba(31, 42, 32, 0.56);
+  backdrop-filter: blur(22px) saturate(170%);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
+  animation: dialogEnter 210ms cubic-bezier(0.05, 0.7, 0.1, 1) both;
+}
+
+.dialogWide {
+  width: min(760px, calc(100vw - 40px));
+}
+
+@keyframes scrimEnter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes dialogEnter {
+  from { opacity: 0; transform: translateY(8px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.dialogHeader {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 18px 18px 13px;
+  border-bottom: 1px solid var(--team-rule);
+}
+
+.dialogIcon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+}
+
+.dialogHeader > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.dialogHeader h2 {
+  overflow: hidden;
+  margin: 2px 0 0;
+  color: var(--team-ink);
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.iconButton {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--team-ink-2);
+  background: transparent;
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: rgba(31, 35, 28, 0.055);
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dialogIntro {
+  margin: 0;
+  padding: 15px 18px 0;
+  color: var(--team-ink-2);
+  font-size: 12.5px;
+  line-height: 19px;
+}
+
+.dialogForm,
+.confirmBody {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 17px 18px 0;
+}
+
+.field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field > span,
+.copyField > span,
+.codeBlock > span {
+  color: var(--team-ink-2);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.field input,
+.field select,
+.copyField input,
+.readOnlyField {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px;
+  border: 1px solid rgba(31, 35, 28, 0.14);
+  border-radius: 10px;
+  outline: none;
+  color: var(--team-ink);
+  background: var(--team-paper);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 20px;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+.field select {
+  appearance: auto;
+}
+
+.field input:focus,
+.field select:focus,
+.copyField input:focus {
+  border-color: var(--team-sage-2);
+  box-shadow: 0 0 0 3px rgba(92, 122, 96, 0.12);
+}
+
+.field input:disabled,
+.field select:disabled {
+  color: var(--team-muted);
+  background: var(--team-wash);
+  cursor: not-allowed;
+}
+
+.field input::placeholder {
+  color: var(--team-muted);
+}
+
+.field small {
+  color: var(--team-muted);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.field small.cautionText,
+.copyError {
+  color: var(--team-caramel);
+}
+
+.readOnlyField {
+  display: flex;
+  align-items: center;
+  color: var(--team-ink-2);
+  background: var(--team-wash);
+}
+
+.dialogFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--team-rule);
+}
+
+.dialogForm > .dialogFooter {
+  margin-right: -18px;
+  margin-left: -18px;
+  padding-bottom: 18px;
+}
+
+.dialogError {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 10px;
+  color: var(--team-rust);
+  background: var(--team-rust-dim);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.dialogError svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.mutationPreview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 13px;
+  border: 1px solid var(--team-rule);
+  border-radius: 11px;
+  background: var(--team-wash);
+}
+
+.mutationPreview > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mutationPreview span {
+  color: var(--team-muted);
+  font: 600 8.5px/13px var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mutationPreview strong {
+  overflow: hidden;
+  color: var(--team-ink);
+  font-size: 11.5px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.infoNotice,
+.warningNotice {
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.warningNotice,
+.deliveryNotice {
+  border: 1px solid rgba(201, 150, 68, 0.28);
+  color: var(--team-caramel);
+  background: var(--team-caramel-dim);
+}
+
+.successNotice {
+  border: 1px solid rgba(92, 122, 96, 0.24);
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+}
+
+.inviteBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 17px 18px 0;
+}
+
+.inviteSection {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 13px;
+  padding: 15px;
+  border: 1px solid var(--team-rule);
+  border-radius: 14px;
+  background: var(--team-paper);
+}
+
+.inviteSectionHeading {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+}
+
+.sectionIcon {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+}
+
+.inviteSectionHeading > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.inviteSectionHeading h3,
+.inviteListHeading h4 {
+  margin: 0;
+  color: var(--team-ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 19px;
+}
+
+.inviteSectionHeading p {
+  margin: 2px 0 0;
+  color: var(--team-ink-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.sectionLoading,
+.sectionError,
+.noCodeState {
+  display: flex;
+  min-height: 72px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 12px;
+  border-radius: 10px;
+  color: var(--team-ink-2);
+  background: var(--team-wash);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.sectionError {
+  justify-content: flex-start;
+  border: 1px solid rgba(184, 92, 61, 0.18);
+  color: var(--team-rust);
+  background: var(--team-rust-dim);
+}
+
+.sectionError > span {
+  flex: 1;
+  min-width: 0;
+}
+
+.noCodeState {
+  justify-content: flex-start;
+}
+
+.noCodeState > svg {
+  flex: none;
+  color: var(--team-sage);
+}
+
+.noCodeState > div {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.noCodeState strong {
+  color: var(--team-ink);
+  font-size: 12px;
+}
+
+.noCodeState span {
+  color: var(--team-ink-2);
+  font-size: 11.5px;
+}
+
+.codeLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 190px;
+  gap: 16px;
+}
+
+.codeDetails {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 13px;
+}
+
+.copyField {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.copyField > div {
+  display: flex;
+  min-width: 0;
+  gap: 7px;
+}
+
+.copyField input {
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
+.copyField button,
+.codeBlock button,
+.deliveryNotice button,
+.successNotice button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 12px;
+  border: 1px solid rgba(92, 122, 96, 0.22);
+  border-radius: 9px;
+  color: var(--team-sage);
+  background: var(--team-sage-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.codeBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px;
+  border: 1px solid var(--team-rule);
+  border-radius: 11px;
+  background: var(--team-wash);
+}
+
+.codeBlock > div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.codeBlock strong {
+  flex: 1;
+  color: var(--team-ink);
+  font: 700 24px/30px var(--font-geist-mono), ui-monospace, monospace;
+  letter-spacing: 0.1em;
+}
+
+.codeBlock button {
+  width: 44px;
+  padding: 0;
+}
+
+.codeBlock small {
+  color: var(--team-muted);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.qrCard {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--team-rule);
+  border-radius: 12px;
+  background: var(--team-wash);
+  flex-direction: column;
+}
+
+.qrCard img {
+  display: block;
+  width: 160px;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--team-rule);
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.qrCard > span {
+  color: var(--team-muted);
+  font-size: 11.5px;
+}
+
+.qrPlaceholder {
+  display: grid;
+  width: 160px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--team-muted);
+  background: rgba(31, 35, 28, 0.045);
+}
+
+.inlineConfirm {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 11px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 10px;
+  background: var(--team-rust-dim);
+}
+
+.inlineConfirm strong {
+  color: var(--team-ink);
+  font-size: 11.5px;
+}
+
+.inlineConfirm > span {
+  color: var(--team-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.inlineConfirm > div {
+  display: flex;
+  gap: 7px;
+  margin-top: 6px;
+}
+
+.inlineConfirm button {
+  flex: 1;
+}
+
+.copyError {
+  margin: 0;
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.managerInviteForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 9px;
+}
+
+.deliveryNotice,
+.successNotice {
+  align-items: center;
+}
+
+.deliveryNotice > svg,
+.successNotice > svg {
+  flex: none;
+}
+
+.deliveryNotice button,
+.successNotice button {
+  flex: none;
+}
+
+.inviteListHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 3px;
+}
+
+.inviteList {
+  overflow: hidden;
+  border: 1px solid var(--team-rule);
+  border-radius: 11px;
+}
+
+.inviteRow {
+  display: flex;
+  min-height: 62px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--team-rule);
+}
+
+.inviteRow:last-child {
+  border-bottom: 0;
+}
+
+.pendingInviteIcon,
+.expiredInviteIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.expiredInviteIcon {
+  color: var(--team-rust);
+  background: var(--team-rust-dim);
+}
+
+.inviteRow > div:not(.revokeConfirm) {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.inviteRow strong {
+  overflow: hidden;
+  color: var(--team-ink);
+  font-size: 11.5px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inviteRow span {
+  color: var(--team-muted);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.revokeConfirm {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+}
+
+.revokeConfirm > span {
+  color: var(--team-rust);
+  font-weight: 650;
+}
+
+.revokeConfirm button {
+  display: grid;
+  min-width: 44px;
+  height: 44px;
+  place-items: center;
+  padding: 0 8px;
+  border: 1px solid var(--team-rule);
+  border-radius: 9px;
+  color: var(--team-ink-2);
+  background: var(--team-paper);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.revokeConfirm button:last-child {
+  border-color: rgba(184, 92, 61, 0.22);
+  color: var(--team-rust);
+  background: var(--team-rust-dim);
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@media (max-width: 700px) {
+  .headingRow {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .headingRow > .primaryButton {
+    align-self: flex-start;
+  }
+
+  .codeLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .qrCard {
+    align-self: center;
+    width: min(210px, 100%);
+  }
+
+  .managerInviteForm {
+    grid-template-columns: 1fr;
+  }
+
+  .managerInviteForm > .primaryButton {
+    width: 100%;
+  }
+
+  .deliveryNotice,
+  .successNotice {
+    flex-wrap: wrap;
+  }
+
+  .deliveryNotice button,
+  .successNotice button {
+    width: 100%;
+    margin-left: 29px;
+  }
+}
+
+@media (max-width: 560px) {
+  .root {
+    gap: 20px;
+  }
+
+  .headingRow > .primaryButton {
+    width: 100%;
+  }
+
+  .teamRow,
+  .approvalRow {
+    min-height: 76px;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 11px;
+  }
+
+  .teamRow .rowBody,
+  .approvalRow .rowBody {
+    width: calc(100% - 52px);
+  }
+
+  .linkedBadge {
+    margin-left: 51px;
+  }
+
+  .rowActions,
+  .approvalActions {
+    width: 100%;
+    margin-left: 51px;
+  }
+
+  .editButton,
+  .approveButton,
+  .denyButton {
+    min-height: 44px;
+  }
+
+  .editButton,
+  .approveButton,
+  .denyButton {
+    flex: 1;
+  }
+
+  .errorState {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .errorState button {
+    grid-column: 1 / -1;
+    width: 100%;
+  }
+
+  .dialogLayer {
+    align-items: end;
+    padding: 0;
+  }
+
+  .dialog,
+  .dialogWide {
+    width: 100%;
+    max-height: calc(100dvh - 24px);
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .dialogHeader {
+    padding: 15px 14px 12px;
+  }
+
+  .dialogIntro {
+    padding: 13px 14px 0;
+  }
+
+  .dialogForm,
+  .confirmBody,
+  .inviteBody {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .dialogForm > .dialogFooter {
+    margin-right: -14px;
+    margin-left: -14px;
+  }
+
+  .dialogFooter {
+    align-items: stretch;
+    padding: 13px 14px max(16px, env(safe-area-inset-bottom, 0px));
+    flex-direction: column-reverse;
+  }
+
+  .dialogFooter .primaryButton,
+  .dialogFooter .secondaryButton,
+  .dialogFooter .dangerButton {
+    width: 100%;
+  }
+
+  .mutationPreview {
+    grid-template-columns: 1fr;
+  }
+
+  .inviteSection {
+    padding: 12px;
+  }
+
+  .copyField > div {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .copyField button {
+    width: 100%;
+  }
+
+  .noCodeState {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .noCodeState > div {
+    width: calc(100% - 34px);
+  }
+
+  .noCodeState > button {
+    width: 100%;
+  }
+
+  .inviteRow {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .revokeConfirm {
+    width: 100%;
+    justify-content: flex-end;
+    margin-left: 44px;
+  }
+}
+
+@media (max-width: 340px) {
+  .root {
+    min-width: 0;
+  }
+
+  .headingCopy h2 {
+    font-size: 17px;
+  }
+
+  .avatar,
+  .waitingIcon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .teamRow .rowBody,
+  .approvalRow .rowBody {
+    width: calc(100% - 48px);
+  }
+
+  .rowActions,
+  .approvalActions,
+  .linkedBadge {
+    margin-left: 47px;
+  }
+
+  .inviteSectionHeading {
+    gap: 8px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dialog,
+  .dialogScrim,
+  .skeletonList > span,
+  .spinner,
+  .buttonSpinner {
+    animation: none;
+  }
+
+  .primaryButton,
+  .secondaryButton,
+  .dangerButton,
+  .approveButton,
+  .denyButton,
+  .editButton {
+    transition: none;
+  }
+
+  .primaryButton:active:not(:disabled),
+  .secondaryButton:active:not(:disabled),
+  .dangerButton:active:not(:disabled),
+  .approveButton:active:not(:disabled),
+  .denyButton:active:not(:disabled),
+  .editButton:active:not(:disabled) {
+    transform: none;
+  }
+}

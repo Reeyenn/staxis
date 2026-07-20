@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { Wifi, Users, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks } from 'lucide-react';
+import { Wifi, Clock, ChevronRight, Bell, UserCog, ScrollText, BarChart3, Timer, DollarSign, ListChecks } from 'lucide-react';
 import { useCan } from '@/lib/capabilities/useCan';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
 import { T, fonts } from '@/app/staff/_components/_tokens';
@@ -25,7 +25,6 @@ export default function SettingsPage() {
     { href:'/settings/pms', icon:Wifi, label:t('pmsConnection', lang), desc: lang === 'es' ? 'Sincronización automática con tu sistema de gestión hotelera' : 'Auto-sync data from your property management system', cap:'manage_settings' },
     { href:'/settings/reports', icon:BarChart3, label: lang === 'es' ? 'Reportes' : 'Reports', desc: lang === 'es' ? 'Genera, exporta y programa reportes cuando los necesites' : 'Run, export, and schedule reports on demand', cap:'run_reports' },
     { href:'/settings/checklists', icon:ListChecks, label: t('checklistsTitle', lang), desc: t('checklistsCardDesc', lang), cap:'manage_checklists' },
-    { href:'/settings/accounts', icon:Users, label: lang === 'es' ? 'Cuenta y equipo' : 'Account & Team', desc: lang === 'es' ? 'Tu perfil, contraseña y cuentas del equipo' : 'Your profile, password, and team accounts', cap:'manage_team' },
     { href:'/settings/users', icon:UserCog, label: lang === 'es' ? 'Usuarios y roles' : 'Users & Roles', desc: lang === 'es' ? 'Cambia roles, desactiva cuentas, transfiere propietario' : 'Change roles, deactivate accounts, transfer ownership', cap:'manage_users' },
     { href:'/settings/notifications', icon:Bell, label: lang === 'es' ? 'Notificaciones' : 'Notifications', desc: lang === 'es' ? 'Cuándo y cómo recibir el reporte diario y semanal' : 'When and how to receive the daily and weekly report', cap:'manage_notifications' },
     { href:'/settings/shifts', icon:Clock, label: lang === 'es' ? 'Turnos' : 'Shifts', desc: lang === 'es' ? 'Plantillas de turnos por departamento (8a–4p, 7a–3p, etc.)' : 'Shift presets by department (8a–4p, 7a–3p, etc.)', cap:'manage_shifts' },

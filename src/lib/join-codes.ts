@@ -72,3 +72,48 @@ export const OWNER_CODE_MAX_USES = 1;
  */
 export const STAFF_CODE_TTL_HOURS = 24 * 7;
 export const STAFF_CODE_MAX_USES = 100;
+
+export interface UsableJoinCodeLike {
+  expires_at: string;
+  max_uses: number;
+  used_count: number;
+  revoked_at?: string | null;
+}
+
+export function isUsableJoinCode(
+  code: UsableJoinCodeLike,
+  nowMs = Date.now(),
+): boolean {
+  const expiryMs = new Date(code.expires_at).getTime();
+  return code.revoked_at == null
+    && Number.isFinite(expiryMs)
+    && expiryMs > nowMs
+    && code.used_count < code.max_uses;
+}
+
+// A per-process keyed mutex closes the common same-deployment race (for
+// example, My Hotel and an already-open legacy settings tab both requesting a
+// code). The route also performs a deterministic post-insert reconciliation,
+// which covers requests that land on different serverless instances.
+const hotelJoinCodeLockTails = new Map<string, Promise<void>>();
+
+export async function withJoinCodeHotelLock<T>(
+  hotelId: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const previous = hotelJoinCodeLockTails.get(hotelId) ?? Promise.resolve();
+  let release = () => {};
+  const current = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.catch(() => undefined).then(() => current);
+  hotelJoinCodeLockTails.set(hotelId, tail);
+
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (hotelJoinCodeLockTails.get(hotelId) === tail) {
+      hotelJoinCodeLockTails.delete(hotelId);
+    }
+  }
+}

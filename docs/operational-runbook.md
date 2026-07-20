@@ -25,6 +25,26 @@ prod state.
 
 ---
 
+## 2026-07-20 — My Hotel account and team security
+
+### Migrations applied to prod (via `scripts/apply-migration.ts`)
+
+| File | What | How to verify |
+|---|---|---|
+| `0328_invite_storage_service_role_only.sql` | Removes direct browser access to hotel account invitations and join-code capability rows; all use now goes through scoped server routes. | Browser roles have no table privileges; only the two explicit `*_deny_browser` policies remain. |
+| `0329_guard_hotel_team_detach_snapshot.sql` | Adds an atomic, version-checked hotel-access removal function so a stale manager action cannot detach an account after its role or access changed. | `to_regprocedure('public.staxis_remove_property_access_guarded(uuid,uuid,text,timestamp with time zone)')` is present and only `service_role` can execute it. |
+
+Applied in order with:
+
+```text
+npx tsx scripts/apply-migration.ts supabase/migrations/0328_invite_storage_service_role_only.sql
+npx tsx scripts/apply-migration.ts supabase/migrations/0329_guard_hotel_team_detach_snapshot.sql
+```
+
+Post-apply verification: `npx tsx scripts/check-migrations-applied.ts` reported all 278 production-required migrations applied. Direct production checks confirmed both migration rows, browser-deny invite policies, service-role access, the guarded RPC, and zero hotels with duplicate usable staff join codes. Rollback requires first deploying code that no longer calls the guarded RPC; then drop that function and restore the former owner-scoped invite/code grants only if a trusted direct-browser flow is intentionally reintroduced.
+
+---
+
 ## 2026-07-19 — Inventory monthly accounting
 
 ### Migrations applied to prod (via `scripts/apply-migration.ts`)

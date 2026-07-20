@@ -23,7 +23,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { verifyTeamManager, callerCan, type TeamCaller } from '@/lib/team-auth';
 import { isAssignableRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { writeRoleChange } from '@/lib/audit-role-changes';
@@ -31,6 +31,47 @@ import { validateUuid } from '@/lib/api-validate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+function normalizedHotelAccess(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((hotelId): hotelId is string => typeof hotelId === 'string' && hotelId.length > 0))];
+}
+
+/**
+ * Name, role, and password live on the account row / auth user, so changing
+ * any of them affects every hotel the target can enter. A hotel manager may
+ * make those global changes only when they can manage_team at every one of
+ * those hotels. Admin is the only safe actor for wildcard-access targets.
+ */
+async function controlsEveryTargetHotel(
+  caller: TeamCaller,
+  targetAccess: string[],
+): Promise<boolean> {
+  if (caller.isAdmin) return true;
+  if (targetAccess.length === 0 || targetAccess.includes('*')) return false;
+
+  // Avoid capability reads for hotels the caller plainly cannot access.
+  if (!caller.propertyAccess.includes('*') && targetAccess.some((hotelId) => !caller.propertyAccess.includes(hotelId))) {
+    return false;
+  }
+
+  const decisions = await Promise.all(
+    targetAccess.map((hotelId) => callerCan(caller, 'manage_team', hotelId)),
+  );
+  return decisions.every(Boolean);
+}
+
+/** Mirrors the PUT/DELETE target hierarchy without making the client infer it. */
+function canActOnTarget(
+  caller: TeamCaller,
+  targetRole: AppRole,
+  isSelf: boolean,
+): boolean {
+  if (targetRole === 'admin') return false;
+  if (targetRole === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') return false;
+  if (targetRole === 'general_manager' && caller.role === 'general_manager' && !isSelf) return false;
+  return true;
+}
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -66,6 +107,34 @@ export async function GET(req: NextRequest) {
     return Array.isArray(r.property_access) && r.property_access.includes(hotelId);
   });
 
+  // accounts.staff_id is a legacy account-wide field. The organization
+  // foundation keeps an exact (account, hotel) identity map, which prevents a
+  // staff link from Hotel A being presented as linked while viewing Hotel B.
+  const teamAccountIds = new Set(teamRows.map((row) => row.id));
+  const staffIdByAccountId = new Map<string, string>();
+  const { data: staffLinks, error: staffLinksErr } = await supabaseAdmin
+    .from('account_property_staff_links')
+    .select('account_id, staff_id')
+    .eq('property_id', hotelId)
+    .eq('is_active', true);
+  if (staffLinksErr) {
+    log.error('[team:GET] property staff-link query failed', {
+      requestId,
+      msg: errToString(staffLinksErr),
+    });
+    return err('Failed to load hotel staff links', {
+      requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
+  } else {
+    for (const link of staffLinks ?? []) {
+      if (teamAccountIds.has(link.account_id)) {
+        staffIdByAccountId.set(link.account_id, link.staff_id);
+      }
+    }
+  }
+
   const emailByUserId = new Map<string, string>();
   const { data: authPage, error: listErr } = await supabaseAdmin.auth.admin.listUsers({ perPage: 1000 });
   if (listErr) {
@@ -76,15 +145,57 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const team = teamRows.map(r => ({
-    accountId: r.id,
-    username: r.username,
-    displayName: r.display_name,
-    email: emailByUserId.get(r.data_user_id) ?? '',
-    role: r.role as AppRole,
-    propertyAccess: r.role === 'admin' ? ['*'] : (r.property_access ?? []),
-    staffId: (r as { staff_id?: string | null }).staff_id ?? null,
-    createdAt: r.created_at,
+  const team = await Promise.all(teamRows.map(async (r) => {
+    const targetRole = r.role as AppRole;
+    const isSelf = r.id === caller.accountId;
+    const targetAccess = targetRole === 'admin' ? ['*'] : normalizedHotelAccess(r.property_access);
+    const hasOtherHotelAccess = targetAccess.includes('*') || targetAccess.some((id) => id !== hotelId);
+    const hotelAccessCount = targetAccess.includes('*') ? null : targetAccess.length;
+    const hierarchyAllowsMutation = canActOnTarget(caller, targetRole, isSelf);
+
+    // Self name/password edits remain self-service even if the caller has a
+    // per-hotel manage_team restriction elsewhere. Other-person account-wide
+    // edits require control of every hotel represented by this account.
+    const controlsAllHotels = isSelf
+      ? true
+      : await controlsEveryTargetHotel(caller, targetAccess);
+    const canEditProfile = hierarchyAllowsMutation && (isSelf || controlsAllHotels);
+    const canChangeRole = hierarchyAllowsMutation && !isSelf && controlsAllHotels;
+    // Direct manager-set passwords cross the Postgres account boundary into
+    // Supabase Auth and cannot be made atomic with a concurrent promotion.
+    // Team members use the standard emailed recovery flow; only the signed-in
+    // person can change their own password here.
+    const canResetPassword = hierarchyAllowsMutation && isSelf;
+    // Detach is intentionally hotel-scoped: a manager may remove Hotel A
+    // access without controlling Hotel B. The atomic RPC preserves Hotel B.
+    const canRemove = hierarchyAllowsMutation && !isSelf;
+    const actions = { canEditProfile, canChangeRole, canResetPassword, canRemove };
+
+    return {
+      accountId: r.id,
+      username: r.username,
+      displayName: r.display_name,
+      email: emailByUserId.get(r.data_user_id) ?? '',
+      role: targetRole,
+      propertyAccess: targetAccess,
+      staffId: staffIdByAccountId.get(r.id) ?? null,
+      createdAt: r.created_at,
+      isSelf,
+      isPlatformAdmin: targetRole === 'admin',
+      hotelAccessCount,
+      hasOtherHotelAccess,
+      globalImpact: {
+        displayNameAffectsAllHotels: true,
+        roleAffectsAllHotels: true,
+        passwordAffectsAllHotels: true,
+        hotelAccessCount,
+        hasOtherHotelAccess,
+      },
+      actions,
+      // Flat aliases keep the contract convenient for existing/simple clients;
+      // `actions` is the canonical grouped shape for the My Hotel UI.
+      ...actions,
+    };
   }));
 
   return ok({ team }, { requestId });
@@ -107,6 +218,23 @@ export async function PUT(req: NextRequest) {
   };
   const { displayName, role, password } = body;
 
+  // Passwords live in Supabase Auth while names, roles, and staff links live
+  // in Postgres. A combined request cannot be atomic across those stores: the
+  // password could succeed and the profile update fail (or vice versa). Force
+  // callers to use two truthful operations so each response describes exactly
+  // one committed mutation and the UI can report a partial outcome honestly.
+  const includesPassword = Object.prototype.hasOwnProperty.call(body, 'password');
+  const includesProfileMutation = Object.prototype.hasOwnProperty.call(body, 'displayName')
+    || Object.prototype.hasOwnProperty.call(body, 'role')
+    || Object.prototype.hasOwnProperty.call(body, 'staffId');
+  if (includesPassword && includesProfileMutation) {
+    return err('Password changes must be saved separately from profile, role, or staff-link changes', {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+
   const hotelIdCheck = validateUuid(body.hotelId, 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
@@ -122,7 +250,7 @@ export async function PUT(req: NextRequest) {
   // Load target.
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, data_user_id, property_access, display_name, staff_id')
+    .select('id, role, data_user_id, property_access, display_name, staff_id, updated_at')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) {
@@ -138,10 +266,22 @@ export async function PUT(req: NextRequest) {
       requestId, status: 403, code: ApiErrorCode.Unauthorized,
     });
   }
-  const targetAccess = Array.isArray(target.property_access) ? target.property_access : [];
+  const targetAccess = normalizedHotelAccess(target.property_access);
   if (!targetAccess.includes(hotelId)) {
     return err('Account does not have access to this hotel', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+
+  // accounts.staff_id remains a legacy account-wide pointer. Until all staff
+  // workflows write the per-property link table directly, changing it for a
+  // multi-hotel account would silently disconnect that person at another
+  // hotel. Fail closed instead of corrupting the other hotel's identity link.
+  if (body.staffId !== undefined && (targetAccess.includes('*') || targetAccess.length !== 1)) {
+    return err('Staff links for people who work at multiple hotels must be changed by Staxis support', {
+      requestId,
+      status: 409,
+      code: ApiErrorCode.IdempotencyConflict,
     });
   }
 
@@ -162,30 +302,19 @@ export async function PUT(req: NextRequest) {
     });
   }
 
-  // Multi-hotel credential protection (audit #12; confirmed policy 2026-06-18).
-  // A password reset is a GLOBAL credential change: it logs the person out of
-  // EVERY hotel they work at, not just this one. So a non-admin manager may only
-  // reset the password of someone whose hotel access is fully within the
-  // manager's own control — a manager/owner of N hotels can reset anyone across
-  // those N, but not someone who also works at a hotel they don't run (that
-  // needs an admin). (Self-service is unaffected; '*'/admin callers bypass.)
-  if (password && !isSelf && caller.role !== 'admin' && !caller.propertyAccess.includes('*')) {
-    const outsideCallerControl = targetAccess.filter(
-      (h) => h !== '*' && !caller.propertyAccess.includes(h),
-    );
-    if (outsideCallerControl.length > 0) {
-      return err('This person also has access to another hotel — only an admin can reset their password.', {
-        requestId, status: 403, code: ApiErrorCode.Unauthorized,
-      });
-    }
+  if (password && !isSelf) {
+    return err('For security, team members must reset their own password from Forgot password', {
+      requestId,
+      status: 403,
+      code: ApiErrorCode.Unauthorized,
+    });
   }
 
   // Build updates. Role changes must stay in the assignable set (no
   // self-promotion to admin via this route).
   const updates: Record<string, unknown> = {};
-  if (typeof displayName === 'string' && displayName.trim() && displayName.trim() !== target.display_name) {
-    updates.display_name = displayName.trim();
-  }
+  const nextDisplayName = typeof displayName === 'string' ? displayName.trim() : '';
+  const changesDisplayName = !!nextDisplayName && nextDisplayName !== target.display_name;
   let nextRole: AppRole | undefined;
   if (role && role !== target.role) {
     if (!isAssignableRole(role)) {
@@ -211,9 +340,31 @@ export async function PUT(req: NextRequest) {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
     }
-    updates.role = role;
     nextRole = role as AppRole;
   }
+
+  // Account name and role are GLOBAL fields, just like the auth password.
+  // Requiring manage_team at only the selected hotel let a Hotel A manager
+  // rename or rerole someone who also worked at Hotel B. Enforce the complete
+  // hotel set before any other-person global mutation. Self name/password edits
+  // deliberately remain available; self role changes are already blocked.
+  if (!isSelf && (changesDisplayName || nextRole || !!password)) {
+    const controlsAllHotels = await controlsEveryTargetHotel(caller, targetAccess);
+    if (!controlsAllHotels) {
+      const mutation = nextRole
+        ? 'change this person\'s role'
+        : changesDisplayName
+          ? 'change this person\'s name'
+          : 'reset this person\'s password';
+      return err(
+        `This person also works at a hotel you do not manage. Only an admin or a manager of every hotel they can access can ${mutation}.`,
+        { requestId, status: 403, code: ApiErrorCode.Unauthorized },
+      );
+    }
+  }
+
+  if (changesDisplayName) updates.display_name = nextDisplayName;
+  if (nextRole) updates.role = nextRole;
 
   // ── staffId link/unlink ─────────────────────────────────────────────────
   // The /staff page's My Shifts view scopes to accounts.staff_id. Manager
@@ -282,14 +433,24 @@ export async function PUT(req: NextRequest) {
   }
 
   if (Object.keys(updates).length > 0) {
-    const { error: upErr } = await supabaseAdmin
+    const { data: updatedRow, error: upErr } = await supabaseAdmin
       .from('accounts')
       .update(updates)
-      .eq('id', accountId);
+      .eq('id', accountId)
+      .eq('updated_at', target.updated_at)
+      .select('id')
+      .maybeSingle();
     if (upErr) {
       log.error('[team:PUT] update failed', { requestId, msg: errToString(upErr) });
       return err('Failed to update account', {
         requestId, status: 500, code: ApiErrorCode.InternalError,
+      });
+    }
+    if (!updatedRow) {
+      return err('This account changed while you were editing it. Refresh and try again.', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
       });
     }
   }
@@ -355,7 +516,7 @@ export async function DELETE(req: NextRequest) {
   // Cheap pre-check before invoking the atomic RPC.
   const { data: target, error: tErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role')
+    .select('id, role, updated_at')
     .eq('id', accountId)
     .maybeSingle();
   if (tErr || !target) {
@@ -383,22 +544,50 @@ export async function DELETE(req: NextRequest) {
   // Two concurrent removals on the same account from different hotels could
   // each compute a stale `next` array and clobber each other, silently re-
   // granting a hotel one of them had just removed.
-  const { data: remaining, error: rpcErr } = await supabaseAdmin.rpc(
-    'staxis_remove_property_access',
-    { p_account_id: accountId, p_hotel_id: hotelId },
+  const { data: removalResult, error: rpcErr } = await supabaseAdmin.rpc(
+    'staxis_remove_property_access_guarded',
+    {
+      p_account_id: accountId,
+      p_hotel_id: hotelId,
+      p_expected_role: target.role,
+      p_expected_updated_at: target.updated_at,
+    },
   );
   if (rpcErr) {
-    log.error('[team:DELETE] staxis_remove_property_access failed', { requestId, msg: errToString(rpcErr) });
+    log.error('[team:DELETE] guarded property removal failed', { requestId, msg: errToString(rpcErr) });
     return err('Failed to remove access', {
       requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
-  // RPC contract: returns -1 if the account row no longer exists, otherwise
-  // the resulting property_access length (0 = nothing left).
-  const remainingLen = typeof remaining === 'number' ? remaining : -1;
-  if (remainingLen < 0) {
+  const guardedResult = removalResult && typeof removalResult === 'object'
+    ? removalResult as { status?: string; remaining_hotels?: number }
+    : null;
+  if (guardedResult?.status === 'not_found') {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
+  if (guardedResult?.status === 'not_attached') {
+    return err('Account does not have access to this hotel', {
+      requestId,
+      status: 404,
+      code: ApiErrorCode.NotFound,
+    });
+  }
+  if (guardedResult?.status === 'conflict') {
+    return err('This account changed while you were removing access. Refresh and try again.', {
+      requestId,
+      status: 409,
+      code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (guardedResult?.status !== 'ok' || typeof guardedResult.remaining_hotels !== 'number') {
+    log.error('[team:DELETE] guarded property removal returned an invalid result', { requestId });
+    return err('Failed to remove access', {
+      requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
+  }
+  const remainingLen = guardedResult.remaining_hotels;
 
   await writeAudit({
     action: 'account.team_detach',

@@ -461,6 +461,10 @@ const RLS_REQUIRED_TABLES = [
  * 'fail' so the doctor doesn't alert during the rollout window.
  */
 const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
+  // 0328 — account onboarding capabilities are exposed only through scoped
+  // server routes. Raw invite/code rows are never browser-readable.
+  'account_invites',
+  'hotel_join_codes',
   'join_requests',
   'agent_eval_baselines',
   'agent_prompts',

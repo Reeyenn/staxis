@@ -12,8 +12,10 @@ export const ALL_ROLES = [
   'staff',  // legacy alias — kept so existing rows validate; new accounts pick one of the above
 ] as const;
 
-// Roles that an admin/owner/GM can assign when inviting someone or
-// generating a join code. We hide 'admin' (Staxis-only) and 'staff' (legacy).
+// Hotel-facing roles available to invitation/account-management flows. The
+// caller-specific hierarchy is enforced by canGrantHotelRole: GMs may grant
+// operational roles only, while owner/admin may also grant owner or GM. We
+// hide 'admin' (Staxis-only) and 'staff' (legacy).
 export const ASSIGNABLE_ROLES = [
   'owner',
   'general_manager',
@@ -36,6 +38,26 @@ export function isAssignableRole(s: unknown): s is AssignableRole {
 // Roles that can manage the team (invite people, generate join codes).
 export function canManageTeam(role: AppRole): boolean {
   return role === 'admin' || role === 'owner' || role === 'general_manager';
+}
+
+/**
+ * Role hierarchy for hotel account invitations.
+ *
+ * General Managers can onboard operational staff, but they cannot create a
+ * peer GM or an owner. Owner and GM are account-wide authority tiers, so only
+ * an existing owner or a Staxis administrator may grant either one. Keep this
+ * shared between invite creation and acceptance so an old pending invite
+ * cannot bypass a later hierarchy check.
+ */
+export function canGrantHotelRole(
+  callerRole: AppRole,
+  invitedRole: AssignableRole,
+): boolean {
+  if (!canManageTeam(callerRole)) return false;
+  if (invitedRole === 'owner' || invitedRole === 'general_manager') {
+    return callerRole === 'admin' || callerRole === 'owner';
+  }
+  return true;
 }
 
 // Roles that can see the Financials suite (Checkbook / Budget / CapEx, revenue,

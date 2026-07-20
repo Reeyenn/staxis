@@ -86,6 +86,10 @@ const TENANT_COLUMNS = new Set([
 const SERVICE_ROLE_ONLY = new Set([
   // From the audit — RLS-on, no policies, intentional (per inline comments
   // in their originating migrations).
+  // 0328 removes the legacy owner-scoped browser policies from the invite
+  // capability stores. All product flows now go through scoped server routes.
+  'account_invites',
+  'hotel_join_codes',
   'join_requests',
   'agent_eval_baselines',
   'agent_prompts',
@@ -482,11 +486,10 @@ for (const [name, t] of tables.entries()) {
     });
   }
 
-  // Note: `hotel_id` is treated as a valid tenant column above. It's a
+  // Note: `hotel_id` is treated as a valid tenant column above. It is a
   // Firestore-era naming convention that survives in account_invites +
-  // hotel_join_codes; both tables have proper RLS policies built on
-  // user_owns_property(hotel_id). No separate Firestore-era flag — the
-  // tenant-column policy check is what matters for security.
+  // hotel_join_codes. Since 0328 those two capability stores are deliberately
+  // service-role-only and are covered by SERVICE_ROLE_ONLY above.
 }
 
 if (violations.length > 0) {

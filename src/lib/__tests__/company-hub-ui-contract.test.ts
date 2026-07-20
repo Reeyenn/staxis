@@ -17,6 +17,11 @@ const invitation = source('src', 'app', 'company-invite', '[token]', 'page.tsx')
 const authShell = source('src', 'components', 'AuthShell.tsx');
 const company = source('src', 'app', 'company', 'page.tsx');
 const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
+const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
+const hotelTeamDialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
+const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
+const settings = source('src', 'app', 'settings', 'page.tsx');
+const legacyAccounts = source('src', 'app', 'settings', 'accounts', 'page.tsx');
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 
 describe('company-only shell routing', () => {
@@ -121,23 +126,66 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /value: ['"]not_active['"], label: localized\(lang, ['"]Not active['"]/);
   });
 
-  test('the invited People filter includes actual pending invitations', () => {
-    assert.match(company, /type PeopleStatusFilter = ['"]all['"] \| ['"]active['"] \| ['"]invited['"] \| ['"]not_active['"]/);
-    assert.match(company, /statusFilter === ['"]invited['"] && invitation\.status === ['"]pending['"]/);
-    assert.match(company, /visibleInvitations\.map/);
+  test('People keeps the operational roster separate from hotel accounts and company access', () => {
+    assert.match(company, /type PeopleStatusFilter = ['"]all['"] \| ['"]active['"] \| ['"]not_active['"]/);
+    assert.match(company, /<HotelTeamPanel/);
+    assert.match(company, /Staff without a linked login/);
+    assert.match(company, /linkedStaffIdSet\.has\(member\.id\)/);
+    assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
+    assert.match(company, /Organization access/);
+    assert.match(company, /data\.invitations\.map/);
   });
 
-  test('admin previews merge hotel roster data without crossing viewer contexts', () => {
+  test('admin previews merge the exact hotel roster without crossing viewer contexts', () => {
     assert.match(propertyContext, /staffViewerKey/);
     assert.match(propertyContext, /setStaffViewerKey\(subscriptionViewerKey\)/);
     assert.match(propertyContext, /setStaffLoadFailed\(true\)/);
     assert.match(company, /staffViewerKey === `\$\{user\.uid\}:\$\{activePropertyId\}`/);
     assert.match(company, /['"]Hotel roster unavailable['"]/);
-    assert.match(company, /['"]Customer access members['"]/);
-    assert.match(company, /['"]Operational staff['"]/);
-    assert.match(company, /shown separately from access accounts/);
+    assert.match(company, /hotelId=\{activeProperty\.id\}/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\)\}/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
     assert.match(company, /statusLabel\(membership\.status, lang\)/);
+    assert.match(hotelTeam, /responseTeam\.filter\(\(member\) => !member\.isPlatformAdmin && member\.role !== ['"]admin['"]\)/);
+  });
+});
+
+describe('My Hotel account and team integration', () => {
+  test('moves the hotel-facing entry out of Settings and preserves old bookmarks', () => {
+    assert.doesNotMatch(settings, /href:\s*['"]\/settings\/accounts['"]/);
+    assert.match(legacyAccounts, /router\.replace\(['"]\/company\?tab=people['"]\)/);
+    assert.match(legacyAccounts, /\/admin\/properties\/\$\{encodeURIComponent\(activePropertyId\)\}/);
+  });
+
+  test('keeps the selected tab in the URL and selects an exact hotel', () => {
+    assert.match(company, /useSearchParams\(\)/);
+    assert.match(company, /params\.set\(['"]tab['"], next\)/);
+    assert.match(company, /value=\{activeProperty\.id\}/);
+    assert.match(company, /onChange=\{\(event\) => onHotelChange\(event\.target\.value\)\}/);
+  });
+
+  test('includes member editing, removal, staff approvals, and both invitation paths', () => {
+    assert.match(hotelTeam, /\/api\/auth\/team\?hotelId=/);
+    assert.match(hotelTeam, /\/api\/staff\/join-requests\?hotelId=/);
+    assert.match(hotelTeam, /Pending staff approvals/);
+    assert.match(hotelTeam, /LazyMemberDialog/);
+    assert.match(hotelTeam, /LazyRemoveDialog/);
+    assert.match(hotelTeam, /LazyInviteDialog/);
+    assert.match(hotelTeamDialogs, /Staff signup link/);
+    assert.match(hotelTeamDialogs, /Invite a General Manager/);
+    assert.match(hotelTeamDialogs, /deliveryStatus === ['"]sent['"]/);
+    assert.match(hotelTeamDialogs, /Copy and send the link directly/);
+  });
+
+  test('keeps account-wide effects honest and dialogs usable above the app shell', () => {
+    assert.match(hotelTeamDialogs, /createPortal\(/);
+    assert.match(hotelTeamDialogs, /document\.body/);
+    assert.match(hotelTeamDialogs, /AbortSignal\.timeout\(15_000\)/);
+    assert.match(hotelTeamDialogs, /This display name appears at every hotel/);
+    assert.match(hotelTeamDialogs, /member\.email \|\| copy\(lang, ['"]Email unavailable['"]/);
+    assert.match(hotelTeam, /createPortal\(/);
+    assert.doesNotMatch(hotelTeamCss, /font:\s*[^;]*\binherit\s*;/);
+    assert.doesNotMatch(hotelTeamCss, /min-height:\s*40px/);
   });
 });
 

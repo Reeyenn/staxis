@@ -1,6 +1,4 @@
 #!/usr/bin/env tsx
-/* eslint-disable no-console */
-
 /**
  * Phase M1.5 (2026-05-14) — multi-tenancy isolation verification script.
  *
@@ -33,7 +31,8 @@
  *   - SELECT * FROM inventory_counts → all rows have property_id = expected
  *   - SELECT * FROM staff → all rows have property_id = expected
  *   - SELECT * FROM accounts → returns AT MOST self (or self + admins)
- *   - SELECT * FROM hotel_join_codes → all rows have hotel_id = expected
+ *   - account_invites + hotel_join_codes → direct browser access is denied;
+ *     legitimate use goes through scoped server routes
  *
  * Fail mode:
  *   Any leak (a row with a different property_id) → script exits 1 + prints
@@ -64,8 +63,12 @@ const TENANT_TABLES: IsolationCheck[] = [
   { table: 'prediction_log' },
   { table: 'schedule_assignments' },
   { table: 'plan_snapshots' },
-  { table: 'hotel_join_codes', filterColumn: 'hotel_id' },
 ];
+
+const SERVER_ONLY_TABLES = [
+  'account_invites',
+  'hotel_join_codes',
+] as const;
 
 interface Failure {
   table: string;
@@ -158,6 +161,76 @@ async function main() {
         await client.query('ROLLBACK');
       }
     }
+
+    // Invite/code rows are authentication capabilities, not ordinary hotel
+    // data. Migration 0328 removes their browser grants entirely. Check the
+    // object privileges directly so SELECT and every write verb are covered,
+    // for both anonymous and signed-in browser roles.
+    for (const table of SERVER_ONLY_TABLES) {
+      const privilegeRes = await client.query<{
+        anon_select: boolean;
+        anon_insert: boolean;
+        anon_update: boolean;
+        anon_delete: boolean;
+        authenticated_select: boolean;
+        authenticated_insert: boolean;
+        authenticated_update: boolean;
+        authenticated_delete: boolean;
+        service_select: boolean;
+        service_insert: boolean;
+        service_update: boolean;
+        service_delete: boolean;
+      }>(`
+        select
+          has_table_privilege('anon', $1, 'select') as anon_select,
+          has_table_privilege('anon', $1, 'insert') as anon_insert,
+          has_table_privilege('anon', $1, 'update') as anon_update,
+          has_table_privilege('anon', $1, 'delete') as anon_delete,
+          has_table_privilege('authenticated', $1, 'select') as authenticated_select,
+          has_table_privilege('authenticated', $1, 'insert') as authenticated_insert,
+          has_table_privilege('authenticated', $1, 'update') as authenticated_update,
+          has_table_privilege('authenticated', $1, 'delete') as authenticated_delete,
+          has_table_privilege('service_role', $1, 'select') as service_select,
+          has_table_privilege('service_role', $1, 'insert') as service_insert,
+          has_table_privilege('service_role', $1, 'update') as service_update,
+          has_table_privilege('service_role', $1, 'delete') as service_delete
+      `, [`public.${table}`]);
+      const privileges = privilegeRes.rows[0];
+      const browserPrivileges = [
+        privileges.anon_select,
+        privileges.anon_insert,
+        privileges.anon_update,
+        privileges.anon_delete,
+        privileges.authenticated_select,
+        privileges.authenticated_insert,
+        privileges.authenticated_update,
+        privileges.authenticated_delete,
+      ];
+      const servicePrivileges = [
+        privileges.service_select,
+        privileges.service_insert,
+        privileges.service_update,
+        privileges.service_delete,
+      ];
+
+      if (browserPrivileges.some(Boolean)) {
+        failures.push({
+          table,
+          reason: 'anon/authenticated still has a direct table privilege',
+          sample: privileges,
+        });
+        console.log(`  ✗ ${table.padEnd(35)} direct browser privilege remains`);
+      } else if (!servicePrivileges.every(Boolean)) {
+        failures.push({
+          table,
+          reason: 'service_role is missing a required server-route table privilege',
+          sample: privileges,
+        });
+        console.log(`  ✗ ${table.padEnd(35)} service route privilege missing`);
+      } else {
+        console.log(`  ✓ ${table.padEnd(35)} browser denied; server routes allowed`);
+      }
+    }
   } finally {
     await client.end();
   }
@@ -174,7 +247,8 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`\n✓ All ${TENANT_TABLES.length} tables properly isolated.`);
+  console.log(`\n✓ All ${TENANT_TABLES.length} tenant tables properly isolated.`);
+  console.log(`✓ All ${SERVER_ONLY_TABLES.length} capability tables are server-only.`);
   console.log(`✓ Multi-tenancy verified — safe to onboard new hotels alongside Beaumont.\n`);
   process.exit(0);
 }

@@ -3,7 +3,7 @@
 export const dynamic = 'force-dynamic';
 
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 import {
   Activity,
@@ -35,6 +35,7 @@ import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { useCan } from '@/lib/capabilities/useCan';
 import {
   EMPTY_COMPANY_ACCESS,
   legacyAccessProfile,
@@ -60,10 +61,14 @@ import {
   ReviewAccessRequestDialog,
   type CompanyLifecycleAction,
 } from './_components/AccessWorkflowDialogs';
+import {
+  HotelTeamPanel,
+  type HotelTeamLinkageState,
+} from './_components/HotelTeamPanel';
 
 type TabId = 'overview' | 'hotels' | 'people' | 'access' | 'activity';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
-type PeopleStatusFilter = 'all' | 'active' | 'invited' | 'not_active';
+type PeopleStatusFilter = 'all' | 'active' | 'not_active';
 
 interface TabDefinition {
   id: TabId;
@@ -75,6 +80,14 @@ interface Envelope<T> {
   ok?: boolean;
   data?: T;
   error?: string;
+}
+
+function isTabId(value: string | null): value is TabId {
+  return value === 'overview'
+    || value === 'hotels'
+    || value === 'people'
+    || value === 'access'
+    || value === 'activity';
 }
 
 const MANAGER_PROFILES = new Set([
@@ -251,7 +264,29 @@ function normalizeCompanyData(value: CompanyAccessData | null | undefined): Comp
 }
 
 export default function CompanyAccessPage() {
+  return (
+    <React.Suspense fallback={<CompanyPageFallback />}>
+      <CompanyAccessContent />
+    </React.Suspense>
+  );
+}
+
+function CompanyPageFallback() {
+  return (
+    <AppLayout>
+      <div className={styles.page} aria-busy="true" aria-label="Loading My Hotel">
+        <div className={styles.skeletonStack} aria-hidden="true">
+          <div className={styles.skeletonPanel}><span /><strong /><small /><div /></div>
+        </div>
+      </div>
+    </AppLayout>
+  );
+}
+
+function CompanyAccessContent() {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { user, loading: authLoading } = useAuth();
   const {
     properties: contextProperties,
@@ -261,8 +296,11 @@ export default function CompanyAccessPage() {
     staffLoadFailed,
     staffViewerKey,
     loading: propertyLoading,
+    setActivePropertyId,
+    refreshStaff,
   } = useProperty();
   const { lang } = useLang();
+  const can = useCan();
 
   const [data, setData] = React.useState<CompanyAccessData | null>(null);
   const [dataViewerKey, setDataViewerKey] = React.useState<string | null>(null);
@@ -271,7 +309,10 @@ export default function CompanyAccessPage() {
   const [loadErrorViewerKey, setLoadErrorViewerKey] = React.useState<string | null>(null);
   const [adminTargetPropertyId, setAdminTargetPropertyId] = React.useState<string | null>(null);
   const [retryKey, setRetryKey] = React.useState(0);
-  const [tab, setTab] = React.useState<TabId>('overview');
+  const [tab, setTab] = React.useState<TabId>(() => {
+    const requested = searchParams.get('tab');
+    return isTabId(requested) ? requested : 'overview';
+  });
   const [query, setQuery] = React.useState('');
   const [hotelStatusFilter, setHotelStatusFilter] = React.useState<HotelStatusFilter>('all');
   const [peopleStatusFilter, setPeopleStatusFilter] = React.useState<PeopleStatusFilter>('all');
@@ -428,14 +469,31 @@ export default function CompanyAccessPage() {
   }, [lang, leaderView, resolved.permissions.viewActivity]);
 
   React.useEffect(() => {
-    if (!tabs.some((item) => item.id === tab)) setTab('overview');
-  }, [tab, tabs]);
+    const requested = searchParams.get('tab');
+    const next = isTabId(requested) ? requested : 'overview';
+    setTab(next);
+    setQuery('');
+    setHotelStatusFilter('all');
+    setPeopleStatusFilter('all');
+  }, [searchParams]);
+
+  React.useEffect(() => {
+    if (loading || (user && !currentData && !currentLoadError)) return;
+    if (tabs.some((item) => item.id === tab)) return;
+    setTab('overview');
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', 'overview');
+    router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+  }, [currentData, currentLoadError, loading, pathname, router, searchParams, tab, tabs, user]);
 
   const switchTab = (next: TabId) => {
     setTab(next);
     setQuery('');
     setHotelStatusFilter('all');
     setPeopleStatusFilter('all');
+    const params = new URLSearchParams(searchParams.toString());
+    params.set('tab', next);
+    router.push(`${pathname}?${params.toString()}`, { scroll: false });
   };
 
   const handleTabKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
@@ -654,18 +712,24 @@ export default function CompanyAccessPage() {
                   staff={currentStaff}
                   hotelRosterUnavailable={currentStaffUnavailable}
                   lang={lang}
+                  currentUser={user}
                   currentAccountId={user.accountId}
+                  activeProperty={activeProperty}
+                  availableHotels={contextProperties}
+                  canManageTeam={can('manage_team')}
+                  onHotelChange={setActivePropertyId}
+                  onChanged={refreshStaff}
                   query={query}
                   onQueryChange={setQuery}
                   statusFilter={peopleStatusFilter}
                   onStatusFilterChange={setPeopleStatusFilter}
-                  onInvite={() => setInviteOpen(true)}
-                  onLifecycleAction={setLifecycleAction}
                 />
               ) : tab === 'access' ? (
                 <AccessPanel
                   data={resolved}
                   lang={lang}
+                  currentAccountId={user.accountId}
+                  onInvite={() => setInviteOpen(true)}
                   onViewReceipt={setSelectedReceipt}
                   onRequestAccess={() => setRequestOpen(true)}
                   onReviewRequest={setReviewRequest}
@@ -864,221 +928,184 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
   );
 }
 
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentAccountId, query, onQueryChange, statusFilter, onStatusFilterChange, onInvite, onLifecycleAction }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, availableHotels, canManageTeam, onHotelChange, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
   lang: string;
+  currentUser: AppUser;
   currentAccountId: string;
+  activeProperty: Property | null;
+  availableHotels: Property[];
+  canManageTeam: boolean;
+  onHotelChange: (propertyId: string) => void;
+  onChanged: () => void | Promise<void>;
   query: string;
   onQueryChange: (value: string) => void;
   statusFilter: PeopleStatusFilter;
   onStatusFilterChange: (value: PeopleStatusFilter) => void;
-  onInvite: () => void;
-  onLifecycleAction: (action: CompanyLifecycleAction) => void;
 }) {
-  const canInvite = data.permissions.manageInvitations
-    && data.permissions.delegationPolicies.some((policy) => policy.profiles.length > 0);
+  const [linkage, setLinkage] = React.useState<HotelTeamLinkageState>({ status: 'loading' });
+  React.useEffect(() => setLinkage({ status: 'loading' }), [activeProperty?.id]);
+  const linkageReady = linkage.status === 'ready';
+  const linkedStaffIdSet = React.useMemo(
+    () => new Set(linkage.status === 'ready' ? linkage.staffIds : []),
+    [linkage],
+  );
   const normalizedQuery = query.trim().toLowerCase();
-  const visibleMemberships = data.memberships.filter((membership) => {
-    if (!data.permissions.viewPeople && membership.accountId !== currentAccountId && !membership.isCurrentUser) return false;
-    const organization = data.organizations.find((item) => item.id === membership.organizationId);
-    const text = `${membership.displayName} ${membership.jobTitle ?? ''} ${membership.accessProfile ?? ''} ${organization?.name ?? ''}`.toLowerCase();
-    const textMatch = !normalizedQuery || text.includes(normalizedQuery);
+  // Organization memberships and their invitation lifecycle live in Access.
+  // People is deliberately hotel-scoped so the three identity systems never
+  // present one person as duplicate, conflicting rows.
+  const rosterFallback = staff.filter((member) => {
+    if (linkageReady && linkedStaffIdSet.has(member.id)) return false;
+    const textMatch = !normalizedQuery || `${member.name} ${member.department ?? ''}`.toLowerCase().includes(normalizedQuery);
     const statusMatch = statusFilter === 'all'
-      || (statusFilter === 'active' && membership.status === 'active')
-      || (statusFilter === 'invited' && membership.status === 'pending')
-      || (statusFilter === 'not_active' && membership.status !== 'active' && membership.status !== 'pending');
+      || (statusFilter === 'active' && member.isActive !== false)
+      || (statusFilter === 'not_active' && member.isActive === false);
     return textMatch && statusMatch;
   });
-  const useAdminHotelRoster = data.viewerContext?.scope === 'property';
-  const rosterFallback = (useAdminHotelRoster || (visibleMemberships.length <= 1 && !data.permissions.viewPeople)) && statusFilter !== 'invited'
-    ? staff.filter((member) => {
-      const textMatch = !normalizedQuery || `${member.name} ${member.department ?? ''}`.toLowerCase().includes(normalizedQuery);
-      const statusMatch = statusFilter === 'all'
-        || (statusFilter === 'active' && member.isActive !== false)
-        || (statusFilter === 'not_active' && member.isActive === false);
-      return textMatch && statusMatch;
-    })
-    : [];
-  const canViewInvitations = data.permissions.manageInvitations
-    || data.viewerContext?.kind === 'staxis_admin_preview';
-  const visibleInvitations = canViewInvitations
-    ? data.invitations.filter((invitation) => {
-      const organization = data.organizations.find((item) => item.id === invitation.organizationId);
-      const text = `${invitation.email} ${invitation.accessProfile} ${invitation.scopeLabel} ${organization?.name ?? ''}`.toLowerCase();
-      const textMatch = !normalizedQuery || text.includes(normalizedQuery);
-      const statusMatch = statusFilter === 'all'
-        || (statusFilter === 'invited' && invitation.status === 'pending')
-        || (statusFilter === 'not_active' && invitation.status !== 'pending');
-      return textMatch && statusMatch;
-    })
-    : [];
 
   return (
     <div className={styles.stack}>
       <div className={styles.headingWithAction}>
         <SectionHeading
-          eyebrow={localized(lang, 'People', 'Personas')}
-          title={data.permissions.viewPeople
-            ? localized(lang, 'People in your scope', 'Personas dentro de tu alcance')
-            : localized(lang, 'My hotel team', 'El equipo de mi hotel')}
-          description={data.permissions.viewPeople
-            ? localized(lang, 'Only people you are allowed to view appear here.', 'Solo aparecen las personas que tienes permiso para ver.')
-            : localized(lang, 'Team directory details only—access settings stay private.', 'Solo detalles del directorio del equipo; la configuración de acceso permanece privada.')}
+          eyebrow={localized(lang, 'My hotel', 'Mi hotel')}
+          title={localized(lang, 'People and team access', 'Personas y acceso del equipo')}
+          description={localized(
+            lang,
+            'Manage hotel logins, invitations, approvals, and operational staff in one place.',
+            'Administra accesos, invitaciones, aprobaciones y personal operativo del hotel en un solo lugar.',
+          )}
         />
-        {canInvite ? (
-          <button type="button" className={styles.primaryButton} onClick={onInvite}>
-            <UserPlus size={16} aria-hidden="true" />
-            {localized(lang, 'Invite person', 'Invitar persona')}
-          </button>
+        {availableHotels.length > 1 && activeProperty ? (
+          <label className={styles.formField}>
+            <span>{localized(lang, 'Hotel being managed', 'Hotel administrado')}</span>
+            <select
+              value={activeProperty.id}
+              onChange={(event) => onHotelChange(event.target.value)}
+              aria-label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
+            >
+              {availableHotels.map((hotel) => <option key={hotel.id} value={hotel.id}>{hotel.name}</option>)}
+            </select>
+          </label>
         ) : null}
       </div>
 
-      <FilterBar
-        lang={lang}
-        query={query}
-        onQueryChange={onQueryChange}
-        statusFilter={statusFilter}
-        onStatusFilterChange={onStatusFilterChange}
-        statusOptions={[
-          { value: 'all', label: localized(lang, 'All', 'Todos') },
-          { value: 'active', label: localized(lang, 'Active', 'Activos') },
-          { value: 'invited', label: localized(lang, 'Invited', 'Invitados') },
-          { value: 'not_active', label: localized(lang, 'Not active', 'No activos') },
-        ]}
-        searchLabel={localized(lang, 'Search people, roles, or companies', 'Buscar personas, cargos o empresas')}
+      {activeProperty ? (
+        <HotelTeamPanel
+          key={activeProperty.id}
+          hotelId={activeProperty.id}
+          hotelName={activeProperty.name}
+          currentUser={currentUser}
+          currentAccountId={currentAccountId}
+          lang={lang === 'es' ? 'es' : 'en'}
+          canManageTeam={canManageTeam}
+          readOnly={Boolean(data.viewerContext?.readOnly)}
+          adminPreview={data.viewerContext?.kind === 'staxis_admin_preview'}
+          staffProfiles={staff}
+          onChanged={onChanged}
+          onLinkageChange={setLinkage}
+        />
+      ) : (
+        <EmptyState
+          icon={Hotel}
+          title={localized(lang, 'Choose a hotel first', 'Primero elige un hotel')}
+          description={localized(lang, 'Team accounts are always managed for one exact hotel.', 'Las cuentas del equipo siempre se administran para un hotel específico.')}
+        />
+      )}
+
+      <SectionHeading
+        eyebrow={localized(lang, 'Operational roster', 'Registro operativo')}
+        title={linkageReady
+          ? localized(lang, 'Staff without a linked login', 'Personal sin acceso vinculado')
+          : localized(lang, 'Operational staff', 'Personal operativo')}
+        description={linkageReady
+          ? localized(
+              lang,
+              'These staff records are used for schedules and assignments but are not linked to an app account yet.',
+              'Estos registros se usan para horarios y asignaciones, pero todavía no están vinculados a una cuenta de la aplicación.',
+            )
+          : linkage.status === 'loading' && canManageTeam
+            ? localized(
+                lang,
+                'Checking which staff already have a hotel login before showing this list.',
+                'Comprobando qué empleados ya tienen acceso al hotel antes de mostrar esta lista.',
+              )
+            : localized(
+                lang,
+                'The complete staff roster used for schedules and assignments.',
+                'El registro completo del personal utilizado para horarios y asignaciones.',
+              )}
       />
 
-      {useAdminHotelRoster ? (
+      {linkage.status === 'loading' && canManageTeam ? (
+        <div className={styles.skeletonStack} role="status" aria-label={localized(lang, 'Checking staff login links', 'Comprobando accesos del personal')}>
+          <div className={styles.skeletonPanel} aria-hidden="true"><span /><strong /><small /><div /></div>
+        </div>
+      ) : (
         <>
-          {visibleMemberships.length > 0 ? (
-            <section className={styles.sectionBlock}>
-              <SectionHeading
-                eyebrow={localized(lang, 'Access directory', 'Directorio de acceso')}
-                title={localized(lang, 'Customer access members', 'Miembros con acceso del cliente')}
-                description={localized(lang, 'These records come from customer access—not the hotel staff roster.', 'Estos registros provienen del acceso del cliente, no del registro de personal del hotel.')}
-              />
-              <div className={styles.listCard} role="list">
-                {visibleMemberships.map((membership) => (
-                  <MembershipRow
-                    key={membership.id}
-                    membership={membership}
-                    organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
-                    isCurrentUser={false}
-                    lang={lang}
-                    onLifecycleAction={onLifecycleAction}
-                  />
-                ))}
-              </div>
-            </section>
-          ) : null}
+          <FilterBar
+            lang={lang}
+            query={query}
+            onQueryChange={onQueryChange}
+            statusFilter={statusFilter}
+            onStatusFilterChange={onStatusFilterChange}
+            statusOptions={[
+              { value: 'all', label: localized(lang, 'All', 'Todos') },
+              { value: 'active', label: localized(lang, 'Active', 'Activos') },
+              { value: 'not_active', label: localized(lang, 'Not active', 'No activos') },
+            ]}
+            searchLabel={localized(lang, 'Search operational staff', 'Buscar personal operativo')}
+          />
 
-          {statusFilter !== 'invited' ? (
-            <section className={styles.sectionBlock}>
-              <SectionHeading
-                eyebrow={localized(lang, 'Hotel roster', 'Registro del hotel')}
-                title={localized(lang, 'Operational staff', 'Personal operativo')}
-                description={localized(lang, 'The current staff roster for this hotel is shown separately from access accounts.', 'El registro actual del hotel se muestra por separado de las cuentas de acceso.')}
-              />
-              {hotelRosterUnavailable ? (
-                <EmptyState
-                  icon={AlertTriangle}
-                  compact
-                  title={localized(lang, 'Hotel roster unavailable', 'Registro del hotel no disponible')}
-                  description={localized(lang, 'Access records are still available. The roster will reconnect automatically.', 'Los registros de acceso siguen disponibles. El registro se volverá a conectar automáticamente.')}
-                />
-              ) : rosterFallback.length > 0 ? (
-                <div className={styles.listCard} role="list">
-                  {rosterFallback.map((member) => (
-                    <div key={member.id} className={styles.personRow} role="listitem">
-                      <Avatar name={member.name} />
-                      <div className={styles.rowBody}>
-                        <strong>{member.name}</strong>
-                        <span>{titleCaseAccessValue(member.department ?? 'team member')}</span>
-                      </div>
-                      <span className={`${styles.status} ${member.isActive === false ? styles.statusMuted : styles.statusActive}`}>
-                        {member.isActive === false ? localized(lang, 'Inactive', 'Inactivo') : localized(lang, 'Team', 'Equipo')}
-                      </span>
-                    </div>
-                  ))}
+          {hotelRosterUnavailable ? (
+            <EmptyState
+              icon={AlertTriangle}
+              compact
+              title={localized(lang, 'Hotel roster unavailable', 'Registro del hotel no disponible')}
+              description={localized(lang, 'Team accounts are still available. The roster will reconnect automatically.', 'Las cuentas del equipo siguen disponibles. El registro se volverá a conectar automáticamente.')}
+            />
+          ) : rosterFallback.length > 0 ? (
+            <div className={styles.listCard} role="list">
+              {rosterFallback.map((member) => (
+                <div key={member.id} className={styles.personRow} role="listitem">
+                  <Avatar name={member.name} />
+                  <div className={styles.rowBody}>
+                    <strong>{member.name}</strong>
+                    <span>{titleCaseAccessValue(member.department ?? 'team member')}</span>
+                  </div>
+                  <span className={`${styles.status} ${member.isActive === false ? styles.statusMuted : styles.statusActive}`}>
+                    {member.isActive === false ? localized(lang, 'Inactive', 'Inactivo') : localized(lang, 'Team', 'Equipo')}
+                  </span>
                 </div>
-              ) : (
-                <EmptyState
-                  icon={Users}
-                  compact
-                  title={localized(lang, 'No hotel staff match', 'Ningún empleado del hotel coincide')}
-                  description={localized(lang, 'Try another search or clear the status filter.', 'Prueba otra búsqueda o borra el filtro de estado.')}
-                />
-              )}
-            </section>
-          ) : visibleMemberships.length === 0 && visibleInvitations.length === 0 ? (
+              ))}
+            </div>
+          ) : (
             <EmptyState
               icon={Users}
-              title={localized(lang, 'No pending invitations', 'No hay invitaciones pendientes')}
-              description={localized(lang, 'Try another search or clear the invited filter.', 'Prueba otra búsqueda o borra el filtro de invitados.')}
+              title={linkageReady
+                ? localized(lang, 'No unlinked staff match', 'Ningún empleado sin acceso coincide')
+                : localized(lang, 'No operational staff match', 'Ningún empleado operativo coincide')}
+              description={linkageReady
+                ? localized(
+                    lang,
+                    'Everyone may already have a linked login, or you can clear the search and status filter.',
+                    'Es posible que todos ya tengan un acceso vinculado, o puedes borrar la búsqueda y el filtro de estado.',
+                  )
+                : localized(lang, 'Try another search or clear the status filter.', 'Prueba otra búsqueda o borra el filtro de estado.')}
             />
-          ) : null}
+          )}
         </>
-      ) : visibleMemberships.length > 0 ? (
-        <div className={styles.listCard} role="list">
-          {visibleMemberships.map((membership) => (
-            <MembershipRow
-              key={membership.id}
-              membership={membership}
-              organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
-              isCurrentUser={membership.accountId === currentAccountId || Boolean(membership.isCurrentUser)}
-              lang={lang}
-              onLifecycleAction={onLifecycleAction}
-            />
-          ))}
-        </div>
-      ) : rosterFallback.length > 0 ? (
-        <div className={styles.listCard} role="list">
-          {rosterFallback.map((member) => (
-            <div key={member.id} className={styles.personRow} role="listitem">
-              <Avatar name={member.name} />
-              <div className={styles.rowBody}>
-                <strong>{member.name}</strong>
-                <span>{titleCaseAccessValue(member.department ?? 'team member')}</span>
-              </div>
-              <span className={`${styles.status} ${member.isActive === false ? styles.statusMuted : styles.statusActive}`}>
-                {member.isActive === false ? localized(lang, 'Inactive', 'Inactivo') : localized(lang, 'Team', 'Equipo')}
-              </span>
-            </div>
-          ))}
-        </div>
-      ) : visibleInvitations.length === 0 ? (
-        <EmptyState
-          icon={Users}
-          title={statusFilter === 'invited'
-            ? localized(lang, 'No pending invitations', 'No hay invitaciones pendientes')
-            : localized(lang, 'No people to show', 'No hay personas para mostrar')}
-          description={statusFilter === 'invited'
-            ? localized(lang, 'Try another search or clear the invited filter.', 'Prueba otra búsqueda o borra el filtro de invitados.')
-            : localized(lang, 'Try another search or ask a manager about team visibility.', 'Prueba otra búsqueda o consulta con un gerente sobre la visibilidad del equipo.')}
-        />
-      ) : null}
-
-      {visibleInvitations.length > 0 ? (
-        <section className={styles.sectionBlock}>
-          <SectionHeading
-            eyebrow={localized(lang, 'Invitations', 'Invitaciones')}
-            title={localized(lang, 'Invitations', 'Invitaciones')}
-            description={localized(lang, 'Invitations stay email-specific and expire automatically.', 'Las invitaciones son específicas para cada correo y vencen automáticamente.')}
-          />
-          <div className={styles.listCard} role="list">
-            {visibleInvitations.map((invitation) => <InvitationRow key={invitation.id} invitation={invitation} lang={lang} onLifecycleAction={onLifecycleAction} />)}
-          </div>
-        </section>
-      ) : null}
+      )}
     </div>
   );
 }
 
-function AccessPanel({ data, lang, onViewReceipt, onRequestAccess, onReviewRequest, onLifecycleAction, canOpenLegacyRoleSettings }: {
+function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, onRequestAccess, onReviewRequest, onLifecycleAction, canOpenLegacyRoleSettings }: {
   data: CompanyAccessData;
   lang: string;
+  currentAccountId: string;
+  onInvite: () => void;
   onViewReceipt: (receipt: EffectiveAccessReceipt) => void;
   onRequestAccess: () => void;
   onReviewRequest: (request: CompanyAccessRequest) => void;
@@ -1086,6 +1113,11 @@ function AccessPanel({ data, lang, onViewReceipt, onRequestAccess, onReviewReque
   canOpenLegacyRoleSettings: boolean;
 }) {
   const adminPreview = data.viewerContext?.kind === 'staxis_admin_preview';
+  const visibleMemberships = data.permissions.viewPeople
+    ? data.memberships
+    : data.memberships.filter((membership) => (
+      membership.accountId === currentAccountId || membership.isCurrentUser
+    ));
   const customerAccessGrants = adminPreview
     ? data.memberships.flatMap((membership) => membership.grants.map((grant) => ({ membership, grant })))
     : [];
@@ -1108,8 +1140,14 @@ function AccessPanel({ data, lang, onViewReceipt, onRequestAccess, onReviewReque
               )}
         />
         {!adminPreview ? <div className={styles.headingActions}>
+          {data.permissions.manageInvitations ? (
+            <button type="button" className={styles.primaryButton} onClick={onInvite}>
+              <UserPlus size={16} aria-hidden="true" />
+              {localized(lang, 'Invite company member', 'Invitar miembro de la empresa')}
+            </button>
+          ) : null}
           {data.permissions.requestAccess ? (
-            <button type="button" className={styles.primaryButton} onClick={onRequestAccess}>
+            <button type="button" className={styles.secondaryButton} onClick={onRequestAccess}>
               <KeyRound size={16} aria-hidden="true" />
               {localized(lang, 'Request access', 'Solicitar acceso')}
             </button>
@@ -1127,6 +1165,32 @@ function AccessPanel({ data, lang, onViewReceipt, onRequestAccess, onReviewReque
           ) : null}
         </div> : null}
       </div>
+
+      {visibleMemberships.length > 0 ? (
+        <section className={styles.sectionBlock}>
+          <SectionHeading
+            eyebrow={localized(lang, 'Organization access', 'Acceso de la organización')}
+            title={localized(lang, 'People with company access', 'Personas con acceso de empresa')}
+            description={localized(
+              lang,
+              'Company membership is separate from a hotel login and operational staff record.',
+              'La membresía de la empresa es independiente del inicio de sesión del hotel y del registro operativo del personal.',
+            )}
+          />
+          <div className={styles.listCard} role="list">
+            {visibleMemberships.map((membership) => (
+              <MembershipRow
+                key={membership.id}
+                membership={membership}
+                organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
+                isCurrentUser={membership.accountId === currentAccountId || Boolean(membership.isCurrentUser)}
+                lang={lang}
+                onLifecycleAction={onLifecycleAction}
+              />
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       {adminPreview && customerAccessGrants.length > 0 ? (
         <div className={styles.listCard} role="list">
