@@ -167,7 +167,16 @@ describe('My Hotel account and team integration', () => {
   test('includes member editing, removal, staff approvals, and both invitation paths', () => {
     assert.match(hotelTeam, /\/api\/auth\/team\?hotelId=/);
     assert.match(hotelTeam, /\/api\/staff\/join-requests\?hotelId=/);
-    assert.match(hotelTeam, /Pending staff approvals/);
+    const accountList = hotelTeam.indexOf('className={styles.teamList}');
+    const accountRows = hotelTeam.indexOf('team.map((member)', accountList);
+    const approvalRows = hotelTeam.indexOf('requests.map((request)', accountList);
+    assert.ok(accountList >= 0 && accountRows > accountList && approvalRows > accountRows);
+    assert.match(hotelTeam, /Pending approval/);
+    assert.match(hotelTeam, /copy\(lang, ['"]Approve['"]/);
+    assert.match(hotelTeam, /copy\(lang, ['"]Deny['"]/);
+    assert.match(hotelTeam, /aria-label=\{copy\(lang, `Approve \$\{request\.name\}`/);
+    assert.match(hotelTeam, /aria-label=\{copy\(lang, `Deny \$\{request\.name\}`/);
+    assert.doesNotMatch(hotelTeam, /Pending staff approvals|pending-approvals-title|No one is waiting for approval|Waiting room/);
     assert.match(hotelTeam, /LazyMemberDialog/);
     assert.match(hotelTeam, /LazyRemoveDialog/);
     assert.match(hotelTeam, /LazyInviteDialog/);
@@ -195,5 +204,7 @@ describe('mobile Company Hub touch targets', () => {
     assert.match(mobile, /\.reviewButton,[\s\S]*\.actionMenu summary,[\s\S]*\.actionMenu button \{\s*min-height: 44px;/);
     assert.match(mobile, /\.searchField > button,[\s\S]*\.iconButton \{\s*width: 44px;\s*height: 44px;/);
     assert.match(mobile, /\.filterChips button \{[\s\S]*min-height: 44px;/);
+    const hotelTeamMobile = hotelTeamCss.slice(hotelTeamCss.indexOf('@media (max-width: 560px)'));
+    assert.match(hotelTeamMobile, /\.editButton,[\s\S]*\.approveButton,[\s\S]*\.denyButton \{\s*min-height: 44px;/);
   });
 });

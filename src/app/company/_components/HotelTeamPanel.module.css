@@ -255,12 +255,10 @@
 }
 
 .teamList,
-.approvalList,
 .skeletonList,
 .emptyState,
 .errorState,
-.allCaughtUp,
-.compactLoading {
+.allCaughtUp {
   overflow: hidden;
   border: 1px solid var(--team-rule);
   border-radius: 14px;
@@ -372,6 +370,23 @@
   text-transform: uppercase;
 }
 
+.pendingBadge {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 999px;
+  color: var(--team-caramel);
+  background: var(--team-caramel-dim);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 14px;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .rowActions,
 .approvalActions {
   display: flex;
@@ -408,6 +423,65 @@
 
 .denyButton:hover:not(:disabled) {
   border-color: rgba(184, 92, 61, 0.38);
+}
+
+.approvalLoadingRow {
+  justify-content: center;
+  color: var(--team-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.approvalErrorRow {
+  color: var(--team-rust);
+  background: rgba(184, 92, 61, 0.035);
+}
+
+.approvalErrorCopy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.approvalErrorCopy strong {
+  color: var(--team-ink);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.approvalErrorCopy span {
+  color: var(--team-ink-2);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.approvalErrorRow button {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 9px;
+  color: var(--team-rust);
+  background: var(--team-rust-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.approvalErrorRow button:hover {
+  border-color: rgba(184, 92, 61, 0.38);
+}
+
+.approvalErrorRow button:focus-visible {
+  outline: 2px solid var(--team-sage);
+  outline-offset: 2px;
 }
 
 .removeButton,
@@ -479,8 +553,7 @@
   line-height: 16px;
 }
 
-.allCaughtUp,
-.compactLoading {
+.allCaughtUp {
   display: flex;
   min-height: 64px;
   align-items: center;
@@ -490,10 +563,6 @@
   color: var(--team-sage);
   font-size: 11.5px;
   line-height: 17px;
-}
-
-.compactLoading {
-  color: var(--team-ink-2);
 }
 
 .emptyState {
@@ -1367,7 +1436,8 @@
     width: calc(100% - 52px);
   }
 
-  .linkedBadge {
+  .linkedBadge,
+  .pendingBadge {
     margin-left: 51px;
   }
 
@@ -1396,6 +1466,11 @@
   .errorState button {
     grid-column: 1 / -1;
     width: 100%;
+  }
+
+  .approvalErrorRow button {
+    width: calc(100% - 51px);
+    margin-left: 51px;
   }
 
   .dialogLayer {
@@ -1509,7 +1584,13 @@
 
   .rowActions,
   .approvalActions,
-  .linkedBadge {
+  .linkedBadge,
+  .pendingBadge {
+    margin-left: 47px;
+  }
+
+  .approvalErrorRow button {
+    width: calc(100% - 47px);
     margin-left: 47px;
   }
 

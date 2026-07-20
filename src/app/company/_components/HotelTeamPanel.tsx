@@ -4,7 +4,6 @@ import React from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
-  CheckCircle2,
   Clock3,
   KeyRound,
   Pencil,
@@ -464,68 +463,6 @@ export function HotelTeamPanel({
         </div>
       ) : null}
 
-      <section className={styles.subsection} aria-labelledby="pending-approvals-title">
-        <div className={styles.subheading}>
-          <div>
-            <span>{copy(lang, 'Waiting room', 'Sala de espera')}</span>
-            <h3 id="pending-approvals-title">{copy(lang, 'Pending staff approvals', 'Aprobaciones de personal pendientes')}</h3>
-          </div>
-          {!requestsLoading && !requestsError ? <strong>{requests.length}</strong> : null}
-        </div>
-
-        {requestsLoading ? (
-          <div className={styles.compactLoading} role="status">
-            <span className={styles.spinner} aria-hidden="true" />
-            {copy(lang, 'Checking for new signups…', 'Buscando nuevos registros…')}
-          </div>
-        ) : requestsError ? (
-          <div className={styles.errorState} role="alert">
-            <AlertCircle size={18} aria-hidden="true" />
-            <div><strong>{copy(lang, 'Approvals did not load', 'Las aprobaciones no se cargaron')}</strong><span>{requestsError}</span></div>
-            <button type="button" onClick={() => void loadRequests()}>
-              <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
-            </button>
-          </div>
-        ) : requests.length > 0 ? (
-          <div className={styles.approvalList} role="list">
-            {requests.map((request) => (
-              <div key={request.id} className={styles.approvalRow} role="listitem">
-                <span className={styles.waitingIcon}><Clock3 size={16} aria-hidden="true" /></span>
-                <div className={styles.rowBody}>
-                  <strong>{request.name}</strong>
-                  <span>
-                    {departmentLabel(request.department, lang)} · {request.language === 'es' ? 'Español' : 'English'} · {timeAgo(request.created_at, lang)}
-                  </span>
-                </div>
-                <div className={styles.approvalActions}>
-                  <button
-                    type="button"
-                    className={styles.approveButton}
-                    onClick={() => setDecision({ request, decision: 'approve' })}
-                    disabled={locked}
-                  >
-                    <UserCheck size={15} aria-hidden="true" />{copy(lang, 'Approve', 'Aprobar')}
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.denyButton}
-                    onClick={() => setDecision({ request, decision: 'deny' })}
-                    disabled={locked}
-                  >
-                    {copy(lang, 'Deny', 'Rechazar')}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className={styles.allCaughtUp}>
-            <CheckCircle2 size={18} aria-hidden="true" />
-            <span>{copy(lang, 'No one is waiting for approval.', 'Nadie está esperando aprobación.')}</span>
-          </div>
-        )}
-      </section>
-
       <section className={styles.subsection} aria-labelledby="team-members-title">
         <div className={styles.subheading}>
           <div>
@@ -547,7 +484,7 @@ export function HotelTeamPanel({
               <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
             </button>
           </div>
-        ) : team.length > 0 ? (
+        ) : team.length > 0 || requests.length > 0 || requestsLoading || Boolean(requestsError) ? (
           <div className={styles.teamList} role="list">
             {team.map((member) => {
               const self = member.accountId === currentAccountId;
@@ -609,6 +546,59 @@ export function HotelTeamPanel({
                 </div>
               );
             })}
+
+            {requestsLoading && team.length === 0 ? (
+              <div className={`${styles.approvalRow} ${styles.approvalLoadingRow}`} role="listitem">
+                <span className={styles.spinner} aria-hidden="true" />
+                <span role="status">{copy(lang, 'Checking pending approvals…', 'Buscando aprobaciones pendientes…')}</span>
+              </div>
+            ) : null}
+
+            {!requestsLoading && requestsError ? (
+              <div className={`${styles.approvalRow} ${styles.approvalErrorRow}`} role="listitem">
+                <AlertCircle size={18} aria-hidden="true" />
+                <div className={styles.approvalErrorCopy} role="alert">
+                  <strong>{copy(lang, 'Pending approvals did not load', 'Las aprobaciones pendientes no se cargaron')}</strong>
+                  <span>{requestsError}</span>
+                </div>
+                <button type="button" onClick={() => void loadRequests()}>
+                  <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
+                </button>
+              </div>
+            ) : null}
+
+            {!requestsLoading && !requestsError ? requests.map((request) => (
+              <div key={request.id} className={styles.approvalRow} role="listitem">
+                <span className={styles.waitingIcon}><Clock3 size={16} aria-hidden="true" /></span>
+                <div className={styles.rowBody}>
+                  <strong>{request.name}</strong>
+                  <span>
+                    {departmentLabel(request.department, lang)} · {request.language === 'es' ? 'Español' : 'English'} · {timeAgo(request.created_at, lang)}
+                  </span>
+                </div>
+                <span className={styles.pendingBadge}>{copy(lang, 'Pending approval', 'Aprobación pendiente')}</span>
+                <div className={styles.approvalActions}>
+                  <button
+                    type="button"
+                    className={styles.approveButton}
+                    onClick={() => setDecision({ request, decision: 'approve' })}
+                    disabled={locked}
+                    aria-label={copy(lang, `Approve ${request.name}`, `Aprobar a ${request.name}`)}
+                  >
+                    <UserCheck size={15} aria-hidden="true" />{copy(lang, 'Approve', 'Aprobar')}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.denyButton}
+                    onClick={() => setDecision({ request, decision: 'deny' })}
+                    disabled={locked}
+                    aria-label={copy(lang, `Deny ${request.name}`, `Rechazar a ${request.name}`)}
+                  >
+                    {copy(lang, 'Deny', 'Rechazar')}
+                  </button>
+                </div>
+              </div>
+            )) : null}
           </div>
         ) : (
           <div className={styles.emptyState}>
