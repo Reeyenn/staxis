@@ -6,13 +6,11 @@ import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 import {
-  Activity,
   AlertTriangle,
   ArrowRight,
   BriefcaseBusiness,
   Building2,
   CalendarClock,
-  Check,
   CheckCircle2,
   ChevronDown,
   CircleHelp,
@@ -43,7 +41,6 @@ import {
   type CompanyAccessData,
   type CompanyAccessRequest,
   type CompanyAccessPermissions,
-  type CompanyActivityEvent,
   type CompanyInvitation,
   type CompanyMembership,
   type CompanyOrganization,
@@ -66,7 +63,7 @@ import {
   type HotelTeamLinkageState,
 } from './_components/HotelTeamPanel';
 
-type TabId = 'overview' | 'hotels' | 'people' | 'access' | 'activity';
+type TabId = 'overview' | 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
 type PeopleStatusFilter = 'all' | 'active' | 'not_active';
 
@@ -86,8 +83,7 @@ function isTabId(value: string | null): value is TabId {
   return value === 'overview'
     || value === 'hotels'
     || value === 'people'
-    || value === 'access'
-    || value === 'activity';
+    || value === 'access';
 }
 
 const MANAGER_PROFILES = new Set([
@@ -448,7 +444,7 @@ function CompanyAccessContent() {
     : hasCompanyScope || isHotelManager;
 
   const tabs = React.useMemo<TabDefinition[]>(() => {
-    const rows: TabDefinition[] = [
+    return [
       { id: 'overview', label: localized(lang, 'Overview', 'Resumen'), icon: Building2 },
       {
         id: 'hotels',
@@ -462,11 +458,7 @@ function CompanyAccessContent() {
       },
       { id: 'access', label: localized(lang, 'Access', 'Acceso'), icon: KeyRound },
     ];
-    if (resolved.permissions.viewActivity) {
-      rows.push({ id: 'activity', label: localized(lang, 'Activity', 'Actividad'), icon: Activity });
-    }
-    return rows;
-  }, [lang, leaderView, resolved.permissions.viewActivity]);
+  }, [lang, leaderView]);
 
   React.useEffect(() => {
     const requested = searchParams.get('tab');
@@ -475,7 +467,12 @@ function CompanyAccessContent() {
     setQuery('');
     setHotelStatusFilter('all');
     setPeopleStatusFilter('all');
-  }, [searchParams]);
+    if (requested !== null && !isTabId(requested)) {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set('tab', 'overview');
+      router.replace(`${pathname}?${params.toString()}`, { scroll: false });
+    }
+  }, [pathname, router, searchParams]);
 
   React.useEffect(() => {
     if (loading || (user && !currentData && !currentLoadError)) return;
@@ -650,29 +647,50 @@ function CompanyAccessContent() {
           </section>
         ) : (
           <>
-            <nav className={styles.tabs} role="tablist" aria-label={localized(lang, 'Company sections', 'Secciones de empresa')}>
-              {tabs.map((item, index) => {
-                const Icon = item.icon;
-                const active = tab === item.id;
-                return (
-                  <button
-                    key={item.id}
-                    id={`company-tab-${item.id}`}
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    aria-controls={`company-panel-${item.id}`}
-                    tabIndex={active ? 0 : -1}
-                    className={active ? styles.tabActive : undefined}
-                    onClick={() => switchTab(item.id)}
-                    onKeyDown={(event) => handleTabKeyDown(event, index)}
+            <div className={styles.tabs}>
+              <nav className={styles.tabList} role="tablist" aria-label={localized(lang, 'Company sections', 'Secciones de empresa')}>
+                {tabs.map((item, index) => {
+                  const Icon = item.icon;
+                  const active = tab === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      id={`company-tab-${item.id}`}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      aria-controls={`company-panel-${item.id}`}
+                      tabIndex={active ? 0 : -1}
+                      className={active ? styles.tabActive : undefined}
+                      onClick={() => switchTab(item.id)}
+                      onKeyDown={(event) => handleTabKeyDown(event, index)}
+                    >
+                      <Icon size={16} strokeWidth={1.9} aria-hidden="true" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+              </nav>
+              {contextProperties.length > 0 ? (
+                <label className={styles.hotelSwitcher}>
+                  <span className={styles.visuallyHidden}>
+                    {localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
+                  </span>
+                  <Hotel className={styles.hotelSwitcherIcon} size={16} strokeWidth={1.9} aria-hidden="true" />
+                  <select
+                    value={activeProperty?.id ?? ''}
+                    onChange={(event) => setActivePropertyId(event.target.value)}
+                    aria-label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
                   >
-                    <Icon size={16} strokeWidth={1.9} aria-hidden="true" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-            </nav>
+                    {!activeProperty ? (
+                      <option value="" disabled>{localized(lang, 'Choose hotel', 'Elige un hotel')}</option>
+                    ) : null}
+                    {contextProperties.map((hotel) => <option key={hotel.id} value={hotel.id}>{hotel.name}</option>)}
+                  </select>
+                  <ChevronDown className={styles.hotelSwitcherChevron} size={16} aria-hidden="true" />
+                </label>
+              ) : null}
+            </div>
 
             <section
               id={`company-panel-${tab}`}
@@ -715,16 +733,14 @@ function CompanyAccessContent() {
                   currentUser={user}
                   currentAccountId={user.accountId}
                   activeProperty={activeProperty}
-                  availableHotels={contextProperties}
                   canManageTeam={can('manage_team')}
-                  onHotelChange={setActivePropertyId}
                   onChanged={refreshStaff}
                   query={query}
                   onQueryChange={setQuery}
                   statusFilter={peopleStatusFilter}
                   onStatusFilterChange={setPeopleStatusFilter}
                 />
-              ) : tab === 'access' ? (
+              ) : (
                 <AccessPanel
                   data={resolved}
                   lang={lang}
@@ -740,8 +756,6 @@ function CompanyAccessContent() {
                     && user.role === 'owner'
                   )}
                 />
-              ) : (
-                <ActivityPanel events={resolved.activity} properties={resolved.properties} lang={lang} />
               )}
             </section>
           </>
@@ -928,7 +942,7 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
   );
 }
 
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, availableHotels, canManageTeam, onHotelChange, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -936,9 +950,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   currentUser: AppUser;
   currentAccountId: string;
   activeProperty: Property | null;
-  availableHotels: Property[];
   canManageTeam: boolean;
-  onHotelChange: (propertyId: string) => void;
   onChanged: () => void | Promise<void>;
   query: string;
   onQueryChange: (value: string) => void;
@@ -967,29 +979,15 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
 
   return (
     <div className={styles.stack}>
-      <div className={styles.headingWithAction}>
-        <SectionHeading
-          eyebrow={localized(lang, 'My hotel', 'Mi hotel')}
-          title={localized(lang, 'People and team access', 'Personas y acceso del equipo')}
-          description={localized(
-            lang,
-            'Manage hotel logins, invitations, approvals, and operational staff in one place.',
-            'Administra accesos, invitaciones, aprobaciones y personal operativo del hotel en un solo lugar.',
-          )}
-        />
-        {availableHotels.length > 1 && activeProperty ? (
-          <label className={styles.formField}>
-            <span>{localized(lang, 'Hotel being managed', 'Hotel administrado')}</span>
-            <select
-              value={activeProperty.id}
-              onChange={(event) => onHotelChange(event.target.value)}
-              aria-label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
-            >
-              {availableHotels.map((hotel) => <option key={hotel.id} value={hotel.id}>{hotel.name}</option>)}
-            </select>
-          </label>
-        ) : null}
-      </div>
+      <SectionHeading
+        eyebrow={localized(lang, 'My hotel', 'Mi hotel')}
+        title={localized(lang, 'People and team access', 'Personas y acceso del equipo')}
+        description={localized(
+          lang,
+          'Manage hotel logins, invitations, approvals, and operational staff in one place.',
+          'Administra accesos, invitaciones, aprobaciones y personal operativo del hotel en un solo lugar.',
+        )}
+      />
 
       {activeProperty ? (
         <HotelTeamPanel
@@ -1265,45 +1263,6 @@ function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, on
           </div>
         </section>
       ) : null}
-    </div>
-  );
-}
-
-function ActivityPanel({ events, properties, lang }: {
-  events: CompanyActivityEvent[];
-  properties: CompanyProperty[];
-  lang: string;
-}) {
-  return (
-    <div className={styles.stack}>
-      <SectionHeading
-        eyebrow={localized(lang, 'Access history', 'Historial de acceso')}
-        title={localized(lang, 'Recent company activity', 'Actividad reciente de la empresa')}
-        description={localized(lang, 'Security-relevant access changes appear in chronological order.', 'Los cambios de acceso relacionados con la seguridad aparecen en orden cronológico.')}
-      />
-      {events.length > 0 ? (
-        <ol className={styles.timeline}>
-          {events.map((event) => {
-            const property = properties.find((item) => item.id === event.propertyId);
-            return (
-              <li key={event.id}>
-                <span className={styles.timelineDot} aria-hidden="true"><Check size={12} /></span>
-                <div>
-                  <strong>{event.summary}</strong>
-                  <p>{event.actorName}{property ? ` · ${property.name}` : ''}</p>
-                  <time dateTime={event.createdAt}>{formatDate(event.createdAt, lang)}</time>
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      ) : (
-        <EmptyState
-          icon={Activity}
-          title={localized(lang, 'No access activity yet', 'Aún no hay actividad de acceso')}
-          description={localized(lang, 'New invitations, grants, and scope changes will appear here.', 'Las nuevas invitaciones, concesiones y cambios de alcance aparecerán aquí.')}
-        />
-      )}
     </div>
   );
 }

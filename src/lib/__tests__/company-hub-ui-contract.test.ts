@@ -160,8 +160,24 @@ describe('My Hotel account and team integration', () => {
   test('keeps the selected tab in the URL and selects an exact hotel', () => {
     assert.match(company, /useSearchParams\(\)/);
     assert.match(company, /params\.set\(['"]tab['"], next\)/);
-    assert.match(company, /value=\{activeProperty\.id\}/);
-    assert.match(company, /onChange=\{\(event\) => onHotelChange\(event\.target\.value\)\}/);
+    assert.match(company, /value=\{activeProperty\?\.id \?\? ['"]['"]\}/);
+    assert.match(company, /onChange=\{\(event\) => setActivePropertyId\(event\.target\.value\)\}/);
+    assert.match(company, /contextProperties\.map\(\(hotel\) => <option key=\{hotel\.id\}/);
+  });
+
+  test('replaces Activity with one compact hotel selector in the navigation', () => {
+    const tabsIndex = company.indexOf('<div className={styles.tabs}>');
+    const tabListIndex = company.indexOf('className={styles.tabList}', tabsIndex);
+    const switcherIndex = company.indexOf('<label className={styles.hotelSwitcher}>', tabListIndex);
+    const panelIndex = company.indexOf('<section', switcherIndex);
+
+    assert.ok(tabsIndex >= 0 && tabListIndex > tabsIndex && switcherIndex > tabListIndex && panelIndex > switcherIndex);
+    assert.match(company, /className=\{styles\.visuallyHidden\}[\s\S]*Choose hotel to manage/);
+    assert.doesNotMatch(company, /Hotel being managed|Hotel administrado/);
+    assert.doesNotMatch(company, /id:\s*['"]activity['"]/);
+    assert.doesNotMatch(company, /function ActivityPanel/);
+    assert.match(company, /requested !== null && !isTabId\(requested\)[\s\S]*params\.set\(['"]tab['"], ['"]overview['"]\)[\s\S]*router\.replace/);
+    assert.match(companyCss, /\.hotelSwitcher select \{[\s\S]*min-height: 42px;/);
   });
 
   test('includes member editing, removal, staff approvals, and both invitation paths', () => {
@@ -204,6 +220,7 @@ describe('mobile Company Hub touch targets', () => {
     assert.match(mobile, /\.reviewButton,[\s\S]*\.actionMenu summary,[\s\S]*\.actionMenu button \{\s*min-height: 44px;/);
     assert.match(mobile, /\.searchField > button,[\s\S]*\.iconButton \{\s*width: 44px;\s*height: 44px;/);
     assert.match(mobile, /\.filterChips button \{[\s\S]*min-height: 44px;/);
+    assert.match(mobile, /\.hotelSwitcher,[\s\S]*\.hotelSwitcher select \{\s*min-height: 44px;/);
     const hotelTeamMobile = hotelTeamCss.slice(hotelTeamCss.indexOf('@media (max-width: 560px)'));
     assert.match(hotelTeamMobile, /\.editButton,[\s\S]*\.approveButton,[\s\S]*\.denyButton \{\s*min-height: 44px;/);
   });
