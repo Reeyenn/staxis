@@ -17,6 +17,7 @@ const invitation = source('src', 'app', 'company-invite', '[token]', 'page.tsx')
 const authShell = source('src', 'components', 'AuthShell.tsx');
 const company = source('src', 'app', 'company', 'page.tsx');
 const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
+const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
 
 describe('company-only shell routing', () => {
   test('does not expose hotel sections without an active hotel', () => {
@@ -42,8 +43,18 @@ describe('Home management entry', () => {
     assert.match(homeHub, /<CxIcon name="company"/);
   });
 
-  test('uses real organization membership for Company Hub and keeps admins separate', () => {
-    assert.match(homeSummary, /account\.active !== true \|\| account\.role === ['"]admin['"]/);
+  test('uses customer membership but selected-hotel topology for the admin preview', () => {
+    assert.match(homeSummary, /if \(!account \|\| account\.active !== true\) return null/);
+    assert.match(homeSummary, /if \(account\.role === ['"]admin['"]\)/);
+    assert.match(homeSummary, /\.from\(['"]organization_property_relationships['"]\)/);
+    assert.match(homeSummary, /\.eq\(['"]property_id['"], propertyId\)/);
+    assert.match(homeSummary, /\.eq\(['"]is_primary_grouping['"], true\)/);
+    assert.match(homeSummary, /relationshipCount !== relationshipRows\.length/);
+    assert.match(homeSummary, /resolveAdminCompanyPreviewTarget\(/);
+    assert.match(homeSummary, /assertExactSingleHotelRelationshipScope\(/);
+    assert.match(homeSummary, /count !== anchorRelationships\.length/);
+    assert.match(homeSummary, /target\.scope === ['"]organization['"] \? ['"]company['"] : ['"]hotel['"]/);
+    assert.match(homeSummary, /managementHubContext\(auth\.userId, pid, requestId\)/);
     assert.match(homeSummary, /\.from\(['"]organization_memberships['"]\)/);
     assert.match(homeSummary, /\.eq\(['"]account_id['"], account\.id as string\)/);
     assert.match(homeSummary, /\.eq\(['"]status['"], ['"]active['"]\)/);
@@ -55,7 +66,8 @@ describe('Home management entry', () => {
     assert.match(homeSummary, /return null;/);
     assert.match(homeSummary, /ok\(\{ tiles, managementContext \}/);
     assert.doesNotMatch(home, /properties\.length > 1 \? ['"]company['"]/);
-    assert.match(home, /management=\{user && user\.role !== ['"]admin['"] && managementContext/);
+    assert.match(home, /management=\{user && managementContext/);
+    assert.doesNotMatch(home, /management=\{user && user\.role !== ['"]admin['"]/);
   });
 
   test('localizes both adaptive labels and always opens the Company Hub route', () => {
@@ -107,6 +119,19 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /type PeopleStatusFilter = ['"]all['"] \| ['"]active['"] \| ['"]invited['"] \| ['"]not_active['"]/);
     assert.match(company, /statusFilter === ['"]invited['"] && invitation\.status === ['"]pending['"]/);
     assert.match(company, /visibleInvitations\.map/);
+  });
+
+  test('admin previews merge hotel roster data without crossing viewer contexts', () => {
+    assert.match(propertyContext, /staffViewerKey/);
+    assert.match(propertyContext, /setStaffViewerKey\(subscriptionViewerKey\)/);
+    assert.match(propertyContext, /setStaffLoadFailed\(true\)/);
+    assert.match(company, /staffViewerKey === `\$\{user\.uid\}:\$\{activePropertyId\}`/);
+    assert.match(company, /['"]Hotel roster unavailable['"]/);
+    assert.match(company, /['"]Customer access members['"]/);
+    assert.match(company, /['"]Operational staff['"]/);
+    assert.match(company, /shown separately from access accounts/);
+    assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
+    assert.match(company, /statusLabel\(membership\.status, lang\)/);
   });
 });
 

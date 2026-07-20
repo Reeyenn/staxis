@@ -44,6 +44,12 @@ import { canForUserId } from '@/lib/capabilities/server';
 import { getEnabledSections } from '@/lib/sections/server';
 import { isSectionEnabled, type AppSection } from '@/lib/sections/registry';
 import { summarizeHomeInventory } from '@/lib/home-inventory-summary';
+import {
+  resolveAdminCompanyPreviewTarget,
+  assertExactSingleHotelRelationshipScope,
+  type AdminPreviewOrganizationTarget,
+  type AdminPreviewPrimaryRelationship,
+} from '@/lib/company-access/admin-preview';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -109,14 +115,18 @@ async function guarded(
 
 /**
  * Resolve the Home management entry without loading the full Company Hub
- * projection. A live membership in a real organization is enough to use the
- * Company Hub label; legacy single-hotel anchors intentionally stay My Hotel.
+ * projection. For customers, a live membership in a real organization is
+ * enough to use the Company Hub label. A Staxis admin instead follows the
+ * already-authorized selected hotel's current primary grouping so switching
+ * hotels also switches the preview context. Legacy single-hotel anchors
+ * intentionally stay My Hotel.
  *
  * This is presentation metadata only. `/company` independently recomputes and
  * enforces the caller's exact grants and scope before returning any data.
  */
 async function managementHubContext(
   userId: string,
+  propertyId: string,
   requestId: string,
 ): Promise<ManagementHubContext | null> {
   try {
@@ -127,7 +137,88 @@ async function managementHubContext(
       .eq('data_user_id', userId)
       .maybeSingle();
     if (accountError) throw accountError;
-    if (!account || account.active !== true || account.role === 'admin') return null;
+    if (!account || account.active !== true) return null;
+
+    if (account.role === 'admin') {
+      // `propertyId` passed the route's userHasPropertyAccess gate before this
+      // helper runs. Resolve the same complete, fail-closed topology used by
+      // the preview endpoint so Home never advertises a context that cannot
+      // safely open.
+      const { data: relationshipRows, error: primaryError, count: relationshipCount } = await supabaseAdmin
+        .from('organization_property_relationships')
+        .select('id, organization_id, property_id, is_primary_grouping, starts_at, ends_at', { count: 'exact' })
+        .eq('property_id', propertyId)
+        .eq('is_primary_grouping', true);
+      if (primaryError) throw primaryError;
+      if (!relationshipRows || relationshipCount !== relationshipRows.length) {
+        throw new Error('admin management relationships were incomplete');
+      }
+
+      const organizationIds = [...new Set(relationshipRows.map((row) => row.organization_id))];
+      const [relatedOrganizationsResult, anchorOrganizationsResult] = await Promise.all([
+        organizationIds.length > 0
+          ? supabaseAdmin.from('organizations')
+              .select('id, name, organization_type, status, legacy_property_id', { count: 'exact' })
+              .in('id', organizationIds)
+          : Promise.resolve({ data: [], error: null, count: 0 }),
+        supabaseAdmin.from('organizations')
+          .select('id, name, organization_type, status, legacy_property_id', { count: 'exact' })
+          .eq('legacy_property_id', propertyId),
+      ]);
+      if (relatedOrganizationsResult.error) throw relatedOrganizationsResult.error;
+      if (anchorOrganizationsResult.error) throw anchorOrganizationsResult.error;
+      if (!relatedOrganizationsResult.data || !anchorOrganizationsResult.data
+        || relatedOrganizationsResult.count !== relatedOrganizationsResult.data.length
+        || anchorOrganizationsResult.count !== anchorOrganizationsResult.data.length) {
+        throw new Error('admin management organizations returned no result');
+      }
+
+      const organizationById = new Map<string, AdminPreviewOrganizationTarget>();
+      for (const row of [...relatedOrganizationsResult.data, ...anchorOrganizationsResult.data]) {
+        organizationById.set(row.id, {
+          id: row.id,
+          name: row.name,
+          organizationType: row.organization_type,
+          status: row.status,
+          legacyPropertyId: row.legacy_property_id,
+        });
+      }
+      const relationships: AdminPreviewPrimaryRelationship[] = relationshipRows.map((row) => ({
+        id: row.id,
+        organizationId: row.organization_id,
+        propertyId: row.property_id,
+        isPrimaryGrouping: row.is_primary_grouping,
+        startsAt: row.starts_at,
+        endsAt: row.ends_at,
+      }));
+      const target = resolveAdminCompanyPreviewTarget({
+        property: { id: propertyId, name: 'Selected hotel' },
+        relationships,
+        organizations: [...organizationById.values()],
+      });
+      if (target.scope === 'property' && target.organization) {
+        const { data: anchorRelationships, error: anchorRelationshipsError, count } = await supabaseAdmin
+          .from('organization_property_relationships')
+          .select('id, organization_id, property_id, is_primary_grouping, starts_at, ends_at', { count: 'exact' })
+          .eq('organization_id', target.organization.id);
+        if (anchorRelationshipsError) throw anchorRelationshipsError;
+        if (!anchorRelationships || count !== anchorRelationships.length) {
+          throw new Error('admin management anchor relationships were incomplete');
+        }
+        assertExactSingleHotelRelationshipScope({
+          selectedPropertyId: propertyId,
+          relationships: anchorRelationships.map((row) => ({
+            id: row.id,
+            organizationId: row.organization_id,
+            propertyId: row.property_id,
+            isPrimaryGrouping: row.is_primary_grouping,
+            startsAt: row.starts_at,
+            endsAt: row.ends_at,
+          })),
+        });
+      }
+      return target.scope === 'organization' ? 'company' : 'hotel';
+    }
 
     const { data: memberships, error: membershipError } = await supabaseAdmin
       .from('organization_memberships')
@@ -409,7 +500,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     canViewFinancials
       ? guarded('financials', requestId, () => financialsTile(pid, today))
       : Promise.resolve(FALLBACK.financials),
-    managementHubContext(auth.userId, requestId),
+    managementHubContext(auth.userId, pid, requestId),
   ]);
 
   const tiles: HomeSummaryTiles = {

@@ -82,6 +82,7 @@ export function subscribeToStaff(
   _uid: string, pid: string,
   callback: (staff: StaffMember[]) => void,
   opts?: StaffListOpts,
+  onFetchError?: (error: unknown) => void,
 ): () => void {
   const { from, to } = clampedRange(opts);
   return subscribeTable<StaffMember>(
@@ -96,6 +97,9 @@ export function subscribeToStaff(
       return asRecordRows(data).map(fromStaffRow);
     },
     callback,
+    undefined,
+    undefined,
+    onFetchError,
   );
 }
 

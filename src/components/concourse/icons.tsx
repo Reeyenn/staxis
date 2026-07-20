@@ -18,6 +18,7 @@ export const CX_ICON_PATHS: Record<string, string> = {
   staff: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0zM22 21v-2a4 4 0 0 0-3-3.9M15 3.1a4 4 0 0 1 0 7.8',
   financials: 'M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6',
   company: 'M3 21h18M5 21V8l7-5 7 5v13M9 21v-5h6v5M8 10h1M11.5 10h1M15 10h1M8 13h1M15 13h1',
+  hotel: 'M3 21h18M5 21V7h14v14M8 10h2M14 10h2M8 14h2M14 14h2M10 21v-4h4v4',
   gear: 'M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zM12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1',
   mic: 'M12 2a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V5a3 3 0 0 1 3-3zM19 10v1a7 7 0 0 1-14 0v-1M12 18v4',
   back: 'M19 12H5M12 19l-7-7 7-7',

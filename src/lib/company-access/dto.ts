@@ -157,6 +157,18 @@ export interface CompanyAccessPermissions {
   delegationPolicies: CompanyDelegationPolicy[];
 }
 
+/** Server-authenticated context for Staxis administrators previewing the
+ * customer-facing Company Hub. Preview mode is deliberately read-only and is
+ * never represented as a customer membership or access receipt. */
+export interface CompanyAccessViewerContext {
+  kind: 'staxis_admin_preview';
+  readOnly: true;
+  requestedPropertyId: string;
+  scope: 'organization' | 'property';
+  targetId: string;
+  targetName: string;
+}
+
 export interface CompanyAccessData {
   organizations: CompanyOrganization[];
   portfolios: CompanyPortfolio[];
@@ -169,6 +181,8 @@ export interface CompanyAccessData {
   permissions: CompanyAccessPermissions;
   /** True when the normalized organization schema was unavailable and legacy access was projected. */
   legacyFallback: boolean;
+  /** Present only for the separately authorized Staxis admin preview route. */
+  viewerContext?: CompanyAccessViewerContext;
 }
 
 export const EMPTY_COMPANY_ACCESS: CompanyAccessData = {

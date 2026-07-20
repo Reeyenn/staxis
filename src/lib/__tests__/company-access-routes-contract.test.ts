@@ -14,6 +14,8 @@ const registrationRollback = source('src/lib/company-access/registration-identit
 const revokeGrantRoute = source('src/app/api/company-access/grants/revoke/route.ts');
 const cancelInvitationRoute = source('src/app/api/company-access/invitations/cancel/route.ts');
 const membershipStatusRoute = source('src/app/api/company-access/memberships/status/route.ts');
+const adminPreviewRoute = source('src/app/api/admin/company-access-preview/route.ts');
+const adminPreviewHelpers = source('src/lib/company-access/admin-preview.ts');
 const dialog = source('src/app/company/_components/AccessWorkflowDialogs.tsx');
 const page = source('src/app/company/page.tsx');
 const signIn = source('src/app/signin/page.tsx');
@@ -27,13 +29,28 @@ describe('company access read/delegation boundary', () => {
     assert.match(getRoute, /organization\.organization_type !== ['"]single_hotel['"]/);
   });
 
-  test('keeps Staxis administrators in the dark Admin Hotels realm', () => {
+  test('keeps customer access closed to admins and uses a separate read-only preview boundary', () => {
     assert.match(getRoute, /account\.role === ['"]admin['"][\s\S]*Admin Hotels workspace[\s\S]*status: 403/);
-    assert.match(page, /user\?\.role === ['"]admin['"]\) router\.replace\(['"]\/admin\/properties#live['"]\)/);
-    assert.match(page, /response\.status === 403[\s\S]*Admin Hotels workspace[\s\S]*router\.replace\(['"]\/admin\/properties#live['"]\)[\s\S]*return/);
-    const forbiddenRedirect = page.indexOf('response.status === 403');
+    assert.match(adminPreviewRoute, /requireAdmin\(req\)/);
+    assert.match(adminPreviewRoute, /validateUuid\(new URL\(req\.url\)\.searchParams\.get\(['"]pid['"]\), ['"]pid['"]\)/);
+    assert.match(page, /\/api\/admin\/company-access-preview\?pid=/);
+    assert.match(page, /normalized\.viewerContext\?\.kind !== ['"]staxis_admin_preview['"]/);
+    assert.match(page, /normalized\.viewerContext\.requestedPropertyId !== requestedPropertyId/);
+    assert.doesNotMatch(page, /user\?\.role === ['"]admin['"]\) router\.replace/);
+
+    const adminFailure = page.indexOf("if (user.role === 'admin')", page.indexOf('} catch (error)'));
     const legacyFallback = page.indexOf('setData(buildLegacyProjection(user, contextProperties))');
-    assert.ok(forbiddenRedirect >= 0 && legacyFallback > forbiddenRedirect, '403 redirect must precede the legacy fallback');
+    assert.ok(adminFailure >= 0 && legacyFallback > adminFailure, 'admin preview failure must be handled before customer fallback');
+    assert.match(page.slice(adminFailure, legacyFallback), /setData\(null\)/);
+
+    assert.match(adminPreviewHelpers, /effectiveAccess: \[\]/);
+    assert.match(adminPreviewHelpers, /managePeople: false/);
+    assert.match(adminPreviewHelpers, /manageInvitations: false/);
+    assert.match(adminPreviewHelpers, /manageAccess: false/);
+    assert.match(adminPreviewHelpers, /requestAccess: false/);
+    assert.match(adminPreviewHelpers, /canRevoke: false/);
+    assert.match(adminPreviewHelpers, /canCancel: false/);
+    assert.match(adminPreviewHelpers, /canReview: false/);
   });
 
   test('fails closed when the account is inactive, including immediately before legacy fallback', () => {

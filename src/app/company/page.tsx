@@ -205,17 +205,48 @@ function buildLegacyProjection(user: AppUser, properties: Property[]): CompanyAc
 
 function normalizeCompanyData(value: CompanyAccessData | null | undefined): CompanyAccessData {
   if (!value) return EMPTY_COMPANY_ACCESS;
+  const viewerContext = value.viewerContext?.kind === 'staxis_admin_preview'
+    && value.viewerContext.readOnly === true
+    && typeof value.viewerContext.requestedPropertyId === 'string'
+    && (value.viewerContext.scope === 'organization' || value.viewerContext.scope === 'property')
+    && typeof value.viewerContext.targetId === 'string'
+    && typeof value.viewerContext.targetName === 'string'
+    ? value.viewerContext
+    : undefined;
+  const memberships = Array.isArray(value.memberships) ? value.memberships : [];
+  const invitations = Array.isArray(value.invitations) ? value.invitations : [];
+  const requests = Array.isArray(value.requests) ? value.requests : [];
   return {
     organizations: Array.isArray(value.organizations) ? value.organizations : [],
     portfolios: Array.isArray(value.portfolios) ? value.portfolios : [],
     properties: Array.isArray(value.properties) ? value.properties : [],
-    memberships: Array.isArray(value.memberships) ? value.memberships : [],
-    effectiveAccess: Array.isArray(value.effectiveAccess) ? value.effectiveAccess : [],
-    invitations: Array.isArray(value.invitations) ? value.invitations : [],
-    requests: Array.isArray(value.requests) ? value.requests : [],
+    memberships: viewerContext ? memberships.map((membership) => ({
+      ...membership,
+      isCurrentUser: false,
+      canSuspend: false,
+      canResume: false,
+      canRemove: false,
+      grants: Array.isArray(membership.grants)
+        ? membership.grants.map((grant) => ({ ...grant, canRevoke: false }))
+        : [],
+    })) : memberships,
+    effectiveAccess: viewerContext ? [] : (Array.isArray(value.effectiveAccess) ? value.effectiveAccess : []),
+    invitations: viewerContext
+      ? invitations.map((invitation) => ({ ...invitation, canCancel: false }))
+      : invitations,
+    requests: viewerContext
+      ? requests.map((request) => ({ ...request, canReview: false }))
+      : requests,
     activity: Array.isArray(value.activity) ? value.activity : [],
-    permissions: { ...EMPTY_COMPANY_ACCESS.permissions, ...(value.permissions ?? {}) },
+    permissions: viewerContext ? {
+      ...EMPTY_COMPANY_ACCESS.permissions,
+      viewHotels: true,
+      viewPeople: true,
+      viewAccess: true,
+      viewActivity: true,
+    } : { ...EMPTY_COMPANY_ACCESS.permissions, ...(value.permissions ?? {}) },
     legacyFallback: Boolean(value.legacyFallback),
+    viewerContext,
   };
 }
 
@@ -226,13 +257,19 @@ export default function CompanyAccessPage() {
     properties: contextProperties,
     activeProperty,
     staff,
+    staffLoaded,
+    staffLoadFailed,
+    staffViewerKey,
     loading: propertyLoading,
   } = useProperty();
   const { lang } = useLang();
 
   const [data, setData] = React.useState<CompanyAccessData | null>(null);
+  const [dataViewerKey, setDataViewerKey] = React.useState<string | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [loadErrorViewerKey, setLoadErrorViewerKey] = React.useState<string | null>(null);
+  const [adminTargetPropertyId, setAdminTargetPropertyId] = React.useState<string | null>(null);
   const [retryKey, setRetryKey] = React.useState(0);
   const [tab, setTab] = React.useState<TabId>('overview');
   const [query, setQuery] = React.useState('');
@@ -243,53 +280,131 @@ export default function CompanyAccessPage() {
   const [requestOpen, setRequestOpen] = React.useState(false);
   const [reviewRequest, setReviewRequest] = React.useState<CompanyAccessRequest | null>(null);
   const [lifecycleAction, setLifecycleAction] = React.useState<CompanyLifecycleAction | null>(null);
+  const previewHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
+  const focusPreviewAfterRetryRef = React.useRef(false);
 
   const propertyKey = contextProperties.map((property) => property.id).sort().join(',');
   const accountId = user?.accountId ?? null;
+  const userRole = user?.role ?? null;
+  const activePropertyId = activeProperty?.id ?? null;
+  const adminPreview = userRole === 'admin';
+  const staffBelongsToCurrentViewer = Boolean(user?.uid && activePropertyId
+    && staffViewerKey === `${user.uid}:${activePropertyId}`);
+  const currentStaff = staffBelongsToCurrentViewer
+    ? staff
+    : [];
+  const currentStaffSettled = staffBelongsToCurrentViewer
+    && (staffLoaded || staffLoadFailed);
+  const currentStaffUnavailable = staffBelongsToCurrentViewer && staffLoadFailed;
 
   React.useEffect(() => {
-    if (!authLoading && user?.role === 'admin') router.replace('/admin/properties#live');
-  }, [authLoading, router, user?.role]);
+    if (!user || authLoading || propertyLoading) return;
+    const requestedPropertyId = user.role === 'admin' ? activePropertyId : null;
+    const requestedViewerKey = `${user.accountId}:${user.role}:${requestedPropertyId ?? 'customer'}`;
+    if (user.role === 'admin' && !requestedPropertyId) {
+      setAdminTargetPropertyId(null);
+      setData(null);
+      setDataViewerKey(null);
+      setLoadError(localized(lang, 'Select a hotel before opening Hotel View.', 'Selecciona un hotel antes de abrir la vista del hotel.'));
+      setLoadErrorViewerKey(requestedViewerKey);
+      setLoading(false);
+      return;
+    }
 
-  React.useEffect(() => {
-    if (!user || user.role === 'admin' || authLoading || propertyLoading) return;
     let cancelled = false;
+    setData(null);
+    setDataViewerKey(null);
+    setSelectedReceipt(null);
+    setInviteOpen(false);
+    setRequestOpen(false);
+    setReviewRequest(null);
+    setLifecycleAction(null);
+    if (user.role === 'admin') {
+      setAdminTargetPropertyId(requestedPropertyId);
+      // Never leave another hotel's preview visible while the new target loads.
+      setQuery('');
+      setHotelStatusFilter('all');
+      setPeopleStatusFilter('all');
+    }
     setLoading(true);
     setLoadError(null);
+    setLoadErrorViewerKey(null);
 
     void (async () => {
       try {
-        const response = await fetchWithAuth('/api/company-access');
+        const endpoint = user.role === 'admin'
+          ? `/api/admin/company-access-preview?pid=${encodeURIComponent(requestedPropertyId!)}`
+          : '/api/company-access';
+        const response = await fetchWithAuth(endpoint);
         const body = await response.json().catch(() => ({})) as Envelope<CompanyAccessData>;
-        if (response.status === 403 && !body.ok && body.error?.includes('Admin Hotels workspace')) {
-          router.replace('/admin/properties#live');
-          return;
-        }
         if (!response.ok || !body.ok || !body.data) {
-          throw new Error(body.error || localized(lang, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
+          throw new Error(user.role === 'admin'
+            ? localized(
+                lang,
+                'Hotel View is unavailable for the selected hotel. Try again or return to Admin.',
+                'La vista del hotel no está disponible para el hotel seleccionado. Inténtalo de nuevo o vuelve a Admin.',
+              )
+            : body.error || localized(lang, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
         }
-        if (!cancelled) setData(normalizeCompanyData(body.data));
+        const normalized = normalizeCompanyData(body.data);
+        if (user.role === 'admin' && (
+          normalized.viewerContext?.kind !== 'staxis_admin_preview'
+          || normalized.viewerContext.readOnly !== true
+          || normalized.viewerContext.requestedPropertyId !== requestedPropertyId
+        )) {
+          throw new Error(localized(lang, 'The admin preview response did not match the selected hotel.', 'La vista previa de administrador no coincidió con el hotel seleccionado.'));
+        }
+        if (!cancelled) {
+          setData(normalized);
+          setDataViewerKey(requestedViewerKey);
+          setLoadError(null);
+          setLoadErrorViewerKey(null);
+        }
       } catch (error) {
         if (cancelled) return;
-        // Keep the customer operational if the normalized schema is still
-        // rolling out. The visible warning makes the partial state explicit.
-        setData(buildLegacyProjection(user, contextProperties));
-        setLoadError(error instanceof Error ? error.message : 'Company access could not be loaded.');
+        if (user.role === 'admin') {
+          // Admin preview must fail closed. The customer legacy fallback would
+          // incorrectly expand an admin to every property in PropertyContext.
+          setData(null);
+          setDataViewerKey(null);
+        } else {
+          // Keep customers operational if the normalized schema is still
+          // rolling out. The visible warning makes the partial state explicit.
+          setData(buildLegacyProjection(user, contextProperties));
+          setDataViewerKey(requestedViewerKey);
+        }
+        setLoadError(error instanceof Error
+          ? error.message
+          : localized(lang, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
+        setLoadErrorViewerKey(requestedViewerKey);
       } finally {
         if (!cancelled) setLoading(false);
       }
     })();
 
     return () => { cancelled = true; };
-  }, [accountId, authLoading, lang, propertyKey, propertyLoading, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [accountId, activePropertyId, authLoading, lang, propertyKey, propertyLoading, retryKey, userRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const resolved = data ?? EMPTY_COMPANY_ACCESS;
+  const adminTargetIsCurrent = !adminPreview || adminTargetPropertyId === activePropertyId;
+  const currentViewerKey = accountId && userRole
+    ? `${accountId}:${userRole}:${adminPreview ? activePropertyId ?? 'customer' : 'customer'}`
+    : null;
+  const dataBelongsToCurrentViewer = Boolean(currentViewerKey && dataViewerKey === currentViewerKey);
+  const adminDataMatchesSelection = !adminPreview || Boolean(
+    data?.viewerContext
+    && data.viewerContext.requestedPropertyId === activePropertyId,
+  );
+  const currentData = adminTargetIsCurrent && dataBelongsToCurrentViewer && adminDataMatchesSelection ? data : null;
+  const currentLoadError = adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null;
+  const resolved = currentData ?? EMPTY_COMPANY_ACCESS;
   const hasCompanyScope = resolved.effectiveAccess.some((receipt) => {
     const profile = receipt.accessProfile.toLowerCase();
     return receipt.scopeType !== 'property' || MANAGER_PROFILES.has(profile);
   });
   const isHotelManager = user?.role === 'admin' || user?.role === 'owner' || user?.role === 'general_manager';
-  const leaderView = hasCompanyScope || isHotelManager;
+  const leaderView = resolved.viewerContext?.scope === 'property'
+    ? false
+    : hasCompanyScope || isHotelManager;
 
   const tabs = React.useMemo<TabDefinition[]>(() => {
     const rows: TabDefinition[] = [
@@ -336,7 +451,47 @@ export default function CompanyAccessPage() {
     document.getElementById(`company-tab-${next.id}`)?.focus();
   };
 
-  const showLoading = authLoading || propertyLoading || (loading && !data);
+  const viewerTransitionLoading = Boolean(
+    user && currentViewerKey && !dataBelongsToCurrentViewer && !currentLoadError,
+  );
+  const propertyRosterLoading = currentData?.viewerContext?.scope === 'property'
+    && !currentStaffSettled;
+  const showLoading = authLoading
+    || propertyLoading
+    || (adminPreview && !adminTargetIsCurrent)
+    || (loading && !currentData)
+    || viewerTransitionLoading
+    || propertyRosterLoading;
+  const adminPreviewFailed = adminPreview && !showLoading && Boolean(currentLoadError) && !currentData;
+  const adminViewerContext = adminPreview ? resolved.viewerContext : undefined;
+  const workspaceTitle = adminPreview
+    ? (adminViewerContext?.scope === 'organization'
+        ? localized(lang, 'Company Hub', 'Centro de empresa')
+        : adminViewerContext?.scope === 'property'
+          ? localized(lang, 'My Hotel', 'Mi hotel')
+          : localized(lang, 'Hotel View', 'Vista del hotel'))
+    : localized(lang, 'Company & Access', 'Empresa y acceso');
+  const customerContextLabel = resolved.organizations.length === 1
+    ? resolved.organizations[0].name
+    : resolved.organizations.length > 1
+      ? localized(lang, `${resolved.organizations.length} company contexts`, `${resolved.organizations.length} contextos de empresa`)
+      : null;
+  const contextLabel = adminPreview
+    ? adminViewerContext?.targetName ?? activeProperty?.name ?? null
+    : customerContextLabel;
+  const hotelRosterCount = resolved.viewerContext?.scope === 'property'
+    ? currentStaff.filter((member) => member.isActive !== false).length
+    : null;
+
+  React.useEffect(() => {
+    if (!focusPreviewAfterRetryRef.current || showLoading) return;
+    focusPreviewAfterRetryRef.current = false;
+    if (adminViewerContext) {
+      previewHeadingRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    document.getElementById('admin-preview-error-title')?.focus({ preventScroll: true });
+  }, [adminViewerContext, adminPreviewFailed, showLoading]);
 
   return (
     <AppLayout>
@@ -346,29 +501,55 @@ export default function CompanyAccessPage() {
             <Building2 size={23} strokeWidth={1.8} />
           </div>
           <div className={styles.heroCopy}>
-            <div className={styles.eyebrow}>{localized(lang, 'Company workspace', 'Espacio de empresa')}</div>
-            <h1>{localized(lang, 'Company & Access', 'Empresa y acceso')}</h1>
+            <div className={styles.eyebrow}>
+              {adminPreview
+                ? localized(lang, 'Staxis admin preview', 'Vista previa de administrador de Staxis')
+                : localized(lang, 'Company workspace', 'Espacio de empresa')}
+            </div>
+            <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
             <p>
-              {localized(
-                lang,
-                'See your hotels, team, and exactly why you have access.',
-                'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
-              )}
+              {adminPreview
+                ? localized(
+                    lang,
+                    'Review the customer workspace for the selected hotel. Changes are disabled.',
+                    'Revisa el espacio del cliente para el hotel seleccionado. Los cambios están desactivados.',
+                  )
+                : localized(
+                    lang,
+                    'See your hotels, team, and exactly why you have access.',
+                    'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
+                  )}
             </p>
           </div>
-          {!showLoading && resolved.organizations.length > 0 ? (
+          {!showLoading && contextLabel ? (
             <div className={styles.contextBadge}>
               <MapPinned size={15} aria-hidden="true" />
-              <span>
-                {resolved.organizations.length === 1
-                  ? resolved.organizations[0].name
-                  : localized(lang, `${resolved.organizations.length} company contexts`, `${resolved.organizations.length} contextos de empresa`)}
-              </span>
+              <span>{contextLabel}</span>
             </div>
           ) : null}
         </header>
 
-        {loadError && data ? (
+        {adminViewerContext ? (
+          <div className={styles.adminPreviewNotice} role="status">
+            <ShieldCheck size={18} aria-hidden="true" />
+            <div>
+              <strong>{localized(lang, 'Admin preview · Read-only', 'Vista de administrador · Solo lectura')}</strong>
+              <span>
+                {localized(
+                  lang,
+                  `Reviewing the customer workspace for ${adminViewerContext.targetName}.`,
+                  `Revisando el espacio del cliente para ${adminViewerContext.targetName}.`,
+                )}
+              </span>
+            </div>
+            <button type="button" onClick={() => router.push('/admin/properties#live')}>
+              {localized(lang, 'Back to Admin', 'Volver a Admin')}
+              <ArrowRight size={14} aria-hidden="true" />
+            </button>
+          </div>
+        ) : null}
+
+        {currentLoadError && currentData ? (
           <div className={styles.partialNotice} role="status">
             <AlertTriangle size={17} aria-hidden="true" />
             <div>
@@ -382,94 +563,128 @@ export default function CompanyAccessPage() {
           </div>
         ) : null}
 
-        <nav className={styles.tabs} role="tablist" aria-label={localized(lang, 'Company sections', 'Secciones de empresa')}>
-          {tabs.map((item, index) => {
-            const Icon = item.icon;
-            const active = tab === item.id;
-            return (
+        {adminPreviewFailed ? (
+          <section className={styles.adminPreviewError} role="alert" aria-labelledby="admin-preview-error-title">
+            <span className={styles.adminPreviewErrorIcon} aria-hidden="true">
+              <AlertTriangle size={20} />
+            </span>
+            <div>
+              <h2 id="admin-preview-error-title" tabIndex={-1}>{localized(lang, 'Hotel View could not be opened', 'No se pudo abrir la vista del hotel')}</h2>
+              <p>{currentLoadError}</p>
+            </div>
+            <div className={styles.adminPreviewErrorActions}>
               <button
-                key={item.id}
-                id={`company-tab-${item.id}`}
                 type="button"
-                role="tab"
-                aria-selected={active}
-                aria-controls={`company-panel-${item.id}`}
-                tabIndex={active ? 0 : -1}
-                className={active ? styles.tabActive : undefined}
-                onClick={() => switchTab(item.id)}
-                onKeyDown={(event) => handleTabKeyDown(event, index)}
+                onClick={() => {
+                  focusPreviewAfterRetryRef.current = true;
+                  setRetryKey((value) => value + 1);
+                }}
+                disabled={loading}
               >
-                <Icon size={16} strokeWidth={1.9} aria-hidden="true" />
-                <span>{item.label}</span>
+                <RefreshCw size={14} aria-hidden="true" />
+                {localized(lang, 'Retry', 'Reintentar')}
               </button>
-            );
-          })}
-        </nav>
+              <button type="button" onClick={() => router.push('/admin/properties#live')}>
+                {localized(lang, 'Back to Admin', 'Volver a Admin')}
+                <ArrowRight size={14} aria-hidden="true" />
+              </button>
+            </div>
+          </section>
+        ) : (
+          <>
+            <nav className={styles.tabs} role="tablist" aria-label={localized(lang, 'Company sections', 'Secciones de empresa')}>
+              {tabs.map((item, index) => {
+                const Icon = item.icon;
+                const active = tab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    id={`company-tab-${item.id}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    aria-controls={`company-panel-${item.id}`}
+                    tabIndex={active ? 0 : -1}
+                    className={active ? styles.tabActive : undefined}
+                    onClick={() => switchTab(item.id)}
+                    onKeyDown={(event) => handleTabKeyDown(event, index)}
+                  >
+                    <Icon size={16} strokeWidth={1.9} aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </button>
+                );
+              })}
+            </nav>
 
-        <section
-          id={`company-panel-${tab}`}
-          role="tabpanel"
-          aria-labelledby={`company-tab-${tab}`}
-          className={styles.panel}
-        >
-          {showLoading ? (
-            <CompanyHubSkeleton />
-          ) : !user ? (
-            <EmptyState
-              icon={ShieldCheck}
-              title={localized(lang, 'Sign in to view access', 'Inicia sesión para ver el acceso')}
-              description={localized(lang, 'Your company access is tied to your Staxis account.', 'Tu acceso de empresa está vinculado a tu cuenta de Staxis.')}
-            />
-          ) : tab === 'overview' ? (
-            <OverviewPanel
-              data={resolved}
-              lang={lang}
-              activePropertyName={activeProperty?.name ?? null}
-              onViewReceipt={setSelectedReceipt}
-            />
-          ) : tab === 'hotels' ? (
-            <HotelsPanel
-              data={resolved}
-              lang={lang}
-              query={query}
-              onQueryChange={setQuery}
-              statusFilter={hotelStatusFilter}
-              onStatusFilterChange={setHotelStatusFilter}
-            />
-          ) : tab === 'people' ? (
-            <PeoplePanel
-              data={resolved}
-              staff={staff}
-              lang={lang}
-              currentAccountId={user.accountId}
-              query={query}
-              onQueryChange={setQuery}
-              statusFilter={peopleStatusFilter}
-              onStatusFilterChange={setPeopleStatusFilter}
-              onInvite={() => setInviteOpen(true)}
-              onLifecycleAction={setLifecycleAction}
-            />
-          ) : tab === 'access' ? (
-            <AccessPanel
-              data={resolved}
-              lang={lang}
-              onViewReceipt={setSelectedReceipt}
-              onRequestAccess={() => setRequestOpen(true)}
-              onReviewRequest={setReviewRequest}
-              onLifecycleAction={setLifecycleAction}
-              canOpenLegacyRoleSettings={Boolean(
-                activeProperty
-                && resolved.properties.some((property) => property.id === activeProperty.id)
-                && (user.role === 'admin' || user.role === 'owner')
+            <section
+              id={`company-panel-${tab}`}
+              role="tabpanel"
+              aria-labelledby={`company-tab-${tab}`}
+              className={styles.panel}
+            >
+              {showLoading ? (
+                <CompanyHubSkeleton lang={lang} />
+              ) : !user ? (
+                <EmptyState
+                  icon={ShieldCheck}
+                  title={localized(lang, 'Sign in to view access', 'Inicia sesión para ver el acceso')}
+                  description={localized(lang, 'Your company access is tied to your Staxis account.', 'Tu acceso de empresa está vinculado a tu cuenta de Staxis.')}
+                />
+              ) : tab === 'overview' ? (
+                <OverviewPanel
+                  data={resolved}
+                  lang={lang}
+                  activePropertyName={activeProperty?.name ?? null}
+                  hotelRosterCount={hotelRosterCount}
+                  hotelRosterUnavailable={currentStaffUnavailable}
+                  onViewReceipt={setSelectedReceipt}
+                />
+              ) : tab === 'hotels' ? (
+                <HotelsPanel
+                  data={resolved}
+                  lang={lang}
+                  query={query}
+                  onQueryChange={setQuery}
+                  statusFilter={hotelStatusFilter}
+                  onStatusFilterChange={setHotelStatusFilter}
+                />
+              ) : tab === 'people' ? (
+                <PeoplePanel
+                  data={resolved}
+                  staff={currentStaff}
+                  hotelRosterUnavailable={currentStaffUnavailable}
+                  lang={lang}
+                  currentAccountId={user.accountId}
+                  query={query}
+                  onQueryChange={setQuery}
+                  statusFilter={peopleStatusFilter}
+                  onStatusFilterChange={setPeopleStatusFilter}
+                  onInvite={() => setInviteOpen(true)}
+                  onLifecycleAction={setLifecycleAction}
+                />
+              ) : tab === 'access' ? (
+                <AccessPanel
+                  data={resolved}
+                  lang={lang}
+                  onViewReceipt={setSelectedReceipt}
+                  onRequestAccess={() => setRequestOpen(true)}
+                  onReviewRequest={setReviewRequest}
+                  onLifecycleAction={setLifecycleAction}
+                  canOpenLegacyRoleSettings={Boolean(
+                    activeProperty
+                    && resolved.properties.some((property) => property.id === activeProperty.id)
+                    && user.role === 'owner'
+                  )}
+                />
+              ) : (
+                <ActivityPanel events={resolved.activity} properties={resolved.properties} lang={lang} />
               )}
-            />
-          ) : (
-            <ActivityPanel events={resolved.activity} properties={resolved.properties} lang={lang} />
-          )}
-        </section>
+            </section>
+          </>
+        )}
       </div>
 
-      {selectedReceipt ? (
+      {currentData && selectedReceipt ? (
         <AccessPreviewDialog
           receipt={selectedReceipt}
           organizations={resolved.organizations}
@@ -478,7 +693,7 @@ export default function CompanyAccessPage() {
           onClose={() => setSelectedReceipt(null)}
         />
       ) : null}
-      {inviteOpen ? (
+      {currentData && inviteOpen && !resolved.viewerContext ? (
         <InvitePersonDialog
           data={resolved}
           lang={lang}
@@ -486,7 +701,7 @@ export default function CompanyAccessPage() {
           onCompleted={() => setRetryKey((value) => value + 1)}
         />
       ) : null}
-      {requestOpen ? (
+      {currentData && requestOpen && !resolved.viewerContext ? (
         <RequestAccessDialog
           data={resolved}
           lang={lang}
@@ -494,7 +709,7 @@ export default function CompanyAccessPage() {
           onCompleted={() => setRetryKey((value) => value + 1)}
         />
       ) : null}
-      {reviewRequest ? (
+      {currentData && reviewRequest && !resolved.viewerContext ? (
         <ReviewAccessRequestDialog
           request={reviewRequest}
           lang={lang}
@@ -502,7 +717,7 @@ export default function CompanyAccessPage() {
           onCompleted={() => setRetryKey((value) => value + 1)}
         />
       ) : null}
-      {lifecycleAction ? (
+      {currentData && lifecycleAction && !resolved.viewerContext ? (
         <CompanyLifecycleDialog
           action={lifecycleAction}
           lang={lang}
@@ -514,14 +729,18 @@ export default function CompanyAccessPage() {
   );
 }
 
-function OverviewPanel({ data, lang, activePropertyName, onViewReceipt }: {
+function OverviewPanel({ data, lang, activePropertyName, hotelRosterCount, hotelRosterUnavailable, onViewReceipt }: {
   data: CompanyAccessData;
   lang: string;
   activePropertyName: string | null;
+  hotelRosterCount: number | null;
+  hotelRosterUnavailable: boolean;
   onViewReceipt: (receipt: EffectiveAccessReceipt) => void;
 }) {
   const primaryReceipt = data.effectiveAccess[0] ?? null;
-  const peopleCount = data.memberships.filter((membership) => membership.status === 'active').length;
+  const membershipPeopleCount = data.memberships.filter((membership) => membership.status === 'active').length;
+  const propertyPreview = data.viewerContext?.scope === 'property';
+  const peopleCount = propertyPreview ? hotelRosterCount ?? 0 : membershipPeopleCount;
   const pendingCount = data.invitations.filter((invitation) => invitation.status === 'pending').length
     + data.requests.filter((request) => request.status === 'pending').length;
 
@@ -536,11 +755,17 @@ function OverviewPanel({ data, lang, activePropertyName, onViewReceipt }: {
         />
         <SummaryCard
           icon={Users}
-          label={localized(lang, 'Visible people', 'Personas visibles')}
-          value={String(peopleCount)}
-          detail={data.permissions.viewPeople
-            ? localized(lang, 'Based on your scope', 'Según tu alcance')
-            : localized(lang, 'Only your access is shown', 'Solo se muestra tu acceso')}
+          label={propertyPreview
+            ? localized(lang, 'Active hotel staff', 'Personal activo del hotel')
+            : localized(lang, 'Active people', 'Personas activas')}
+          value={propertyPreview && hotelRosterUnavailable ? '—' : String(peopleCount)}
+          detail={propertyPreview
+            ? hotelRosterUnavailable
+              ? localized(lang, 'Roster temporarily unavailable', 'Registro no disponible temporalmente')
+              : localized(lang, 'From the hotel roster', 'Del registro del hotel')
+            : data.permissions.viewPeople
+              ? localized(lang, 'Based on your scope', 'Según tu alcance')
+              : localized(lang, 'Only your access is shown', 'Solo se muestra tu acceso')}
         />
         <SummaryCard
           icon={Clock3}
@@ -550,27 +775,29 @@ function OverviewPanel({ data, lang, activePropertyName, onViewReceipt }: {
         />
       </div>
 
-      <section className={styles.sectionBlock}>
-        <SectionHeading
-          eyebrow={localized(lang, 'Your access receipt', 'Tu recibo de acceso')}
-          title={localized(lang, 'Why you can see this workspace', 'Por qué puedes ver este espacio')}
-          description={localized(
-            lang,
-            'Your title describes your work. Your access profile and scope control what you can actually open.',
-            'Tu cargo describe tu trabajo. Tu perfil y alcance de acceso controlan lo que puedes abrir.',
-          )}
-        />
-        {primaryReceipt ? (
-          <AccessReceiptCard receipt={primaryReceipt} properties={data.properties} lang={lang} onView={() => onViewReceipt(primaryReceipt)} featured />
-        ) : (
-          <EmptyState
-            icon={KeyRound}
-            compact
-            title={localized(lang, 'No active access grant', 'No hay una concesión de acceso activa')}
-            description={localized(lang, 'Ask your manager or Staxis support to review your account.', 'Pide a tu gerente o al soporte de Staxis que revise tu cuenta.')}
+      {!data.viewerContext ? (
+        <section className={styles.sectionBlock}>
+          <SectionHeading
+            eyebrow={localized(lang, 'Your access receipt', 'Tu recibo de acceso')}
+            title={localized(lang, 'Why you can see this workspace', 'Por qué puedes ver este espacio')}
+            description={localized(
+              lang,
+              'Your title describes your work. Your access profile and scope control what you can actually open.',
+              'Tu cargo describe tu trabajo. Tu perfil y alcance de acceso controlan lo que puedes abrir.',
+            )}
           />
-        )}
-      </section>
+          {primaryReceipt ? (
+            <AccessReceiptCard receipt={primaryReceipt} properties={data.properties} lang={lang} onView={() => onViewReceipt(primaryReceipt)} featured />
+          ) : (
+            <EmptyState
+              icon={KeyRound}
+              compact
+              title={localized(lang, 'No active access grant', 'No hay una concesión de acceso activa')}
+              description={localized(lang, 'Ask your manager or Staxis support to review your account.', 'Pide a tu gerente o al soporte de Staxis que revise tu cuenta.')}
+            />
+          )}
+        </section>
+      ) : null}
 
       <section className={styles.sectionBlock}>
         <SectionHeading
@@ -637,9 +864,10 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
   );
 }
 
-function PeoplePanel({ data, staff, lang, currentAccountId, query, onQueryChange, statusFilter, onStatusFilterChange, onInvite, onLifecycleAction }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentAccountId, query, onQueryChange, statusFilter, onStatusFilterChange, onInvite, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
+  hotelRosterUnavailable: boolean;
   lang: string;
   currentAccountId: string;
   query: string;
@@ -663,7 +891,8 @@ function PeoplePanel({ data, staff, lang, currentAccountId, query, onQueryChange
       || (statusFilter === 'not_active' && membership.status !== 'active' && membership.status !== 'pending');
     return textMatch && statusMatch;
   });
-  const rosterFallback = visibleMemberships.length <= 1 && !data.permissions.viewPeople && statusFilter !== 'invited'
+  const useAdminHotelRoster = data.viewerContext?.scope === 'property';
+  const rosterFallback = (useAdminHotelRoster || (visibleMemberships.length <= 1 && !data.permissions.viewPeople)) && statusFilter !== 'invited'
     ? staff.filter((member) => {
       const textMatch = !normalizedQuery || `${member.name} ${member.department ?? ''}`.toLowerCase().includes(normalizedQuery);
       const statusMatch = statusFilter === 'all'
@@ -672,7 +901,9 @@ function PeoplePanel({ data, staff, lang, currentAccountId, query, onQueryChange
       return textMatch && statusMatch;
     })
     : [];
-  const visibleInvitations = data.permissions.manageInvitations
+  const canViewInvitations = data.permissions.manageInvitations
+    || data.viewerContext?.kind === 'staxis_admin_preview';
+  const visibleInvitations = canViewInvitations
     ? data.invitations.filter((invitation) => {
       const organization = data.organizations.find((item) => item.id === invitation.organizationId);
       const text = `${invitation.email} ${invitation.accessProfile} ${invitation.scopeLabel} ${organization?.name ?? ''}`.toLowerCase();
@@ -719,7 +950,77 @@ function PeoplePanel({ data, staff, lang, currentAccountId, query, onQueryChange
         searchLabel={localized(lang, 'Search people, roles, or companies', 'Buscar personas, cargos o empresas')}
       />
 
-      {visibleMemberships.length > 0 ? (
+      {useAdminHotelRoster ? (
+        <>
+          {visibleMemberships.length > 0 ? (
+            <section className={styles.sectionBlock}>
+              <SectionHeading
+                eyebrow={localized(lang, 'Access directory', 'Directorio de acceso')}
+                title={localized(lang, 'Customer access members', 'Miembros con acceso del cliente')}
+                description={localized(lang, 'These records come from customer access—not the hotel staff roster.', 'Estos registros provienen del acceso del cliente, no del registro de personal del hotel.')}
+              />
+              <div className={styles.listCard} role="list">
+                {visibleMemberships.map((membership) => (
+                  <MembershipRow
+                    key={membership.id}
+                    membership={membership}
+                    organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
+                    isCurrentUser={false}
+                    lang={lang}
+                    onLifecycleAction={onLifecycleAction}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {statusFilter !== 'invited' ? (
+            <section className={styles.sectionBlock}>
+              <SectionHeading
+                eyebrow={localized(lang, 'Hotel roster', 'Registro del hotel')}
+                title={localized(lang, 'Operational staff', 'Personal operativo')}
+                description={localized(lang, 'The current staff roster for this hotel is shown separately from access accounts.', 'El registro actual del hotel se muestra por separado de las cuentas de acceso.')}
+              />
+              {hotelRosterUnavailable ? (
+                <EmptyState
+                  icon={AlertTriangle}
+                  compact
+                  title={localized(lang, 'Hotel roster unavailable', 'Registro del hotel no disponible')}
+                  description={localized(lang, 'Access records are still available. The roster will reconnect automatically.', 'Los registros de acceso siguen disponibles. El registro se volverá a conectar automáticamente.')}
+                />
+              ) : rosterFallback.length > 0 ? (
+                <div className={styles.listCard} role="list">
+                  {rosterFallback.map((member) => (
+                    <div key={member.id} className={styles.personRow} role="listitem">
+                      <Avatar name={member.name} />
+                      <div className={styles.rowBody}>
+                        <strong>{member.name}</strong>
+                        <span>{titleCaseAccessValue(member.department ?? 'team member')}</span>
+                      </div>
+                      <span className={`${styles.status} ${member.isActive === false ? styles.statusMuted : styles.statusActive}`}>
+                        {member.isActive === false ? localized(lang, 'Inactive', 'Inactivo') : localized(lang, 'Team', 'Equipo')}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <EmptyState
+                  icon={Users}
+                  compact
+                  title={localized(lang, 'No hotel staff match', 'Ningún empleado del hotel coincide')}
+                  description={localized(lang, 'Try another search or clear the status filter.', 'Prueba otra búsqueda o borra el filtro de estado.')}
+                />
+              )}
+            </section>
+          ) : visibleMemberships.length === 0 && visibleInvitations.length === 0 ? (
+            <EmptyState
+              icon={Users}
+              title={localized(lang, 'No pending invitations', 'No hay invitaciones pendientes')}
+              description={localized(lang, 'Try another search or clear the invited filter.', 'Prueba otra búsqueda o borra el filtro de invitados.')}
+            />
+          ) : null}
+        </>
+      ) : visibleMemberships.length > 0 ? (
         <div className={styles.listCard} role="list">
           {visibleMemberships.map((membership) => (
             <MembershipRow
@@ -784,19 +1085,29 @@ function AccessPanel({ data, lang, onViewReceipt, onRequestAccess, onReviewReque
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
   canOpenLegacyRoleSettings: boolean;
 }) {
+  const adminPreview = data.viewerContext?.kind === 'staxis_admin_preview';
+  const customerAccessGrants = adminPreview
+    ? data.memberships.flatMap((membership) => membership.grants.map((grant) => ({ membership, grant })))
+    : [];
   return (
     <div className={styles.stack}>
       <div className={styles.headingWithAction}>
         <SectionHeading
-          eyebrow={localized(lang, 'Effective access', 'Acceso efectivo')}
-          title={localized(lang, 'What you can reach—and why', 'A qué puedes acceder y por qué')}
-          description={localized(
-            lang,
-            'Job titles are descriptive. Access profiles and scope are what authorize your account.',
-            'Los cargos son descriptivos. Los perfiles y el alcance de acceso son los que autorizan tu cuenta.',
-          )}
+          eyebrow={adminPreview
+            ? localized(lang, 'Access records', 'Registros de acceso')
+            : localized(lang, 'Effective access', 'Acceso efectivo')}
+          title={adminPreview
+            ? localized(lang, 'Customer access records', 'Registros de acceso del cliente')
+            : localized(lang, 'What you can reach—and why', 'A qué puedes acceder y por qué')}
+          description={adminPreview
+            ? localized(lang, 'Review this scope without changing customer access.', 'Revisa este alcance sin cambiar el acceso del cliente.')
+            : localized(
+                lang,
+                'Job titles are descriptive. Access profiles and scope are what authorize your account.',
+                'Los cargos son descriptivos. Los perfiles y el alcance de acceso son los que autorizan tu cuenta.',
+              )}
         />
-        <div className={styles.headingActions}>
+        {!adminPreview ? <div className={styles.headingActions}>
           {data.permissions.requestAccess ? (
             <button type="button" className={styles.primaryButton} onClick={onRequestAccess}>
               <KeyRound size={16} aria-hidden="true" />
@@ -814,10 +1125,30 @@ function AccessPanel({ data, lang, onViewReceipt, onRequestAccess, onReviewReque
               {localized(lang, 'Access is managed', 'El acceso es administrado')}
             </button>
           ) : null}
-        </div>
+        </div> : null}
       </div>
 
-      {data.effectiveAccess.length > 0 ? (
+      {adminPreview && customerAccessGrants.length > 0 ? (
+        <div className={styles.listCard} role="list">
+          {customerAccessGrants.map(({ membership, grant }) => (
+            <div key={`${membership.id}:${grant.id}`} className={styles.accessWorkRow} role="listitem">
+              <span className={styles.workIcon}><KeyRound size={17} aria-hidden="true" /></span>
+              <div className={styles.rowBody}>
+                <strong>{membership.displayName}</strong>
+                <span>
+                  {titleCaseAccessValue(grant.accessProfile)} · {grant.scopeLabel}
+                  {grant.expiresAt
+                    ? ` · ${localized(lang, 'Expires', 'Vence')} ${formatDate(grant.expiresAt, lang)}`
+                    : ''}
+                </span>
+              </div>
+              <span className={`${styles.status} ${statusClass(membership.status)}`}>
+                {statusLabel(membership.status, lang)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : !adminPreview && data.effectiveAccess.length > 0 ? (
         <div className={styles.receiptGrid}>
           {data.effectiveAccess.map((receipt) => (
             <AccessReceiptCard
@@ -830,11 +1161,15 @@ function AccessPanel({ data, lang, onViewReceipt, onRequestAccess, onReviewReque
           ))}
         </div>
       ) : (
-        <EmptyState
-          icon={KeyRound}
-          title={localized(lang, 'No access grants found', 'No se encontraron concesiones de acceso')}
-          description={localized(lang, 'Your administrator can review the account and hotel assignment.', 'Tu administrador puede revisar la cuenta y la asignación del hotel.')}
-        />
+          <EmptyState
+            icon={KeyRound}
+            title={adminPreview
+              ? localized(lang, 'No customer access records found', 'No se encontraron registros de acceso del cliente')
+              : localized(lang, 'No access grants found', 'No se encontraron concesiones de acceso')}
+            description={adminPreview
+              ? localized(lang, 'There are no customer grant records in this preview scope.', 'No hay registros de concesiones del cliente dentro de este alcance de vista previa.')
+              : localized(lang, 'Your administrator can review the account and hotel assignment.', 'Tu administrador puede revisar la cuenta y la asignación del hotel.')}
+          />
       )}
 
       {data.permissions.viewAccess && (data.requests.length > 0 || data.invitations.length > 0) ? (
@@ -1393,9 +1728,13 @@ function EmptyState({ icon: Icon, title, description, actionLabel, onAction, com
   );
 }
 
-function CompanyHubSkeleton() {
+function CompanyHubSkeleton({ lang }: { lang: string }) {
   return (
-    <div className={styles.skeletonStack} role="status" aria-label="Loading company access">
+    <div
+      className={styles.skeletonStack}
+      role="status"
+      aria-label={localized(lang, 'Loading company access', 'Cargando el acceso de la empresa')}
+    >
       <div className={styles.skeletonGrid} aria-hidden="true">
         {[0, 1, 2].map((key) => <div key={key} className={styles.skeletonCard}><span /><strong /><small /></div>)}
       </div>

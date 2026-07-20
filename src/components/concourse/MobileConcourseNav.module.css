@@ -146,7 +146,7 @@
 
 .eyebrow {
   padding: 8px 8px 4px;
-  color: #a6aba6;
+  color: #687067;
   font-family: var(--font-geist-mono), ui-monospace, monospace;
   font-size: 9px;
   font-weight: 500;
@@ -190,6 +190,29 @@
 .navRowActive:hover,
 .navRowActive:active {
   background: rgba(158, 183, 166, 0.14);
+}
+
+.viewSwitchRow {
+  border: 1px solid rgba(92, 122, 96, 0.18);
+  color: #356b4c;
+  background: rgba(158, 183, 166, 0.1);
+}
+
+.viewSwitchRow:hover {
+  background: rgba(158, 183, 166, 0.16);
+}
+
+.viewSwitchRow:active {
+  background: rgba(158, 183, 166, 0.22);
+}
+
+.viewSwitchRow .iconChip {
+  color: #3e5c48;
+  background: rgba(92, 122, 96, 0.14);
+}
+
+.viewSwitchRow .rowLabel {
+  font-weight: 600;
 }
 
 .iconChip {

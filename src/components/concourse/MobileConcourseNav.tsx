@@ -3,7 +3,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight, Download, LogOut, Menu, X } from 'lucide-react';
-import type { BarItem } from './ConcourseBarView';
+import type { BarItem, ViewSwitchAction } from './ConcourseBarView';
 import { CxIcon, CxLogo, CX_ICON_PATHS } from './icons';
 import styles from './MobileConcourseNav.module.css';
 
@@ -28,6 +28,8 @@ interface MobileConcourseNavProps {
   languageLabel: string;
   accountMenuLabel: string;
   companyLabel: string;
+  viewSectionLabel: string;
+  viewSwitch?: ViewSwitchAction;
   settingsLabel: string;
   signOutLabel: string;
   installLabel: string;
@@ -76,6 +78,8 @@ export function MobileConcourseNav({
   languageLabel,
   accountMenuLabel,
   companyLabel,
+  viewSectionLabel,
+  viewSwitch,
   settingsLabel,
   signOutLabel,
   installLabel,
@@ -194,6 +198,11 @@ export function MobileConcourseNav({
     onCompany();
   };
 
+  const selectView = () => {
+    closeDrawer();
+    viewSwitch?.onClick();
+  };
+
   const signOut = () => {
     closeDrawer();
     onSignOut();
@@ -259,6 +268,27 @@ export function MobileConcourseNav({
         </div>
 
         <div className={styles.drawerScroll}>
+          {viewSwitch ? (
+            <>
+              <div className={styles.eyebrow}>{viewSectionLabel}</div>
+              <nav className={styles.sectionList} aria-label={viewSectionLabel}>
+                <button
+                  type="button"
+                  className={`${styles.navRow} ${styles.viewSwitchRow}`}
+                  onClick={selectView}
+                  aria-label={viewSwitch.ariaLabel}
+                >
+                  <span className={styles.iconChip} aria-hidden="true">
+                    <CxIcon name={viewSwitch.icon} size={17} />
+                  </span>
+                  <span className={styles.rowLabel}>{viewSwitch.label}</span>
+                  <ChevronRight className={styles.chevron} size={14} strokeWidth={2} aria-hidden="true" />
+                </button>
+              </nav>
+              <div className={styles.divider} aria-hidden="true" />
+            </>
+          ) : null}
+
           <div className={styles.eyebrow}>{sectionsLabel}</div>
           <nav className={styles.sectionList} aria-label={sectionsLabel}>
             {items.map((item) => (
@@ -384,7 +414,7 @@ export function MobileConcourseNav({
         </button>
 
         {mobileTitle ? (
-          <h1 className={styles.pageTitle}>{mobileTitle}</h1>
+          <div className={styles.pageTitle}>{mobileTitle}</div>
         ) : (
           <button type="button" className={styles.topBrand} onClick={onHome} aria-label={homeLabel}>
             <CxLogo size={20} color="currentColor" />

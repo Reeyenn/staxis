@@ -166,6 +166,113 @@
   cursor: not-allowed;
 }
 
+.adminPreviewNotice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 11px 14px;
+  border: 1px solid rgba(92, 122, 96, 0.24);
+  border-radius: 12px;
+  color: var(--company-sage);
+  background: var(--company-sage-dim);
+}
+
+.adminPreviewNotice > div {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.adminPreviewNotice strong {
+  color: var(--company-ink);
+  font-size: 12.5px;
+  line-height: 18px;
+}
+
+.adminPreviewNotice span {
+  color: var(--company-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.adminPreviewNotice button,
+.adminPreviewErrorActions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  gap: 7px;
+  padding: 0 12px;
+  border: 1px solid rgba(92, 122, 96, 0.2);
+  border-radius: 9px;
+  color: var(--company-sage);
+  background: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  font: 600 11.5px/16px inherit;
+  transition: background-color 180ms cubic-bezier(0.2, 0, 0, 1), transform 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.adminPreviewNotice button:hover,
+.adminPreviewErrorActions button:hover {
+  background: var(--company-paper);
+}
+
+.adminPreviewNotice button:active,
+.adminPreviewErrorActions button:active {
+  transform: scale(0.98);
+}
+
+.adminPreviewError {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  min-height: 116px;
+  margin-top: 18px;
+  padding: 20px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 16px;
+  background: var(--company-paper);
+  box-shadow: 0 12px 28px -24px rgba(31, 42, 32, 0.44);
+}
+
+.adminPreviewErrorIcon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--company-rust);
+  background: var(--company-rust-dim);
+}
+
+.adminPreviewError h2 {
+  margin: 0;
+  color: var(--company-ink);
+  font-size: 16px;
+  line-height: 22px;
+}
+
+.adminPreviewError p {
+  margin: 4px 0 0;
+  color: var(--company-ink-2);
+  font-size: 12.5px;
+  line-height: 19px;
+}
+
+.adminPreviewErrorActions {
+  display: flex;
+  gap: 8px;
+}
+
+.adminPreviewErrorActions button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
 .tabs {
   display: flex;
   align-items: stretch;
@@ -230,6 +337,8 @@
 .organizationGroup summary:focus-visible,
 .iconButton:focus-visible,
 .partialNotice button:focus-visible,
+.adminPreviewNotice button:focus-visible,
+.adminPreviewErrorActions button:focus-visible,
 .dialogScrim:focus-visible {
   outline: 2px solid var(--company-sage);
   outline-offset: 2px;
@@ -1861,9 +1970,31 @@
     flex-wrap: wrap;
   }
 
-  .partialNotice button {
+  .partialNotice button,
+  .adminPreviewNotice button {
     min-height: 44px;
     margin-left: 28px;
+  }
+
+  .adminPreviewNotice {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .adminPreviewError {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+    padding: 16px;
+  }
+
+  .adminPreviewErrorActions {
+    grid-column: 1 / -1;
+    flex-direction: column;
+  }
+
+  .adminPreviewErrorActions button {
+    width: 100%;
+    min-height: 44px;
   }
 
   .tabs {
@@ -2047,6 +2178,8 @@
   .tabs button,
   .primaryButton,
   .secondaryButton,
+  .adminPreviewNotice button,
+  .adminPreviewErrorActions button,
   .organizationGroup summary,
   .disclosureIcon {
     transition: none;
@@ -2054,7 +2187,9 @@
 
   .tabs button:active,
   .primaryButton:active,
-  .secondaryButton:active {
+  .secondaryButton:active,
+  .adminPreviewNotice button:active,
+  .adminPreviewErrorActions button:active {
     transform: none;
   }
 }

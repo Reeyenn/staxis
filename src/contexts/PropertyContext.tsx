@@ -27,6 +27,9 @@ interface PropertyContextType {
   activePropertyId: string | null;
   staff: StaffMember[];
   staffLoaded: boolean;
+  staffLoadFailed: boolean;
+  /** Identity + hotel key for the currently exposed staff snapshot. */
+  staffViewerKey: string | null;
   publicAreas: PublicArea[];
   laundryConfig: LaundryCategory[];
   /** The active hotel's capability restrictions (admin's Access-tab toggles).
@@ -47,6 +50,8 @@ const PropertyContext = createContext<PropertyContextType>({
   activePropertyId: null,
   staff: [],
   staffLoaded: false,
+  staffLoadFailed: false,
+  staffViewerKey: null,
   publicAreas: [],
   laundryConfig: [],
   capabilityOverrides: {},
@@ -103,6 +108,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   });
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [staffLoaded, setStaffLoaded] = useState(false);
+  const [staffLoadFailed, setStaffLoadFailed] = useState(false);
+  const [staffViewerKey, setStaffViewerKey] = useState<string | null>(null);
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
   const [laundryConfig, setLaundryConfig] = useState<LaundryCategory[]>([]);
   const [capabilityOverrides, setCapabilityOverrides] = useState<CapabilityOverrideMap>({});
@@ -180,6 +187,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const userUid           = user?.uid;
   const userRole          = user?.role;
   const userPropertyAccessKey = (user?.propertyAccess ?? []).join(',');
+  const expectedStaffViewerKey = userUid && activePropertyId
+    ? `${userUid}:${activePropertyId}`
+    : null;
+  const expectedStaffViewerKeyRef = useRef(expectedStaffViewerKey);
+  expectedStaffViewerKeyRef.current = expectedStaffViewerKey;
   useEffect(() => {
     if (!user) {
       setLoading(false);
@@ -258,13 +270,31 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     if (!user || !activePropertyId) {
       setStaff([]);
       setStaffLoaded(false);
+      setStaffLoadFailed(false);
+      setStaffViewerKey(null);
       return;
     }
     let cancelled = false;
+    const subscriptionViewerKey = `${user.uid}:${activePropertyId}`;
+    // Never carry one hotel's roster through the transition to another hotel
+    // or account while the new real-time snapshot is connecting.
+    setStaff([]);
+    setStaffLoaded(false);
+    setStaffLoadFailed(false);
+    setStaffViewerKey(null);
     const unsubStaff = subscribeToStaff(user.uid, activePropertyId, staffList => {
       if (!cancelled) {
         setStaff(staffList);
         setStaffLoaded(true);
+        setStaffLoadFailed(false);
+        setStaffViewerKey(subscriptionViewerKey);
+      }
+    }, undefined, () => {
+      if (!cancelled) {
+        setStaff([]);
+        setStaffLoaded(false);
+        setStaffLoadFailed(true);
+        setStaffViewerKey(subscriptionViewerKey);
       }
     });
     return () => {
@@ -372,8 +402,13 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
   const refreshStaff = async () => {
     if (!user || !activePropertyId) return;
+    const refreshViewerKey = `${user.uid}:${activePropertyId}`;
     const list = await getStaff(user.uid, activePropertyId);
+    if (expectedStaffViewerKeyRef.current !== refreshViewerKey) return;
     setStaff(list);
+    setStaffLoaded(true);
+    setStaffLoadFailed(false);
+    setStaffViewerKey(refreshViewerKey);
   };
 
   const refreshPublicAreas = async () => {
@@ -396,6 +431,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         activePropertyId,
         staff,
         staffLoaded,
+        staffLoadFailed,
+        staffViewerKey,
         publicAreas,
         laundryConfig,
         capabilityOverrides,

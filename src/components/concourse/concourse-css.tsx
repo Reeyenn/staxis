@@ -69,6 +69,7 @@ const CX_CSS = `
 .cx-pill.cx-active{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
 .cx-pill.cx-active .cx-labw,.cx-pill.cx-context-home .cx-labw{grid-template-columns:1fr;opacity:1;}
 .cx-pill.cx-utility-pill .cx-labw{grid-template-columns:1fr;opacity:1;}
+.cx-pill.cx-view-switch{color:#3E5C48;background:rgba(158,183,166,.16);}
 /* Hover takeover — instant open. Pills sit edge-to-edge (bar gap 3px) so
    moving along the bar hands hover from pill to pill with no dead zone. */
 .cx-pill:hover{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);
@@ -98,6 +99,7 @@ const CX_CSS = `
   display:grid;place-items:center;color:#5C625C;flex-shrink:0;padding:0;}
 .cx-gear:hover{background:rgba(31,35,28,.06);}
 .cx-gear.cx-on{background:rgba(158,183,166,.25);color:#3E5C48;}
+.cx-pill:focus-visible,.cx-gear:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
 .cx-avatarbtn{position:relative;isolation:isolate;width:44px;height:44px;border-radius:50%;background:transparent;
   color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600;border:none;cursor:pointer;
   flex-shrink:0;padding:0;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
@@ -256,6 +258,14 @@ const CX_CSS = `
   font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;font-size:13px;}
 .cx-capsule input::placeholder{color:#A6ABA6;}
 
+@media (min-width:761px) and (max-width:1100px){
+  .cx-barwrap{padding-bottom:8px;
+    -webkit-mask-image:linear-gradient(to right,transparent 0,#000 20px,#000 calc(100% - 20px),transparent 100%);
+    mask-image:linear-gradient(to right,transparent 0,#000 20px,#000 calc(100% - 20px),transparent 100%);}
+  .cx-pill{height:44px;}
+  .cx-gear{width:44px;height:44px;}
+}
+
 @media (max-width:760px){
   .staxis-app-shell{min-height:100dvh!important;--staxis-app-background:radial-gradient(ellipse 1100px 560px at 50% -4%,#FFFFFF 0%,#F0F3EF 100%);}
   .cx-desktop-bar{display:none;}
@@ -280,6 +290,7 @@ const CX_CSS = `
 /* Reduced motion: drop the looping decorative animations, keep one-shot entrances. */
 @media (prefers-reduced-motion: reduce){
   .cx-swap{animation:none;}
+  .cx-pill,.cx-pill .cx-labw,.cx-gear{transition:none;}
   .cx-tile{transition:none;}
   .cx-management-link,.cx-management-icon,.cx-management-arrow{transition:none;}
   .cx-management-link:hover,.cx-management-link:active,.cx-management-link:hover .cx-management-arrow{transform:none;}

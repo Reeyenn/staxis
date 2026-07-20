@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
-import { ConcourseBarView } from '@/components/concourse/ConcourseBarView';
+import {
+  ConcourseBarView,
+  type ViewSwitchAction,
+} from '@/components/concourse/ConcourseBarView';
 import { CxIcon, CxLogo } from '@/components/concourse/icons';
 
 type ElementProps = Record<string, unknown> & { children?: React.ReactNode };
@@ -12,9 +15,15 @@ function visit(node: React.ReactNode, callback: (element: React.ReactElement<Ele
   React.Children.forEach(node.props.children, child => visit(child, callback));
 }
 
-function renderBar(showHome: boolean, onLogo = () => {}, homeLabel = 'Home') {
+function renderBar(
+  showHome: boolean,
+  onLogo = () => {},
+  homeLabel = 'Home',
+  viewSwitch?: ViewSwitchAction,
+) {
   return ConcourseBarView({
     items: [],
+    viewSwitch,
     gearActive: false,
     onGear: () => {},
     onLogo,
@@ -94,4 +103,41 @@ test('contextual Home action keeps the localized label', () => {
   assert.equal(buttons.length, 1);
   assert.equal(containsComponent(buttons[0], CxIcon, { name: 'back' }), true);
   assert.equal(containsText(buttons[0], 'Inicio'), true);
+});
+
+test('admin route switch is an always-labelled utility action', () => {
+  let clicks = 0;
+  const viewSwitch: ViewSwitchAction = {
+    label: 'Admin View',
+    ariaLabel: 'Switch to Admin View',
+    icon: 'admin',
+    onClick: () => { clicks += 1; },
+  };
+  const tree = renderBar(false, () => {}, 'Home', viewSwitch);
+  const buttons = labelledButtons(tree, 'Switch to Admin View');
+
+  assert.equal(buttons.length, 1);
+  assert.equal(buttons[0].props.className, 'cx-pill cx-utility-pill cx-view-switch');
+  assert.equal(containsComponent(buttons[0], CxIcon, { name: 'admin' }), true);
+  assert.equal(containsText(buttons[0], 'Admin View'), true);
+  assert.equal(buttons[0].props['aria-current'], undefined);
+
+  const onClick = buttons[0].props.onClick;
+  assert.equal(onClick, viewSwitch.onClick);
+  (onClick as () => void)();
+  assert.equal(clicks, 1);
+});
+
+test('hotel route switch keeps its localized destination visible', () => {
+  const tree = renderBar(false, () => {}, 'Inicio', {
+    label: 'Vista del hotel',
+    ariaLabel: 'Cambiar a la vista del hotel',
+    icon: 'hotel',
+    onClick: () => {},
+  });
+  const buttons = labelledButtons(tree, 'Cambiar a la vista del hotel');
+
+  assert.equal(buttons.length, 1);
+  assert.equal(containsComponent(buttons[0], CxIcon, { name: 'hotel' }), true);
+  assert.equal(containsText(buttons[0], 'Vista del hotel'), true);
 });
