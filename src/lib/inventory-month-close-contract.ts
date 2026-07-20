@@ -60,6 +60,20 @@ export interface MonthCloseDashboardView {
   items: MonthCloseItemView[];
 }
 
+export interface MonthCloseMutationReceipt {
+  mutationCommitted: true;
+  dashboard: null;
+  propertyId: string;
+  month: string;
+  action: 'start' | 'close';
+  mutationRequestId: string;
+}
+
+export interface MonthCloseMutationScope {
+  propertyId: string;
+  sequence: number;
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -253,4 +267,64 @@ export function normalizeMonthCloseDashboard(payload: unknown): MonthCloseDashbo
     },
     items,
   };
+}
+
+/** Reject a valid dashboard for the wrong hotel at the client boundary. */
+export function normalizeMonthCloseDashboardForProperty(
+  payload: unknown,
+  propertyId: string,
+): MonthCloseDashboardView | null {
+  const dashboard = normalizeMonthCloseDashboard(payload);
+  return dashboard?.propertyId === propertyId ? dashboard : null;
+}
+
+/** Minimal success receipt used when the mutation committed but its follow-up read failed. */
+export function inventoryMonthCloseMutationReceipt(args: {
+  propertyId: string;
+  month: string;
+  action: 'start' | 'close';
+  mutationRequestId: string;
+}): MonthCloseMutationReceipt {
+  return {
+    mutationCommitted: true,
+    dashboard: null,
+    propertyId: args.propertyId,
+    month: args.month,
+    action: args.action,
+    mutationRequestId: args.mutationRequestId,
+  };
+}
+
+export function normalizeMonthCloseMutationReceipt(payload: unknown): MonthCloseMutationReceipt | null {
+  if (!isRecord(payload)) return null;
+  const candidate = recordAt(payload, 'data') ?? payload;
+  const propertyId = asText(candidate.propertyId);
+  const month = asText(candidate.month);
+  const mutationRequestId = asText(candidate.mutationRequestId);
+  if (
+    candidate.mutationCommitted !== true
+    || candidate.dashboard !== null
+    || !propertyId
+    || !month
+    || !/^\d{4}-(?:0[1-9]|1[0-2])$/.test(month)
+    || (candidate.action !== 'start' && candidate.action !== 'close')
+    || !mutationRequestId
+  ) return null;
+  return {
+    mutationCommitted: true,
+    dashboard: null,
+    propertyId,
+    month,
+    action: candidate.action,
+    mutationRequestId,
+  };
+}
+
+/** Ignore late save responses after a hotel switch or newer mutation. */
+export function isCurrentMonthCloseMutation(
+  scope: MonthCloseMutationScope,
+  activePropertyId: string | null,
+  currentSequence: number,
+): boolean {
+  return scope.propertyId === activePropertyId && scope.sequence === currentSequence;
 }

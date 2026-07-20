@@ -27,6 +27,7 @@ import '@/lib/agent/tools/index';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 const PID = '00000000-0000-0000-0000-0000000000c1';
+const UID = '00000000-0000-0000-0000-0000000000c0';
 const CALLER_STAFF = '00000000-0000-0000-0000-0000000000c2';
 const ACCT = '00000000-0000-0000-0000-0000000000c3';
 const MARIA = '00000000-0000-0000-0000-0000000000c4';
@@ -146,7 +147,7 @@ function buildStub(table: string) {
 function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
   return {
     user: {
-      uid: 'uid-1', accountId: ACCT, username: 'reeyen', displayName: 'Reeyen Boss',
+      uid: UID, accountId: ACCT, username: 'reeyen', displayName: 'Reeyen Boss',
       role: 'general_manager', propertyAccess: [PID], dept: 'front_desk',
     },
     propertyId: PID, staffId: CALLER_STAFF, requestId: 'req-1', surface: 'chat',
@@ -277,10 +278,12 @@ describe('adjust_stock', () => {
     });
     assert.equal(updated.inventory?.length ?? 0, 0, 'count must not use a standalone inventory update');
     assert.equal(rpcCalls.length, 1);
-    assert.equal(rpcCalls[0].fn, 'staxis_save_inventory_count');
+    assert.equal(rpcCalls[0].fn, 'staxis_save_inventory_count_for_actor');
     assert.equal(rpcCalls[0].args.p_property_id, PID);
     assert.match(String(rpcCalls[0].args.p_request_id), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
     assert.equal(rpcCalls[0].args.p_counted_by, 'Reeyen Boss');
+    assert.equal(rpcCalls[0].args.p_actor_id, UID);
+    assert.equal(rpcCalls[0].args.p_actor_name, 'Reeyen Boss');
     assert.deepEqual(rpcCalls[0].args.p_rows, [{
       item_id: 'i1',
       expected_stock: 30,
@@ -294,9 +297,15 @@ describe('adjust_stock', () => {
     const res = await executeTool('adjust_stock', { itemName: 'Soap', markOrdered: true }, ctx());
     assert.equal(res.ok, true);
     assert.equal(inserted.inventory_orders?.length ?? 0, 0, 'order intent must not create a received delivery');
-    assert.equal(updated.inventory?.length, 1);
-    assert.deepEqual(Object.keys(updated.inventory[0]), ['last_ordered_at']);
-    assert.ok(!Number.isNaN(Date.parse(String(updated.inventory[0].last_ordered_at))));
+    assert.equal(updated.inventory?.length ?? 0, 0, 'order intent must be atomic, not a standalone item update');
+    assert.equal(rpcCalls.length, 1);
+    assert.equal(rpcCalls[0].fn, 'staxis_record_inventory_order_intent');
+    assert.equal(rpcCalls[0].args.p_property_id, PID);
+    assert.equal(rpcCalls[0].args.p_item_id, 'i1');
+    assert.match(String(rpcCalls[0].args.p_request_id), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+    assert.ok(!Number.isNaN(Date.parse(String(rpcCalls[0].args.p_ordered_at))));
+    assert.equal(rpcCalls[0].args.p_actor_id, UID);
+    assert.equal(rpcCalls[0].args.p_actor_name, 'Reeyen Boss');
     assert.deepEqual(res.data, {
       itemName: 'Soap',
       category: 'housekeeping',
@@ -307,7 +316,11 @@ describe('adjust_stock', () => {
       purchaseLogged: false,
       note: 'Order intent timestamp saved only. No delivery or purchase was logged.',
     });
-    assert.equal(rpcCalls.length, 0, 'order-only actions do not create a count session');
+    assert.equal(
+      rpcCalls.filter((call) => call.fn === 'staxis_save_inventory_count_for_actor').length,
+      0,
+      'order-only actions do not create a count session',
+    );
   });
 
   test('refuses when neither a count nor an order is given', async () => {

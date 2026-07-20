@@ -376,7 +376,7 @@ export function AskStaxisBar() {
         <section
           ref={mobileSheetRef}
           id="staxis-mobile-sheet"
-          className="asx-mobile-sheet"
+          className={`asx-mobile-sheet${onInventory ? ' asx-mobile-sheet-inventory' : ''}`}
           role="dialog"
           aria-modal="false"
           aria-labelledby="staxis-mobile-title"
@@ -458,7 +458,7 @@ export function AskStaxisBar() {
       <button
         ref={mobileFabRef}
         type="button"
-        className={`asx-mobile-fab${mobileOpen ? ' asx-mobile-fab-open' : ''}`}
+        className={`asx-mobile-fab${mobileOpen ? ' asx-mobile-fab-open' : ''}${onInventory ? ' asx-mobile-fab-inventory' : ''}`}
         onClick={mobileOpen ? closeMobile : openMobile}
         aria-label={mobileOpen
           ? (lang === 'es' ? 'Cerrar Staxis' : 'Close Staxis')
@@ -820,6 +820,13 @@ const ASX_CSS = `
   .asx-mobile-fab:active{transform:scale(.96);}
   .asx-mobile-fab:focus-visible{outline:2px solid #1F231C;outline-offset:3px;}
   .asx-mobile-fab-open{animation:none;}
+  /* Inventory has full-width quick-count controls down the page. Dock the
+     assistant trigger into the phone header instead of covering a row's +
+     button. The sheet itself already has a close action, so the trigger can
+     leave the focus order while that sheet is open. */
+  .asx-mobile-fab.asx-mobile-fab-inventory{top:max(6px,env(safe-area-inset-top,0px));right:68px;bottom:auto;
+    width:44px;height:44px;border-radius:14px;animation:none;box-shadow:0 7px 18px -10px rgba(62,92,72,.6);}
+  .asx-mobile-fab.asx-mobile-fab-inventory.asx-mobile-fab-open{visibility:hidden;}
 
   .asx-mobile-sheet{position:fixed;left:0;right:0;bottom:0;z-index:71;height:46dvh;min-height:350px;max-height:520px;
     display:flex;flex-direction:column;overflow:hidden;background:#fff;color:#1F231C;
@@ -868,6 +875,7 @@ const ASX_CSS = `
 
   .asx-mobile-composer{min-height:58px;padding:8px 78px max(8px,env(safe-area-inset-bottom,0px)) 12px;display:flex;align-items:center;gap:9px;flex:none;
     background:#fff;border-top:1px solid rgba(31,35,28,.08);}
+  .asx-mobile-sheet-inventory .asx-mobile-composer{padding-right:12px;}
   .asx-mobile-composer>span{color:#5C7A60;font-size:15px;line-height:1;flex:none;}
   .asx-mobile-composer input{flex:1;min-width:0;height:40px;border:none;outline:none;background:transparent;color:#1F231C;
     font:400 16px/20px var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}

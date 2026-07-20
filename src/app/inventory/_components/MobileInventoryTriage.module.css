@@ -186,9 +186,58 @@
   display: none;
 }
 
+.actionRailWrap {
+  position: relative;
+  min-width: 0;
+}
+
 .actionRail {
-  padding: 11px 20px 0;
+  padding: 11px 68px 0 20px;
   animation: mobileInventoryRise 260ms cubic-bezier(0.05, 0.7, 0.1, 1) 70ms both;
+}
+
+.railScrollButton {
+  position: absolute;
+  top: 11px;
+  z-index: 3;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--mi-control-border);
+  border-radius: 12px;
+  place-items: center;
+  color: var(--mi-ink);
+  background: color-mix(in srgb, var(--mi-surface) 94%, transparent);
+  box-shadow: 0 4px 14px -8px rgba(31, 42, 32, 0.5);
+  cursor: pointer;
+  font: 500 24px/1 var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background-color 150ms cubic-bezier(0.2, 0, 0, 1), transform 100ms cubic-bezier(0.2, 0, 0, 1);
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.railScrollPrevious {
+  left: 8px;
+}
+
+.railScrollNext {
+  right: 8px;
+}
+
+.railScrollButton:hover {
+  background: var(--mi-surface);
+}
+
+.railScrollButton:active {
+  transform: scale(0.96);
+}
+
+.railScrollButton:focus-visible {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: 2px;
 }
 
 .actionButton {
@@ -298,6 +347,85 @@
 .actionPrimary .actionBadge {
   color: #fff;
   background: rgba(255, 255, 255, 0.16);
+}
+
+.searchWrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  height: 48px;
+  margin: 9px 20px 0;
+  border: 1px solid var(--mi-control-border);
+  border-radius: 12px;
+  background: var(--mi-surface);
+  transition: border-color 150ms cubic-bezier(0.2, 0, 0, 1), box-shadow 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.searchWrap:focus-within {
+  border-color: var(--mi-focus);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--mi-focus) 18%, transparent);
+}
+
+.searchIcon {
+  position: absolute;
+  left: 15px;
+  width: 20px;
+  height: 20px;
+  color: var(--mi-ink-2);
+  fill: none;
+  stroke: currentcolor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+  pointer-events: none;
+}
+
+.searchInput {
+  width: 100%;
+  height: 46px;
+  min-width: 0;
+  padding: 0 50px 0 45px;
+  border: 0;
+  outline: 0;
+  color: var(--mi-ink);
+  background: transparent;
+  font: 400 16px/22px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  appearance: none;
+}
+
+.searchInput::placeholder {
+  color: var(--mi-dim);
+}
+
+.searchInput::-webkit-search-cancel-button {
+  display: none;
+}
+
+.clearSearch {
+  position: absolute;
+  right: 1px;
+  display: grid;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  place-items: center;
+  color: var(--mi-ink-2);
+  background: transparent;
+  cursor: pointer;
+  font: 500 21px/1 var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.clearSearch:hover {
+  background: var(--mi-rule-soft);
+}
+
+.clearSearch:focus-visible {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: -3px;
 }
 
 .filterRail {
@@ -714,6 +842,22 @@
   white-space: nowrap;
 }
 
+.quickSaving {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+}
+
+.quickSaving > span {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--mi-sage) 24%, transparent);
+  border-top-color: var(--mi-sage-text);
+  border-radius: 999px;
+  animation: mobileInventorySpin 800ms linear infinite;
+}
+
 .noMatches,
 .emptyCatalog {
   margin-top: 14px;
@@ -724,9 +868,30 @@
 }
 
 .noMatches {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: 12px;
   padding: 28px 20px;
   text-align: center;
   font-size: 13px;
+}
+
+.noMatches button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid var(--mi-control-border);
+  border-radius: 10px;
+  color: var(--mi-ink);
+  background: transparent;
+  cursor: pointer;
+  font: 650 12px/16px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.noMatches button:focus-visible {
+  outline: 2px solid var(--mi-focus);
+  outline-offset: 2px;
 }
 
 .emptyCatalog {
@@ -801,13 +966,28 @@
   }
 }
 
+@keyframes mobileInventorySpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (max-width: 350px) {
   .masthead,
-  .actionRail,
   .filterRail,
   .triageBoard {
     padding-right: 16px;
     padding-left: 16px;
+  }
+
+  .actionRail {
+    padding-right: 64px;
+    padding-left: 16px;
+  }
+
+  .searchWrap {
+    margin-right: 16px;
+    margin-left: 16px;
   }
 
   .hairline {
@@ -850,14 +1030,21 @@
   .itemCard,
   .stockFill,
   .stepButton::before,
-  .editButton {
+  .editButton,
+  .railScrollButton,
+  .searchWrap {
     transition: none;
   }
 
   .actionButton:active::before,
   .filterTarget:active > span,
-  .stepButton:active::before {
+  .stepButton:active::before,
+  .railScrollButton:active {
     transform: none;
+  }
+
+  .quickSaving > span {
+    animation: none;
   }
 
   .editButton:active {

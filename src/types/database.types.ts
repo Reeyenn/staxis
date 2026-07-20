@@ -2098,6 +2098,83 @@ export type Database = {
           },
         ]
       }
+      inventory_audit_events: {
+        Row: {
+          action: string
+          actor_name: string | null
+          actor_user_id: string | null
+          after_state: Json | null
+          before_state: Json | null
+          created_at: string
+          dedupe_key: string | null
+          details: Json
+          entity_id: string | null
+          entity_key: string
+          entity_type: string
+          financial_details: Json
+          id: string
+          occurred_at: string
+          property_id: string
+          request_id: string | null
+          sequence: number
+          source_id: string
+          source_table: string
+          summary: Json
+        }
+        Insert: {
+          action: string
+          actor_name?: string | null
+          actor_user_id?: string | null
+          after_state?: Json | null
+          before_state?: Json | null
+          created_at?: string
+          dedupe_key?: string | null
+          details?: Json
+          entity_id?: string | null
+          entity_key: string
+          entity_type: string
+          financial_details?: Json
+          id?: string
+          occurred_at: string
+          property_id: string
+          request_id?: string | null
+          sequence?: number
+          source_id: string
+          source_table: string
+          summary?: Json
+        }
+        Update: {
+          action?: string
+          actor_name?: string | null
+          actor_user_id?: string | null
+          after_state?: Json | null
+          before_state?: Json | null
+          created_at?: string
+          dedupe_key?: string | null
+          details?: Json
+          entity_id?: string | null
+          entity_key?: string
+          entity_type?: string
+          financial_details?: Json
+          id?: string
+          occurred_at?: string
+          property_id?: string
+          request_id?: string | null
+          sequence?: number
+          source_id?: string
+          source_table?: string
+          summary?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_audit_events_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       inventory_budgets: {
         Row: {
           basis: string
@@ -2153,6 +2230,8 @@ export type Database = {
           item_name: string
           notes: string | null
           property_id: string
+          recorded_by_name: string | null
+          recorded_by_user_id: string | null
           unit_cost: number | null
           variance: number | null
           variance_value: number | null
@@ -2170,6 +2249,8 @@ export type Database = {
           item_name: string
           notes?: string | null
           property_id: string
+          recorded_by_name?: string | null
+          recorded_by_user_id?: string | null
           unit_cost?: number | null
           variance?: number | null
           variance_value?: number | null
@@ -2187,6 +2268,8 @@ export type Database = {
           item_name?: string
           notes?: string | null
           property_id?: string
+          recorded_by_name?: string | null
+          recorded_by_user_id?: string | null
           unit_cost?: number | null
           variance?: number | null
           variance_value?: number | null
@@ -2419,6 +2502,9 @@ export type Database = {
           quantity: number
           quantity_cases: number | null
           received_at: string
+          recorded_by_name: string | null
+          recorded_by_user_id: string | null
+          request_id: string | null
           total_cost: number | null
           unit_cost: number | null
           vendor_name: string | null
@@ -2438,6 +2524,9 @@ export type Database = {
           quantity: number
           quantity_cases?: number | null
           received_at?: string
+          recorded_by_name?: string | null
+          recorded_by_user_id?: string | null
+          request_id?: string | null
           total_cost?: number | null
           unit_cost?: number | null
           vendor_name?: string | null
@@ -2457,6 +2546,9 @@ export type Database = {
           quantity?: number
           quantity_cases?: number | null
           received_at?: string
+          recorded_by_name?: string | null
+          recorded_by_user_id?: string | null
+          request_id?: string | null
           total_cost?: number | null
           unit_cost?: number | null
           vendor_name?: string | null
@@ -2929,6 +3021,8 @@ export type Database = {
           property_id: string
           reconciled_at: string
           reconciled_by: string | null
+          recorded_by_name: string | null
+          recorded_by_user_id: string | null
           system_estimate: number
           unaccounted_variance: number
           unaccounted_variance_value: number | null
@@ -2945,6 +3039,8 @@ export type Database = {
           property_id: string
           reconciled_at?: string
           reconciled_by?: string | null
+          recorded_by_name?: string | null
+          recorded_by_user_id?: string | null
           system_estimate: number
           unaccounted_variance: number
           unaccounted_variance_value?: number | null
@@ -2961,6 +3057,8 @@ export type Database = {
           property_id?: string
           reconciled_at?: string
           reconciled_by?: string | null
+          recorded_by_name?: string | null
+          recorded_by_user_id?: string | null
           system_estimate?: number
           unaccounted_variance?: number
           unaccounted_variance_value?: number | null
@@ -3874,6 +3972,8 @@ export type Database = {
           hourly_wage: number
           id: string
           inventory_ai_mode: string
+          inventory_budget_mode: string
+          inventory_tab_layout: Json | null
           is_test: boolean
           last_synced_at: string | null
           morning_briefing_time: string | null
@@ -3920,6 +4020,8 @@ export type Database = {
           hourly_wage?: number
           id?: string
           inventory_ai_mode?: string
+          inventory_budget_mode?: string
+          inventory_tab_layout?: Json | null
           is_test?: boolean
           last_synced_at?: string | null
           morning_briefing_time?: string | null
@@ -3966,6 +4068,8 @@ export type Database = {
           hourly_wage?: number
           id?: string
           inventory_ai_mode?: string
+          inventory_budget_mode?: string
+          inventory_tab_layout?: Json | null
           is_test?: boolean
           last_synced_at?: string | null
           morning_briefing_time?: string | null
@@ -4871,38 +4975,38 @@ export type Database = {
       }
       vendors: {
         Row: {
-          category: string
-          contact_email: string | null
-          contact_name: string | null
-          contact_phone: string | null
+          account_number: string | null
           created_at: string
+          email: string | null
           id: string
+          is_active: boolean
           name: string
           notes: string | null
+          phone: string | null
           property_id: string
           updated_at: string
         }
         Insert: {
-          category: string
-          contact_email?: string | null
-          contact_name?: string | null
-          contact_phone?: string | null
+          account_number?: string | null
           created_at?: string
+          email?: string | null
           id?: string
+          is_active?: boolean
           name: string
           notes?: string | null
+          phone?: string | null
           property_id: string
           updated_at?: string
         }
         Update: {
-          category?: string
-          contact_email?: string | null
-          contact_name?: string | null
-          contact_phone?: string | null
+          account_number?: string | null
           created_at?: string
+          email?: string | null
           id?: string
+          is_active?: boolean
           name?: string
           notes?: string | null
+          phone?: string | null
           property_id?: string
           updated_at?: string
         }
@@ -5685,6 +5789,42 @@ export type Database = {
         }
         Returns: Json
       }
+      staxis_create_inventory_vendor: {
+        Args: {
+          p_account_number: string | null
+          p_actor_id: string
+          p_actor_name: string | null
+          p_email: string | null
+          p_is_active: boolean
+          p_name: string
+          p_notes: string | null
+          p_phone: string | null
+          p_property_id: string
+        }
+        Returns: Json
+      }
+      staxis_append_inventory_audit_event: {
+        Args: {
+          p_action: string
+          p_actor_name: string | null
+          p_actor_user_id: string | null
+          p_after_state: Json | null
+          p_before_state: Json | null
+          p_dedupe_key: string | null
+          p_details: Json | null
+          p_entity_id: string | null
+          p_entity_key: string
+          p_entity_type: string
+          p_financial_details: Json | null
+          p_occurred_at: string | null
+          p_property_id: string
+          p_request_id: string | null
+          p_source_id: string
+          p_source_table: string
+          p_summary: Json | null
+        }
+        Returns: string
+      }
       staxis_inventory_archive_zero_evidence: {
         Args: { p_item_id: string; p_property_id: string }
         Returns: {
@@ -5698,6 +5838,19 @@ export type Database = {
       staxis_inventory_has_stock_evidence: {
         Args: { p_item_id: string; p_property_id: string }
         Returns: boolean
+      }
+      staxis_inventory_audit_actor_name: {
+        Args: { p_user_id: string }
+        Returns: string
+      }
+      staxis_list_inventory_audit_events: {
+        Args: {
+          p_before_sequence: number | null
+          p_include_financials: boolean
+          p_limit: number
+          p_property_id: string
+        }
+        Returns: Json
       }
       staxis_list_inventory_archive_readiness: {
         Args: { p_item_ids: string[]; p_property_id: string }
@@ -5759,6 +5912,17 @@ export type Database = {
         }
         Returns: Json
       }
+      staxis_record_inventory_order_intent: {
+        Args: {
+          p_actor_id: string
+          p_actor_name: string | null
+          p_item_id: string
+          p_ordered_at: string
+          p_property_id: string
+          p_request_id: string
+        }
+        Returns: Json
+      }
       staxis_refresh_inventory_delivery_metadata: {
         Args: {
           p_changed_root_id: string
@@ -5769,6 +5933,19 @@ export type Database = {
       }
       staxis_receive_inventory_delivery: {
         Args: {
+          p_lines: Json
+          p_notes: string | null
+          p_property_id: string
+          p_received_at: string
+          p_request_id: string
+          p_vendor_name: string | null
+        }
+        Returns: Json
+      }
+      staxis_receive_inventory_delivery_for_actor: {
+        Args: {
+          p_actor_id: string
+          p_actor_name: string | null
           p_lines: Json
           p_notes: string | null
           p_property_id: string
@@ -5845,6 +6022,38 @@ export type Database = {
           p_property_id: string
           p_request_id: string
           p_rows: Json
+        }
+        Returns: Json
+      }
+      staxis_save_inventory_count_for_actor: {
+        Args: {
+          p_actor_id: string
+          p_actor_name: string | null
+          p_counted_at: string
+          p_counted_by: string
+          p_property_id: string
+          p_request_id: string
+          p_rows: Json
+        }
+        Returns: Json
+      }
+      staxis_update_inventory_property_config: {
+        Args: {
+          p_actor_id: string
+          p_actor_name: string | null
+          p_budget_mode: string | null
+          p_property_id: string
+          p_tab_layout: Json | null
+        }
+        Returns: boolean
+      }
+      staxis_update_inventory_vendor: {
+        Args: {
+          p_actor_id: string
+          p_actor_name: string | null
+          p_patch: Json
+          p_property_id: string
+          p_vendor_id: string
         }
         Returns: Json
       }

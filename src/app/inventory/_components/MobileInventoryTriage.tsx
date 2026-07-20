@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fmtMoney } from './format';
 import { t, type Lang } from './inv-i18n';
 import type { InvTab } from './InventoryTabs';
@@ -22,6 +22,8 @@ export interface MobileInventoryTriageProps {
   items: DisplayItem[];
   bucket: StockBucket;
   onBucket: (bucket: StockBucket) => void;
+  query: string;
+  onQuery: (query: string) => void;
   tabs: InvTab[];
   stockHealth: number | null;
   shelfValue: number;
@@ -30,6 +32,7 @@ export interface MobileInventoryTriageProps {
   canViewFinancials: boolean;
   onAction: (action: SidebarAction) => void;
   onQuickCount: (itemId: string, nextValue: number) => void;
+  quickCountLockedIds?: ReadonlySet<string>;
   /** Opens the same complete Add/Edit sheet used on desktop. */
   onEdit?: (item: DisplayItem) => void;
   onAdd?: () => void;
@@ -60,6 +63,8 @@ export function MobileInventoryTriage({
   items,
   bucket,
   onBucket,
+  query,
+  onQuery,
   tabs,
   stockHealth,
   shelfValue,
@@ -68,13 +73,14 @@ export function MobileInventoryTriage({
   canViewFinancials,
   onAction,
   onQuickCount,
+  quickCountLockedIds,
   onEdit,
   onAdd,
 }: MobileInventoryTriageProps) {
   const tx = t(lang);
   const partition = useMemo(
-    () => partitionMobileInventory(items, bucket),
-    [items, bucket],
+    () => partitionMobileInventory(items, bucket, query),
+    [items, bucket, query],
   );
   const countedItems = items.filter((item) => !item.uncounted);
   const orderNowCount = countedItems.filter((item) => item.status === 'critical').length;
@@ -128,6 +134,47 @@ export function MobileInventoryTriage({
     [items.length, lang, tabs, tx.all],
   );
 
+  const actionRailRef = useRef<HTMLDivElement>(null);
+  const [actionOverflow, setActionOverflow] = useState({ previous: false, next: false });
+  const syncActionOverflow = useCallback(() => {
+    const rail = actionRailRef.current;
+    if (!rail) return;
+    const previous = rail.scrollLeft > 2;
+    const next = Math.ceil(rail.scrollLeft + rail.clientWidth) < rail.scrollWidth - 2;
+    setActionOverflow((current) => (
+      current.previous === previous && current.next === next
+        ? current
+        : { previous, next }
+    ));
+  }, []);
+
+  useEffect(() => {
+    const rail = actionRailRef.current;
+    if (!rail) return;
+    syncActionOverflow();
+    rail.addEventListener('scroll', syncActionOverflow, { passive: true });
+    window.addEventListener('resize', syncActionOverflow);
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(syncActionOverflow);
+    observer?.observe(rail);
+    return () => {
+      rail.removeEventListener('scroll', syncActionOverflow);
+      window.removeEventListener('resize', syncActionOverflow);
+      observer?.disconnect();
+    };
+  }, [actions.length, onAdd, syncActionOverflow]);
+
+  const scrollActions = useCallback((direction: -1 | 1) => {
+    const rail = actionRailRef.current;
+    if (!rail) return;
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    rail.scrollBy({
+      left: direction * Math.max(180, Math.floor(rail.clientWidth * 0.72)),
+      behavior: reduceMotion ? 'auto' : 'smooth',
+    });
+  }, []);
+
   return (
     <section className={styles.mobileOnly} aria-label={tx.pageTitle}>
       <div className={styles.masthead}>
@@ -151,38 +198,85 @@ export function MobileInventoryTriage({
       </div>
       <div className={styles.hairline} aria-hidden="true" />
 
-      <div className={styles.actionRail} role="group" aria-label={tx.do}>
-        {actions.map((action) => (
+      <div className={styles.actionRailWrap}>
+        <div ref={actionRailRef} className={styles.actionRail} role="group" aria-label={tx.do}>
+          {actions.map((action) => (
+            <button
+              key={action.key}
+              type="button"
+              className={actionClassName(action.variant)}
+              onClick={() => onAction(action.key)}
+              aria-label={action.badge == null ? action.label : `${action.label}, ${action.badge}`}
+            >
+              {action.leading === 'arrow' ? (
+                <span className={styles.actionArrow} aria-hidden="true">→</span>
+              ) : null}
+              {action.leading === 'dot' ? (
+                <span className={styles.actionDot} aria-hidden="true" />
+              ) : null}
+              <span className={styles.actionLabel}>{action.label}</span>
+              {action.badge != null ? (
+                <span className={styles.actionBadge} aria-hidden="true">{action.badge}</span>
+              ) : null}
+            </button>
+          ))}
+          {onAdd ? (
+            // Desktop always shows "+ Add item" in the filter bar; without this
+            // a phone user with a non-empty catalog had NO direct add path
+            // (only the empty-catalog panel wired onAdd).
+            <button
+              type="button"
+              className={actionClassName(undefined)}
+              onClick={onAdd}
+              aria-label={tx.addItem}
+            >
+              <span className={styles.actionLabel}>{tx.addItem}</span>
+            </button>
+          ) : null}
+        </div>
+        {actionOverflow.previous ? (
           <button
-            key={action.key}
             type="button"
-            className={actionClassName(action.variant)}
-            onClick={() => onAction(action.key)}
-            aria-label={action.badge == null ? action.label : `${action.label}, ${action.badge}`}
+            className={`${styles.railScrollButton} ${styles.railScrollPrevious}`}
+            onClick={() => scrollActions(-1)}
+            aria-label={tx.previousActions}
           >
-            {action.leading === 'arrow' ? (
-              <span className={styles.actionArrow} aria-hidden="true">→</span>
-            ) : null}
-            {action.leading === 'dot' ? (
-              <span className={styles.actionDot} aria-hidden="true" />
-            ) : null}
-            <span className={styles.actionLabel}>{action.label}</span>
-            {action.badge != null ? (
-              <span className={styles.actionBadge} aria-hidden="true">{action.badge}</span>
-            ) : null}
+            <span aria-hidden="true">‹</span>
           </button>
-        ))}
-        {onAdd ? (
-          // Desktop always shows "+ Add item" in the filter bar; without this
-          // a phone user with a non-empty catalog had NO direct add path
-          // (only the empty-catalog panel wired onAdd).
+        ) : null}
+        {actionOverflow.next ? (
           <button
             type="button"
-            className={actionClassName(undefined)}
-            onClick={onAdd}
-            aria-label={tx.addItem}
+            className={`${styles.railScrollButton} ${styles.railScrollNext}`}
+            onClick={() => scrollActions(1)}
+            aria-label={tx.moreActions}
           >
-            <span className={styles.actionLabel}>{tx.addItem}</span>
+            <span aria-hidden="true">›</span>
+          </button>
+        ) : null}
+      </div>
+
+      <div className={styles.searchWrap}>
+        <svg className={styles.searchIcon} viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5" />
+          <path d="m16 16 4 4" />
+        </svg>
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => onQuery(event.target.value)}
+          placeholder={tx.search}
+          aria-label={tx.searchInventory}
+          className={styles.searchInput}
+        />
+        {query ? (
+          <button
+            type="button"
+            className={styles.clearSearch}
+            onClick={() => onQuery('')}
+            aria-label={tx.clearSearch}
+          >
+            <span aria-hidden="true">×</span>
           </button>
         ) : null}
       </div>
@@ -211,9 +305,12 @@ export function MobileInventoryTriage({
         {items.length === 0 ? (
           <EmptyCatalog lang={lang} onAdd={onAdd} />
         ) : partition.visibleCount === 0 ? (
-          // Mobile has no search box — an empty bucket here is an empty TAB,
-          // so "nothing matches your search" would be misleading.
-          <div className={styles.noMatches} role="status">{tx.emptyTab}</div>
+          <div className={styles.noMatches} role="status">
+            <span>{query.trim() ? tx.nothingMatches : tx.emptyTab}</span>
+            {query.trim() ? (
+              <button type="button" onClick={() => onQuery('')}>{tx.clearSearch}</button>
+            ) : null}
+          </div>
         ) : (
           <>
             <TriageGroup
@@ -223,6 +320,7 @@ export function MobileInventoryTriage({
               lang={lang}
               emptyLabel={tx.nothingHere}
               onQuickCount={onQuickCount}
+              quickCountLockedIds={quickCountLockedIds}
               onEdit={onEdit}
             />
             <TriageGroup
@@ -232,6 +330,7 @@ export function MobileInventoryTriage({
               lang={lang}
               emptyLabel={tx.nothingHere}
               onQuickCount={onQuickCount}
+              quickCountLockedIds={quickCountLockedIds}
               onEdit={onEdit}
             />
             <TriageGroup
@@ -241,6 +340,7 @@ export function MobileInventoryTriage({
               lang={lang}
               emptyLabel={tx.nothingHere}
               onQuickCount={onQuickCount}
+              quickCountLockedIds={quickCountLockedIds}
               onEdit={onEdit}
             />
             {partition.uncounted.length > 0 ? (
@@ -251,6 +351,7 @@ export function MobileInventoryTriage({
                 lang={lang}
                 emptyLabel={tx.nothingHere}
                 onQuickCount={onQuickCount}
+                quickCountLockedIds={quickCountLockedIds}
                 onEdit={onEdit}
               />
             ) : null}
@@ -341,6 +442,7 @@ function TriageGroup({
   lang,
   emptyLabel,
   onQuickCount,
+  quickCountLockedIds,
   onEdit,
 }: {
   label: string;
@@ -349,6 +451,7 @@ function TriageGroup({
   lang: Lang;
   emptyLabel: string;
   onQuickCount: (itemId: string, nextValue: number) => void;
+  quickCountLockedIds?: ReadonlySet<string>;
   onEdit?: (item: DisplayItem) => void;
 }) {
   const statusClass = status === 'neutral' ? styles.statusNeutral : STATUS_CLASS[status];
@@ -365,7 +468,13 @@ function TriageGroup({
         <ul className={styles.cardList}>
           {items.map((item) => (
             <li key={item.id}>
-              <InventoryCard item={item} lang={lang} onQuickCount={onQuickCount} onEdit={onEdit} />
+              <InventoryCard
+                item={item}
+                lang={lang}
+                onQuickCount={onQuickCount}
+                quickCountLocked={quickCountLockedIds?.has(item.id) ?? false}
+                onEdit={onEdit}
+              />
             </li>
           ))}
         </ul>
@@ -378,11 +487,13 @@ function InventoryCard({
   item,
   lang,
   onQuickCount,
+  quickCountLocked,
   onEdit,
 }: {
   item: DisplayItem;
   lang: Lang;
   onQuickCount: (itemId: string, nextValue: number) => void;
+  quickCountLocked: boolean;
   onEdit?: (item: DisplayItem) => void;
 }) {
   // Real last count, not the occupancy estimate — the +/− steppers save a new
@@ -405,6 +516,7 @@ function InventoryCard({
     ? `Aumentar existencias de ${item.name}`
     : `Increase ${item.name} on hand`;
   const editLabel = lang === 'es' ? `Editar ${item.name}` : `Edit ${item.name}`;
+  const savingLabel = `${t(lang).savingQuickCount}: ${item.name}`;
 
   return (
     <article
@@ -452,25 +564,37 @@ function InventoryCard({
             {t(lang).edit}
           </button>
         ) : null}
-        <div className={styles.stepper} role="group" aria-label={lang === 'es' ? `Conteo rápido de ${item.name}` : `Quick count ${item.name}`}>
-        <button
-          type="button"
-          className={styles.stepButton}
-          onClick={() => onQuickCount(item.id, Math.max(0, onHand - 1))}
-          aria-label={decrease}
-          disabled={onHand === 0}
+        <div
+          className={styles.stepper}
+          role="group"
+          aria-label={lang === 'es' ? `Conteo rápido de ${item.name}` : `Quick count ${item.name}`}
+          aria-busy={quickCountLocked}
         >
-          <span aria-hidden="true">−</span>
-        </button>
-        <span className={styles.stepValue} aria-live="polite">{onHand}</span>
-        <button
-          type="button"
-          className={`${styles.stepButton} ${styles.stepButtonPlus}`}
-          onClick={() => onQuickCount(item.id, onHand + 1)}
-          aria-label={increase}
-        >
-          <span aria-hidden="true">+</span>
-        </button>
+          <button
+            type="button"
+            className={styles.stepButton}
+            onClick={() => onQuickCount(item.id, Math.max(0, onHand - 1))}
+            aria-label={decrease}
+            disabled={quickCountLocked || onHand === 0}
+          >
+            <span aria-hidden="true">−</span>
+          </button>
+          <span className={styles.stepValue} aria-live="polite">
+            {quickCountLocked ? (
+              <span className={styles.quickSaving} role="status" aria-label={savingLabel}>
+                <span aria-hidden="true" />
+              </span>
+            ) : onHand}
+          </span>
+          <button
+            type="button"
+            className={`${styles.stepButton} ${styles.stepButtonPlus}`}
+            onClick={() => onQuickCount(item.id, onHand + 1)}
+            aria-label={increase}
+            disabled={quickCountLocked}
+          >
+            <span aria-hidden="true">+</span>
+          </button>
         </div>
       </div>
     </article>

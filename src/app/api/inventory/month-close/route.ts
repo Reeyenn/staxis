@@ -26,6 +26,7 @@ import {
   validatePurchaseSelection,
   type InventoryMonthClosePostBody,
 } from '@/lib/inventory-month-close';
+import { inventoryMonthCloseMutationReceipt } from '@/lib/inventory-month-close-contract';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 
@@ -199,11 +200,11 @@ export async function POST(req: NextRequest) {
       requestId: body.requestId,
       err: errToString(error),
     });
-    return ok({
-      mutationCommitted: true,
-      dashboard: null,
+    return ok(inventoryMonthCloseMutationReceipt({
+      propertyId: gate.pid,
       action: body.action,
       month: body.month,
-    }, { requestId: gate.requestId, status: 202 });
+      mutationRequestId: body.requestId,
+    }), { requestId: gate.requestId, status: 202 });
   }
 }

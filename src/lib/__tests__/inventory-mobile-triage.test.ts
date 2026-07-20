@@ -68,6 +68,24 @@ describe('partitionMobileInventory', () => {
 
     assert.deepEqual(partition.critical.map(({ id }) => id), ['first', 'later', 'fallback']);
   });
+
+  it('searches item name, vendor, and id inside the selected tab', () => {
+    const items = [
+      item('linen-001', 'good', { name: 'King Sheets', vendor: 'Grand Harbor' }),
+      item('soap-002', 'low', { name: 'Body Wash', vendor: 'Supply Co' }),
+      item('linen-003', 'critical', { name: 'Pillowcases', vendor: 'Grand Harbor', cat: 'breakfast' }),
+    ];
+
+    assert.deepEqual(
+      partitionMobileInventory(items, 'all', 'grand harbor').good.map(({ id }) => id),
+      ['linen-001'],
+    );
+    assert.deepEqual(
+      partitionMobileInventory(items, 'all', 'soap-002').low.map(({ id }) => id),
+      ['soap-002'],
+    );
+    assert.equal(partitionMobileInventory(items, 'general', 'pillow').visibleCount, 0);
+  });
 });
 
 describe('Mobile Inventory theme contract', () => {

@@ -13,7 +13,7 @@ import type {
   InventoryDeliveryCorrection,
   InventoryOrder,
 } from '@/types';
-import { supabase, logErr, asRecordRows } from './_common';
+import { supabase, logErr, asRecordRow, asRecordRows } from './_common';
 import { fromInventoryOrderRow, parseStringField, toDate } from '../db-mappers';
 import {
   inventoryDeliveryCorrectionRootChunks,
@@ -107,4 +107,39 @@ export async function listEffectiveInventoryDeliveries(
     includeFinancials,
   );
   return mergeInventoryDeliveryCorrections(orders, corrections);
+}
+
+/** Resolve one effective delivery by its stable receipt/root id. This is used
+ * by cursor-paged History, whose older rows can outlive the deliberately small
+ * recent-delivery list. Corrections are requested first so the database's
+ * property, MFA, and financial gates fail closed before the receipt read. */
+export async function getEffectiveInventoryDelivery(
+  uid: string,
+  pid: string,
+  rootOrderId: string,
+  includeFinancials = true,
+): Promise<EffectiveInventoryDelivery | null> {
+  const corrections = await listInventoryDeliveryCorrections(
+    uid,
+    pid,
+    [rootOrderId],
+    includeFinancials,
+  );
+  const columns = includeFinancials
+    ? '*'
+    : 'id,property_id,activity_sequence,item_id,item_name,quantity,quantity_cases,vendor_name,ordered_at,received_at,notes';
+  const { data, error } = await supabase
+    .from('inventory_orders')
+    .select(columns)
+    .eq('property_id', pid)
+    .eq('id', rootOrderId)
+    .eq('entry_kind', 'receipt')
+    .maybeSingle();
+  if (error) { logErr('getEffectiveInventoryDelivery', error); throw error; }
+  const row = asRecordRow(data);
+  if (!row) return null;
+  return mergeInventoryDeliveryCorrections(
+    [fromInventoryOrderRow(row)],
+    corrections,
+  )[0] ?? null;
 }

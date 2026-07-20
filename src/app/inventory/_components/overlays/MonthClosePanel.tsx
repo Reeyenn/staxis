@@ -5,7 +5,9 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { inventoryMonthKeyInZone } from '@/lib/inventory-month-close';
 import {
-  normalizeMonthCloseDashboard,
+  isCurrentMonthCloseMutation,
+  normalizeMonthCloseDashboardForProperty,
+  normalizeMonthCloseMutationReceipt,
   type MonthCloseDashboardView,
   type MonthCloseIssue,
   type MonthClosePurchaseSource,
@@ -119,9 +121,18 @@ function monthCloseStrings(lang: Lang) {
       negativeBody: 'Ending inventory is greater than beginning inventory plus purchases. Check the ending count or purchase source before closing.',
       closeMonth: 'Close month',
       closing: 'Closing…',
+      finalReview: 'Final review',
+      confirmTitle: (month: string) => `Close ${month}?`,
+      confirmBody: 'Review the purchase source and equation below. Closing locks this monthly result so the hotel keeps one reliable record.',
+      confirmMonth: 'Month',
+      confirmLockedTitle: 'This result will be locked',
+      confirmLockedBody: 'After closing, the month, purchase source, and calculated usage cannot be edited from Inventory.',
+      confirmAction: (month: string) => `Close ${month}`,
       closeAvailableTitle: 'Close is not available yet',
       closeAvailableBody: (date: string) => `This property can close the period on ${date}. Prepare costs now, then take the ending count in the eligible month-end window.`,
       closed: 'Month closed successfully.',
+      committedRefreshTitle: 'The month-close action was saved',
+      committedRefreshBody: 'The saved result is committed, but the refreshed checklist could not load. Retry loading the status; do not repeat the month-close action.',
       actionFailed: 'The month close was not saved. Review the information and try again.',
       actionFailedTitle: 'Could not save month close',
       networkActionFailed: 'The connection failed, so we could not confirm the result. Retry this same safe action or reload the month status; its saved request ID prevents a duplicate.',
@@ -228,9 +239,18 @@ function monthCloseStrings(lang: Lang) {
       negativeBody: 'El inventario final es mayor que el inventario inicial más las compras. Revisa el conteo final o la fuente de compras antes de cerrar.',
       closeMonth: 'Cerrar mes',
       closing: 'Cerrando…',
+      finalReview: 'Revisión final',
+      confirmTitle: (month: string) => `¿Cerrar ${month}?`,
+      confirmBody: 'Revisa la fuente de compras y la ecuación a continuación. Al cerrar, este resultado mensual queda bloqueado para conservar un registro confiable del hotel.',
+      confirmMonth: 'Mes',
+      confirmLockedTitle: 'Este resultado quedará bloqueado',
+      confirmLockedBody: 'Después del cierre, el mes, la fuente de compras y el uso calculado no se pueden editar desde Inventario.',
+      confirmAction: (month: string) => `Cerrar ${month}`,
       closeAvailableTitle: 'El cierre aún no está disponible',
       closeAvailableBody: (date: string) => `Esta propiedad puede cerrar el período el ${date}. Prepara los costos ahora y realiza el conteo final en el período elegible de fin de mes.`,
       closed: 'El mes se cerró correctamente.',
+      committedRefreshTitle: 'Se guardó la acción de cierre mensual',
+      committedRefreshBody: 'El resultado guardado ya está confirmado, pero no se pudo cargar la lista actualizada. Vuelve a cargar el estado; no repitas la acción de cierre mensual.',
       actionFailed: 'No se guardó el cierre mensual. Revisa la información e inténtalo de nuevo.',
       actionFailedTitle: 'No se pudo guardar el cierre mensual',
       networkActionFailed: 'Falló la conexión y no se pudo confirmar el resultado. Reintenta esta misma acción segura o vuelve a cargar el estado del mes; el ID guardado evita duplicados.',
@@ -654,19 +674,27 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [confirmingClose, setConfirmingClose] = useState(false);
+  const [committedRefreshPending, setCommittedRefreshPending] = useState(false);
   const [mutationError, setMutationError] = useState<MonthCloseActionFailure | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [purchaseSource, setPurchaseSource] = useState<MonthClosePurchaseSource>('logged_deliveries');
   const [manualPurchase, setManualPurchase] = useState('');
   const requestSequence = useRef(0);
+  const mutationSequence = useRef(0);
   const loadAbort = useRef<AbortController | null>(null);
   const pendingAttemptRef = useRef<PendingMonthCloseAttempt | null>(null);
+  const activePropertyIdRef = useRef(activePropertyId);
+  activePropertyIdRef.current = activePropertyId;
+  const cancelConfirmationRef = useRef<HTMLButtonElement>(null);
+  const closeMonthButtonRef = useRef<HTMLButtonElement>(null);
   const formId = useId();
   const purchaseHelpId = useId();
   const manualHelpId = useId();
 
   const applyDashboard = useCallback((next: MonthCloseDashboardView) => {
     setDashboard(next);
+    setCommittedRefreshPending(false);
     setPurchaseSource(next.purchase.source ?? 'logged_deliveries');
     setManualPurchase(centsToInput(next.purchase.manualPurchaseCents));
     const propertyId = next.propertyId || activePropertyId;
@@ -704,9 +732,8 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
       );
       const payload = await responseJson(response);
       if (!response.ok) throw new Error(apiMessage(payload) ?? `HTTP ${response.status}`);
-      const next = normalizeMonthCloseDashboard(payload);
+      const next = normalizeMonthCloseDashboardForProperty(payload, activePropertyId);
       if (!next) throw new Error('INVALID_MONTH_CLOSE_DASHBOARD');
-      if (next.propertyId !== activePropertyId) throw new Error('WRONG_PROPERTY_MONTH_CLOSE_DASHBOARD');
       if (sequence === requestSequence.current) applyDashboard(next);
       return next;
     } catch {
@@ -719,6 +746,10 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
   }, [activePropertyId, applyDashboard]);
 
   useEffect(() => {
+    mutationSequence.current += 1;
+    setSaving(false);
+    setConfirmingClose(false);
+    setCommittedRefreshPending(false);
     if (!open) {
       loadAbort.current?.abort();
       return;
@@ -728,6 +759,14 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
     void loadDashboard(true);
     return () => loadAbort.current?.abort();
   }, [open, activePropertyId, loadDashboard]);
+
+  useEffect(() => {
+    if (!confirmingClose) return;
+    const frame = requestAnimationFrame(() => {
+      cancelConfirmationRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [confirmingClose]);
 
   const manualParsed = useMemo(() => parseMoneyInput(manualPurchase), [manualPurchase]);
   const manualError = purchaseSource === 'manual_total'
@@ -894,6 +933,22 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
     onStartCount();
   };
 
+  const cancelCloseConfirmation = () => {
+    setConfirmingClose(false);
+    requestAnimationFrame(() => {
+      closeMonthButtonRef.current?.focus({ preventScroll: true });
+    });
+  };
+
+  const handlePanelClose = () => {
+    if (saving) return;
+    if (confirmingClose) {
+      cancelCloseConfirmation();
+      return;
+    }
+    onClose();
+  };
+
   const reloadRecovery = async () => {
     setMutationError(null);
     await loadDashboard(true);
@@ -904,6 +959,12 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
     if (!dashboard || !activePropertyId || saving) return;
     const action = dashboard.status === 'not_started' ? 'start' : dashboard.status === 'open' ? 'close' : null;
     if (!action || (action === 'start' ? baselineBlocked : closeBlocked)) return;
+    if (action === 'close' && !confirmingClose) {
+      setMutationError(null);
+      setStatusMessage(null);
+      setConfirmingClose(true);
+      return;
+    }
 
     const basePayload: Record<string, unknown> = {
       propertyId: activePropertyId,
@@ -938,8 +999,19 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
       removePendingAttempt(attempt);
       if (pendingAttemptRef.current?.storageKey === attempt?.storageKey) pendingAttemptRef.current = null;
     };
+    const mutationScope = {
+      propertyId: activePropertyId,
+      sequence: ++mutationSequence.current,
+    };
+    const mutationRequestId = asText(attempt.payload.requestId);
+    const mutationIsCurrent = () => isCurrentMonthCloseMutation(
+      mutationScope,
+      activePropertyIdRef.current,
+      mutationSequence.current,
+    );
 
     setSaving(true);
+    setCommittedRefreshPending(false);
     setMutationError(null);
     setStatusMessage(null);
     try {
@@ -955,20 +1027,37 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
           && response.status !== 408
           && response.status !== 429;
         if (definitiveClientFailure) clearAttempt();
+        if (!mutationIsCurrent()) return;
         setMutationError(localizedActionFailure(apiFailure(payload, copy.actionFailed), copy));
         return;
       }
-      clearAttempt();
 
-      const returned = normalizeMonthCloseDashboard(payload);
-      if (returned && returned.propertyId === activePropertyId) applyDashboard(returned);
-      else await loadDashboard(false);
+      const returned = normalizeMonthCloseDashboardForProperty(payload, mutationScope.propertyId);
+      const receipt = normalizeMonthCloseMutationReceipt(payload);
+      const validReceipt = receipt != null
+        && receipt.propertyId === mutationScope.propertyId
+        && receipt.month === dashboard.month
+        && receipt.action === action
+        && receipt.mutationRequestId === mutationRequestId;
+      if (!returned && !validReceipt) throw new Error('INVALID_MONTH_CLOSE_MUTATION_RESPONSE');
+      clearAttempt();
+      if (!mutationIsCurrent()) return;
+
+      if (returned) {
+        applyDashboard(returned);
+      } else {
+        const refreshed = await loadDashboard(false);
+        if (!mutationIsCurrent()) return;
+        if (!refreshed) setCommittedRefreshPending(true);
+      }
+      setConfirmingClose(false);
       setStatusMessage(action === 'start' ? copy.started : copy.closed);
       onChanged?.();
     } catch {
+      if (!mutationIsCurrent()) return;
       setMutationError({ code: 'month_close_network_error', message: copy.networkActionFailed });
     } finally {
-      setSaving(false);
+      if (mutationIsCurrent()) setSaving(false);
     }
   };
 
@@ -986,11 +1075,47 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
         </Btn>
       </>
     );
+  } else if (dashboard?.status === 'open' && !loading && !loadError && confirmingClose) {
+    footer = (
+      <>
+        <Btn
+          ref={cancelConfirmationRef}
+          className="mc-button"
+          variant="ghost"
+          style={button44}
+          onClick={cancelCloseConfirmation}
+          disabled={saving}
+          aria-describedby={`${formId}-confirm-title ${formId}-confirm-copy`}
+        >
+          {copy.cancel}
+        </Btn>
+        <Btn
+          className="mc-button"
+          variant="primary"
+          style={button44}
+          type="submit"
+          form={formId}
+          disabled={saving}
+          aria-busy={saving}
+          aria-describedby={`${formId}-confirm-title ${formId}-confirm-copy`}
+        >
+          {saving ? copy.closing : copy.confirmAction(title)}
+        </Btn>
+      </>
+    );
   } else if (dashboard?.status === 'open' && !loading && !loadError) {
     footer = (
       <>
         <Btn className="mc-button" variant="ghost" style={button44} onClick={onClose} disabled={saving}>{copy.cancel}</Btn>
-        <Btn className="mc-button" variant="primary" style={button44} type="submit" form={formId} disabled={saving || closeBlocked}>
+        <Btn
+          ref={closeMonthButtonRef}
+          className="mc-button"
+          variant="primary"
+          style={button44}
+          type="submit"
+          form={formId}
+          disabled={saving || closeBlocked}
+        >
           {saving ? copy.closing : copy.closeMonth}
         </Btn>
       </>
@@ -1000,7 +1125,7 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
   return (
     <Overlay
       open={open}
-      onClose={() => { if (!saving) onClose(); }}
+      onClose={handlePanelClose}
       eyebrow={copy.eyebrow}
       title={title}
       accent={T.brand}
@@ -1057,6 +1182,13 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
         .mc-issues { margin: 0; padding-left: 19px; }
         .mc-issues li { color: ${T.ink2}; font-size: 12px; line-height: 1.5; margin: 4px 0; }
         .mc-closed-meta { color: ${T.ink2}; font-size: 12px; line-height: 1.5; }
+        .mc-confirm { display: flex; flex-direction: column; gap: 16px; }
+        .mc-confirm-title { color: ${T.ink}; font-size: 22px; font-weight: 680; letter-spacing: -.025em; line-height: 1.2; margin: 0; }
+        .mc-confirm-copy { color: ${T.ink2}; font-size: 13.5px; line-height: 1.55; margin: 5px 0 0; max-width: 620px; }
+        .mc-confirm-meta { display: grid; gap: 8px; grid-template-columns: repeat(2,minmax(0,1fr)); margin: 0; }
+        .mc-confirm-meta > div { background: ${T.inkWash}; border: 1px solid ${T.rule}; border-radius: 12px; padding: 12px 14px; }
+        .mc-confirm-meta dt { color: ${T.ink3}; font-family: ${fonts.mono}; font-size: 9.5px; font-weight: 650; letter-spacing: .055em; text-transform: uppercase; }
+        .mc-confirm-meta dd { color: ${T.ink}; font-size: 13px; font-weight: 650; line-height: 1.4; margin: 5px 0 0; }
         @keyframes mc-spin { to { transform: rotate(360deg); } }
         @media (max-width: 680px) {
           .mc-equation { grid-template-columns: 1fr; }
@@ -1065,9 +1197,10 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
           .mc-readiness-grid { grid-template-columns: 1fr; }
           .mc-section-head { flex-direction: column; }
           .mc-section-head .mc-button { width: 100%; }
+          .mc-confirm-meta { grid-template-columns: 1fr; }
         }
         @media (prefers-reduced-motion: reduce) {
-          .mc-spinner { animation-duration: 1.6s; }
+          .mc-spinner { animation: none; }
           .mc-purchase-option, .mc-button { transition: none !important; }
         }
       `}</style>
@@ -1096,15 +1229,56 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
           </Notice>
         )}
 
-        {!activePropertyId ? (
+        {confirmingClose && dashboard?.status === 'open' ? (
+          <section
+            className="mc-confirm"
+            role="region"
+            aria-labelledby={`${formId}-confirm-title`}
+            aria-describedby={`${formId}-confirm-copy`}
+          >
+            <div>
+              <StatusBadge tone="warn">{copy.finalReview}</StatusBadge>
+              <h2 id={`${formId}-confirm-title`} className="mc-confirm-title" style={{ marginTop: 13 }}>
+                {copy.confirmTitle(title)}
+              </h2>
+              <p id={`${formId}-confirm-copy`} className="mc-confirm-copy">{copy.confirmBody}</p>
+            </div>
+            <dl className="mc-confirm-meta">
+              <div>
+                <dt>{copy.confirmMonth}</dt>
+                <dd>{title}</dd>
+              </div>
+              <div>
+                <dt>{copy.purchaseSource}</dt>
+                <dd>{sourceLabel(purchaseSource, copy)}</dd>
+              </div>
+            </dl>
+            <Equation
+              lang={lang}
+              beginningCents={dashboard.totals.beginningCents}
+              purchaseCents={selectedPurchaseCents}
+              endingCents={selectedEndingCents}
+              actualCents={actualCents}
+              purchaseDetail={sourceLabel(purchaseSource, copy)}
+              copy={copy}
+            />
+            <Notice tone="warn" title={copy.confirmLockedTitle} role="status">
+              {copy.confirmLockedBody}
+            </Notice>
+          </section>
+        ) : !activePropertyId ? (
           <Notice tone="info" title={copy.noPropertyTitle}>{copy.noPropertyBody}</Notice>
         ) : loading ? (
           <LoadingState copy={copy} />
         ) : loadError || !dashboard ? (
-          <div className="mc-state-panel" role="alert">
+          <div className="mc-state-panel" role={committedRefreshPending ? 'status' : 'alert'}>
             <div style={{ flex: 1 }}>
-              <div className="mc-state-title">{copy.loadErrorTitle}</div>
-              <div className="mc-state-body">{copy.loadErrorBody}</div>
+              <div className="mc-state-title">
+                {committedRefreshPending ? copy.committedRefreshTitle : copy.loadErrorTitle}
+              </div>
+              <div className="mc-state-body">
+                {committedRefreshPending ? copy.committedRefreshBody : copy.loadErrorBody}
+              </div>
             </div>
             <Btn className="mc-button" variant="ghost" style={button44} onClick={() => void loadDashboard(true)}>{copy.retry}</Btn>
           </div>

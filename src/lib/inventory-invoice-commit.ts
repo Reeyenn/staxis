@@ -116,6 +116,60 @@ export class InvoiceCommitValidationError extends Error {
   }
 }
 
+export const INVOICE_REFERENCE_MAX_LENGTH = 80;
+
+export type InvoiceReferenceValidationCode =
+  | 'invoice_reference_required'
+  | 'invoice_reference_invalid';
+
+/**
+ * Canonical form used by both the manager-facing field and the durable
+ * delivery key. NFKC folds full-width OCR characters, whitespace is made
+ * deterministic, and casing is normalized because invoice references are
+ * identifiers rather than prose.
+ */
+export function normalizeInvoiceReference(value?: string | null): string {
+  return (value ?? '')
+    .normalize('NFKC')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .toLocaleUpperCase('en-US');
+}
+
+export function invoiceReferenceValidationCode(
+  value?: string | null,
+): InvoiceReferenceValidationCode | null {
+  const reference = normalizeInvoiceReference(value);
+  if (!reference) return 'invoice_reference_required';
+  // @ and · delimit the reference/vendor components in the durable business
+  // key. Controls/formatting characters could make visually identical keys
+  // compare differently, while a punctuation-only value is not an identifier.
+  if (
+    reference.length > INVOICE_REFERENCE_MAX_LENGTH
+    || /[@·\p{Cc}\p{Cf}\p{Cs}]/u.test(reference)
+    || !/[\p{L}\p{N}]/u.test(reference)
+  ) return 'invoice_reference_invalid';
+  return null;
+}
+
+function requireInvoiceReference(value?: string | null): string {
+  const reference = normalizeInvoiceReference(value);
+  const code = invoiceReferenceValidationCode(reference);
+  if (code === 'invoice_reference_required') {
+    throw new InvoiceCommitValidationError(
+      code,
+      'Enter an invoice number or unique reference before saving.',
+    );
+  }
+  if (code === 'invoice_reference_invalid') {
+    throw new InvoiceCommitValidationError(
+      code,
+      `Use an invoice reference of ${INVOICE_REFERENCE_MAX_LENGTH} characters or fewer without control characters, “@”, or “·”.`,
+    );
+  }
+  return reference;
+}
+
 function toFiniteNumber(x: unknown): number | undefined {
   if (x === null || x === undefined || x === '') return undefined;
   const n = typeof x === 'number' ? x : Number(x);
@@ -132,12 +186,28 @@ function toCases(x: unknown): number | null {
   return n !== undefined && n > 0 ? n : null;
 }
 
-/** Soft dedupe marker stamped on the order notes. Only carries an inv# when a
- *  number was extracted; otherwise it's a generic source tag. */
+function normalizeInvoiceTagVendor(value?: string | null): string {
+  return (value ?? '')
+    .normalize('NFKC')
+    .replace(/[@·\p{Cc}\p{Cf}\p{Cs}]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .toLocaleLowerCase('en-US');
+}
+
+/** Durable business-key marker stamped on the order notes. Blank input keeps
+ *  the legacy generic tag for parsing old rows, but buildCommitPlan rejects it
+ *  before any new scanned delivery can be committed. */
 export function buildNotesTag(invoiceNumber?: string | null, vendorName?: string | null): string {
-  const num = (invoiceNumber ?? '').trim();
+  const num = normalizeInvoiceReference(invoiceNumber);
   if (!num) return INVOICE_SCAN_NOTE_PREFIX;
-  const vendor = (vendorName ?? '').trim().toLowerCase();
+  if (invoiceReferenceValidationCode(num) !== null) {
+    throw new InvoiceCommitValidationError(
+      'invoice_reference_invalid',
+      `Use an invoice reference of ${INVOICE_REFERENCE_MAX_LENGTH} characters or fewer without control characters, “@”, or “·”.`,
+    );
+  }
+  const vendor = normalizeInvoiceTagVendor(vendorName);
   return `${INVOICE_SCAN_NOTE_PREFIX} · inv#${num}@${vendor}`;
 }
 
@@ -145,7 +215,14 @@ export function buildNotesTag(invoiceNumber?: string | null, vendorName?: string
  *  carries this invoice's (numbered) tag. Not a hard guarantee — see plan §4. */
 export function invoiceAlreadyRecorded(existingNotes: readonly (string | null | undefined)[], notesTag: string): boolean {
   if (!notesTag.startsWith(`${INVOICE_SCAN_NOTE_PREFIX} · inv#`)) return false; // unnumbered → can't dedupe
-  return existingNotes.some((n) => typeof n === 'string' && n.includes(notesTag));
+  const canonicalize = (value: string) => value
+    .normalize('NFKC')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .toLocaleLowerCase('en-US');
+  const canonicalTag = canonicalize(notesTag);
+  return existingNotes.some((n) => typeof n === 'string'
+    && canonicalize(n) === canonicalTag);
 }
 
 export function isInvoiceCalendarDate(value: string): boolean {
@@ -210,8 +287,9 @@ function parseReceivedAt(
  */
 export function buildCommitPlan(draft: ReviewDraftInput, now: Date = new Date()): CommitPlan {
   const vendorName = (draft.vendorName ?? '').trim() || undefined;
+  const invoiceReference = requireInvoiceReference(draft.invoiceNumber);
   const receivedAt = parseReceivedAt(draft.invoiceDate, draft.propertyTimezone, now);
-  const notesTag = buildNotesTag(draft.invoiceNumber, vendorName);
+  const notesTag = buildNotesTag(invoiceReference, vendorName);
 
   const orders: CommitOrder[] = [];
   const creates: CommitCreate[] = [];

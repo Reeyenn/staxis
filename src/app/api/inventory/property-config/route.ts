@@ -73,11 +73,20 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('nothing to update', { requestId, status: 400, code: 'validation_failed' });
   }
 
-  const { error } = await supabaseAdmin.from('properties').update(update).eq('id', pid);
+  const { data: saved, error } = await supabaseAdmin.rpc('staxis_update_inventory_property_config', {
+    p_property_id: pid,
+    p_tab_layout: update.inventory_tab_layout ?? null,
+    p_budget_mode: update.inventory_budget_mode ?? null,
+    p_actor_id: gate.userId,
+    p_actor_name: gate.name,
+  });
   if (error) {
     // Log detail server-side; don't leak table/constraint names to the client.
     log.error('[inventory/property-config] update failed', { err: errToString(error) });
     return err('save_failed', { requestId, status: 500, code: 'internal_error' });
+  }
+  if (saved !== true) {
+    return err('property_not_found', { requestId, status: 404, code: 'not_found' });
   }
 
   return ok({ saved: true }, { requestId });

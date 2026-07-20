@@ -225,11 +225,13 @@ registerTool<AdjustStockArgs>({
     //    request UUID makes an ambiguous retry safe: the database receipt and
     //    both operational writes commit together, or none of them do.
     if (wantsCount && count !== null) {
-      const { error: countErr } = await supabaseAdmin.rpc('staxis_save_inventory_count', {
+      const { error: countErr } = await supabaseAdmin.rpc('staxis_save_inventory_count_for_actor', {
         p_property_id: ctx.propertyId,
         p_request_id: crypto.randomUUID(),
         p_counted_at: nowIso,
         p_counted_by: ctx.user.displayName || ctx.user.username || 'team',
+        p_actor_id: ctx.user.uid,
+        p_actor_name: ctx.user.displayName || ctx.user.username || null,
         p_rows: [{
           item_id: item.id,
           expected_stock: Number(item.current_stock ?? 0),
@@ -242,14 +244,17 @@ registerTool<AdjustStockArgs>({
 
     // 2) Save order intent only. `inventory_orders` is the received-delivery
     //    ledger and drives purchase accounting, so an intent must never create
-    //    a row there. The removed purchase-order flow has no quantity ledger.
+    //    a row there. The actor-aware RPC updates the operational reminder and
+    //    appends a durable non-purchase audit event in one transaction.
     if (wantsOrder) {
-      const { error: intentErr } = await supabaseAdmin
-        .from('inventory')
-        .update({ last_ordered_at: nowIso })
-        .eq('property_id', ctx.propertyId)
-        .eq('id', item.id)
-        .is('archived_at', null);
+      const { error: intentErr } = await supabaseAdmin.rpc('staxis_record_inventory_order_intent', {
+        p_property_id: ctx.propertyId,
+        p_item_id: item.id,
+        p_request_id: crypto.randomUUID(),
+        p_ordered_at: nowIso,
+        p_actor_id: ctx.user.uid,
+        p_actor_name: ctx.user.displayName || ctx.user.username || null,
+      });
       if (intentErr) {
         return {
           ok: false,

@@ -13,6 +13,7 @@ import {
   persistDeliveryAttempt,
   retainOrCreateDeliveryAttempt,
 } from '../../app/inventory/_components/overlays/scan-commit';
+import { ssStrings } from '../../app/inventory/_components/overlays/scan-i18n';
 
 function memoryStorage() {
   const values = new Map<string, string>();
@@ -202,7 +203,7 @@ describe('delivery retry envelope', () => {
   });
 });
 
-describe('numbered invoice hard block', () => {
+describe('scanned invoice reference hard block', () => {
   test('fails closed for duplicate, pending, or unavailable history checks', () => {
     assert.equal(numberedInvoiceSaveBlocked({
       invoiceNumber: 'INV-123', checking: true, duplicate: false, checkFailed: false,
@@ -231,13 +232,44 @@ describe('numbered invoice hard block', () => {
 
     assert.match(deliverySource, /if \(saving \|\| retryLocked\) return;/);
     assert.match(deliverySource, /disabled=\{saving \|\| retryLocked\}/);
-    assert.match(scanSource, /if \(phase === 'committing' \|\| retryLocked\) return;/);
-    assert.match(scanSource, /listEffectiveInventoryDeliveries\(user\.uid, activePropertyId, 2000, true\)/);
-    assert.match(scanSource, /actionable === 0 \|\| duplicateBlocked/);
+    assert.match(
+      scanSource,
+      /if \(saveBoundaryScopeRef\.current \|\| phase === 'verifying' \|\| phase === 'committing' \|\| retryLocked\) return;/,
+    );
+    assert.match(
+      scanSource,
+      /listEffectiveInventoryDeliveries\(\s*user\.uid,\s*requestScope\.propertyId,\s*2000,\s*true,?\s*\)/,
+    );
+    assert.match(scanSource, /actionable === 0 \|\| !invoiceReferenceReady \|\| duplicateBlocked/);
+    assert.match(scanSource, /!retryLocked && \(!invoiceReferenceReady \|\| duplicateBlocked/);
+    assert.match(
+      scanSource,
+      /if \(!retryLocked\) \{[\s\S]*?verifyDuplicateInvoice\(normalizedInvoiceReference, vendor\)/,
+    );
+    assert.match(scanSource, /invoiceNumber: normalizedInvoiceReference/);
+    assert.match(scanSource, /id="scan-invoice-reference"[\s\S]*?required[\s\S]*?aria-invalid=/);
+    assert.match(scanSource, /aria-describedby="scan-invoice-reference-help"/);
+    assert.match(scanSource, /id="scan-invoice-reference-help"[\s\S]*?role=/);
     assert.match(scanSource, /await retryCommit\(progressRef\.current/);
     assert.match(scanSource, /invoiceDateFromReceivedAt\(restored\.receivedAt, timezoneRef\.current\)/);
     assert.match(scanSource, /propertyTimezone: timezone/);
     assert.doesNotMatch(scanSource, /restored\?\.receivedAt\.slice\(0, 10\)/);
+  });
+
+  test('required reference guidance and duplicate warning are bilingual', () => {
+    const en = ssStrings('en');
+    const es = ssStrings('es');
+
+    assert.equal(en.invoiceNumber, 'Invoice or reference number');
+    assert.equal(es.invoiceNumber, 'Número de factura o referencia');
+    assert.match(en.invoiceReferenceRequired, /before saving/i);
+    assert.match(es.invoiceReferenceRequired, /antes de guardar/i);
+    assert.match(en.invoiceReferenceHint, /received twice/i);
+    assert.match(es.invoiceReferenceHint, /dos veces/i);
+    assert.match(en.dupWarn, /already recorded/i);
+    assert.match(es.dupWarn, /ya está registrado/i);
+    assert.doesNotMatch(en.invoiceNumber, /optional/i);
+    assert.doesNotMatch(es.invoiceNumber, /opcional/i);
   });
 
   test('nonfinancial delivery entry hides invoice OCR and records unknown cost explicitly', () => {

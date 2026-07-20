@@ -9,6 +9,7 @@ import {
   subscribeToInventory,
   listInventoryCounts,
   listEffectiveInventoryDeliveries,
+  getEffectiveInventoryDelivery,
   listInventoryDiscards,
   listInventoryBudgets,
   listInventoryBudgetSections,
@@ -44,6 +45,7 @@ import {
   type InventoryBudgetActualPeriod,
 } from '@/lib/inventory-budget-actual';
 import { propertyTimezoneOrUTC, validPropertyTimezone } from '@/lib/property-timezone';
+import type { InventoryAuditEvent, InventoryAuditPage } from '@/lib/inventory-audit-history';
 import {
   fetchDailyAverages,
   type DailyAverages,
@@ -72,6 +74,11 @@ import { LedgerTable } from './LedgerTable';
 import { StockList } from './StockList';
 import { MobileInventoryTriage } from './MobileInventoryTriage';
 import mobileStyles from './MobileInventoryTriage.module.css';
+import { inventoryOverlayAfterCountSave } from './inventory-count-navigation';
+import {
+  inventoryAuditDeliveryForActiveProperty,
+  inventoryAuditMatchesProperty,
+} from './inventory-audit-state';
 import { useRiseIn } from './motion';
 import { InvFx, HealthRing, CountUp, PingDot } from './fx';
 import { toDisplayItem, applyDraft } from './adapter';
@@ -140,6 +147,64 @@ function monthCloseDashboardFromPayload(payload: unknown): InventoryMonthCloseDa
     || !Array.isArray(candidate.history)
   ) return null;
   return candidate as unknown as InventoryMonthCloseDashboard;
+}
+
+const INVENTORY_AUDIT_ACTION_SET = new Set<InventoryAuditEvent['action']>([
+  'item.created', 'item.updated', 'item.archived',
+  'count.saved', 'delivery.received', 'order_intent.recorded', 'loss.recorded', 'reconciliation.recorded',
+  'delivery.corrected', 'delivery.voided', 'opening_adjustment.recorded',
+  'month.started', 'month.closed',
+  'vendor.created', 'vendor.updated', 'vendor.inactivated',
+  'budget.created', 'budget.updated', 'budget.deleted',
+  'category.created', 'category.updated', 'category.deleted',
+  'budget_section.created', 'budget_section.updated', 'budget_section.deleted',
+  'config.updated',
+]);
+
+const INVENTORY_AUDIT_ENTITY_SET = new Set<InventoryAuditEvent['entityType']>([
+  'item', 'count', 'delivery', 'loss', 'reconciliation', 'delivery_correction',
+  'opening_adjustment', 'month', 'vendor', 'budget', 'category', 'budget_section', 'config',
+]);
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function isInventoryAuditEvent(value: unknown): value is InventoryAuditEvent {
+  if (!isRecord(value) || !isRecord(value.summary) || !isRecord(value.details)) return false;
+  const { summary } = value;
+  return typeof value.id === 'string'
+    && INVENTORY_AUDIT_ACTION_SET.has(value.action as InventoryAuditEvent['action'])
+    && INVENTORY_AUDIT_ENTITY_SET.has(value.entityType as InventoryAuditEvent['entityType'])
+    && isNullableString(value.entityId)
+    && typeof value.occurredAt === 'string'
+    && isNullableString(value.actorName)
+    && isNullableString(value.requestId)
+    && isNullableString(summary.label)
+    && isNullableString(summary.secondaryLabel)
+    && isNullableNumber(summary.quantity)
+    && isNullableString(summary.unit)
+    && isNullableNumber(summary.itemCount)
+    && Array.isArray(summary.changedFields)
+    && summary.changedFields.every((field) => typeof field === 'string');
+}
+
+function inventoryAuditPageFromPayload(payload: unknown): InventoryAuditPage | null {
+  if (!isRecord(payload)) return null;
+  const candidate = isRecord(payload.data) ? payload.data : payload;
+  if (
+    !Array.isArray(candidate.events)
+    || !candidate.events.every(isInventoryAuditEvent)
+    || (candidate.nextCursor !== null && candidate.nextCursor !== undefined && typeof candidate.nextCursor !== 'string')
+  ) return null;
+  return {
+    events: candidate.events,
+    nextCursor: typeof candidate.nextCursor === 'string' ? candidate.nextCursor : null,
+  };
 }
 
 export function InventoryShell() {
@@ -259,6 +324,18 @@ export function InventoryShell() {
   const [inventoryReload, setInventoryReload] = useState(0);
   const [quickCountError, setQuickCountError] = useState(false);
   const [quickCountLockedIds, setQuickCountLockedIds] = useState<Set<string>>(() => new Set());
+  const [auditEvents, setAuditEvents] = useState<InventoryAuditEvent[]>([]);
+  const [auditPropertyId, setAuditPropertyId] = useState<string | null>(null);
+  const [auditNextCursor, setAuditNextCursor] = useState<string | null>(null);
+  const [auditStatus, setAuditStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
+  const [auditLoadingMore, setAuditLoadingMore] = useState(false);
+  // Exact delivery lookups inside History are cached so expanding old events
+  // stays fast. Advance this generation after an immutable correction/void so
+  // the old component (and any late lookup continuation) is discarded before
+  // the manager can open the same delivery again.
+  const [auditDeliveryLookupRevision, setAuditDeliveryLookupRevision] = useState(0);
+  const auditLoadSequence = React.useRef(0);
+  const auditMatchesActiveProperty = inventoryAuditMatchesProperty(activePropertyId, auditPropertyId);
 
   // ── Subscribe + fetch when property loads ──────────────────────────
   // Both mount effects depend on the user's stable uid, NOT the user object —
@@ -272,6 +349,18 @@ export function InventoryShell() {
   // so an old hotel's response can never paint an item into the new hotel.
   const activePropertyIdRef = React.useRef(activePropertyId);
   activePropertyIdRef.current = activePropertyId;
+  useEffect(() => {
+    // Invalidate in-flight pages and retag the empty state on every property
+    // lifecycle transition, including a temporary/null selection. The render
+    // guard below hides the old property synchronously before this effect runs.
+    auditLoadSequence.current += 1;
+    setAuditPropertyId(uid ? activePropertyId : null);
+    setAuditEvents([]);
+    setAuditNextCursor(null);
+    setAuditStatus('idle');
+    setAuditLoadingMore(false);
+  }, [uid, activePropertyId, canViewFinancials]);
+
   useEffect(() => {
     if (!uid || !activePropertyId) return;
     setItems([]);
@@ -434,6 +523,69 @@ export function InventoryShell() {
       cancelled = true;
     };
   }, [uid, activePropertyId, fetchBoardData, applyBoardData, inventoryReload]);
+
+  const loadAuditHistory = useCallback(async (cursor: string | null, append: boolean) => {
+    const propertyId = activePropertyId;
+    if (!propertyId || !uid) return;
+    const sequence = ++auditLoadSequence.current;
+    if (append) setAuditLoadingMore(true);
+    else {
+      setAuditPropertyId(propertyId);
+      setAuditStatus('loading');
+      setAuditEvents([]);
+      setAuditNextCursor(null);
+    }
+    try {
+      const params = new URLSearchParams({ propertyId, limit: '50' });
+      if (cursor) params.set('cursor', cursor);
+      const response = await fetchWithAuth(`/api/inventory/history?${params.toString()}`, {
+        cache: 'no-store',
+      });
+      if (!response.ok) throw new Error(`inventory history load failed (${response.status})`);
+      const page = inventoryAuditPageFromPayload(await response.json());
+      if (!page) throw new Error('inventory history response was invalid');
+      if (sequence !== auditLoadSequence.current || activePropertyIdRef.current !== propertyId) return;
+      setAuditEvents((current) => append
+        ? [...current, ...page.events.filter((event) => !current.some((row) => row.id === event.id))]
+        : page.events);
+      setAuditNextCursor(page.nextCursor);
+      setAuditStatus('ready');
+    } catch (error) {
+      console.error('[inventory] audit history load failed', error);
+      if (sequence === auditLoadSequence.current && activePropertyIdRef.current === propertyId) {
+        setAuditStatus(append ? 'ready' : 'error');
+      }
+    } finally {
+      if (sequence === auditLoadSequence.current && activePropertyIdRef.current === propertyId) {
+        setAuditLoadingMore(false);
+      }
+    }
+  }, [activePropertyId, uid]);
+
+  useEffect(() => {
+    if (overlay !== 'history' || !activePropertyId) return;
+    void loadAuditHistory(null, false);
+  }, [overlay, activePropertyId, canViewFinancials, loadAuditHistory]);
+
+  const resolveAuditDelivery = useCallback(async (
+    rootOrderId: string,
+  ): Promise<EffectiveInventoryDelivery | null> => {
+    const requestedPropertyId = activePropertyId;
+    const requestedUid = uid;
+    if (!requestedPropertyId || !requestedUid || !canManage || !canViewFinancials) return null;
+    const delivery = await getEffectiveInventoryDelivery(
+      requestedUid,
+      requestedPropertyId,
+      rootOrderId,
+      true,
+    );
+    return inventoryAuditDeliveryForActiveProperty(
+      requestedPropertyId,
+      activePropertyIdRef.current,
+      rootOrderId,
+      delivery,
+    );
+  }, [activePropertyId, uid, canManage, canViewFinancials]);
 
   // ── Honour ?action= deep links once on mount + when property switches ──
   useEffect(() => {
@@ -1277,6 +1429,8 @@ export function InventoryShell() {
         items={effectiveDisplay}
         bucket={bucket}
         onBucket={setBucket}
+        query={query}
+        onQuery={setQuery}
         tabs={visibleTabs}
         stockHealth={stockHealth}
         shelfValue={shelfValue}
@@ -1285,6 +1439,7 @@ export function InventoryShell() {
         canViewFinancials={canViewFinancials}
         onAction={openOverlay}
         onQuickCount={onQuickCount}
+        quickCountLockedIds={quickCountLockedIds}
         onEdit={onEditItem}
         onAdd={() => { setEditItem(null); setOverlay('add'); }}
       />
@@ -1461,8 +1616,9 @@ export function InventoryShell() {
         requireComplete={countForMonthClose}
         canViewFinancials={canViewFinancials}
         onSaved={() => {
+          const nextOverlay = inventoryOverlayAfterCountSave(countForMonthClose);
           setCountForMonthClose(false);
-          setOverlay('close');
+          setOverlay(nextOverlay);
           void refreshData();
         }}
         items={items}
@@ -1488,6 +1644,7 @@ export function InventoryShell() {
       />
 
       <HistoryPanel
+        key={`${activePropertyId ?? 'no-property'}:${auditDeliveryLookupRevision}`}
         lang={L}
         open={overlay === 'history'}
         onClose={closeOverlay}
@@ -1497,6 +1654,18 @@ export function InventoryShell() {
         canCorrectDeliveries={canManage && canViewFinancials}
         onCorrectDelivery={onCorrectDelivery}
         onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('scan'); }}
+        auditPropertyId={auditMatchesActiveProperty ? auditPropertyId : null}
+        auditEvents={!auditMatchesActiveProperty ? [] : auditStatus === 'error' ? null : auditEvents}
+        auditLoading={!auditMatchesActiveProperty || auditStatus === 'idle' || auditStatus === 'loading'}
+        auditLoadingMore={auditMatchesActiveProperty && auditLoadingMore}
+        auditNextCursor={auditMatchesActiveProperty ? auditNextCursor : null}
+        onLoadOlder={() => {
+          if (auditMatchesActiveProperty && auditNextCursor && !auditLoadingMore) {
+            void loadAuditHistory(auditNextCursor, true);
+          }
+        }}
+        onRetryAudit={() => { void loadAuditHistory(null, false); }}
+        onResolveAuditDelivery={resolveAuditDelivery}
       />
 
       <DeliveryCorrectionSheet
@@ -1505,7 +1674,11 @@ export function InventoryShell() {
         delivery={deliveryCorrection}
         items={items}
         onClose={() => setOverlay('history')}
-        onSaved={() => { setOverlay('history'); void refreshData(); }}
+        onSaved={() => {
+          setAuditDeliveryLookupRevision((current) => current + 1);
+          setOverlay('history');
+          void refreshData();
+        }}
         onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('scan'); }}
       />
 

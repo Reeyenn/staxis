@@ -9,8 +9,11 @@ import assert from 'node:assert/strict';
 import {
   buildCommitPlan,
   buildNotesTag,
+  INVOICE_REFERENCE_MAX_LENGTH,
   invoiceDateFromReceivedAt,
   invoiceAlreadyRecorded,
+  invoiceReferenceValidationCode,
+  normalizeInvoiceReference,
 } from '../inventory-invoice-commit';
 
 const NOW = new Date('2026-05-29T12:00:00');
@@ -30,6 +33,39 @@ function draft(lines: Line[], extra: Record<string, unknown> = {}) {
 }
 
 describe('buildCommitPlan — validation', () => {
+  it('rejects a blank invoice/reference before building a delivery', () => {
+    for (const invoiceNumber of [null, '', '   \n  ']) {
+      assert.throws(
+        () => buildCommitPlan(draft([
+          { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1' },
+        ], { invoiceNumber }), NOW),
+        (error: unknown) => error instanceof Error
+          && 'code' in error
+          && error.code === 'invoice_reference_required',
+      );
+    }
+  });
+
+  it('rejects unsafe or non-identifying invoice references', () => {
+    for (const invoiceNumber of [
+      'INV@123',
+      'INV·123',
+      `INV\u200B123`,
+      '---',
+      'A'.repeat(INVOICE_REFERENCE_MAX_LENGTH + 1),
+    ]) {
+      assert.equal(invoiceReferenceValidationCode(invoiceNumber), 'invoice_reference_invalid');
+      assert.throws(
+        () => buildCommitPlan(draft([
+          { key: 'a', itemName: 'X', decision: 'match', matchedItemId: '1', qty: '1' },
+        ], { invoiceNumber }), NOW),
+        (error: unknown) => error instanceof Error
+          && 'code' in error
+          && error.code === 'invoice_reference_invalid',
+      );
+    }
+  });
+
   it('excludes skipped lines', () => {
     const p = buildCommitPlan(draft([{ key: 'a', itemName: 'Towels', decision: 'skip', matchedItemId: '1', qty: '5' }]), NOW);
     assert.equal(p.orders.length, 0);
@@ -134,8 +170,17 @@ describe('buildCommitPlan — dates & tag', () => {
     assert.throws(() => create('Pacific/Pago_Pago', '2026-05-30'), /later than today/i);
   });
 
-  it('builds the dedupe tag with and without an invoice number', () => {
+  it('normalizes OCR/reference text into one stable dedupe key', () => {
+    assert.equal(normalizeInvoiceReference('  inv－１２３   a  '), 'INV-123 A');
+    assert.equal(invoiceReferenceValidationCode('  inv－１２３   a  '), null);
     assert.equal(buildNotesTag('5567', 'Acme Supply'), 'Invoice scan · inv#5567@acme supply');
+    assert.equal(
+      buildNotesTag('  inv－１２３   a  ', '  ACME   Supply  '),
+      'Invoice scan · inv#INV-123 A@acme supply',
+    );
+  });
+
+  it('keeps the legacy generic source tag parseable outside commit planning', () => {
     assert.equal(buildNotesTag(null, 'Acme'), 'Invoice scan');
     assert.equal(buildNotesTag('', 'Acme'), 'Invoice scan');
   });
@@ -239,11 +284,26 @@ describe('invoiceAlreadyRecorded', () => {
   const tag = 'Invoice scan · inv#5567@acme supply';
   it('flags a matching numbered tag in existing notes', () => {
     assert.equal(invoiceAlreadyRecorded(['Reorder list', tag, null], tag), true);
+    assert.equal(
+      invoiceAlreadyRecorded(['Invoice scan · inv#inv-123@acme supply'], buildNotesTag('INV-123', 'Acme Supply')),
+      true,
+    );
+    assert.equal(
+      invoiceAlreadyRecorded(['Invoice scan · inv#INV-123@Acme   Supply'], buildNotesTag('INV-123', 'Acme Supply')),
+      true,
+    );
   });
   it('never flags an unnumbered tag (cannot dedupe)', () => {
     assert.equal(invoiceAlreadyRecorded(['Invoice scan'], 'Invoice scan'), false);
   });
   it('returns false when no note matches', () => {
     assert.equal(invoiceAlreadyRecorded(['something else'], tag), false);
+    assert.equal(
+      invoiceAlreadyRecorded(
+        ['Invoice scan · inv#5567@acme supply company'],
+        'Invoice scan · inv#5567@acme supply',
+      ),
+      false,
+    );
   });
 });

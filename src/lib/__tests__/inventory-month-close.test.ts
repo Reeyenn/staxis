@@ -109,6 +109,20 @@ describe('inventory month-close recovery errors', () => {
     assert.match(moved.message, /new complete count/i);
   });
 
+  it('labels a start baseline count separately from an ending count', () => {
+    const error = {
+      code: '22023',
+      message: 'one current complete physical-count session is required for every active item',
+    };
+    const baseline = inventoryMonthCloseMutationFailure(error, 'start');
+    assert.equal(baseline.code, 'month_close_baseline_count_required');
+    assert.match(baseline.message, /start this baseline/i);
+    assert.doesNotMatch(baseline.message, /ending-count window/i);
+
+    const ending = inventoryMonthCloseMutationFailure(error, 'close');
+    assert.equal(ending.code, 'month_close_ending_count_required');
+  });
+
   it('never presents an unknown dependency failure as a valid close result', () => {
     const failure = inventoryMonthCloseMutationFailure(new Error('connection reset'));
     assert.equal(failure.status, 500);

@@ -8,11 +8,18 @@
 
 import React, { useMemo, useState } from 'react';
 import type { EffectiveInventoryDelivery } from '@/types';
+import type { InventoryAuditAction, InventoryAuditEvent } from '@/lib/inventory-audit-history';
 import { T, fonts, statusColor } from '../tokens';
 import { Overlay } from './Overlay';
 import { fmtMoney } from '../format';
 import { type Lang } from '../inv-i18n';
 import styles from './HistoryPanel.module.css';
+import {
+  canCorrectEffectiveInventoryDelivery,
+  inventoryAuditDeliveryRootOrderId,
+  inventoryAuditMoneyFacts,
+  type InventoryAuditMoneyKind,
+} from './inventory-audit-presentation';
 import {
   historyEventsForViewer,
   type HistoryEvent,
@@ -32,6 +39,16 @@ interface HistoryPanelProps {
   canCorrectDeliveries?: boolean;
   onCorrectDelivery?: (delivery: EffectiveInventoryDelivery) => void;
   onAddDelivery?: () => void;
+  /** New cursor-paged audit ledger. `null` means it could not be loaded and
+   * the recent operational feed below remains available as a safe fallback. */
+  auditEvents?: InventoryAuditEvent[] | null;
+  auditLoading?: boolean;
+  auditLoadingMore?: boolean;
+  auditNextCursor?: string | null;
+  auditPropertyId?: string | null;
+  onLoadOlder?: () => void;
+  onRetryAudit?: () => void;
+  onResolveAuditDelivery?: (rootOrderId: string) => Promise<EffectiveInventoryDelivery | null>;
 }
 
 function hpStrings(lang: Lang) {
@@ -97,6 +114,43 @@ function hpStrings(lang: Lang) {
       closeEquation: 'Beginning + purchases − ending = actual used',
       close: 'Hide details',
       showDetails: 'Show details',
+      completeHistoryUnavailable: 'Complete history could not load. Recent inventory activity is shown below.',
+      retryHistory: 'Retry complete history',
+      searchHistory: 'Search history',
+      allActivity: 'All activity',
+      countsActivity: 'Counts',
+      deliveriesActivity: 'Deliveries',
+      catalogActivity: 'Items',
+      monthlyActivity: 'Monthly',
+      settingsActivity: 'Setup',
+      noAuditMatches: 'No history matches these filters.',
+      loadOlder: 'Load older history',
+      loadingHistory: 'Loading history…',
+      requestId: 'Request ID',
+      changed: 'Changed',
+      totalCost: 'Total',
+      previousTotalCost: 'Previous total',
+      currentTotalCost: 'Current total',
+      varianceValue: 'Variance value',
+      inventoryValue: 'Inventory value',
+      actualUsedValue: 'Actual used',
+      budgetValue: 'Budget',
+      unitCostValue: 'Unit cost',
+      loadingDelivery: 'Loading delivery details…',
+      deliveryUnavailable: 'Delivery details are unavailable.',
+      retryDelivery: 'Retry delivery details',
+      existingItemBaseline: 'Existing inventory item',
+      actionTitles: {
+        'item.created': 'Added inventory item', 'item.updated': 'Updated inventory item', 'item.archived': 'Archived inventory item',
+        'count.saved': 'Saved inventory count', 'delivery.received': 'Received delivery', 'order_intent.recorded': 'Marked item as ordered', 'loss.recorded': 'Recorded stock loss',
+        'reconciliation.recorded': 'Reconciled inventory', 'delivery.corrected': 'Corrected delivery', 'delivery.voided': 'Voided delivery',
+        'opening_adjustment.recorded': 'Adjusted opening inventory', 'month.started': 'Started monthly tracking', 'month.closed': 'Closed inventory month',
+        'vendor.created': 'Added vendor', 'vendor.updated': 'Updated vendor', 'vendor.inactivated': 'Inactivated vendor',
+        'budget.created': 'Added inventory budget', 'budget.updated': 'Updated inventory budget', 'budget.deleted': 'Deleted inventory budget',
+        'category.created': 'Added inventory category', 'category.updated': 'Updated inventory category', 'category.deleted': 'Deleted inventory category',
+        'budget_section.created': 'Added budget section', 'budget_section.updated': 'Updated budget section', 'budget_section.deleted': 'Deleted budget section',
+        'config.updated': 'Updated inventory setup',
+      } satisfies Record<InventoryAuditAction, string>,
     },
     es: {
       eyebrow: 'Historial',
@@ -156,8 +210,55 @@ function hpStrings(lang: Lang) {
       closeEquation: 'Inicial + compras − final = uso real',
       close: 'Ocultar detalle',
       showDetails: 'Ver detalle',
+      completeHistoryUnavailable: 'No se pudo cargar el historial completo. La actividad reciente aparece abajo.',
+      retryHistory: 'Reintentar historial completo',
+      searchHistory: 'Buscar en el historial',
+      allActivity: 'Toda la actividad',
+      countsActivity: 'Conteos',
+      deliveriesActivity: 'Entregas',
+      catalogActivity: 'Artículos',
+      monthlyActivity: 'Mensual',
+      settingsActivity: 'Configuración',
+      noAuditMatches: 'Ningún registro coincide con estos filtros.',
+      loadOlder: 'Cargar historial anterior',
+      loadingHistory: 'Cargando historial…',
+      requestId: 'ID de solicitud',
+      changed: 'Cambios',
+      totalCost: 'Total',
+      previousTotalCost: 'Total anterior',
+      currentTotalCost: 'Total actual',
+      varianceValue: 'Valor de la diferencia',
+      inventoryValue: 'Valor del inventario',
+      actualUsedValue: 'Uso real',
+      budgetValue: 'Presupuesto',
+      unitCostValue: 'Costo unitario',
+      loadingDelivery: 'Cargando detalles de la entrega…',
+      deliveryUnavailable: 'Los detalles de la entrega no están disponibles.',
+      retryDelivery: 'Reintentar detalles de la entrega',
+      existingItemBaseline: 'Artículo de inventario existente',
+      actionTitles: {
+        'item.created': 'Artículo de inventario agregado', 'item.updated': 'Artículo de inventario actualizado', 'item.archived': 'Artículo de inventario archivado',
+        'count.saved': 'Conteo de inventario guardado', 'delivery.received': 'Entrega recibida', 'order_intent.recorded': 'Artículo marcado como pedido', 'loss.recorded': 'Pérdida de existencias registrada',
+        'reconciliation.recorded': 'Inventario conciliado', 'delivery.corrected': 'Entrega corregida', 'delivery.voided': 'Entrega anulada',
+        'opening_adjustment.recorded': 'Inventario inicial ajustado', 'month.started': 'Seguimiento mensual iniciado', 'month.closed': 'Mes de inventario cerrado',
+        'vendor.created': 'Proveedor agregado', 'vendor.updated': 'Proveedor actualizado', 'vendor.inactivated': 'Proveedor desactivado',
+        'budget.created': 'Presupuesto de inventario agregado', 'budget.updated': 'Presupuesto de inventario actualizado', 'budget.deleted': 'Presupuesto de inventario eliminado',
+        'category.created': 'Categoría de inventario agregada', 'category.updated': 'Categoría de inventario actualizada', 'category.deleted': 'Categoría de inventario eliminada',
+        'budget_section.created': 'Sección de presupuesto agregada', 'budget_section.updated': 'Sección de presupuesto actualizada', 'budget_section.deleted': 'Sección de presupuesto eliminada',
+        'config.updated': 'Configuración de inventario actualizada',
+      } satisfies Record<InventoryAuditAction, string>,
     },
   }[lang];
+}
+
+function auditEventTitle(
+  event: InventoryAuditEvent,
+  hp: ReturnType<typeof hpStrings>,
+): string {
+  if (event.action === 'item.created' && event.details.baseline === true) {
+    return hp.existingItemBaseline;
+  }
+  return hp.actionTitles[event.action];
 }
 
 export function HistoryPanel({
@@ -170,6 +271,14 @@ export function HistoryPanel({
   canCorrectDeliveries = false,
   onCorrectDelivery,
   onAddDelivery,
+  auditEvents,
+  auditLoading = false,
+  auditLoadingMore = false,
+  auditNextCursor = null,
+  auditPropertyId = null,
+  onLoadOlder,
+  onRetryAudit,
+  onResolveAuditDelivery,
 }: HistoryPanelProps) {
   const hp = useMemo(() => hpStrings(lang), [lang]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -197,7 +306,7 @@ export function HistoryPanel({
   }, [timezone]);
   const locale = lang === 'es' ? 'es-ES' : 'en-US';
   const dateFmt = useMemo(
-    () => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', timeZone: safeTimezone }),
+    () => new Intl.DateTimeFormat(locale, { month: 'short', day: 'numeric', year: 'numeric', timeZone: safeTimezone }),
     [locale, safeTimezone],
   );
   const timeFmt = useMemo(
@@ -239,6 +348,20 @@ export function HistoryPanel({
     }
   };
 
+  const auditDeliveryById = useMemo(() => {
+    const byId = new Map<string, EffectiveInventoryDelivery>();
+    for (const event of events) {
+      for (const line of event.lines) {
+        if (line.delivery) byId.set(line.delivery.rootOrderId, line.delivery);
+      }
+    }
+    return byId;
+  }, [events]);
+
+  const suffixCount = auditEvents !== undefined && auditEvents !== null
+    ? `${auditEvents.length}${auditNextCursor ? '+' : ''}`
+    : String(visibleEvents.length);
+
   const subFor = (e: HistoryEvent): string => {
     if (e.kind === 'monthClose' && e.monthClose) {
       const parts = [hp.monthlyActualFinalized];
@@ -267,10 +390,56 @@ export function HistoryPanel({
       onClose={onClose}
       eyebrow={hp.eyebrow}
       italic={hp.italic}
-      suffix={`${visibleEvents.length} ${visibleEvents.length === 1 ? hp.event : hp.events}`}
+      suffix={`${suffixCount} ${(auditEvents?.length ?? visibleEvents.length) === 1 ? hp.event : hp.events}`}
       width={860}
     >
-      <div className={styles.eventList} style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
+      {auditEvents !== undefined && auditEvents !== null ? (
+        <AuditHistoryFeed
+          key={auditPropertyId ?? 'no-property'}
+          events={auditEvents}
+          lang={lang}
+          hp={hp}
+          timezone={safeTimezone}
+          loading={auditLoading}
+          loadingMore={auditLoadingMore}
+          hasMore={Boolean(auditNextCursor)}
+          onLoadOlder={onLoadOlder}
+          deliveryById={auditDeliveryById}
+          canViewFinancials={canViewFinancials}
+          canCorrectDeliveries={canCorrectDeliveries}
+          onCorrectDelivery={onCorrectDelivery}
+          onAddDelivery={onAddDelivery}
+          onResolveAuditDelivery={onResolveAuditDelivery}
+        />
+      ) : (
+        <>
+          {auditEvents === null && (
+            <div
+              role="alert"
+              style={{
+                alignItems: 'center', background: T.goldDim, border: `1px solid ${T.gold}55`,
+                borderRadius: 12, color: T.ink2, display: 'flex', fontFamily: fonts.sans,
+                fontSize: 12.5, gap: 12, justifyContent: 'space-between', lineHeight: 1.45,
+                marginBottom: 12, padding: '10px 12px',
+              }}
+            >
+              <span>{hp.completeHistoryUnavailable}</span>
+              {onRetryAudit && (
+                <button
+                  type="button"
+                  onClick={onRetryAudit}
+                  style={{
+                    background: T.paper, border: `1px solid ${T.gold}77`, borderRadius: 9,
+                    color: T.ink, cursor: 'pointer', flex: 'none', fontFamily: fonts.sans,
+                    fontSize: 12, fontWeight: 700, minHeight: 44, padding: '0 13px',
+                  }}
+                >
+                  {hp.retryHistory}
+                </button>
+              )}
+            </div>
+          )}
+          <div className={styles.eventList} style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, padding: '4px 20px' }}>
         {visibleEvents.length === 0 ? (
           <div
             style={{
@@ -430,8 +599,365 @@ export function HistoryPanel({
             );
           })
         )}
-      </div>
+          </div>
+        </>
+      )}
     </Overlay>
+  );
+}
+
+type AuditFilter = 'all' | 'counts' | 'deliveries' | 'catalog' | 'monthly' | 'settings';
+
+function auditFilterFor(action: InventoryAuditAction): Exclude<AuditFilter, 'all'> {
+  if (action === 'count.saved' || action === 'reconciliation.recorded') return 'counts';
+  if (
+    action === 'delivery.received' || action === 'order_intent.recorded' || action === 'delivery.corrected'
+    || action === 'delivery.voided' || action === 'loss.recorded'
+    || action === 'opening_adjustment.recorded'
+  ) return 'deliveries';
+  if (action.startsWith('item.')) return 'catalog';
+  if (action.startsWith('month.')) return 'monthly';
+  return 'settings';
+}
+
+function auditTone(action: InventoryAuditAction): { color: string; background: string } {
+  const group = auditFilterFor(action);
+  if (group === 'counts') return { color: T.purple, background: T.purpleDim };
+  if (group === 'deliveries') {
+    return action === 'loss.recorded' || action === 'delivery.voided'
+      ? { color: T.terra, background: T.terraDim }
+      : { color: T.sageDeep, background: T.sageDim };
+  }
+  if (group === 'monthly') return { color: T.forestText, background: T.sageDim };
+  if (group === 'catalog') return { color: T.tealText, background: T.tealDim };
+  return { color: T.ink2, background: T.inkWash };
+}
+
+function humanizeAuditField(value: string): string {
+  return value
+    .replace(/_/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/^./, (character) => character.toUpperCase());
+}
+
+function auditMoneyLabel(
+  kind: InventoryAuditMoneyKind,
+  hp: ReturnType<typeof hpStrings>,
+): string {
+  const labels: Record<InventoryAuditMoneyKind, string> = {
+    unitCost: hp.unitCostValue,
+    totalCost: hp.totalCost,
+    previousTotalCost: hp.previousTotalCost,
+    currentTotalCost: hp.currentTotalCost,
+    varianceValue: hp.varianceValue,
+    inventoryValue: hp.inventoryValue,
+    actualUsedValue: hp.actualUsedValue,
+    budgetValue: hp.budgetValue,
+  };
+  return labels[kind];
+}
+
+function AuditHistoryFeed({
+  events,
+  lang,
+  hp,
+  timezone,
+  loading,
+  loadingMore,
+  hasMore,
+  onLoadOlder,
+  deliveryById,
+  canViewFinancials,
+  canCorrectDeliveries,
+  onCorrectDelivery,
+  onAddDelivery,
+  onResolveAuditDelivery,
+}: {
+  events: InventoryAuditEvent[];
+  lang: Lang;
+  hp: ReturnType<typeof hpStrings>;
+  timezone: string;
+  loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  onLoadOlder?: () => void;
+  deliveryById: ReadonlyMap<string, EffectiveInventoryDelivery>;
+  canViewFinancials: boolean;
+  canCorrectDeliveries: boolean;
+  onCorrectDelivery?: (delivery: EffectiveInventoryDelivery) => void;
+  onAddDelivery?: () => void;
+  onResolveAuditDelivery?: (rootOrderId: string) => Promise<EffectiveInventoryDelivery | null>;
+}) {
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<AuditFilter>('all');
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [resolvedDeliveries, setResolvedDeliveries] = useState<
+    Map<string, EffectiveInventoryDelivery | null>
+  >(() => new Map());
+  const [resolvingDeliveryIds, setResolvingDeliveryIds] = useState<Set<string>>(() => new Set());
+  const [deliveryLookupErrors, setDeliveryLookupErrors] = useState<Set<string>>(() => new Set());
+  const resolvingDeliveryIdsRef = React.useRef<Set<string>>(new Set());
+
+  const resolveDelivery = async (rootOrderId: string, retry = false) => {
+    if (
+      !onResolveAuditDelivery
+      || deliveryById.has(rootOrderId)
+      || (!retry && resolvedDeliveries.has(rootOrderId))
+      || resolvingDeliveryIdsRef.current.has(rootOrderId)
+    ) return;
+    resolvingDeliveryIdsRef.current.add(rootOrderId);
+    setResolvingDeliveryIds((current) => new Set(current).add(rootOrderId));
+    setDeliveryLookupErrors((current) => {
+      const next = new Set(current);
+      next.delete(rootOrderId);
+      return next;
+    });
+    try {
+      const delivery = await onResolveAuditDelivery(rootOrderId);
+      const safeDelivery = delivery?.rootOrderId === rootOrderId ? delivery : null;
+      setResolvedDeliveries((current) => new Map(current).set(rootOrderId, safeDelivery));
+    } catch (error) {
+      console.error('[inventory] audit delivery lookup failed', error);
+      setDeliveryLookupErrors((current) => new Set(current).add(rootOrderId));
+    } finally {
+      resolvingDeliveryIdsRef.current.delete(rootOrderId);
+      setResolvingDeliveryIds((current) => {
+        const next = new Set(current);
+        next.delete(rootOrderId);
+        return next;
+      });
+    }
+  };
+
+  const locale = lang === 'es' ? 'es-ES' : 'en-US';
+  const dateTime = useMemo(() => new Intl.DateTimeFormat(locale, {
+    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', timeZone: timezone,
+  }), [locale, timezone]);
+  const filterLabels: Record<AuditFilter, string> = {
+    all: hp.allActivity,
+    counts: hp.countsActivity,
+    deliveries: hp.deliveriesActivity,
+    catalog: hp.catalogActivity,
+    monthly: hp.monthlyActivity,
+    settings: hp.settingsActivity,
+  };
+  const normalizedQuery = query.trim().toLocaleLowerCase(locale);
+  const visible = events.filter((event) => {
+    if (filter !== 'all' && auditFilterFor(event.action) !== filter) return false;
+    if (!normalizedQuery) return true;
+    return [
+      auditEventTitle(event, hp), event.summary.label, event.summary.secondaryLabel,
+      event.actorName, event.requestId, ...event.summary.changedFields,
+    ].filter(Boolean).join(' ').toLocaleLowerCase(locale).includes(normalizedQuery);
+  });
+
+  if (loading && events.length === 0) {
+    return (
+      <div role="status" aria-live="polite" style={{ color: T.ink2, fontFamily: fonts.sans, padding: '44px 20px', textAlign: 'center' }}>
+        {hp.loadingHistory}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className={styles.auditTools} style={{ display: 'grid', gap: 10, gridTemplateColumns: 'minmax(0, 1fr) minmax(150px, 210px)', marginBottom: 12 }}>
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          aria-label={hp.searchHistory}
+          placeholder={hp.searchHistory}
+          style={{
+            background: T.paper, border: `1px solid ${T.controlBorder}`, borderRadius: 11,
+            color: T.ink, fontFamily: fonts.sans, fontSize: 14, height: 44, minWidth: 0, padding: '0 13px',
+          }}
+        />
+        <select
+          value={filter}
+          onChange={(event) => setFilter(event.target.value as AuditFilter)}
+          aria-label={hp.allActivity}
+          style={{
+            background: T.paper, border: `1px solid ${T.controlBorder}`, borderRadius: 11,
+            color: T.ink, fontFamily: fonts.sans, fontSize: 13, height: 44, padding: '0 12px',
+          }}
+        >
+          {(Object.keys(filterLabels) as AuditFilter[]).map((key) => (
+            <option key={key} value={key}>{filterLabels[key]}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className={styles.eventList} style={{ background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 14, overflow: 'hidden' }}>
+        {visible.length === 0 ? (
+          <div role="status" style={{ color: T.ink3, fontFamily: fonts.sans, fontSize: 14, padding: '40px 20px', textAlign: 'center' }}>
+            {hp.noAuditMatches}
+          </div>
+        ) : visible.map((event, index) => {
+          const isOpen = expanded.has(event.id);
+          const tone = auditTone(event.action);
+          const occurred = new Date(event.occurredAt);
+          const when = Number.isFinite(occurred.getTime()) ? dateTime.format(occurred) : event.occurredAt;
+          const quantity = event.summary.quantity;
+          const quantityLabel = quantity != null
+            ? `${quantity} ${event.summary.unit ?? ''}`.trim()
+            : event.summary.itemCount != null
+              ? `${event.summary.itemCount} ${event.summary.itemCount === 1 ? hp.item : hp.items}`
+              : null;
+          const rootOrderId = inventoryAuditDeliveryRootOrderId(event);
+          const resolvedDelivery = rootOrderId ? resolvedDeliveries.get(rootOrderId) : undefined;
+          const delivery = rootOrderId
+            ? deliveryById.get(rootOrderId) ?? resolvedDelivery
+            : undefined;
+          const deliveryLookupAttempted = Boolean(rootOrderId && resolvedDeliveries.has(rootOrderId));
+          const deliveryIsResolving = Boolean(rootOrderId && resolvingDeliveryIds.has(rootOrderId));
+          const deliveryLookupFailed = Boolean(rootOrderId && deliveryLookupErrors.has(rootOrderId));
+          const financialAmounts = inventoryAuditMoneyFacts(event, canViewFinancials);
+          const eventTitle = auditEventTitle(event, hp);
+          return (
+            <div key={event.id} style={{ borderTop: index === 0 ? 0 : `1px solid ${T.ruleSoft}` }}>
+              <button
+                type="button"
+                className={styles.auditEventButton}
+                onClick={() => {
+                  const opening = !expanded.has(event.id);
+                  setExpanded((current) => {
+                    const next = new Set(current);
+                    if (next.has(event.id)) next.delete(event.id); else next.add(event.id);
+                    return next;
+                  });
+                  if (
+                    opening
+                    && rootOrderId
+                    && event.action !== 'delivery.voided'
+                    && canCorrectDeliveries
+                    && onCorrectDelivery
+                    && !delivery
+                    && !deliveryLookupAttempted
+                  ) void resolveDelivery(rootOrderId);
+                }}
+                aria-expanded={isOpen}
+                style={{
+                  alignItems: 'center', background: 'transparent', border: 0, color: T.ink,
+                  cursor: 'pointer', display: 'grid', gap: 12,
+                  gridTemplateColumns: 'minmax(132px, auto) minmax(0, 1fr) minmax(110px, auto) 20px',
+                  minHeight: 68, padding: '11px 16px', textAlign: 'left', width: '100%',
+                }}
+              >
+                <span className={styles.auditDate} style={{ color: T.ink3, fontFamily: fonts.mono, fontSize: 10.5, lineHeight: 1.35 }}>{when}</span>
+                <span className={styles.auditSummary} style={{ minWidth: 0 }}>
+                  <span style={{ color: T.ink, display: 'block', fontFamily: fonts.sans, fontSize: 13.5, fontWeight: 650, lineHeight: 1.35 }}>
+                    {eventTitle}{event.summary.label ? ` · ${event.summary.label}` : ''}
+                  </span>
+                  <span style={{ color: T.ink2, display: 'block', fontFamily: fonts.sans, fontSize: 11.5, lineHeight: 1.4, marginTop: 2 }}>
+                    {[event.actorName ?? hp.team, event.summary.secondaryLabel].filter(Boolean).join(' · ')}
+                  </span>
+                </span>
+                <span className={styles.auditMeta} style={{ justifySelf: 'end', textAlign: 'right' }}>
+                  <span style={{ background: tone.background, borderRadius: 999, color: tone.color, display: 'inline-flex', fontFamily: fonts.sans, fontSize: 10.5, fontWeight: 650, padding: '4px 8px' }}>
+                    {filterLabels[auditFilterFor(event.action)]}
+                  </span>
+                  {quantityLabel && (
+                    <span style={{ color: T.ink2, display: 'block', fontFamily: fonts.mono, fontSize: 10.5, marginTop: 4 }}>
+                      {quantityLabel}
+                    </span>
+                  )}
+                  {financialAmounts.map((amount) => (
+                    <span key={amount.kind} style={{ color: T.ink, display: 'block', fontFamily: fonts.sans, fontSize: 11, fontWeight: 650, marginTop: 4 }}>
+                      {auditMoneyLabel(amount.kind, hp)}: {fmtMoney(amount.value)}
+                    </span>
+                  ))}
+                </span>
+                <span className={styles.auditArrow} aria-hidden="true" style={{ color: T.dim, transform: isOpen ? 'rotate(90deg)' : 'none', transition: 'transform 180ms cubic-bezier(.2,0,0,1)' }}>›</span>
+              </button>
+              {isOpen && (
+                <div style={{ background: T.bg, borderTop: `1px solid ${T.ruleSoft}`, color: T.ink2, fontFamily: fonts.sans, fontSize: 12, lineHeight: 1.5, padding: '12px 16px 14px' }}>
+                  {event.summary.changedFields.length > 0 && (
+                    <div><strong style={{ color: T.ink }}>{hp.changed}:</strong> {event.summary.changedFields.map(humanizeAuditField).join(', ')}</div>
+                  )}
+                  {event.requestId && (
+                    <div style={{ marginTop: event.summary.changedFields.length ? 5 : 0 }}>
+                      <strong style={{ color: T.ink }}>{hp.requestId}:</strong>{' '}
+                      <code style={{ fontFamily: fonts.mono, fontSize: 10.5, overflowWrap: 'anywhere' }}>{event.requestId}</code>
+                    </div>
+                  )}
+                  {canCorrectDeliveries && rootOrderId && deliveryIsResolving && (
+                    <div role="status" aria-live="polite" style={{ color: T.ink2, marginTop: 10 }}>
+                      {hp.loadingDelivery}
+                    </div>
+                  )}
+                  {canCorrectDeliveries && rootOrderId && !deliveryIsResolving && deliveryLookupFailed && (
+                    <button
+                      type="button"
+                      onClick={() => { void resolveDelivery(rootOrderId, true); }}
+                      style={{
+                        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 9,
+                        color: T.ink, cursor: 'pointer', fontFamily: fonts.sans, fontSize: 12,
+                        fontWeight: 650, marginTop: 10, minHeight: 44, padding: '0 13px',
+                      }}
+                    >
+                      {hp.retryDelivery}
+                    </button>
+                  )}
+                  {canCorrectDeliveries && rootOrderId && !deliveryIsResolving && !deliveryLookupFailed
+                    && !delivery && deliveryLookupAttempted && (
+                      <div style={{ color: T.ink2, marginTop: 10 }}>
+                        {hp.deliveryUnavailable}{' '}
+                        {onResolveAuditDelivery && (
+                          <button
+                            type="button"
+                            className={styles.lineAction}
+                            onClick={() => { void resolveDelivery(rootOrderId, true); }}
+                            style={{ marginLeft: 8 }}
+                          >
+                            {hp.retryDelivery}
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  {canCorrectDeliveries && !deliveryIsResolving
+                    && (event.action === 'delivery.voided' || delivery?.status === 'voided')
+                    && onAddDelivery && (
+                      <button type="button" className={styles.lineAction} onClick={onAddDelivery} style={{ marginTop: 10 }}>
+                        {hp.addNewDelivery}
+                      </button>
+                    )}
+                  {canCorrectDeliveries && !deliveryIsResolving
+                    && event.action !== 'delivery.voided'
+                    && canCorrectEffectiveInventoryDelivery(delivery)
+                    && onCorrectDelivery && (
+                      <button
+                        type="button"
+                        className={styles.lineAction}
+                        onClick={() => onCorrectDelivery(delivery)}
+                        style={{ marginTop: 10 }}
+                      >
+                        {hp.correctDelivery}
+                      </button>
+                    )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {hasMore && onLoadOlder && (
+        <button
+          type="button"
+          onClick={onLoadOlder}
+          disabled={loadingMore}
+          aria-busy={loadingMore}
+          style={{
+            background: T.paper, border: `1px solid ${T.controlBorder}`, borderRadius: 11,
+            color: T.ink, cursor: loadingMore ? 'wait' : 'pointer', fontFamily: fonts.sans,
+            fontSize: 13, fontWeight: 650, marginTop: 12, minHeight: 44, padding: '0 16px', width: '100%',
+          }}
+        >
+          {loadingMore ? hp.loadingHistory : hp.loadOlder}
+        </button>
+      )}
+    </div>
   );
 }
 

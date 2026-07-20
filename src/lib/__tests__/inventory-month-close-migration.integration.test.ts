@@ -134,6 +134,26 @@ describe('inventory month close migration 0322', () => {
       `select count(*) from public.inventory_orders where property_id = $1 and item_id = $2`,
       [PROPERTY_ID, BASE_ITEM_ID],
     )), 0);
+
+    const countActors = await pg.query(
+      `select recorded_by_user_id,recorded_by_name
+       from public.inventory_counts where count_session_id in ($1,$2)`,
+      [EXISTING_ADJUSTMENT_REQUEST_ID, SECOND_EXISTING_ADJUSTMENT_REQUEST_ID],
+    ) as { rows: Array<{ recorded_by_user_id: string | null; recorded_by_name: string | null }> };
+    assert.equal(countActors.rows.length, 2);
+    assert.ok(countActors.rows.every((row) => row.recorded_by_user_id === USER_ID));
+    assert.ok(countActors.rows.every((row) => Boolean(row.recorded_by_name)));
+
+    const linkedAudit = await pg.query(
+      `select action,actor_user_id from public.inventory_audit_events
+       where request_id in ($1,$2) order by request_id,action`,
+      [EXISTING_ADJUSTMENT_REQUEST_ID, SECOND_EXISTING_ADJUSTMENT_REQUEST_ID],
+    ) as { rows: Array<{ action: string; actor_user_id: string | null }> };
+    assert.deepEqual(
+      linkedAudit.rows.map((row) => row.action),
+      ['count.saved', 'opening_adjustment.recorded', 'count.saved', 'opening_adjustment.recorded'],
+    );
+    assert.ok(linkedAudit.rows.every((row) => row.actor_user_id === USER_ID));
   });
 
   test('rejects unexplained positive stock and positive-stock archival', async () => {

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeMonthCloseDashboard } from '../inventory-month-close-contract';
+import {
+  inventoryMonthCloseMutationReceipt,
+  isCurrentMonthCloseMutation,
+  normalizeMonthCloseDashboard,
+  normalizeMonthCloseDashboardForProperty,
+  normalizeMonthCloseMutationReceipt,
+} from '../inventory-month-close-contract';
 
 function validDashboard(): Record<string, unknown> {
   return {
@@ -70,6 +76,14 @@ test('month close rejects missing financial evidence instead of creating fake ze
   const invalidCount = validDashboard();
   (invalidCount.purchase as Record<string, unknown>).loggedDeliveryCount = -1;
   assert.equal(normalizeMonthCloseDashboard(invalidCount), null);
+
+  const missingItems = validDashboard();
+  delete missingItems.items;
+  assert.equal(normalizeMonthCloseDashboard(missingItems), null);
+
+  const missingCompleteness = validDashboard();
+  delete missingCompleteness.completeness;
+  assert.equal(normalizeMonthCloseDashboard(missingCompleteness), null);
 });
 
 test('month close rejects invented issue messages and invalid hotel timezones', () => {
@@ -80,4 +94,32 @@ test('month close rejects invented issue messages and invalid hotel timezones', 
   const badTimezone = validDashboard();
   badTimezone.timezone = 'hotel-local-time';
   assert.equal(normalizeMonthCloseDashboard(badTimezone), null);
+});
+
+test('month close rejects a complete dashboard for a different hotel', () => {
+  assert.ok(normalizeMonthCloseDashboardForProperty(validDashboard(), 'property-1'));
+  assert.equal(normalizeMonthCloseDashboardForProperty(validDashboard(), 'property-2'), null);
+});
+
+test('month close validates the committed-without-dashboard receipt', () => {
+  const receipt = inventoryMonthCloseMutationReceipt({
+    propertyId: 'property-1',
+    month: '2026-07',
+    action: 'close',
+    mutationRequestId: 'request-1',
+  });
+  assert.deepEqual(normalizeMonthCloseMutationReceipt({ data: receipt }), receipt);
+  assert.equal(normalizeMonthCloseMutationReceipt({
+    data: { ...receipt, mutationRequestId: null },
+  }), null);
+  assert.equal(normalizeMonthCloseMutationReceipt({
+    data: { ...receipt, dashboard: {} },
+  }), null);
+});
+
+test('month close ignores a save response after a hotel switch or newer save', () => {
+  const scope = { propertyId: 'property-1', sequence: 7 };
+  assert.equal(isCurrentMonthCloseMutation(scope, 'property-1', 7), true);
+  assert.equal(isCurrentMonthCloseMutation(scope, 'property-2', 7), false);
+  assert.equal(isCurrentMonthCloseMutation(scope, 'property-1', 8), false);
 });

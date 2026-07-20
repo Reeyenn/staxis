@@ -23,8 +23,16 @@ function urgencySort(a: DisplayItem, b: DisplayItem) {
 export function partitionMobileInventory(
   items: DisplayItem[],
   bucket: StockBucket,
+  query = '',
 ): MobileInventoryPartition {
-  const visible = items.filter((item) => inBucket(item, bucket));
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visible = items
+    .filter((item) => inBucket(item, bucket))
+    .filter((item) => (
+      normalizedQuery
+        ? `${item.name} ${item.vendor ?? ''} ${item.id}`.toLocaleLowerCase().includes(normalizedQuery)
+        : true
+    ));
   const counted = visible.filter((item) => !item.uncounted);
   return {
     critical: counted.filter((item) => item.status === 'critical').sort(urgencySort),

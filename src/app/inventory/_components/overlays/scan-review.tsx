@@ -129,14 +129,15 @@ export function reviewRowIsReady(row: ReviewRow): boolean {
 }
 
 export function invoiceReviewHasUnsavedWork(input: {
-  phase: 'upload' | 'reading' | 'review' | 'committing' | 'done' | 'error';
+  phase: 'upload' | 'reading' | 'review' | 'verifying' | 'committing' | 'done' | 'error';
   hasStagedFile: boolean;
   rowCount: number;
 }): boolean {
   if (input.phase === 'done') return false;
   return input.hasStagedFile
     || input.phase === 'reading'
-    || ((input.phase === 'review' || input.phase === 'committing') && input.rowCount > 0);
+    || ((input.phase === 'review' || input.phase === 'verifying' || input.phase === 'committing')
+      && input.rowCount > 0);
 }
 
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];

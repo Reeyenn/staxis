@@ -98,6 +98,11 @@ const STRINGS = {
     generalInventory: 'General inventory',
     breakfastInventory: 'Breakfast inventory',
     search: 'Search…',
+    searchInventory: 'Search inventory',
+    clearSearch: 'Clear search',
+    previousActions: 'Show previous actions',
+    moreActions: 'Show more actions',
+    savingQuickCount: 'Saving quick count',
     addItem: '+ Add item',
     // ── StockList columns ──
     colOrderNow: 'Order now',
@@ -201,6 +206,11 @@ const STRINGS = {
     generalInventory: 'Inventario general',
     breakfastInventory: 'Inventario de desayuno',
     search: 'Buscar…',
+    searchInventory: 'Buscar en inventario',
+    clearSearch: 'Borrar búsqueda',
+    previousActions: 'Mostrar acciones anteriores',
+    moreActions: 'Mostrar más acciones',
+    savingQuickCount: 'Guardando conteo rápido',
     addItem: '+ Agregar artículo',
     // ── StockList columns ──
     colOrderNow: 'Pedir ahora',

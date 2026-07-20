@@ -23,7 +23,7 @@ const PADDING: Record<Size, string> = {
 const HEIGHT: Record<Size, number> = { sm: 30, md: 38, lg: 42 };
 const FONT_SIZE: Record<Size, number> = { sm: 11.5, md: 12.5, lg: 13.5 };
 
-export function Btn({
+export const Btn = React.forwardRef<HTMLButtonElement, BtnProps>(function Btn({
   variant = 'ghost',
   size = 'md',
   type = 'button',
@@ -31,7 +31,7 @@ export function Btn({
   disabled,
   children,
   ...rest
-}: BtnProps) {
+}, ref) {
   const v = (() => {
     switch (variant) {
       case 'primary':
@@ -49,6 +49,7 @@ export function Btn({
   })();
   return (
     <button
+      ref={ref}
       type={type}
       disabled={disabled}
       {...rest}
@@ -75,4 +76,4 @@ export function Btn({
       {children}
     </button>
   );
-}
+});

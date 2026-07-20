@@ -14,7 +14,7 @@
      scan-i18n.ts     — the sheet's bilingual dictionary
    ────────────────────────────────────────────────────────────────────── */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -25,9 +25,12 @@ import { inventoryDateKeyInZone } from '@/lib/inventory-month-close';
 import {
   buildCommitPlan,
   buildNotesTag,
+  INVOICE_REFERENCE_MAX_LENGTH,
   invoiceDateFromReceivedAt,
   invoiceAlreadyRecorded,
+  invoiceReferenceValidationCode,
   isInvoiceCalendarDate,
+  normalizeInvoiceReference,
 } from '@/lib/inventory-invoice-commit';
 
 import { T, fonts } from '../tokens';
@@ -66,8 +69,19 @@ import {
   numberedInvoiceSaveBlocked,
   errMsg,
 } from './scan-commit';
+import {
+  beginInvoiceOperation,
+  createInvoiceOperationCursor,
+  duplicateInvoiceRequestIsCurrent,
+  invalidateInvoiceOperations,
+  invoiceOperationIsCurrent,
+  normalizeDuplicateVendorIdentity,
+  syncInvoiceOperationLifecycle,
+  type DuplicateInvoiceRequestScope,
+  type InvoiceOperationScope,
+} from './scan-operation-scope';
 
-type ScanPhase = 'upload' | 'reading' | 'review' | 'committing' | 'done' | 'error';
+type ScanPhase = 'upload' | 'reading' | 'review' | 'verifying' | 'committing' | 'done' | 'error';
 
 interface InvoiceReviewDraft {
   propertyId: string;
@@ -155,6 +169,51 @@ export function ScanInvoiceSheet({
   const [banner, setBanner] = useState('');
   const [retryLocked, setRetryLocked] = useState(false);
   const [recoveredLineCount, setRecoveredLineCount] = useState(0);
+  const vendorRef = useRef(vendor);
+  const invoiceNumberRef = useRef<string | null>(invoiceNumber);
+  // This ref closes the one-render gap between Save and the visible
+  // `verifying` phase. Keep it populated through the write so no property
+  // change can slip between duplicate verification and commit.
+  const saveBoundaryScopeRef = useRef<InvoiceOperationScope | null>(null);
+  const operationCursorRef = useRef(createInvoiceOperationCursor(open, activePropertyId));
+
+  // Synchronize only after React commits this lifecycle. Mutating these refs
+  // during render would let an abandoned concurrent render cancel work that
+  // still belongs to the currently committed hotel. Layout cleanup runs
+  // synchronously on a committed lifecycle change or unmount, before a stale
+  // continuation can cross the Save boundary.
+  useLayoutEffect(() => {
+    const nextLifecycle = syncInvoiceOperationLifecycle(
+      operationCursorRef.current,
+      open,
+      activePropertyId,
+    );
+    if (nextLifecycle !== operationCursorRef.current) {
+      operationCursorRef.current = nextLifecycle;
+      saveBoundaryScopeRef.current = null;
+    }
+    return () => {
+      operationCursorRef.current = invalidateInvoiceOperations(operationCursorRef.current);
+      saveBoundaryScopeRef.current = null;
+    };
+  }, [activePropertyId, open]);
+
+  useLayoutEffect(() => {
+    vendorRef.current = vendor;
+    invoiceNumberRef.current = invoiceNumber;
+  }, [invoiceNumber, vendor]);
+
+  const beginOperation = useCallback((propertyId: string) => {
+    const started = beginInvoiceOperation(operationCursorRef.current, propertyId);
+    operationCursorRef.current = started.cursor;
+    return started.scope;
+  }, []);
+  const invalidateOperations = useCallback(() => {
+    operationCursorRef.current = invalidateInvoiceOperations(operationCursorRef.current);
+  }, []);
+  const operationCurrent = useCallback((scope: InvoiceOperationScope) => (
+    invoiceOperationIsCurrent(scope, operationCursorRef.current)
+  ), []);
 
   // Per-line commit progress, so a retry after a partial failure resumes the
   // failed step and never double-inserts an order / re-creates an item.
@@ -172,20 +231,48 @@ export function ScanInvoiceSheet({
     ? { kind: 'invoice-review' as const, userId: user.uid, propertyId: activePropertyId, scope: 'review' }
     : null, [activePropertyId, user?.uid]);
 
-  const verifyDuplicateInvoice = useCallback(async (number: string, vendorName: string) => {
-    if (!number) {
+  const verifyDuplicateInvoice = useCallback(async (
+    number: string,
+    vendorName: string,
+    existingScope?: InvoiceOperationScope,
+  ) => {
+    const reference = normalizeInvoiceReference(number);
+    const propertyId = existingScope?.propertyId ?? activePropertyId;
+    const scope = existingScope ?? (propertyId ? beginOperation(propertyId) : null);
+    if (invoiceReferenceValidationCode(reference) !== null) {
+      if (scope && !operationCurrent(scope)) return 'stale' as const;
       setDupChecking(false);
       setDupWarn(false);
       setDupCheckFailed(false);
-      return 'clear' as const;
+      return 'invalid' as const;
     }
-    if (!user?.uid || !activePropertyId) return 'failed' as const;
+    if (!user?.uid || !propertyId || !scope) return 'failed' as const;
+    const requestScope: DuplicateInvoiceRequestScope = {
+      ...scope,
+      reference,
+      vendor: normalizeDuplicateVendorIdentity(vendorName),
+    };
+    const requestCurrent = () => duplicateInvoiceRequestIsCurrent(
+      requestScope,
+      operationCursorRef.current,
+      {
+        reference: normalizeInvoiceReference(invoiceNumberRef.current),
+        vendor: vendorRef.current,
+      },
+    );
+    if (!requestCurrent()) return 'stale' as const;
     setDupChecking(true);
     setDupWarn(false);
     setDupCheckFailed(false);
     try {
-      const tag = buildNotesTag(number, vendorName || null);
-      const deliveries = await listEffectiveInventoryDeliveries(user.uid, activePropertyId, 2000, true);
+      const tag = buildNotesTag(reference, vendorName || null);
+      const deliveries = await listEffectiveInventoryDeliveries(
+        user.uid,
+        requestScope.propertyId,
+        2000,
+        true,
+      );
+      if (!requestCurrent()) return 'stale' as const;
       // A fully voided invoice may be re-entered through the audited database
       // replacement path. Any still-effective line keeps the hard duplicate
       // block, so voiding one line cannot weaken protection for the rest.
@@ -198,12 +285,14 @@ export function ScanInvoiceSheet({
       setDupWarn(duplicate);
       return duplicate ? 'duplicate' as const : 'clear' as const;
     } catch {
+      if (!requestCurrent()) return 'stale' as const;
       setDupCheckFailed(true);
       return 'failed' as const;
     } finally {
-      setDupChecking(false);
+      // An older request must not clear the spinner for a newer identity.
+      if (requestCurrent()) setDupChecking(false);
     }
-  }, [activePropertyId, user?.uid]);
+  }, [activePropertyId, beginOperation, operationCurrent, user?.uid]);
 
   // Revoke every thumbnail object-URL currently staged. Called on reset/close
   // and unmount so we never leak blob URLs (esp. across repeated open/close).
@@ -225,14 +314,18 @@ export function ScanInvoiceSheet({
           activePropertyId,
         )
       : null;
+    const restoredVendor = restored?.vendorName ?? reviewDraft?.vendor ?? '';
+    const restoredInvoiceNumber = reviewDraft?.invoiceNumber ?? null;
+    vendorRef.current = restoredVendor;
+    invoiceNumberRef.current = restoredInvoiceNumber;
     setPhase(restored || reviewDraft ? 'review' : 'upload');
     setErrorText('');
     clearStaged();
-    setVendor(restored?.vendorName ?? reviewDraft?.vendor ?? '');
+    setVendor(restoredVendor);
     setInvoiceDate(restored
       ? (invoiceDateFromReceivedAt(restored.receivedAt, timezoneRef.current) ?? '')
       : reviewDraft?.invoiceDate ?? '');
-    setInvoiceNumber(reviewDraft?.invoiceNumber ?? null);
+    setInvoiceNumber(restoredInvoiceNumber);
     setRows(reviewDraft?.rows ?? []);
     setDupWarn(false);
     setDupChecking(false);
@@ -342,13 +435,14 @@ export function ScanInvoiceSheet({
   // pages and their thumbnails before delegating to the parent's onClose, so
   // closing mid-stage never leaks blob URLs or carries pages into a reopen.
   const handleClose = () => {
-    if (phase === 'committing' || retryLocked) return;
+    if (saveBoundaryScopeRef.current || phase === 'verifying' || phase === 'committing' || retryLocked) return;
     const unsaved = invoiceReviewHasUnsavedWork({
       phase,
       hasStagedFile: stagedRef.current.kind !== 'none',
       rowCount: rows.length,
     });
     if (unsaved && !confirm(ss.discardConfirm)) return;
+    invalidateOperations();
     clearStaged();
     if (reviewStorageInput) clearInventoryOverlayDraft(reviewStorageInput);
     onClose();
@@ -362,6 +456,7 @@ export function ScanInvoiceSheet({
     if (!user || !activePropertyId) return;
     const cur = stagedRef.current;
     if (cur.kind === 'none') return;
+    const scanScope = beginOperation(activePropertyId);
     setPhase('reading');
     setErrorText('');
     setDupWarn(false);
@@ -378,16 +473,19 @@ export function ScanInvoiceSheet({
             return { imageBase64: resized.base64, mediaType: resized.mediaType };
           }),
         );
-        body = JSON.stringify({ pid: activePropertyId, pages });
+        if (!operationCurrent(scanScope)) return;
+        body = JSON.stringify({ pid: scanScope.propertyId, pages });
       } else {
         const pdfBase64 = await fileToBase64(cur.file);
-        body = JSON.stringify({ pid: activePropertyId, pdfBase64 });
+        if (!operationCurrent(scanScope)) return;
+        body = JSON.stringify({ pid: scanScope.propertyId, pdfBase64 });
       }
       const res = await fetchWithAuth('/api/inventory/scan-invoice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
       });
+      if (!operationCurrent(scanScope)) return;
       const json = (await res.json()) as {
         ok?: boolean;
         vendor_name?: string | null;
@@ -396,6 +494,7 @@ export function ScanInvoiceSheet({
         items?: RawInvoiceLine[];
         error?: string;
       };
+      if (!operationCurrent(scanScope)) return;
       if (!res.ok || !json.ok) {
         setPhase('error');
         setErrorText(scanErrorFor(lang, res.status, json.error));
@@ -407,10 +506,13 @@ export function ScanInvoiceSheet({
         setErrorText(ss.noLineItems);
         return;
       }
+      const scannedVendor = (json.vendor_name ?? '').trim();
       setRows(items.map((raw, i) => buildRow(raw, i, display)));
-      setVendor((json.vendor_name ?? '').trim());
+      vendorRef.current = scannedVendor;
+      setVendor(scannedVendor);
       setInvoiceDate((json.invoice_date ?? '').trim());
-      const num = (json.invoice_number ?? '').trim();
+      const num = normalizeInvoiceReference(json.invoice_number);
+      invoiceNumberRef.current = num || null;
       setInvoiceNumber(num || null);
       setBanner('');
       // Scan accepted — the staged files (and their thumbnails) are done with;
@@ -418,21 +520,28 @@ export function ScanInvoiceSheet({
       clearStaged();
       setPhase('review');
 
-      // A numbered invoice is fail-closed: search a field-test-sized history
-      // window and hard-block Save on a match OR if history could not be
-      // verified. There is deliberately no override during the field test.
-      if (num) {
-        await verifyDuplicateInvoice(num, (json.vendor_name ?? '').trim());
+      // A valid invoice/reference is fail-closed: search a field-test-sized
+      // history window and hard-block Save on a match OR if history could not
+      // be verified. Missing/invalid references are blocked locally below.
+      if (invoiceReferenceValidationCode(num) === null) {
+        await verifyDuplicateInvoice(num, scannedVendor, scanScope);
       }
     } catch (err) {
+      if (!operationCurrent(scanScope)) return;
       console.error('[scan-invoice] failed', err);
       setPhase('error');
       setErrorText(ss.uploadFailed);
     }
   };
 
+  const normalizedInvoiceReference = normalizeInvoiceReference(invoiceNumber);
+  const invoiceReferenceErrorCode = invoiceReferenceValidationCode(normalizedInvoiceReference);
+  const invoiceReferenceReady = invoiceReferenceErrorCode === null;
+  const invoiceReferenceMessage = invoiceReferenceErrorCode === 'invoice_reference_invalid'
+    ? ss.invoiceReferenceInvalid
+    : ss.invoiceReferenceRequired;
   const duplicateBlocked = numberedInvoiceSaveBlocked({
-    invoiceNumber,
+    invoiceNumber: invoiceReferenceReady ? normalizedInvoiceReference : null,
     checking: dupChecking,
     duplicate: dupWarn,
     checkFailed: dupCheckFailed,
@@ -467,41 +576,90 @@ export function ScanInvoiceSheet({
     if (!open || !hasUnsavedChanges) return;
     const beforePropertyChange = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent;
-      if (phase === 'committing' || retryLocked) {
+      if (
+        saveBoundaryScopeRef.current
+        || phase === 'verifying'
+        || phase === 'committing'
+        || retryLocked
+      ) {
         event.preventDefault();
         setBanner(ss.propertySwitchBlocked);
         return;
       }
-      if (!window.confirm(ss.propertySwitchConfirm)) event.preventDefault();
+      if (!window.confirm(ss.propertySwitchConfirm)) {
+        event.preventDefault();
+        return;
+      }
+      // Invalidate synchronously inside the confirmed event, before the
+      // property context can render the new hotel. Late OCR/history responses
+      // from this hotel are then inert even in the same microtask turn. The
+      // confirmation is an explicit discard, so remove this hotel's persisted
+      // review before allowing the context to complete the switch.
+      if (reviewStorageInput) clearInventoryOverlayDraft(reviewStorageInput);
+      invalidateOperations();
     };
     window.addEventListener(BEFORE_PROPERTY_CHANGE_EVENT, beforePropertyChange);
     return () => window.removeEventListener(BEFORE_PROPERTY_CHANGE_EVENT, beforePropertyChange);
-  }, [hasUnsavedChanges, open, phase, retryLocked, ss.propertySwitchBlocked, ss.propertySwitchConfirm]);
+  }, [
+    hasUnsavedChanges,
+    invalidateOperations,
+    open,
+    phase,
+    reviewStorageInput,
+    retryLocked,
+    ss.propertySwitchBlocked,
+    ss.propertySwitchConfirm,
+  ]);
 
   const handleCommit = async () => {
     if (
-      !user || !activePropertyId || phase === 'committing'
-      || (!retryLocked && (duplicateBlocked || !rowsReady || !invoiceDateReady))
+      !user || !activePropertyId || saveBoundaryScopeRef.current
+      || phase === 'verifying' || phase === 'committing'
+      || (!retryLocked && (!invoiceReferenceReady || duplicateBlocked || !rowsReady || !invoiceDateReady))
     ) return;
+    const commitScope = beginOperation(activePropertyId);
+    const commitPropertyId = commitScope.propertyId;
+    saveBoundaryScopeRef.current = commitScope;
+    const releaseSaveBoundary = () => {
+      const current = saveBoundaryScopeRef.current;
+      if (current?.propertyId === commitScope.propertyId && current.sequence === commitScope.sequence) {
+        saveBoundaryScopeRef.current = null;
+      }
+    };
+    setBanner('');
     // Recheck the editable identity at the actual save boundary. An onBlur
     // lookup alone can race the Save click and let a newly typed duplicate
     // through before React paints the checking state.
-    if (!retryLocked && invoiceNumber) {
-      const result = await verifyDuplicateInvoice(invoiceNumber, vendor);
-      if (result !== 'clear') return;
+    if (!retryLocked) {
+      // Enter a hard state before awaiting. The ref above closes the immediate
+      // event-loop gap; this phase locks the visible review controls.
+      setPhase('verifying');
+      const result = await verifyDuplicateInvoice(normalizedInvoiceReference, vendor, commitScope);
+      if (!operationCurrent(commitScope)) {
+        releaseSaveBoundary();
+        if (
+          operationCursorRef.current.open
+          && operationCursorRef.current.propertyId === commitScope.propertyId
+        ) setPhase('review');
+        return;
+      }
+      if (result !== 'clear') {
+        releaseSaveBoundary();
+        setPhase('review');
+        return;
+      }
     }
     setPhase('committing');
-    setBanner('');
 
     try {
       if (retryLocked) {
-        await retryCommit(progressRef.current, { uid: user.uid, pid: activePropertyId });
+        await retryCommit(progressRef.current, { uid: user.uid, pid: commitPropertyId });
       } else {
         const plan = buildCommitPlan({
           propertyTimezone: timezone,
           vendorName: vendor,
           invoiceDate,
-          invoiceNumber,
+          invoiceNumber: normalizedInvoiceReference,
           lines: rows.map((r) => ({
             key: r.key,
             itemName: r.decision === 'create' ? r.newName : r.raw.item_name,
@@ -527,12 +685,16 @@ export function ScanInvoiceSheet({
         });
         await executeCommit(plan, progressRef.current, {
           uid: user.uid,
-          pid: activePropertyId,
+          pid: commitPropertyId,
         });
       }
     } catch (e) {
+      if (!operationCurrent(commitScope)) {
+        releaseSaveBoundary();
+        return;
+      }
       if (isDefinitiveDeliveryFailure(e, retryLocked)) {
-        releaseRejectedCommit(progressRef.current, activePropertyId);
+        releaseRejectedCommit(progressRef.current, commitPropertyId);
         setRetryLocked(false);
       } else if (progressRef.current.attempt) {
         setRecoveredLineCount(progressRef.current.attempt?.lines.length ?? rows.length);
@@ -544,14 +706,21 @@ export function ScanInvoiceSheet({
       }
       setBanner(ss.savingFailed(errMsg(e)));
       setPhase('review');
+      releaseSaveBoundary();
+      return;
+    }
+    if (!operationCurrent(commitScope)) {
+      releaseSaveBoundary();
       return;
     }
     setRetryLocked(false);
     if (reviewStorageInput) clearInventoryOverlayDraft(reviewStorageInput);
     setPhase('done');
+    releaseSaveBoundary();
   };
 
-  const reviewing = phase === 'review' || phase === 'committing';
+  const reviewing = phase === 'review' || phase === 'verifying' || phase === 'committing';
+  const saveBusy = phase === 'verifying' || phase === 'committing';
   const actionable = rows.filter((r) => r.decision !== 'skip').length;
   const matchedCount = rows.filter((r) => r.decision === 'match').length;
   const createCount = rows.filter((r) => r.decision === 'create').length;
@@ -569,16 +738,18 @@ export function ScanInvoiceSheet({
       footer={
         reviewing ? (
           <>
-            <Btn variant="ghost" size="md" onClick={handleClose} disabled={phase === 'committing'}>
+            <Btn variant="ghost" size="md" onClick={handleClose} disabled={saveBusy}>
               {ss.cancel}
             </Btn>
             <Btn
               variant="primary"
               size="md"
               onClick={handleCommit}
-              disabled={phase === 'committing' || (!retryLocked && (actionable === 0 || duplicateBlocked || !rowsReady || !invoiceDateReady))}
+              disabled={saveBusy || (!retryLocked && (actionable === 0 || !invoiceReferenceReady || duplicateBlocked || !rowsReady || !invoiceDateReady))}
             >
-              {phase === 'committing'
+              {phase === 'verifying'
+                ? (lang === 'es' ? 'Verificando factura…' : 'Verifying invoice…')
+                : phase === 'committing'
                 ? ss.adding
                 : retryLocked
                   ? (lang === 'es' ? 'Reintentar la misma entrega' : 'Retry exact delivery')
@@ -713,37 +884,89 @@ export function ScanInvoiceSheet({
           )}
           {banner && <div style={warmStrip}>{banner}</div>}
 
-          <div className={overlayStyles.formGrid3} style={{ alignItems: 'end' }}>
+          <div className={overlayStyles.formGrid3} style={{ alignItems: 'start' }}>
             <label>
               <span className={overlayStyles.fieldLabel}>{ss.vendor}</span>
               <input
                 className={overlayStyles.formControl}
                 style={{ ...inputLg, minHeight: 44, marginTop: 6 }}
                 value={vendor}
-                disabled={retryLocked || phase === 'committing'}
+                disabled={retryLocked || saveBusy}
                 onChange={(event) => {
+                  if (saveBoundaryScopeRef.current) return;
+                  vendorRef.current = event.target.value;
+                  invalidateOperations();
                   setVendor(event.target.value);
+                  setDupChecking(false);
                   setDupWarn(false);
                   setDupCheckFailed(false);
                 }}
-                onBlur={() => { if (invoiceNumber) void verifyDuplicateInvoice(invoiceNumber, vendor); }}
+                onBlur={() => {
+                  if (!saveBoundaryScopeRef.current && invoiceReferenceReady) {
+                    void verifyDuplicateInvoice(normalizedInvoiceReference, vendor);
+                  }
+                }}
               />
             </label>
-            <label>
+            <label htmlFor="scan-invoice-reference">
               <span className={overlayStyles.fieldLabel}>{ss.invoiceNumber}</span>
               <input
+                id="scan-invoice-reference"
                 className={overlayStyles.formControl}
-                style={{ ...inputLg, minHeight: 44, marginTop: 6 }}
+                style={{
+                  ...inputLg,
+                  minHeight: 44,
+                  marginTop: 6,
+                  borderColor: !retryLocked && !invoiceReferenceReady ? T.warm : T.controlBorder,
+                }}
                 value={invoiceNumber ?? ''}
-                disabled={retryLocked || phase === 'committing'}
+                disabled={retryLocked || saveBusy}
+                required
+                aria-required="true"
+                aria-invalid={!retryLocked && !invoiceReferenceReady}
+                aria-describedby="scan-invoice-reference-help"
+                aria-errormessage={!retryLocked && !invoiceReferenceReady
+                  ? 'scan-invoice-reference-help'
+                  : undefined}
+                autoComplete="off"
+                spellCheck={false}
+                maxLength={INVOICE_REFERENCE_MAX_LENGTH}
                 onChange={(event) => {
-                  const next = event.target.value.trimStart();
+                  if (saveBoundaryScopeRef.current) return;
+                  const next = event.target.value;
+                  invoiceNumberRef.current = next || null;
+                  invalidateOperations();
                   setInvoiceNumber(next || null);
+                  setDupChecking(false);
                   setDupWarn(false);
                   setDupCheckFailed(false);
                 }}
-                onBlur={() => { if (invoiceNumber) void verifyDuplicateInvoice(invoiceNumber.trim(), vendor); }}
+                onBlur={() => {
+                  if (saveBoundaryScopeRef.current) return;
+                  const next = normalizeInvoiceReference(invoiceNumber);
+                  invoiceNumberRef.current = next || null;
+                  setInvoiceNumber(next || null);
+                  if (invoiceReferenceValidationCode(next) === null) {
+                    void verifyDuplicateInvoice(next, vendor);
+                  }
+                }}
               />
+              <span
+                id="scan-invoice-reference-help"
+                role={!retryLocked && !invoiceReferenceReady ? 'alert' : undefined}
+                style={{
+                  display: 'block',
+                  marginTop: 4,
+                  fontFamily: fonts.sans,
+                  fontSize: 11,
+                  lineHeight: '16px',
+                  color: !retryLocked && !invoiceReferenceReady ? T.warm : T.ink3,
+                }}
+              >
+                {!retryLocked && !invoiceReferenceReady
+                  ? invoiceReferenceMessage
+                  : ss.invoiceReferenceHint}
+              </span>
             </label>
             <label>
               <span className={overlayStyles.fieldLabel}>{ss.invoiceDate}</span>
@@ -753,14 +976,17 @@ export function ScanInvoiceSheet({
                 className={overlayStyles.formControl}
                 style={{ ...inputLg, minHeight: 44, marginTop: 6 }}
                 value={invoiceDate}
-                disabled={retryLocked || phase === 'committing'}
+                disabled={retryLocked || saveBusy}
                 aria-invalid={!invoiceDateReady}
                 onChange={(event) => setInvoiceDate(event.target.value)}
               />
             </label>
           </div>
 
-          {!retryLocked && <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {!retryLocked && <fieldset
+            disabled={saveBusy}
+            style={{ display: 'flex', flexDirection: 'column', border: 0, margin: 0, minWidth: 0, padding: 0 }}
+          >
             {rows.map((row) => (
               <ReviewRowView
                 key={row.key}
@@ -796,7 +1022,7 @@ export function ScanInvoiceSheet({
                 }
               />
             ))}
-          </div>}
+          </fieldset>}
         </div>
       )}
     </Overlay>

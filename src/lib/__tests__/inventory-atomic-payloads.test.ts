@@ -86,6 +86,7 @@ describe('atomic inventory delivery payload', () => {
       propertyTimezone: 'America/Chicago',
       vendorName: 'Acme',
       invoiceDate: '2026-07-15',
+      invoiceNumber: 'ATOMIC-123',
       lines: [
         {
           key: 'existing', itemName: 'Towel', decision: 'match', matchedItemId: 'item-a',

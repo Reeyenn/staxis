@@ -17,5 +17,6 @@ export const ASSISTANT_COUNT_NOTE = 'Counted via Staxis assistant';
 
 /** Legacy delivery-ledger rows previously written by the AI assistant.
  * Retained unchanged so existing History entries still classify correctly.
- * Current `markOrdered` only stamps `inventory.last_ordered_at`. */
+ * Current `markOrdered` atomically stamps `inventory.last_ordered_at` and an
+ * `order_intent.recorded` audit event; it still never implies a purchase. */
 export const ASSISTANT_ORDER_NOTE = 'Marked ordered via assistant';
