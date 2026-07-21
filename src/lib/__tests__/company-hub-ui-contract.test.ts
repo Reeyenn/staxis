@@ -166,6 +166,11 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /contextProperties\.map\(\(hotel\) => <option key=\{hotel\.id\}/);
   });
 
+  test('starts My Team with the account tools instead of a redundant intro block', () => {
+    assert.doesNotMatch(company, /People and team access|Personas y acceso del equipo/);
+    assert.doesNotMatch(company, /Manage hotel logins, invitations, approvals|Administra accesos, invitaciones, aprobaciones/);
+  });
+
   test('replaces Activity with one compact hotel selector in the navigation', () => {
     const tabsIndex = company.indexOf('<div className={styles.tabs}>');
     const tabListIndex = company.indexOf('className={styles.tabList}', tabsIndex);

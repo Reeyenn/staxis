@@ -1038,16 +1038,6 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
 
   return (
     <div className={styles.stack}>
-      <SectionHeading
-        eyebrow={localized(lang, 'My hotel', 'Mi hotel')}
-        title={localized(lang, 'People and team access', 'Personas y acceso del equipo')}
-        description={localized(
-          lang,
-          'Manage hotel logins, invitations, approvals, and operational staff in one place.',
-          'Administra accesos, invitaciones, aprobaciones y personal operativo del hotel en un solo lugar.',
-        )}
-      />
-
       {activeProperty ? (
         <HotelTeamPanel
           key={`${activeProperty.id}:${adminToolsEnabled ? 'admin' : 'preview'}`}
