@@ -9,7 +9,7 @@
 
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { UserPlus } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -23,6 +23,8 @@ import invitePanelStyles from '@/components/team/InviteStaffPanel.module.css';
 import type { StaffMember, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from './_tokens';
 import { StaffAvatar, SeniorTag, HoursBar } from './_people';
+import { useStaffDialog } from './useStaffDialog';
+import dialogStyles from './StaffDialog.module.css';
 
 // A pending join request awaiting a manager's approve/deny.
 interface JoinRequest {
@@ -835,9 +837,24 @@ function StaffEditModal({
   lang: 'en' | 'es';
 }) {
   const departments: StaffDepartment[] = ['housekeeping', 'front_desk', 'maintenance', 'other'];
+  const idPrefix = useId();
+  const titleId = `${idPrefix}-title`;
+  const nameId = `${idPrefix}-name`;
+  const departmentLabelId = `${idPrefix}-department-label`;
+  const phoneId = `${idPrefix}-phone`;
+  const languageLabelId = `${idPrefix}-language-label`;
+  const wageId = `${idPrefix}-wage`;
+  const maxHoursId = `${idPrefix}-max-hours`;
+  const maxDaysId = `${idPrefix}-max-days`;
+  const loginId = `${idPrefix}-login`;
+  const loginHintId = `${idPrefix}-login-hint`;
+  const vacationId = `${idPrefix}-vacation`;
+  const vacationHintId = `${idPrefix}-vacation-hint`;
+  const dialogRef = useStaffDialog(onClose);
+
   return (
     <div
-      onClick={onClose}
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 1000,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -846,7 +863,13 @@ function StaffEditModal({
       }}
     >
       <div
-        onClick={e => e.stopPropagation()}
+        ref={dialogRef}
+        className={dialogStyles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onMouseDown={e => e.stopPropagation()}
         style={{
           background: T.paper, borderRadius: 18,
           width: '100%', maxWidth: 480, maxHeight: '88vh', overflowY: 'auto',
@@ -858,13 +881,13 @@ function StaffEditModal({
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           marginBottom: 18,
         }}>
-          <h2 style={{
+          <h2 id={titleId} style={{
             margin: 0, fontFamily: fonts.sans, fontSize: 18,
             color: T.ink, letterSpacing: '-0.02em', fontWeight: 600,
           }}>
             {editMember ? editMember.name : (lang === 'es' ? 'Nuevo personal' : 'New staff member')}
           </h2>
-          <button onClick={onClose} style={{
+          <button type="button" onClick={onClose} aria-label={lang === 'es' ? 'Cerrar' : 'Close'} style={{
             background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
             width: 28, height: 28, cursor: 'pointer',
             display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -874,22 +897,23 @@ function StaffEditModal({
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           {/* Name */}
-          <Field label={lang === 'es' ? 'Nombre' : 'Name'}>
+          <Field controlId={nameId} label={lang === 'es' ? 'Nombre' : 'Name'}>
             <input
+              id={nameId}
               type="text" value={form.name}
               onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-              autoFocus placeholder="Maria L."
+              data-dialog-initial-focus="true" placeholder="Maria L."
               style={inputStyle}
             />
           </Field>
 
           {/* Department */}
-          <Field label={lang === 'es' ? 'Departamento' : 'Department'}>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <Field labelId={departmentLabelId} label={lang === 'es' ? 'Departamento' : 'Department'}>
+            <div role="group" aria-labelledby={departmentLabelId} style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               {departments.map(d => {
                 const sel = form.department === d;
                 return (
-                  <button key={d}
+                  <button key={d} type="button" aria-pressed={sel}
                     onClick={() => setForm(f => ({ ...f, department: d }))}
                     style={{
                       padding: '6px 13px', borderRadius: 999,
@@ -907,8 +931,9 @@ function StaffEditModal({
           </Field>
 
           {/* Phone */}
-          <Field label={lang === 'es' ? 'Teléfono' : 'Phone'}>
+          <Field controlId={phoneId} label={lang === 'es' ? 'Teléfono' : 'Phone'}>
             <input
+              id={phoneId}
               type="tel" value={form.phone ?? ''}
               onChange={e => {
                 markPhoneTouched();
@@ -920,12 +945,12 @@ function StaffEditModal({
           </Field>
 
           {/* Language */}
-          <Field label={lang === 'es' ? 'Idioma' : 'Language'}>
-            <div style={{ display: 'flex', gap: 6 }}>
+          <Field labelId={languageLabelId} label={lang === 'es' ? 'Idioma' : 'Language'}>
+            <div role="group" aria-labelledby={languageLabelId} style={{ display: 'flex', gap: 6 }}>
               {(['en', 'es'] as const).map(l => {
                 const sel = form.language === l;
                 return (
-                  <button key={l}
+                  <button key={l} type="button" aria-pressed={sel}
                     onClick={() => setForm(f => ({ ...f, language: l }))}
                     style={{
                       flex: 1, padding: '10px 14px', borderRadius: 12,
@@ -944,8 +969,9 @@ function StaffEditModal({
           {/* Hourly wage — management only (payroll-private). Hidden for any
               non-manager; the wage also never reaches a non-manager browser. */}
           {showWage && (
-            <Field label={lang === 'es' ? 'Salario por hora' : 'Hourly wage'}>
+            <Field controlId={wageId} label={lang === 'es' ? 'Salario por hora' : 'Hourly wage'}>
               <input
+                id={wageId}
                 type="number" value={form.hourlyWage ?? ''} step="0.50" min="0"
                 onChange={e => {
                   markWageTouched();
@@ -966,21 +992,23 @@ function StaffEditModal({
 
           {/* Max hours + days grid */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            <Field label={lang === 'es' ? 'Máx horas / sem' : 'Max h/wk'}>
+            <Field controlId={maxHoursId} label={lang === 'es' ? 'Máx horas / sem' : 'Max h/wk'}>
               <DraftNumberInput
                 value={form.maxWeeklyHours}
                 onCommit={n => setForm(f => ({ ...f, maxWeeklyHours: n }))}
                 min={1}
                 width="100%"
+                inputProps={{ id: maxHoursId }}
                 style={{ ...inputStyle, fontFamily: fonts.mono, textAlign: 'left' }}
               />
             </Field>
-            <Field label={lang === 'es' ? 'Máx días / sem' : 'Max days/wk'}>
+            <Field controlId={maxDaysId} label={lang === 'es' ? 'Máx días / sem' : 'Max days/wk'}>
               <DraftNumberInput
                 value={form.maxDaysPerWeek}
                 onCommit={n => setForm(f => ({ ...f, maxDaysPerWeek: n }))}
                 min={1} max={7}
                 width="100%"
+                inputProps={{ id: maxDaysId }}
                 style={{ ...inputStyle, fontFamily: fonts.mono, textAlign: 'left' }}
               />
             </Field>
@@ -1013,12 +1041,16 @@ function StaffEditModal({
 
           {/* Linked login picker */}
           <Field
+            controlId={loginId}
             label={lang === 'es' ? 'Inicio de sesión (opcional)' : 'Linked login (optional)'}
+            hintId={loginHintId}
             hint={lang === 'es'
               ? 'La cuenta vinculada verá su propio horario al abrir Personal.'
               : 'The linked account sees their own schedule when they open Staff.'}
           >
             <select
+              id={loginId}
+              aria-describedby={loginHintId}
               value={linkedAccountId ?? ''}
               onChange={e => setLinkedAccountId(e.target.value || null)}
               style={{
@@ -1040,10 +1072,14 @@ function StaffEditModal({
 
           {/* Vacation dates */}
           <Field
+            controlId={vacationId}
             label={lang === 'es' ? 'Fechas de vacaciones' : 'Vacation dates'}
+            hintId={vacationHintId}
             hint={lang === 'es' ? 'Una por línea, YYYY-MM-DD' : 'One per line, YYYY-MM-DD'}
           >
             <textarea
+              id={vacationId}
+              aria-describedby={vacationHintId}
               value={form.vacationDates}
               onChange={e => setForm(f => ({ ...f, vacationDates: e.target.value }))}
               rows={3}
@@ -1104,22 +1140,30 @@ const inputStyle: React.CSSProperties = {
 };
 
 function Field({
-  label, hint, children,
+  label, hint, controlId, labelId, hintId, children,
 }: {
   label: string;
   hint?: string;
+  controlId?: string;
+  labelId?: string;
+  hintId?: string;
   children: React.ReactNode;
 }) {
+  const labelStyle: React.CSSProperties = {
+    display: 'block', fontFamily: fonts.mono, fontSize: 10, fontWeight: 600,
+    color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase',
+    marginBottom: 6,
+  };
   return (
     <div>
-      <label style={{
-        display: 'block', fontFamily: fonts.mono, fontSize: 10, fontWeight: 600,
-        color: T.ink2, letterSpacing: '0.06em', textTransform: 'uppercase',
-        marginBottom: 6,
-      }}>{label}</label>
+      {controlId ? (
+        <label htmlFor={controlId} id={labelId} style={labelStyle}>{label}</label>
+      ) : (
+        <div id={labelId} style={labelStyle}>{label}</div>
+      )}
       {children}
       {hint && (
-        <p style={{
+        <p id={hintId} style={{
           margin: '6px 0 0', fontFamily: fonts.sans, fontSize: 11.5,
           color: T.ink3, lineHeight: 1.4,
         }}>{hint}</p>

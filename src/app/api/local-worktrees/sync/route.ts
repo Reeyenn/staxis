@@ -40,6 +40,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { revalidateTag } from 'next/cache';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { env } from '@/lib/env';
+import { isExplicitLocalDevelopment } from '@/lib/local-sync-auth';
 import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
@@ -73,16 +74,14 @@ function asStr(v: unknown, max = 500): string | null {
  * in api-auth.ts, but parameterized on LOCAL_SYNC_SECRET so this dev-tool
  * channel can be rotated without touching cron infra.
  */
-function checkLocalSyncSecret(req: NextRequest): NextResponse | null {
+export function checkLocalSyncSecret(req: NextRequest): NextResponse | null {
   const secret = env.LOCAL_SYNC_SECRET;
   if (!secret) {
-    const isVercelProd = env.VERCEL_ENV === 'production';
-    const isOtherProd = env.NODE_ENV === 'production' && !env.VERCEL_ENV;
-    if (isVercelProd || isOtherProd) {
-      log.error('[local-worktrees/sync] LOCAL_SYNC_SECRET unset in production — refusing');
-      return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
-    }
-    return null;  // dev / preview without the secret — pass through
+    // Vercel previews are internet-reachable deployments too. The only
+    // secretless bypass is an explicitly local Next.js development process.
+    if (isExplicitLocalDevelopment(env.NODE_ENV, env.VERCEL_ENV)) return null;
+    log.error('[local-worktrees/sync] LOCAL_SYNC_SECRET unset outside local development — refusing');
+    return NextResponse.json({ error: 'server misconfigured' }, { status: 500 });
   }
   const auth = req.headers.get('authorization') ?? '';
   const expected = `Bearer ${secret}`;

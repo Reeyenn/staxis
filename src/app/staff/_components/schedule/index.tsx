@@ -36,7 +36,7 @@ const DEFAULT_WEEKLY_CAP = 40;
 
 const HL_SHADOW = `inset 0 0 0 1px ${T.brand}`;
 
-export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => void }) {
+export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory?: () => void }) {
   const { activePropertyId, activeProperty, staff } = useProperty();
   const { lang } = useLang();
   const data = useScheduleData(activePropertyId, staff);
@@ -92,7 +92,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
   lang: 'en' | 'es';
   data: ScheduleData;
   propertyName?: string;
-  onOpenDirectory: () => void;
+  onOpenDirectory?: () => void;
 }) {
   const es = lang === 'es';
   const reducedMotion = useReducedMotion();
@@ -750,7 +750,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
 
       {/* toast */}
       {toast && (
-        <div style={{
+        <div role="status" aria-live="polite" aria-atomic="true" style={{
           position: 'fixed', bottom: 22, left: '50%', transform: 'translateX(-50%)', zIndex: 1200,
           padding: '11px 18px', background: 'rgba(255,255,255,0.95)',
           border: '1px solid rgba(92,122,96,0.3)', borderRadius: 999,
@@ -797,7 +797,9 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
           weekMinutes={dayWeekMinutes}
           approvedTorByStaff={approvedTorByStaff}
           onPick={onPickStaff}
-          onOpenDirectory={() => { setPickerOpen(false); onOpenDirectory(); }}
+          onOpenDirectory={onOpenDirectory
+            ? () => { setPickerOpen(false); onOpenDirectory(); }
+            : undefined}
           onClose={() => setPickerOpen(false)}
         />
       )}

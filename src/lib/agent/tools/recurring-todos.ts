@@ -2,7 +2,7 @@
 //
 // Daily/weekly checklists that reappear as normal to-dos. Backed by
 // recurring_task_templates (migration 0303) + src/lib/recurring-tasks/store.ts.
-// A once-a-day spawner (process-sms-jobs cron) materializes each active template
+// The process-agent-schedules cron materializes each due active template
 // into a plain comms_tasks row, so the to-do pane shows recurring instances
 // exactly like any other task.
 //

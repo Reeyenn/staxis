@@ -2,12 +2,14 @@
 
 import { NextRequest } from 'next/server';
 import { requireFinanceAccess, isUuid } from '@/lib/financials/api-gate';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { recordInventoryOpeningAdjustment } from '@/lib/db/inventory-month-closes';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -37,13 +39,23 @@ export async function POST(req: NextRequest) {
   const propertyId = typeof body.propertyId === 'string' ? body.propertyId : null;
   const gate = await requireFinanceAccess(req, propertyId);
   if (!gate.ok) return gate.response;
-  if (!(await canForProperty({ role: gate.role }, 'manage_inventory_orders', gate.pid))) {
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: gate.role },
+    'manage_inventory_orders',
+    gate.pid,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(gate.requestId);
+  }
+  if (capabilityDecision === 'denied') {
     return err('You do not have permission to correct opening inventory.', {
       requestId: gate.requestId,
       status: 403,
       code: ApiErrorCode.Forbidden,
     });
   }
+  const sectionGate = await requireSectionEnabled(req, gate.pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const itemId = typeof body.itemId === 'string' ? body.itemId : '';
   const requestId = typeof body.requestId === 'string' ? body.requestId : '';

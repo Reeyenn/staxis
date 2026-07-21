@@ -30,14 +30,9 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // Tight cadences (sub-hourly) — Vercel native cron (May 2026 audit
   // pass-6: moved from GH Actions, which was silently throttling these
   // to 60-200 min intervals). Vercel Pro supports per-minute precision.
-  // process-sms-jobs MOVED to Vercel native (2026-06-26 pre-onboarding
-  // audit): the GH Actions schedule was throttled ~17× (observed 1.4h-stale
-  // heartbeat on a 5-min cron), so SMS-link delivery drained late — exactly
-  // the failure FAILSAFES.md warns about for sub-30-min GH crons. The GH
-  // workflow .github/workflows/sms-jobs-cron.yml is KEPT as a redundant
-  // backup scheduler (failsafe #4 — don't disable workflows); dual-firing is
-  // safe because staxis_claim_sms_jobs uses FOR UPDATE SKIP LOCKED (no
-  // double-send). This entry is the scheduler of record (Vercel).
+  // The old process-sms-jobs transport was retired with Twilio on 2026-07-17.
+  // Agent reminders and recurring Communications tasks now have their own
+  // transport-independent five-minute scheduler below.
   // Plan v4 (2026-05-24): removed `scraper-health` cron entry — Railway
   // scraper service is gone, `vercel-watchdog` (5-min, listed below) is
   // its replacement.
@@ -53,6 +48,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // compliance-anomaly-sweep were deleted outright the same day with the
   // whole compliance section.)
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'process-agent-schedules',           source: { kind: 'vercel', cronPath: '/api/cron/process-agent-schedules' },           cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-consolidate-memory',          source: { kind: 'vercel', cronPath: '/api/cron/agent-consolidate-memory' },          cronExpr: '0 5 * * *' },
   { heartbeatName: 'walkthrough-heal-stale',            source: { kind: 'vercel', cronPath: '/api/cron/walkthrough-heal-stale' },             cronExpr: '*/30 * * * *' },
@@ -63,7 +59,6 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'sweep-orphan-auth-users',           source: { kind: 'vercel', cronPath: '/api/cron/sweep-orphan-auth-users' },             cronExpr: '0 7 * * *' },
   { heartbeatName: 'sweep-mfa-verified-sessions',       source: { kind: 'vercel', cronPath: '/api/cron/sweep-mfa-verified-sessions' },         cronExpr: '0 */6 * * *' },
   // Daily — most live in ml-cron.yml's multi-cron list
-  { heartbeatName: 'ml-run-inference',      source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 10 * * *' },
   { heartbeatName: 'ml-predict-inventory',  source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 11 * * *' },
   // 2026-05-24: removed `ml-aggregate-priors` — cross-fleet cohort
   // aggregation is a no-op at N<5 hotels per cohort. Cron still fires
@@ -75,10 +70,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   { heartbeatName: 'webhook-dedup-purge',               source: { kind: 'vercel', cronPath: '/api/cron/webhook-dedup-purge' },              cronExpr: '15 4 * * *' },
   { heartbeatName: 'pms-auth-codes-purge',              source: { kind: 'vercel', cronPath: '/api/cron/pms-auth-codes-purge' },             cronExpr: '45 4 * * *' },
   // Weekly
-  { heartbeatName: 'ml-train-demand',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 8 * * 0' },
-  { heartbeatName: 'ml-train-supply',       source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '30 8 * * 0' },
   { heartbeatName: 'ml-train-inventory',    source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 9 * * 0' },
-  { heartbeatName: 'ml-retention-purge',    source: { kind: 'github', workflowFile: 'ml-retention-purge.yml' },      cronExpr: '0 8 * * *' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
   // scraper observability cron.
   // Plan v4 (2026-05-23): replaces scraper/vercel-watchdog.js (Railway

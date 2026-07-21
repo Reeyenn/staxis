@@ -8,6 +8,7 @@ import type { NextRequest } from 'next/server';
 import { ok } from '@/lib/api-response';
 import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
 import { listConversationsForStaff, listStaff, getStaffRow, normalizeLang } from '@/lib/comms/core';
+import { requirePropertySectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,6 +19,8 @@ interface Body { pid?: string; staffId?: string }
 export async function POST(req: NextRequest): Promise<Response> {
   const gate = await gateHousekeeperRequest<Body>(req, 'comms-read');
   if (!gate.ok) return gate.response;
+  const sectionGate = await requirePropertySectionEnabled(gate.pid, 'communications', gate);
+  if (!sectionGate.ok) return sectionGate.response;
 
   const staff = await getStaffRow(gate.pid, gate.staffId);
   const dept = staff?.department ?? null;

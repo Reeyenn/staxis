@@ -21,6 +21,7 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
+import { useCan } from '@/lib/capabilities/useCan';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { SubTabBar, type StaffTab } from './_components/SubTabBar';
 import { UnifiedSchedule } from './_components/schedule';
@@ -34,7 +35,14 @@ const PREVIEW_STAFF_STORAGE_KEY = 'staxis-staff-previewid';
 
 export default function StaffPage() {
   const { user, loading } = useAuth();
-  const { activePropertyId, loading: propLoading } = useProperty();
+  const {
+    activeProperty,
+    activePropertyId,
+    capabilityOverridesPropertyId,
+    capabilityOverridesViewerKey,
+    loading: propLoading,
+  } = useProperty();
+  const can = useCan();
   const router = useRouter();
 
   // No property selected (an account with zero accessible hotels, or the active
@@ -58,19 +66,60 @@ export default function StaffPage() {
   }
 
   const isManager = canManageTeam(user.role);
+  const capabilityViewerKey = `${user.uid}:${activePropertyId}`;
+  const capabilityContextReady = Boolean(
+    activeProperty?.id === activePropertyId
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === capabilityViewerKey
+  );
+
+  // A missing override snapshot defaults capabilities to allowed. Do not mount
+  // either manager data surface under that optimistic fallback: on a property
+  // switch it could briefly expose controls from the previous hotel's access
+  // decision before the exact user/property snapshot arrives.
+  if (isManager && !capabilityContextReady) {
+    return <AppLayout><LoadingState/></AppLayout>;
+  }
+
+  const canManageSchedule = isManager && can('manage_shifts');
+  const canManageDirectory = isManager && can('manage_team');
+  const hasManagerSurface = canManageSchedule || canManageDirectory;
 
   // Demo login + manager → both UIs, switchable.
-  if (user.isDemo && isManager) {
-    return <AppLayout><DemoSwitchableView/></AppLayout>;
+  if (user.isDemo && hasManagerSurface) {
+    return (
+      <AppLayout>
+        <DemoSwitchableView
+          canManageSchedule={canManageSchedule}
+          canManageDirectory={canManageDirectory}
+        />
+      </AppLayout>
+    );
+  }
+  if (hasManagerSurface) {
+    return (
+      <AppLayout>
+        <ManagerView
+          canManageSchedule={canManageSchedule}
+          canManageDirectory={canManageDirectory}
+        />
+      </AppLayout>
+    );
   }
   if (isManager) {
-    return <AppLayout><ManagerView/></AppLayout>;
+    return <AppLayout><ManagerAccessUnavailable/></AppLayout>;
   }
   return <AppLayout><MyShifts/></AppLayout>;
 }
 
 // ── Demo-only Manager ⇄ Staff preview ───────────────────────────────────────
-function DemoSwitchableView() {
+function DemoSwitchableView({
+  canManageSchedule,
+  canManageDirectory,
+}: {
+  canManageSchedule: boolean;
+  canManageDirectory: boolean;
+}) {
   const { user } = useAuth();
   const [mode, setMode] = useState<'manager' | 'staff'>(() => {
     if (typeof window === 'undefined') return 'manager';
@@ -102,7 +151,12 @@ function DemoSwitchableView() {
         loginName={user?.displayName ?? user?.username ?? 'demo'}
       />
       {mode === 'manager'
-        ? <ManagerView/>
+        ? (
+          <ManagerView
+            canManageSchedule={canManageSchedule}
+            canManageDirectory={canManageDirectory}
+          />
+        )
         : <MyShifts previewStaffId={previewStaffId}/>}
     </div>
   );
@@ -209,7 +263,13 @@ function DemoViewSwitch({
   );
 }
 
-function ManagerView() {
+function ManagerView({
+  canManageSchedule,
+  canManageDirectory,
+}: {
+  canManageSchedule: boolean;
+  canManageDirectory: boolean;
+}) {
   const [tab, setTab] = useState<StaffTab>(() => {
     if (typeof window === 'undefined') return 'schedule';
     try {
@@ -217,22 +277,63 @@ function ManagerView() {
       return raw === 'directory' ? raw : 'schedule';
     } catch { return 'schedule'; }
   });
+  const availableTabs = useMemo<StaffTab[]>(() => [
+    ...(canManageSchedule ? ['schedule' as const] : []),
+    ...(canManageDirectory ? ['directory' as const] : []),
+  ], [canManageSchedule, canManageDirectory]);
+  const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0];
+
   useEffect(() => {
-    try { window.localStorage.setItem(TAB_STORAGE_KEY, tab); } catch { /* noop */ }
-  }, [tab]);
+    if (!activeTab) return;
+    try { window.localStorage.setItem(TAB_STORAGE_KEY, activeTab); } catch { /* noop */ }
+  }, [activeTab]);
+
+  if (!activeTab) return <ManagerAccessUnavailable/>;
 
   return (
     <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
-      <SubTabBar tab={tab} onTab={setTab}/>
-      {tab === 'schedule'  && <UnifiedSchedule onOpenDirectory={() => setTab('directory')}/>}
-      {tab === 'directory' && <ManagerDirectory/>}
+      <SubTabBar tab={activeTab} onTab={setTab} availableTabs={availableTabs}/>
+      {activeTab === 'schedule' && (
+        <div id="staff-panel-schedule" role="tabpanel" aria-labelledby="staff-tab-schedule">
+          <UnifiedSchedule
+            onOpenDirectory={canManageDirectory ? () => setTab('directory') : undefined}
+          />
+        </div>
+      )}
+      {activeTab === 'directory' && (
+        <div id="staff-panel-directory" role="tabpanel" aria-labelledby="staff-tab-directory">
+          <ManagerDirectory/>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ManagerAccessUnavailable() {
+  return (
+    <div style={{
+      minHeight: '60vh', display: 'grid', placeItems: 'center', padding: 24,
+      color: T.ink, fontFamily: fonts.sans,
+    }}>
+      <div role="status" style={{
+        width: 'min(100%, 460px)', textAlign: 'center', padding: '28px 24px',
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+        boxShadow: T.cardShadow,
+      }}>
+        <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
+          Staff tools aren&apos;t available for your access
+        </div>
+        <div style={{ fontSize: 13, lineHeight: 1.5, color: T.ink3 }}>
+          Ask an administrator to enable Schedule or Team access for your role at this hotel.
+        </div>
+      </div>
     </div>
   );
 }
 
 function LoadingState() {
   return (
-    <div style={{
+    <div role="status" aria-live="polite" style={{
       minHeight: '60vh',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.08em',

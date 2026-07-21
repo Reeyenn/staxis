@@ -10,6 +10,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { type TeamCaller, verifyTeamManager } from '@/lib/team-auth';
 import type { StaffDepartment } from '@/types';
 import { errToString } from '@/lib/utils';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,9 +33,9 @@ interface CreateOperationalStaffBody {
 type StaffMutationAuthorization = 'allowed' | 'denied' | 'unavailable';
 
 /**
- * Mutation authorization must fail closed. The shared capability loader is
- * intentionally permissive when its override read fails, which is suitable
- * for non-destructive UI resolution but not for a service-role write.
+ * Mutation authorization must fail closed. This route also re-reads the
+ * account's active state and role immediately before its service-role write,
+ * so a stale TeamCaller can never authorize a staff creation.
  */
 async function authorizeStaffMutation(
   caller: TeamCaller,
@@ -114,6 +115,8 @@ export async function POST(req: NextRequest) {
       code: ApiErrorCode.Forbidden,
     });
   }
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   const phone = typeof body.phone === 'string' ? body.phone.trim() : '';

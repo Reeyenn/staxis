@@ -13,7 +13,9 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validatePhone, validateUuid } from '@/lib/api-validate';
-import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -37,9 +39,13 @@ export async function GET(req: NextRequest) {
     });
   }
   const propertyId = propertyCheck.value!;
-  if (!(await callerCan(caller, 'manage_team', propertyId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', propertyId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+  const sectionGate = await requireSectionEnabled(req, propertyId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const { data, error: queryError } = await supabaseAdmin
     .from('staff')
@@ -94,9 +100,13 @@ export async function PUT(req: NextRequest) {
     });
   }
   const propertyId = propertyCheck.value!;
-  if (!(await callerCan(caller, 'manage_team', propertyId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', propertyId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+  const sectionGate = await requireSectionEnabled(req, propertyId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const staffCheck = validateUuid(body.staffId, 'staffId');
   if (staffCheck.error) {

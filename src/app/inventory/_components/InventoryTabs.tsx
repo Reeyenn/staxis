@@ -331,6 +331,7 @@ export function InventoryTabs({
               }}
               onBlur={cancelNew}
               placeholder={tx.newTabPh}
+              aria-label={tx.newTabPh}
               maxLength={40}
               style={{
                 height: 34, width: 150, padding: '0 12px', borderRadius: 999,

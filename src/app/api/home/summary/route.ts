@@ -13,8 +13,9 @@
  * Resilience contract: every tile computes inside its own guard. If one
  * domain's query fails (missing table, RPC error, cold-start emptiness),
  * that tile alone degrades to its muted "Open …" fallback — the route
- * never 500s because one read broke. Enabled tiles run concurrently; disabled
- * sections are never queried.
+ * never 500s because one tile read broke. The section-policy read is the one
+ * aggregate-wide prerequisite: if it is unavailable the route returns a
+ * retryable 503, and disabled sections are never queried.
  *
  * Sources per tile (all read-only, via supabaseAdmin):
  *   staxis         — agent_nudges (status='pending', scoped to the
@@ -40,9 +41,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid } from '@/lib/api-validate';
 import { getPropertyOpsConfig } from '@/lib/property-config';
 import { getMonthRevenue } from '@/lib/financials/revenue';
-import { canForUserId } from '@/lib/capabilities/server';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { getEnabledSections } from '@/lib/sections/server';
-import { isSectionEnabled, type AppSection } from '@/lib/sections/registry';
+import { isSectionEnabled, type AppSection, type EnabledSections } from '@/lib/sections/registry';
 import { summarizeHomeInventory } from '@/lib/home-inventory-summary';
 import {
   resolveAdminCompanyPreviewTarget,
@@ -461,12 +463,29 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     });
   }
 
+  // Section policy is an aggregate-wide authorization prerequisite. A read
+  // outage must not turn every missing flag into default-ON or fall through to
+  // tile queries; return the same retryable 503 as the per-route section gates.
+  let enabledSections: EnabledSections;
+  try {
+    enabledSections = await getEnabledSections(pid);
+  } catch (error) {
+    log.error('[home-summary] enabled_sections lookup failed closed', {
+      requestId,
+      pid,
+      err: error instanceof Error ? error.message : String(error),
+    });
+    return err('section availability is temporarily unavailable', {
+      requestId,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
+    });
+  }
+
   // Property-local "today" — never throws (getPropertyOpsConfig returns
   // defaults on any failure), so this is safe outside the tile guards.
-  const [opsConfig, enabledSections] = await Promise.all([
-    getPropertyOpsConfig(pid),
-    getEnabledSections(pid),
-  ]);
+  const opsConfig = await getPropertyOpsConfig(pid);
   const today = todayInTz(opsConfig.timezone);
   const localHour = localHourInTz(opsConfig.timezone);
 
@@ -480,9 +499,13 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   // Unlike the client-side tile filter, this prevents revenue from being read
   // or returned at all for roles that cannot view financials.
-  const canViewFinancials = isSectionEnabled(enabledSections, 'financials')
-    ? await canForUserId(auth.userId, 'view_financials', pid)
-    : false;
+  const financialCapabilityDecision = isSectionEnabled(enabledSections, 'financials')
+    ? await capabilityDecisionForUserId(auth.userId, 'view_financials', pid)
+    : 'denied';
+  if (financialCapabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  const canViewFinancials = financialCapabilityDecision === 'allowed';
 
   // Enabled tiles concurrently, each individually guarded. Disabled tiles
   // keep their neutral fallback without touching that domain's tables.

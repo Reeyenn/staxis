@@ -10,7 +10,9 @@ const joinCodeRoute = source('src/app/api/auth/join-codes/route.ts');
 describe('hotel account invitation route contract', () => {
   test('preserves MFA, capability, hotel scope, and role gates', () => {
     assert.match(inviteRoute, /verifyTeamManager\(req, \{ capability: 'manage_team' \}\)/);
-    assert.match(inviteRoute, /callerCan\(caller, 'manage_team', hotelId\)/);
+    assert.match(inviteRoute, /callerCapabilityDecision\(caller, 'manage_team', hotelId\)/);
+    assert.match(inviteRoute, /capabilityDecision === 'unavailable'[\s\S]*capabilityUnavailableResponse/);
+    assert.match(inviteRoute, /capabilityDecision === 'denied'/);
     assert.match(inviteRoute, /isAssignableRole\(role\)/);
   });
 
@@ -29,8 +31,16 @@ describe('hotel account invitation route contract', () => {
 
   test('revoke resolves hotel scope before deletion and records the action', () => {
     const deletion = inviteRoute.indexOf("from('account_invites')\n    .delete()");
-    const scopeCheck = inviteRoute.lastIndexOf("callerCan(caller, 'manage_team', row.hotel_id)", deletion);
-    assert.ok(scopeCheck >= 0 && deletion > scopeCheck, 'hotel authorization must precede deletion');
+    const scopeCheck = inviteRoute.lastIndexOf(
+      "callerCapabilityDecision(caller, 'manage_team', row.hotel_id)",
+      deletion,
+    );
+    const unavailable = inviteRoute.indexOf("capabilityDecision === 'unavailable'", scopeCheck);
+    const denied = inviteRoute.indexOf("capabilityDecision === 'denied'", unavailable);
+    assert.ok(
+      scopeCheck >= 0 && unavailable > scopeCheck && denied > unavailable && deletion > denied,
+      'retryable outage and hotel denial must both precede deletion',
+    );
     assert.match(inviteRoute, /\.is\('accepted_at', null\)[\s\S]*Invite is no longer pending/);
     assert.match(inviteRoute, /action: 'invite\.revoke'/);
   });
@@ -39,7 +49,9 @@ describe('hotel account invitation route contract', () => {
 describe('join-code get-or-create route contract', () => {
   test('preserves MFA, capability, and hotel scope gates', () => {
     assert.match(joinCodeRoute, /verifyTeamManager\(req, \{ capability: 'manage_team' \}\)/);
-    assert.match(joinCodeRoute, /callerCan\(caller, 'manage_team', hotelId\)/);
+    assert.match(joinCodeRoute, /callerCapabilityDecision\(caller, 'manage_team', hotelId\)/);
+    assert.match(joinCodeRoute, /capabilityDecision === 'unavailable'[\s\S]*capabilityUnavailableResponse/);
+    assert.match(joinCodeRoute, /capabilityDecision === 'denied'/);
   });
 
   test('reuses a usable code before inserting and serializes same-hotel requests', () => {

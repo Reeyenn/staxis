@@ -12,9 +12,11 @@ import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { isUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { canViewFinancials, type AppRole } from '@/lib/roles';
-import { isSectionEnabledForProperty } from '@/lib/sections/server';
+import { requireSectionEnabled } from '@/lib/sections/server';
+import { isSectionEnabled } from '@/lib/sections/registry';
 import {
   listInventoryAuditHistory,
   parseInventoryAuditLimit,
@@ -59,10 +61,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       requestId, status: 403, code: 'forbidden_property',
     });
   }
+  const sectionGate = await requireSectionEnabled(req, propertyId, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
-  const includeFinancials = canViewFinancials(role)
-    && await canForProperty({ role }, 'view_financials', propertyId)
-    && await isSectionEnabledForProperty(propertyId, 'financials');
+  const capabilityDecision = canViewFinancials(role)
+    ? await capabilityDecisionForProperty({ role }, 'view_financials', propertyId)
+    : 'denied';
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  const includeFinancials = capabilityDecision === 'allowed'
+    && isSectionEnabled(sectionGate.enabledSections, 'financials');
   try {
     const page = await listInventoryAuditHistory(supabaseAdmin, {
       propertyId,

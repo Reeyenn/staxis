@@ -23,7 +23,13 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCan, type TeamCaller } from '@/lib/team-auth';
+import {
+  verifyTeamManager,
+  callerCapabilityDecision,
+  type TeamCaller,
+} from '@/lib/team-auth';
+import type { CapabilityDecision } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { isAssignableRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { writeRoleChange } from '@/lib/audit-role-changes';
@@ -46,19 +52,20 @@ function normalizedHotelAccess(value: unknown): string[] {
 async function controlsEveryTargetHotel(
   caller: TeamCaller,
   targetAccess: string[],
-): Promise<boolean> {
-  if (caller.isAdmin) return true;
-  if (targetAccess.length === 0 || targetAccess.includes('*')) return false;
+): Promise<CapabilityDecision> {
+  if (caller.isAdmin) return 'allowed';
+  if (targetAccess.length === 0 || targetAccess.includes('*')) return 'denied';
 
   // Avoid capability reads for hotels the caller plainly cannot access.
   if (!caller.propertyAccess.includes('*') && targetAccess.some((hotelId) => !caller.propertyAccess.includes(hotelId))) {
-    return false;
+    return 'denied';
   }
 
   const decisions = await Promise.all(
-    targetAccess.map((hotelId) => callerCan(caller, 'manage_team', hotelId)),
+    targetAccess.map((hotelId) => callerCapabilityDecision(caller, 'manage_team', hotelId)),
   );
-  return decisions.every(Boolean);
+  if (decisions.includes('unavailable')) return 'unavailable';
+  return decisions.every((decision) => decision === 'allowed') ? 'allowed' : 'denied';
 }
 
 /** Mirrors the PUT/DELETE target hierarchy without making the client infer it. */
@@ -84,7 +91,9 @@ export async function GET(req: NextRequest) {
   const hotelIdCheck = validateUuid(hotelIdRaw, 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
-  if (!(await callerCan(caller, 'manage_team', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
@@ -145,7 +154,7 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  const team = await Promise.all(teamRows.map(async (r) => {
+  const teamWithDecisions = await Promise.all(teamRows.map(async (r) => {
     const targetRole = r.role as AppRole;
     const isSelf = r.id === caller.accountId;
     const targetAccess = targetRole === 'admin' ? ['*'] : normalizedHotelAccess(r.property_access);
@@ -156,9 +165,10 @@ export async function GET(req: NextRequest) {
     // Self name/password edits remain self-service even if the caller has a
     // per-hotel manage_team restriction elsewhere. Other-person account-wide
     // edits require control of every hotel represented by this account.
-    const controlsAllHotels = isSelf
-      ? true
+    const controlsAllHotelsDecision: CapabilityDecision = isSelf
+      ? 'allowed'
       : await controlsEveryTargetHotel(caller, targetAccess);
+    const controlsAllHotels = controlsAllHotelsDecision === 'allowed';
     const canEditProfile = hierarchyAllowsMutation && (isSelf || controlsAllHotels);
     const canChangeRole = hierarchyAllowsMutation && !isSelf && controlsAllHotels;
     // Direct manager-set passwords cross the Postgres account boundary into
@@ -172,31 +182,39 @@ export async function GET(req: NextRequest) {
     const actions = { canEditProfile, canChangeRole, canResetPassword, canRemove };
 
     return {
-      accountId: r.id,
-      username: r.username,
-      displayName: r.display_name,
-      email: emailByUserId.get(r.data_user_id) ?? '',
-      role: targetRole,
-      propertyAccess: targetAccess,
-      staffId: staffIdByAccountId.get(r.id) ?? null,
-      createdAt: r.created_at,
-      isSelf,
-      isPlatformAdmin: targetRole === 'admin',
-      hotelAccessCount,
-      hasOtherHotelAccess,
-      globalImpact: {
-        displayNameAffectsAllHotels: true,
-        roleAffectsAllHotels: true,
-        passwordAffectsAllHotels: true,
+      controlsAllHotelsDecision,
+      row: {
+        accountId: r.id,
+        username: r.username,
+        displayName: r.display_name,
+        email: emailByUserId.get(r.data_user_id) ?? '',
+        role: targetRole,
+        propertyAccess: targetAccess,
+        staffId: staffIdByAccountId.get(r.id) ?? null,
+        createdAt: r.created_at,
+        isSelf,
+        isPlatformAdmin: targetRole === 'admin',
         hotelAccessCount,
         hasOtherHotelAccess,
+        globalImpact: {
+          displayNameAffectsAllHotels: true,
+          roleAffectsAllHotels: true,
+          passwordAffectsAllHotels: true,
+          hotelAccessCount,
+          hasOtherHotelAccess,
+        },
+        actions,
+        // Flat aliases keep the contract convenient for existing/simple clients;
+        // `actions` is the canonical grouped shape for the My Hotel UI.
+        ...actions,
       },
-      actions,
-      // Flat aliases keep the contract convenient for existing/simple clients;
-      // `actions` is the canonical grouped shape for the My Hotel UI.
-      ...actions,
     };
   }));
+
+  if (teamWithDecisions.some(({ controlsAllHotelsDecision }) => controlsAllHotelsDecision === 'unavailable')) {
+    return capabilityUnavailableResponse(requestId);
+  }
+  const team = teamWithDecisions.map(({ row }) => row);
 
   return ok({ team }, { requestId });
 }
@@ -243,7 +261,9 @@ export async function PUT(req: NextRequest) {
   if (accountIdCheck.error) return err(accountIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const accountId = accountIdCheck.value!;
 
-  if (!(await callerCan(caller, 'manage_team', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
@@ -349,8 +369,11 @@ export async function PUT(req: NextRequest) {
   // hotel set before any other-person global mutation. Self name/password edits
   // deliberately remain available; self role changes are already blocked.
   if (!isSelf && (changesDisplayName || nextRole || !!password)) {
-    const controlsAllHotels = await controlsEveryTargetHotel(caller, targetAccess);
-    if (!controlsAllHotels) {
+    const controlsAllHotelsDecision = await controlsEveryTargetHotel(caller, targetAccess);
+    if (controlsAllHotelsDecision === 'unavailable') {
+      return capabilityUnavailableResponse(requestId);
+    }
+    if (controlsAllHotelsDecision === 'denied') {
       const mutation = nextRole
         ? 'change this person\'s role'
         : changesDisplayName
@@ -503,7 +526,9 @@ export async function DELETE(req: NextRequest) {
   if (accountIdCheck.error) return err(accountIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const accountId = accountIdCheck.value!;
 
-  if (!(await callerCan(caller, 'manage_team', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
   if (accountId === caller.accountId) {

@@ -10,7 +10,8 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
-import { canForUserId } from '@/lib/capabilities/server';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { presignDocument } from '@/lib/knowledge/core';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
@@ -24,7 +25,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const ctx = await commsContext(req, raw.pid ?? null);
   if (!ctx.ok) return ctx.response;
-  if (!(await canForUserId(ctx.userId, 'manage_knowledge', ctx.pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
+  if (capabilityDecision === 'denied') {
     return err('Only managers can upload documents', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
   const rl = await checkAndIncrementRateLimit('knowledge-presign', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));

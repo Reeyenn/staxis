@@ -22,7 +22,14 @@ export default function ForgotPasswordPage() {
     setError('');
     try {
       const redirectTo = `${window.location.origin}/signin/reset`;
-      await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), { redirectTo });
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(
+        email.trim().toLowerCase(),
+        { redirectTo },
+      );
+      // Supabase reports most delivery failures as a resolved `{ error }`, not
+      // a thrown promise. Never show the success state unless it confirmed the
+      // request was accepted.
+      if (resetErr) throw resetErr;
       setSent(true);
     } catch (err) {
       console.error('resetPasswordForEmail failed', err);
@@ -57,8 +64,10 @@ export default function ForgotPasswordPage() {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <AuthLabel>{lang === 'es' ? 'Correo electrónico' : 'Email'}</AuthLabel>
+            <AuthLabel htmlFor="forgot-email">{lang === 'es' ? 'Correo electrónico' : 'Email'}</AuthLabel>
             <input
+              id="forgot-email"
+              name="email"
               className="si-input"
               type="email"
               value={email}

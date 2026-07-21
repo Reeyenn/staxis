@@ -24,7 +24,7 @@ import type { L as LType } from './comms-types-fe';
 import { useCommsResource } from './comms-data';
 import { T, SERIF, MonoLabel } from './comms-ui';
 // Snow content styling (shared with the Knowledge hub) — see comms-snow.tsx.
-import { SANS, card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle } from './comms-snow';
+import { SANS, card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, ResourceError } from './comms-snow';
 
 const subLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--snow-ink3)', marginBottom: 6 };
 
@@ -63,14 +63,19 @@ function localLabel(v: string | null, L: LType): string {
 // ═══════════════════════════════════════════════════════════════════════════
 export function ContactsMode({ pid, isManager, L }: { pid: string; isManager: boolean; L: LType }) {
   const [editing, setEditing] = React.useState<null | 'new' | KnowledgeContactDTO>(null);
+  const [mutationError, setMutationError] = React.useState<string | null>(null);
 
-  const { data, loading, reload } = useCommsResource<{ contacts: KnowledgeContactDTO[] }>(`/api/knowledge/contacts?pid=${encodeURIComponent(pid)}`);
-  // null = still loading (spinner); a failed fetch shows the empty state.
-  const items = data?.contacts ?? (loading ? null : []);
+  const { data, loading, error: loadError, reload } = useCommsResource<{ contacts: KnowledgeContactDTO[] }>(`/api/knowledge/contacts?pid=${encodeURIComponent(pid)}`, { keepDataOnError: true });
+  const items = data?.contacts ?? null;
 
   const remove = async (c: KnowledgeContactDTO) => {
     if (!window.confirm(L(`Delete "${c.name}"?`, `¿Eliminar "${c.name}"?`))) return;
-    await apiDelete(`/api/knowledge/contacts?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(c.id)}`);
+    setMutationError(null);
+    const r = await apiDelete(`/api/knowledge/contacts?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(c.id)}`);
+    if (!r.ok) {
+      setMutationError(L('The contact was not deleted. Please try again.', 'No se eliminó el contacto. Inténtalo de nuevo.'));
+      return;
+    }
     await reload();
   };
 
@@ -96,7 +101,7 @@ export function ContactsMode({ pid, isManager, L }: { pid: string; isManager: bo
             {/* Header — mirrors LogbookPane's serif title + count */}
             <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
               <div>
-                <div style={{ marginBottom: 7 }}><MonoLabel>{L(`${count} contacts`, `${count} contactos`)}</MonoLabel></div>
+                <div style={{ marginBottom: 7 }}><MonoLabel>{data ? L(`${count} contacts`, `${count} contactos`) : (loading ? L('Loading contacts', 'Cargando contactos') : L('Contacts unavailable', 'Contactos no disponibles'))}</MonoLabel></div>
                 <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Contacts', 'Contactos')}</div>
               </div>
               {isManager && (
@@ -105,13 +110,15 @@ export function ContactsMode({ pid, isManager, L }: { pid: string; isManager: bo
             </div>
 
             <div style={{ marginTop: 22 }}>
-              {items === null ? (
+              {mutationError && <div role="alert" style={{ marginBottom: 10, color: 'var(--snow-warm)', fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{mutationError}</span><button onClick={() => setMutationError(null)} style={ghostBtn}>{L('Dismiss', 'Cerrar')}</button></div>}
+              {loadError && <div style={{ marginBottom: 10 }}><ResourceError text={data ? L('Contacts could not refresh. Showing the last results.', 'No se pudieron actualizar los contactos. Se muestran los últimos resultados.') : L('Contacts could not load. Check your connection and try again.', 'No se pudieron cargar los contactos. Revisa tu conexión e inténtalo de nuevo.')} retryLabel={L('Retry loading contacts', 'Reintentar cargar contactos')} onRetry={() => void reload()} /></div>}
+              {loading && !data ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--snow-ink3)', fontSize: 13, padding: 20 }}><Loader2 size={15} className="comms-spin" /> {L('Loading…', 'Cargando…')}</div>
-              ) : items.length === 0 ? (
+              ) : items && items.length === 0 ? (
                 <div style={{ fontFamily: SANS, fontSize: 13.5, color: 'var(--snow-ink3)', padding: '28px 16px', textAlign: 'center', border: '1px dashed var(--snow-rule)', borderRadius: 12 }}>
                   {L('No contacts yet. Add vendors, emergency numbers, brand reps, and nearby places.', 'Aún no hay contactos. Agrega proveedores, números de emergencia, representantes de marca y lugares cercanos.')}
                 </div>
-              ) : (
+              ) : items ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
                   {groups.map((g) => (
                     <div key={g.key}>
@@ -133,7 +140,7 @@ export function ContactsMode({ pid, isManager, L }: { pid: string; isManager: bo
                     </div>
                   ))}
                 </div>
-              )}
+              ) : null}
             </div>
           </>
         )}
@@ -304,7 +311,7 @@ function ContactEditor({ pid, contact, L, onDone, onCancel }: { pid: string; con
           <label style={labelStyle}>{L('Notes (optional)', 'Notas (opcional)')}</label>
           <textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={KNOWLEDGE_LIMITS.NOTES_MAX} rows={3} style={{ ...inputStyle, resize: 'vertical' }} />
         </div>
-        {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
+        {error && <div role="alert" style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={save} disabled={busy || !name.trim()} style={{ ...primaryBtn, opacity: busy || !name.trim() ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="comms-spin" /> : null} {L('Save', 'Guardar')}</button>
           <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>

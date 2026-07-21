@@ -45,7 +45,8 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid } from '@/lib/api-validate';
 import { todayInTz, addDays } from '@/lib/forecast';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
   shiftMinutes,
   resolveWageCents,
@@ -112,7 +113,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       log.error('labor-cost: accounts lookup failed', { requestId, msg: accountErr.message });
       return err('account lookup failed', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
     }
-    if (!(await canForProperty({ role: (accountRow?.role as string | undefined) ?? null }, 'view_wages', propertyId))) {
+    const capabilityDecision = await capabilityDecisionForProperty(
+      { role: (accountRow?.role as string | undefined) ?? null },
+      'view_wages',
+      propertyId,
+    );
+    if (capabilityDecision === 'unavailable') {
+      return capabilityUnavailableResponse(requestId);
+    }
+    if (capabilityDecision === 'denied') {
       return err('forbidden — role does not have labor cost access', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });

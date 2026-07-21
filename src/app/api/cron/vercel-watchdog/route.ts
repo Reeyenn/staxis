@@ -129,6 +129,9 @@ export async function GET(req: NextRequest) {
       failingNames: failing.map((c) => c.name),
       alertedBusinessHours: isBusinessHours,
     },
-    { requestId },
+    // A red watchdog must be visible even when Sentry is unconfigured or its
+    // transport is down. Non-2xx makes Vercel record the cron invocation as a
+    // failure instead of silently presenting a green scheduler history.
+    { requestId, status: 503 },
   );
 }

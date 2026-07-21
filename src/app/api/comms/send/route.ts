@@ -10,8 +10,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext } from '@/lib/comms/route-helpers';
-import { requireSectionEnabled } from '@/lib/sections/server';
 import { getConversation, canAccessConversation, postMessage, getMessageScope } from '@/lib/comms/core';
+import { parseCommsAttachmentPath } from '@/lib/comms/attachments';
 import type { MessageType } from '@/lib/comms/types';
 
 export const runtime = 'nodejs';
@@ -40,11 +40,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   const ctx = await commsContext(req, body.pid ?? null);
   if (!ctx.ok) return ctx.response;
 
-  // Section gate (add-on, on top of the comms tenant guard above): if
-  // Communications is turned off for this hotel, block sending messages.
-  const sectionGate = await requireSectionEnabled(req, ctx.pid, 'communications');
-  if (!sectionGate.ok) return sectionGate.response;
-
   const convV = validateUuid(body.conversationId, 'conversationId');
   if (convV.error) {
     return err(convV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
@@ -59,9 +54,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (text.length > 4000) {
     return err('message too long (max 4000 chars)', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
   }
-  // Attachment path, if present, must be inside this property's namespace.
-  if (body.attachmentPath && !body.attachmentPath.startsWith(`${ctx.pid}/comms/`)) {
-    return err('invalid attachment path', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+  let validatedAttachmentKind: 'photo' | 'voice' | null = null;
+  if (body.attachmentPath) {
+    const attachment = parseCommsAttachmentPath(ctx.pid, body.attachmentPath);
+    if (!attachment) {
+      return err('invalid attachment path', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    }
+    if (attachment.conversationId !== convV.value) {
+      return err('attachment belongs to a different conversation', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
+    }
+    if (body.attachmentKind && body.attachmentKind !== attachment.kind) {
+      return err('attachment kind does not match its file type', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+    }
+    validatedAttachmentKind = attachment.kind;
   }
 
   const rl = await checkAndIncrementRateLimit('comms-send', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
@@ -105,7 +110,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     sourceLang: ctx.lang,
     msgType,
     attachmentPath: body.attachmentPath ?? null,
-    attachmentKind: body.attachmentKind ?? null,
+    attachmentKind: validatedAttachmentKind,
     voiceDurationMs: typeof body.voiceDurationMs === 'number' ? body.voiceDurationMs : null,
     handoffShift,
     handoffOutstanding: msgType === 'handoff' ? (body.handoffOutstanding ?? null) : null,

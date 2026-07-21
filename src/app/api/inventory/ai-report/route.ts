@@ -37,6 +37,7 @@ import {
   activeInventoryItemIds,
   filterInventoryMlRowsToActiveItems,
 } from '@/lib/inventory-ml-active';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -99,6 +100,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!(await userHasPropertyAccess(session.userId, propertyId))) {
     return err('forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+  const sectionGate = await requireSectionEnabled(req, propertyId, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
   try {
     const sevenDaysAgoIso = new Date(Date.now() - 7 * 86400000).toISOString();

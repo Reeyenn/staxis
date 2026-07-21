@@ -18,7 +18,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import type { StaffDepartment } from '@/types';
@@ -56,7 +57,11 @@ async function authedHotelId(req: NextRequest, hotelIdRaw: unknown, requestId: s
   if (!caller) return { failure: err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized }) };
   const check = validateUuid(hotelIdRaw as string | null | undefined, 'hotelId');
   if (check.error) return { failure: err(check.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed }) };
-  if (!(await callerCan(caller, 'manage_shifts', check.value!))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_shifts', check.value!);
+  if (capabilityDecision === 'unavailable') {
+    return { failure: capabilityUnavailableResponse(requestId) };
+  }
+  if (capabilityDecision === 'denied') {
     return { failure: err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized }) };
   }
   return { hotelId: check.value!, caller };
@@ -67,6 +72,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const auth = await authedHotelId(req, searchParams.get('hotelId'), requestId);
   if ('failure' in auth) return auth.failure;
+
+  const sectionGate = await requireSectionEnabled(req, auth.hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const { data, error } = await supabaseAdmin
     .from('schedule_templates')

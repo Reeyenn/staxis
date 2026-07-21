@@ -1,12 +1,11 @@
+import type { Metadata } from 'next';
+
 export const dynamic = 'force-static';
+export const metadata: Metadata = { title: 'SMS Consent - Staxis' };
 
 export default function ConsentPage() {
   return (
-    <html lang="en">
-      <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>SMS Consent - Staxis</title>
+    <>
         <style>{`
           * { box-sizing: border-box; margin: 0; padding: 0; }
           body {
@@ -123,8 +122,6 @@ export default function ConsentPage() {
             text-align: center;
           }
         `}</style>
-      </head>
-      <body>
         <div className="container">
 
           <div className="logo">
@@ -242,7 +239,6 @@ export default function ConsentPage() {
           </footer>
 
         </div>
-      </body>
-    </html>
+    </>
   );
 }

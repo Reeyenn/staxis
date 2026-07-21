@@ -12,6 +12,8 @@ import { log } from '@/lib/log';
 import { todayStr } from '@/lib/utils';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { translateMessagesForReader } from './translate';
+import { attachmentBelongsToConversation } from './attachments';
+import { commsStaffIdentityId } from './identity';
 import type { AiCallOptions } from '@/lib/ai/usage';
 import type {
   ChannelKey, CommsLang, CommsDept, ConversationDTO, MessageDTO, TaskDTO, StaffLite,
@@ -142,7 +144,7 @@ async function staffDeptMap(pid: string, ids: string[]): Promise<Map<string, str
 /** Resolve an authenticated account → its staff identity + role for messaging. */
 export async function resolveAccount(userId: string): Promise<{
   accountId: string; role: string; staffId: string | null; displayName: string;
-  preferredLanguage: CommsLang; propertyAccess: string[];
+  preferredLanguage: CommsLang; propertyAccess: string[]; authUserId: string;
 } | null> {
   const { data } = await supabaseAdmin
     .from('accounts')
@@ -157,6 +159,7 @@ export async function resolveAccount(userId: string): Promise<{
     displayName: (data.display_name as string) ?? 'Manager',
     preferredLanguage: normalizeLang(data.preferred_language),
     propertyAccess: (data.property_access as string[] | null) ?? [],
+    authUserId: userId,
   };
 }
 
@@ -176,43 +179,157 @@ function deptFromRole(role: string): string {
 
 /**
  * Resolve an account's staff identity *within a property* for messaging.
- * Every messaging participant is a staff.id; this guarantees one exists for
- * the account in `pid` (managers included), self-healing across properties:
- *   1. account.staff_id, if it lives in this property
- *   2. an existing active staff row matching the account's display name
- *   3. otherwise create a minimal staff row (so messaging always works)
- * Never mutates the accounts row (avoids side effects elsewhere).
+ * Identity is never inferred from a mutable/non-unique display name:
+ *   1. authoritative account+property staff link
+ *   2. active staff row bound to the caller's exact auth user id
+ *   3. atomically claim an explicit legacy accounts.staff_id while unbound
+ *   4. deterministic, caller-bound staff row created idempotently
+ *
+ * The deterministic id makes concurrent first-use requests atomic without a
+ * schema change: one insert wins and all contenders re-read the same row.
  */
 export async function resolveStaffIdForAccount(
   pid: string,
-  account: { accountId: string; role: string; staffId: string | null; displayName: string },
+  account: {
+    accountId: string;
+    authUserId: string;
+    role: string;
+    staffId: string | null;
+    displayName: string;
+  },
 ): Promise<string> {
-  if (account.staffId) {
-    const row = await getStaffRow(pid, account.staffId);
-    if (row) return row.id;
+  const linked = await supabaseAdmin
+    .from('account_property_staff_links')
+    .select('staff_id')
+    .eq('account_id', account.accountId)
+    .eq('property_id', pid)
+    .eq('is_active', true)
+    .maybeSingle();
+  if (linked.error) {
+    log.error('resolveStaffIdForAccount: staff-link lookup failed', {
+      accountId: account.accountId,
+      pid,
+      err: linked.error.message,
+    });
+    throw linked.error;
   }
-  const byName = await supabaseAdmin
+  if (linked.data?.staff_id) {
+    const staff = await supabaseAdmin
+      .from('staff')
+      .select('id, is_active')
+      .eq('id', linked.data.staff_id)
+      .eq('property_id', pid)
+      .maybeSingle();
+    if (staff.error) throw staff.error;
+    if (staff.data?.id && staff.data.is_active !== false) return staff.data.id as string;
+  }
+
+  const byAuthUser = await supabaseAdmin
     .from('staff')
     .select('id, is_active')
     .eq('property_id', pid)
-    .ilike('name', account.displayName)
+    .eq('auth_user_id', account.authUserId)
+    .eq('is_active', true)
+    .order('id', { ascending: true })
     .limit(1)
     .maybeSingle();
-  if (byName.data?.id && byName.data.is_active !== false) return byName.data.id as string;
+  if (byAuthUser.error) {
+    log.error('resolveStaffIdForAccount: auth-user lookup failed', {
+      authUserId: account.authUserId,
+      pid,
+      err: byAuthUser.error.message,
+    });
+    throw byAuthUser.error;
+  }
+  if (byAuthUser.data?.id) return byAuthUser.data.id as string;
+
+  // Compatibility bridge for pre-0325 accounts. `accounts.staff_id` is an
+  // explicit account-owned pointer (unlike a name match), so an active row in
+  // this exact property may be claimed only while auth_user_id is still NULL.
+  // The conditional update is the atomic link: if two stale accounts point at
+  // one row, one caller wins and the other falls through to its own identity.
+  if (account.staffId) {
+    const legacy = await supabaseAdmin
+      .from('staff')
+      .select('id, property_id, auth_user_id, is_active')
+      .eq('id', account.staffId)
+      .eq('property_id', pid)
+      .maybeSingle();
+    if (legacy.error) throw legacy.error;
+    if (legacy.data?.id && legacy.data.is_active !== false) {
+      if (legacy.data.auth_user_id === account.authUserId) return legacy.data.id as string;
+      if (legacy.data.auth_user_id == null) {
+        const claimed = await supabaseAdmin
+          .from('staff')
+          .update({ auth_user_id: account.authUserId })
+          .eq('id', account.staffId)
+          .eq('property_id', pid)
+          .eq('is_active', true)
+          .is('auth_user_id', null)
+          .select('id')
+          .maybeSingle();
+        if (claimed.error) throw claimed.error;
+        if (claimed.data?.id) return claimed.data.id as string;
+
+        const afterClaimRace = await supabaseAdmin
+          .from('staff')
+          .select('id, auth_user_id, is_active')
+          .eq('id', account.staffId)
+          .eq('property_id', pid)
+          .maybeSingle();
+        if (afterClaimRace.error) throw afterClaimRace.error;
+        if (
+          afterClaimRace.data?.id
+          && afterClaimRace.data.auth_user_id === account.authUserId
+          && afterClaimRace.data.is_active !== false
+        ) {
+          return afterClaimRace.data.id as string;
+        }
+      }
+    }
+  }
+
+  const deterministicId = commsStaffIdentityId(pid, account.accountId);
 
   const created = await supabaseAdmin
     .from('staff')
     .insert({
+      id: deterministicId,
       property_id: pid,
+      auth_user_id: account.authUserId,
       name: account.displayName,
       department: deptFromRole(account.role),
       is_active: true,
       language: 'en',
     })
-    .select('id')
-    .single();
-  if (created.error) { log.error('resolveStaffIdForAccount: create failed', { err: created.error.message }); throw created.error; }
-  return created.data.id as string;
+    .select('id, property_id, auth_user_id')
+    .maybeSingle();
+  if (!created.error && created.data?.id) return created.data.id as string;
+
+  // A concurrent request may have inserted the deterministic row first.
+  const afterConflict = await supabaseAdmin
+    .from('staff')
+    .select('id, property_id, auth_user_id, is_active')
+    .eq('id', deterministicId)
+    .maybeSingle();
+  if (
+    !afterConflict.error
+    && afterConflict.data?.id
+    && afterConflict.data.property_id === pid
+    && afterConflict.data.auth_user_id === account.authUserId
+    && afterConflict.data.is_active !== false
+  ) {
+    return afterConflict.data.id as string;
+  }
+
+  const failure = created.error ?? afterConflict.error ?? new Error('staff identity creation returned no row');
+  log.error('resolveStaffIdForAccount: caller-bound create failed', {
+    accountId: account.accountId,
+    authUserId: account.authUserId,
+    pid,
+    err: failure.message,
+  });
+  throw failure;
 }
 
 // ── Conversation ensure/lookup ──────────────────────────────────────────────
@@ -737,7 +854,11 @@ export async function getMessages(
   // Signed URLs for attachments.
   const urlByPath = new Map<string, string>();
   for (const r of rows) {
-    if (r.attachment_path && !urlByPath.has(r.attachment_path)) {
+    if (
+      r.attachment_path
+      && attachmentBelongsToConversation(pid, r.conversation_id, r.attachment_path)
+      && !urlByPath.has(r.attachment_path)
+    ) {
       const url = await attachmentSignedUrl(r.attachment_path);
       if (url) urlByPath.set(r.attachment_path, url);
     }
@@ -1486,7 +1607,11 @@ async function hydrateMessages(
   const nameMap = await staffNameMap(pid, rows.map((r) => r.sender_staff_id).filter((x): x is string => !!x));
   const urlByPath = new Map<string, string>();
   for (const r of rows) {
-    if (r.attachment_path && !urlByPath.has(r.attachment_path)) {
+    if (
+      r.attachment_path
+      && attachmentBelongsToConversation(pid, r.conversation_id, r.attachment_path)
+      && !urlByPath.has(r.attachment_path)
+    ) {
       const url = await attachmentSignedUrl(r.attachment_path);
       if (url) urlByPath.set(r.attachment_path, url);
     }

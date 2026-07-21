@@ -60,6 +60,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { readTwoFactorEnabledFresh } from '@/lib/two-factor';
 import { errToString } from '@/lib/utils';
 import { env } from '@/lib/env';
+import { SUPERSEDED_MIGRATIONS } from '@/lib/migration-policy';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -782,16 +783,15 @@ async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationM
     //   apply 24h after Phase 2B's RLS sweep (2026-05-22 07:12 UTC) so
     //   legacy trusted users have one full token-refresh cycle to pick
     //   up mfa_verified=true. Apply window: 2026-05-23 07:12 UTC onwards.
-    const PENDING_INTENTIONALLY: ReadonlySet<string> = new Set(['0162']);
     const missing = EXPECTED_MIGRATIONS.filter(v =>
-      !applied.has(v) && !PENDING_INTENTIONALLY.has(v));
+      !applied.has(v) && !SUPERSEDED_MIGRATIONS.has(v));
     const unexpected = [...applied].filter(
       v => !EXPECTED_MIGRATIONS.includes(v) && !ALLOWED_EXTRA_APPLIED_MIGRATIONS.has(v),
     );
     if (missing.length > 0) {
       return {
         status: 'fail',
-        detail: `${missing.length} migration(s) missing from live DB: ${missing.join(', ')}. Code expects all ${EXPECTED_MIGRATIONS.length} to be applied (excluding ${PENDING_INTENTIONALLY.size} intentionally-pending).`,
+        detail: `${missing.length} migration(s) missing from live DB: ${missing.join(', ')}. Code expects all applicable migrations to be applied (${SUPERSEDED_MIGRATIONS.size} historical migration(s) are permanently superseded and must never run).`,
         fix: `Apply ${missing.map(v => `supabase/migrations/${v}_*.sql`).join(', ')} via the Supabase SQL editor. Each migration is idempotent.`,
       };
     }
@@ -860,6 +860,7 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // 2026-07-19: compliance-reminders + compliance-anomaly-sweep removed —
   // the engineering-compliance section was deleted entirely (owner call).
   { name: 'agent-sweep-reservations',      cadenceHours: 5/60,  description: 'every-5-min reserved-row sweeper (Vercel native cron, Codex round-5 R2)' },
+  { name: 'process-agent-schedules',       cadenceHours: 5/60,  description: 'every-5-min delivery of due agent reminders and recurring Communications tasks' },
   { name: 'agent-summarize-long-conversations', cadenceHours: 30/60, description: 'every-30-min summarization of long agent conversations (L4 part B)' },
   { name: 'agent-consolidate-memory',      cadenceHours: 24,    description: 'nightly per-hotel memory consolidation — auto-learns durable facts from conversations (self-learning Move #2)' },
   { name: 'walkthrough-heal-stale',        cadenceHours: 30/60, description: 'every-30-min walkthrough recovery (heals stale runs left mid-walkthrough by crashed clients)' },
@@ -869,12 +870,10 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   // legacy `rooms` table (dropped in v4). CUA writes room state to
   // pms_room_status_log (event-sourced, no per-day seeding needed).
   // Daily
-  { name: 'ml-run-inference',              cadenceHours: 24,    description: 'daily demand+supply+optimizer predictions' },
   { name: 'ml-predict-inventory',          cadenceHours: 24,    description: 'daily inventory predictions for tomorrow' },
   // 2026-05-24: removed `ml-aggregate-priors` — cross-fleet cohort
   // aggregation is a no-op at N<5 hotels per cohort. Re-add when scale
   // makes the cron meaningful. (See route.ts for the matching log demote.)
-  { name: 'ml-retention-purge',            cadenceHours: 24,    description: 'daily prediction_log/app_events retention purge (Phase 3.6)' },
   { name: 'purge-old-error-logs',          cadenceHours: 24,    description: 'daily error_logs retention sweep' },
   { name: 'agent-archive-stale-conversations', cadenceHours: 24, description: 'daily 3am archival of stale agent conversations (L4 part A)' },
   { name: 'claude-sessions-purge',         cadenceHours: 24,    description: 'daily 3:30am claude_sessions retention sweep — deletes rows older than 24h so random-sessionId floods can\'t grow the table (security audit M2)' },
@@ -882,8 +881,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
   { name: 'webhook-dedup-purge',           cadenceHours: 24,    description: 'daily 4:15am purge of expired webhook-dedup keys (auth-storage-cookies-and-middleware)' },
   { name: 'pms-auth-codes-purge',          cadenceHours: 24,    description: 'daily 4:45am purge of pms_auth_codes older than 7 days (Okta 2FA inbox, migration 0274)' },
   // Weekly
-  { name: 'ml-train-demand',               cadenceHours: 168,   description: 'weekly demand training (Sunday)' },
-  { name: 'ml-train-supply',               cadenceHours: 168,   description: 'weekly supply training (Sunday)' },
   { name: 'ml-train-inventory',            cadenceHours: 168,   description: 'weekly inventory training (Sunday)' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
   // scraper observability cron, scraper service is gone.

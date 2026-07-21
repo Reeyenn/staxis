@@ -61,12 +61,12 @@ export function MessageRow({ m, grouped, me, pid, L, conversation, onOpenThread,
 
         {/* attachments */}
         {m.attachmentKind === 'photo' && m.attachmentUrl && (
-          <img src={m.attachmentUrl} alt="" style={{ maxWidth: 320, maxHeight: 260, borderRadius: 10, border: `1px solid ${T.hair}`, marginTop: 2, marginBottom: text ? 6 : 0, display: 'block' }} />
+          <img src={m.attachmentUrl} alt="" style={{ maxWidth: 'min(320px, 100%)', maxHeight: 260, borderRadius: 10, border: `1px solid ${T.hair}`, marginTop: 2, marginBottom: text ? 6 : 0, display: 'block' }} />
         )}
         {m.attachmentKind === 'voice' && (
           <div style={{ marginTop: 2, marginBottom: text ? 6 : 0 }}>
             {m.attachmentUrl
-              ? <audio controls src={m.attachmentUrl} style={{ height: 36, maxWidth: 280 }} />
+              ? <audio controls src={m.attachmentUrl} style={{ height: 36, maxWidth: '100%' }} />
               : <span style={{ fontFamily: SANS, fontSize: 12.5, color: T.dim }}>🎤 {L('Voice message', 'Mensaje de voz')}</span>}
           </div>
         )}
@@ -158,16 +158,27 @@ function Reactions({ count, mine, onToggle, L }: { count: number; mine: boolean;
 // ── Announcement acknowledgement (recipient button + manager tracker) ────────
 function AckButton({ pid, m, onChanged, L }: { pid: string; m: MessageDTO; onChanged: () => void | Promise<void>; L: L }) {
   const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
   const ack = async () => {
     if (busy) return;
-    setBusy(true);
-    try { await apiPost('/api/comms/acknowledge', { pid, messageId: m.id }); await onChanged(); }
+    setBusy(true); setError(null);
+    try {
+      const r = await apiPost('/api/comms/acknowledge', { pid, messageId: m.id });
+      if (!r.ok) {
+        setError(L('Acknowledgement was not saved. Please try again.', 'No se guardó la confirmación. Inténtalo de nuevo.'));
+        return;
+      }
+      await onChanged();
+    }
     finally { setBusy(false); }
   };
   return (
-    <button onClick={ack} disabled={busy} style={{ display: 'flex', alignItems: 'center', gap: 6, background: deptColorDark(T.forest), color: '#fff', border: 'none', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: SANS, opacity: busy ? 0.6 : 1 }}>
-      {busy ? <Loader2 size={13} className="comms-spin" /> : <ShieldCheck size={13} />} {L('I read & understand', 'Leí y entiendo')}
-    </button>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 6 }}>
+      <button onClick={ack} disabled={busy} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 6, background: deptColorDark(T.forest), color: '#fff', border: 'none', borderRadius: 8, padding: '7px 12px', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: SANS, opacity: busy ? 0.6 : 1 }}>
+        {busy ? <Loader2 size={13} className="comms-spin" /> : <ShieldCheck size={13} />} {L('I read & understand', 'Leí y entiendo')}
+      </button>
+      {error && <span role="alert" style={{ color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4 }}>{error}</span>}
+    </div>
   );
 }
 
@@ -175,12 +186,14 @@ function AckTracker({ pid, m, L }: { pid: string; m: MessageDTO; L: L }) {
   const [open, setOpen] = React.useState(false);
   const [campaign, setCampaign] = React.useState<CampaignStatusDTO | null>(null);
   const [showCampaign, setShowCampaign] = React.useState(false);
+  const [campaignLoading, setCampaignLoading] = React.useState(false);
+  const [campaignError, setCampaignError] = React.useState<string | null>(null);
 
   // Open-driven loader: nothing fetches until the tracker is first expanded;
   // while open it polls every 5s (hidden-gated); closing stops the poll but
   // keeps the last status so reopening shows it instantly, then refreshes.
   const [everOpened, setEverOpened] = React.useState(false);
-  const { data: status, reload } = useCommsResource<AckStatusDTO>(
+  const { data: status, loading: statusLoading, error: statusError, reload } = useCommsResource<AckStatusDTO>(
     `/api/comms/acknowledge/status?pid=${encodeURIComponent(pid)}&messageId=${encodeURIComponent(m.id)}`,
     { enabled: everOpened, pollMs: open ? 5000 : undefined, keepDataOnError: true },
   );
@@ -192,9 +205,15 @@ function AckTracker({ pid, m, L }: { pid: string; m: MessageDTO; L: L }) {
   }, [open, reload]);
 
   const loadCampaign = async () => {
-    if (!m.ackCampaignId) return;
+    if (!m.ackCampaignId || campaignLoading) return;
+    setCampaignLoading(true); setCampaignError(null);
     const r = await apiGet<CampaignStatusDTO>(`/api/comms/acknowledge/campaign?pid=${encodeURIComponent(pid)}&campaignId=${encodeURIComponent(m.ackCampaignId)}`);
-    if (r.ok && r.data) { setCampaign(r.data); setShowCampaign(true); }
+    if (r.ok && r.data) {
+      setCampaign(r.data); setShowCampaign(true);
+    } else {
+      setCampaignError(L('All-property completion could not load. Please try again.', 'No se pudo cargar el avance de todas las propiedades. Inténtalo de nuevo.'));
+    }
+    setCampaignLoading(false);
   };
 
   const total = status?.total ?? 0;
@@ -202,11 +221,13 @@ function AckTracker({ pid, m, L }: { pid: string; m: MessageDTO; L: L }) {
   const pct = total ? Math.round((acked / total) * 100) : 0;
   return (
     <div style={{ width: '100%', maxWidth: 300 }}>
-      <button onClick={() => setOpen((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: T.dim, padding: 0, fontFamily: SANS }}>
+      <button onClick={() => setOpen((v) => !v)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 12, fontWeight: 600, color: T.dim, padding: 0, fontFamily: SANS }}>
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         <ShieldCheck size={13} color={deptColorDark(T.forest)} />
         {status ? L(`${acked} of ${total} acknowledged`, `${acked} de ${total} confirmaron`) : L('Acknowledgement tracker', 'Seguimiento de confirmación')}
       </button>
+      {open && statusLoading && !status && <div role="status" style={{ marginTop: 6, color: T.dim, fontFamily: SANS, fontSize: 12 }}>{L('Loading acknowledgements…', 'Cargando confirmaciones…')}</div>}
+      {open && statusError && <div role="alert" style={{ marginTop: 6, color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{status ? L('Acknowledgements could not refresh. Showing the last results.', 'No se pudieron actualizar las confirmaciones. Se muestran los últimos resultados.') : L('Acknowledgements could not load.', 'No se pudieron cargar las confirmaciones.')}</span><button onClick={() => void reload()} aria-label={L('Retry loading acknowledgements', 'Reintentar cargar confirmaciones')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${T.hair}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}>↻</button></div>}
       {open && status && (
         <div style={{ marginTop: 6, padding: 10, background: T.forestTint, borderRadius: 10, fontSize: 12, color: T.ink, display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ height: 6, background: T.hairSoft, borderRadius: 999, overflow: 'hidden' }}>
@@ -216,10 +237,11 @@ function AckTracker({ pid, m, L }: { pid: string; m: MessageDTO; L: L }) {
             ? <div><strong>{L('Waiting on', 'Falta')}:</strong> {status.pending.map((p) => p.name).join(', ')}</div>
             : <div style={{ color: deptColorDark(T.forest), fontWeight: 600 }}>{L('Everyone has acknowledged', 'Todos confirmaron')}</div>}
           {m.ackCampaignId && !showCampaign && (
-            <button onClick={loadCampaign} style={{ display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 11.5, fontWeight: 600, color: deptColorDark(T.forest), padding: '2px 0', fontFamily: SANS }}>
-              <Building2 size={12} /> {L('View all-property completion', 'Ver avance de todas las propiedades')}
+            <button onClick={() => void loadCampaign()} disabled={campaignLoading} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 5, background: 'transparent', border: 'none', cursor: campaignLoading ? 'wait' : 'pointer', fontSize: 11.5, fontWeight: 600, color: deptColorDark(T.forest), padding: '2px 0', fontFamily: SANS }}>
+              {campaignLoading ? <Loader2 size={12} className="comms-spin" /> : <Building2 size={12} />} {L('View all-property completion', 'Ver avance de todas las propiedades')}
             </button>
           )}
+          {campaignError && <div role="alert" style={{ color: T.terracotta, lineHeight: 1.4 }}>{campaignError}</div>}
           {showCampaign && campaign && <CampaignPanel campaign={campaign} L={L} />}
         </div>
       )}

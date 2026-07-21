@@ -2,7 +2,7 @@
 //
 // Delayed one-shot reminders the assistant schedules for later. Backed by
 // agent_reminders (migration 0302) + src/lib/reminders/store.ts; fired by the
-// process-sms-jobs cron tick.
+// process-agent-schedules cron tick.
 //
 //   create_reminder — MUTATION (card): schedule a reminder to a person or a
 //                     department for a specific time. The card shows the exact

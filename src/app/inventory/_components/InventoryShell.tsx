@@ -350,16 +350,31 @@ export function InventoryShell() {
   const [tabLayout, setTabLayout] = useState<InventoryTabLayout>(
     activeProperty?.inventoryTabLayout ?? { order: [], hidden: [] },
   );
+  const [inventoryConfigError, setInventoryConfigError] = useState<string | null>(null);
+  const layoutSaveChainRef = React.useRef<Promise<void>>(Promise.resolve());
+  const layoutSaveGenerationRef = React.useRef(0);
+  const layoutSaveScopeRef = React.useRef<string | null>(activePropertyId);
+  const layoutDesiredKeyRef = React.useRef(JSON.stringify(tabLayout));
+  const layoutLastSavedRef = React.useRef<InventoryTabLayout>(tabLayout);
   // Resync from the property record when it hydrates / on property switch. Dep
   // is a stable JSON key (not the object identity, which churns on auth-token
   // rebuilds) so an optimistic local layout is never clobbered by a re-render.
-  const storedLayoutKey = activeProperty?.inventoryTabLayout
-    ? JSON.stringify(activeProperty.inventoryTabLayout)
+  const storedLayoutKey = activeProperty?.id === activePropertyId
+    ? JSON.stringify(activeProperty.inventoryTabLayout ?? { order: [], hidden: [] })
     : '';
   useEffect(() => {
     if (!storedLayoutKey) return;
-    try { setTabLayout(JSON.parse(storedLayoutKey) as InventoryTabLayout); } catch { /* ignore */ }
-  }, [storedLayoutKey]);
+    try {
+      const storedLayout = JSON.parse(storedLayoutKey) as InventoryTabLayout;
+      setTabLayout(storedLayout);
+      layoutLastSavedRef.current = storedLayout;
+      layoutDesiredKeyRef.current = storedLayoutKey;
+      layoutSaveScopeRef.current = activePropertyId;
+      layoutSaveGenerationRef.current += 1;
+      layoutSaveChainRef.current = Promise.resolve();
+      setInventoryConfigError(null);
+    } catch { /* ignore invalid legacy property config */ }
+  }, [activePropertyId, storedLayoutKey]);
   const [bucket, setBucket] = useState<StockBucket>('all');
   const [query, setQuery] = useState('');
   // Layout: the Ledger table (default) or the old triage board (Order now /
@@ -1396,25 +1411,39 @@ export function InventoryShell() {
     // jump to it.
     const existing = customCategories.find((c) => c.name.trim().toLowerCase() === trimmed.toLowerCase());
     if (existing) { setBucket(`custom:${existing.id}`); return; }
+    setInventoryConfigError(null);
     try {
       const id = await upsertInventoryCustomCategory(uid, activePropertyId, { name: trimmed, sort: customCategories.length });
       await refreshData();
       setBucket(`custom:${id}`); // jump to the new tab
     } catch (err) {
       console.error('[inventory] add category failed', err);
+      setInventoryConfigError(
+        L === 'es'
+          ? 'No se pudo agregar la categoría. No se guardaron cambios; inténtalo de nuevo.'
+          : 'The category could not be added. Nothing was saved; try again.',
+      );
     }
-  }, [uid, activePropertyId, customCategories, refreshData]);
+  }, [uid, activePropertyId, customCategories, refreshData, L]);
 
   const deleteCustomCategory = useCallback(async (id: string) => {
-    if (!uid || !activePropertyId) return;
+    if (!uid || !activePropertyId) return false;
+    setInventoryConfigError(null);
     try {
       await deleteInventoryCustomCategory(uid, activePropertyId, id);
       setBucket((b) => (b === `custom:${id}` ? 'all' : b)); // leave the deleted tab
       await refreshData();
+      return true;
     } catch (err) {
       console.error('[inventory] delete category failed', err);
+      setInventoryConfigError(
+        L === 'es'
+          ? 'No se pudo eliminar la categoría. Sigue disponible; inténtalo de nuevo.'
+          : 'The category could not be removed. It is still available; try again.',
+      );
+      return false;
     }
-  }, [uid, activePropertyId, refreshData]);
+  }, [uid, activePropertyId, refreshData, L]);
 
   // ── Tab layout (0308) — reorder / remove / restore built-ins ────────────
   // Persist optimistically: update local state now, write in the background.
@@ -1423,17 +1452,57 @@ export function InventoryShell() {
   // UPDATE, so a GM's direct write was a silent no-op and their tab setup
   // reverted on reload.
   const persistLayout = useCallback((next: InventoryTabLayout) => {
-    setTabLayout(next);
-    if (uid && activePropertyId) {
-      void fetchWithAuth('/api/inventory/property-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pid: activePropertyId, tabLayout: next }),
-      })
-        .then((res) => { if (!res.ok) throw new Error(`save failed (${res.status})`); })
-        .catch((err) => console.error('[inventory] save tab layout failed', err));
+    if (!uid || !activePropertyId) {
+      setInventoryConfigError(
+        L === 'es'
+          ? 'No se pudo guardar el diseño porque no hay un hotel activo.'
+          : 'The tab layout could not be saved because no hotel is active.',
+      );
+      return;
     }
-  }, [uid, activePropertyId]);
+    const propertyId = activePropertyId;
+    const generation = layoutSaveGenerationRef.current;
+    const nextKey = JSON.stringify(next);
+    layoutDesiredKeyRef.current = nextKey;
+    setTabLayout(next);
+    setInventoryConfigError(null);
+
+    const save = async () => {
+      try {
+        const res = await fetchWithAuth('/api/inventory/property-config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pid: propertyId, tabLayout: next }),
+        });
+        if (!res.ok) throw new Error(`save failed (${res.status})`);
+        if (
+          generation === layoutSaveGenerationRef.current
+          && layoutSaveScopeRef.current === propertyId
+        ) {
+          layoutLastSavedRef.current = next;
+          if (layoutDesiredKeyRef.current === nextKey) setInventoryConfigError(null);
+        }
+      } catch (err) {
+        console.error('[inventory] save tab layout failed', err);
+        if (
+          generation !== layoutSaveGenerationRef.current
+          || layoutSaveScopeRef.current !== propertyId
+          || layoutDesiredKeyRef.current !== nextKey
+        ) return;
+        const fallback = layoutLastSavedRef.current;
+        layoutDesiredKeyRef.current = JSON.stringify(fallback);
+        setTabLayout(fallback);
+        setInventoryConfigError(
+          L === 'es'
+            ? 'No se guardó el cambio de pestañas. Se restauró el diseño anterior.'
+            : 'The tab change was not saved. The previous layout was restored.',
+        );
+      }
+    };
+
+    const queued = layoutSaveChainRef.current.catch(() => {}).then(save);
+    layoutSaveChainRef.current = queued;
+  }, [uid, activePropertyId, L]);
 
   const reorderTabs = useCallback((keys: string[]) => {
     persistLayout({ order: keys, hidden: tabLayout.hidden });
@@ -1442,8 +1511,12 @@ export function InventoryShell() {
   const removeTab = useCallback((key: string) => {
     if (key.startsWith('custom:')) {
       const id = key.slice(7);
-      void deleteCustomCategory(id); // deletes the row (items detach) + resets bucket
-      persistLayout({ order: tabLayout.order.filter((k) => k !== key), hidden: tabLayout.hidden });
+      // Delete first. If that fails, keep the tab visible so the user can retry
+      // instead of falsely presenting an unsaved removal as successful.
+      void (async () => {
+        if (!await deleteCustomCategory(id)) return;
+        persistLayout({ order: tabLayout.order.filter((k) => k !== key), hidden: tabLayout.hidden });
+      })();
     } else {
       // Hide a built-in tab. Items keep their category and still show under All.
       const hidden = Array.from(new Set([...tabLayout.hidden, key]));
@@ -1592,6 +1665,34 @@ export function InventoryShell() {
               {L === 'es' ? 'Reintentar conteos pendientes' : 'Retry pending counts'}
             </button>
           )}
+        </div>
+      )}
+
+      {inventoryConfigError && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          style={{
+            margin: '0 4px 14px', padding: '10px 14px', borderRadius: 10,
+            border: `1px solid ${T.terra}55`, background: T.terraDim, color: T.terra,
+            fontSize: 13, display: 'flex', alignItems: 'center',
+            justifyContent: 'space-between', gap: 12,
+          }}
+        >
+          <span>{inventoryConfigError}</span>
+          <button
+            type="button"
+            onClick={() => setInventoryConfigError(null)}
+            aria-label={L === 'es' ? 'Cerrar aviso' : 'Dismiss notice'}
+            style={{
+              flex: 'none', minWidth: 44, minHeight: 44,
+              border: `1px solid ${T.terra}66`, borderRadius: 8,
+              padding: '6px 10px', background: T.bg, color: T.terra,
+              fontFamily: fonts.sans, fontSize: 12, fontWeight: 700, cursor: 'pointer',
+            }}
+          >
+            {L === 'es' ? 'Cerrar' : 'Dismiss'}
+          </button>
         </div>
       )}
 

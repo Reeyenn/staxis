@@ -11,7 +11,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { writeAudit } from '@/lib/audit';
 import {
   generateJoinCode,
@@ -113,7 +114,9 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const hotelId = searchParams.get('hotelId');
   if (!hotelId) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!(await callerCan(caller, 'manage_team', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
@@ -142,7 +145,9 @@ export async function POST(req: NextRequest) {
   if (!hotelId) {
     return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (!(await callerCan(caller, 'manage_team', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
   return withJoinCodeHotelLock(hotelId, async () => {
@@ -295,7 +300,9 @@ export async function DELETE(req: NextRequest) {
 
   const { data: row } = await supabaseAdmin.from('hotel_join_codes').select('hotel_id').eq('id', id).maybeSingle();
   if (!row) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!(await callerCan(caller, 'manage_team', row.hotel_id))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', row.hotel_id);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

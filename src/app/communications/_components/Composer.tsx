@@ -91,12 +91,15 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
         if (effOrgWide && r.data?.orgWide) setOrgNotice({ postedCount: r.data.postedCount ?? 0, propertyCount: r.data.propertyCount ?? 0, failedCount: r.data.failedCount ?? 0 });
         setRequireAck(false); setOrgWide(false);
       } else if (handoffMode) {
-        await apiPost('/api/comms/send', { pid, conversationId: c.id, body, msgType: 'handoff', handoffShift: currentShift(), handoffOutstanding: body });
+        const r = await apiPost('/api/comms/send', { pid, conversationId: c.id, body, msgType: 'handoff', handoffShift: currentShift(), handoffOutstanding: body });
+        if (!r.ok) { setError(L('Could not send the hand-off. Please try again.', 'No se pudo enviar el relevo. Inténtalo de nuevo.')); return; }
       } else {
-        await apiPost('/api/comms/send', { pid, conversationId: c.id, body });
+        const sent = await apiPost('/api/comms/send', { pid, conversationId: c.id, body });
+        if (!sent.ok) { setError(L('Message could not be sent. Please try again.', 'No se pudo enviar el mensaje. Inténtalo de nuevo.')); return; }
         if (/@staxis/i.test(body)) {
           const q = body.replace(/@staxis/ig, '').trim() || body;
-          await apiPost('/api/comms/assistant', { pid, conversationId: c.id, question: q });
+          const assistant = await apiPost('/api/comms/assistant', { pid, conversationId: c.id, question: q });
+          if (!assistant.ok) setError(L('Your message was sent, but Staxis could not answer right now.', 'Tu mensaje se envió, pero Staxis no pudo responder ahora.'));
         } else {
           const det = await apiPost<{ action: { kind: string; description: string | null; roomNumber: string | null; severity: string | null } }>('/api/comms/detect-action', { pid, text: body });
           const a = det.data?.action;
@@ -105,14 +108,17 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
       }
       setText(''); setHandoffMode(false);
       await reload();
+    } catch {
+      setError(L('Message could not be sent. Please try again.', 'No se pudo enviar el mensaje. Inténtalo de nuevo.'));
     } finally { setBusy(false); }
   };
 
   const doAction = async () => {
     if (!actionOffer) return;
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
-      await apiPost('/api/comms/action', { pid, conversationId: c.id, kind: actionOffer.kind, description: actionOffer.description, roomNumber: actionOffer.roomNumber, severity: actionOffer.severity });
+      const r = await apiPost('/api/comms/action', { pid, conversationId: c.id, kind: actionOffer.kind, description: actionOffer.description, roomNumber: actionOffer.roomNumber, severity: actionOffer.severity });
+      if (!r.ok) { setError(L('Could not create the action. Please try again.', 'No se pudo crear la acción. Inténtalo de nuevo.')); return; }
       setActionOffer(null); await onReloadThread();
     } finally { setBusy(false); }
   };
@@ -126,20 +132,21 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
       rec.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data); };
       rec.onstop = () => { stream.getTracks().forEach((t) => t.stop()); void finishVoice(); };
       recorderRef.current = rec; recStartRef.current = Date.now(); rec.start(); setRecording(true);
-    } catch { /* mic denied */ }
+    } catch { setError(L('Microphone access is unavailable. Check your browser permission and try again.', 'El acceso al micrófono no está disponible. Revisa el permiso del navegador e inténtalo de nuevo.')); }
   };
   const stopRec = () => { recorderRef.current?.stop(); setRecording(false); };
   const finishVoice = async () => {
     const durMs = Date.now() - recStartRef.current;
     const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
     if (blob.size === 0) return;
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
       const pre = await apiPost<{ path: string; signedUrl: string }>('/api/comms/photo-presign', { pid, conversationId: c.id, kind: 'voice', filename: 'voice.webm' });
-      if (!pre.data) return;
-      if (!(await uploadToSignedUrl(pre.data.signedUrl, blob))) return;
+      if (!pre.ok || !pre.data) { setError(L('Voice message could not be prepared. Please try again.', 'No se pudo preparar el mensaje de voz. Inténtalo de nuevo.')); return; }
+      if (!(await uploadToSignedUrl(pre.data.signedUrl, blob))) { setError(L('Voice message upload failed. Please try again.', 'Falló la carga del mensaje de voz. Inténtalo de nuevo.')); return; }
       const tr = await apiPost<{ text: string }>('/api/comms/transcribe', { pid, path: pre.data.path });
-      await apiPost('/api/comms/send', { pid, conversationId: c.id, body: tr.data?.text ?? '', msgType: 'voice', attachmentPath: pre.data.path, attachmentKind: 'voice', voiceDurationMs: durMs });
+      const sent = await apiPost('/api/comms/send', { pid, conversationId: c.id, body: tr.data?.text ?? '', msgType: 'voice', attachmentPath: pre.data.path, attachmentKind: 'voice', voiceDurationMs: durMs });
+      if (!sent.ok) { setError(L('Voice message could not be sent. Please try again.', 'No se pudo enviar el mensaje de voz. Inténtalo de nuevo.')); return; }
       await reload();
     } finally { setBusy(false); }
   };
@@ -147,12 +154,13 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
   const onPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; e.target.value = '';
     if (!file) return;
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
       const pre = await apiPost<{ path: string; signedUrl: string }>('/api/comms/photo-presign', { pid, conversationId: c.id, kind: 'photo', filename: file.name });
-      if (!pre.data) return;
-      if (!(await uploadToSignedUrl(pre.data.signedUrl, file))) return;
-      await apiPost('/api/comms/send', { pid, conversationId: c.id, body: '', msgType: 'photo', attachmentPath: pre.data.path, attachmentKind: 'photo' });
+      if (!pre.ok || !pre.data) { setError(L('Photo could not be prepared. Please try again.', 'No se pudo preparar la foto. Inténtalo de nuevo.')); return; }
+      if (!(await uploadToSignedUrl(pre.data.signedUrl, file))) { setError(L('Photo upload failed. Please try again.', 'Falló la carga de la foto. Inténtalo de nuevo.')); return; }
+      const sent = await apiPost('/api/comms/send', { pid, conversationId: c.id, body: '', msgType: 'photo', attachmentPath: pre.data.path, attachmentKind: 'photo' });
+      if (!sent.ok) { setError(L('Photo could not be sent. Please try again.', 'No se pudo enviar la foto. Inténtalo de nuevo.')); return; }
       await reload();
     } finally { setBusy(false); }
   };
@@ -161,7 +169,7 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
   return (
     <div style={{ padding: '0 20px 16px' }}>
       {actionOffer && (
-        <div style={{ margin: '0 0 8px', padding: 12, background: tint(T.terracotta, .08), borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, fontFamily: SANS }}>
+        <div style={{ margin: '0 0 8px', padding: 12, background: tint(T.terracotta, .08), borderRadius: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13, fontFamily: SANS }}>
           {actionOffer.kind === 'work_order' ? <Wrench size={16} color={T.terracotta} /> : <AlertCircle size={16} color={T.terracotta} />}
           <span style={{ flex: 1 }}>{actionOffer.kind === 'work_order' ? L('Looks like a maintenance issue.', 'Parece un problema de mantenimiento.') : L('Looks like a guest complaint.', 'Parece una queja de huésped.')}</span>
           <button onClick={doAction} disabled={busy} style={{ background: T.terracotta, color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 12.5, fontWeight: 600, fontFamily: SANS, cursor: 'pointer' }}>{actionOffer.kind === 'work_order' ? L('Create work order', 'Crear orden') : L('Log complaint', 'Registrar queja')}</button>
@@ -220,13 +228,13 @@ export function Composer({ pid, me, conversation: c, L, onReloadThread, onReload
             placeholder={isAnnouncement ? L('Write an announcement…', 'Escribe un anuncio…') : L('Message…  (type @Staxis to ask the assistant)', 'Mensaje…  (escribe @Staxis para el asistente)')}
             style={{ flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 14, lineHeight: 1.5, color: T.ink, padding: '4px 0', maxHeight: 120 }} />
           <button ref={sendBtn} onClick={() => { popNode(sendBtn.current); void doSend(); }} disabled={!canSend} aria-label={L('Send', 'Enviar')}
-            style={{ width: 32, height: 32, borderRadius: 8, border: 'none', cursor: canSend ? 'pointer' : 'default', background: canSend ? T.forest : T.hairSoft, color: canSend ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            style={{ width: 44, height: 44, borderRadius: 9, border: 'none', cursor: canSend ? 'pointer' : 'default', background: canSend ? T.forest : T.hairSoft, color: canSend ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             {busy ? <Loader2 size={15} className="comms-spin" /> : <Send size={15} />}
           </button>
         </div>
       </div>
       {recording && <div style={{ fontSize: 12, color: T.terracotta, marginTop: 6, fontFamily: SANS }}>● {L('Recording… tap stop to send', 'Grabando… toca detener para enviar')}</div>}
-      {error && <div style={{ fontSize: 12, color: T.terracotta, marginTop: 6, fontFamily: SANS }}>{error}</div>}
+      {error && <div role="alert" style={{ fontSize: 12, color: T.terracotta, marginTop: 6, fontFamily: SANS }}>{error}</div>}
     </div>
   );
 }

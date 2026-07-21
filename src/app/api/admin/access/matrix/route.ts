@@ -11,7 +11,11 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireAdmin } from '@/lib/admin-auth';
-import { loadOverridesForProperty } from '@/lib/capabilities/server';
+import {
+  isCapabilityLookupError,
+  loadOverridesForProperty,
+} from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
   CAPABILITY_LIST,
   CAPABILITY_GROUPS,
@@ -35,7 +39,15 @@ export async function GET(req: NextRequest): Promise<Response> {
     return err('propertyId is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const overrides = await loadOverridesForProperty(idCheck.value);
+  let overrides: Awaited<ReturnType<typeof loadOverridesForProperty>>;
+  try {
+    overrides = await loadOverridesForProperty(idCheck.value);
+  } catch (error) {
+    if (isCapabilityLookupError(error)) {
+      return capabilityUnavailableResponse(requestId);
+    }
+    throw error;
+  }
 
   return ok(
     {

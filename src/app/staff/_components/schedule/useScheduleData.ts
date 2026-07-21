@@ -28,6 +28,7 @@ const WEEKS_BACK = 12;        // initial history window
 const WEEKS_AHEAD = 8;        // planning horizon
 const MAX_WEEKS_BACK = 30;    // arrows stop here (~7 months)
 const UNDO_MAX = 30;
+const INITIAL_SNAPSHOT_TIMEOUT_MS = 8_000;
 
 export interface TemplateShift {
   staffId: string;
@@ -104,14 +105,26 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
     setServerShifts([]); setPresets([]); setTor([]);
     setLoadedKey(null);
     setLoadError(null);
+    let cancelled = false;
+    let settled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     const pending = new Set(['shifts', 'presets', 'time-off']);
     const done = (part: string) => {
+      if (cancelled || settled) return;
       pending.delete(part);
-      if (pending.size === 0) setLoadedKey(subscriptionKey);
+      if (pending.size === 0) {
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        setLoadedKey(subscriptionKey);
+      }
     };
     const fail = () => {
+      if (cancelled || settled) return;
+      settled = true;
+      if (timeoutId) clearTimeout(timeoutId);
       setLoadError('Could not load the schedule. Check your connection and try again.');
     };
+    timeoutId = setTimeout(fail, INITIAL_SNAPSHOT_TIMEOUT_MS);
     const unsubs = [
       subscribeToScheduledShifts('', propertyId, windowStart, windowEnd, rows => {
         setServerShifts(rows);
@@ -126,7 +139,11 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
         done('time-off');
       }, undefined, fail),
     ];
-    return () => { unsubs.forEach(u => { try { u(); } catch { /* ignore */ } }); };
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unsubs.forEach(u => { try { u(); } catch { /* ignore */ } });
+    };
   }, [propertyId, windowStart, windowEnd, retryNonce]);
 
   // ── Server day map (assigned shifts only), stable name order ──────────

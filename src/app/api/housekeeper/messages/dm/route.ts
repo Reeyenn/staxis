@@ -8,6 +8,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
 import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
 import { getStaffRow, ensureDmConversation } from '@/lib/comms/core';
+import { requirePropertySectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -17,6 +18,8 @@ interface Body { pid?: string; staffId?: string; otherStaffId?: string }
 export async function POST(req: NextRequest): Promise<Response> {
   const gate = await gateHousekeeperRequest<Body>(req, 'comms-send');
   if (!gate.ok) return gate.response;
+  const sectionGate = await requirePropertySectionEnabled(gate.pid, 'communications', gate);
+  if (!sectionGate.ok) return sectionGate.response;
 
   const otherV = validateUuid(gate.body.otherStaffId, 'otherStaffId');
   if (otherV.error) return err(otherV.error, { requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers });

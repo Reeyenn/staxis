@@ -49,7 +49,7 @@ import {
 } from '@/lib/agent/llm';
 import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { getToolsForRole } from '@/lib/agent/tools';
-import { getEnabledSections } from '@/lib/sections/server';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
@@ -123,6 +123,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!hasAccess) {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
+  const sectionGate = await requireSectionEnabled(req, body.propertyId, 'staxis');
+  if (!sectionGate.ok) return sectionGate.response;
 
   // ── Load account row + role + staff.id + department (shared with resolve) ─
   // Approval-cards feature: the new comms tools (send_message, create_todo,
@@ -244,12 +246,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   // feed the DYNAMIC prompt block. Memory retrieval is non-fatal (returns '').
   // enabledSections drives the section gate: any tool tagged with a section the
   // hotel has turned OFF is dropped from the catalog (and refused in executeTool
-  // as defense-in-depth). Cached + fail-soft to null (⇒ all sections ON).
-  const [snapshot, memoryBlock, enabledSections] = await Promise.all([
+  // as defense-in-depth). Reuse the exact map read by the fail-closed gate.
+  const [snapshot, memoryBlock] = await Promise.all([
     buildHotelSnapshot(body.propertyId, userCtx.role, staffId),
     retrieveMemoryForTurn(body.propertyId, userCtx.accountId),
-    getEnabledSections(body.propertyId),
   ]);
+  const enabledSections = sectionGate.enabledSections;
   const systemPrompt = await buildSystemPrompt(userCtx.role, snapshot, conversationId, undefined, memoryBlock);
   const tools = getToolsForRole(userCtx.role, 'chat', undefined, enabledSections);
 

@@ -71,6 +71,7 @@ export function FilterBar({
         value={query}
         onChange={(e) => onQuery(e.target.value)}
         placeholder={tx.search}
+        aria-label={tx.search}
         className="inv-search"
         style={{
           flex: 1, minWidth: 140, height: 38, padding: '0 16px', borderRadius: 999,
@@ -79,7 +80,7 @@ export function FilterBar({
       />
 
       {/* View switch — Ledger table ↔ triage board. */}
-      <div style={{ display: 'inline-flex', border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3, background: T.bg, flexShrink: 0 }}>
+      <div role="group" aria-label={lang === 'es' ? 'Vista de inventario' : 'Inventory view'} style={{ display: 'inline-flex', border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3, background: T.bg, flexShrink: 0 }}>
         {(['ledger', 'board'] as const).map((v) => {
           const active = view === v;
           return (

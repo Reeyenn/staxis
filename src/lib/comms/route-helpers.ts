@@ -12,6 +12,7 @@ import { err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { resolveAccount, resolveStaffIdForAccount, getStaffRow, isManagerRole } from './core';
 import type { CommsLang } from './types';
@@ -73,6 +74,12 @@ export async function commsContext(
   if (!hasAccess) {
     return { ok: false, response: err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers }) };
   }
+
+  // Central policy boundary for every authenticated /api/comms route. Keep it
+  // before account/staff resolution because that resolution can create a
+  // caller-bound staff identity on first use.
+  const sectionGate = await requireSectionEnabled(req, pid, 'communications');
+  if (!sectionGate.ok) return { ok: false, response: sectionGate.response };
 
   const account = await resolveAccount(session.userId);
   if (!account) {

@@ -12,7 +12,11 @@ import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canManageTeam, type AppRole } from '@/lib/roles';
 import { requireSession } from '@/lib/api-auth';
-import { canForProperty } from '@/lib/capabilities/server';
+import {
+  canForProperty,
+  capabilityDecisionForProperty,
+  type CapabilityDecision,
+} from '@/lib/capabilities/server';
 import { MANAGER_FLOOR_CAPABILITIES, type CapabilityKey } from '@/lib/capabilities/registry';
 
 export interface TeamCaller {
@@ -99,6 +103,20 @@ export async function callerCan(
 }
 
 /**
+ * Tri-state variant for API boundaries that must distinguish an explicit deny
+ * from an override-store outage. Property-scope failures are ordinary denials;
+ * only the capability read itself can be `unavailable`.
+ */
+export async function callerCapabilityDecision(
+  caller: TeamCaller,
+  capability: CapabilityKey,
+  hotelId: string,
+): Promise<CapabilityDecision> {
+  if (!canManageHotel(caller, hotelId)) return 'denied';
+  return capabilityDecisionForProperty({ role: caller.role }, capability, hotelId);
+}
+
+/**
  * Capability + property-scope check resolved straight from an authenticated
  * user id (no pre-fetched TeamCaller). Loads the account once, then requires
  * BOTH:
@@ -136,4 +154,38 @@ export async function accountCanForProperty(
   // (2) Property scope — admin and '*' wildcard reach every property.
   const access = (account.property_access ?? []) as string[];
   return role === 'admin' || access.includes(propertyId) || access.includes('*');
+}
+
+/**
+ * API-boundary variant of accountCanForProperty that preserves the same
+ * capability-then-property-scope ordering while distinguishing an override
+ * store outage from a real denial.
+ */
+export async function accountCapabilityDecisionForProperty(
+  authUserId: string,
+  capability: CapabilityKey,
+  propertyId: string | null | undefined,
+): Promise<CapabilityDecision> {
+  if (!propertyId) return 'denied';
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('role, property_access')
+    .eq('data_user_id', authUserId)
+    .maybeSingle();
+  if (error || !account) return 'denied';
+
+  const role = (account.role as AppRole | null) ?? null;
+  if (!role) return 'denied';
+
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role },
+    capability,
+    propertyId,
+  );
+  if (capabilityDecision !== 'allowed') return capabilityDecision;
+
+  const access = (account.property_access ?? []) as string[];
+  return role === 'admin' || access.includes(propertyId) || access.includes('*')
+    ? 'allowed'
+    : 'denied';
 }

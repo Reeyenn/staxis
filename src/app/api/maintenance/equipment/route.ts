@@ -15,7 +15,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { canForUserId } from '@/lib/capabilities/server';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { listEquipment, createEquipment } from '@/lib/equipment/store';
 import { parseEquipmentInput } from '@/lib/equipment/validate';
 
@@ -65,7 +66,15 @@ export async function POST(req: NextRequest) {
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  if (!(await canForUserId(session.userId, 'manage_equipment', pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(
+    session.userId,
+    'manage_equipment',
+    pid,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (capabilityDecision === 'denied') {
     return err('Manager role required', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

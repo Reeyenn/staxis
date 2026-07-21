@@ -140,7 +140,11 @@ beforeEach(() => {
       upsert(...args: unknown[]) { chain.push(`upsert(${JSON.stringify(args)})`); return builder; },
       update(...args: unknown[]) { chain.push(`update(${JSON.stringify(args)})`); return builder; },
       insert(...args: unknown[]) { chain.push(`insert(${JSON.stringify(args)})`); return Promise.resolve({ error: null }); },
-      then: (resolve: (v: unknown) => unknown) => resolve({ data: null, error: null }),
+      then: (resolve: (v: unknown) => unknown) => resolve(
+        table === 'capability_overrides'
+          ? { data: [], error: null }
+          : { data: null, error: null },
+      ),
     };
     return builder;
   }) as unknown as FromFn;

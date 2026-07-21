@@ -125,7 +125,10 @@ export function Overlay({
 
       const focusable = Array.from(
         cardRef.current?.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR) ?? [],
-      ).filter((element) => element.tabIndex >= 0 && !element.hasAttribute('disabled'));
+      ).filter((element) => element.tabIndex >= 0
+        && !element.hasAttribute('disabled')
+        && !element.hidden
+        && element.getAttribute('aria-hidden') !== 'true');
       if (focusable.length === 0) {
         e.preventDefault();
         cardRef.current?.focus();
@@ -168,15 +171,15 @@ export function Overlay({
       returnFocusRef.current = document.activeElement;
     }
     const frame = requestAnimationFrame(() => closeRef.current?.focus({ preventScroll: true }));
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      const returnTarget = returnFocusRef.current;
+      returnFocusRef.current = null;
+      if (returnTarget?.isConnected) {
+        requestAnimationFrame(() => returnTarget.focus({ preventScroll: true }));
+      }
+    };
   }, [open, render]);
-
-  useEffect(() => {
-    if (open) return;
-    const returnTarget = returnFocusRef.current;
-    returnFocusRef.current = null;
-    if (returnTarget?.isConnected) returnTarget.focus({ preventScroll: true });
-  }, [open]);
 
   // WAAPI entrance. Runs as a LAYOUT effect so the from-keyframe (opacity 0)
   // takes effect BEFORE the first paint of the freshly-mounted card. With a
@@ -287,8 +290,8 @@ export function Overlay({
             onClick={onClose}
             aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
             style={{
-              width: 30,
-              height: 30,
+              width: 44,
+              height: 44,
               borderRadius: 999,
               cursor: 'pointer',
               background: 'transparent',

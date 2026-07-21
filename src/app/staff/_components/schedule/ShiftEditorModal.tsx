@@ -5,12 +5,14 @@
 
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useId, useState } from 'react';
 import {
   toMin, toHHMM, normalizeShiftEnd, fmtMinRange, type BoardShift,
 } from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn } from '../_tokens';
 import { Avatar } from '../_people';
+import { useStaffDialog } from '../useStaffDialog';
+import dialogStyles from '../StaffDialog.module.css';
 
 const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
 
@@ -31,12 +33,12 @@ export function ShiftEditorModal({
   const [end, setEnd] = useState(toHHMM(shift.endMin));
   const [note, setNote] = useState(shift.note ?? '');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+  const titleId = useId();
+  const startId = useId();
+  const endId = useId();
+  const noteId = useId();
+  const errorId = useId();
+  const dialogRef = useStaffDialog(onClose);
 
   const save = () => {
     if (!TIME_RE.test(start.trim()) || !TIME_RE.test(end.trim())) {
@@ -60,9 +62,7 @@ export function ShiftEditorModal({
 
   return (
     <div
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 1100,
         background: 'rgba(31,35,28,0.42)', backdropFilter: 'blur(6px)',
@@ -70,7 +70,15 @@ export function ShiftEditorModal({
         padding: 20, fontFamily: fonts.sans,
       }}
     >
-      <div onClick={e => e.stopPropagation()} style={{
+      <div
+        ref={dialogRef}
+        className={dialogStyles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onMouseDown={e => e.stopPropagation()}
+        style={{
         background: T.paper, borderRadius: 22, width: '100%', maxWidth: 400,
         padding: '22px 24px',
         boxShadow: '0 24px 70px -10px rgba(31,35,28,0.34), 0 0 0 1px rgba(31,35,28,0.04)',
@@ -79,7 +87,7 @@ export function ShiftEditorModal({
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
             <Avatar staffId={shift.staffId} name={staffName} size={32}/>
             <div style={{ minWidth: 0 }}>
-              <h2 style={{
+              <h2 id={titleId} style={{
                 margin: 0, fontFamily: fonts.sans, fontSize: 20,
                 fontWeight: 600, letterSpacing: '-0.02em', color: T.ink,
                 whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
@@ -91,8 +99,9 @@ export function ShiftEditorModal({
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={es ? 'Cerrar' : 'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,
@@ -103,23 +112,29 @@ export function ShiftEditorModal({
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginTop: 18 }}>
           <div>
-            <Caps size={9}>{es ? 'Inicio' : 'Start'}</Caps>
+            <label htmlFor={startId}><Caps size={9}>{es ? 'Inicio' : 'Start'}</Caps></label>
             <input
+              id={startId}
               value={start}
               onChange={e => { setStart(e.target.value); setErrorMsg(null); }}
               onKeyDown={e => { if (e.key === 'Enter') save(); }}
               placeholder="08:00"
-              autoFocus
+              data-dialog-initial-focus="true"
+              aria-invalid={errorMsg ? true : undefined}
+              aria-describedby={errorMsg ? errorId : undefined}
               style={{ ...inputStyle, fontFamily: fonts.mono, marginTop: 6 }}
             />
           </div>
           <div>
-            <Caps size={9}>{es ? 'Fin' : 'End'}</Caps>
+            <label htmlFor={endId}><Caps size={9}>{es ? 'Fin' : 'End'}</Caps></label>
             <input
+              id={endId}
               value={end}
               onChange={e => { setEnd(e.target.value); setErrorMsg(null); }}
               onKeyDown={e => { if (e.key === 'Enter') save(); }}
               placeholder="16:00"
+              aria-invalid={errorMsg ? true : undefined}
+              aria-describedby={errorMsg ? errorId : undefined}
               style={{ ...inputStyle, fontFamily: fonts.mono, marginTop: 6 }}
             />
           </div>
@@ -131,8 +146,9 @@ export function ShiftEditorModal({
         </div>
 
         <div style={{ marginTop: 14 }}>
-          <Caps size={9}>{es ? 'Nota (opcional)' : 'Note (optional)'}</Caps>
+          <label htmlFor={noteId}><Caps size={9}>{es ? 'Nota (opcional)' : 'Note (optional)'}</Caps></label>
           <input
+            id={noteId}
             value={note}
             onChange={e => setNote(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') save(); }}
@@ -143,7 +159,7 @@ export function ShiftEditorModal({
         </div>
 
         {errorMsg && (
-          <div role="alert" style={{
+          <div id={errorId} role="alert" style={{
             marginTop: 12, padding: '9px 13px', background: 'rgba(184,92,61,0.08)',
             border: '1px solid rgba(184,92,61,0.25)', borderRadius: 10,
             color: T.red, fontSize: 12.5,

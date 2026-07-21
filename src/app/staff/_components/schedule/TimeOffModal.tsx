@@ -7,11 +7,13 @@
 
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import type { StaffMember, TimeOffRequest } from '@/types';
 import { dayInfo } from '@/lib/schedule-board';
 import { T, fonts, Caps, Btn } from '../_tokens';
 import { Avatar } from '../_people';
+import { useStaffDialog } from '../useStaffDialog';
+import dialogStyles from '../StaffDialog.module.css';
 
 function useNameById(staff: StaffMember[]) {
   return useMemo(() => {
@@ -121,7 +123,11 @@ export function TimeOffSection({
             </div>
             {isDenying && (
               <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label className={dialogStyles.visuallyHidden} htmlFor={`deny-reason-${r.id}`}>
+                  {es ? `Motivo para rechazar la solicitud de ${name}` : `Reason for denying ${name}'s request`}
+                </label>
                 <input
+                  id={`deny-reason-${r.id}`}
                   autoFocus
                   value={denyReason}
                   onChange={e => setDenyReason(e.target.value)}
@@ -172,18 +178,12 @@ export function TimeOffHistoryModal({
   const es = lang === 'es';
   const nameById = useNameById(staff);
   const fmtDate = useFmtDate(today, lang);
-
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+  const titleId = useId();
+  const dialogRef = useStaffDialog(onClose);
 
   return (
     <div
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 1100,
         background: 'rgba(31,35,28,0.42)', backdropFilter: 'blur(6px)',
@@ -191,7 +191,15 @@ export function TimeOffHistoryModal({
         padding: 20, fontFamily: fonts.sans,
       }}
     >
-      <div onClick={e => e.stopPropagation()} style={{
+      <div
+        ref={dialogRef}
+        className={dialogStyles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onMouseDown={e => e.stopPropagation()}
+        style={{
         background: T.paper, borderRadius: 22, width: '100%', maxWidth: 460,
         maxHeight: '78vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
         boxShadow: '0 24px 70px -10px rgba(31,35,28,0.34), 0 0 0 1px rgba(31,35,28,0.04)',
@@ -202,14 +210,15 @@ export function TimeOffHistoryModal({
         }}>
           <div>
             <Caps>{es ? 'Tiempo libre' : 'Time off'}</Caps>
-            <h2 style={{
+            <h2 id={titleId} style={{
               margin: '3px 0 0', fontFamily: fonts.sans, fontSize: 22,
               fontWeight: 600, letterSpacing: '-0.02em', color: T.ink,
             }}>{es ? 'Historial' : 'History'}</h2>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={es ? 'Cerrar' : 'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,

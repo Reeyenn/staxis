@@ -8,7 +8,7 @@
 // Communications — NOT subscribeTable. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Plus, X, ArrowLeft, Loader2, MessageSquare, ChevronDown, Send } from 'lucide-react';
+import { Plus, X, ArrowLeft, Loader2, MessageSquare, ChevronDown, Send, AlertCircle, RefreshCw } from 'lucide-react';
 import { apiPost } from '@/lib/comms/client';
 import type { LogEntryDTO, LogReplyDTO, CommsDept } from '@/lib/comms/types';
 import type { L } from './comms-types-fe';
@@ -44,12 +44,12 @@ export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [adding, setAdding] = React.useState(false);
 
-  const { data, loading, reload: load } = useCommsResource<{ entries: LogEntryDTO[] }>(
+  const { data, loading, error: loadError, reload: load } = useCommsResource<{ entries: LogEntryDTO[] }>(
     `/api/comms/logbook?pid=${encodeURIComponent(pid)}`,
     { pollMs: 8000, keepDataOnError: true },
   );
   const entries = React.useMemo(() => data?.entries ?? [], [data]);
-  const loaded = !loading;
+  const loaded = data !== null;
 
   const selected = selectedId ? entries.find((e) => e.id === selectedId) ?? null : null;
 
@@ -69,10 +69,10 @@ export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '26px 28px 60px' }}>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
           <div>
-            <div style={{ marginBottom: 7 }}><MonoLabel>{L(`${entries.length} recaps`, `${entries.length} resúmenes`)}</MonoLabel></div>
+            <div style={{ marginBottom: 7 }}><MonoLabel>{data ? L(`${entries.length} recaps`, `${entries.length} resúmenes`) : (loading ? L('Loading recaps', 'Cargando resúmenes') : L('Log unavailable', 'Bitácora no disponible'))}</MonoLabel></div>
             <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Log book', 'Bitácora')}</div>
           </div>
-          <button onClick={() => setAdding((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${adding ? T.hair : tint(T.forest, .4)}`, background: adding ? T.bg : tint(T.forest, .12), color: adding ? T.dim : deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
+          <button onClick={() => setAdding((v) => !v)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${adding ? T.hair : tint(T.forest, .4)}`, background: adding ? T.bg : tint(T.forest, .12), color: adding ? T.dim : deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
             {adding ? <><X size={15} /> {L('Cancel', 'Cancelar')}</> : <><Plus size={16} /> {L('New entry', 'Nueva entrada')}</>}
           </button>
         </div>
@@ -80,7 +80,9 @@ export function LogbookMode({ pid, meName, L }: { pid: string; meName: string; L
         {adding && <LogComposer pid={pid} L={L} onAdded={() => { setAdding(false); void load(); }} />}
 
         <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {loaded && entries.length === 0 && !adding && (
+          {loading && !data && <div role="status" style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center' }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading recaps…', 'Cargando resúmenes…')}</div>}
+          {loadError && <div role="alert" style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{data ? L('The log book could not refresh. Showing the last results.', 'No se pudo actualizar la bitácora. Se muestran los últimos resultados.') : L('The log book could not load. Check your connection and try again.', 'No se pudo cargar la bitácora. Revisa tu conexión e inténtalo de nuevo.')}</span><button onClick={() => void load()} aria-label={L('Retry loading the log book', 'Reintentar cargar la bitácora')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button></div>}
+          {loaded && !loadError && entries.length === 0 && !adding && (
             <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}>
               {L('No recaps yet. Post a shift handoff to get started.', 'Sin resúmenes aún. Publica un resumen de turno para empezar.')}
             </div>
@@ -142,14 +144,16 @@ function LogComposer({ pid, L, onAdded }: { pid: string; L: L; onAdded: () => vo
   const [body, setBody] = React.useState('');
   const [category, setCategory] = React.useState('general');
   const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
   const inp = React.useRef<HTMLInputElement | null>(null);
   React.useEffect(() => { inp.current?.focus(); }, []);
 
   const submit = async () => {
     const t = title.trim(); if (!t || busy) return;
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
-      await apiPost('/api/comms/logbook', { pid, title: t, body: body.trim() || undefined, category });
+      const r = await apiPost('/api/comms/logbook', { pid, title: t, body: body.trim() || undefined, category });
+      if (!r.ok) { setError(L('The recap was not posted. Please try again.', 'No se publicó el resumen. Inténtalo de nuevo.')); return; }
       onAdded();
     } finally { setBusy(false); }
   };
@@ -167,17 +171,18 @@ function LogComposer({ pid, L, onAdded }: { pid: string; L: L; onAdded: () => vo
           <MonoLabel style={{ fontSize: 9.5 }}>{L('Area', 'Área')}</MonoLabel>
           <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
             <DeptDot dept={curDept} />
-            <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ appearance: 'none', border: `1px solid ${T.hair}`, borderRadius: 8, background: T.paper, fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: T.ink, padding: '5px 26px 5px 9px', marginLeft: 7, cursor: 'pointer' }}>
+            <select value={category} onChange={(e) => setCategory(e.target.value)} style={{ minHeight: 44, appearance: 'none', border: `1px solid ${T.hair}`, borderRadius: 8, background: T.paper, fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: T.ink, padding: '5px 26px 5px 9px', marginLeft: 7, cursor: 'pointer' }}>
               {CATS.map((c) => <option key={c.key} value={c.key}>{L(c.en, c.es)}</option>)}
             </select>
             <span style={{ position: 'absolute', right: 8, color: T.dim, pointerEvents: 'none', display: 'flex' }}><ChevronDown size={12} /></span>
           </span>
         </label>
         <div style={{ flex: 1 }} />
-        <button onClick={submit} disabled={!title.trim() || busy} style={{ fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '8px 16px', borderRadius: 9, border: 'none', cursor: title.trim() ? 'pointer' : 'default', background: title.trim() ? T.ink : T.hairSoft, color: title.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button onClick={submit} disabled={!title.trim() || busy} style={{ minHeight: 44, fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '8px 16px', borderRadius: 9, border: 'none', cursor: title.trim() ? 'pointer' : 'default', background: title.trim() ? T.ink : T.hairSoft, color: title.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', gap: 6 }}>
           {busy && <Loader2 size={13} className="comms-spin" />} {L('Post recap', 'Publicar')}
         </button>
       </div>
+      {error && <div role="alert" style={{ marginTop: 8, color: T.terracotta, fontFamily: SANS, fontSize: 12.5 }}>{error}</div>}
     </div>
   );
 }
@@ -190,9 +195,10 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
 }) {
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
+  const [sendError, setSendError] = React.useState<string | null>(null);
   const dept = catDept(entry.category);
 
-  const { data, reload: load } = useCommsResource<{ replies: LogReplyDTO[] }>(
+  const { data, loading, error: loadError, reload: load } = useCommsResource<{ replies: LogReplyDTO[] }>(
     `/api/comms/logbook/replies?pid=${encodeURIComponent(pid)}&entryId=${encodeURIComponent(entry.id)}`,
     { pollMs: 8000, keepDataOnError: true },
   );
@@ -200,17 +206,18 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
 
   const send = async () => {
     const t = text.trim(); if (!t || busy) return;
-    setBusy(true);
+    setBusy(true); setSendError(null);
     try {
       const r = await apiPost('/api/comms/logbook/replies', { pid, entryId: entry.id, body: t });
-      if (r.ok) { setText(''); await load(); onReplied(); }
+      if (!r.ok) { setSendError(L('The reply was not sent. Please try again.', 'No se envió la respuesta. Inténtalo de nuevo.')); return; }
+      setText(''); await load(); onReplied();
     } finally { setBusy(false); }
   };
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
       <div style={{ maxWidth: 720, margin: '0 auto', padding: '22px 28px 60px' }}>
-        <button onClick={onBack} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', cursor: 'pointer', color: T.dim, fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '4px 0 14px' }}>
+        <button onClick={onBack} style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', cursor: 'pointer', color: T.dim, fontFamily: SANS, fontSize: 13, fontWeight: 600, padding: '4px 0' }}>
           <ArrowLeft size={15} /> {L('Back to log', 'Volver a la bitácora')}
         </button>
 
@@ -232,9 +239,11 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
 
         {/* Replies */}
         <div style={{ marginTop: 22 }}>
-          <MonoLabel>{replies.length === 1 ? L('1 reply', '1 respuesta') : L(`${replies.length} replies`, `${replies.length} respuestas`)}</MonoLabel>
+          <MonoLabel>{data ? (replies.length === 1 ? L('1 reply', '1 respuesta') : L(`${replies.length} replies`, `${replies.length} respuestas`)) : (loading ? L('Loading replies', 'Cargando respuestas') : L('Replies unavailable', 'Respuestas no disponibles'))}</MonoLabel>
         </div>
         <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {loading && !data && <div role="status" style={{ color: T.dim, fontFamily: SANS, fontSize: 12.5 }}>{L('Loading replies…', 'Cargando respuestas…')}</div>}
+          {loadError && <div role="alert" style={{ color: T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{data ? L('Replies could not refresh. Showing the last results.', 'No se pudieron actualizar las respuestas. Se muestran los últimos resultados.') : L('Replies could not load.', 'No se pudieron cargar las respuestas.')}</span><button onClick={() => void load()} aria-label={L('Retry loading replies', 'Reintentar cargar respuestas')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${T.hair}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={14} /></button></div>}
           {replies.map((r) => (
             <div key={r.id} style={{ display: 'flex', gap: 10 }}>
               <Avatar name={r.authorName ?? L('Staff', 'Personal')} dept="management" size={28} />
@@ -250,13 +259,14 @@ function LogEntryDetail({ pid, entry, meName, L, onBack, onReplied }: {
         </div>
 
         {/* Reply composer */}
+        {sendError && <div role="alert" style={{ marginTop: 14, color: T.terracotta, fontFamily: SANS, fontSize: 12.5 }}>{sendError}</div>}
         <div style={{ marginTop: 18, display: 'flex', gap: 10, alignItems: 'flex-end' }}>
           <Avatar name={meName} dept="management" size={28} me />
           <textarea value={text} onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
             placeholder={L('Reply to this recap…', 'Responder a este resumen…')} rows={1}
-            style={{ flex: 1, border: `1px solid ${T.hair}`, borderRadius: 12, background: T.paper, resize: 'vertical', fontFamily: SANS, fontSize: 14, color: T.ink, lineHeight: 1.5, padding: '10px 12px', outline: 'none', minHeight: 40 }} />
-          <button onClick={send} disabled={!text.trim() || busy} title={L('Send reply', 'Enviar respuesta')} style={{ width: 40, height: 40, borderRadius: 10, border: 'none', cursor: text.trim() ? 'pointer' : 'default', background: text.trim() ? T.ink : T.hairSoft, color: text.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            style={{ flex: 1, border: `1px solid ${T.hair}`, borderRadius: 12, background: T.paper, resize: 'vertical', fontFamily: SANS, fontSize: 14, color: T.ink, lineHeight: 1.5, padding: '10px 12px', outline: 'none', minHeight: 44 }} />
+          <button onClick={send} disabled={!text.trim() || busy} title={L('Send reply', 'Enviar respuesta')} style={{ width: 44, height: 44, borderRadius: 10, border: 'none', cursor: text.trim() ? 'pointer' : 'default', background: text.trim() ? T.ink : T.hairSoft, color: text.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             {busy ? <Loader2 size={16} className="comms-spin" /> : <Send size={16} />}
           </button>
         </div>

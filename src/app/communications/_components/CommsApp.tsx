@@ -6,7 +6,7 @@
 // Search palette · Catch-up popover. All data via /api/comms/*. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Search, Sparkles, ListTodo, BookOpen, Notebook, CalendarDays, Phone, Megaphone, Plus, Reply, ArrowRight } from 'lucide-react';
+import { Search, Sparkles, ListTodo, BookOpen, Notebook, CalendarDays, Phone, Megaphone, Plus, Reply, ArrowRight, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
@@ -23,7 +23,14 @@ import { CalendarMode } from './CalendarPane';
 import { ContactsMode } from './ContactsPane';
 
 export function CommsApp() {
-  const { activePropertyId: pid } = useProperty();
+  const { activePropertyId } = useProperty();
+  // A hotel switch is a resource-boundary change, not an ordinary refresh.
+  // Remount the workspace so no conversations, messages, badges, or modal
+  // state from the previous hotel can remain while the next request settles.
+  return <CommsPropertyApp key={activePropertyId ?? 'no-property'} pid={activePropertyId} />;
+}
+
+function CommsPropertyApp({ pid }: { pid: string | null }) {
   const { locale } = useLang();
   const L = React.useCallback<LType>((en, es) => (locale === 'es' ? es : en), [locale]);
 
@@ -36,7 +43,12 @@ export function CommsApp() {
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [showNew, setShowNew] = React.useState(false);
   const [memberCount, setMemberCount] = React.useState<number | null>(null);
+  const [mobileDetail, setMobileDetail] = React.useState(false);
+  const [messagesLoading, setMessagesLoading] = React.useState(false);
+  const [messagesError, setMessagesError] = React.useState<string | null>(null);
+  const [mutationError, setMutationError] = React.useState<string | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const threadRequestRef = React.useRef(0);
   // `pid` comes from a client-only context (reads localStorage), so it's null
   // during SSR but already set on the first client render. Branching the render
   // on it directly made the server HTML ("Select a property…") disagree with the
@@ -50,20 +62,23 @@ export function CommsApp() {
     // same hydration discipline as the pid branch below (#418).
     try {
       const v = new URLSearchParams(window.location.search).get('view');
-      if (v === 'logbook' || v === 'threads' || v === 'todo' || v === 'knowledge' || v === 'calendar' || v === 'contacts') setMode(v);
+      if (v === 'logbook' || v === 'threads' || v === 'todo' || v === 'knowledge' || v === 'calendar' || v === 'contacts') {
+        setMode(v);
+        setMobileDetail(true);
+      }
     } catch { /* */ }
   }, []);
 
   // ── Data ──────────────────────────────────────────────────────────────────
   // Bootstrap (sidebar + me + staff): 8s poll, last-good held through failed
-  // polls and property switches (the new pid's data replaces it when it lands).
-  const { data: boot, reload: loadBoot } = useCommsResource<BootstrapData>(
+  // polls. CommsApp's property-keyed boundary clears it on hotel switches.
+  const { data: boot, loading: bootLoading, error: bootError, reload: loadBoot } = useCommsResource<BootstrapData>(
     `/api/comms/bootstrap?pid=${encodeURIComponent(pid ?? '')}`,
     { pollMs: 8000, keepDataOnError: true, enabled: !!pid },
   );
   // Worklist: fetched up-front for the sidebar badge; 15s poll only while the
   // To-do view is open (plus a refresh on entry, below).
-  const { data: worklistData, reload: loadWorklist } = useCommsResource<{ items: WorklistItem[] }>(
+  const { data: worklistData, loading: worklistLoading, error: worklistError, reload: loadWorklist } = useCommsResource<{ items: WorklistItem[] }>(
     `/api/worklist?pid=${encodeURIComponent(pid ?? '')}`,
     { pollMs: mode === 'todo' ? 15000 : undefined, keepDataOnError: true, enabled: !!pid },
   );
@@ -76,16 +91,30 @@ export function CommsApp() {
   // (not hold the previous thread's messages), and every successful fetch —
   // polls included — re-pins the scroll to the bottom. Neither survives
   // useCommsResource's silent keep-last-good source switches.
-  const loadThread = React.useCallback(async () => {
+  const loadThread = React.useCallback(async (showLoading = false) => {
     if (!pid || !selId) return;
+    const requestId = ++threadRequestRef.current;
+    if (showLoading) setMessagesLoading(true);
     const r = await apiGet<{ messages: MessageDTO[] }>(`/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}`);
+    if (requestId !== threadRequestRef.current) return;
     if (r.ok && r.data) {
       setMessages(r.data.messages);
+      setMessagesError(null);
       setTimeout(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }, 30);
+    } else {
+      setMessagesError(r.error || L('Could not load messages.', 'No se pudieron cargar los mensajes.'));
     }
-  }, [pid, selId]);
+    setMessagesLoading(false);
+  }, [pid, selId, L]);
 
-  React.useEffect(() => { setMessages([]); if (selId) void loadThread(); }, [selId, loadThread]);
+  React.useEffect(() => {
+    threadRequestRef.current += 1;
+    setMessages([]);
+    setMessagesError(null);
+    setMessagesLoading(!!selId);
+    if (selId) void loadThread(true);
+    return () => { threadRequestRef.current += 1; };
+  }, [selId, loadThread]);
   React.useEffect(() => {
     if (!selId || mode !== 'chats') return;
     const iv = setInterval(() => { if (!document.hidden) void loadThread(); }, 3000);
@@ -106,32 +135,42 @@ export function CommsApp() {
   }, [pid, selId, selConvo]);
 
   // ── Actions ─────────────────────────────────────────────────────────────────
-  const selectConversation = (id: string) => { setSelId(id); setMode('chats'); setThreadParent(null); setPanel(null); };
-  const switchMode = (m: ViewMode) => { setMode(m); if (m !== 'chats') { setThreadParent(null); setPanel(null); } };
+  const selectConversation = (id: string) => { setSelId(id); setMode('chats'); setThreadParent(null); setPanel(null); setMobileDetail(true); };
+  const switchMode = (m: ViewMode) => { setMode(m); setMobileDetail(true); if (m !== 'chats') { setThreadParent(null); setPanel(null); } };
   const jump = (id: string) => { selectConversation(id); setCatchOpen(false); setSearchOpen(false); };
   const openThread = (m: MessageDTO) => { setPanel(null); setThreadParent((cur) => (cur?.id === m.id ? null : m)); };
   const togglePanel = (p: Exclude<RightPanel, null>) => { setThreadParent(null); setPanel((cur) => (cur === p ? null : p)); };
+  const showMobileList = () => { setMobileDetail(false); setThreadParent(null); setPanel(null); };
+  const actionFailed = (en: string, es: string) => setMutationError(L(en, es));
 
   const reactToggle = async (m: MessageDTO) => {
     if (!pid) return;
-    await apiPost('/api/comms/react', { pid, messageId: m.id });
+    setMutationError(null);
+    const r = await apiPost('/api/comms/react', { pid, messageId: m.id });
+    if (!r.ok) { actionFailed('Could not update the acknowledgement. Please try again.', 'No se pudo actualizar la confirmación. Inténtalo de nuevo.'); return; }
     await loadThread();
   };
   const pinToggle = async (m: MessageDTO) => {
     if (!pid) return;
-    await apiPost('/api/comms/pin', { pid, messageId: m.id, pinned: !m.pinned });
+    setMutationError(null);
+    const r = await apiPost('/api/comms/pin', { pid, messageId: m.id, pinned: !m.pinned });
+    if (!r.ok) { actionFailed('Could not update the pinned message. Please try again.', 'No se pudo actualizar el mensaje fijado. Inténtalo de nuevo.'); return; }
     await loadThread();
   };
   const turnIntoTask = async (m: MessageDTO) => {
     if (!pid) return;
-    await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || L('Message task', 'Tarea de mensaje'), sourceMessageId: m.id });
+    setMutationError(null);
+    const r = await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || L('Message task', 'Tarea de mensaje'), sourceMessageId: m.id });
+    if (!r.ok) { actionFailed('Could not turn this message into a task. Please try again.', 'No se pudo convertir este mensaje en una tarea. Inténtalo de nuevo.'); return; }
     setMode('todo'); setThreadParent(null); setPanel(null);
     await loadWorklist();
   };
   const openDm = async (staffId: string) => {
     if (!pid) return;
+    setMutationError(null);
     const r = await apiPost<{ conversationId: string }>('/api/comms/dm', { pid, otherStaffId: staffId });
-    if (r.data?.conversationId) { await loadBoot(); selectConversation(r.data.conversationId); setShowNew(false); setSearchOpen(false); }
+    if (!r.ok || !r.data?.conversationId) { actionFailed('Could not start the direct message. Please try again.', 'No se pudo iniciar el mensaje directo. Inténtalo de nuevo.'); return; }
+    await loadBoot(); selectConversation(r.data.conversationId); setShowNew(false); setSearchOpen(false);
   };
 
   if (!mounted) {
@@ -141,6 +180,19 @@ export function CommsApp() {
   }
   if (!pid) {
     return <div style={{ padding: 40, fontFamily: SANS, color: T.dim }}>{L('Select a property to use Communications.', 'Selecciona una propiedad para usar Comunicaciones.')}</div>;
+  }
+  if (!boot) {
+    return (
+      <div className="comms-shell" style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative', borderRadius: 18, border: '1px solid rgba(31,35,28,.08)', boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)', overflow: 'hidden' }}>
+        <ResourceState
+          loading={bootLoading || !bootError}
+          title={bootLoading || !bootError ? L('Loading Communications…', 'Cargando Comunicaciones…') : L('Communications could not load', 'No se pudo cargar Comunicaciones')}
+          detail={bootLoading || !bootError ? L('Getting conversations and staff for this property.', 'Obteniendo conversaciones y personal de esta propiedad.') : L('Check your connection, then try again. Your data has not been changed.', 'Revisa tu conexión e inténtalo de nuevo. Tus datos no se modificaron.')}
+          retryLabel={L('Try again', 'Reintentar')}
+          onRetry={() => void loadBoot()}
+        />
+      </div>
+    );
   }
 
   const conversations = boot?.conversations ?? [];
@@ -153,7 +205,7 @@ export function CommsApp() {
 
   const right = mode === 'chats'
     ? (threadParent && selConvo
-        ? <ThreadPanel pid={pid} conversation={selConvo} parent={threadParent} L={L} onClose={() => setThreadParent(null)} onReload={loadThread} />
+        ? <ThreadPanel key={`${selConvo.id}:${threadParent.id}`} pid={pid} conversation={selConvo} parent={threadParent} L={L} onClose={() => setThreadParent(null)} onReload={loadThread} />
         : panel === 'pinned' && selConvo
         ? <PinnedPanel pid={pid} conversation={selConvo} L={L} onClose={() => setPanel(null)} />
         : panel === 'members' && selConvo
@@ -165,9 +217,9 @@ export function CommsApp() {
     // Concourse shell: the workspace flexes to fill the space under the
     // floating pill bar as a rounded card (was `calc(100vh - 64px)` against
     // the old solid header — that left a top seam + bottom overflow).
-    <div style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative', borderRadius: 18, border: '1px solid rgba(31,35,28,.08)', boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)', overflow: 'hidden' }}>
+    <div className={`comms-shell${mobileDetail ? ' comms-mobile-detail' : ''}`} style={{ display: 'flex', flex: 1, minHeight: 0, fontFamily: SANS, color: T.ink, background: T.bg, position: 'relative', borderRadius: 18, border: '1px solid rgba(31,35,28,.08)', boxShadow: '0 6px 16px -14px rgba(31,42,32,.35)', overflow: 'hidden' }}>
       {/* ── Sidebar ── */}
-      <aside style={{ width: 272, background: T.bg, borderRight: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
+      <aside className="comms-sidebar" style={{ width: 272, background: T.bg, borderRight: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', flexShrink: 0, overflow: 'hidden' }}>
         <div style={{ padding: '14px 14px 10px', borderBottom: `1px solid ${T.hairSoft}` }}>
           <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 16, color: T.ink }}>{L('Communications', 'Comunicaciones')}</div>
           <div style={{ fontFamily: SANS, fontSize: 11.5, color: T.dim, display: 'flex', alignItems: 'center', gap: 5, marginTop: 2 }}>
@@ -206,25 +258,34 @@ export function CommsApp() {
       </aside>
 
       {/* ── Main area ── */}
-      <div style={{ flex: 1, minWidth: 0, display: 'flex' }}>
-        {mode === 'chats' && (
-          <>
-            {selConvo
-              ? <MessagePane
-                  pid={pid} me={boot!.me} conversation={selConvo} messages={messages} online={online} memberCount={memberCount} L={L}
-                  activeThreadId={threadParent?.id ?? null} activePanel={panel} scrollRef={scrollRef}
-                  onReloadThread={loadThread} onReloadBoot={loadBoot} onOpenThread={openThread} onTogglePanel={togglePanel}
-                  onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={() => setSearchOpen(true)} />
-              : <EmptyHint text={L('Pick a conversation, or start a new message.', 'Elige una conversación o inicia un mensaje nuevo.')} />}
-            {right}
-          </>
-        )}
-        {mode === 'threads' && <ThreadsList pid={pid} L={L} onOpen={(convId, parent) => { selectConversation(convId); setThreadParent(parent); }} />}
-        {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot?.staff ?? []} L={L} reload={loadWorklist} />}
-        {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot?.me.isManager} L={L} /></div>}
-        {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot?.me.displayName ?? L('You', 'Tú')} L={L} />}
-        {mode === 'calendar' && <CalendarMode key={pid} pid={pid} isManager={!!boot?.me.isManager} L={L} />}
-        {mode === 'contacts' && <ContactsMode key={pid} pid={pid} isManager={!!boot?.me.isManager} L={L} />}
+      <div className="comms-main" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <div className="comms-mobile-backbar">
+          <button className="comms-mobile-back" onClick={showMobileList} aria-label={L('Back to conversations', 'Volver a conversaciones')}>
+            <ChevronLeft size={20} aria-hidden="true" />
+            <span>{L('Conversations', 'Conversaciones')}</span>
+          </button>
+        </div>
+        <div className="comms-main-content" style={{ flex: 1, minHeight: 0, minWidth: 0, display: 'flex', position: 'relative' }}>
+          {mode === 'chats' && (
+            <>
+              {selConvo
+                ? <MessagePane
+                    pid={pid} me={boot.me} conversation={selConvo} messages={messages} online={online} memberCount={memberCount} L={L}
+                    messagesLoading={messagesLoading} messagesError={messagesError} onRetryMessages={() => void loadThread(true)}
+                    activeThreadId={threadParent?.id ?? null} activePanel={panel} scrollRef={scrollRef}
+                    onReloadThread={loadThread} onReloadBoot={loadBoot} onOpenThread={openThread} onTogglePanel={togglePanel}
+                    onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={() => setSearchOpen(true)} />
+                : <EmptyHint text={L('Pick a conversation, or start a new message.', 'Elige una conversación o inicia un mensaje nuevo.')} />}
+              {right}
+            </>
+          )}
+          {mode === 'threads' && <ThreadsList pid={pid} L={L} onOpen={(convId, parent) => { selectConversation(convId); setThreadParent(parent); }} />}
+          {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot.staff ?? []} L={L} reload={loadWorklist} loading={worklistLoading} error={worklistError} />}
+          {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot.me.isManager} L={L} /></div>}
+          {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot.me.displayName ?? L('You', 'Tú')} L={L} />}
+          {mode === 'calendar' && <CalendarMode key={pid} pid={pid} isManager={!!boot.me.isManager} L={L} />}
+          {mode === 'contacts' && <ContactsMode key={pid} pid={pid} isManager={!!boot.me.isManager} L={L} />}
+        </div>
       </div>
 
       {/* ── Overlays ── */}
@@ -232,7 +293,66 @@ export function CommsApp() {
       {searchOpen && <SearchPalette pid={pid} L={L} onClose={() => setSearchOpen(false)} onJump={jump} onOpenDm={openDm} />}
       {showNew && boot && <NewMessageModal staff={boot.staff} L={L} onPick={openDm} onClose={() => setShowNew(false)} />}
 
-      <style>{`.comms-spin{animation:comms-spin 1s linear infinite}@keyframes comms-spin{to{transform:rotate(360deg)}}`}</style>
+      {(bootError || mutationError) && (
+        <div className="comms-alert-stack">
+          {bootError && (
+            <div className="comms-action-alert" role="alert">
+              <AlertCircle size={18} aria-hidden="true" />
+              <span>{L('Conversations could not refresh. Showing the last results.', 'No se pudieron actualizar las conversaciones. Se muestran los últimos resultados.')}</span>
+              <button onClick={() => void loadBoot()} aria-label={L('Retry loading conversations', 'Reintentar cargar conversaciones')}><RefreshCw size={17} aria-hidden="true" /></button>
+            </div>
+          )}
+          {mutationError && (
+            <div className="comms-action-alert" role="alert">
+              <AlertCircle size={18} aria-hidden="true" />
+              <span>{mutationError}</span>
+              <button onClick={() => setMutationError(null)} aria-label={L('Dismiss error', 'Cerrar error')}><X size={18} aria-hidden="true" /></button>
+            </div>
+          )}
+        </div>
+      )}
+
+      <style>{`
+        .comms-spin{animation:comms-spin 1s linear infinite}
+        @keyframes comms-spin{to{transform:rotate(360deg)}}
+        .comms-mobile-backbar{display:none}
+        .comms-alert-stack{position:absolute;right:16px;bottom:16px;z-index:90;display:flex;flex-direction:column;align-items:flex-end;gap:8px;max-width:min(420px,calc(100% - 32px))}
+        .comms-action-alert{display:flex;align-items:center;gap:10px;width:100%;padding:12px 12px 12px 14px;border-left:3px solid ${T.terracotta};border-radius:9px;background:${T.ink};color:#fff;box-shadow:0 12px 32px rgba(31,35,28,.24);font:500 13px/1.4 ${SANS}}
+        .comms-action-alert>span{flex:1;min-width:0}
+        .comms-action-alert>button{width:44px;height:44px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:0;border-radius:8px;background:transparent;color:#fff;cursor:pointer}
+        .comms-action-alert>button:focus-visible,.comms-mobile-back:focus-visible{outline:2px solid ${T.teal};outline-offset:2px}
+        @media(max-width:1100px){
+          .comms-right-panel{position:absolute!important;inset:0!important;z-index:20!important;width:100%!important;max-width:none!important;border-left:0!important}
+          .comms-right-panel button{min-height:44px}
+        }
+        @media(max-width:767px){
+          .comms-shell{width:100%;border-radius:14px!important}
+          .comms-sidebar{width:100%!important;border-right:0!important}
+          .comms-sidebar button{min-height:44px}
+          .comms-main{display:none!important;width:100%}
+          .comms-mobile-detail .comms-sidebar{display:none!important}
+          .comms-mobile-detail .comms-main{display:flex!important}
+          .comms-mobile-backbar{display:flex;height:48px;flex-shrink:0;align-items:center;border-bottom:1px solid ${T.hairSoft};padding:0 6px;background:${T.bg}}
+          .comms-mobile-back{min-width:44px;min-height:44px;display:inline-flex;align-items:center;gap:4px;padding:0 8px;border:0;border-radius:9px;background:transparent;color:${deptColorDark(T.forest)};font:600 13px ${SANS};cursor:pointer}
+          .comms-main-content{width:100%;overflow:hidden}
+          .comms-alert-stack{right:10px;bottom:10px;max-width:calc(100% - 20px)}
+        }
+        @media(prefers-reduced-motion:reduce){.comms-spin{animation:none}}
+      `}</style>
+    </div>
+  );
+}
+
+function ResourceState({ loading, title, detail, retryLabel, onRetry }: { loading: boolean; title: string; detail: string; retryLabel: string; onRetry: () => void }) {
+  return (
+    <div role={loading ? 'status' : 'alert'} aria-live={loading ? 'polite' : 'assertive'} style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 28, textAlign: 'center' }}>
+      <style>{`@keyframes comms-resource-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.comms-resource-spin{animation:none!important}}`}</style>
+      <div style={{ width: '100%', maxWidth: 420, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10 }}>
+        {loading ? <Loader2 size={24} className="comms-resource-spin" style={{ animation: 'comms-resource-spin 1s linear infinite' }} color={T.forest} aria-hidden="true" /> : <AlertCircle size={24} color={T.terracotta} aria-hidden="true" />}
+        <div style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{title}</div>
+        <div style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.5, color: T.dim }}>{detail}</div>
+        {!loading && <button onClick={onRetry} style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, padding: '0 16px', borderRadius: 9, border: `1px solid ${T.hairer}`, background: T.bg, color: T.ink, fontFamily: SANS, fontWeight: 650, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" />{retryLabel}</button>}
+      </div>
     </div>
   );
 }
@@ -295,15 +415,17 @@ function EmptyHint({ text }: { text: string }) {
 // ── Threads mode (every conversation that has a live thread) ─────────────────
 interface ThreadSummaryDTO { conversationId: string; conversationTitle: string; dept: CommsDept; parent: MessageDTO }
 function ThreadsList({ pid, L, onOpen }: { pid: string; L: LType; onOpen: (convId: string, parent: MessageDTO) => void }) {
-  const { data } = useCommsResource<{ threads: ThreadSummaryDTO[] }>(`/api/comms/threads?pid=${encodeURIComponent(pid)}`, { keepDataOnError: true });
+  const { data, loading, error, reload } = useCommsResource<{ threads: ThreadSummaryDTO[] }>(`/api/comms/threads?pid=${encodeURIComponent(pid)}`, { keepDataOnError: true });
   const items = data?.threads ?? [];
   return (
     <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '26px 28px 60px' }}>
-        <div style={{ marginBottom: 7 }}><MonoLabel>{L(`${items.length} threads`, `${items.length} hilos`)}</MonoLabel></div>
+        <div style={{ marginBottom: 7 }}><MonoLabel>{data ? L(`${items.length} threads`, `${items.length} hilos`) : (loading ? L('Loading threads', 'Cargando hilos') : L('Threads unavailable', 'Hilos no disponibles'))}</MonoLabel></div>
         <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Threads', 'Hilos')}</div>
         <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {items.length === 0 && <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}>{L('No threads yet. Reply to a message to start one.', 'Sin hilos aún. Responde a un mensaje para empezar uno.')}</div>}
+          {loading && items.length === 0 && <div role="status" style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading threads…', 'Cargando hilos…')}</div>}
+          {error && <div role="alert" style={{ fontFamily: SANS, fontSize: 13, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{items.length > 0 ? L('Threads could not refresh. Showing the last results.', 'No se pudieron actualizar los hilos. Se muestran los últimos resultados.') : L('Threads could not load.', 'No se pudieron cargar los hilos.')}</span><button onClick={() => void reload()} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }} aria-label={L('Retry loading threads', 'Reintentar cargar hilos')}><RefreshCw size={15} aria-hidden="true" /></button></div>}
+          {!loading && !error && items.length === 0 && <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}>{L('No threads yet. Reply to a message to start one.', 'Sin hilos aún. Responde a un mensaje para empezar uno.')}</div>}
           {items.map(({ conversationId, conversationTitle, dept, parent }) => (
             <button key={parent.id} onClick={() => onOpen(conversationId, parent)} style={{ textAlign: 'left', border: `1px solid ${T.hair}`, borderRadius: 13, background: T.bg, cursor: 'pointer', padding: '14px 16px' }}
               onMouseEnter={(e) => (e.currentTarget.style.borderColor = tint(deptColor(dept), .45))} onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.hair)}>

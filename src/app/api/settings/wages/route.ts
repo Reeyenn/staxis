@@ -24,7 +24,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { validateUuid, validateInt } from '@/lib/api-validate';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
   isLaborRole,
   LABOR_ROLE_DEPARTMENTS,
@@ -90,7 +91,15 @@ async function authorize(
     log.error('wages: accounts lookup failed', { requestId, msg: accountErr.message });
     return { ok: false, response: err('account lookup failed', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure }) };
   }
-  if (!(await canForProperty({ role: (accountRow?.role as string | undefined) ?? null }, 'view_wages', propertyId))) {
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: (accountRow?.role as string | undefined) ?? null },
+    'view_wages',
+    propertyId,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return { ok: false, response: capabilityUnavailableResponse(requestId) };
+  }
+  if (capabilityDecision === 'denied') {
     return { ok: false, response: err('forbidden — role does not have wage access', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
   return { ok: true, propertyId };

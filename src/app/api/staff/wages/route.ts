@@ -35,12 +35,14 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { type AppRole } from '@/lib/roles';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
   callerManagesProperty,
   validateWage,
   type WageCaller,
 } from '@/lib/staff-wages';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -73,9 +75,17 @@ export async function GET(req: NextRequest) {
   if (!callerManagesProperty(caller, pidV.value!)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  if (!(await canForProperty({ role: caller.role }, 'view_wages', pidV.value!))) {
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: caller.role },
+    'view_wages',
+    pidV.value!,
+  );
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+  const sectionGate = await requireSectionEnabled(req, pidV.value!, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const { data, error: qErr } = await supabaseAdmin
     .from('staff')
@@ -115,9 +125,17 @@ export async function PUT(req: NextRequest) {
   if (!callerManagesProperty(caller, pidV.value!)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-  if (!(await canForProperty({ role: caller.role }, 'view_wages', pidV.value!))) {
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: caller.role },
+    'view_wages',
+    pidV.value!,
+  );
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
+  const sectionGate = await requireSectionEnabled(req, pidV.value!, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const sidV = validateUuid(body.staffId, 'staffId');
   if (sidV.error) return err(sidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });

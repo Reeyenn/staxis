@@ -92,10 +92,9 @@ export function ConcourseBar() {
     ? (lang === 'es' ? 'Gestión' : 'Management')
     : (lang === 'es' ? 'Centro de empresa' : 'Company Hub');
 
-  // Pending-decision badge on the Staxis pill. Seeded from the sample queue
-  // (same Phase-1 footing as the queue page) and kept in sync while the user
-  // approves/dismisses on /feed via the queue's broadcast event.
-  // Starts at 0 — the queue broadcasts the real pending count when it mounts.
+  // Pending-decision badge on the Staxis pill. Starts hidden at zero. A live
+  // queue source may broadcast a verified count; the pilot's unavailable
+  // queue state deliberately does not broadcast a fabricated all-clear.
   const [pendingCount, setPendingCount] = React.useState(0);
   React.useEffect(() => {
     const h = (e: Event) => {

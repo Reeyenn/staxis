@@ -77,7 +77,8 @@ import {
   deriveModelKind,
   type OptimizerModelKind,
 } from '@/lib/ml-schedule-helpers';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -209,7 +210,15 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // operational forecast (staffing, gaps, room mix) but zero out the dollar
     // projections so the money never reaches them — the UI hides the labor row
     // via the labor_cost_visible flag below. (Access cleanup 2026-06-26.)
-    const canSeeLaborCost = await canForProperty({ role }, 'view_wages', propertyId);
+    const capabilityDecision = await capabilityDecisionForProperty(
+      { role },
+      'view_wages',
+      propertyId,
+    );
+    if (capabilityDecision === 'unavailable') {
+      return capabilityUnavailableResponse(requestId);
+    }
+    const canSeeLaborCost = capabilityDecision === 'allowed';
 
     // Rate limit (60/hr per user × property). hashToRateLimitKey
     // produces a UUID-shaped digest so the same api_limits.property_id

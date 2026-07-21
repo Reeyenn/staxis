@@ -13,6 +13,8 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import { commsContext } from '@/lib/comms/route-helpers';
 import { transcribeAudioBuffer } from '@/lib/comms/assistant';
 import { assertAudioBudget } from '@/lib/agent/cost-controls';
+import { parseCommsAttachmentPath } from '@/lib/comms/attachments';
+import { canAccessConversation, getConversation } from '@/lib/comms/core';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -30,9 +32,24 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const pV = validateString(body.path, { max: 300, label: 'path' });
   if (pV.error) return err(pV.error, { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
-  // The clip must live inside THIS property's comms namespace.
-  if (!pV.value!.startsWith(`${ctx.pid}/comms/`)) {
+  const attachment = parseCommsAttachmentPath(ctx.pid, pV.value!);
+  if (!attachment || attachment.kind !== 'voice') {
     return err('invalid path', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
+  }
+
+  // The conversation embedded in the storage key is part of the authorization
+  // boundary. Check membership before rate limiting, budget reservation, object
+  // download, or paid transcription.
+  const convo = await getConversation(ctx.pid, attachment.conversationId);
+  if (!convo) {
+    return err('Not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });
+  }
+  const allowed = await canAccessConversation(ctx.pid, ctx.staffId, convo, {
+    isManager: ctx.isManager,
+    dept: ctx.dept,
+  });
+  if (!allowed) {
+    return err('Forbidden', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
 
   const rl = await checkAndIncrementRateLimit('comms-transcribe', ctx.pid);

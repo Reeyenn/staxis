@@ -19,7 +19,7 @@ import { T, SANS as COMMS_SANS, SERIF, deptColorDark, tint, MonoLabel } from './
 // The calendar body keeps the Snow design-system styling it had inside the
 // Knowledge hub (var(--snow-*)), so it reads identically; only the surrounding
 // shell + header match the Communications tab system.
-import { card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, Loading, Empty } from './comms-snow';
+import { card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, Loading, Empty, ResourceError } from './comms-snow';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CALENDAR mode (self-fetching) — owns the flex:1 / overflow scroll container,
@@ -27,14 +27,19 @@ import { card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, Loading, E
 // ─────────────────────────────────────────────────────────────────────────────
 export function CalendarMode({ pid, isManager, L }: { pid: string; isManager: boolean; L: L }) {
   const [adding, setAdding] = React.useState(false);
+  const [mutationError, setMutationError] = React.useState<string | null>(null);
 
-  const { data, loading, reload } = useCommsResource<{ events: KnowledgeEventDTO[] }>(`/api/knowledge/events?pid=${encodeURIComponent(pid)}`);
-  // null = still loading (spinner); a failed fetch shows the empty state.
-  const items = data?.events ?? (loading ? null : []);
+  const { data, loading, error: loadError, reload } = useCommsResource<{ events: KnowledgeEventDTO[] }>(`/api/knowledge/events?pid=${encodeURIComponent(pid)}`, { keepDataOnError: true });
+  const items = data?.events ?? null;
 
   const remove = async (ev: KnowledgeEventDTO) => {
     if (!window.confirm(L(`Delete "${ev.title}"?`, `¿Eliminar "${ev.title}"?`))) return;
-    await apiDelete(`/api/knowledge/events?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(ev.id)}`);
+    setMutationError(null);
+    const r = await apiDelete(`/api/knowledge/events?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(ev.id)}`);
+    if (!r.ok) {
+      setMutationError(L('The event was not deleted. Please try again.', 'No se eliminó el evento. Inténtalo de nuevo.'));
+      return;
+    }
     await reload();
   };
 
@@ -50,11 +55,11 @@ export function CalendarMode({ pid, isManager, L }: { pid: string; isManager: bo
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '26px 28px 60px' }}>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
           <div>
-            <div style={{ marginBottom: 7 }}><MonoLabel>{count === 1 ? L('1 event', '1 evento') : L(`${count} events`, `${count} eventos`)}</MonoLabel></div>
+            <div style={{ marginBottom: 7 }}><MonoLabel>{data ? (count === 1 ? L('1 event', '1 evento') : L(`${count} events`, `${count} eventos`)) : (loading ? L('Loading events', 'Cargando eventos') : L('Events unavailable', 'Eventos no disponibles'))}</MonoLabel></div>
             <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Calendar', 'Calendario')}</div>
           </div>
           {isManager && (
-            <button onClick={() => setAdding((v) => !v)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${adding ? T.hair : tint(T.forest, .4)}`, background: adding ? T.bg : tint(T.forest, .12), color: adding ? T.dim : deptColorDark(T.forest), fontFamily: COMMS_SANS, fontSize: 13.5, fontWeight: 600 }}>
+            <button onClick={() => setAdding((v) => !v)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${adding ? T.hair : tint(T.forest, .4)}`, background: adding ? T.bg : tint(T.forest, .12), color: adding ? T.dim : deptColorDark(T.forest), fontFamily: COMMS_SANS, fontSize: 13.5, fontWeight: 600 }}>
               {adding ? <><X size={15} /> {L('Cancel', 'Cancelar')}</> : <><Plus size={16} /> {L('Add event', 'Agregar evento')}</>}
             </button>
           )}
@@ -63,14 +68,16 @@ export function CalendarMode({ pid, isManager, L }: { pid: string; isManager: bo
         {adding && isManager && <EventEditor pid={pid} L={L} onDone={async () => { setAdding(false); await reload(); }} onCancel={() => setAdding(false)} />}
 
         <div style={{ marginTop: 18 }}>
-          {items === null ? <Loading L={L} /> : count === 0 ? (
+          {mutationError && <div role="alert" style={{ marginBottom: 10, color: 'var(--snow-warm)', fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{mutationError}</span><button onClick={() => setMutationError(null)} style={ghostBtn}>{L('Dismiss', 'Cerrar')}</button></div>}
+          {loadError && <div style={{ marginBottom: 10 }}><ResourceError text={data ? L('Events could not refresh. Showing the last results.', 'No se pudieron actualizar los eventos. Se muestran los últimos resultados.') : L('Events could not load. Check your connection and try again.', 'No se pudieron cargar los eventos. Revisa tu conexión e inténtalo de nuevo.')} retryLabel={L('Retry loading events', 'Reintentar cargar eventos')} onRetry={() => void reload()} /></div>}
+          {loading && !data ? <Loading L={L} /> : data && count === 0 ? (
             <Empty text={L('No events yet. Add training days, vendor visits, or brand audits.', 'Aún no hay eventos. Agrega días de capacitación, visitas de proveedores o auditorías.')} />
-          ) : (
+          ) : data ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {upcoming.length > 0 && <EventList title={L('Upcoming', 'Próximos')} events={upcoming} isManager={isManager} onRemove={remove} L={L} />}
               {past.length > 0 && <EventList title={L('Past', 'Pasados')} events={past} isManager={isManager} onRemove={remove} L={L} dim />}
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
@@ -143,7 +150,7 @@ function EventEditor({ pid, L, onDone, onCancel }: { pid: string; L: L; onDone: 
         <label style={labelStyle}>{L('Notes (optional)', 'Notas (opcional)')}</label>
         <textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={KNOWLEDGE_LIMITS.NOTES_MAX} rows={2} style={{ ...inputStyle, resize: 'vertical' }} />
       </div>
-      {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
+      {error && <div role="alert" style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8 }}>
         <button onClick={save} disabled={busy || !title.trim() || !eventDate} style={{ ...primaryBtn, opacity: busy || !title.trim() || !eventDate ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
         <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>

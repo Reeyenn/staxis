@@ -13,6 +13,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -73,6 +74,8 @@ function isFinancialEvidence(value: unknown): value is InventoryFinancialEvidenc
 export async function GET(req: NextRequest) {
   const gate = await requireFinanceAccess(req, req.nextUrl.searchParams.get('propertyId'));
   if (!gate.ok) return gate.response;
+  const sectionGate = await requireSectionEnabled(req, gate.pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
   try {
     const { data, error } = await supabaseAdmin.rpc(

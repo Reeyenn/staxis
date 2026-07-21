@@ -43,8 +43,16 @@ export const GET = defineRoute({
 
     // Coalesce the stored map (null ⇒ all-on) into a full 8-key boolean map so
     // the modal always renders 8 toggles, never {}.
-    const sections = resolveSections(await getEnabledSections(idCheck.value));
-    return ctx.ok({ sections });
+    try {
+      const sections = resolveSections(await getEnabledSections(idCheck.value));
+      return ctx.ok({ sections });
+    } catch {
+      return ctx.err('section availability is temporarily unavailable', {
+        status: 503,
+        code: ApiErrorCode.UpstreamFailure,
+        headers: { 'Retry-After': '5' },
+      });
+    }
   },
 });
 

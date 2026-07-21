@@ -48,8 +48,8 @@ export async function GET(req: NextRequest) {
     const pidV = validateUuid(req.nextUrl.searchParams.get('propertyId'), 'propertyId');
     if (pidV.error) return err(pidV.error, { requestId, status: 400, code: 'validation_failed' });
 
-    const gate = await gateChecklistAccess(req, pidV.value!);
-    if (!gate.ok) return err(gate.error, { requestId, status: gate.status, code: gate.code });
+    const gate = await gateChecklistAccess(req, pidV.value!, requestId);
+    if (!gate.ok) return gate.response;
 
     const checklist = await getEffectiveInspectionChecklist(pidV.value!);
     return ok({ checklist }, { requestId });
@@ -67,8 +67,8 @@ export async function PUT(req: NextRequest) {
     const pidV = validateUuid(body.propertyId, 'propertyId');
     if (pidV.error) return err(pidV.error, { requestId, status: 400, code: 'validation_failed' });
 
-    const gate = await gateChecklistAccess(req, pidV.value!);
-    if (!gate.ok) return err(gate.error, { requestId, status: gate.status, code: gate.code });
+    const gate = await gateChecklistAccess(req, pidV.value!, requestId);
+    if (!gate.ok) return gate.response;
 
     const nameV = validateString(body.name, { label: 'name', max: MAX_NAME_LEN });
     if (nameV.error) return err(nameV.error, { requestId, status: 400, code: 'validation_failed' });
@@ -112,8 +112,8 @@ export async function DELETE(req: NextRequest) {
     const cidV = validateUuid(req.nextUrl.searchParams.get('checklistId'), 'checklistId');
     if (cidV.error) return err(cidV.error, { requestId, status: 400, code: 'validation_failed' });
 
-    const gate = await gateChecklistAccess(req, pidV.value!);
-    if (!gate.ok) return err(gate.error, { requestId, status: gate.status, code: gate.code });
+    const gate = await gateChecklistAccess(req, pidV.value!, requestId);
+    if (!gate.ok) return gate.response;
 
     const deleted = await deleteInspectionOverride(pidV.value!, cidV.value!);
     return ok({ reset: deleted }, { requestId });

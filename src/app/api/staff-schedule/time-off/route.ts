@@ -20,7 +20,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
-import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateDateStr, validateUuid } from '@/lib/api-validate';
 import { fromTimeOffRequestRow } from '@/lib/db-mappers';
@@ -132,7 +133,9 @@ export async function PUT(req: NextRequest) {
   const hotelIdCheck = validateUuid(body.hotelId, 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
-  if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_shifts', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

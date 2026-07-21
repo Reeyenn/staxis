@@ -13,7 +13,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 
@@ -30,9 +31,14 @@ export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
   const hotelIdCheck = validateUuid(searchParams.get('hotelId'), 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!(await callerCan(caller, 'manage_shifts', hotelIdCheck.value!))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_shifts', hotelIdCheck.value!);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+
+  const sectionGate = await requireSectionEnabled(req, hotelIdCheck.value!, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const { data, error } = await supabaseAdmin
     .from('schedule_week_signoffs').select('week_start')
@@ -55,7 +61,9 @@ export async function POST(req: NextRequest) {
   const hotelIdCheck = validateUuid(body.hotelId, 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
-  if (!(await callerCan(caller, 'manage_shifts', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_shifts', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 

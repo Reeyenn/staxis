@@ -255,7 +255,7 @@ describe('inventory financial permissions migration 0331', () => {
     }
   });
 
-  test('disabling Inventory blocks custom-tab mutation without hiding stored tab labels', async () => {
+  test('disabling Inventory blocks custom-tab reads and mutations at the database boundary', async () => {
     await pg.query(
       `update public.properties
        set enabled_sections='{"inventory":false,"financials":true}'::jsonb
@@ -280,13 +280,37 @@ describe('inventory financial permissions migration 0331', () => {
         ),
         /row-level security|violates.*policy|permission denied/i,
       );
-      assert.equal(
-        (await asUser(
+      assert.deepEqual(
+        await asUser(
           OWNER,
           `select id from public.inventory_custom_categories where property_id=$1`,
           [PROPERTY],
-        )).length,
-        2,
+        ),
+        [],
+      );
+      assert.deepEqual(
+        await asUser(
+          OWNER,
+          `select category from public.inventory_budgets where property_id=$1`,
+          [PROPERTY],
+        ),
+        [],
+      );
+      assert.deepEqual(
+        await asUser(
+          OWNER,
+          `select id from public.inventory_budget_sections where property_id=$1`,
+          [PROPERTY],
+        ),
+        [],
+      );
+      assert.deepEqual(
+        await asUser(
+          OWNER,
+          `select public.staxis_user_can_view_inventory_financials($1) as allowed`,
+          [PROPERTY],
+        ),
+        [{ allowed: false }],
       );
     } finally {
       await pg.query(

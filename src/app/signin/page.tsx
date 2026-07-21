@@ -248,8 +248,10 @@ function SignInInner() {
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
         <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <AuthLabel>{lang === 'es' ? 'Correo electrónico' : 'Email'}</AuthLabel>
+          <AuthLabel htmlFor="signin-email">{lang === 'es' ? 'Correo electrónico' : 'Email'}</AuthLabel>
           <input
+            id="signin-email"
+            name="email"
             className="si-input"
             type="text"
             inputMode="email"
@@ -265,12 +267,14 @@ function SignInInner() {
 
         <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-            <AuthLabel>{t('password', lang)}</AuthLabel>
+            <AuthLabel htmlFor="signin-password">{t('password', lang)}</AuthLabel>
             <Link href="/signin/forgot" style={authLinkStyle}>
               {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
             </Link>
           </div>
           <input
+            id="signin-password"
+            name="password"
             className="si-input"
             type="password"
             value={password}

@@ -19,7 +19,8 @@ import type { NextRequest } from 'next/server';
 import { err, ok } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateEnum, validateUuid } from '@/lib/api-validate';
-import { callerCan, verifyTeamManager } from '@/lib/team-auth';
+import { callerCapabilityDecision, verifyTeamManager } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { partitionTargets } from '@/lib/checklists/access';
 import {
   CLEANING_TYPES,
@@ -84,8 +85,15 @@ export async function POST(req: NextRequest) {
     // hotel via the Access tab. Honor that per-hotel restriction (partitionTargets
     // only checks property access). One restricted target rejects the whole
     // request, matching the no-partial-writes contract. (Security audit 2026-06-18.)
-    const capChecks = await Promise.all(authorized.map((p) => callerCan(caller, 'manage_checklists', p)));
-    if (capChecks.some((allowed) => !allowed)) {
+    const capabilityDecisions = await Promise.all(
+      authorized.map((propertyId) => (
+        callerCapabilityDecision(caller, 'manage_checklists', propertyId)
+      )),
+    );
+    if (capabilityDecisions.some((decision) => decision === 'unavailable')) {
+      return capabilityUnavailableResponse(requestId);
+    }
+    if (capabilityDecisions.some((decision) => decision === 'denied')) {
       return err('Checklist management is restricted for your role at one or more of the selected properties.', {
         requestId, status: 403, code: 'property_access_denied',
       });
@@ -96,7 +104,15 @@ export async function POST(req: NextRequest) {
       if (keyV.error) return err(keyV.error, { requestId, status: 400, code: 'validation_failed' });
       const srcV = validateUuid(body.sourcePropertyId, 'sourcePropertyId');
       if (srcV.error) return err(srcV.error, { requestId, status: 400, code: 'validation_failed' });
-      if (!(await callerCan(caller, 'manage_checklists', srcV.value!))) {
+      const sourceCapabilityDecision = await callerCapabilityDecision(
+        caller,
+        'manage_checklists',
+        srcV.value!,
+      );
+      if (sourceCapabilityDecision === 'unavailable') {
+        return capabilityUnavailableResponse(requestId);
+      }
+      if (sourceCapabilityDecision === 'denied') {
         return err('You do not have access to the source property.', {
           requestId, status: 403, code: 'property_access_denied',
         });
@@ -115,10 +131,20 @@ export async function POST(req: NextRequest) {
     if (!source) {
       return err('Source checklist not found.', { requestId, status: 404, code: 'not_found' });
     }
-    if (source.propertyId !== null && !(await callerCan(caller, 'manage_checklists', source.propertyId))) {
-      return err('You do not have access to the source checklist.', {
-        requestId, status: 403, code: 'property_access_denied',
-      });
+    if (source.propertyId !== null) {
+      const sourceCapabilityDecision = await callerCapabilityDecision(
+        caller,
+        'manage_checklists',
+        source.propertyId,
+      );
+      if (sourceCapabilityDecision === 'unavailable') {
+        return capabilityUnavailableResponse(requestId);
+      }
+      if (sourceCapabilityDecision === 'denied') {
+        return err('You do not have access to the source checklist.', {
+          requestId, status: 403, code: 'property_access_denied',
+        });
+      }
     }
 
     const result = await copyInspectionToProperties(keyV.value!, authorized);

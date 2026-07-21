@@ -8,11 +8,13 @@
 
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useId, useState } from 'react';
 import type { ShiftPreset, StaffMember, TimeOffRequest } from '@/types';
 import { deptDefaultTimes, fmtHours, fmtMinRange } from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
+import { useStaffDialog } from '../useStaffDialog';
+import dialogStyles from '../StaffDialog.module.css';
 
 const DEFAULT_WEEKLY_CAP = 40;
 
@@ -34,16 +36,16 @@ export function AddStaffModal({
   /** Approved time-off requests landing on this exact day, per staff. */
   approvedTorByStaff: Map<string, TimeOffRequest>;
   onPick: (s: StaffMember, opts?: { overrideTimeOff?: boolean }) => void;
-  onOpenDirectory: () => void;
+  onOpenDirectory?: () => void;
   onClose: () => void;
 }) {
   // Picking someone with approved time off that day asks first.
   const [confirmFor, setConfirmFor] = useState<StaffMember | null>(null);
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+  const titleId = useId();
+  const dialogRef = useStaffDialog(() => {
+    if (confirmFor) setConfirmFor(null);
+    else onClose();
+  });
 
   const es = lang === 'es';
   const avail = staff.filter(s => s.isActive !== false && !takenIds.has(s.id));
@@ -58,9 +60,7 @@ export function AddStaffModal({
 
   return (
     <div
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 1100,
         background: 'rgba(31,35,28,0.42)', backdropFilter: 'blur(6px)',
@@ -68,7 +68,15 @@ export function AddStaffModal({
         padding: 20, fontFamily: fonts.sans,
       }}
     >
-      <div onClick={e => e.stopPropagation()} style={{
+      <div
+        ref={dialogRef}
+        className={dialogStyles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onMouseDown={e => e.stopPropagation()}
+        style={{
         background: T.paper, borderRadius: 22, width: '100%', maxWidth: 440,
         maxHeight: '82vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
         boxShadow: '0 24px 70px -10px rgba(31,35,28,0.34), 0 0 0 1px rgba(31,35,28,0.04)',
@@ -79,14 +87,15 @@ export function AddStaffModal({
         }}>
           <div>
             <Caps>{es ? 'Directorio de personal' : 'Staff directory'}</Caps>
-            <h2 style={{
+            <h2 id={titleId} style={{
               margin: '3px 0 0', fontFamily: fonts.sans, fontSize: 22,
               fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
             }}>{dayTitle}</h2>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={es ? 'Cerrar' : 'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,
@@ -121,6 +130,7 @@ export function AddStaffModal({
                   return (
                     <button
                       key={s.id}
+                      type="button"
                       onClick={() => (tor ? setConfirmFor(s) : onPick(s))}
                       style={{
                         width: '100%', display: 'flex', alignItems: 'center', gap: 11,
@@ -178,7 +188,7 @@ export function AddStaffModal({
         </div>
 
         {confirmFor && (
-          <div style={{
+          <div role="alert" aria-live="assertive" style={{
             borderTop: '1px solid rgba(140,106,51,0.32)', padding: '12px 16px',
             background: 'rgba(201,150,68,0.10)',
             display: 'flex', flexDirection: 'column', gap: 9,
@@ -208,18 +218,27 @@ export function AddStaffModal({
             fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink2, marginTop: 1,
           }}>i</span>
           <span style={{ fontSize: 11.5, color: T.ink2, lineHeight: 1.5 }}>
-            {es ? '¿No ves a alguien? Las personas nuevas se agregan en ' : 'Don’t see someone? New hires are added in '}
-            <button
-              onClick={onOpenDirectory}
-              style={{
-                background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
-                fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 700, color: T.ink,
-                textDecoration: 'underline', textUnderlineOffset: 2,
-              }}
-            >{es ? 'Personal → Directorio' : 'Staff → Directory'}</button>
-            {es
-              ? '. Cuando estén en el directorio, aparecerán aquí automáticamente.'
-              : '. Once they’re in the directory, they’ll show up here automatically.'}
+            {onOpenDirectory ? (
+              <>
+                {es ? '¿No ves a alguien? Las personas nuevas se agregan en ' : 'Don’t see someone? New hires are added in '}
+                <button
+                  type="button"
+                  onClick={onOpenDirectory}
+                  style={{
+                    background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
+                    fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 700, color: T.ink,
+                    textDecoration: 'underline', textUnderlineOffset: 2,
+                  }}
+                >{es ? 'Personal → Directorio' : 'Staff → Directory'}</button>
+                {es
+                  ? '. Cuando estén en el directorio, aparecerán aquí automáticamente.'
+                  : '. Once they’re in the directory, they’ll show up here automatically.'}
+              </>
+            ) : (
+              es
+                ? '¿No ves a alguien? Un administrador con acceso al Directorio puede agregarlo.'
+                : 'Don’t see someone? An administrator with Directory access can add them.'
+            )}
           </span>
         </div>
       </div>

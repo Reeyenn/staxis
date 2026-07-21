@@ -53,9 +53,9 @@ export function ConfirmDialog({
     };
   }, [open]);
 
-  // Keyboard: ESC cancels, Enter confirms, and Tab stays within the two dialog
-  // actions. Capture phase + stopPropagation keeps a parent overlay from also
-  // handling the same key.
+  // Keyboard: ESC cancels and Tab stays within the two dialog actions. Native
+  // button activation owns Enter/Space; a document-level Enter handler would
+  // wrongly confirm even while keyboard focus is on Cancel.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -63,10 +63,6 @@ export function ConfirmDialog({
         e.preventDefault();
         e.stopPropagation();
         onCancel();
-      } else if (e.key === 'Enter') {
-        e.preventDefault();
-        e.stopPropagation();
-        onConfirm();
       } else if (e.key === 'Tab') {
         const actions = [cancelRef.current, confirmRef.current].filter(
           (action): action is HTMLButtonElement => action !== null,
@@ -107,7 +103,7 @@ export function ConfirmDialog({
   return (
     <div
       ref={scrimRef}
-      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}
+      onMouseDown={(e) => { if (!danger && e.target === e.currentTarget) onCancel(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 3000,
         background: 'rgba(31,35,28,0.34)',
@@ -117,7 +113,7 @@ export function ConfirmDialog({
     >
       <div
         ref={cardRef}
-        role="dialog"
+        role={danger ? 'alertdialog' : 'dialog'}
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={message ? messageId : undefined}

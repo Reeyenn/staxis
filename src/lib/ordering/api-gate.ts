@@ -23,8 +23,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { type AppRole } from '@/lib/roles';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { isUuid } from '@/lib/api-validate';
+import { requireSectionEnabled } from '@/lib/sections/server';
+import type { EnabledSections } from '@/lib/sections/registry';
 
 export { isUuid };
 
@@ -38,6 +41,7 @@ export type OrderingAccess =
       email: string | null;
       pid: string;
       requestId: string;
+      enabledSections: EnabledSections;
     }
   | { ok: false; response: NextResponse };
 
@@ -83,7 +87,15 @@ export async function requireOrderingAccess(
 
   // 4) Capability gate — manage_inventory_orders, honoring this hotel's Access-tab
   //    restrictions (default: every role; an admin can switch a role OFF per hotel).
-  if (!(await canForProperty({ role }, 'manage_inventory_orders', pid))) {
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role },
+    'manage_inventory_orders',
+    pid,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return { ok: false, response: capabilityUnavailableResponse(requestId) };
+  }
+  if (capabilityDecision === 'denied') {
     return {
       ok: false,
       response: err('forbidden: ordering is restricted for your role at this property', {
@@ -109,6 +121,9 @@ export async function requireOrderingAccess(
     };
   }
 
+  const sectionGate = await requireSectionEnabled(req, pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate;
+
   return {
     ok: true,
     userId: session.userId,
@@ -118,5 +133,6 @@ export async function requireOrderingAccess(
     email: session.email ?? null,
     pid,
     requestId,
+    enabledSections: sectionGate.enabledSections,
   };
 }

@@ -23,6 +23,8 @@ import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { captureException } from '@/lib/sentry';
 import { requireSession } from '@/lib/api-auth';
+import { isUuid } from '@/lib/api-validate';
+import { isConfirmedAuthUserNotFound } from '@/lib/auth-account-delete';
 
 type AccountRole = AppRole;
 
@@ -317,30 +319,82 @@ export async function PUT(req: NextRequest) {
   const caller = await verifyAdmin(req);
   if (!caller.ok) return caller.response;
 
-  const body = await req.json();
-  const { accountId, displayName, email, role, propertyAccess, password } = body as {
-    accountId: string;
-    displayName?: string;
-    email?: string;
-    role?: AccountRole;
-    propertyAccess?: string[];
-    password?: string;
-  };
-
-  if (!accountId) {
-    return err('accountId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  let body: Record<string, unknown>;
+  try {
+    const parsed = await req.json() as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid body');
+    body = parsed as Record<string, unknown>;
+  } catch {
+    return err('A valid JSON body is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (role !== undefined && !isValidRole(role)) {
+
+  const accountId = body.accountId;
+  const displayName = body.displayName;
+  const email = body.email;
+  const role = body.role;
+  const propertyAccess = body.propertyAccess;
+  const password = body.password;
+
+  if (!isUuid(accountId)) {
+    return err('accountId must be a valid UUID', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  if (role !== undefined && (typeof role !== 'string' || !isValidRole(role))) {
     return err(`role must be one of: ${ALL_ROLES.join(', ')}`, {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
+  const normalizedDisplayName = displayName === undefined
+    ? undefined
+    : typeof displayName === 'string'
+      ? displayName.trim()
+      : null;
+  if (
+    normalizedDisplayName !== undefined
+    && (normalizedDisplayName === null || normalizedDisplayName.length === 0 || normalizedDisplayName.length > 120)
+  ) {
+    return err('displayName must be between 1 and 120 characters', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  if (password !== undefined && typeof password !== 'string') {
+    return err('password must be a string', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  if (typeof password === 'string' && password.length > 0 && password.length < 6) {
+    return err('password must be at least 6 characters', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
 
-  // Fetch the target account so we know its data_user_id for the password
-  // update path.
+  let normalizedPropertyAccess: string[] | undefined;
+  if (propertyAccess !== undefined) {
+    if (!Array.isArray(propertyAccess) || propertyAccess.length > 1000) {
+      return err('propertyAccess must be an array', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    for (const propertyId of propertyAccess) {
+      if (propertyId !== '*' && !isUuid(propertyId)) {
+        return err('propertyAccess contains an invalid property id', {
+          requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+        });
+      }
+    }
+    normalizedPropertyAccess = Array.from(new Set(propertyAccess as string[]));
+  }
+
+  let normalizedEmail: string | undefined;
+  if (email !== undefined) {
+    if (typeof email !== 'string') {
+      return err('A valid email is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    normalizedEmail = email.toLowerCase().trim();
+    if (!isValidEmail(normalizedEmail)) {
+      return err('A valid email is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+  }
+
+  // Validate and diff the complete request before either persistence system is
+  // mutated. The settings form submits the full row on every save, so unchanged
+  // fields are removed before the safe-separation check below.
   const { data: target, error: fetchErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, data_user_id, role')
+    .select('id, data_user_id, role, display_name, property_access')
     .eq('id', accountId)
     .maybeSingle();
 
@@ -350,15 +404,66 @@ export async function PUT(req: NextRequest) {
 
   // Build the accounts-table update.
   const updates: Record<string, unknown> = {};
-  if (displayName !== undefined) updates.display_name = displayName;
-  if (role !== undefined) updates.role = role;
-  if (propertyAccess !== undefined) {
+  if (normalizedDisplayName !== undefined && normalizedDisplayName !== target.display_name) {
+    updates.display_name = normalizedDisplayName;
+  }
+  if (role !== undefined && role !== target.role) updates.role = role;
+  if (normalizedPropertyAccess !== undefined || role !== undefined) {
+    const currentAccess = Array.isArray(target.property_access) ? target.property_access as string[] : [];
     const effectiveRole = (role ?? target.role) as AccountRole;
-    updates.property_access =
-      effectiveRole === 'admin' ? [] : propertyAccess.filter(id => id !== '*');
+    const effectiveAccess = effectiveRole === 'admin'
+      ? []
+      : (normalizedPropertyAccess ?? currentAccess).filter((id) => id !== '*');
+    const sameAccess = [...effectiveAccess].sort().join('\0') === [...currentAccess].sort().join('\0');
+    if (!sameAccess) updates.property_access = effectiveAccess;
   }
 
-  if (Object.keys(updates).length > 0) {
+  // Determine whether the submitted email is an actual credential change.
+  // A lookup failure is retryable and happens before any account-table write.
+  let currentAuthEmail: string | null = null;
+  if (normalizedEmail !== undefined) {
+    let authLookup;
+    try {
+      authLookup = await supabaseAdmin.auth.admin.getUserById(target.data_user_id);
+    } catch (lookupError) {
+      log.error('[accounts:PUT] auth user lookup threw', { requestId, msg: errToString(lookupError), accountId });
+      return err('Login service is temporarily unavailable', {
+        requestId, status: 503, code: ApiErrorCode.UpstreamFailure, headers: { 'Retry-After': '5' },
+      });
+    }
+    if (authLookup.error) {
+      log.error('[accounts:PUT] auth user lookup failed', { requestId, msg: errToString(authLookup.error), accountId });
+      return err('Login service is temporarily unavailable', {
+        requestId, status: 503, code: ApiErrorCode.UpstreamFailure, headers: { 'Retry-After': '5' },
+      });
+    }
+    if (!authLookup.data.user) {
+      return err('Login for this account was not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+    currentAuthEmail = authLookup.data.user.email?.toLowerCase().trim() ?? null;
+  }
+
+  const authUpdates: { password?: string; email?: string; email_confirm?: boolean } = {};
+  if (typeof password === 'string' && password.length > 0) authUpdates.password = password;
+  if (normalizedEmail !== undefined && normalizedEmail !== currentAuthEmail) {
+    authUpdates.email = normalizedEmail;
+    authUpdates.email_confirm = true;
+  }
+
+  const hasAccountUpdates = Object.keys(updates).length > 0;
+  const hasAuthUpdates = Object.keys(authUpdates).length > 0;
+  if (hasAccountUpdates && hasAuthUpdates) {
+    return err('Update profile/access and login credentials in separate saves', {
+      requestId,
+      status: 409,
+      code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (!hasAccountUpdates && !hasAuthUpdates) {
+    return err('Nothing to update', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+
+  if (hasAccountUpdates) {
     const { error: updErr } = await supabaseAdmin
       .from('accounts')
       .update(updates)
@@ -369,17 +474,9 @@ export async function PUT(req: NextRequest) {
     }
   }
 
-  // Password + email rotation go through Supabase Auth's admin API.
-  const authUpdates: { password?: string; email?: string; email_confirm?: boolean } = {};
-  if (password) authUpdates.password = password;
-  if (email !== undefined) {
-    const normalizedEmail = email.toLowerCase().trim();
-    if (!isValidEmail(normalizedEmail)) {
-      return err('A valid email is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-    }
-    authUpdates.email = normalizedEmail;
-    authUpdates.email_confirm = true;
-  }
+  // Password + email rotation go through Supabase Auth's admin API. This branch
+  // is intentionally mutually exclusive with the accounts-table branch above,
+  // so an Auth failure can never leave a partially updated profile.
   if (Object.keys(authUpdates).length > 0) {
     const { error: authErr } = await supabaseAdmin.auth.admin.updateUserById(
       target.data_user_id,
@@ -391,10 +488,6 @@ export async function PUT(req: NextRequest) {
         requestId, status: 400, code: ApiErrorCode.ValidationFailed,
       });
     }
-  }
-
-  if (Object.keys(updates).length === 0 && Object.keys(authUpdates).length === 0) {
-    return err('Nothing to update', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   await writeAudit({
@@ -470,7 +563,13 @@ export async function DELETE(req: NextRequest) {
   }
 
   // Delete the auth user — the FK cascade removes the accounts row too.
-  const { error: delErr } = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
+  let delErr: unknown = null;
+  try {
+    const result = await supabaseAdmin.auth.admin.deleteUser(target.data_user_id);
+    delErr = result.error;
+  } catch (deleteError) {
+    delErr = deleteError;
+  }
   if (delErr) {
     log.error('[accounts:DELETE] auth.admin.deleteUser failed', {
       requestId,
@@ -478,13 +577,32 @@ export async function DELETE(req: NextRequest) {
       accountId,
       authUserId: target.data_user_id,
     });
-    // If auth user was already gone, at least clean up the accounts row so
-    // the admin isn't stuck with a zombie. PostgrestFilterBuilder is a
-    // thenable but has no .catch — wrap in try/await.
-    try {
-      await supabaseAdmin.from('accounts').delete().eq('id', accountId);
-    } catch { /* best effort — primary goal was deleting the auth user */ }
-    return err('Failed to delete account', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    // Only a confirmed missing Auth user is safe to clean up locally. Timeouts,
+    // 5xx responses, and network errors preserve the accounts row so a retry
+    // cannot turn a healthy login into an untracked orphan.
+    if (!isConfirmedAuthUserNotFound(delErr)) {
+      return err('Login service is temporarily unavailable; the account was not deleted', {
+        requestId,
+        status: 503,
+        code: ApiErrorCode.UpstreamFailure,
+        headers: { 'Retry-After': '5' },
+      });
+    }
+
+    const { error: cleanupErr } = await supabaseAdmin
+      .from('accounts')
+      .delete()
+      .eq('id', accountId);
+    if (cleanupErr) {
+      log.error('[accounts:DELETE] orphan account cleanup failed', {
+        requestId,
+        msg: errToString(cleanupErr),
+        accountId,
+      });
+      return err('Failed to delete orphaned account', {
+        requestId, status: 500, code: ApiErrorCode.InternalError,
+      });
+    }
   }
 
   await writeAudit({

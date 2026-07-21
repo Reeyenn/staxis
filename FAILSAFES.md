@@ -57,14 +57,11 @@ We deliberately split crons across two schedulers because they have different re
 
 | Path | Cadence | What it does |
 |---|---|---|
-| `/api/cron/process-sms-jobs` | every 5 min | Drains SMS jobs queue → Twilio |
-| `/api/cron/scraper-health` | every 15 min | Alerting watchdog for dead scrapers |
-| `/api/cron/seal-daily` | hourly :05 | Per-property attendance marks + daily_logs |
-| `/api/cron/expire-trials` | daily 09:00 UTC | Flips expired trial accounts |
+| `/api/cron/process-agent-schedules` | every 5 min | Delivers agent reminders + materializes recurring Communications tasks |
+| `/api/cron/agent-sweep-reservations` | every 5 min | Releases stale AI cost reservations |
+| `/api/cron/vercel-watchdog` | every 5 min | Checks the production app/doctor and fails visibly on red |
 
-Vercel Pro guarantees per-minute precision. We moved `process-sms-jobs` and `scraper-health` here in May 2026 audit pass-6 after observing GitHub Actions throttle them by 7-17×. Moved `seal-daily` here 2026-05-17 after a 4-tick GH scheduler stall turned the doctor red.
-
-> **`process-sms-jobs` (2026-06-26 pre-onboarding audit):** the config had drifted back onto GitHub Actions (`sms-jobs-cron.yml`) and was throttled ~17× (1.4h-stale heartbeat on a 5-min cron → SMS links arrived late). Restored to Vercel native cron (`vercel.json` + `SCHEDULE_REGISTRY` source `vercel`). The GH workflow is **kept as a redundant backup scheduler** — dual-firing is safe because `staxis_claim_sms_jobs` uses `FOR UPDATE SKIP LOCKED` (no double-send). Worker-pressed staff links also drain inline via `after(processSmsJobs)` in the send routes, so first-send never depends on the cron.
+Vercel Pro guarantees per-minute precision. Operational sub-30-minute jobs stay here because GitHub Actions has previously delayed tight schedules by 7–17×. The Twilio-backed `process-sms-jobs` worker was retired on 2026-07-17; reminders and recurring in-app tasks must remain independent of any SMS transport.
 
 ### GitHub Actions workflows (`.github/workflows/`)
 **Use for:** daily/weekly cadences where hour-scale precision is fine.

@@ -1,7 +1,6 @@
 // useWeekShifts — week-of-shifts view backed by `scheduled_shifts`
-// (migration 0147), with `time_off_requests` joined for ⏱ pins on the
-// manager grid and `week_publications` for the draft/published gate
-// that decides what staff see in My Shifts.
+// (migration 0147), with `time_off_requests` joined for the employee's
+// request history. Shift row status is the draft/published visibility gate.
 //
 // Returns:
 //   • days[]            — Mon..Sun metadata for the visible week
@@ -11,19 +10,16 @@
 //                         by `${staffId}:${date}` for cell pin lookup
 //   • torByStaff{}      — all TOR for the visible week, indexed by
 //                         staffId (used by the My Shifts time-off card)
-//   • publishedDates    — Set of YYYY-MM-DD dates inside a published
-//                         week. Staff view hides drafts.
-//   • presets[]         — full preset list for the property (cell-edit
-//                         popover offers these as one-click picks)
 
 import { useCallback, useEffect, useState } from 'react';
 import {
   subscribeToScheduledShifts, subscribeToTimeOffRequests,
-  subscribeToWeekPublications, subscribeToShiftPresets,
 } from '@/lib/db';
 import type {
-  ScheduledShift, TimeOffRequest, WeekPublication, ShiftPreset,
+  ScheduledShift, TimeOffRequest,
 } from '@/types';
+
+const INITIAL_SNAPSHOT_TIMEOUT_MS = 8_000;
 
 export type WeekDayKey = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 export const DAY_KEYS: readonly WeekDayKey[] = ['mon','tue','wed','thu','fri','sat','sun'];
@@ -52,8 +48,6 @@ export interface WeekShiftsResult {
   openShifts: ScheduledShift[];
   torPending: Record<string, TimeOffRequest>;
   torByStaff: Record<string, TimeOffRequest[]>;
-  publishedDates: Set<string>;
-  presets: ShiftPreset[];
   loading: boolean;
   loadError: string | null;
   retry: () => void;
@@ -119,8 +113,6 @@ export function useWeekShifts(
 
   const [shifts, setShifts] = useState<ScheduledShift[]>([]);
   const [tor, setTor] = useState<TimeOffRequest[]>([]);
-  const [pubs, setPubs] = useState<WeekPublication[]>([]);
-  const [presets, setPresets] = useState<ShiftPreset[]>([]);
   const [loadedKey, setLoadedKey] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -132,21 +124,35 @@ export function useWeekShifts(
 
   useEffect(() => {
     if (!propertyId || !staffId || !requestedKey) {
-      setShifts([]); setTor([]); setPubs([]); setPresets([]);
+      setShifts([]); setTor([]);
       setLoadedKey(null);
       setLoadError(null);
       return;
     }
     const subscriptionKey = requestedKey;
-    const pending = new Set(['shifts', 'tor', 'pubs', 'presets']);
+    let cancelled = false;
+    let settled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    const pending = new Set(['shifts', 'tor']);
     const done = (part: string) => {
+      if (cancelled || settled) return;
       pending.delete(part);
-      if (pending.size === 0) setLoadedKey(subscriptionKey);
+      if (pending.size === 0) {
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        setLoadedKey(subscriptionKey);
+      }
     };
-    const fail = () => setLoadError('Could not load your shifts. Check your connection and try again.');
-    setShifts([]); setTor([]); setPubs([]); setPresets([]);
+    const fail = () => {
+      if (cancelled || settled) return;
+      settled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      setLoadError('Could not load your shifts. Check your connection and try again.');
+    };
+    setShifts([]); setTor([]);
     setLoadedKey(null);
     setLoadError(null);
+    timeoutId = setTimeout(fail, INITIAL_SNAPSHOT_TIMEOUT_MS);
     const unSubs = [
       subscribeToScheduledShifts('', propertyId, weekStart, weekEnd, (rows) => {
         setShifts(rows);
@@ -156,23 +162,17 @@ export function useWeekShifts(
         setTor(rows);
         done('tor');
       }, staffId, fail),
-      subscribeToWeekPublications('', propertyId, (rows) => {
-        setPubs(rows);
-        done('pubs');
-      }, fail),
-      subscribeToShiftPresets('', propertyId, (rows) => {
-        setPresets(rows);
-        done('presets');
-      }, fail),
     ];
-    return () => { unSubs.forEach(u => { try { u(); } catch { /* ignore */ } }); };
+    return () => {
+      cancelled = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      unSubs.forEach(u => { try { u(); } catch { /* ignore */ } });
+    };
   }, [propertyId, weekStart, weekEnd, staffId, requestedKey, retryNonce]);
 
   const snapshotReady = loadedKey === requestedKey;
   const visibleShifts = snapshotReady ? shifts : [];
   const visibleTor = snapshotReady ? tor : [];
-  const visiblePubs = snapshotReady ? pubs : [];
-  const visiblePresets = snapshotReady ? presets : [];
 
   // Bucket assigned shifts per (staff, day). Open shifts collected separately.
   const byStaff: Record<string, WeekShiftCell[]> = {};
@@ -197,22 +197,8 @@ export function useWeekShifts(
     torByStaff[r.staffId].push(r);
   }
 
-  // Published dates — latest publication wins per week. We expand each
-  // week_start into its 7 days.
-  const latestByWeek = new Map<string, WeekPublication>();
-  for (const p of visiblePubs) {
-    const existing = latestByWeek.get(p.weekStart);
-    if (!existing || p.publishedAt.getTime() > existing.publishedAt.getTime()) {
-      latestByWeek.set(p.weekStart, p);
-    }
-  }
-  const publishedDates = new Set<string>();
-  for (const p of latestByWeek.values()) {
-    for (let i = 0; i < 7; i++) publishedDates.add(addDays(p.weekStart, i));
-  }
-
   return {
     days, byStaff, openShifts, torPending, torByStaff,
-    publishedDates, presets: visiblePresets, loading, loadError, retry,
+    loading, loadError, retry,
   };
 }

@@ -45,6 +45,7 @@ function VerifyInner() {
   // so we auto-trust the device and hide the checkbox entirely — Reeyen
   // wants signups to skip the extra "remember this device?" prompt.
   const postSignup = params.get('postSignup') === '1';
+  const initialDeliveryFailed = params.get('delivery') === 'failed';
   // OTP completion normally resolves through the property selector. Company
   // Hub and company-invitation targets are property-independent: a new
   // invitee may not have a hotel grant until the invitation itself is
@@ -98,6 +99,48 @@ function VerifyInner() {
   const [trust, setTrust] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [codeDelivered, setCodeDelivered] = useState(!initialDeliveryFailed);
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState(
+    initialDeliveryFailed
+      ? (lang === 'es'
+          ? 'No pudimos enviar el código. Envía uno nuevo para continuar.'
+          : "We couldn't send the code. Send a new one to continue.")
+      : '',
+  );
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((seconds) => Math.max(0, seconds - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
+
+  const resendCode = async () => {
+    if (!email || resending || resendCooldown > 0) return;
+    setResending(true);
+    setResendError('');
+    setError('');
+    try {
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email: email.trim().toLowerCase(),
+        options: { shouldCreateUser: false },
+      });
+      if (otpErr) throw otpErr;
+      setCode('');
+      setCodeDelivered(true);
+      setResendCooldown(30);
+    } catch (err) {
+      console.warn('verify: resend code failed', err);
+      setResendError(lang === 'es'
+        ? 'No se pudo enviar un código nuevo. Intenta de nuevo.'
+        : "Couldn't send a new code. Try again.");
+    } finally {
+      setResending(false);
+    }
+  };
 
   // No email → user landed here without going through /signin first.
   // Also: if the global human-2FA switch is off, no code email was sent —
@@ -202,16 +245,24 @@ function VerifyInner() {
     }>
 
       <p style={{ fontSize: 13.5, color: '#5C625C', lineHeight: 1.5, textAlign: 'center', margin: '0 0 18px' }}>
-        {lang === 'es'
-          ? <>Enviamos un código de 6 dígitos a <strong style={{ color: '#1F231C' }}>{email}</strong>. Ingrésalo abajo.</>
-          : <>We sent a 6-digit code to <strong style={{ color: '#1F231C' }}>{email}</strong>. Enter it below.</>}
+        {codeDelivered
+          ? (lang === 'es'
+              ? <>Enviamos un código de 6 dígitos a <strong style={{ color: '#1F231C' }}>{email}</strong>. Ingrésalo abajo.</>
+              : <>We sent a 6-digit code to <strong style={{ color: '#1F231C' }}>{email}</strong>. Enter it below.</>)
+          : (lang === 'es'
+              ? <>Aún no se envió un código a <strong style={{ color: '#1F231C' }}>{email}</strong>.</>
+              : <>A code has not been sent to <strong style={{ color: '#1F231C' }}>{email}</strong> yet.</>)}
       </p>
 
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
+        {resendError && <AuthError id="otp-resend-error">{resendError}</AuthError>}
+
         <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          <AuthLabel>{lang === 'es' ? 'Código de 6 dígitos' : '6-digit code'}</AuthLabel>
+          <AuthLabel htmlFor="signin-otp">{lang === 'es' ? 'Código de 6 dígitos' : '6-digit code'}</AuthLabel>
           <input
+            id="signin-otp"
+            name="one-time-code"
             className="si-input"
             type="text"
             inputMode="numeric"
@@ -262,6 +313,28 @@ function VerifyInner() {
             ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
             : (lang === 'es' ? 'Verificar' : 'Verify')
           }
+        </button>
+
+        <button
+          type="button"
+          onClick={() => void resendCode()}
+          disabled={!handoffResolved || !email || submitting || resending || resendCooldown > 0}
+          aria-describedby={resendError ? 'otp-resend-error' : undefined}
+          style={{
+            minHeight: 44, borderRadius: 12, border: '1px solid rgba(31,35,28,0.14)',
+            background: 'rgba(255,255,255,0.72)', color: '#3A3F38',
+            fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
+            cursor: (!handoffResolved || !email || submitting || resending || resendCooldown > 0) ? 'not-allowed' : 'pointer',
+            opacity: (!handoffResolved || !email || submitting || resending || resendCooldown > 0) ? 0.58 : 1,
+          }}
+        >
+          {resending
+            ? (lang === 'es' ? 'Enviando…' : 'Sending…')
+            : resendCooldown > 0
+              ? (lang === 'es' ? `Reenviar en ${resendCooldown}s` : `Resend in ${resendCooldown}s`)
+              : codeDelivered
+                ? (lang === 'es' ? 'Reenviar código' : 'Resend code')
+                : (lang === 'es' ? 'Enviar un código nuevo' : 'Send a new code')}
         </button>
 
         <Link

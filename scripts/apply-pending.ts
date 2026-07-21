@@ -38,6 +38,7 @@
 import { Client } from 'pg';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { applicableMigrationFiles, SUPERSEDED_MIGRATIONS } from '../src/lib/migration-policy';
 
 const MIGRATIONS_DIR = 'supabase/migrations';
 
@@ -97,7 +98,14 @@ async function main() {
     process.exit(2);
   }
 
-  const pending = files.filter((f) => !applied.has(f.slice(0, 4)));
+  const applicableFiles = applicableMigrationFiles(files);
+  const pending = applicableFiles.filter((f) => !applied.has(f.slice(0, 4)));
+
+  const supersededFiles = files.filter((f) => SUPERSEDED_MIGRATIONS.has(f.slice(0, 4)));
+  if (supersededFiles.length > 0) {
+    console.log(`Skipping ${supersededFiles.length} superseded migration(s) that must never be applied:`);
+    for (const f of supersededFiles) console.log(`  ${f}`);
+  }
 
   if (pending.length === 0) {
     console.log('✓ Nothing pending. All migrations already applied to prod.');

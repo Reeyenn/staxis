@@ -140,7 +140,11 @@ describe(`public-page routes (${routeFiles.length} file(s)) follow capability-ch
 
       test('imports supabaseAdmin (since it touches tenant tables)', () => {
         const importsAdmin = /from\s+['"](@\/lib\/supabase-admin|\.\.?\/(?:[^'"]*\/)?supabase-admin)['"]/.test(src);
-        assert.ok(importsAdmin, `must import supabaseAdmin from @/lib/supabase-admin`);
+        const delegatesToStaffLinkGate = /verifyStaffLinkToken\s*\(/.test(src);
+        assert.ok(
+          importsAdmin || delegatesToStaffLinkGate,
+          `must import supabaseAdmin or delegate the staff read to verifyStaffLinkToken`,
+        );
       });
 
       test('has a capability check (validateUuid OR inline staff/room property check)', () => {

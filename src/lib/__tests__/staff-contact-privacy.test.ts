@@ -25,7 +25,8 @@ describe('staff phone privacy', () => {
   test('contacts API requires manage_team and scopes reads and writes to the property', () => {
     const route = source('src/app/api/staff/contacts/route.ts');
     assert.match(route, /verifyTeamManager\(req, \{ capability: 'manage_team' \}\)/g);
-    assert.match(route, /callerCan\(caller, 'manage_team', propertyId\)/g);
+    assert.match(route, /callerCapabilityDecision\(caller, 'manage_team', propertyId\)/g);
+    assert.match(route, /capabilityDecision === 'unavailable'[\s\S]*capabilityUnavailableResponse/g);
     assert.match(route, /\.select\('id, phone'\)[\s\S]*\.eq\('property_id', propertyId\)/);
     assert.match(route, /\.update\(\{ phone, phone_lookup: phoneLookup \}\)[\s\S]*\.eq\('id', staffCheck\.value!\)[\s\S]*\.eq\('property_id', propertyId\)/);
     assert.match(route, /phone\.replace\(\/\\D\/g, ''\)\.slice\(-10\)/);

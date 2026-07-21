@@ -20,6 +20,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
+import { useSectionEnabled } from '@/lib/sections/useSectionEnabled';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { monthLabelFromYm } from '@/lib/format-date';
 import { priorMonthKey, type FinanceSummary } from '@/lib/financials/shared';
@@ -49,7 +50,13 @@ function localMonthKey(d: Date): string {
 
 export default function FinancialsPage() {
   const { user, loading: authLoading } = useAuth();
-  const { activePropertyId, loading: propLoading } = useProperty();
+  const {
+    activePropertyId,
+    activeProperty,
+    loading: propLoading,
+    capabilityOverridesViewerKey,
+    capabilityOverridesPropertyId,
+  } = useProperty();
   const can = useCan();
   const { lang } = useLang();
   const router = useRouter();
@@ -63,7 +70,17 @@ export default function FinancialsPage() {
   const [summaryNonce, setSummaryNonce] = useState(0);
 
   const currentMonth = localMonthKey(new Date());
-  const allowed = !!user && can('view_financials');
+  const financialsEnabled = useSectionEnabled('financials');
+  const capabilityViewerKey = user?.uid && activePropertyId
+    ? `${user.uid}:${activePropertyId}`
+    : null;
+  const accessContextReady = Boolean(
+    capabilityViewerKey
+    && activeProperty?.id === activePropertyId
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === capabilityViewerKey
+  );
+  const allowed = accessContextReady && financialsEnabled && !!user && can('view_financials');
 
   // Redirect a restricted role away (client guard; the API gate is the real
   // enforcement). `allowed` honors this hotel's Access-tab restrictions and
@@ -74,14 +91,15 @@ export default function FinancialsPage() {
       router.replace('/signin');
       return;
     }
+    if (activePropertyId && !accessContextReady) return;
     if (!allowed) {
       router.replace('/dashboard');
     }
-  }, [user, authLoading, propLoading, allowed, router]);
+  }, [user, authLoading, propLoading, activePropertyId, accessContextReady, allowed, router]);
 
   const summaryRes = useApiResource<{ summary: FinanceSummary }>(
     `/api/financials/summary?pid=${activePropertyId}&month=${month}#${summaryNonce}`,
-    { enabled: !!activePropertyId },
+    { enabled: !!activePropertyId && allowed },
   );
   const summary = summaryRes.data?.summary ?? null;
   // Not-yet-fetched reads as loading (loading starts false while the property
@@ -93,7 +111,7 @@ export default function FinancialsPage() {
   // Tabs call this after any mutation so the header totals stay live.
   const onTabChanged = useCallback(() => setSummaryNonce((n) => n + 1), []);
 
-  if (authLoading || propLoading || !allowed) {
+  if (authLoading || propLoading || !accessContextReady || !allowed) {
     return (
       <AppLayout>
         <div style={{ background: 'transparent', minHeight: 'calc(100dvh - 64px)', padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>

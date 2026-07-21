@@ -3,7 +3,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
@@ -26,21 +26,41 @@ const DELIVERY_OPTIONS = ['16:00', '18:00', '20:00', '22:00'];
 
 export default function NotificationsPage() {
   const router = useRouter();
-  const { user } = useAuth();
-  const { properties } = useProperty();
+  const { user, loading: authLoading } = useAuth();
+  const {
+    properties,
+    activeProperty,
+    activePropertyId,
+    loading: propertyLoading,
+    capabilityOverridesViewerKey,
+    capabilityOverridesPropertyId,
+    setActivePropertyId,
+  } = useProperty();
   const { lang } = useLang();
   const can = useCan();
+  const capabilityViewerKey = user?.uid && activePropertyId
+    ? `${user.uid}:${activePropertyId}`
+    : null;
+  const accessContextReady = Boolean(
+    capabilityViewerKey
+    && activeProperty?.id === activePropertyId
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === capabilityViewerKey
+  );
+  const allowed = accessContextReady && !!user && can('manage_notifications');
 
   // Gated by per-hotel manage_notifications (default: every role; admin can
   // switch a role OFF per hotel from the Access tab).
   useEffect(() => {
-    if (user && !can('manage_notifications')) router.replace('/settings');
-  }, [user, can, router]);
+    if (!authLoading && !propertyLoading && user && accessContextReady && !allowed) {
+      router.replace('/settings');
+    }
+  }, [user, authLoading, propertyLoading, accessContextReady, allowed, router]);
 
-  const [propertyId, setPropertyId] = useState<string>('');
-  useEffect(() => {
-    if (!propertyId && properties.length > 0) setPropertyId(properties[0].id);
-  }, [properties, propertyId]);
+  // The selected settings hotel must also be PropertyContext's active hotel.
+  // Capability overrides are scoped to that active hotel; keeping a separate
+  // local selector could authorize against Hotel A and then fetch Hotel B.
+  const propertyId = activePropertyId ?? '';
 
   const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [loading, setLoading] = useState(true);
@@ -48,34 +68,55 @@ export default function NotificationsPage() {
   const [error, setError] = useState('');
   const [savedFlash, setSavedFlash] = useState(false);
   const [newCc, setNewCc] = useState('');
+  const loadRequestRef = useRef(0);
+  const activeScopeRef = useRef<string | null>(null);
+  activeScopeRef.current = allowed ? propertyId : null;
+
+  useEffect(() => {
+    // Invalidate any response for the previous hotel and remove its settings
+    // before the newly selected hotel's capability snapshot can become ready.
+    loadRequestRef.current += 1;
+    setPrefs(null);
+    setError('');
+    setSavedFlash(false);
+    setLoading(true);
+  }, [propertyId]);
 
   const load = useCallback(async () => {
-    if (!propertyId) return;
+    const requestedPropertyId = propertyId;
+    const requestId = ++loadRequestRef.current;
+    if (!requestedPropertyId || !allowed || activeScopeRef.current !== requestedPropertyId) {
+      if (!requestedPropertyId) setLoading(false);
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       const res = await fetchWithAuth(`/api/settings/notifications?propertyId=${propertyId}`);
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
+      if (requestId !== loadRequestRef.current || activeScopeRef.current !== requestedPropertyId) return;
       if (!res.ok || !body.ok || !body.data) {
         setError(body.error || (lang === 'es' ? 'No se pudieron cargar las preferencias' : 'Failed to load preferences'));
         return;
       }
       setPrefs(body.data.preferences);
     } catch (err) {
+      if (requestId !== loadRequestRef.current || activeScopeRef.current !== requestedPropertyId) return;
       // A network throw used to escape as an unhandled rejection — the page
       // rendered blank (prefs null) with no error at all.
       console.error('[notifications:settings] load failed', err);
       setError(lang === 'es' ? 'No se pudieron cargar las preferencias — revisa tu conexión' : 'Failed to load preferences — check your connection');
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current && activeScopeRef.current === requestedPropertyId) setLoading(false);
     }
-  }, [propertyId, lang]);
+  }, [propertyId, lang, allowed]);
 
   useEffect(() => { void load(); }, [load]);
 
   /** Returns true only when the server confirmed the save. */
   const save = async (next: Partial<Preferences>): Promise<boolean> => {
-    if (!prefs || !propertyId) return false;
+    if (!allowed || !prefs || !propertyId) return false;
+    const requestedPropertyId = propertyId;
     setSaving(true);
     setError('');
     try {
@@ -85,6 +126,7 @@ export default function NotificationsPage() {
         body: JSON.stringify({ propertyId, ...next }),
       });
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
+      if (activeScopeRef.current !== requestedPropertyId) return false;
       if (!res.ok || !body.ok || !body.data) {
         setError(body.error || (lang === 'es' ? 'No se pudo guardar' : 'Failed to save'));
         return false;
@@ -94,6 +136,7 @@ export default function NotificationsPage() {
       window.setTimeout(() => setSavedFlash(false), 1800);
       return true;
     } catch (err) {
+      if (activeScopeRef.current !== requestedPropertyId) return false;
       // A network throw used to escape silently — toggles/pause buttons did
       // nothing with zero feedback.
       console.error('[notifications:settings] save failed', err);
@@ -134,7 +177,25 @@ export default function NotificationsPage() {
     await save({ pausedUntil: until });
   };
 
-  if (!user || !can('manage_notifications')) return null;
+  if (authLoading || propertyLoading || (!!user && !accessContextReady)) {
+    return (
+      <AppLayout>
+        <div role="status" style={{ minHeight: '50dvh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+          {lang === 'es' ? 'Comprobando acceso…' : 'Checking access…'}
+        </div>
+      </AppLayout>
+    );
+  }
+  if (!user) return null;
+  if (!allowed) {
+    return (
+      <AppLayout>
+        <div role="status" style={{ minHeight: '50dvh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+          {lang === 'es' ? 'Volviendo a Configuración…' : 'Returning to Settings…'}
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>
@@ -167,7 +228,7 @@ export default function NotificationsPage() {
         {properties.length > 1 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <label style={labelStyle}>{lang === 'es' ? 'Hotel' : 'Hotel'}</label>
-            <select value={propertyId} onChange={e => setPropertyId(e.target.value)} style={{ ...inputStyle, height: 42 }}>
+            <select value={propertyId} onChange={e => setActivePropertyId(e.target.value)} style={{ ...inputStyle, height: 44 }}>
               {properties.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
             </select>
           </div>

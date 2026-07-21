@@ -19,6 +19,14 @@ import { t, SUPPORTED_LOCALES } from '@/lib/translations';
 import type { HousekeeperLocale } from '@/lib/translations';
 import { LanguageSwitcher } from '@/components/i18n/LanguageSwitcher';
 
+type CompletionSnapshot = {
+  pid: string;
+  staffId: string;
+  date: string;
+  areas: string[];
+  loads: string[];
+};
+
 // Shared full-screen state wrapper (missing-link / loading / error). Each state
 // spreads this and overrides only gap/padding/textAlign, so the rendered inline
 // style stays byte-for-byte what it was when written out three times.
@@ -65,11 +73,18 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
   // shifting through the day as the CUA updates checkout/stayover rooms.
   const [completedLoads, setCompletedLoads] = useState<Set<string>>(new Set());
   const [error, setError] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'error'>('idle');
   // Seed saved completion only on first load / date roll, never on the 60s
   // poll — otherwise a poll landing between a local toggle and its save would
   // clobber the worker's just-tapped checkmark with stale server state.
   const seededRef = useRef(false);
-  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Checklist writes are serialized and coalesced. A worker can tap several
+  // rows quickly, but only one request is ever in flight; after it finishes we
+  // persist the newest queued snapshot. `keepalive` lets an already-started
+  // write finish when the worker follows another link or closes the tab.
+  const queuedSaveRef = useRef<CompletionSnapshot | null>(null);
+  const saveInFlightRef = useRef(false);
+  const mountedRef = useRef(true);
 
   // Seed BOTH the page language and this worker's name from the staff row on
   // mount. These used to be two effects firing one identical getStaffSelfPublic
@@ -173,27 +188,61 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     }
   }, [pid, laundryPersonId, today]);
 
-  // Persist checklist progress (debounced 600ms) through /api/laundry/complete
-  // (service-role + (pid, staffId) capability check). This is the fix for the
-  // "refresh / midnight / poll wipes the whole shift" bug — progress now lives
-  // server-side, not just in browser memory.
+  const drainCompletionSaves = useCallback(async () => {
+    if (saveInFlightRef.current || !queuedSaveRef.current) return;
+    saveInFlightRef.current = true;
+
+    while (queuedSaveRef.current) {
+      const snapshot = queuedSaveRef.current;
+      queuedSaveRef.current = null;
+      if (mountedRef.current) setSaveStatus('saving');
+
+      try {
+        const res = await fetch('/api/laundry/complete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          keepalive: true,
+          body: JSON.stringify(withStaffLinkTokenBody({
+            pid: snapshot.pid,
+            staffId: snapshot.staffId,
+            date: snapshot.date,
+            completedAreaIds: snapshot.areas,
+            completedLoadCategories: snapshot.loads,
+          })),
+        });
+        const body = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+        if (!res.ok || !body?.ok) {
+          throw new Error(body?.error || `save responded ${res.status}`);
+        }
+      } catch (err) {
+        // Keep the newest unsaved snapshot available for the visible Retry
+        // action. If another tap arrived while this request was in flight, that
+        // newer snapshot wins; otherwise retry exactly the failed snapshot.
+        if (!queuedSaveRef.current) queuedSaveRef.current = snapshot;
+        console.error('[laundry] save failed:', err);
+        if (mountedRef.current) setSaveStatus('error');
+        break;
+      }
+    }
+
+    saveInFlightRef.current = false;
+    if (mountedRef.current && !queuedSaveRef.current) setSaveStatus('idle');
+  }, []);
+
+  // Persist immediately (rather than after a timer) so a tap starts a durable
+  // keepalive request before the worker can navigate away. Rapid taps are
+  // coalesced by `drainCompletionSaves` without out-of-order server writes.
   const persistCompletion = useCallback((areas: Set<string>, loads: Set<string>) => {
     if (!pid || !laundryPersonId) return;
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(() => {
-      void fetch('/api/laundry/complete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(withStaffLinkTokenBody({
-          pid,
-          staffId: laundryPersonId,
-          date: today,
-          completedAreaIds: Array.from(areas),
-          completedLoadCategories: Array.from(loads),
-        })),
-      }).catch((err) => console.error('[laundry] save failed:', err));
-    }, 600);
-  }, [pid, laundryPersonId, today]);
+    queuedSaveRef.current = {
+      pid,
+      staffId: laundryPersonId,
+      date: today,
+      areas: Array.from(areas),
+      loads: Array.from(loads),
+    };
+    void drainCompletionSaves();
+  }, [pid, laundryPersonId, today, drainCompletionSaves]);
 
   useEffect(() => {
     // Re-seed completion on (re)mount or the midnight date roll, then poll the
@@ -226,8 +275,10 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, [loadBootstrap]);
 
-  // Flush any pending save timer on unmount.
-  useEffect(() => () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); }, []);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // Calculate today's date for area filtering
   const todayDate = new Date();
@@ -420,6 +471,45 @@ export default function LaundryPersonPage({ params }: { params: Promise<{ id: st
           </div>
         )}
 
+        {saveStatus === 'saving' && (
+          <div
+            role="status"
+            aria-live="polite"
+            style={{
+              minHeight: 44, padding: '10px 14px', display: 'flex', alignItems: 'center',
+              background: 'rgba(255,255,255,0.82)', border: '1px solid var(--border)',
+              color: 'var(--text-muted)', borderRadius: 10, fontSize: 13, fontWeight: 600,
+            }}
+          >
+            {t('savingDots', lang)}
+          </div>
+        )}
+
+        {saveStatus === 'error' && (
+          <div
+            role="alert"
+            style={{
+              padding: '12px 14px', display: 'flex', alignItems: 'center',
+              justifyContent: 'space-between', gap: 12, background: 'rgba(239,68,68,0.08)',
+              border: '1px solid rgba(239,68,68,0.28)', color: 'var(--red, #B42318)',
+              borderRadius: 10, fontSize: 13, lineHeight: 1.4,
+            }}
+          >
+            <span>{t('hkOfflineQueueFailed', lang)}</span>
+            <button
+              type="button"
+              onClick={() => void drainCompletionSaves()}
+              style={{
+                minWidth: 88, minHeight: 44, padding: '0 14px', flexShrink: 0,
+                borderRadius: 10, border: '1px solid currentColor', background: 'white',
+                color: 'inherit', fontWeight: 700, cursor: 'pointer',
+              }}
+            >
+              {t('tryAgain', lang)}
+            </button>
+          </div>
+        )}
+
         {/* Review pass (Codex #7): while PMS feeds are learning, the load
             list may be missing entire categories — a celebratory "All
             done!" or "No tasks today" off that data is a confident wrong
@@ -542,7 +632,9 @@ function TaskCard({
 }) {
   return (
     <button
+      type="button"
       onClick={onToggle}
+      aria-pressed={isCompleted}
       style={{
         width: '100%', textAlign: 'left',
         background: isCompleted ? 'var(--green-dim)' : 'white',

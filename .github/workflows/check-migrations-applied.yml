@@ -36,18 +36,41 @@ jobs:
     # opt-in to this environment can read the prod DB credentials.
     environment: production
     steps:
-      - uses: actions/checkout@v4
+      # Never execute the pull request's scripts, package lifecycle hooks, or
+      # workflow changes with production credentials. The checker and its npm
+      # dependency graph come from the trusted base commit; the candidate tree
+      # is treated only as migration filenames/content to inventory.
+      - name: Check out trusted checker
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Check out candidate tree as data only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
+          cache-dependency-path: trusted/package-lock.json
 
-      - run: npm ci
+      - name: Install trusted checker dependencies
+        working-directory: trusted
+        run: npm ci --ignore-scripts
 
       - name: Verify every migration file is registered in prod
+        working-directory: trusted
         env:
           SUPABASE_DB_HOST: ${{ secrets.SUPABASE_DB_HOST }}
           SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
           SUPABASE_PROJECT_REF: ${{ secrets.SUPABASE_PROJECT_REF }}
-        run: npx tsx scripts/check-migrations-applied.ts
+        # The supplied database credential should be a dedicated role with
+        # CONNECT plus SELECT on applied_migrations only. The job never needs
+        # schema mutation privileges.
+        run: npx tsx scripts/check-migrations-applied.ts --migrations-dir=../candidate/supabase/migrations

@@ -32,7 +32,8 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { captureException } from '@/lib/sentry';
 import { requireFinanceAccess } from '@/lib/financials/api-gate';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
@@ -120,11 +121,15 @@ export async function POST(req: NextRequest) {
   }
   const financeGate = await requireFinanceAccess(req, pid);
   if (!financeGate.ok) return financeGate.response;
-  if (!(await canForProperty(
+  const capabilityDecision = await capabilityDecisionForProperty(
     { role: financeGate.role },
     'manage_inventory_orders',
     financeGate.pid,
-  ))) {
+  );
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(financeGate.requestId);
+  }
+  if (capabilityDecision === 'denied') {
     return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
   const inventorySectionGate = await requireSectionEnabled(req, financeGate.pid, 'inventory');

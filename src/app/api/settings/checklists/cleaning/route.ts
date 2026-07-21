@@ -46,8 +46,8 @@ export async function GET(req: NextRequest) {
     const typeV = validateEnum(req.nextUrl.searchParams.get('cleaningType'), CLEANING_TYPES, 'cleaningType');
     if (typeV.error) return err(typeV.error, { requestId, status: 400, code: 'validation_failed' });
 
-    const gate = await gateChecklistAccess(req, pidV.value!);
-    if (!gate.ok) return err(gate.error, { requestId, status: gate.status, code: gate.code });
+    const gate = await gateChecklistAccess(req, pidV.value!, requestId);
+    if (!gate.ok) return gate.response;
 
     const checklist = await getEffectiveCleaningChecklist(pidV.value!, typeV.value as CleaningType);
     return ok({ checklist }, { requestId });
@@ -67,8 +67,8 @@ export async function PUT(req: NextRequest) {
     const typeV = validateEnum(body.cleaningType, CLEANING_TYPES, 'cleaningType');
     if (typeV.error) return err(typeV.error, { requestId, status: 400, code: 'validation_failed' });
 
-    const gate = await gateChecklistAccess(req, pidV.value!);
-    if (!gate.ok) return err(gate.error, { requestId, status: gate.status, code: gate.code });
+    const gate = await gateChecklistAccess(req, pidV.value!, requestId);
+    if (!gate.ok) return gate.response;
 
     const parsed = parseCleaningItems(body.items);
     if (parsed.error) return err(parsed.error, { requestId, status: 400, code: 'validation_failed' });
@@ -107,8 +107,8 @@ export async function DELETE(req: NextRequest) {
     const typeV = validateEnum(req.nextUrl.searchParams.get('cleaningType'), CLEANING_TYPES, 'cleaningType');
     if (typeV.error) return err(typeV.error, { requestId, status: 400, code: 'validation_failed' });
 
-    const gate = await gateChecklistAccess(req, pidV.value!);
-    if (!gate.ok) return err(gate.error, { requestId, status: gate.status, code: gate.code });
+    const gate = await gateChecklistAccess(req, pidV.value!, requestId);
+    if (!gate.ok) return gate.response;
 
     const deleted = await deleteCleaningOverride(pidV.value!, typeV.value as CleaningType);
     return ok({ reset: deleted }, { requestId });

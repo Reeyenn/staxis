@@ -27,7 +27,8 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid, validateString, validateEnum } from '@/lib/api-validate';
-import { accountCanForProperty } from '@/lib/team-auth';
+import { accountCapabilityDecisionForProperty } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -97,7 +98,15 @@ export async function POST(req: NextRequest) {
     });
   }
   if (!property) return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!(await accountCanForProperty(session.userId, 'manage_team', pidV.value!))) {
+  const teamCapabilityDecision = await accountCapabilityDecisionForProperty(
+    session.userId,
+    'manage_team',
+    pidV.value!,
+  );
+  if (teamCapabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (teamCapabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -110,11 +119,18 @@ export async function POST(req: NextRequest) {
       if (typeof v === 'boolean') services[k] = v;
     }
   }
-  if (
-    Object.keys(services).length > 0
-    && !(await accountCanForProperty(session.userId, 'manage_settings', pidV.value!))
-  ) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  if (Object.keys(services).length > 0) {
+    const settingsCapabilityDecision = await accountCapabilityDecisionForProperty(
+      session.userId,
+      'manage_settings',
+      pidV.value!,
+    );
+    if (settingsCapabilityDecision === 'unavailable') {
+      return capabilityUnavailableResponse(requestId);
+    }
+    if (settingsCapabilityDecision === 'denied') {
+      return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+    }
   }
 
   // ─── staff entries ──────────────────────────────────────────────────────

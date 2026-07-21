@@ -72,9 +72,10 @@ describe('inventory usage-budget UI contract', () => {
     assert.match(propertyConfigRoute, /canViewFinancials\(gate\.role\)/);
     assert.match(
       propertyConfigRoute,
-      /canForProperty\(\{ role: gate\.role \}, 'view_financials', pid\)/,
+      /capabilityDecisionForProperty\(\{ role: gate\.role \}, 'view_financials', pid\)/,
     );
-    assert.match(propertyConfigRoute, /isSectionEnabledForProperty\(pid, 'financials'\)/);
+    assert.match(propertyConfigRoute, /capabilityDecision === 'unavailable'[\s\S]*capabilityUnavailableResponse/);
+    assert.match(propertyConfigRoute, /isSectionEnabled\(gate\.enabledSections, 'financials'\)/);
   });
 
   it('hydrates hidden cost fields only through the central finance gate', () => {
@@ -89,8 +90,9 @@ describe('inventory usage-budget UI contract', () => {
     assert.match(scanInvoiceRoute, /requireFinanceAccess\(req, pid\)/);
     assert.match(
       scanInvoiceRoute,
-      /canForProperty\([\s\S]*?'manage_inventory_orders',[\s\S]*?financeGate\.pid/,
+      /capabilityDecisionForProperty\([\s\S]*?'manage_inventory_orders',[\s\S]*?financeGate\.pid/,
     );
+    assert.match(scanInvoiceRoute, /capabilityDecision === 'unavailable'[\s\S]*capabilityUnavailableResponse/);
     assert.match(scanInvoiceRoute, /requireSectionEnabled\(req, financeGate\.pid, 'inventory'\)/);
     assert.doesNotMatch(scanInvoiceRoute, /userHasPropertyAccess/);
   });

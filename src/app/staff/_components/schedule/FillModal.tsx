@@ -10,7 +10,7 @@
 
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useId, useState } from 'react';
 import type { StaffMember } from '@/types';
 import {
   boardRange, fmtMin, fmtMinRange, shortName,
@@ -18,6 +18,8 @@ import {
 } from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from '../_tokens';
 import { Avatar } from '../_people';
+import { useStaffDialog } from '../useStaffDialog';
+import dialogStyles from '../StaffDialog.module.css';
 import { WeekRoster } from './WeekRoster';
 import type { ScheduleTemplate } from './useScheduleData';
 
@@ -55,12 +57,8 @@ export function FillModal({
   const [wPreview, setWPreview] = useState<WeekInfo | null>(null);
   // Week scope: apply the pick to every upcoming week, not just this one.
   const [repeatAll, setRepeatAll] = useState(false);
-
-  useEffect(() => {
-    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+  const titleId = useId();
+  const dialogRef = useStaffDialog(onClose);
 
   const es = lang === 'es';
   const save = () => {
@@ -83,9 +81,7 @@ export function FillModal({
 
   return (
     <div
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
       style={{
         position: 'fixed', inset: 0, zIndex: 1100,
         background: 'rgba(31,35,28,0.42)', backdropFilter: 'blur(6px)',
@@ -93,7 +89,15 @@ export function FillModal({
         padding: 20, fontFamily: fonts.sans,
       }}
     >
-      <div onClick={e => e.stopPropagation()} style={{
+      <div
+        ref={dialogRef}
+        className={dialogStyles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        onMouseDown={e => e.stopPropagation()}
+        style={{
         background: T.paper, borderRadius: 22, width: '100%', maxWidth: wPreview ? 880 : 460,
         maxHeight: '86vh', display: 'flex', flexDirection: 'column', overflow: 'hidden',
         boxShadow: '0 24px 70px -10px rgba(31,35,28,0.34), 0 0 0 1px rgba(31,35,28,0.04)',
@@ -106,8 +110,10 @@ export function FillModal({
           <div style={{ display: 'flex', alignItems: 'center', gap: 11 }}>
             {(preview || wPreview) && (
               <button
+                type="button"
                 onClick={() => { setPreview(null); setWPreview(null); }}
                 title={es ? 'Atrás' : 'Back'}
+                aria-label={es ? 'Atrás' : 'Back'}
                 style={{
                   width: 30, height: 30, borderRadius: '50%', border: `1px solid ${T.rule}`,
                   background: 'transparent', cursor: 'pointer', color: T.ink2, fontSize: 15, flexShrink: 0,
@@ -116,7 +122,7 @@ export function FillModal({
               >‹</button>
             )}
             <div>
-              <h2 style={{
+              <h2 id={titleId} style={{
                 margin: 0, fontFamily: fonts.sans, fontSize: 22,
                 fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
               }}>{title}</h2>
@@ -128,8 +134,9 @@ export function FillModal({
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            aria-label="Close"
+            aria-label={es ? 'Cerrar' : 'Close'}
             style={{
               background: 'transparent', border: `1px solid ${T.rule}`, borderRadius: '50%',
               width: 30, height: 30, cursor: 'pointer', color: T.ink2, fontSize: 16, flexShrink: 0,
@@ -231,6 +238,7 @@ export function FillModal({
               {/* fill from history — the main move */}
               {!more ? (
                 <button
+                  type="button"
                   onClick={() => setMore(true)}
                   style={{
                     marginTop: 10, width: '100%', cursor: 'pointer',
@@ -259,9 +267,13 @@ export function FillModal({
                           return (
                             <button
                               key={d.date}
+                              type="button"
                               onClick={() => okDay && setPreview(d)}
                               disabled={!okDay}
                               title={okDay
+                                ? (es ? `Ver quién estuvo el ${d.dowFull} ${d.dayNum}` : `See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
+                                : (es ? 'Aún no es historial' : 'Not history yet')}
+                              aria-label={okDay
                                 ? (es ? `Ver quién estuvo el ${d.dowFull} ${d.dayNum}` : `See who was on ${d.dowFull} ${d.mon} ${d.dayNum}`)
                                 : (es ? 'Aún no es historial' : 'Not history yet')}
                               style={{
@@ -307,6 +319,7 @@ export function FillModal({
               <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${T.rule}` }}>
                 {!naming ? (
                   <button
+                    type="button"
                     onClick={() => currentCount > 0 && setNaming(true)}
                     disabled={currentCount === 0}
                     style={{
@@ -325,6 +338,7 @@ export function FillModal({
                   <div style={{ display: 'flex', gap: 8 }}>
                     <input
                       autoFocus
+                      aria-label={es ? 'Nombre de la plantilla' : 'Template name'}
                       value={name}
                       onChange={e => setName(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') save(); }}
@@ -389,8 +403,10 @@ function FillRow({
       <Btn variant="primary" size="sm" style={{ borderRadius: 10 }} onClick={onUse}>{cta}</Btn>
       {onDelete && (
         <button
+          type="button"
           onClick={onDelete}
           title={deleteTitle}
+          aria-label={deleteTitle}
           style={{
             width: 24, height: 24, borderRadius: '50%', border: `1px solid ${T.rule}`,
             background: 'transparent', color: T.ink3, cursor: 'pointer',
@@ -507,6 +523,7 @@ function SaveBar({
         <div style={{ display: 'flex', gap: 8 }}>
           <input
             autoFocus
+            aria-label={es ? 'Nombre de la plantilla' : 'Template name'}
             value={nm}
             onChange={e => setNm(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') go(); }}

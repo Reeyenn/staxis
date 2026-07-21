@@ -16,7 +16,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
 import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, clientIpRateLimitKey } from '@/lib/api-ratelimit';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
   canGrantHotelRole,
   canManageTeam,
@@ -98,7 +99,13 @@ export async function POST(req: NextRequest) {
   if (inviterRole !== 'admin' && !inviterAccess.includes(invite.hotel_id)) {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
-  if (!(await canForProperty({ role: inviterRole }, 'manage_team', invite.hotel_id))) {
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: inviterRole },
+    'manage_team',
+    invite.hotel_id,
+  );
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
   if (!isAssignableRole(invite.role) || !canGrantHotelRole(inviterRole, invite.role)) {

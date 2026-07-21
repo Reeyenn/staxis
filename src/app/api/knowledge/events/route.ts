@@ -11,7 +11,8 @@
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid, validateString, validateDateStr } from '@/lib/api-validate';
-import { canForUserId } from '@/lib/capabilities/server';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { commsContext } from '@/lib/comms/route-helpers';
 import { listEvents, createEvent, deleteEvent } from '@/lib/knowledge/core';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
@@ -32,7 +33,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const ctx = await commsContext(req, raw.pid ?? null);
   if (!ctx.ok) return ctx.response;
-  if (!(await canForUserId(ctx.userId, 'manage_knowledge', ctx.pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
+  if (capabilityDecision === 'denied') {
     return err('Only managers can add calendar events', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
 
@@ -70,7 +73,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 export async function DELETE(req: NextRequest): Promise<Response> {
   const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
   if (!ctx.ok) return ctx.response;
-  if (!(await canForUserId(ctx.userId, 'manage_knowledge', ctx.pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
+  if (capabilityDecision === 'denied') {
     return err('Only managers can delete calendar events', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
   const idV = validateUuid(req.nextUrl.searchParams.get('id'), 'id');

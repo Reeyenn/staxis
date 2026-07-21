@@ -289,7 +289,7 @@ export default function DashboardPage() {
   // snapshot carries no occupancy yet — the chart + ring then fall back to
   // the synthetic trend, same as the rest of the dashboard.
   const occPct = useMemo(() => {
-    if (counts && (counts.stayovers + counts.checkouts) > 0) {
+    if (counts && counts.total_rooms > 0) {
       const denom = totalRooms || counts.total_rooms || 1;
       return Math.round(((counts.stayovers + counts.checkouts) / denom) * 100);
     }

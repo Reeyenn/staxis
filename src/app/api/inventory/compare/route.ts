@@ -38,6 +38,7 @@ import {
   resolveInventoryCompareActual,
   type InventoryCompareBasis,
 } from '@/lib/inventory-compare-actual';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -83,6 +84,8 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const gate = await requireFinanceAccess(req, url.searchParams.get('propertyId'));
   if (!gate.ok) return gate.response;
+  const sectionGate = await requireSectionEnabled(req, gate.pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const from = url.searchParams.get('from') ?? '';
   const to = url.searchParams.get('to') ?? '';

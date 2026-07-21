@@ -124,8 +124,10 @@ export default function ResetPasswordPage() {
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
           <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <AuthLabel>{lang === 'es' ? 'Nueva contraseña' : 'New password'}</AuthLabel>
+            <AuthLabel htmlFor="reset-password">{lang === 'es' ? 'Nueva contraseña' : 'New password'}</AuthLabel>
             <input
+              id="reset-password"
+              name="new-password"
               className="si-input"
               type="password"
               value={password}
@@ -137,8 +139,10 @@ export default function ResetPasswordPage() {
           </div>
 
           <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <AuthLabel>{lang === 'es' ? 'Confirmar contraseña' : 'Confirm password'}</AuthLabel>
+            <AuthLabel htmlFor="reset-password-confirm">{lang === 'es' ? 'Confirmar contraseña' : 'Confirm password'}</AuthLabel>
             <input
+              id="reset-password-confirm"
+              name="new-password-confirm"
               className="si-input"
               type="password"
               value={confirm}

@@ -1,12 +1,11 @@
+import type { Metadata } from 'next';
+
 export const dynamic = 'force-static';
+export const metadata: Metadata = { title: 'Terms of Service — Staxis' };
 
 export default function TermsPage() {
   return (
-    <html lang="en">
-      <head>
-        <meta charSet="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>Terms of Service — Staxis</title>
+    <>
         <style>{`
           * { box-sizing: border-box; margin: 0; padding: 0; }
           body {
@@ -30,8 +29,6 @@ export default function TermsPage() {
           a { color: #d97706; }
           footer { margin-top: 48px; font-size: 13px; color: #9ca3af; text-align: center; }
         `}</style>
-      </head>
-      <body>
         <div className="container">
           <div className="logo">
             <div className="logo-mark">S</div>
@@ -121,19 +118,11 @@ export default function TermsPage() {
               Staxis — operated by Reeyen Patel (sole proprietor) · 2215 Rio Grande St, Austin, TX 78705
             </div>
             <div>
-              {/*
-                These links use plain <a> instead of next/link because this
-                page is rendered as `force-static` and ships its own <html>
-                + <body>, so it lives outside the App Router runtime where
-                <Link> hooks in. Plain anchors work fine in this static
-                context.
-              */}
               {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
               <a href="/">Home</a> · <a href="/consent">SMS Consent</a> · <a href="/privacy">Privacy</a> · <a href="mailto:rp@reeyenpatel.com">rp@reeyenpatel.com</a>
             </div>
           </footer>
         </div>
-      </body>
-    </html>
+    </>
   );
 }

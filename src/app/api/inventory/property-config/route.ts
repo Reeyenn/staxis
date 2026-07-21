@@ -11,8 +11,9 @@
 import type { NextRequest } from 'next/server';
 import { ok, err } from '@/lib/api-response';
 import { requireOrderingAccess } from '@/lib/ordering/api-gate';
-import { isSectionEnabledForProperty, requireSectionEnabled } from '@/lib/sections/server';
-import { canForProperty } from '@/lib/capabilities/server';
+import { isSectionEnabled } from '@/lib/sections/registry';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { canViewFinancials } from '@/lib/roles';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
@@ -40,9 +41,6 @@ export async function POST(req: NextRequest): Promise<Response> {
   const gate = await requireOrderingAccess(req, body.pid);
   if (!gate.ok) return gate.response;
   const { pid, requestId } = gate;
-
-  const sectionGate = await requireSectionEnabled(req, pid, 'inventory');
-  if (!sectionGate.ok) return sectionGate.response;
 
   const update: Record<string, unknown> = {};
 
@@ -75,11 +73,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     // on the client hiding the Budgets panel: this route uses service role and
     // would otherwise let any delivery-capable hotel member change accounting
     // behavior with a direct request.
-    if (
-      !canViewFinancials(gate.role)
-      || !(await canForProperty({ role: gate.role }, 'view_financials', pid))
-      || !(await isSectionEnabledForProperty(pid, 'financials'))
-    ) {
+    const capabilityDecision = canViewFinancials(gate.role)
+      ? await capabilityDecisionForProperty({ role: gate.role }, 'view_financials', pid)
+      : 'denied';
+    if (capabilityDecision === 'unavailable') {
+      return capabilityUnavailableResponse(requestId);
+    }
+    if (capabilityDecision === 'denied' || !isSectionEnabled(gate.enabledSections, 'financials')) {
       return err('You do not have permission to change inventory budget settings.', {
         requestId, status: 403, code: 'forbidden_role',
       });

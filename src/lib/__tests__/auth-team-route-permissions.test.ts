@@ -49,6 +49,7 @@ interface TestState {
   roleChangeRows: Array<Record<string, unknown>>;
   rpcCalls: Array<{ fn: string; args: Record<string, unknown> }>;
   capabilityOverrides: Array<{ property_id: string; capability: string; role: string; allowed: boolean }>;
+  capabilityOverrideError: { message: string } | null;
   staffLinks: Array<{ account_id: string; property_id: string; staff_id: string; is_active: boolean }>;
   accountUpdateConflicts: Set<string>;
   removalConflicts: Set<string>;
@@ -104,6 +105,7 @@ function resetState(): void {
     roleChangeRows: [],
     rpcCalls: [],
     capabilityOverrides: [],
+    capabilityOverrideError: null,
     staffLinks: [],
     accountUpdateConflicts: new Set(),
     removalConflicts: new Set(),
@@ -209,8 +211,10 @@ function installSupabaseStub(): void {
           return builder;
         },
         then: (resolve: (value: unknown) => unknown) => resolve({
-          data: state.capabilityOverrides.filter((row) => row.property_id === propertyId),
-          error: null,
+          data: state.capabilityOverrideError
+            ? null
+            : state.capabilityOverrides.filter((row) => row.property_id === propertyId),
+          error: state.capabilityOverrideError,
         }),
       };
       return builder;
@@ -405,6 +409,24 @@ describe('GET /api/auth/team action contract', () => {
 });
 
 describe('PUT /api/auth/team cross-hotel account safety', () => {
+  test('capability override read outages fail closed with a retryable 503', async () => {
+    state.capabilityOverrideError = { message: 'simulated capability store outage' };
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      displayName: 'Must Not Save',
+    }));
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '5');
+    const body = await response.json();
+    assert.equal(body.ok, false);
+    assert.equal(body.code, 'upstream_failure');
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Local');
+    assert.equal(state.accountUpdates.length, 0);
+  });
+
   test('Hotel A manager cannot rename a Hotel A + B employee', async () => {
     const response = await PUT(request('PUT', '/api/auth/team', {
       hotelId: HOTEL_A,

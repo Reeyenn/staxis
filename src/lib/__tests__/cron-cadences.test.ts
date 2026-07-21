@@ -131,8 +131,15 @@ describe('cron cadences', () => {
       if (entry.source.kind === 'github') {
         const path = join(WORKFLOWS_DIR, entry.source.workflowFile);
         const content = readFileSync(path, 'utf8');
-        const hasSingleQuoted = content.includes(`cron: '${entry.cronExpr}'`);
-        const hasDoubleQuoted = content.includes(`cron: "${entry.cronExpr}"`);
+        // Only an uncommented list item under a workflow schedule is active.
+        // Raw substring matching let `# - cron: ...` satisfy this test and
+        // falsely advertised disabled ML jobs as production schedulers.
+        const activeCronLines = content
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => /^-\s+cron:\s*['"][^'"]+['"](?:\s+#.*)?$/.test(line));
+        const hasSingleQuoted = activeCronLines.some((line) => line.startsWith(`- cron: '${entry.cronExpr}'`));
+        const hasDoubleQuoted = activeCronLines.some((line) => line.startsWith(`- cron: "${entry.cronExpr}"`));
         assert.ok(
           hasSingleQuoted || hasDoubleQuoted,
           `${path} does not contain the cron schedule \`${entry.cronExpr}\` for heartbeat ` +

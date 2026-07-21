@@ -11,7 +11,8 @@
 
 import { NextRequest } from 'next/server';
 import { requireFinanceAccess, isUuid } from '@/lib/financials/api-gate';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
@@ -29,6 +30,7 @@ import {
 import { inventoryMonthCloseMutationReceipt } from '@/lib/inventory-month-close-contract';
 import { log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -41,6 +43,8 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const gate = await requireFinanceAccess(req, url.searchParams.get('propertyId'));
   if (!gate.ok) return gate.response;
+  const sectionGate = await requireSectionEnabled(req, gate.pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const month = url.searchParams.get('month');
   if (month != null && !isMonthKey(month)) {
@@ -88,8 +92,18 @@ export async function POST(req: NextRequest) {
   const propertyId = typeof body.propertyId === 'string' ? body.propertyId : null;
   const gate = await requireFinanceAccess(req, propertyId);
   if (!gate.ok) return gate.response;
+  const sectionGate = await requireSectionEnabled(req, gate.pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
-  if (!(await canForProperty({ role: gate.role }, 'manage_inventory_orders', gate.pid))) {
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: gate.role },
+    'manage_inventory_orders',
+    gate.pid,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(gate.requestId);
+  }
+  if (capabilityDecision === 'denied') {
     return err('You do not have permission to start or close inventory periods.', {
       requestId: gate.requestId,
       status: 403,

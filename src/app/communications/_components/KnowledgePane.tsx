@@ -24,7 +24,7 @@ import type {
 } from '@/lib/knowledge/types';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 import { useCommsResource } from './comms-data';
-import { SANS, card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, Loading, Empty } from './comms-snow';
+import { SANS, card, primaryBtn, ghostBtn, iconBtn, inputStyle, labelStyle, Loading, Empty, ResourceError } from './comms-snow';
 
 type LFn = (en: string, es: string) => string;
 
@@ -103,7 +103,8 @@ export function KnowledgePane({ pid, isManager, L }: { pid: string; isManager: b
             <button
               key={s.key}
               onClick={() => setSection(s.key)}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: active ? 'var(--snow-sage-dim)' : 'transparent', color: active ? 'var(--snow-sage-deep)' : 'var(--snow-ink2)', border: active ? '1px solid var(--snow-sage)' : '1px solid transparent', borderRadius: 9, padding: '7px 13px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: SANS }}
+              aria-current={active ? 'page' : undefined}
+              style={{ minHeight: 44, display: 'inline-flex', alignItems: 'center', gap: 6, background: active ? 'var(--snow-sage-dim)' : 'transparent', color: active ? 'var(--snow-sage-deep)' : 'var(--snow-ink2)', border: active ? '1px solid var(--snow-sage)' : '1px solid transparent', borderRadius: 9, padding: '7px 13px', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: SANS }}
             >
               {s.icon}{L(s.en, s.es)}
             </button>
@@ -136,14 +137,19 @@ function SectionHeader({ title, action }: { title: React.ReactNode; action?: Rea
 function SopsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L: LFn }) {
   const [selected, setSelected] = React.useState<KnowledgeArticleDTO | null>(null);
   const [editing, setEditing] = React.useState<null | 'new' | KnowledgeArticleDTO>(null);
+  const [mutationError, setMutationError] = React.useState<string | null>(null);
 
-  const { data, loading, reload } = useCommsResource<{ articles: KnowledgeArticleDTO[] }>(`/api/knowledge/articles?pid=${encodeURIComponent(pid)}`);
-  // null = still loading (spinner); a failed fetch shows the empty state.
-  const items = data?.articles ?? (loading ? null : []);
+  const { data, loading, error: loadError, reload } = useCommsResource<{ articles: KnowledgeArticleDTO[] }>(`/api/knowledge/articles?pid=${encodeURIComponent(pid)}`, { keepDataOnError: true });
+  const items = data?.articles ?? null;
 
   const remove = async (a: KnowledgeArticleDTO) => {
     if (!window.confirm(L(`Delete "${a.title}"?`, `¿Eliminar "${a.title}"?`))) return;
-    await apiDelete(`/api/knowledge/articles?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(a.id)}`);
+    setMutationError(null);
+    const r = await apiDelete(`/api/knowledge/articles?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(a.id)}`);
+    if (!r.ok) {
+      setMutationError(L('The SOP was not deleted. Please try again.', 'No se eliminó el procedimiento. Inténtalo de nuevo.'));
+      return;
+    }
     setSelected(null);
     await reload();
   };
@@ -156,6 +162,7 @@ function SopsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L
     return (
       <div>
         <button onClick={() => setSelected(null)} style={{ ...ghostBtn, marginBottom: 12 }}><ChevronLeft size={14} /> {L('Back', 'Atrás')}</button>
+        {mutationError && <div role="alert" style={{ marginBottom: 10, color: 'var(--snow-warm)', fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{mutationError}</span><button onClick={() => setMutationError(null)} style={ghostBtn}>{L('Dismiss', 'Cerrar')}</button></div>}
         <div style={{ ...card, padding: 18 }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
             <div>
@@ -189,9 +196,11 @@ function SopsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L
         title={L('Standard Operating Procedures', 'Procedimientos operativos')}
         action={isManager ? <button onClick={() => setEditing('new')} style={primaryBtn}><Plus size={15} /> {L('New SOP', 'Nuevo')}</button> : undefined}
       />
-      {items === null ? <Loading L={L} /> : items.length === 0 ? (
+      {mutationError && <div role="alert" style={{ marginBottom: 10, color: 'var(--snow-warm)', fontSize: 12.5, display: 'flex', alignItems: 'center', gap: 8 }}><span style={{ flex: 1 }}>{mutationError}</span><button onClick={() => setMutationError(null)} style={ghostBtn}>{L('Dismiss', 'Cerrar')}</button></div>}
+      {loadError && <div style={{ marginBottom: 10 }}><ResourceError text={data ? L('SOPs could not refresh. Showing the last results.', 'No se pudieron actualizar los procedimientos. Se muestran los últimos resultados.') : L('SOPs could not load. Check your connection and try again.', 'No se pudieron cargar los procedimientos. Revisa tu conexión e inténtalo de nuevo.')} retryLabel={L('Retry loading SOPs', 'Reintentar cargar procedimientos')} onRetry={() => void reload()} /></div>}
+      {loading && !data ? <Loading L={L} /> : items && items.length === 0 ? (
         <Empty text={isManager ? L('No SOPs yet. Add your first how-to so the team — and the assistant — can find it.', 'Aún no hay procedimientos. Agrega el primero para que el equipo y el asistente lo encuentren.') : L('No SOPs published yet.', 'Aún no hay procedimientos publicados.')} />
-      ) : (
+      ) : items ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {items.map((a) => (
             <button key={a.id} onClick={() => setSelected(a)} style={{ ...card, padding: '12px 14px', textAlign: 'left', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -205,7 +214,7 @@ function SopsSection({ pid, isManager, L }: { pid: string; isManager: boolean; L
             </button>
           ))}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -256,7 +265,7 @@ function SopEditor({ pid, article, L, onDone, onCancel }: { pid: string; article
           <label style={labelStyle}>{L('Steps / content', 'Pasos / contenido')}</label>
           <textarea value={body} onChange={(e) => setBody(e.target.value)} maxLength={KNOWLEDGE_LIMITS.BODY_MAX} rows={12} placeholder={L('Write the procedure here. Plain text or markdown.', 'Escribe el procedimiento aquí. Texto simple o markdown.')} style={{ ...inputStyle, resize: 'vertical', minHeight: 160, lineHeight: 1.5 }} />
         </div>
-        {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
+        {error && <div role="alert" style={{ color: 'var(--snow-warm)', fontSize: 12.5 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8 }}>
           <button onClick={save} disabled={busy || !title.trim()} style={{ ...primaryBtn, opacity: busy || !title.trim() ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
           <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
@@ -281,23 +290,25 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
   const [editingDocId, setEditingDocId] = React.useState<string | null>(null);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
 
-  // Docs + folders land together; either half failing falls back to [] on its
-  // own (never an error state), exactly like the old paired setStates.
-  const { data, reload } = useCommsResource<{ documents: KnowledgeDocumentDTO[]; folders: KnowledgeFolderDTO[] }>({
+  // Docs + folders are one display contract. If either read fails, surface the
+  // failure instead of presenting a partial result as a genuinely empty list.
+  const { data, loading, error: loadError, reload } = useCommsResource<{ documents: KnowledgeDocumentDTO[]; folders: KnowledgeFolderDTO[] }>({
     key: pid,
     fetch: async () => {
       const [docsR, foldersR] = await Promise.all([
         apiGet<{ documents: KnowledgeDocumentDTO[] }>(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}`),
         apiGet<{ folders: KnowledgeFolderDTO[] }>(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}`),
       ]);
+      if (!docsR.ok || !docsR.data) return { error: docsR.error || L('Documents could not load.', 'No se pudieron cargar los documentos.') };
+      if (!foldersR.ok || !foldersR.data) return { error: foldersR.error || L('Folders could not load.', 'No se pudieron cargar las carpetas.') };
       return {
         data: {
-          documents: docsR.ok && docsR.data ? docsR.data.documents : [],
-          folders: foldersR.ok && foldersR.data ? foldersR.data.folders : [],
+          documents: docsR.data.documents,
+          folders: foldersR.data.folders,
         },
       };
     },
-  });
+  }, { keepDataOnError: true });
   const items = data ? data.documents : null;
   const folders = data?.folders ?? [];
 
@@ -333,6 +344,8 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
       const reg = await apiPost('/api/knowledge/documents', { pid, title, path: pre.data.path, mimeType: pre.data.contentType, sizeBytes: file.size, visibility: access.visibility, visibleDept: access.visibleDept, folderId: targetFolderId });
       if (!reg.ok) { setError(reg.error || L('Could not save the document.', 'No se pudo guardar el documento.')); return; }
       await reload();
+    } catch {
+      setError(L('Upload failed. Check your connection and try again.', 'La carga falló. Revisa tu conexión e inténtalo de nuevo.'));
     } finally {
       setBusy(false);
     }
@@ -340,13 +353,16 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
 
   const removeDoc = async (d: KnowledgeDocumentDTO) => {
     if (!window.confirm(L(`Delete "${d.title}"?`, `¿Eliminar "${d.title}"?`))) return;
-    await apiDelete(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(d.id)}`);
+    setError(null);
+    const r = await apiDelete(`/api/knowledge/documents?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(d.id)}`);
+    if (!r.ok) { setError(r.error || L('The document was not deleted.', 'No se eliminó el documento.')); return; }
     await reload();
   };
 
   const addFolder = async () => {
     const name = newFolderName.trim();
     if (!name) return;
+    setError(null);
     const r = await apiPost('/api/knowledge/folders', { pid, name });
     if (!r.ok) { setError(r.error || L('Could not create the folder.', 'No se pudo crear la carpeta.')); return; }
     setNewFolderName(''); setAddingFolder(false);
@@ -358,13 +374,17 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
     if (name === null) return;
     const trimmed = name.trim();
     if (!trimmed || trimmed === f.name) return;
-    await apiPatch('/api/knowledge/folders', { pid, id: f.id, name: trimmed });
+    setError(null);
+    const r = await apiPatch('/api/knowledge/folders', { pid, id: f.id, name: trimmed });
+    if (!r.ok) { setError(r.error || L('The folder was not renamed.', 'No se cambió el nombre de la carpeta.')); return; }
     await reload();
   };
 
   const removeFolder = async (f: KnowledgeFolderDTO) => {
     if (!window.confirm(L('Delete this folder? The files inside are kept — they just move out of the folder.', '¿Eliminar esta carpeta? Los archivos se conservan — solo salen de la carpeta.'))) return;
-    await apiDelete(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(f.id)}`);
+    setError(null);
+    const r = await apiDelete(`/api/knowledge/folders?pid=${encodeURIComponent(pid)}&id=${encodeURIComponent(f.id)}`);
+    if (!r.ok) { setError(r.error || L('The folder was not deleted.', 'No se eliminó la carpeta.')); return; }
     if (currentFolderId === f.id) setCurrentFolderId(null);
     await reload();
   };
@@ -409,8 +429,9 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
           title={<span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}><Folder size={17} color="var(--snow-sage-deep)" /> {currentFolder?.name ?? L('Folder', 'Carpeta')}</span>}
           action={uploadControls}
         />
-        {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
-        {items === null ? <Loading L={L} /> : docList(L('No documents in this folder yet.', 'Aún no hay documentos en esta carpeta.'))}
+        {error && <div role="alert" style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+        {loadError && <div style={{ marginBottom: 10 }}><ResourceError text={data ? L('Documents could not refresh. Showing the last results.', 'No se pudieron actualizar los documentos. Se muestran los últimos resultados.') : L('Documents could not load. Check your connection and try again.', 'No se pudieron cargar los documentos. Revisa tu conexión e inténtalo de nuevo.')} retryLabel={L('Retry loading documents', 'Reintentar cargar documentos')} onRetry={() => void reload()} /></div>}
+        {loading && !data ? <Loading L={L} /> : data ? docList(L('No documents in this folder yet.', 'Aún no hay documentos en esta carpeta.')) : null}
       </div>
     );
   }
@@ -427,7 +448,8 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
           </div>
         ) : undefined}
       />
-      {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      {error && <div role="alert" style={{ color: 'var(--snow-warm)', fontSize: 12.5, marginBottom: 10 }}>{error}</div>}
+      {loadError && <div style={{ marginBottom: 10 }}><ResourceError text={data ? L('Documents could not refresh. Showing the last results.', 'No se pudieron actualizar los documentos. Se muestran los últimos resultados.') : L('Documents could not load. Check your connection and try again.', 'No se pudieron cargar los documentos. Revisa tu conexión e inténtalo de nuevo.')} retryLabel={L('Retry loading documents', 'Reintentar cargar documentos')} onRetry={() => void reload()} /></div>}
       {isManager && <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', marginBottom: 12 }}>{L('PDF, Word, Text, Markdown, CSV, and photos (JPG, PNG, WebP) up to 10 MB. The assistant reads the full text — including scanned PDFs and photos, which it transcribes with AI (that takes a moment; the badge shows “Reading scan…” until it’s ready).', 'PDF, Word, Texto, Markdown, CSV y fotos (JPG, PNG, WebP) hasta 10 MB. El asistente lee el texto completo — incluidos los PDF escaneados y las fotos, que transcribe con IA (tarda un momento; la etiqueta muestra “Leyendo el escaneo…” hasta que esté listo).')}</div>}
       {addingFolder && isManager && (
         <div style={{ ...card, padding: 12, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -444,9 +466,9 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
           <button onClick={() => { setAddingFolder(false); setNewFolderName(''); }} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
         </div>
       )}
-      {items === null ? <Loading L={L} /> : (folders.length === 0 && visibleDocs.length === 0) ? (
+      {loading && !data ? <Loading L={L} /> : data && (folders.length === 0 && visibleDocs.length === 0) ? (
         <Empty text={L('No documents yet.', 'Aún no hay documentos.')} />
-      ) : (
+      ) : data ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           {folders.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -474,7 +496,7 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
             </div>
           )}
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -572,7 +594,7 @@ function DocEditor({ d, folders, pid, L, onDone, onCancel }: {
       </div>
       <button onClick={() => void save()} disabled={busy || !dirty} style={{ ...primaryBtn, opacity: busy || !dirty ? 0.5 : 1 }}>{busy ? <Loader2 size={14} className="spin" /> : null} {L('Save', 'Guardar')}</button>
       <button onClick={onCancel} style={ghostBtn}>{L('Cancel', 'Cancelar')}</button>
-      {error && <div style={{ color: 'var(--snow-warm)', fontSize: 12.5, width: '100%' }}>{error}</div>}
+      {error && <div role="alert" style={{ color: 'var(--snow-warm)', fontSize: 12.5, width: '100%' }}>{error}</div>}
     </div>
   );
 }

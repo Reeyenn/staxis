@@ -18,7 +18,11 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { loadOverridesForProperty } from '@/lib/capabilities/server';
+import {
+  isCapabilityLookupError,
+  loadOverridesForProperty,
+} from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -48,6 +52,13 @@ export async function GET(req: NextRequest): Promise<Response> {
     });
   }
 
-  const overrides = await loadOverridesForProperty(idCheck.value);
-  return ok({ overrides }, { requestId });
+  try {
+    const overrides = await loadOverridesForProperty(idCheck.value);
+    return ok({ overrides }, { requestId });
+  } catch (error) {
+    if (isCapabilityLookupError(error)) {
+      return capabilityUnavailableResponse(requestId);
+    }
+    throw error;
+  }
 }

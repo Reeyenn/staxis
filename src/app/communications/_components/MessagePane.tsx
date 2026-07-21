@@ -7,7 +7,7 @@
 // the client. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Send, Megaphone, Users, MessageSquare, X, Loader2, Pin, Search } from 'lucide-react';
+import { Send, Megaphone, Users, MessageSquare, X, Loader2, Pin, Search, AlertCircle, RefreshCw } from 'lucide-react';
 import { apiPost } from '@/lib/comms/client';
 import type { ConversationDTO, MessageDTO, MemberDTO, CommsDept } from '@/lib/comms/types';
 import type { Me, L, RightPanel } from './comms-types-fe';
@@ -27,6 +27,9 @@ export interface MessagePaneProps {
   me: Me;
   conversation: ConversationDTO;
   messages: MessageDTO[];
+  messagesLoading: boolean;
+  messagesError: string | null;
+  onRetryMessages: () => void;
   online: Set<string>;
   memberCount: number | null;
   L: L;
@@ -59,7 +62,7 @@ export function MessagePane(props: MessagePaneProps) {
     if (dk !== walkDay) { dayBreaks.add(m.id); walkDay = dk; }
   }
   return (
-    <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: T.bg }}>
+    <div className="comms-message-pane" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', background: T.bg }}>
       {/* Header */}
       <div style={{ padding: '0 18px', height: 56, borderBottom: `1px solid ${T.hair}`, display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <span style={{ display: 'flex', color: deptColor(c.dept) }}>
@@ -87,7 +90,22 @@ export function MessagePane(props: MessagePaneProps) {
 
       {/* Messages */}
       <div ref={props.scrollRef} style={{ flex: 1, overflowY: 'auto', padding: '14px 0' }}>
-        {messages.length === 0 && (
+        {props.messagesLoading && messages.length === 0 && (
+          <div role="status" aria-live="polite" style={{ color: T.dim, fontFamily: SANS, fontSize: 13.5, textAlign: 'center', marginTop: 48, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading messages…', 'Cargando mensajes…')}
+          </div>
+        )}
+        {props.messagesError && (
+          <div role="alert" style={{ margin: messages.length > 0 ? '0 16px 12px' : '40px 16px 0', padding: '12px 14px', borderRadius: 10, border: `1px solid rgba(184,92,61,.24)`, background: 'rgba(184,92,61,.08)', color: T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.45, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <AlertCircle size={17} aria-hidden="true" style={{ flexShrink: 0 }} />
+            <span style={{ flex: 1, minWidth: 0 }}>{messages.length > 0 ? L('Messages may be out of date.', 'Los mensajes pueden estar desactualizados.') : L('Messages could not load. Check your connection and try again.', 'No se pudieron cargar los mensajes. Revisa tu conexión e inténtalo de nuevo.')}</span>
+            <button onClick={props.onRetryMessages} disabled={props.messagesLoading} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 10px', borderRadius: 8, border: `1px solid rgba(184,92,61,.28)`, background: T.bg, color: T.terracotta, cursor: props.messagesLoading ? 'wait' : 'pointer', fontFamily: SANS, fontSize: 12, fontWeight: 700 }}>
+              {props.messagesLoading ? <Loader2 size={14} className="comms-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}
+              <span>{L('Retry', 'Reintentar')}</span>
+            </button>
+          </div>
+        )}
+        {!props.messagesLoading && !props.messagesError && messages.length === 0 && (
           <div style={{ color: T.dim, fontFamily: SANS, fontSize: 13.5, textAlign: 'center', marginTop: 48 }}>
             {L('No messages yet — say hello.', 'Sin mensajes aún — saluda.')}
           </div>
@@ -137,8 +155,9 @@ export function ThreadPanel({ pid, conversation: c, parent, L, onClose, onReload
   const ref = React.useRef<HTMLDivElement | null>(null);
   const [text, setText] = React.useState('');
   const [busy, setBusy] = React.useState(false);
+  const [sendError, setSendError] = React.useState<string | null>(null);
 
-  const { data, reload } = useCommsResource<{ parent: MessageDTO | null; replies: MessageDTO[] }>(
+  const { data, loading, error, reload } = useCommsResource<{ parent: MessageDTO | null; replies: MessageDTO[] }>(
     `/api/comms/thread?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(c.id)}&parentId=${encodeURIComponent(parent.id)}`,
     { pollMs: 4000, keepDataOnError: true },
   );
@@ -154,33 +173,42 @@ export function ThreadPanel({ pid, conversation: c, parent, L, onClose, onReload
 
   const send = async () => {
     const body = text.trim(); if (!body || busy) return;
-    setBusy(true);
-    try { await apiPost('/api/comms/send', { pid, conversationId: c.id, body, parentMessageId: parent.id }); setText(''); await reload(); await onReload(); }
+    setBusy(true); setSendError(null);
+    try {
+      const r = await apiPost('/api/comms/send', { pid, conversationId: c.id, body, parentMessageId: parent.id });
+      if (!r.ok) { setSendError(L('Reply could not be sent. Please try again.', 'No se pudo enviar la respuesta. Inténtalo de nuevo.')); return; }
+      setText(''); await reload(); await onReload();
+    }
     finally { setBusy(false); }
   };
 
   return (
-    <div ref={ref} style={{ width: 380, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
+    <div ref={ref} className="comms-right-panel" style={{ width: 380, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
       <div style={{ padding: '0 14px', height: 56, borderBottom: `1px solid ${T.hair}`, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{L('Thread', 'Hilo')}</span>
         <span style={{ fontFamily: SANS, fontSize: 12.5, color: T.dim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.kind === 'dm' ? c.title : '#' + c.title}</span>
         <div style={{ flex: 1 }} />
-        <button onClick={onClose} style={paneIcon}><X size={17} /></button>
+        <button onClick={onClose} aria-label={L('Close thread', 'Cerrar hilo')} style={paneIcon}><X size={17} /></button>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 0' }}>
         <ThreadMessage m={parentMsg} dept={c.dept} L={L} />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 20px' }}>
-          <span style={{ fontFamily: SANS, fontSize: 12, color: T.dim }}>{replies.length === 1 ? L('1 reply', '1 respuesta') : L(`${replies.length} replies`, `${replies.length} respuestas`)}</span>
-          <div style={{ flex: 1, height: 1, background: T.hair }} />
-        </div>
-        {replies.map((r) => <ThreadMessage key={r.id} m={r} dept={c.dept} L={L} />)}
+        {loading && !data && <PanelResourceNotice loading text={L('Loading replies…', 'Cargando respuestas…')} />}
+        {error && <PanelResourceNotice text={data ? L('Replies could not refresh. Showing the last results.', 'No se pudieron actualizar las respuestas. Se muestran los últimos resultados.') : L('Replies could not load.', 'No se pudieron cargar las respuestas.')} retryLabel={L('Retry loading replies', 'Reintentar cargar respuestas')} onRetry={() => void reload()} />}
+        {data && <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 20px' }}>
+            <span style={{ fontFamily: SANS, fontSize: 12, color: T.dim }}>{replies.length === 1 ? L('1 reply', '1 respuesta') : L(`${replies.length} replies`, `${replies.length} respuestas`)}</span>
+            <div style={{ flex: 1, height: 1, background: T.hair }} />
+          </div>
+          {replies.map((r) => <ThreadMessage key={r.id} m={r} dept={c.dept} L={L} />)}
+        </>}
       </div>
       <div style={{ padding: '0 14px 14px' }}>
+        {sendError && <div role="alert" style={{ color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4, marginBottom: 7 }}>{sendError}</div>}
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, border: `1px solid ${T.hairer}`, borderRadius: 11, padding: '6px 6px 6px 12px', background: T.bg }}>
           <textarea value={text} onChange={(e) => setText(e.target.value)} rows={1} placeholder={L('Reply…', 'Responder…')}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void send(); } }}
             style={{ flex: 1, resize: 'none', border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 14, lineHeight: 1.5, color: T.ink, padding: '4px 0', maxHeight: 120 }} />
-          <button onClick={send} disabled={!text.trim() || busy} aria-label={L('Send', 'Enviar')} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', cursor: text.trim() ? 'pointer' : 'default', background: text.trim() ? T.forest : T.hairSoft, color: text.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <button onClick={send} disabled={!text.trim() || busy} aria-label={L('Send', 'Enviar')} style={{ width: 44, height: 44, borderRadius: 9, border: 'none', cursor: text.trim() ? 'pointer' : 'default', background: text.trim() ? T.forest : T.hairSoft, color: text.trim() ? '#fff' : T.dim, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
             {busy ? <Loader2 size={14} className="comms-spin" /> : <Send size={14} />}
           </button>
         </div>
@@ -199,8 +227,8 @@ function ThreadMessage({ m, dept, L }: { m: MessageDTO; dept?: CommsDept; L: L }
           <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 13.5, color: isStaxis ? deptColorDark(T.forest) : T.ink }}>{m.mine ? L('You', 'Tú') : (isStaxis ? 'Staxis' : m.senderName)}</span>
           <span style={{ fontFamily: MONO, fontSize: 10, color: T.dim }}>{fmtClock(m.createdAt)}</span>
         </div>
-        {m.attachmentKind === 'photo' && m.attachmentUrl && <img src={m.attachmentUrl} alt="" style={{ maxWidth: 260, borderRadius: 8, border: `1px solid ${T.hair}`, marginTop: 4, display: 'block' }} />}
-        {m.attachmentKind === 'voice' && m.attachmentUrl && <audio controls src={m.attachmentUrl} style={{ height: 34, maxWidth: 240, marginTop: 4 }} />}
+        {m.attachmentKind === 'photo' && m.attachmentUrl && <img src={m.attachmentUrl} alt="" style={{ maxWidth: '100%', borderRadius: 8, border: `1px solid ${T.hair}`, marginTop: 4, display: 'block' }} />}
+        {m.attachmentKind === 'voice' && m.attachmentUrl && <audio controls src={m.attachmentUrl} style={{ height: 34, maxWidth: '100%', marginTop: 4 }} />}
         {m.body && <div style={{ fontFamily: SANS, fontSize: 14, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word', marginTop: 1 }}>{renderInline(m.body)}</div>}
       </div>
     </div>
@@ -209,20 +237,22 @@ function ThreadMessage({ m, dept, L }: { m: MessageDTO; dept?: CommsDept; L: L }
 
 export function PinnedPanel({ pid, conversation: c, L, onClose }: { pid: string; conversation: ConversationDTO; L: L; onClose: () => void }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
-  const { data } = useCommsResource<{ pinned: MessageDTO[] }>(
+  const { data, loading, error, reload } = useCommsResource<{ pinned: MessageDTO[] }>(
     `/api/comms/pin?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(c.id)}`,
     { keepDataOnError: true },
   );
   const pins = data?.pinned ?? [];
   React.useEffect(() => { slideInNode(ref.current); }, []);
   return (
-    <div ref={ref} style={{ width: 380, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
+    <div ref={ref} className="comms-right-panel" style={{ width: 380, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
       <div style={{ padding: '0 14px', height: 56, borderBottom: `1px solid ${T.hair}`, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <Pin size={16} /><span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{L('Pinned', 'Fijados')}</span>
-        <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>{pins.length}</span>
-        <div style={{ flex: 1 }} /><button onClick={onClose} style={paneIcon}><X size={17} /></button>
+        <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>{data ? pins.length : '—'}</span>
+        <div style={{ flex: 1 }} /><button onClick={onClose} aria-label={L('Close pinned messages', 'Cerrar mensajes fijados')} style={paneIcon}><X size={17} /></button>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {loading && !data && <PanelResourceNotice loading text={L('Loading pinned messages…', 'Cargando mensajes fijados…')} />}
+        {error && <PanelResourceNotice text={data ? L('Pinned messages could not refresh. Showing the last results.', 'No se pudieron actualizar los mensajes fijados. Se muestran los últimos resultados.') : L('Pinned messages could not load.', 'No se pudieron cargar los mensajes fijados.')} retryLabel={L('Retry loading pinned messages', 'Reintentar cargar mensajes fijados')} onRetry={() => void reload()} />}
         {pins.map((m) => (
           <div key={m.id} style={{ border: `1px solid ${T.hair}`, borderRadius: 11, padding: '12px 13px', background: T.bg }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
@@ -234,7 +264,7 @@ export function PinnedPanel({ pid, conversation: c, L, onClose }: { pid: string;
             <div style={{ fontFamily: SANS, fontSize: 13.5, lineHeight: 1.5, color: T.ink, wordBreak: 'break-word' }}>{m.body ? renderInline(m.body) : (m.attachmentKind === 'photo' ? L('Photo', 'Foto') : m.attachmentKind === 'voice' ? L('Voice message', 'Mensaje de voz') : '')}</div>
           </div>
         ))}
-        {pins.length === 0 && <div style={{ color: T.dim, fontFamily: SANS, fontSize: 13, textAlign: 'center', padding: 24 }}>{L('Nothing pinned in this channel yet.', 'Nada fijado en este canal aún.')}</div>}
+        {!loading && !error && pins.length === 0 && <div style={{ color: T.dim, fontFamily: SANS, fontSize: 13, textAlign: 'center', padding: 24 }}>{L('Nothing pinned in this channel yet.', 'Nada fijado en este canal aún.')}</div>}
       </div>
     </div>
   );
@@ -244,20 +274,22 @@ export function MembersPanel({ pid, conversation: c, online, L, onClose, onMessa
   pid: string; conversation: ConversationDTO; online: Set<string>; L: L; onClose: () => void; onMessage: (staffId: string) => void;
 }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
-  const { data } = useCommsResource<{ members: MemberDTO[]; memberCount: number }>(
+  const { data, loading, error, reload } = useCommsResource<{ members: MemberDTO[]; memberCount: number }>(
     `/api/comms/members?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(c.id)}`,
     { keepDataOnError: true },
   );
   const members = data?.members ?? [];
   React.useEffect(() => { slideInNode(ref.current); }, []);
   return (
-    <div ref={ref} style={{ width: 320, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
+    <div ref={ref} className="comms-right-panel" style={{ width: 320, flexShrink: 0, borderLeft: `1px solid ${T.hair}`, display: 'flex', flexDirection: 'column', background: T.bg, height: '100%' }}>
       <div style={{ padding: '0 14px', height: 56, borderBottom: `1px solid ${T.hair}`, display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
         <Users size={16} /><span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15, color: T.ink }}>{L('Members', 'Miembros')}</span>
-        <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>{members.length}</span>
-        <div style={{ flex: 1 }} /><button onClick={onClose} style={paneIcon}><X size={17} /></button>
+        <span style={{ fontFamily: MONO, fontSize: 11, color: T.dim }}>{data ? members.length : '—'}</span>
+        <div style={{ flex: 1 }} /><button onClick={onClose} aria-label={L('Close members', 'Cerrar miembros')} style={paneIcon}><X size={17} /></button>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '8px 8px 16px' }}>
+        {loading && !data && <PanelResourceNotice loading text={L('Loading members…', 'Cargando miembros…')} />}
+        {error && <PanelResourceNotice text={data ? L('Members could not refresh. Showing the last results.', 'No se pudieron actualizar los miembros. Se muestran los últimos resultados.') : L('Members could not load.', 'No se pudieron cargar los miembros.')} retryLabel={L('Retry loading members', 'Reintentar cargar miembros')} onRetry={() => void reload()} />}
         {members.map((p) => {
           const on = online.has(p.staffId) || p.onShift;
           return (
@@ -274,8 +306,18 @@ export function MembersPanel({ pid, conversation: c, online, L, onClose, onMessa
             </div>
           );
         })}
-        {members.length === 0 && <div style={{ color: T.dim, fontFamily: SANS, fontSize: 13, textAlign: 'center', padding: 24 }}>{L('No members.', 'Sin miembros.')}</div>}
+        {!loading && !error && members.length === 0 && <div style={{ color: T.dim, fontFamily: SANS, fontSize: 13, textAlign: 'center', padding: 24 }}>{L('No members.', 'Sin miembros.')}</div>}
       </div>
+    </div>
+  );
+}
+
+function PanelResourceNotice({ loading = false, text, retryLabel = 'Retry', onRetry }: { loading?: boolean; text: string; retryLabel?: string; onRetry?: () => void }) {
+  return (
+    <div role={loading ? 'status' : 'alert'} style={{ margin: '8px 10px', padding: '11px 12px', borderRadius: 9, border: loading ? `1px dashed ${T.hair}` : '1px solid rgba(184,92,61,.24)', background: loading ? T.paper : 'rgba(184,92,61,.08)', color: loading ? T.dim : T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 8 }}>
+      {loading ? <Loader2 size={15} className="comms-spin" aria-hidden="true" /> : <AlertCircle size={15} aria-hidden="true" />}
+      <span style={{ flex: 1 }}>{text}</span>
+      {onRetry && <button onClick={onRetry} aria-label={retryLabel} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', borderRadius: 8, border: '1px solid rgba(184,92,61,.28)', background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={14} aria-hidden="true" /></button>}
     </div>
   );
 }

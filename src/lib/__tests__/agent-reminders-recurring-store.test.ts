@@ -3,7 +3,7 @@
  *   fireDueReminders()        — claims a due row, delivers it, stamps fired_at.
  *   spawnDueRecurringTodos()  — spawns today's instances per cadence, idempotent.
  *
- * These run on the process-sms-jobs tick, so their correctness isn't exercised
+ * These run on the process-agent-schedules tick, so their correctness isn't exercised
  * by the tool tests. We monkey-patch supabaseAdmin.from with table stubs and the
  * comms core delivery is exercised through the real ensure-conversation +
  * postMessage path.
@@ -26,6 +26,7 @@ import { spawnDueRecurringTodos } from '@/lib/recurring-tasks/store';
 const PID = '00000000-0000-0000-0000-0000000000d1';
 const CREATOR = '00000000-0000-0000-0000-0000000000d2';
 const TARGET = '00000000-0000-0000-0000-0000000000d3';
+const DISABLED_PID = '00000000-0000-0000-0000-0000000000d4';
 
 let reminderRows: Array<Record<string, unknown>>;
 let templateRows: Array<Record<string, unknown>>;
@@ -33,6 +34,7 @@ const postedMessages: Array<Record<string, unknown>> = [];
 const spawnedTasks: Array<Record<string, unknown>> = [];
 const reminderUpdates: Array<Record<string, unknown>> = [];
 const templateUpdates: Array<Record<string, unknown>> = [];
+let communicationsSectionEnabled = true;
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 
@@ -43,6 +45,7 @@ beforeEach(() => {
   spawnedTasks.length = 0;
   reminderUpdates.length = 0;
   templateUpdates.length = 0;
+  communicationsSectionEnabled = true;
   // @ts-expect-error monkey-patch the singleton for the test
   supabaseAdmin.from = (table: string) => buildStub(table);
 });
@@ -51,21 +54,30 @@ afterEach(() => {
 });
 
 function buildStub(table: string) {
+  if (table === 'properties') {
+    return {
+      select: () => ({
+        eq: () => ({
+          maybeSingle: async () => ({ data: { enabled_sections: { communications: communicationsSectionEnabled } }, error: null }),
+        }),
+      }),
+    };
+  }
   if (table === 'agent_reminders') {
     const api: Record<string, unknown> = {
-      select: () => api, eq: () => api, lte: () => api, is: () => api, order: () => api, limit: () => api,
-      // Two shapes hang off update():
-      //   claim:    .update({fired_at}).eq(id).is(fired_at,null).is(canceled_at,null).select(id).maybeSingle()
-      //   rollback: .update({fired_at:null}).eq(id) → awaited (thenable)
+      select: () => api, eq: () => api, lte: () => api, is: () => api,
+      or: () => api, order: () => api, limit: () => api,
       update: (row: Record<string, unknown>) => {
         reminderUpdates.push(row);
-        const eqResult: Record<string, unknown> = {
-          is: () => ({
-            is: () => ({ select: () => ({ maybeSingle: async () => ({ data: { id: 'claimed' }, error: null }) }) }),
-          }),
-          then: (resolve: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(resolve),
-        };
-        return { eq: () => eqResult };
+        const builder: Record<string, unknown> = {};
+        builder.eq = () => builder;
+        builder.is = () => builder;
+        builder.or = () => builder;
+        builder.select = () => ({
+          maybeSingle: async () => ({ data: { id: 'claimed' }, error: null }),
+        });
+        builder.then = (resolve: (v: unknown) => unknown) => Promise.resolve({ error: null }).then(resolve);
+        return builder;
       },
       then: (resolve: (v: unknown) => unknown) => Promise.resolve({ data: reminderRows, error: null }).then(resolve),
     };
@@ -125,9 +137,9 @@ describe('fireDueReminders', () => {
     assert.equal(res.failed, 0);
     assert.equal(postedMessages.length, 1);
     assert.match(String(postedMessages[0].body), /check the pool/);
-    // The claim + no rollback: one update carrying fired_at, none nulling it.
-    assert.ok(reminderUpdates.some((u) => u.fired_at), 'fired_at was stamped on claim');
-    assert.ok(!reminderUpdates.some((u) => u.fired_at === null), 'no rollback on a successful delivery');
+    assert.ok(reminderUpdates.some((u) => typeof u.claim_token === 'string'), 'a delivery lease was acquired');
+    assert.ok(reminderUpdates.some((u) => u.fired_at), 'fired_at was stamped only after delivery');
+    assert.equal(postedMessages[0].meta && (postedMessages[0].meta as Record<string, unknown>).agent_reminder_id, 'r1');
   });
 
   test('delivers a person reminder as a DM from the creator', async () => {
@@ -142,6 +154,21 @@ describe('fireDueReminders', () => {
     assert.equal(postedMessages.length, 1);
     assert.equal(postedMessages[0].sender_staff_id, CREATOR); // AS the creator
   });
+
+  test('pauses a due reminder while Communications is disabled', async () => {
+    communicationsSectionEnabled = false;
+    reminderRows = [{
+      id: 'r-disabled', property_id: DISABLED_PID, created_by_staff_id: CREATOR,
+      target_staff_id: TARGET, target_department: null,
+      body: 'do not deliver yet', fire_at: new Date(Date.now() - 60000).toISOString(),
+      fired_at: null, canceled_at: null, created_at: new Date().toISOString(),
+    }];
+    const res = await fireDueReminders(new Date());
+    assert.equal(res.due, 1);
+    assert.equal(res.fired, 0);
+    assert.equal(postedMessages.length, 0);
+    assert.equal(reminderUpdates.length, 0, 'disabled reminder stays pending and unclaimed');
+  });
 });
 
 describe('spawnDueRecurringTodos', () => {
@@ -154,6 +181,7 @@ describe('spawnDueRecurringTodos', () => {
     }];
     const res = await spawnDueRecurringTodos(new Date());
     assert.equal(res.spawned, 1);
+    assert.equal(res.failed, 0);
     assert.equal(spawnedTasks.length, 1);
     assert.equal(spawnedTasks[0].title, 'check pool chemicals');
     assert.equal(spawnedTasks[0].recurring_template_id, 't1');
@@ -173,6 +201,7 @@ describe('spawnDueRecurringTodos', () => {
     const res = await spawnDueRecurringTodos(new Date());
     assert.equal(res.spawned, 0);
     assert.equal(res.skipped, 1);
+    assert.equal(res.failed, 0);
     assert.equal(spawnedTasks.length, 0);
   });
 
@@ -185,7 +214,24 @@ describe('spawnDueRecurringTodos', () => {
     ];
     const res = await spawnDueRecurringTodos(monday);
     assert.equal(res.spawned, 1, 'only the Monday template spawns on a Monday');
+    assert.equal(res.failed, 0);
     assert.equal(spawnedTasks.length, 1);
     assert.equal(spawnedTasks[0].title, 'monday task');
+  });
+
+  test('does not spawn recurring Communications tasks while the section is disabled', async () => {
+    communicationsSectionEnabled = false;
+    templateRows = [{
+      id: 't-disabled', property_id: DISABLED_PID, title: 'paused template',
+      assigned_staff_id: null, assigned_department: 'maintenance', priority: 'normal',
+      cadence: 'daily', weekday: null, active: true, last_spawned_on: null,
+      created_at: new Date().toISOString(), properties: { timezone: 'America/Chicago' },
+    }];
+    const res = await spawnDueRecurringTodos(new Date());
+    assert.equal(res.spawned, 0);
+    assert.equal(res.skipped, 1);
+    assert.equal(res.failed, 0);
+    assert.equal(spawnedTasks.length, 0);
+    assert.equal(templateUpdates.length, 0);
   });
 });

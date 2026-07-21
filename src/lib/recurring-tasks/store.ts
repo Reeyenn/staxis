@@ -4,7 +4,7 @@
 // Backing tables: recurring_task_templates (migration 0303) + the additive
 // comms_tasks.(recurring_template_id, recurring_instance_date) columns. Service-
 // role only. The create_recurring_todo / stop_recurring_todo / list tools call
-// the CRUD helpers; the process-sms-jobs cron calls spawnDueRecurringTodos().
+// the CRUD helpers; process-agent-schedules calls spawnDueRecurringTodos().
 //
 // A template SPAWNS a plain comms_tasks row each day it's due, so the existing
 // to-do pane shows recurring instances exactly like any other task. Spawning is
@@ -15,6 +15,7 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import { isSectionEnabledForProperty } from '@/lib/sections/server';
 
 export const RECURRING_DEPARTMENTS = ['front_desk', 'housekeeping', 'maintenance', 'general'] as const;
 export const RECURRING_CADENCES = ['daily', 'weekdays', 'weekly'] as const;
@@ -144,13 +145,14 @@ export interface SpawnResult {
   properties: number;
   spawned: number;
   skipped: number;
+  failed: number;
 }
 
 /**
  * Spawn today's recurring to-do instances, once per property per local day.
  * Idempotent: the unique (recurring_template_id, recurring_instance_date) index
  * means a second call the same day inserts nothing (duplicate → swallowed). Safe
- * to call from the every-5-min cron. Called from the process-sms-jobs tick.
+ * to call from the every-5-min process-agent-schedules cron.
  */
 export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<SpawnResult> {
   // Pull all active templates + their property's timezone in one pass. Small
@@ -161,17 +163,25 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
     .eq('active', true);
   if (error) {
     log.error('[recurring-tasks] spawn query failed', { err: error.message });
-    return { properties: 0, spawned: 0, skipped: 0 };
+    throw new Error(`failed to load recurring task templates: ${error.message}`);
   }
 
   const rows = (data ?? []) as Array<Record<string, unknown>>;
   const propsSeen = new Set<string>();
+  const communicationsEnabled = new Map<string, boolean>();
   let spawned = 0;
   let skipped = 0;
+  let failed = 0;
 
   for (const raw of rows) {
     const template = mapRow(raw);
     propsSeen.add(template.propertyId);
+    let sectionEnabled = communicationsEnabled.get(template.propertyId);
+    if (sectionEnabled === undefined) {
+      sectionEnabled = await isSectionEnabledForProperty(template.propertyId, 'communications');
+      communicationsEnabled.set(template.propertyId, sectionEnabled);
+    }
+    if (!sectionEnabled) { skipped += 1; continue; }
     const tz = ((raw.properties as { timezone?: string } | null)?.timezone) || 'America/Chicago';
     const { date, weekday } = localDayParts(now, tz);
 
@@ -206,6 +216,7 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
         skipped += 1;
       } else {
         log.warn('[recurring-tasks] instance insert failed', { templateId: template.id, err: insErr.message });
+        failed += 1;
         continue; // leave last_spawned_on so we retry next tick
       }
     } else {
@@ -213,11 +224,18 @@ export async function spawnDueRecurringTodos(now: Date = new Date()): Promise<Sp
     }
 
     // Advance bookkeeping so the every-5-min cron doesn't re-spawn today.
-    await supabaseAdmin
+    const { error: bookkeepingError } = await supabaseAdmin
       .from('recurring_task_templates')
       .update({ last_spawned_on: date, updated_at: nowIso })
       .eq('id', template.id);
+    if (bookkeepingError) {
+      failed += 1;
+      log.warn('[recurring-tasks] bookkeeping update failed', {
+        templateId: template.id,
+        err: bookkeepingError.message,
+      });
+    }
   }
 
-  return { properties: propsSeen.size, spawned, skipped };
+  return { properties: propsSeen.size, spawned, skipped, failed };
 }

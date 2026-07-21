@@ -17,7 +17,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
 import { commsContext, listAccessiblePropertyIds } from '@/lib/comms/route-helpers';
 import { requireSectionEnabled } from '@/lib/sections/server';
-import { canForUserId } from '@/lib/capabilities/server';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { postAnnouncement, createAckCampaign } from '@/lib/comms/core';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
 
@@ -35,7 +36,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   const ctx = await commsContext(req, body.pid ?? null);
   if (!ctx.ok) return ctx.response;
 
-  if (!(await canForUserId(ctx.userId, 'post_announcements', ctx.pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'post_announcements', ctx.pid);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
+  if (capabilityDecision === 'denied') {
     return err('posting announcements is restricted for your role at this property', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
   }
 
@@ -88,10 +91,13 @@ export async function POST(req: NextRequest): Promise<Response> {
     // Access tab, and an org-wide mandatory-read blast must honor that per-hotel
     // restriction instead of forcing a notice into a hotel where it's revoked.
     // (Security audit 2026-06-18: org-wide fan-out previously skipped this.)
-    const allowChecks = await Promise.all(
-      candidates.map((p) => canForUserId(ctx.userId, 'post_announcements', p)),
+    const capabilityDecisions = await Promise.all(
+      candidates.map((p) => capabilityDecisionForUserId(ctx.userId, 'post_announcements', p)),
     );
-    const targets = candidates.filter((_, i) => allowChecks[i]);
+    if (capabilityDecisions.some((decision) => decision === 'unavailable')) {
+      return capabilityUnavailableResponse(ctx.requestId);
+    }
+    const targets = candidates.filter((_, i) => capabilityDecisions[i] === 'allowed');
     if (targets.length === 0) {
       return err('posting announcements is restricted for your role at the selected properties', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
     }

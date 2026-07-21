@@ -15,7 +15,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { canForUserId } from '@/lib/capabilities/server';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { getEquipmentDetail, updateEquipment, deleteEquipment } from '@/lib/equipment/store';
 import { parseEquipmentPatch } from '@/lib/equipment/validate';
 
@@ -78,7 +79,15 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
   if (!sectionGate.ok) return sectionGate.response;
 
-  if (!(await canForUserId(session.userId, 'manage_equipment', pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(
+    session.userId,
+    'manage_equipment',
+    pid,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (capabilityDecision === 'denied') {
     return err('Manager role required', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -118,7 +127,15 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
   const sectionGate = await requireSectionEnabled(req, pid, 'maintenance');
   if (!sectionGate.ok) return sectionGate.response;
 
-  if (!(await canForUserId(session.userId, 'manage_equipment', pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(
+    session.userId,
+    'manage_equipment',
+    pid,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (capabilityDecision === 'denied') {
     return err('Manager role required', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

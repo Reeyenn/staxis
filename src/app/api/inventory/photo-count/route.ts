@@ -24,6 +24,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { captureException } from '@/lib/sentry';
 import { buildPrompt, canonicalName, sanitizeItemName } from '@/lib/photo-count-prompt';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,6 +69,8 @@ export async function POST(req: NextRequest) {
   if (!(await userHasPropertyAccess(session.userId, pid))) {
     return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
+  const sectionGate = await requireSectionEnabled(req, pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
   if (typeof imageBase64 !== 'string' || imageBase64.length < 100) {
     return NextResponse.json({ ok: false, error: 'invalid_image' }, { status: 400 });
   }

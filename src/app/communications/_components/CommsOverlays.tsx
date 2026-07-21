@@ -5,7 +5,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
 import {
-  Search, X, Megaphone, ArrowRight, ArrowUpRight, AlertTriangle, Sparkles, Plus, Check, Clock, ChevronDown, Loader2,
+  Search, X, Megaphone, ArrowRight, ArrowUpRight, AlertTriangle, AlertCircle, Sparkles, Plus, Check, Clock, ChevronDown, Loader2, RefreshCw,
 } from 'lucide-react';
 import { apiGet, apiPost, apiDelete } from '@/lib/comms/client';
 import type { ConversationDTO, StaffLite, SearchHitDTO, CommsDept } from '@/lib/comms/types';
@@ -23,23 +23,35 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
 }) {
   const [q, setQ] = React.useState('');
   const [hits, setHits] = React.useState<SearchHitDTO[]>([]);
+  const [searching, setSearching] = React.useState(true);
+  const [searchError, setSearchError] = React.useState<string | null>(null);
+  const [searchNonce, setSearchNonce] = React.useState(0);
   const inp = React.useRef<HTMLInputElement | null>(null);
+  const searchRequest = React.useRef(0);
 
   React.useEffect(() => { inp.current?.focus(); }, []);
   // Debounced live search (220ms per keystroke) — stays hand-rolled;
   // useCommsResource has no debounce.
   React.useEffect(() => {
+    const requestId = ++searchRequest.current;
+    setSearching(true); setSearchError(null); setHits([]);
     const id = setTimeout(async () => {
       const r = await apiGet<{ hits: SearchHitDTO[] }>(`/api/comms/search?pid=${encodeURIComponent(pid)}&q=${encodeURIComponent(q.trim())}`);
-      if (r.ok && r.data) setHits(r.data.hits);
+      if (requestId !== searchRequest.current) return;
+      if (r.ok && r.data) {
+        setHits(r.data.hits);
+      } else {
+        setSearchError(L('Search could not load. Check your connection and try again.', 'No se pudo cargar la búsqueda. Revisa tu conexión e inténtalo de nuevo.'));
+      }
+      setSearching(false);
     }, 220);
-    return () => clearTimeout(id);
-  }, [pid, q]);
+    return () => { clearTimeout(id); searchRequest.current += 1; };
+  }, [pid, q, searchNonce, L]);
 
   const channels = hits.filter((h) => h.kind === 'channel');
   const people = hits.filter((h) => h.kind === 'person');
   const messages = hits.filter((h) => h.kind === 'message');
-  const rowStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 11, width: '100%', textAlign: 'left', padding: '8px 16px', border: 'none', background: 'transparent', cursor: 'pointer' };
+  const rowStyle: React.CSSProperties = { minHeight: 44, display: 'flex', alignItems: 'center', gap: 11, width: '100%', textAlign: 'left', padding: '8px 16px', border: 'none', background: 'transparent', cursor: 'pointer' };
   const hov = (e: React.MouseEvent<HTMLButtonElement>) => (e.currentTarget.style.background = T.paper);
   const out = (e: React.MouseEvent<HTMLButtonElement>) => (e.currentTarget.style.background = 'transparent');
 
@@ -50,7 +62,7 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
           <span style={{ color: T.dim, display: 'flex' }}><Search size={18} /></span>
           <input ref={inp} value={q} onChange={(e) => setQ(e.target.value)} placeholder={L('Search messages, channels and people…', 'Buscar mensajes, canales y personas…')}
             style={{ flex: 1, border: 'none', outline: 'none', background: 'transparent', fontFamily: SANS, fontSize: 15, color: T.ink }} />
-          <button onClick={onClose} style={{ fontFamily: MONO, fontSize: 10, letterSpacing: '.08em', color: T.dim, border: `1px solid ${T.hair}`, borderRadius: 6, padding: '3px 7px', background: 'transparent', cursor: 'pointer' }}>ESC</button>
+          <button onClick={onClose} aria-label={L('Close search', 'Cerrar búsqueda')} style={{ minWidth: 44, minHeight: 44, fontFamily: MONO, fontSize: 10, letterSpacing: '.08em', color: T.dim, border: `1px solid ${T.hair}`, borderRadius: 6, padding: '3px 7px', background: 'transparent', cursor: 'pointer' }}>ESC</button>
         </div>
         <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0 12px' }}>
           {channels.length > 0 && <div style={{ marginBottom: 8 }}><div style={{ padding: '8px 16px 4px' }}><MonoLabel>{L('Channels', 'Canales')}</MonoLabel></div>
@@ -81,7 +93,9 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
               </button>
             ))}
           </div>}
-          {hits.length === 0 && <div style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}>{q ? L(`No results for “${q}”.`, `Sin resultados para “${q}”.`) : L('Type to search.', 'Escribe para buscar.')}</div>}
+          {searching && hits.length === 0 && <div role="status" style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Searching…', 'Buscando…')}</div>}
+          {searchError && <div role="alert" style={{ margin: '8px 16px', padding: '12px 14px', borderRadius: 10, border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), color: T.terracotta, fontFamily: SANS, fontSize: 13, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{hits.length > 0 ? L('Search could not refresh. Showing the last results.', 'No se pudo actualizar la búsqueda. Se muestran los últimos resultados.') : searchError}</span><button onClick={() => setSearchNonce((n) => n + 1)} aria-label={L('Retry search', 'Reintentar búsqueda')} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }}><RefreshCw size={15} aria-hidden="true" /></button></div>}
+          {!searching && !searchError && hits.length === 0 && <div style={{ padding: '24px 16px', textAlign: 'center', fontFamily: SANS, fontSize: 13.5, color: T.dim }}>{q ? L(`No results for “${q}”.`, `Sin resultados para “${q}”.`) : L('Type to search.', 'Escribe para buscar.')}</div>}
         </div>
     </CommsOverlay>
   );
@@ -108,9 +122,17 @@ export function CatchUp({ pid, conversations, L, onJump, onClose }: {
 
   const [summary, setSummary] = React.useState<string | null>(null);
   const [loadingSummary, setLoadingSummary] = React.useState(false);
+  const [summaryError, setSummaryError] = React.useState<string | null>(null);
   const summarize = async () => {
-    setLoadingSummary(true);
-    try { const r = await apiPost<{ summary: string }>('/api/comms/summary', { pid }); setSummary(r.data?.summary ?? L('You are all caught up.', 'Estás al día.')); }
+    setLoadingSummary(true); setSummaryError(null);
+    try {
+      const r = await apiPost<{ summary: string }>('/api/comms/summary', { pid });
+      if (!r.ok || !r.data?.summary) {
+        setSummaryError(L('Staxis could not summarize this activity. Please try again.', 'Staxis no pudo resumir esta actividad. Inténtalo de nuevo.'));
+        return;
+      }
+      setSummary(r.data.summary);
+    }
     finally { setLoadingSummary(false); }
   };
 
@@ -146,6 +168,7 @@ export function CatchUp({ pid, conversations, L, onJump, onClose }: {
                   {loadingSummary ? <Loader2 size={13} className="comms-spin" /> : <Sparkles size={13} />} {L('Summarize with AI', 'Resumir con IA')}
                 </button>
           )}
+          {summaryError && <div role="alert" style={{ margin: '0 10px 10px', color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4 }}>{summaryError}</div>}
         </div>
     </CommsOverlay>
   );
@@ -216,11 +239,12 @@ function inDateBucket(it: WorklistItem, bucket: DateBucket): boolean {
   return due.getTime() <= end.getTime();
 }
 
-export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items: WorklistItem[]; staff: StaffLite[]; L: L; reload: () => void }) {
+export function TodoMode({ pid, items, staff, L, reload, loading = false, error = null }: { pid: string; items: WorklistItem[]; staff: StaffLite[]; L: L; reload: () => void; loading?: boolean; error?: string | null }) {
   const [adding, setAdding] = React.useState(false);
   const [assignTarget, setAssignTarget] = React.useState<WorklistItem | null>(null);
   const [typeFilter, setTypeFilter] = React.useState<WorklistSourceType | 'all'>('all');
   const [bucket, setBucket] = React.useState<DateBucket>('all');
+  const [mutationError, setMutationError] = React.useState<string | null>(null);
   const meta = sourceMeta(L);
 
   const filtered = items.filter((it) => (typeFilter === 'all' || it.sourceType === typeFilter) && inDateBucket(it, bucket));
@@ -234,11 +258,21 @@ export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items:
   // completable inline (canComplete=false) — their row deep-links to the inspect
   // flow instead. Manual to-dos can also be deleted from here.
   const complete = async (it: WorklistItem) => {
-    await apiPost('/api/worklist/complete', { pid, sourceType: it.sourceType, sourceId: it.sourceId });
+    setMutationError(null);
+    const r = await apiPost('/api/worklist/complete', { pid, sourceType: it.sourceType, sourceId: it.sourceId });
+    if (!r.ok) {
+      setMutationError(L('The item was not completed. Please try again.', 'No se completó el elemento. Inténtalo de nuevo.'));
+      return;
+    }
     reload();
   };
   const deleteTask = async (it: WorklistItem) => {
-    await apiDelete(`/api/comms/tasks?pid=${encodeURIComponent(pid)}&taskId=${encodeURIComponent(it.sourceId)}`);
+    setMutationError(null);
+    const r = await apiDelete(`/api/comms/tasks?pid=${encodeURIComponent(pid)}&taskId=${encodeURIComponent(it.sourceId)}`);
+    if (!r.ok) {
+      setMutationError(L('The to-do was not deleted. Please try again.', 'No se eliminó la tarea. Inténtalo de nuevo.'));
+      return;
+    }
     reload();
   };
 
@@ -277,7 +311,28 @@ export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items:
 
         {/* List */}
         <div style={{ marginTop: 16, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {filtered.length === 0 && (
+          {mutationError && (
+            <div role="alert" style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <AlertCircle size={17} aria-hidden="true" style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{mutationError}</span>
+              <button onClick={() => setMutationError(null)} aria-label={L('Dismiss error', 'Cerrar error')} style={{ width: 44, height: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', border: 0, borderRadius: 8, background: 'transparent', color: T.terracotta, cursor: 'pointer' }}><X size={17} aria-hidden="true" /></button>
+            </div>
+          )}
+          {loading && items.length === 0 && (
+            <div role="status" aria-live="polite" style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '26px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              <Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading worklist…', 'Cargando lista…')}
+            </div>
+          )}
+          {error && (
+            <div role="alert" style={{ fontFamily: SANS, fontSize: 13, lineHeight: 1.45, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}>
+              <AlertCircle size={17} aria-hidden="true" style={{ flexShrink: 0 }} />
+              <span style={{ flex: 1 }}>{items.length > 0 ? L('The worklist could not refresh. Showing the last results.', 'No se pudo actualizar la lista. Se muestran los últimos resultados.') : L('The worklist could not load. Check your connection and try again.', 'No se pudo cargar la lista. Revisa tu conexión e inténtalo de nuevo.')}</span>
+              <button onClick={reload} disabled={loading} style={{ minWidth: 44, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, padding: '0 10px', borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: loading ? 'wait' : 'pointer', fontFamily: SANS, fontSize: 12, fontWeight: 700 }}>
+                {loading ? <Loader2 size={14} className="comms-spin" aria-hidden="true" /> : <RefreshCw size={14} aria-hidden="true" />}{L('Retry', 'Reintentar')}
+              </button>
+            </div>
+          )}
+          {!loading && (!error || items.length > 0) && filtered.length === 0 && (
             <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '26px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}>
               {items.length === 0
                 ? L('Nothing open across the property. Add a to-do to get started.', 'Nada pendiente en la propiedad. Agrega una tarea para empezar.')
@@ -299,11 +354,16 @@ export function TodoMode({ pid, items, staff, L, reload }: { pid: string; items:
 // ── Assign / reassign popup (staff for task & complaint; priority lane for work order) ──
 function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistItem; pid: string; staff: StaffLite[]; L: L; onClose: () => void; onDone: () => void }) {
   const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
   const isPriority = item.sourceType === 'workorder';
 
   const post = async (payload: Record<string, unknown>) => {
-    if (busy) return; setBusy(true);
-    try { await apiPost('/api/worklist/assign', { pid, sourceType: item.sourceType, sourceId: item.sourceId, ...payload }); onDone(); }
+    if (busy) return; setBusy(true); setError(null);
+    try {
+      const r = await apiPost('/api/worklist/assign', { pid, sourceType: item.sourceType, sourceId: item.sourceId, ...payload });
+      if (!r.ok) { setError(L('The assignment was not saved. Please try again.', 'No se guardó la asignación. Inténtalo de nuevo.')); return; }
+      onDone();
+    }
     finally { setBusy(false); }
   };
 
@@ -314,6 +374,8 @@ function AssignModal({ item, pid, staff, L, onClose, onDone }: { item: WorklistI
           <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 15 }}>{isPriority ? L('Set priority', 'Definir prioridad') : L('Assign to', 'Asignar a')}</span>
           <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
         </div>
+
+        {error && <div role="alert" style={{ margin: '12px 14px 0', color: T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4 }}>{error}</div>}
 
         {isPriority ? (
           <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -420,14 +482,16 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
   const [priority, setPriority] = React.useState<'normal' | 'high' | 'urgent'>('normal');
   const [dueIso, setDueIso] = React.useState('');   // '' = no due date
   const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
   const inp = React.useRef<HTMLInputElement | null>(null);
   React.useEffect(() => { inp.current?.focus(); }, []);
 
   const submit = async () => {
     const t = text.trim(); if (!t || busy) return;
-    setBusy(true);
+    setBusy(true); setError(null);
     try {
-      await apiPost('/api/comms/tasks', { pid, title: t, assignedDepartment: dept, assignedStaffId: assignee || undefined, priority, dueAt: dueIso || undefined });
+      const r = await apiPost('/api/comms/tasks', { pid, title: t, assignedDepartment: dept, assignedStaffId: assignee || undefined, priority, dueAt: dueIso || undefined });
+      if (!r.ok) { setError(L('The to-do was not added. Please try again.', 'No se agregó la tarea. Inténtalo de nuevo.')); return; }
       onAdded();
     } finally { setBusy(false); }
   };
@@ -443,6 +507,7 @@ function TodoComposer({ pid, staff, L, onClose, onAdded }: { pid: string; staff:
         </div>
 
         <div style={{ padding: '14px 18px' }}>
+          {error && <div role="alert" style={{ marginBottom: 10, color: T.terracotta, fontFamily: SANS, fontSize: 12.5, lineHeight: 1.4 }}>{error}</div>}
           <input ref={inp} value={text} onChange={(e) => setText(e.target.value)} placeholder={L('What needs doing?', '¿Qué hay que hacer?')}
             onKeyDown={(e) => { if (e.key === 'Enter') void submit(); }}
             style={{ width: '100%', border: `1px solid ${T.hair}`, borderRadius: 10, outline: 'none', background: T.paper, fontFamily: SANS, fontSize: 15, color: T.ink, padding: '11px 12px' }} />

@@ -23,11 +23,9 @@
  */
 
 import { NextRequest } from 'next/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
-import { getOrMintRequestId } from '@/lib/log';
+import { getOrMintRequestId, log } from '@/lib/log';
 import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 import { SUPPORTED_LOCALES, type HousekeeperLocale } from '@/lib/translations';
 import { getEnabledSections } from '@/lib/sections/server';
@@ -70,10 +68,20 @@ export async function GET(req: NextRequest) {
 
   // Per-hotel section gate. The public housekeeper page can't use the client
   // hook (anon, no PropertyContext), so the Messages tab's on/off state is
-  // resolved server-side here and rides along on the bootstrap. Fail-soft to
-  // ON (getEnabledSections + isSectionEnabled both default-ON). SMS is never
+  // resolved server-side here and rides along on the bootstrap. A section-read
+  // outage must not break the operational housekeeper bootstrap, but it also
+  // must not expose Messages: fail this flag closed to false. SMS is never
   // gated — this only controls the in-app Messages tab.
-  const communicationsEnabled = isSectionEnabled(await getEnabledSections(pid), 'communications');
+  let communicationsEnabled = false;
+  try {
+    communicationsEnabled = isSectionEnabled(await getEnabledSections(pid), 'communications');
+  } catch (error) {
+    log.error('[housekeeper/me] enabled_sections lookup failed closed', {
+      requestId,
+      pid,
+      err: error instanceof Error ? error.message : String(error),
+    });
+  }
 
   return ok(
     { id: data.staffId, name: data.name, language: lang, communicationsEnabled },

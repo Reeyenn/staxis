@@ -41,7 +41,8 @@ import { writeAudit } from '@/lib/audit';
 import { writeRoleChange } from '@/lib/audit-role-changes';
 import { validateUuid } from '@/lib/api-validate';
 import { isAssignableRole, type AppRole } from '@/lib/roles';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { denyRoleChange } from '@/lib/settings-user-role-change';
 
 export const runtime = 'nodejs';
@@ -103,7 +104,16 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const pidV = validateUuid(url.searchParams.get('propertyId'), 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerCanManageProperty(caller, pidV.value!) || !(await canForProperty({ role: caller.role }, 'manage_users', pidV.value!))) {
+  if (!callerCanManageProperty(caller, pidV.value!)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: caller.role },
+    'manage_users',
+    pidV.value!,
+  );
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -181,7 +191,16 @@ export async function PUT(req: NextRequest) {
 
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerCanManageProperty(caller, pidV.value!) || !(await canForProperty({ role: caller.role }, 'manage_users', pidV.value!))) {
+  if (!callerCanManageProperty(caller, pidV.value!)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  }
+  const capabilityDecision = await capabilityDecisionForProperty(
+    { role: caller.role },
+    'manage_users',
+    pidV.value!,
+  );
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

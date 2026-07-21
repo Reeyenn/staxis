@@ -11,7 +11,7 @@
 
 'use client';
 
-import React, { useMemo, useState } from 'react';
+import React, { useId, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -21,6 +21,9 @@ import { T, fonts, deptMeta, asDeptKey, Btn, Caps } from './_tokens';
 import { Avatar } from './_people';
 import { useWeekShifts, mondayOf } from './useWeekShifts';
 import { fmtRange } from '@/lib/schedule-board';
+import { isStaffVisibleScheduleStatus } from './staff-shift-visibility';
+import { useStaffDialog } from './useStaffDialog';
+import dialogStyles from './StaffDialog.module.css';
 
 export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } = {}) {
   const { user } = useAuth();
@@ -35,7 +38,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
   const staffId = previewStaffId !== undefined ? previewStaffId : (user?.staffId ?? null);
   const me = useMemo(() => staff.find(s => s.id === staffId) ?? null, [staff, staffId]);
   const {
-    days, byStaff, openShifts, torByStaff, publishedDates,
+    days, byStaff, openShifts, torByStaff,
     loading: shiftsLoading, loadError: shiftsLoadError, retry: retryShifts,
   } = useWeekShifts(activePropertyId, weekStart, staffId);
 
@@ -70,14 +73,14 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
     );
   }
   const meDept = deptMeta[asDeptKey(me.department)];
-  // Only show *published* shifts (drafts are manager-side). Past dates
-  // still render even if not in a published week — they ran historically.
+  // Row status is the source of truth. The manager schedule saves rows as
+  // `published` immediately; the legacy week stamp is non-fatal bookkeeping
+  // and must not hide a successfully saved shift or expose a draft.
   const myWeekFull = byStaff[me.id] ?? Array.from({ length: 7 }, () => ({ kind: 'off' as const }));
   const today = new Date().toLocaleDateString('en-CA');
-  const myWeek = myWeekFull.map((c, i) => {
+  const myWeek = myWeekFull.map((c) => {
     if (c.kind !== 'shift') return c;
-    if (publishedDates.has(c.shift.shiftDate) || c.shift.shiftDate < today) return c;
-    return { kind: 'off' as const };
+    return isStaffVisibleScheduleStatus(c.shift.status) ? c : { kind: 'off' as const };
   });
 
   const myShiftCount = myWeek.filter(c => c.kind === 'shift').length;
@@ -98,7 +101,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
   const myDeptLabel = es ? (deptNameEs[myDept] ?? 'tu área') : meDept.label.toLowerCase();
   const myOpenShifts = openShifts.filter(o =>
     o.department === myDept
-    && o.status !== 'draft'
+    && isStaffVisibleScheduleStatus(o.status)
     && o.shiftDate >= today,
   ).sort((a, b) => a.shiftDate.localeCompare(b.shiftDate));
 
@@ -536,6 +539,12 @@ function RequestTimeOffModal({
   const [reason, setReason] = useState<string>('');
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const titleId = useId();
+  const descriptionId = useId();
+  const dateId = useId();
+  const reasonId = useId();
+  const errorId = useId();
+  const dialogRef = useStaffDialog(onClose);
 
   const submit = async () => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(requestDate)) { setErrorMsg(es ? 'Elige una fecha.' : 'Pick a date.'); return; }
@@ -558,21 +567,31 @@ function RequestTimeOffModal({
   };
 
   return (
-    <div onClick={onClose} style={{
+    <div onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }} style={{
       position: 'fixed', inset: 0, zIndex: 1100,
       background: 'rgba(31,35,28,0.42)', backdropFilter: 'blur(6px)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
     }}>
-      <div onClick={e => e.stopPropagation()} style={{
+      <div
+        ref={dialogRef}
+        className={dialogStyles.dialog}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-describedby={descriptionId}
+        aria-busy={busy}
+        tabIndex={-1}
+        onMouseDown={e => e.stopPropagation()}
+        style={{
         background: T.paper, borderRadius: 18, padding: '24px 26px',
         maxWidth: 420, width: '100%',
         boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24), 0 0 0 1px rgba(31,35,28,0.04)',
       }}>
-        <h2 style={{
+        <h2 id={titleId} style={{
           margin: 0, fontFamily: fonts.sans, fontSize: 18,
           color: T.ink, letterSpacing: '-0.02em', fontWeight: 600,
         }}>{es ? 'Solicitar día libre' : 'Request time off'}</h2>
-        <p style={{ margin: '8px 0 16px', fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.5 }}>
+        <p id={descriptionId} style={{ margin: '8px 0 16px', fontFamily: fonts.sans, fontSize: 13, color: T.ink2, lineHeight: 1.5 }}>
           {es
             ? 'Tu gerente lo verá en el horario y lo aprobará o denegará.'
             : 'Your manager will see this in the schedule grid and approve or deny.'}
@@ -580,17 +599,22 @@ function RequestTimeOffModal({
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
           <div>
-            <Caps size={10}>{es ? 'Fecha' : 'Date'}</Caps>
+            <label htmlFor={dateId}><Caps size={10}>{es ? 'Fecha' : 'Date'}</Caps></label>
             <input
+              id={dateId}
               type="date" value={requestDate}
               onChange={e => setRequestDate(e.target.value)}
               min={today}
+              data-dialog-initial-focus="true"
+              aria-invalid={errorMsg ? true : undefined}
+              aria-describedby={errorMsg ? errorId : undefined}
               style={{ ...inputStyle, marginTop: 6 }}
             />
           </div>
           <div>
-            <Caps size={10}>{es ? 'Motivo (opcional)' : 'Reason (optional)'}</Caps>
+            <label htmlFor={reasonId}><Caps size={10}>{es ? 'Motivo (opcional)' : 'Reason (optional)'}</Caps></label>
             <input
+              id={reasonId}
               value={reason}
               onChange={e => setReason(e.target.value)}
               placeholder={es ? 'ej. cita médica' : 'e.g. doctor appointment'}
@@ -598,7 +622,7 @@ function RequestTimeOffModal({
             />
           </div>
           {errorMsg && (
-            <div role="alert" style={{
+            <div id={errorId} role="alert" style={{
               padding: '10px 14px', background: 'rgba(184,92,61,0.08)',
               border: '1px solid rgba(184,92,61,0.25)', borderRadius: 12,
               color: '#B85C3D', fontFamily: fonts.sans, fontSize: 13,

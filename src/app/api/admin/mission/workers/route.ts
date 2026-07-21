@@ -84,6 +84,7 @@ function tierOf(name: string): WorkerTier {
 
 const WORKER_META: Record<string, { description: string; group: WorkerGroup }> = {
   'agent-sweep-reservations':            { description: 'Frees up AI budget if a task crashes mid-way.',              group: 'Agent' },
+  'process-agent-schedules':             { description: 'Delivers reminders and creates recurring team tasks.',       group: 'Agent' },
   'agent-summarize-long-conversations':  { description: 'Tidies up long AI chats so they stay fast.',                group: 'Agent' },
   'agent-consolidate-memory':            { description: "Cleans up the AI assistant's memory overnight.",            group: 'Agent' },
   'agent-archive-stale-conversations':   { description: "Files away old AI chats you're done with.",                 group: 'Agent' },
@@ -91,12 +92,8 @@ const WORKER_META: Record<string, { description: string; group: WorkerGroup }> =
   'walkthrough-heal-stale':              { description: "Cleans up show-me-how tutorials that got interrupted.",      group: 'Other' },
   'sweep-orphan-auth-users':             { description: 'Removes leftover half-finished sign-up accounts.',           group: 'Cleanup' },
   'sweep-mfa-verified-sessions':         { description: 'Clears out expired 2-factor sign-in sessions.',              group: 'Cleanup' },
-  'ml-run-inference':                    { description: 'Runs the daily demand and staffing forecast.',              group: 'ML' },
   'ml-predict-inventory':                { description: 'Predicts which supplies each hotel will need.',              group: 'Inventory' },
-  'ml-train-demand':                     { description: 'Retrains the demand-forecast model each week.',              group: 'ML' },
-  'ml-train-supply':                     { description: 'Retrains the staffing-forecast model each week.',            group: 'ML' },
   'ml-train-inventory':                  { description: 'Retrains the supply-prediction model each week.',            group: 'Inventory' },
-  'ml-retention-purge':                  { description: 'Deletes old prediction data on schedule.',                  group: 'Cleanup' },
   'purge-old-error-logs':                { description: 'Deletes old error logs to keep things tidy.',               group: 'Cleanup' },
   'claude-sessions-purge':               { description: 'Clears out old AI browser sessions.',                       group: 'Cleanup' },
   'webhook-dedup-purge':                 { description: 'Removes old duplicate-message guards.',                     group: 'Cleanup' },

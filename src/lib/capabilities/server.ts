@@ -16,9 +16,26 @@ import { isCapabilityKey, isHotelRole, type CapabilityKey } from './registry';
  * Load one hotel's capability overrides as a { capability → role → allowed } map.
  * Wrapped in React `cache()` so repeated gate checks within a single request
  * share one read. Reads fresh per request (no TTL) so an Access-tab toggle takes
- * effect on the very next page load / API call. Returns {} on any error or for a
- * missing pid — i.e. falls back to the everyone-everything default, never throws.
+ * effect on the very next page load / API call. A successful empty result means
+ * the hotel has no overrides and therefore uses the registry defaults. A read
+ * failure is different: silently treating it as an empty result would erase an
+ * explicit deny for the duration of the outage, so failures throw and API gates
+ * must fail closed.
  */
+export class CapabilityLookupError extends Error {
+  readonly propertyId: string;
+
+  constructor(propertyId: string, options?: { cause?: unknown }) {
+    super('failed to read capability overrides', options);
+    this.name = 'CapabilityLookupError';
+    this.propertyId = propertyId;
+  }
+}
+
+export function isCapabilityLookupError(error: unknown): error is CapabilityLookupError {
+  return error instanceof CapabilityLookupError;
+}
+
 export const loadOverridesForProperty = cache(
   async (propertyId: string): Promise<CapabilityOverrideMap> => {
     const map: CapabilityOverrideMap = {};
@@ -27,7 +44,9 @@ export const loadOverridesForProperty = cache(
       .from('capability_overrides')
       .select('capability, role, allowed')
       .eq('property_id', propertyId);
-    if (error || !data) return map;
+    if (error || !Array.isArray(data)) {
+      throw new CapabilityLookupError(propertyId, { cause: error });
+    }
     for (const row of data as Array<{ capability: string; role: string; allowed: boolean }>) {
       if (!isCapabilityKey(row.capability) || !isHotelRole(row.role)) continue;
       (map[row.capability] ??= {})[row.role] = !!row.allowed;
@@ -35,6 +54,8 @@ export const loadOverridesForProperty = cache(
     return map;
   },
 );
+
+export type CapabilityDecision = 'allowed' | 'denied' | 'unavailable';
 
 /** Resolve an auth user's account role (cached per request). */
 export const resolveAccountRole = cache(
@@ -66,6 +87,25 @@ export async function canForProperty(
 }
 
 /**
+ * API-friendly capability resolution. Only the known override-store outage is
+ * converted to `unavailable`; programmer errors and unrelated failures still
+ * surface normally. Callers can therefore return a deliberate retryable 503
+ * without ever confusing an outage with an authorization denial or grant.
+ */
+export async function capabilityDecisionForProperty(
+  user: CapUser,
+  capability: CapabilityKey,
+  propertyId: string | null | undefined,
+): Promise<CapabilityDecision> {
+  try {
+    return (await canForProperty(user, capability, propertyId)) ? 'allowed' : 'denied';
+  } catch (error) {
+    if (isCapabilityLookupError(error)) return 'unavailable';
+    throw error;
+  }
+}
+
+/**
  * Convenience for routes that have a userId but not yet a role: resolve the role
  * from `accounts`, then delegate to canForProperty.
  */
@@ -76,4 +116,18 @@ export async function canForUserId(
 ): Promise<boolean> {
   const role = await resolveAccountRole(userId);
   return canForProperty({ role }, capability, propertyId);
+}
+
+/**
+ * Tri-state HTTP-boundary variant of canForUserId. Account absence/unknown
+ * roles remain ordinary denials; only a capability-override lookup outage is
+ * reported as unavailable so routes can return the standard retryable 503.
+ */
+export async function capabilityDecisionForUserId(
+  userId: string,
+  capability: CapabilityKey,
+  propertyId: string | null | undefined,
+): Promise<CapabilityDecision> {
+  const role = await resolveAccountRole(userId);
+  return capabilityDecisionForProperty({ role }, capability, propertyId);
 }

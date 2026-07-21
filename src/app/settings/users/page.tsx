@@ -3,7 +3,7 @@
 
 export const dynamic = 'force-dynamic';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
@@ -27,52 +27,93 @@ interface UserRow {
 
 export default function UsersPage() {
   const router = useRouter();
-  const { user } = useAuth();
-  const { properties } = useProperty();
+  const { user, loading: authLoading } = useAuth();
+  const {
+    properties,
+    activeProperty,
+    activePropertyId,
+    loading: propertyLoading,
+    capabilityOverridesViewerKey,
+    capabilityOverridesPropertyId,
+    setActivePropertyId,
+  } = useProperty();
   const { lang } = useLang();
   const can = useCan();
+  const capabilityViewerKey = user?.uid && activePropertyId
+    ? `${user.uid}:${activePropertyId}`
+    : null;
+  const accessContextReady = Boolean(
+    capabilityViewerKey
+    && activeProperty?.id === activePropertyId
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === capabilityViewerKey
+  );
+  const allowed = accessContextReady && !!user && can('manage_users');
 
   useEffect(() => {
-    if (user && !can('manage_users')) router.replace('/settings');
-  }, [user, can, router]);
+    if (!authLoading && !propertyLoading && user && accessContextReady && !allowed) {
+      router.replace('/settings');
+    }
+  }, [user, authLoading, propertyLoading, accessContextReady, allowed, router]);
 
-  const [propertyId, setPropertyId] = useState<string>('');
-  useEffect(() => {
-    if (!propertyId && properties.length > 0) setPropertyId(properties[0].id);
-  }, [properties, propertyId]);
+  // Keep the data scope and capability scope identical. A separate local
+  // hotel selector could otherwise authorize against one hotel's overrides
+  // while sending a settings request for another hotel.
+  const propertyId = activePropertyId ?? '';
 
   const [users, setUsers] = useState<UserRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busyAccountId, setBusyAccountId] = useState<string | null>(null);
   const [transferTarget, setTransferTarget] = useState<UserRow | null>(null);
+  const loadRequestRef = useRef(0);
+  const activeScopeRef = useRef<string | null>(null);
+  activeScopeRef.current = allowed ? propertyId : null;
+
+  useEffect(() => {
+    // A late Hotel A response must never render after the selector moves to
+    // Hotel B, even if A's request was already in flight.
+    loadRequestRef.current += 1;
+    setUsers([]);
+    setError('');
+    setTransferTarget(null);
+    setLoading(true);
+  }, [propertyId]);
 
   const load = useCallback(async () => {
-    if (!propertyId) return;
+    const requestedPropertyId = propertyId;
+    const requestId = ++loadRequestRef.current;
+    if (!requestedPropertyId || !allowed || activeScopeRef.current !== requestedPropertyId) {
+      if (!requestedPropertyId) setLoading(false);
+      return;
+    }
     setLoading(true);
     setError('');
     try {
       const res = await fetchWithAuth(`/api/settings/users?propertyId=${propertyId}`);
       const body = await res.json() as { ok?: boolean; data?: { users: UserRow[] }; error?: string };
+      if (requestId !== loadRequestRef.current || activeScopeRef.current !== requestedPropertyId) return;
       if (!res.ok || !body.ok || !body.data) {
         setError(body.error || (lang === 'es' ? 'No se pudieron cargar los usuarios' : 'Failed to load users'));
         return;
       }
       setUsers(body.data.users);
     } catch (err) {
+      if (requestId !== loadRequestRef.current || activeScopeRef.current !== requestedPropertyId) return;
       // A network throw used to escape as an unhandled rejection, rendering a
       // silently empty user list with no error.
       console.error('[users:settings] load failed', err);
       setError(lang === 'es' ? 'No se pudieron cargar los usuarios — revisa tu conexión' : 'Failed to load users — check your connection');
     } finally {
-      setLoading(false);
+      if (requestId === loadRequestRef.current && activeScopeRef.current === requestedPropertyId) setLoading(false);
     }
-  }, [propertyId, lang]);
+  }, [propertyId, lang, allowed]);
 
   useEffect(() => { void load(); }, [load]);
 
   const performAction = async (accountId: string, action: string, payload: Record<string, unknown> = {}) => {
-    if (!propertyId) return;
+    if (!allowed || !propertyId) return;
+    const requestedPropertyId = propertyId;
     setBusyAccountId(accountId);
     setError('');
     try {
@@ -82,12 +123,14 @@ export default function UsersPage() {
         body: JSON.stringify({ propertyId, accountId, action, ...payload }),
       });
       const body = await res.json() as { ok?: boolean; error?: string };
+      if (activeScopeRef.current !== requestedPropertyId) return;
       if (!res.ok || !body.ok) {
         setError(body.error || (lang === 'es' ? 'La acción falló' : 'Action failed'));
         return;
       }
       await load();
     } catch (err) {
+      if (activeScopeRef.current !== requestedPropertyId) return;
       // A network throw used to silently do nothing — the role select just
       // snapped back and a deactivate looked like it succeeded.
       console.error('[users:settings] action failed', err);
@@ -109,7 +152,25 @@ export default function UsersPage() {
     });
   }, [users]);
 
-  if (!user || !can('manage_users')) return null;
+  if (authLoading || propertyLoading || (!!user && !accessContextReady)) {
+    return (
+      <AppLayout>
+        <div role="status" style={{ minHeight: '50dvh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+          {lang === 'es' ? 'Comprobando acceso…' : 'Checking access…'}
+        </div>
+      </AppLayout>
+    );
+  }
+  if (!user) return null;
+  if (!allowed) {
+    return (
+      <AppLayout>
+        <div role="status" style={{ minHeight: '50dvh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
+          {lang === 'es' ? 'Volviendo a Configuración…' : 'Returning to Settings…'}
+        </div>
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>
@@ -140,7 +201,7 @@ export default function UsersPage() {
         {properties.length > 1 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             <label style={labelStyle}>{lang === 'es' ? 'Hotel' : 'Hotel'}</label>
-            <select value={propertyId} onChange={e => setPropertyId(e.target.value)} style={{ ...inputStyle, height: 42 }}>
+            <select value={propertyId} onChange={e => setActivePropertyId(e.target.value)} style={{ ...inputStyle, height: 44 }}>
               {properties.map(h => <option key={h.id} value={h.id}>{h.name}</option>)}
             </select>
           </div>

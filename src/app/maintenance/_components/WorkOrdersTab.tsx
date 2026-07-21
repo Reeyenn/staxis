@@ -740,14 +740,31 @@ export function WorkOrdersTab() {
   ];
 
   return (
-    <div style={{ padding: '28px 48px 130px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+    <div className="mt-workorders-page" style={{ background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
+      <style>{`
+        .mt-workorders-page { padding: 28px 48px 130px; }
+        .mt-workorders-board {
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 20px;
+          align-items: start;
+        }
+        @media (max-width: 980px) {
+          .mt-workorders-page { padding-inline: 24px; }
+          .mt-workorders-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        }
+        @media (max-width: 560px) {
+          .mt-workorders-page { padding: 20px 16px 130px; }
+          .mt-workorders-board { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+        }
+      `}</style>
       <PageHead
         eyebrow={es ? 'Órdenes de trabajo · hoy' : 'Work orders · today'}
         lead={`${open.length} ${es ? 'abiertas' : 'open'}`}
         rest={`${doneList.length} ${es ? 'listas' : 'done'}`}
         actions={<>
-          <Btn variant="ghost" onClick={() => setHistoryOpen(true)}>{es ? 'Historial' : 'History'} ({doneList.length}) →</Btn>
-          <Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
+          <Btn size="lg" variant="ghost" onClick={() => setHistoryOpen(true)}>{es ? 'Historial' : 'History'} ({doneList.length}) →</Btn>
+          <Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>
         </>}
       />
 
@@ -759,10 +776,10 @@ export function WorkOrdersTab() {
         <MtEmptyCard
           title={es ? 'Todo al día.' : 'All caught up.'}
           body={es ? 'Nada abierto. Buen trabajo.' : 'Nothing open. Nice work.'}
-          action={<Btn variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>}
+          action={<Btn size="lg" variant="primary" onClick={() => setSubmitOpen(true)}>＋ {es ? 'Nueva orden' : 'New work order'}</Btn>}
         />
       ) : (
-        <div ref={boardRef} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, alignItems: 'start' }}>
+        <div ref={boardRef} className="mt-workorders-board">
           {lanes.map((l) => {
             const items = laneItems(l.key);
             return (

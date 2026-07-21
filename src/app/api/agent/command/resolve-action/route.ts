@@ -34,7 +34,7 @@ import {
 } from '@/lib/agent/llm';
 import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { executeTool, getTool, getToolsForRole, type ToolContext } from '@/lib/agent/tools';
-import { getEnabledSections } from '@/lib/sections/server';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { retrieveMemoryForTurn } from '@/lib/agent/memory-context';
@@ -104,6 +104,8 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!hasAccess) {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
+  const sectionGate = await requireSectionEnabled(req, body.pid, 'staxis');
+  if (!sectionGate.ok) return sectionGate.response;
 
   // ── Load account row + role + staff.id + department (shared with command) ─
   const ctxLoad = await loadAgentUserCtx(auth.userId, body.pid);
@@ -223,9 +225,9 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Per-hotel section gate: re-check the CURRENT section state at execution
   // time. Guards the toggle-while-pending race (a card proposed while the
   // section was on, then turned off before approval) and the resume re-plan
-  // below. Cached + fail-soft to null (⇒ every section ON). Fed into both
+  // below. Reuse the exact map read by the fail-closed gate. Fed into both
   // executeTool (via toolCtx) and getToolsForRole for the resume turn.
-  const enabledSections = await getEnabledSections(body.pid);
+  const enabledSections = sectionGate.enabledSections;
   const toolCtx: ToolContext = {
     user: userCtx,
     propertyId: body.pid,

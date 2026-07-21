@@ -23,8 +23,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { canViewFinancials, type AppRole } from '@/lib/roles';
-import { canForProperty } from '@/lib/capabilities/server';
-import { isSectionEnabledForProperty } from '@/lib/sections/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { requirePropertySectionEnabled } from '@/lib/sections/server';
 import { isUuid } from '@/lib/api-validate';
 
 export { isUuid };
@@ -101,7 +102,11 @@ export async function requireFinanceAccess(
   // 4b) Per-hotel capability gate — view_financials, honoring this hotel's
   //     Access-tab restrictions (an admin can switch a manager OFF per hotel).
   //     Admin always passes; admin-only caps are unaffected here.
-  if (!(await canForProperty({ role }, 'view_financials', pid))) {
+  const capabilityDecision = await capabilityDecisionForProperty({ role }, 'view_financials', pid);
+  if (capabilityDecision === 'unavailable') {
+    return { ok: false, response: capabilityUnavailableResponse(requestId) };
+  }
+  if (capabilityDecision === 'denied') {
     return {
       ok: false,
       response: err('forbidden: financials are restricted for your role at this property', {
@@ -130,18 +135,11 @@ export async function requireFinanceAccess(
   // 6) Section gate — checked LAST (after the caller's property access is proven,
   //    so a stranger can't probe another hotel's section state) but it OVERRIDES
   //    the capability result: if Financials is turned off for this hotel, finance
-  //    is gone for EVERY role including owner/admin. Fail-soft to ON via the
-  //    helper, so a read hiccup never hides a live section.
-  if (!(await isSectionEnabledForProperty(pid, 'financials'))) {
-    return {
-      ok: false,
-      response: err('the financials section is turned off for this hotel', {
-        requestId,
-        status: 403,
-        code: 'section_disabled',
-      }),
-    };
-  }
+  //    is gone for EVERY role including owner/admin. A section-state lookup
+  //    failure is a retryable 503; it must never bypass the money gate or leak
+  //    out as an unhandled exception.
+  const sectionGate = await requirePropertySectionEnabled(pid, 'financials', { requestId });
+  if (!sectionGate.ok) return sectionGate;
 
   return {
     ok: true,
@@ -221,16 +219,22 @@ export async function requireFinanceRollup(req: NextRequest): Promise<FinanceMul
   // section off — admins always; everyone else honors each hotel's Access-tab
   // restriction and section toggle. A role switched OFF (or a section switched
   // OFF) for Financials at a hotel can't see that hotel's money in the rollup
-  // either (no leak via aggregation). Both reads are request-cached + fail-soft.
+  // either (no leak via aggregation). A lookup outage fails the whole rollup
+  // closed with the standard retryable 503 instead of silently widening it.
   if (role !== 'admin') {
     const allowed: string[] = [];
     for (const p of propertyIds) {
-      if (
-        (await canForProperty({ role }, 'view_financials', p)) &&
-        (await isSectionEnabledForProperty(p, 'financials'))
-      ) {
-        allowed.push(p);
+      const capabilityDecision = await capabilityDecisionForProperty({ role }, 'view_financials', p);
+      if (capabilityDecision === 'unavailable') {
+        return { ok: false, response: capabilityUnavailableResponse(requestId) };
       }
+      if (capabilityDecision === 'denied') continue;
+      const sectionGate = await requirePropertySectionEnabled(p, 'financials', { requestId });
+      if (!sectionGate.ok) {
+        if (sectionGate.response.status === 403) continue;
+        return sectionGate;
+      }
+      allowed.push(p);
     }
     propertyIds = allowed;
   }

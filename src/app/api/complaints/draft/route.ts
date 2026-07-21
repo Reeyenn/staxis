@@ -15,7 +15,8 @@ import { log, getOrMintRequestId } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { canForUserId } from '@/lib/capabilities/server';
+import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { draftServiceRecovery } from '@/lib/complaints-ai';
 import { fromComplaintRow } from '@/lib/complaints-shared';
@@ -54,7 +55,15 @@ export async function POST(req: NextRequest): Promise<Response> {
 
   const hasAccess = await userHasPropertyAccess(session.userId, pid);
   if (!hasAccess) return err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
-  if (!(await canForUserId(session.userId, 'use_complaints', pid))) {
+  const capabilityDecision = await capabilityDecisionForUserId(
+    session.userId,
+    'use_complaints',
+    pid,
+  );
+  if (capabilityDecision === 'unavailable') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (capabilityDecision === 'denied') {
     return err('forbidden — complaints are restricted for your role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
   }
 

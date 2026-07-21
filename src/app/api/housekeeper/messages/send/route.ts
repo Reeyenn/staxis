@@ -10,6 +10,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
 import { gateHousekeeperRequest } from '@/lib/housekeeper-workflow/auth';
 import { getConversation, canAccessConversation, postMessage, getStaffRow, normalizeLang } from '@/lib/comms/core';
+import { requirePropertySectionEnabled } from '@/lib/sections/server';
+import { parseCommsAttachmentPath } from '@/lib/comms/attachments';
 import type { MessageType } from '@/lib/comms/types';
 
 export const runtime = 'nodejs';
@@ -24,6 +26,8 @@ const ALLOWED = new Set<MessageType>(['text', 'photo', 'voice']);
 export async function POST(req: NextRequest): Promise<Response> {
   const gate = await gateHousekeeperRequest<Body>(req, 'comms-send');
   if (!gate.ok) return gate.response;
+  const sectionGate = await requirePropertySectionEnabled(gate.pid, 'communications', gate);
+  if (!sectionGate.ok) return sectionGate.response;
   const b = gate.body;
 
   const convV = validateUuid(b.conversationId, 'conversationId');
@@ -32,8 +36,19 @@ export async function POST(req: NextRequest): Promise<Response> {
   const text = (b.body ?? '').trim();
   if (!text && !b.attachmentPath) return err('message is empty', { requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers });
   if (text.length > 4000) return err('message too long', { requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers });
-  if (b.attachmentPath && !b.attachmentPath.startsWith(`${gate.pid}/comms/`)) {
-    return err('invalid attachment path', { requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers });
+  let validatedAttachmentKind: 'photo' | 'voice' | null = null;
+  if (b.attachmentPath) {
+    const attachment = parseCommsAttachmentPath(gate.pid, b.attachmentPath);
+    if (!attachment) {
+      return err('invalid attachment path', { requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers });
+    }
+    if (attachment.conversationId !== convV.value) {
+      return err('attachment belongs to a different conversation', { requestId: gate.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: gate.headers });
+    }
+    if (b.attachmentKind && b.attachmentKind !== attachment.kind) {
+      return err('attachment kind does not match its file type', { requestId: gate.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: gate.headers });
+    }
+    validatedAttachmentKind = attachment.kind;
   }
 
   const convo = await getConversation(gate.pid, convV.value!);
@@ -52,7 +67,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     sourceLang: normalizeLang(staff?.language),
     msgType,
     attachmentPath: b.attachmentPath ?? null,
-    attachmentKind: b.attachmentKind ?? null,
+    attachmentKind: validatedAttachmentKind,
     voiceDurationMs: typeof b.voiceDurationMs === 'number' ? b.voiceDurationMs : null,
   });
   return ok({ id: msg.id, createdAt: msg.createdAt }, { requestId: gate.requestId, status: 201, headers: gate.headers });

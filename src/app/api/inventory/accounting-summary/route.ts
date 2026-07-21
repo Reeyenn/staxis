@@ -27,6 +27,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getInventoryAccountingSummary, localMonthWindowUTC } from '@/lib/db/inventory-accounting';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -47,6 +48,8 @@ export async function GET(req: NextRequest) {
   // caller never learns the shape of the query params.
   const gate = await requireFinanceAccess(req, url.searchParams.get('propertyId'));
   if (!gate.ok) return gate.response;
+  const sectionGate = await requireSectionEnabled(req, gate.pid, 'inventory');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const monthParam = url.searchParams.get('month');
   if (monthParam != null && !isMonthString(monthParam)) {

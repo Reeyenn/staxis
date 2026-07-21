@@ -18,8 +18,10 @@ describe('onboarding complete authorization', () => {
   test('uses the shared manage-team property gate', () => {
     assert.match(
       source,
-      /accountCanForProperty\(session\.userId,\s*['"]manage_team['"],\s*pidV\.value!/,
+      /accountCapabilityDecisionForProperty\(\s*session\.userId,\s*['"]manage_team['"],\s*pidV\.value!/,
     );
+    assert.match(source, /teamCapabilityDecision === ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/);
+    assert.match(source, /teamCapabilityDecision === ['"]denied['"][\s\S]*status: 403/);
   });
 
   test('does not require the caller to equal properties.owner_id', () => {
@@ -30,7 +32,9 @@ describe('onboarding complete authorization', () => {
   test('requires settings capability before changing enabled services', () => {
     assert.match(
       source,
-      /Object\.keys\(services\)\.length > 0[\s\S]*accountCanForProperty\(session\.userId,\s*['"]manage_settings['"],\s*pidV\.value!/,
+      /Object\.keys\(services\)\.length > 0[\s\S]*accountCapabilityDecisionForProperty\(\s*session\.userId,\s*['"]manage_settings['"],\s*pidV\.value!/,
     );
+    assert.match(source, /settingsCapabilityDecision === ['"]unavailable['"][\s\S]*capabilityUnavailableResponse/);
+    assert.match(source, /settingsCapabilityDecision === ['"]denied['"][\s\S]*status: 403/);
   });
 });

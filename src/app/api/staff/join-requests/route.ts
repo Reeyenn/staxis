@@ -20,10 +20,12 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { validateUuid } from '@/lib/api-validate';
 import { writeAudit } from '@/lib/audit';
 import { toStaffRow } from '@/lib/db-mappers';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,9 +51,13 @@ export async function GET(req: NextRequest) {
   const hotelIdCheck = validateUuid(searchParams.get('hotelId'), 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
-  if (!(await callerCan(caller, 'manage_team', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const { data, error: qErr } = await supabaseAdmin
     .from('join_requests')
@@ -83,9 +89,13 @@ export async function PUT(req: NextRequest) {
   if (body.decision !== 'approve' && body.decision !== 'deny') {
     return err('decision must be approve | deny', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (!(await callerCan(caller, 'manage_team', hotelId))) {
+  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
+  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
 
   const { data: jr, error: jrErr } = await supabaseAdmin
     .from('join_requests')

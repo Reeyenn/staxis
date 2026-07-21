@@ -23,7 +23,8 @@ import { ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { isValidRole, type AppRole } from '@/lib/roles';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
   EDITABLE_CLEANING_TYPES,
   CLEAN_TIME_DEFAULT_MINUTES,
@@ -105,11 +106,19 @@ export const GET = defineRoute({
 
     const rows = await fetchCleanTimeStandards(pidV.value!);
     const standards = shapeStandards(rows);
+    const capabilityDecision = await capabilityDecisionForProperty(
+      { role: account.role },
+      'manage_clean_times',
+      pidV.value!,
+    );
+    if (capabilityDecision === 'unavailable') {
+      return capabilityUnavailableResponse(ctx.requestId);
+    }
 
     return ctx.ok({
       standards,
       defaults: CLEAN_TIME_DEFAULT_MINUTES,
-      canEdit: await canForProperty({ role: account.role }, 'manage_clean_times', pidV.value!),
+      canEdit: capabilityDecision === 'allowed',
       min: MIN_CLEAN_MINUTES,
       max: MAX_CLEAN_MINUTES,
     });
@@ -135,7 +144,15 @@ export const PUT = defineRoute({
     }
     // Writes honor the per-hotel manage_clean_times capability (default: every
     // role; an admin can switch a role OFF for this hotel from the Access tab).
-    if (!(await canForProperty({ role: account.role }, 'manage_clean_times', pidV.value!))) {
+    const capabilityDecision = await capabilityDecisionForProperty(
+      { role: account.role },
+      'manage_clean_times',
+      pidV.value!,
+    );
+    if (capabilityDecision === 'unavailable') {
+      return capabilityUnavailableResponse(ctx.requestId);
+    }
+    if (capabilityDecision === 'denied') {
       return ctx.err('Only managers can change cleaning times', {
         status: 403, code: ApiErrorCode.Forbidden,
       });
