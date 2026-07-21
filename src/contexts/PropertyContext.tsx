@@ -214,6 +214,10 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     : null;
   const expectedStaffViewerKeyRef = useRef(expectedStaffViewerKey);
   expectedStaffViewerKeyRef.current = expectedStaffViewerKey;
+  const staffSubscriptionRef = useRef<{
+    viewerKey: string;
+    refresh: () => Promise<void>;
+  } | null>(null);
   useEffect(() => {
     if (!user) {
       setLoading(false);
@@ -282,13 +286,13 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   }, [userUid, userRole, userPropertyAccessKey]);
 
   // Load active property data.
-  // Staff is loaded via onSnapshot (real-time) so it updates when the network
-  // response arrives after a cache miss - preventing the intermittent "no staff"
-  // bug caused by getDocs returning an empty cached snapshot.
-  // ── Real-time staff listener ─────────────────────────────────────────────
-  // Keyed on the raw activePropertyId so staff load immediately (responsiveness).
-  // Fires with the local cache first (possibly empty), then again when the
-  // server response arrives — eliminating the cache-vs-server "no staff" race.
+  // Staff uses a safe projected snapshot rather than postgres_changes. The
+  // database intentionally denies table-wide SELECT to protect phone/payroll
+  // columns, while Realtime still authorizes against the full row. The roster
+  // helper fetches immediately, retries transient auth races, polls while the
+  // page is visible, and catches up on foreground/online.
+  // ── Staff roster snapshot listener ───────────────────────────────────────
+  // Keyed on the raw activePropertyId so staff load immediately.
   useEffect(() => {
     if (!user || !activePropertyId) {
       setStaff([]);
@@ -305,7 +309,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     setStaffLoaded(false);
     setStaffLoadFailed(false);
     setStaffViewerKey(null);
-    const unsubStaff = subscribeToStaff(user.uid, activePropertyId, staffList => {
+    const staffSubscription = subscribeToStaff(user.uid, activePropertyId, staffList => {
       if (!cancelled) {
         setStaff(staffList);
         setStaffLoaded(true);
@@ -320,9 +324,16 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         setStaffViewerKey(subscriptionViewerKey);
       }
     });
+    staffSubscriptionRef.current = {
+      viewerKey: subscriptionViewerKey,
+      refresh: staffSubscription.refresh,
+    };
     return () => {
       cancelled = true;
-      unsubStaff();
+      if (staffSubscriptionRef.current?.viewerKey === subscriptionViewerKey) {
+        staffSubscriptionRef.current = null;
+      }
+      staffSubscription.unsubscribe();
     };
     // Depend on the stable uid (not the object ref) so a token refresh doesn't
     // tear down + recreate the subscription every hour.
@@ -455,6 +466,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const refreshStaff = async () => {
     if (!user || !activePropertyId) return;
     const refreshViewerKey = `${user.uid}:${activePropertyId}`;
+    const subscription = staffSubscriptionRef.current;
+    if (subscription?.viewerKey === refreshViewerKey) {
+      await subscription.refresh();
+      return;
+    }
     const list = await getStaff(user.uid, activePropertyId);
     if (expectedStaffViewerKeyRef.current !== refreshViewerKey) return;
     setStaff(list);

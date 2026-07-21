@@ -115,6 +115,127 @@ export type ApplyPayloadReducer<T> = (
   currentRows: readonly T[],
 ) => T[] | null;
 
+export interface PollingSubscriptionOptions<T> {
+  /**
+   * Foreground refresh cadence. Values below five seconds are clamped so a
+   * caller cannot accidentally create an aggressive database loop.
+  */
+  pollIntervalMs?: number;
+  /** Skip publishing an unchanged snapshot to avoid unrelated React renders. */
+  isEqual?: (previous: T[], next: T[]) => boolean;
+}
+
+export interface PollingSubscription {
+  refresh: () => Promise<void>;
+  unsubscribe: () => void;
+}
+
+/**
+ * Snapshot subscription for a table that cannot safely use postgres_changes.
+ *
+ * Realtime currently authorizes subscriptions against the full row. A table
+ * protected by column-level SELECT grants therefore cannot open a channel
+ * without either failing authorization or granting access to private fields.
+ * This transport keeps the safe projected fetch, never overlaps requests,
+ * pauses while hidden, and catches up immediately on foreground/online.
+ */
+export function subscribeByPolling<T>(
+  doFetch: () => Promise<T[]>,
+  callback: (rows: T[]) => void,
+  onFetchError?: (error: unknown) => void,
+  options?: PollingSubscriptionOptions<T>,
+): PollingSubscription {
+  let active = true;
+  let backgroundPending = false;
+  let hasPublished = false;
+  let failureReported = false;
+  let lastRows: T[] | null = null;
+  let requestChain: Promise<void> = Promise.resolve();
+  const requestedInterval = options?.pollIntervalMs ?? 30_000;
+  const pollIntervalMs = Math.max(5_000, requestedInterval);
+
+  const runOnce = async () => {
+    if (!active) return;
+    try {
+      const rows = await doFetch();
+      if (!active) return;
+      const unchanged = lastRows !== null
+        && options?.isEqual?.(lastRows, rows) === true;
+      hasPublished = true;
+      failureReported = false;
+      if (!unchanged) {
+        lastRows = rows;
+        callback(rows);
+      }
+    } catch (error) {
+      if (!active) return;
+      if (!failureReported) {
+        failureReported = true;
+        logErr('Polling listener error', error);
+        // Once a good snapshot is visible, a temporary refresh failure must
+        // not erase it. Keep serving the last-known roster and retry later.
+        if (!hasPublished) onFetchError?.(error);
+      }
+      throw error;
+    }
+  };
+
+  // Every request, including an explicit post-mutation refresh, joins the
+  // same chain. A poll that started before an edit therefore finishes before
+  // the edit's refresh begins and can never overwrite the newer snapshot.
+  const refresh = (): Promise<void> => {
+    if (!active) return Promise.resolve();
+    const request = requestChain.then(runOnce);
+    requestChain = request.catch(() => undefined);
+    return request;
+  };
+
+  const backgroundRefresh = () => {
+    if (!active || backgroundPending) return;
+    backgroundPending = true;
+    void refresh()
+      .catch(() => undefined)
+      .finally(() => { backgroundPending = false; });
+  };
+
+  const onPoll = () => {
+    const visible = typeof document === 'undefined' || !document.hidden;
+    const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+    if (visible && online) backgroundRefresh();
+  };
+  const onVisibility = () => {
+    const online = typeof navigator === 'undefined' || navigator.onLine !== false;
+    if (typeof document !== 'undefined' && !document.hidden && online) backgroundRefresh();
+  };
+  const onOnline = () => {
+    if (typeof document === 'undefined' || !document.hidden) backgroundRefresh();
+  };
+
+  backgroundRefresh();
+  const pollTimer = setInterval(onPoll, pollIntervalMs);
+  if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', onVisibility);
+  }
+  if (typeof window !== 'undefined') {
+    window.addEventListener('online', onOnline);
+  }
+
+  const unsubscribe = () => {
+    active = false;
+    backgroundPending = false;
+    lastRows = null;
+    clearInterval(pollTimer);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibility);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('online', onOnline);
+    }
+  };
+
+  return { refresh, unsubscribe };
+}
+
 /**
  * Build an applyPayload reducer for the common "upsert by id, optionally
  * filtered by slice" pattern. Three of the hot subscriptions (rooms,

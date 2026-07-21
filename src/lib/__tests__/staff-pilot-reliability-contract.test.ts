@@ -47,6 +47,28 @@ describe('staff pilot reliability contracts', () => {
     assert.doesNotMatch(route, /supabaseAdmin|\.from\(['"]staff['"]\)/);
   });
 
+  test('private roster refreshes without requesting restricted Realtime columns', () => {
+    const staffDb = source('src/lib/db/staff.ts');
+    const commonDb = source('src/lib/db/_common.ts');
+    assert.match(staffDb, /STAFF_READ_RETRY_DELAYS_MS = \[200, 500, 1_000\]/);
+    assert.match(staffDb, /isTransientStaffReadError[\s\S]*42501[\s\S]*pgrst301/);
+    assert.match(staffDb, /readStaffRosterWithRetry\(pid, from, to\)/);
+    assert.match(staffDb, /subscribeByPolling<StaffMember>[\s\S]*pollIntervalMs: STAFF_ROSTER_POLL_INTERVAL_MS/);
+    assert.match(staffDb, /isEqual: \(previous, next\) => JSON\.stringify\(previous\) === JSON\.stringify\(next\)/);
+    assert.match(commonDb, /export function subscribeByPolling<T>/);
+    assert.match(commonDb, /requestChain\.then\(runOnce\)/);
+    assert.match(commonDb, /return \{ refresh, unsubscribe \}/);
+    assert.match(commonDb, /if \(!hasPublished\) onFetchError\?\.\(error\)/);
+    assert.match(commonDb, /navigator\.onLine !== false/);
+    assert.match(commonDb, /setInterval\(onPoll, pollIntervalMs\)/);
+    assert.match(commonDb, /addEventListener\('visibilitychange', onVisibility\)/);
+    assert.match(commonDb, /addEventListener\('online', onOnline\)/);
+    assert.match(commonDb, /clearInterval\(pollTimer\)/);
+    const propertyContext = source('src/contexts/PropertyContext.tsx');
+    assert.match(propertyContext, /staffSubscriptionRef\.current = \{[\s\S]*refresh: staffSubscription\.refresh/);
+    assert.match(propertyContext, /subscription\?\.viewerKey === refreshViewerKey[\s\S]*await subscription\.refresh\(\)/);
+  });
+
   test('every public housekeeper/laundry action carries the bearer-token gate', () => {
     const runner = source('src/lib/housekeeper-workflow/room-action-runner.ts');
     const gate = source('src/lib/housekeeper-workflow/auth.ts');

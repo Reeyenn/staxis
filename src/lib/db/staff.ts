@@ -10,7 +10,13 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { StaffMember } from '@/types';
-import { supabase, logErr, subscribeTable, asRecordRows } from './_common';
+import {
+  supabase,
+  logErr,
+  subscribeByPolling,
+  asRecordRows,
+  type PollingSubscription,
+} from './_common';
 import { toStaffRow, fromStaffRow } from '../db-mappers';
 
 /** Default upper bound on staff rows returned by listing helpers. */
@@ -39,6 +45,53 @@ export const STAFF_COLS =
   'scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, ' +
   'days_worked_this_week, vacation_dates, is_active, schedule_priority, ' +
   'last_paired_at';
+
+const STAFF_ROSTER_POLL_INTERVAL_MS = 30_000;
+const STAFF_READ_RETRY_DELAYS_MS = [200, 500, 1_000] as const;
+
+function staffReadErrorText(error: unknown): string {
+  if (error instanceof Error) return `${error.name} ${error.message}`.toLowerCase();
+  if (error && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    return [record.code, record.message, record.details, record.hint]
+      .filter((value): value is string => typeof value === 'string')
+      .join(' ')
+      .toLowerCase();
+  }
+  return String(error).toLowerCase();
+}
+
+function isTransientStaffReadError(error: unknown): boolean {
+  const text = staffReadErrorText(error);
+  return text.includes('42501')
+    || text.includes('pgrst301')
+    || text.includes('permission')
+    || text.includes('unauthorized')
+    || text.includes('unauthenticated')
+    || text.includes('jwt');
+}
+
+async function readStaffRosterWithRetry(
+  pid: string,
+  from: number,
+  to: number,
+): Promise<StaffMember[]> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      const { data, error } = await supabase
+        .from('staff').select(STAFF_COLS)
+        .eq('property_id', pid)
+        .order('name', { ascending: true })
+        .range(from, to);
+      if (error) throw error;
+      return asRecordRows(data).map(fromStaffRow);
+    } catch (error) {
+      const retryDelay = STAFF_READ_RETRY_DELAYS_MS[attempt];
+      if (retryDelay === undefined || !isTransientStaffReadError(error)) throw error;
+      await new Promise<void>((resolve) => setTimeout(resolve, retryDelay));
+    }
+  }
+}
 
 // Defense for the WRITE side of the same leak. The mapper faithfully maps
 // phone/hourlyWage to database columns, but the anon client must never carry
@@ -69,13 +122,12 @@ export async function getStaff(
   _uid: string, pid: string, opts?: StaffListOpts,
 ): Promise<StaffMember[]> {
   const { from, to } = clampedRange(opts);
-  const { data, error } = await supabase
-    .from('staff').select(STAFF_COLS)
-    .eq('property_id', pid)
-    .order('name', { ascending: true })
-    .range(from, to);
-  if (error) { logErr('getStaff', error); throw error; }
-  return asRecordRows(data).map(fromStaffRow);
+  try {
+    return await readStaffRosterWithRetry(pid, from, to);
+  } catch (error) {
+    logErr('getStaff', error);
+    throw error;
+  }
 }
 
 export function subscribeToStaff(
@@ -83,23 +135,22 @@ export function subscribeToStaff(
   callback: (staff: StaffMember[]) => void,
   opts?: StaffListOpts,
   onFetchError?: (error: unknown) => void,
-): () => void {
+): PollingSubscription {
   const { from, to } = clampedRange(opts);
-  return subscribeTable<StaffMember>(
-    `staff:${pid}`, 'staff', `property_id=eq.${pid}`,
-    async () => {
-      const { data, error } = await supabase
-        .from('staff').select(STAFF_COLS)
-        .eq('property_id', pid)
-        .order('name', { ascending: true })
-        .range(from, to);
-      if (error) throw error;
-      return asRecordRows(data).map(fromStaffRow);
-    },
+  return subscribeByPolling<StaffMember>(
+    () => readStaffRosterWithRetry(pid, from, to),
     callback,
-    undefined,
-    undefined,
     onFetchError,
+    {
+      // Migration 0332 intentionally denies table-wide SELECT so phone,
+      // payroll, and auth-link columns never reach a hotel browser. The
+      // currently shipped realtime-js client cannot request a safe column
+      // projection for postgres_changes, so a Realtime channel fails with
+      // 42501. A bounded snapshot poll preserves that database boundary and
+      // still keeps concurrent roster edits fresh during the pilot.
+      pollIntervalMs: STAFF_ROSTER_POLL_INTERVAL_MS,
+      isEqual: (previous, next) => JSON.stringify(previous) === JSON.stringify(next),
+    },
   );
 }
 
