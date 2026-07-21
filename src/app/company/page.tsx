@@ -314,6 +314,7 @@ function CompanyAccessContent() {
   const [peopleStatusFilter, setPeopleStatusFilter] = React.useState<PeopleStatusFilter>('all');
   const [selectedReceipt, setSelectedReceipt] = React.useState<EffectiveAccessReceipt | null>(null);
   const [inviteOpen, setInviteOpen] = React.useState(false);
+  const [teamInviteHotelId, setTeamInviteHotelId] = React.useState<string | null>(null);
   const [requestOpen, setRequestOpen] = React.useState(false);
   const [reviewRequest, setReviewRequest] = React.useState<CompanyAccessRequest | null>(null);
   const [lifecycleAction, setLifecycleAction] = React.useState<CompanyLifecycleAction | null>(null);
@@ -326,6 +327,7 @@ function CompanyAccessContent() {
   const userRole = user?.role ?? null;
   const activePropertyId = activeProperty?.id ?? null;
   const adminPreview = userRole === 'admin';
+  const canManageTeam = can('manage_team');
   const staffBelongsToCurrentViewer = Boolean(user?.uid && activePropertyId
     && staffViewerKey === `${user.uid}:${activePropertyId}`);
   const currentStaff = staffBelongsToCurrentViewer
@@ -360,6 +362,7 @@ function CompanyAccessContent() {
     setDataViewerKey(null);
     setSelectedReceipt(null);
     setInviteOpen(false);
+    setTeamInviteHotelId(null);
     setRequestOpen(false);
     setReviewRequest(null);
     setLifecycleAction(null);
@@ -474,6 +477,7 @@ function CompanyAccessContent() {
     setQuery('');
     setHotelStatusFilter('all');
     setPeopleStatusFilter('all');
+    if (next !== 'people') setTeamInviteHotelId(null);
     if (requested !== null && !isTabId(requested)) {
       const params = new URLSearchParams(searchParams.toString());
       params.set('tab', 'overview');
@@ -495,6 +499,7 @@ function CompanyAccessContent() {
     setQuery('');
     setHotelStatusFilter('all');
     setPeopleStatusFilter('all');
+    if (next !== 'people') setTeamInviteHotelId(null);
     const params = new URLSearchParams(searchParams.toString());
     params.set('tab', next);
     router.push(`${pathname}?${params.toString()}`, { scroll: false });
@@ -532,6 +537,11 @@ function CompanyAccessContent() {
     && adminViewerContext
     && adminDataMatchesSelection,
   );
+  const hotelTeamLocked = Boolean(
+    showLoading
+    || !currentData
+    || ((adminPreview || resolved.viewerContext?.readOnly === true) && !adminToolsActive),
+  );
   const workspaceTitle = adminPreview
     ? (adminViewerContext?.scope === 'organization'
         ? localized(lang, 'Company Hub', 'Centro de empresa')
@@ -552,6 +562,12 @@ function CompanyAccessContent() {
     : null;
 
   React.useEffect(() => {
+    if (tab !== 'people' || !canManageTeam || hotelTeamLocked) {
+      setTeamInviteHotelId(null);
+    }
+  }, [canManageTeam, hotelTeamLocked, tab]);
+
+  React.useEffect(() => {
     if (!focusPreviewAfterRetryRef.current || showLoading) return;
     focusPreviewAfterRetryRef.current = false;
     if (adminViewerContext) {
@@ -565,45 +581,72 @@ function CompanyAccessContent() {
     <AppLayout>
       <div className={styles.page}>
         <header className={styles.hero}>
-          <div className={styles.heroMark} aria-hidden="true">
-            <Building2 size={23} strokeWidth={1.8} />
-          </div>
-          <div className={styles.heroCopy}>
-            <div className={styles.eyebrow}>
-              {adminPreview
-                ? adminToolsActive
-                  ? localized(lang, 'Staxis admin view', 'Vista de administrador de Staxis')
-                  : localized(lang, 'Staxis hotel view', 'Vista del hotel de Staxis')
-                : localized(lang, 'Company workspace', 'Espacio de empresa')}
+          <div className={styles.heroIdentity}>
+            <div className={styles.heroMark} aria-hidden="true">
+              <Building2 size={23} strokeWidth={1.8} />
             </div>
-            <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
-            <p>
-              {adminPreview
-                ? adminToolsActive
-                  ? localized(
-                      lang,
-                      'Manage this hotel without leaving My Hotel.',
-                      'Administra este hotel sin salir de Mi hotel.',
-                    )
+            <div className={styles.heroCopy}>
+              <div className={styles.eyebrow}>
+                {adminPreview
+                  ? adminToolsActive
+                    ? localized(lang, 'Staxis admin view', 'Vista de administrador de Staxis')
+                    : localized(lang, 'Staxis hotel view', 'Vista del hotel de Staxis')
+                  : localized(lang, 'Company workspace', 'Espacio de empresa')}
+              </div>
+              <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
+              <p>
+                {adminPreview
+                  ? adminToolsActive
+                    ? localized(
+                        lang,
+                        'Manage this hotel without leaving My Hotel.',
+                        'Administra este hotel sin salir de Mi hotel.',
+                      )
+                    : localized(
+                        lang,
+                        'Review this hotel in read-only mode.',
+                        'Revisa este hotel en modo de solo lectura.',
+                      )
                   : localized(
                       lang,
-                      'Review this hotel in read-only mode.',
-                      'Revisa este hotel en modo de solo lectura.',
-                    )
-                : localized(
-                    lang,
-                    'See your hotels, team, and exactly why you have access.',
-                    'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
-                  )}
-            </p>
+                      'See your hotels, team, and exactly why you have access.',
+                      'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
+                    )}
+              </p>
+            </div>
           </div>
-          <div className={styles.heroActions}>
-            {!showLoading && contextLabel ? (
+
+          <div className={styles.heroHotelSlot}>
+            {contextProperties.length > 0 ? (
+              <label className={styles.heroHotelSwitcher}>
+                <span className={styles.visuallyHidden}>
+                  {localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
+                </span>
+                <MapPinned className={styles.heroHotelSwitcherIcon} size={16} aria-hidden="true" />
+                <select
+                  value={activeProperty?.id ?? ''}
+                  onChange={(event) => {
+                    setTeamInviteHotelId(null);
+                    setActivePropertyId(event.target.value);
+                  }}
+                  aria-label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
+                >
+                  {!activeProperty ? (
+                    <option value="" disabled>{localized(lang, 'Choose hotel', 'Elige un hotel')}</option>
+                  ) : null}
+                  {contextProperties.map((hotel) => <option key={hotel.id} value={hotel.id}>{hotel.name}</option>)}
+                </select>
+                <ChevronDown className={styles.heroHotelSwitcherChevron} size={16} aria-hidden="true" />
+              </label>
+            ) : !showLoading && contextLabel ? (
               <div className={styles.contextBadge}>
                 <MapPinned size={15} aria-hidden="true" />
                 <span>{contextLabel}</span>
               </div>
             ) : null}
+          </div>
+
+          <div className={styles.heroActions}>
             {adminPreview ? (
               <label className={styles.adminViewSwitch}>
                 <span className={styles.adminViewSwitchLabel}>
@@ -695,24 +738,20 @@ function CompanyAccessContent() {
                   );
                 })}
               </nav>
-              {contextProperties.length > 0 ? (
-                <label className={styles.hotelSwitcher}>
-                  <span className={styles.visuallyHidden}>
-                    {localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
-                  </span>
-                  <Hotel className={styles.hotelSwitcherIcon} size={16} strokeWidth={1.9} aria-hidden="true" />
-                  <select
-                    value={activeProperty?.id ?? ''}
-                    onChange={(event) => setActivePropertyId(event.target.value)}
-                    aria-label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
-                  >
-                    {!activeProperty ? (
-                      <option value="" disabled>{localized(lang, 'Choose hotel', 'Elige un hotel')}</option>
-                    ) : null}
-                    {contextProperties.map((hotel) => <option key={hotel.id} value={hotel.id}>{hotel.name}</option>)}
-                  </select>
-                  <ChevronDown className={styles.hotelSwitcherChevron} size={16} aria-hidden="true" />
-                </label>
+              {tab === 'people' && activeProperty && canManageTeam ? (
+                <button
+                  type="button"
+                  className={styles.teamInviteButton}
+                  onClick={() => setTeamInviteHotelId(activeProperty.id)}
+                  disabled={hotelTeamLocked}
+                  aria-haspopup="dialog"
+                  title={hotelTeamLocked
+                    ? localized(lang, 'Unavailable in read-only preview', 'No disponible en la vista de solo lectura')
+                    : undefined}
+                >
+                  <UserPlus size={16} aria-hidden="true" />
+                  {localized(lang, 'Invite staff', 'Invitar personal')}
+                </button>
               ) : null}
             </div>
 
@@ -758,7 +797,9 @@ function CompanyAccessContent() {
                   currentAccountId={user.accountId}
                   activeProperty={activeProperty}
                   adminToolsEnabled={adminToolsActive}
-                  canManageTeam={can('manage_team')}
+                  canManageTeam={canManageTeam}
+                  inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
+                  onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
                   onChanged={refreshStaff}
                   query={query}
                   onQueryChange={setQuery}
@@ -967,7 +1008,7 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
   );
 }
 
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, inviteDialogOpen, onInviteDialogOpenChange, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -977,6 +1018,8 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   activeProperty: Property | null;
   adminToolsEnabled: boolean;
   canManageTeam: boolean;
+  inviteDialogOpen: boolean;
+  onInviteDialogOpenChange: (open: boolean) => void;
   onChanged: () => void | Promise<void>;
   query: string;
   onQueryChange: (value: string) => void;
@@ -1017,6 +1060,8 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           readOnly={Boolean(data.viewerContext?.readOnly) && !adminToolsEnabled}
           adminPreview={data.viewerContext?.kind === 'staxis_admin_preview'}
           allowAdminActions={adminToolsEnabled}
+          inviteDialogOpen={inviteDialogOpen}
+          onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}
           onChanged={onChanged}
           onLinkageChange={setLinkage}

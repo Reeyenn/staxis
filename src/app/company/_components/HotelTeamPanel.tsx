@@ -90,6 +90,8 @@ export interface HotelTeamPanelProps {
   /** Unlocks only the separately authorized hotel-team routes while keeping
    * the admin preview DTO and company-access mutations read-only. */
   allowAdminActions?: boolean;
+  inviteDialogOpen: boolean;
+  onInviteDialogOpenChange: (open: boolean) => void;
   staffProfiles?: StaffMember[];
   onChanged?: () => void | Promise<void>;
   /** Tri-state result prevents the parent from calling staff "unlinked" before this request succeeds. */
@@ -261,6 +263,8 @@ export function HotelTeamPanel({
   readOnly = false,
   adminPreview = false,
   allowAdminActions = false,
+  inviteDialogOpen,
+  onInviteDialogOpenChange,
   staffProfiles = [],
   onChanged,
   onLinkageChange,
@@ -277,8 +281,6 @@ export function HotelTeamPanel({
     request: HotelJoinRequest;
     decision: 'approve' | 'deny';
   } | null>(null);
-  const [inviteOpen, setInviteOpen] = React.useState(false);
-
   const teamAbortRef = React.useRef<AbortController | null>(null);
   const requestAbortRef = React.useRef<AbortController | null>(null);
   const teamSequenceRef = React.useRef(0);
@@ -434,34 +436,12 @@ export function HotelTeamPanel({
   }
 
   return (
-    <section className={styles.root} aria-labelledby="hotel-team-title">
-      <div className={styles.headingRow}>
-        <div className={styles.headingCopy}>
-          <span>{copy(lang, 'Hotel accounts', 'Cuentas del hotel')}</span>
-          <h2 id="hotel-team-title">{copy(lang, 'Team logins and invitations', 'Accesos e invitaciones del equipo')}</h2>
-          <p>{copy(
-            lang,
-            `Manage only the accounts connected to ${hotelName}. Company access stays separate.`,
-            `Administra solo las cuentas conectadas a ${hotelName}. El acceso de la empresa permanece separado.`,
-          )}</p>
-        </div>
-        <button
-          type="button"
-          className={styles.primaryButton}
-          onClick={() => setInviteOpen(true)}
-          disabled={locked}
-          title={locked ? copy(lang, 'Unavailable in read-only preview', 'No disponible en la vista de solo lectura') : undefined}
-        >
-          <UserPlus size={16} aria-hidden="true" />
-          {copy(lang, 'Invite staff', 'Invitar personal')}
-        </button>
-      </div>
-
+    <div className={styles.root}>
       <section className={styles.subsection} aria-labelledby="team-members-title">
         <div className={styles.subheading}>
           <div>
             <span>{copy(lang, 'Access roster', 'Registro de acceso')}</span>
-            <h3 id="team-members-title">{copy(lang, 'Hotel team accounts', 'Cuentas del equipo del hotel')}</h3>
+            <h2 id="team-members-title">{copy(lang, 'Hotel team accounts', 'Cuentas del equipo del hotel')}</h2>
           </div>
           {!teamLoading && !teamError ? <strong>{team.length}</strong> : null}
         </div>
@@ -600,7 +580,7 @@ export function HotelTeamPanel({
             <h3>{copy(lang, 'No hotel accounts yet', 'Aún no hay cuentas del hotel')}</h3>
             <p>{copy(lang, 'Invite staff to create the first login for this hotel.', 'Invita al personal para crear el primer acceso de este hotel.')}</p>
             {!locked ? (
-              <button type="button" className={styles.secondaryButton} onClick={() => setInviteOpen(true)}>
+              <button type="button" className={styles.secondaryButton} onClick={() => onInviteDialogOpenChange(true)}>
                 <UserPlus size={16} aria-hidden="true" />{copy(lang, 'Invite staff', 'Invitar personal')}
               </button>
             ) : null}
@@ -639,13 +619,13 @@ export function HotelTeamPanel({
             }}
           />
         ) : null}
-        {inviteOpen ? (
+        {inviteDialogOpen ? (
           <LazyInviteDialog
             hotelId={hotelId}
             hotelName={hotelName}
             lang={lang}
             canInviteManager={currentUser.role === 'admin' || currentUser.role === 'owner'}
-            onClose={() => setInviteOpen(false)}
+            onClose={() => onInviteDialogOpenChange(false)}
             onChanged={() => changedRef.current?.()}
           />
         ) : null}
@@ -664,6 +644,6 @@ export function HotelTeamPanel({
           />
         ) : null}
       </React.Suspense>
-    </section>
+    </div>
   );
 }

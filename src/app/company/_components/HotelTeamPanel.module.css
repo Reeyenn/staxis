@@ -34,40 +34,12 @@
   gap: 24px;
 }
 
-.headingRow {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.headingCopy {
-  max-width: 680px;
-}
-
-.headingCopy > span,
 .subheading > div > span,
 .dialogHeader > div > span {
   color: var(--team-muted);
   font: 600 9.5px/14px var(--font-geist-mono), ui-monospace, monospace;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-}
-
-.headingCopy h2 {
-  margin: 3px 0 0;
-  color: var(--team-ink);
-  font-size: 18px;
-  font-weight: 650;
-  line-height: 24px;
-  letter-spacing: -0.018em;
-}
-
-.headingCopy p {
-  margin: 4px 0 0;
-  color: var(--team-ink-2);
-  font-size: 12.5px;
-  line-height: 19px;
 }
 
 .primaryButton,
@@ -228,7 +200,7 @@
   gap: 14px;
 }
 
-.subheading h3 {
+.subheading h2 {
   margin: 2px 0 0;
   color: var(--team-ink);
   font-size: 14.5px;
@@ -1371,15 +1343,6 @@
 }
 
 @media (max-width: 700px) {
-  .headingRow {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .headingRow > .primaryButton {
-    align-self: flex-start;
-  }
-
   .codeLayout {
     grid-template-columns: 1fr;
   }
@@ -1412,10 +1375,6 @@
 @media (max-width: 560px) {
   .root {
     gap: 20px;
-  }
-
-  .headingRow > .primaryButton {
-    width: 100%;
   }
 
   .teamRow,
@@ -1560,10 +1519,6 @@
 @media (max-width: 340px) {
   .root {
     min-width: 0;
-  }
-
-  .headingCopy h2 {
-    font-size: 17px;
   }
 
   .avatar,

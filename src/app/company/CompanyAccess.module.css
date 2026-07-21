@@ -28,7 +28,7 @@
 
 .hero {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
   align-items: center;
   gap: 16px;
   min-height: 88px;
@@ -39,6 +39,13 @@
   box-shadow: 0 18px 42px -34px rgba(31, 42, 32, 0.42);
   backdrop-filter: blur(18px) saturate(160%);
   -webkit-backdrop-filter: blur(18px) saturate(160%);
+}
+
+.heroIdentity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 16px;
 }
 
 .heroMark,
@@ -96,9 +103,93 @@
 
 .heroActions {
   display: flex;
+  width: 100%;
   align-items: center;
   justify-content: flex-end;
+  justify-self: end;
   gap: 10px;
+}
+
+.heroHotelSlot {
+  display: flex;
+  min-width: 0;
+  justify-content: center;
+  justify-self: center;
+}
+
+.heroHotelSwitcher {
+  position: relative;
+  display: flex;
+  width: 228px;
+  max-width: 100%;
+  min-height: 44px;
+  align-items: center;
+  border-radius: 999px;
+  color: var(--company-sage);
+}
+
+.heroHotelSwitcher select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 40px;
+  overflow: hidden;
+  border: 1px solid rgba(92, 122, 96, 0.16);
+  border-radius: 999px;
+  outline: 0;
+  appearance: none;
+  color: var(--company-sage);
+  background: var(--company-sage-dim);
+  cursor: pointer;
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 18px;
+  text-align: center;
+  text-align-last: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: background-color 200ms cubic-bezier(0.2, 0, 0, 1), border-color 200ms cubic-bezier(0.2, 0, 0, 1), box-shadow 200ms cubic-bezier(0.2, 0, 0, 1), transform 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.heroHotelSwitcher:hover select:not(:disabled) {
+  border-color: rgba(92, 122, 96, 0.3);
+  background: rgba(92, 122, 96, 0.17);
+}
+
+.heroHotelSwitcher select:focus-visible {
+  outline: 2px solid var(--company-sage);
+  outline-offset: 2px;
+  border-color: rgba(62, 92, 72, 0.38);
+}
+
+.heroHotelSwitcher select:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.heroHotelSwitcher select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.heroHotelSwitcherIcon,
+.heroHotelSwitcherChevron {
+  position: absolute;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.heroHotelSwitcherIcon {
+  left: 15px;
+}
+
+.heroHotelSwitcherChevron {
+  right: 15px;
+  transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.heroHotelSwitcher:focus-within .heroHotelSwitcherChevron {
+  transform: rotate(180deg);
 }
 
 .contextBadge {
@@ -391,7 +482,7 @@
   transition: color 200ms cubic-bezier(0.2, 0, 0, 1), background-color 200ms cubic-bezier(0.2, 0, 0, 1), box-shadow 200ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-.tabs button:hover {
+.tabs button:hover:not(:disabled) {
   color: var(--company-ink);
   background: rgba(31, 35, 28, 0.045);
 }
@@ -407,74 +498,30 @@
   transform: scale(0.99);
 }
 
-.hotelSwitcher {
-  position: relative;
-  display: flex;
+.tabs .teamInviteButton {
   flex: 1 0 172px;
-  align-items: center;
   min-width: 172px;
   min-height: 42px;
-  border-radius: 10px;
-  color: var(--company-sage);
+  padding: 0 17px;
+  border: 1px solid var(--company-sage);
+  color: #ffffff;
+  background: var(--company-sage);
+  box-shadow: 0 8px 18px -12px rgba(62, 92, 72, 0.8);
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 18px;
 }
 
-.hotelSwitcher select {
-  width: 100%;
-  height: 100%;
-  min-height: 42px;
-  padding: 0 36px 0 38px;
-  overflow: hidden;
-  border: 0;
-  border-radius: 10px;
-  outline: 0;
-  appearance: none;
-  color: var(--company-ink);
-  background: rgba(31, 35, 28, 0.045);
-  cursor: pointer;
-  font: 600 12.5px/18px var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: color 200ms cubic-bezier(0.2, 0, 0, 1), background-color 200ms cubic-bezier(0.2, 0, 0, 1), box-shadow 200ms cubic-bezier(0.2, 0, 0, 1);
+.tabs .teamInviteButton:hover:not(:disabled) {
+  color: #ffffff;
+  background: #356b4c;
 }
 
-.hotelSwitcher:hover select {
-  color: var(--company-sage);
-  background: var(--company-sage-dim);
-}
-
-.hotelSwitcher select:focus-visible {
-  outline: 2px solid var(--company-sage);
-  outline-offset: 2px;
-  background: var(--company-sage-dim);
-}
-
-.hotelSwitcher select:active {
-  transform: scale(0.99);
-}
-
-.hotelSwitcher select:disabled {
-  opacity: 0.45;
+.tabs .teamInviteButton:disabled {
+  opacity: 0.42;
   cursor: not-allowed;
-}
-
-.hotelSwitcherIcon,
-.hotelSwitcherChevron {
-  position: absolute;
-  z-index: 1;
-  pointer-events: none;
-}
-
-.hotelSwitcherIcon {
-  left: 14px;
-}
-
-.hotelSwitcherChevron {
-  right: 13px;
-  transition: transform 200ms cubic-bezier(0.2, 0, 0, 1);
-}
-
-.hotelSwitcher:focus-within .hotelSwitcherChevron {
-  transform: rotate(180deg);
+  box-shadow: none;
 }
 
 .tabs button:focus-visible,
@@ -1969,21 +2016,32 @@
   }
 
   .hero {
-    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .heroIdentity {
+    grid-column: 1 / -1;
+  }
+
+  .heroHotelSlot {
+    grid-column: 2;
+    width: min(240px, 100%);
+    justify-self: center;
+  }
+
+  .heroHotelSwitcher {
+    width: 100%;
   }
 
   .heroActions {
-    grid-column: 1 / -1;
+    grid-column: 3;
     width: 100%;
-    justify-content: space-between;
-    flex-wrap: wrap;
   }
 
   .contextBadge {
-    flex: 1;
+    width: 100%;
     min-width: 0;
     max-width: none;
-    justify-self: start;
   }
 
   .adminViewSwitch {
@@ -2043,9 +2101,29 @@
   }
 
   .hero {
+    grid-template-columns: minmax(0, 1fr);
     min-height: 0;
     padding: 15px;
     border-radius: 16px;
+  }
+
+  .heroIdentity,
+  .heroHotelSlot,
+  .heroActions {
+    grid-column: 1;
+  }
+
+  .heroHotelSlot {
+    width: 100%;
+  }
+
+  .heroHotelSwitcher {
+    width: 100%;
+  }
+
+  .heroActions {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .heroMark {
@@ -2106,8 +2184,9 @@
     flex-basis: 404px;
   }
 
-  .hotelSwitcher,
-  .hotelSwitcher select {
+  .heroHotelSwitcher,
+  .heroHotelSwitcher select,
+  .tabs .teamInviteButton {
     min-height: 44px;
   }
 
@@ -2276,8 +2355,8 @@
   }
 
   .tabs button,
-  .hotelSwitcher select,
-  .hotelSwitcherChevron,
+  .heroHotelSwitcher select,
+  .heroHotelSwitcherChevron,
   .adminViewSwitchTrack,
   .adminViewSwitchHandle,
   .primaryButton,
@@ -2289,7 +2368,7 @@
   }
 
   .tabs button:active,
-  .hotelSwitcher select:active,
+  .heroHotelSwitcher select:active,
   .primaryButton:active,
   .secondaryButton:active,
   .adminPreviewErrorActions button:active {

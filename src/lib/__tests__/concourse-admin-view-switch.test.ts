@@ -49,6 +49,9 @@ describe('in-place admin hotel view', () => {
     assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminToolsEnabled \? ['"]admin['"] : ['"]preview['"]\}`\}/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
     assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
+    assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(\(adminPreview \|\| resolved\.viewerContext\?\.readOnly === true\) && !adminToolsActive\)/);
+    assert.match(company, /className=\{styles\.teamInviteButton\}[\s\S]*?disabled=\{hotelTeamLocked\}/);
+    assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
     assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
     assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
   });
@@ -69,7 +72,11 @@ describe('in-place admin hotel view', () => {
     assert.match(companyCss, /\.adminViewSwitchTrack \{[\s\S]*?width: 48px;[\s\S]*?height: 28px;/);
     assert.match(companyCss, /\.adminViewSwitch input:focus-visible \+ \.adminViewSwitchTrack \{[\s\S]*?outline:/);
     const mobileRules = companyCss.slice(companyCss.indexOf('@media (max-width: 800px)'));
-    assert.match(mobileRules, /\.heroActions \{[\s\S]*?grid-column: 1 \/ -1;[\s\S]*?justify-content: space-between;/);
+    assert.match(mobileRules, /\.hero \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto minmax\(0, 1fr\);/);
+    assert.match(mobileRules, /\.heroHotelSlot \{[\s\S]*?grid-column: 2;[\s\S]*?width: min\(240px, 100%\);[\s\S]*?justify-self: center;/);
+    assert.match(mobileRules, /\.heroActions \{[\s\S]*?grid-column: 3;[\s\S]*?width: 100%;/);
+    const phoneRules = companyCss.slice(companyCss.indexOf('@media (max-width: 600px)'));
+    assert.match(phoneRules, /\.heroIdentity,[\s\S]*?\.heroHotelSlot,[\s\S]*?\.heroActions \{\s*grid-column: 1;/);
     const reducedMotion = companyCss.slice(companyCss.indexOf('@media (prefers-reduced-motion: reduce)'));
     assert.match(reducedMotion, /\.adminViewSwitchTrack,[\s\S]*?\.adminViewSwitchHandle,/);
   });
