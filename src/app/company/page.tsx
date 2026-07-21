@@ -62,6 +62,7 @@ import {
   HotelTeamPanel,
   type HotelTeamLinkageState,
 } from './_components/HotelTeamPanel';
+import { HotelSwitcher } from './_components/HotelSwitcher';
 
 type TabId = 'overview' | 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
@@ -618,26 +619,17 @@ function CompanyAccessContent() {
 
           <div className={styles.heroHotelSlot}>
             {contextProperties.length > 0 ? (
-              <label className={styles.heroHotelSwitcher}>
-                <span className={styles.visuallyHidden}>
-                  {localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
-                </span>
-                <MapPinned className={styles.heroHotelSwitcherIcon} size={16} aria-hidden="true" />
-                <select
-                  value={activeProperty?.id ?? ''}
-                  onChange={(event) => {
-                    setTeamInviteHotelId(null);
-                    setActivePropertyId(event.target.value);
-                  }}
-                  aria-label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
-                >
-                  {!activeProperty ? (
-                    <option value="" disabled>{localized(lang, 'Choose hotel', 'Elige un hotel')}</option>
-                  ) : null}
-                  {contextProperties.map((hotel) => <option key={hotel.id} value={hotel.id}>{hotel.name}</option>)}
-                </select>
-                <ChevronDown className={styles.heroHotelSwitcherChevron} size={16} aria-hidden="true" />
-              </label>
+              <HotelSwitcher
+                className={styles.heroHotelSwitcher}
+                hotels={contextProperties}
+                activeHotelId={activeProperty?.id ?? null}
+                label={localized(lang, 'Choose hotel to manage', 'Elige el hotel que deseas administrar')}
+                placeholder={localized(lang, 'Choose hotel', 'Elige un hotel')}
+                onSelect={(hotelId) => {
+                  setTeamInviteHotelId(null);
+                  setActivePropertyId(hotelId);
+                }}
+              />
             ) : !showLoading && contextLabel ? (
               <div className={styles.contextBadge}>
                 <MapPinned size={15} aria-hidden="true" />

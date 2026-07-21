@@ -17,6 +17,8 @@ const invitation = source('src', 'app', 'company-invite', '[token]', 'page.tsx')
 const authShell = source('src', 'components', 'AuthShell.tsx');
 const company = source('src', 'app', 'company', 'page.tsx');
 const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
+const hotelSwitcher = source('src', 'app', 'company', '_components', 'HotelSwitcher.tsx');
+const hotelSwitcherCss = source('src', 'app', 'company', '_components', 'HotelSwitcher.module.css');
 const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
 const hotelTeamDialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
 const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
@@ -161,9 +163,9 @@ describe('My Hotel account and team integration', () => {
   test('keeps the selected tab in the URL and selects an exact hotel', () => {
     assert.match(company, /useSearchParams\(\)/);
     assert.match(company, /params\.set\(['"]tab['"], next\)/);
-    assert.match(company, /value=\{activeProperty\?\.id \?\? ['"]['"]\}/);
-    assert.match(company, /onChange=\{\(event\) => \{\s*setTeamInviteHotelId\(null\);\s*setActivePropertyId\(event\.target\.value\);\s*\}\}/);
-    assert.match(company, /contextProperties\.map\(\(hotel\) => <option key=\{hotel\.id\}/);
+    assert.match(company, /activeHotelId=\{activeProperty\?\.id \?\? null\}/);
+    assert.match(company, /onSelect=\{\(hotelId\) => \{\s*setTeamInviteHotelId\(null\);\s*setActivePropertyId\(hotelId\);\s*\}\}/);
+    assert.match(company, /hotels=\{contextProperties\}/);
   });
 
   test('starts My Team with the account tools instead of a redundant intro block', () => {
@@ -180,7 +182,7 @@ describe('My Hotel account and team integration', () => {
   test('centers hotel switching in the hero and uses the freed toolbar slot for inviting staff', () => {
     const heroIndex = company.indexOf('<header className={styles.hero}>');
     const hotelSlotIndex = company.indexOf('<div className={styles.heroHotelSlot}>', heroIndex);
-    const switcherIndex = company.indexOf('<label className={styles.heroHotelSwitcher}>', hotelSlotIndex);
+    const switcherIndex = company.indexOf('<HotelSwitcher', hotelSlotIndex);
     const heroEnd = company.indexOf('</header>', switcherIndex);
     const tabsIndex = company.indexOf('<div className={styles.tabs}>');
     const tabListIndex = company.indexOf('className={styles.tabList}', tabsIndex);
@@ -190,8 +192,7 @@ describe('My Hotel account and team integration', () => {
 
     assert.ok(heroIndex >= 0 && hotelSlotIndex > heroIndex && switcherIndex > hotelSlotIndex && heroEnd > switcherIndex);
     assert.ok(tabsIndex > heroEnd && tabListIndex > tabsIndex && tabListEnd > tabListIndex && inviteIndex > tabListEnd && panelIndex > inviteIndex);
-    assert.match(company, /className=\{styles\.visuallyHidden\}[\s\S]*Choose hotel to manage/);
-    assert.doesNotMatch(company.slice(switcherIndex, heroEnd), /disabled=\{showLoading\}/);
+    assert.match(company.slice(switcherIndex, heroEnd), /label=\{localized\(lang, ['"]Choose hotel to manage['"]/);
     assert.match(company, /tab === ['"]people['"] && activeProperty && canManageTeam/);
     assert.match(company, /onClick=\{\(\) => setTeamInviteHotelId\(activeProperty\.id\)\}/);
     assert.match(company, /disabled=\{hotelTeamLocked\}/);
@@ -203,8 +204,38 @@ describe('My Hotel account and team integration', () => {
     assert.doesNotMatch(company, /function ActivityPanel/);
     assert.match(company, /requested !== null && !isTabId\(requested\)[\s\S]*params\.set\(['"]tab['"], ['"]overview['"]\)[\s\S]*router\.replace/);
     assert.match(companyCss, /\.hero \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto minmax\(0, 1fr\);/);
-    assert.match(companyCss, /\.heroHotelSwitcher select \{[\s\S]*min-height: 44px;[\s\S]*text-align: center;[\s\S]*text-align-last: center;/);
+    assert.match(hotelSwitcherCss, /\.trigger \{[\s\S]*min-height: 44px;[\s\S]*grid-template-columns: 24px minmax\(0, 1fr\) 24px;/);
     assert.match(companyCss, /\.tabs \.teamInviteButton \{[\s\S]*min-height: 42px;[\s\S]*background: var\(--company-sage\);/);
+  });
+
+  test('uses a styled accessible hotel menu instead of a browser-native select', () => {
+    assert.doesNotMatch(hotelSwitcher, /<select|<option/);
+    assert.match(hotelSwitcher, /role="combobox"/);
+    assert.match(hotelSwitcher, /aria-haspopup="listbox"/);
+    assert.match(hotelSwitcher, /aria-expanded=\{open\}/);
+    assert.match(hotelSwitcher, /aria-controls=\{open \? listboxId : undefined\}/);
+    assert.match(hotelSwitcher, /aria-activedescendant=/);
+    assert.match(hotelSwitcher, /role="listbox"/);
+    assert.match(hotelSwitcher, /role="option"/);
+    assert.match(hotelSwitcher, /aria-selected=\{selected\}/);
+    assert.match(hotelSwitcher, /const selected = hotel\.id === activeHotelId/);
+    assert.match(hotelSwitcher, /aria-activedescendant=\{open && hotels\[highlightedIndex\] \? `\$\{listboxId\}-option-\$\{highlightedIndex\}`/);
+    assert.match(hotelSwitcher, /id=\{`\$\{listboxId\}-option-\$\{index\}`\}/);
+    assert.match(hotelSwitcher, /tabIndex=\{-1\}/);
+    assert.match(hotelSwitcher, /event\.key === ['"]ArrowDown['"] \|\| event\.key === ['"]ArrowUp['"]/);
+    assert.match(hotelSwitcher, /event\.key === ['"]Escape['"] && open/);
+    assert.match(hotelSwitcher, /event\.stopPropagation\(\)/);
+    assert.match(hotelSwitcher, /event\.key === ['"]Tab['"][\s\S]*if \(open\) chooseHotel\(highlightedIndex\)/);
+    assert.match(hotelSwitcher, /event\.key === ['"]Home['"][\s\S]*openMenu\(0\)/);
+    assert.match(hotelSwitcher, /cyclingOneLetter/);
+    assert.match(hotelSwitcher, /else typeaheadValueRef\.current = ['"]['"]/);
+    assert.match(hotelSwitcher, /document\.addEventListener\(['"]pointerdown['"], closeWhenOutside, true\)/);
+    assert.match(hotelSwitcherCss, /\.menu \{[\s\S]*z-index: 120;[\s\S]*max-height:[\s\S]*overflow-y: auto;[\s\S]*background: rgba\(255, 255, 255, 0\.98\);[\s\S]*box-shadow:/);
+    assert.match(hotelSwitcherCss, /\.option \{[\s\S]*min-height: 44px;/);
+    assert.match(hotelSwitcherCss, /\.option\[aria-selected='true'\]/);
+    assert.match(hotelSwitcherCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*\.menu \{\s*animation: none;/);
+    assert.match(companyCss, /\.hero \{[\s\S]*z-index: 2;/);
+    assert.match(companyCss, /\.tabs \{[\s\S]*z-index: 1;/);
   });
 
   test('includes member editing, removal, staff approvals, and both invitation paths', () => {
@@ -249,7 +280,8 @@ describe('mobile Company Hub touch targets', () => {
     assert.match(mobile, /\.reviewButton,[\s\S]*\.actionMenu summary,[\s\S]*\.actionMenu button \{\s*min-height: 44px;/);
     assert.match(mobile, /\.searchField > button,[\s\S]*\.iconButton \{\s*width: 44px;\s*height: 44px;/);
     assert.match(mobile, /\.filterChips button \{[\s\S]*min-height: 44px;/);
-    assert.match(mobile, /\.heroHotelSwitcher,[\s\S]*\.heroHotelSwitcher select,[\s\S]*\.tabs \.teamInviteButton \{\s*min-height: 44px;/);
+    assert.match(mobile, /\.heroHotelSwitcher,[\s\S]*\.tabs \.teamInviteButton \{\s*min-height: 44px;/);
+    assert.match(hotelSwitcherCss, /\.option \{[\s\S]*min-height: 44px;/);
     const hotelTeamMobile = hotelTeamCss.slice(hotelTeamCss.indexOf('@media (max-width: 560px)'));
     assert.match(hotelTeamMobile, /\.editButton,[\s\S]*\.approveButton,[\s\S]*\.denyButton \{\s*min-height: 44px;/);
   });

@@ -1,0 +1,191 @@
+.root {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-height: 44px;
+  color: var(--company-sage);
+}
+
+.trigger {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  grid-template-columns: 24px minmax(0, 1fr) 24px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: 1px solid rgba(92, 122, 96, 0.2);
+  border-radius: 999px;
+  outline: 0;
+  color: var(--company-sage);
+  background: var(--company-sage-dim);
+  box-shadow: none;
+  cursor: pointer;
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 18px;
+  transition:
+    background-color 180ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 180ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 180ms cubic-bezier(0.2, 0, 0, 1),
+    transform 120ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.trigger:hover:not(:disabled) {
+  border-color: rgba(62, 92, 72, 0.36);
+  background: rgba(92, 122, 96, 0.17);
+}
+
+.trigger[aria-expanded='true'] {
+  border-color: rgba(62, 92, 72, 0.38);
+  background: rgba(92, 122, 96, 0.18);
+  box-shadow: 0 8px 22px -18px rgba(31, 42, 32, 0.72);
+}
+
+.trigger:focus-visible {
+  outline: 2px solid var(--company-sage);
+  outline-offset: 2px;
+}
+
+.trigger:active:not(:disabled) {
+  transform: scale(0.99);
+}
+
+.trigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.triggerIcon,
+.chevron {
+  justify-self: center;
+  pointer-events: none;
+}
+
+.triggerValue {
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.trigger[aria-expanded='true'] .chevron {
+  transform: rotate(180deg);
+}
+
+.menu {
+  position: absolute;
+  z-index: 120;
+  top: calc(100% + 8px);
+  left: 50%;
+  width: min(320px, calc(100vw - 32px));
+  max-height: min(304px, calc(100dvh - 112px));
+  padding: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid rgba(31, 35, 28, 0.11);
+  border-radius: 14px;
+  color: var(--company-ink);
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 44px -22px rgba(31, 42, 32, 0.48), 0 4px 14px rgba(31, 42, 32, 0.08);
+  transform: translateX(-50%);
+  animation: menuEnter 160ms cubic-bezier(0.2, 0, 0, 1);
+  box-sizing: border-box;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(92, 122, 96, 0.3) transparent;
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+
+.option {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px 0 9px;
+  border: 0;
+  border-radius: 9px;
+  outline: 0;
+  color: var(--company-ink-2);
+  background: transparent;
+  cursor: pointer;
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 18px;
+  text-align: left;
+  transition: color 140ms ease, background-color 140ms ease;
+}
+
+.option + .option {
+  margin-top: 2px;
+}
+
+.option:hover,
+.option[data-highlighted='true'] {
+  color: var(--company-sage);
+  background: rgba(92, 122, 96, 0.09);
+}
+
+.option[aria-selected='true'] {
+  color: var(--company-sage);
+  background: rgba(92, 122, 96, 0.14);
+  font-weight: 650;
+}
+
+.option[aria-selected='true'][data-highlighted='true'] {
+  background: rgba(92, 122, 96, 0.19);
+}
+
+.checkSlot {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  color: var(--company-sage);
+}
+
+.optionLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes menuEnter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -5px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .trigger,
+  .chevron,
+  .option {
+    transition: none;
+  }
+
+  .trigger:active {
+    transform: none;
+  }
+
+  .menu {
+    animation: none;
+  }
+}
