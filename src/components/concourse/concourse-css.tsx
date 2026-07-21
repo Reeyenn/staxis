@@ -68,8 +68,6 @@ const CX_CSS = `
   padding:0 4px 0 7px;font-size:12px;font-weight:600;}
 .cx-pill.cx-active{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);}
 .cx-pill.cx-active .cx-labw,.cx-pill.cx-context-home .cx-labw{grid-template-columns:1fr;opacity:1;}
-.cx-pill.cx-utility-pill .cx-labw{grid-template-columns:1fr;opacity:1;}
-.cx-pill.cx-view-switch{color:#3E5C48;background:rgba(158,183,166,.16);}
 /* Hover takeover — instant open. Pills sit edge-to-edge (bar gap 3px) so
    moving along the bar hands hover from pill to pill with no dead zone. */
 .cx-pill:hover{background:#3E5C48;color:#fff;box-shadow:0 8px 18px -8px rgba(62,92,72,.55);

@@ -87,6 +87,9 @@ export interface HotelTeamPanelProps {
   canManageTeam: boolean;
   readOnly?: boolean;
   adminPreview?: boolean;
+  /** Unlocks only the separately authorized hotel-team routes while keeping
+   * the admin preview DTO and company-access mutations read-only. */
+  allowAdminActions?: boolean;
   staffProfiles?: StaffMember[];
   onChanged?: () => void | Promise<void>;
   /** Tri-state result prevents the parent from calling staff "unlinked" before this request succeeds. */
@@ -257,6 +260,7 @@ export function HotelTeamPanel({
   canManageTeam,
   readOnly = false,
   adminPreview = false,
+  allowAdminActions = false,
   staffProfiles = [],
   onChanged,
   onLinkageChange,
@@ -289,7 +293,7 @@ export function HotelTeamPanel({
     [staffProfiles],
   );
 
-  const locked = readOnly || adminPreview;
+  const locked = readOnly || (adminPreview && !allowAdminActions);
 
   const loadTeam = React.useCallback(async (clearFirst = false) => {
     teamAbortRef.current?.abort();

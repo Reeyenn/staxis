@@ -8,7 +8,7 @@
 // gate, exactly like the old Header), logo → /home hub, gear → /settings,
 // and an avatar dropdown that keeps
 // everything the old header offered: who you are, hotel switching, the full
-// 5-language list, Admin (owners), and sign out.
+// 5-language list and sign out.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React from 'react';
@@ -52,7 +52,6 @@ export function ConcourseBar() {
     ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
     : (lang === 'es' ? 'Inicio' : 'Home');
   const showCompanyInMobileNavigation = Boolean(user && !companyOnly);
-  const isAdminWorkspace = pathname.startsWith('/admin');
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [phoneHandoffOpen, setPhoneHandoffOpen] = React.useState(false);
   const [installStaxisOpen, setInstallStaxisOpen] = React.useState(false);
@@ -76,8 +75,6 @@ export function ConcourseBar() {
   // (optimistic active) instead of waiting for the new pathname to arrive.
   const [pendingHref, setPendingHref] = React.useState<string | null>(null);
   React.useEffect(() => { setPendingHref(null); }, [pathname]);
-  const roleRef = React.useRef(user?.role);
-  roleRef.current = user?.role ?? roleRef.current;
   React.useEffect(() => {
     if (PREFETCHED_THIS_SESSION) return;
     const idle = window.setTimeout(() => {
@@ -86,22 +83,11 @@ export function ConcourseBar() {
         ? ['/company', '/settings']
         : [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
       if (!hrefs.includes('/company')) hrefs.push('/company');
-      if (!companyOnly && roleRef.current === 'admin') hrefs.push('/admin/properties');
       hrefs.forEach((h) => router.prefetch(h));
     }, 2500);
     return () => window.clearTimeout(idle);
   }, [companyOnly, router]);
   const go = (href: string) => { setPendingHref(href); router.push(href); };
-  const viewSwitch = user?.role === 'admin' ? {
-    label: isAdminWorkspace
-      ? (lang === 'es' ? 'Vista del hotel' : 'Hotel View')
-      : (lang === 'es' ? 'Vista de administrador' : 'Admin View'),
-    ariaLabel: isAdminWorkspace
-      ? (lang === 'es' ? 'Cambiar a la vista del hotel' : 'Switch to Hotel View')
-      : (lang === 'es' ? 'Cambiar a la vista de administrador' : 'Switch to Admin View'),
-    icon: isAdminWorkspace ? 'hotel' as const : 'admin' as const,
-    onClick: () => go(isAdminWorkspace ? '/home' : '/admin/properties#live'),
-  } : undefined;
   const companyNavigationLabel = user?.role === 'admin'
     ? (lang === 'es' ? 'Gestión' : 'Management')
     : (lang === 'es' ? 'Centro de empresa' : 'Company Hub');
@@ -293,8 +279,6 @@ export function ConcourseBar() {
           ? `Abrir menú de usuario de ${userName}`
           : `Open user menu for ${userName}`}
         companyLabel={companyNavigationLabel}
-        viewSectionLabel={lang === 'es' ? 'Vista' : 'View'}
-        viewSwitch={viewSwitch}
         settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
         signOutLabel={t('signOut', lang)}
         installLabel={lang === 'es' ? 'Añadir Staxis a la pantalla de inicio' : 'Add Staxis to Home Screen'}
@@ -321,7 +305,6 @@ export function ConcourseBar() {
       />
       <ConcourseBarView
         items={items}
-        viewSwitch={viewSwitch}
         gearActive={pathname.startsWith('/settings')}
         onGear={() => go('/settings')}
         onLogo={() => go(homeHref)}
@@ -330,7 +313,7 @@ export function ConcourseBar() {
         avatar={avatar}
         // Away from the hub, the leftmost Staxis pill becomes a back-to-Home
         // control without changing the bar's visual language.
-        showHome={pathname !== homeHref && !isAdminWorkspace}
+        showHome={pathname !== homeHref}
         desktopOnly
       />
       <PhoneHandoffDialog

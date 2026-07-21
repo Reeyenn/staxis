@@ -21,17 +21,8 @@ export interface BarItem {
   onClick: () => void;
 }
 
-export interface ViewSwitchAction {
-  label: string;
-  ariaLabel: string;
-  icon: 'admin' | 'hotel';
-  onClick: () => void;
-}
-
 export interface ConcourseBarViewProps {
   items: BarItem[];
-  /** Admin-only route switch. The label names the destination workspace. */
-  viewSwitch?: ViewSwitchAction;
   gearActive: boolean;
   onGear: () => void;
   onLogo: () => void;
@@ -49,7 +40,7 @@ export interface ConcourseBarViewProps {
 }
 
 export function ConcourseBarView({
-  items, viewSwitch, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
   showHome = false, desktopOnly = false,
 }: ConcourseBarViewProps) {
   return (
@@ -73,19 +64,7 @@ export function ConcourseBarView({
             <span className="cx-lab">{homeLabel}</span>
           </span>
         </button>
-        {viewSwitch ? (
-          <button
-            type="button"
-            className="cx-pill cx-utility-pill cx-view-switch"
-            onClick={viewSwitch.onClick}
-            title={viewSwitch.ariaLabel}
-            aria-label={viewSwitch.ariaLabel}
-          >
-            <CxIcon name={viewSwitch.icon} size={16} />
-            <span className="cx-labw"><span className="cx-lab">{viewSwitch.label}</span></span>
-          </button>
-        ) : null}
-        {items.length > 0 || viewSwitch ? <span className="cx-divider" aria-hidden /> : null}
+        {items.length > 0 ? <span className="cx-divider" aria-hidden /> : null}
         {items.map((it) => (
           <button
             key={it.key}

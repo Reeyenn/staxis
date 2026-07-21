@@ -12,67 +12,57 @@ const barView = source('src', 'components', 'concourse', 'ConcourseBarView.tsx')
 const mobile = source('src', 'components', 'concourse', 'MobileConcourseNav.tsx');
 const concourseCss = source('src', 'components', 'concourse', 'concourse-css.tsx');
 const mobileCss = source('src', 'components', 'concourse', 'MobileConcourseNav.module.css');
+const company = source('src', 'app', 'company', 'page.tsx');
+const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
+const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
 
-describe('admin workspace navigation', () => {
-  test('uses one explicit destination action instead of treating Admin as a department', () => {
-    assert.match(concourse, /const isAdminWorkspace = pathname\.startsWith\(['"]\/admin['"]\)/);
-    assert.match(concourse, /user\?\.role === ['"]admin['"] \? \{/);
-    assert.match(concourse, /isAdminWorkspace \? ['"]\/home['"] : ['"]\/admin\/properties#live['"]/);
-    assert.doesNotMatch(concourse, /items\.push\(\{[\s\S]*?key: ['"]admin['"]/);
-    assert.match(barView, /className="cx-pill cx-utility-pill cx-view-switch"/);
+describe('in-place admin hotel view', () => {
+  test('removes the admin destination action from desktop and phone navigation', () => {
+    assert.doesNotMatch(concourse, /const viewSwitch|viewSwitch=|Switch to Admin View|\/admin\/properties#live['"]\)/);
+    assert.doesNotMatch(barView, /ViewSwitchAction|viewSwitch|cx-view-switch|cx-utility-pill/);
+    assert.doesNotMatch(mobile, /ViewSwitchAction|viewSwitch|selectView|viewSectionLabel|viewSwitchRow/);
+    assert.doesNotMatch(concourseCss, /cx-view-switch|cx-utility-pill/);
+    assert.doesNotMatch(mobileCss, /viewSwitchRow/);
   });
 
-  test('keeps Company Hub out of the desktop top bar while retaining the phone destination', () => {
-    assert.match(concourse, /const showCompanyInMobileNavigation = Boolean\(user && !companyOnly\)/);
-    assert.match(concourse, /showCompany=\{showCompanyInMobileNavigation\}/);
-    assert.doesNotMatch(barView, /companyActive|onCompany|companyLabel/);
-    assert.match(mobile, /onCompany/);
-    assert.match(concourse, /user\?\.role === ['"]admin['"][\s\S]*?['"]Management['"]/);
+  test('keeps the switch inside My Hotel and changes local state without routing', () => {
+    const heroIndex = company.indexOf('<header className={styles.hero}>');
+    const switchIndex = company.indexOf('<label className={styles.adminViewSwitch}>', heroIndex);
+    const heroEnd = company.indexOf('</header>', switchIndex);
+    const switchMarkup = company.slice(switchIndex, heroEnd);
+
+    assert.ok(heroIndex >= 0 && switchIndex > heroIndex && heroEnd > switchIndex);
+    assert.match(switchMarkup, /type="checkbox"/);
+    assert.match(switchMarkup, /role="switch"/);
+    assert.match(switchMarkup, /checked=\{adminToolsActive\}/);
+    assert.match(switchMarkup, /aria-checked=\{adminToolsActive\}/);
+    assert.match(switchMarkup, /onChange=\{\(event\) => setAdminToolsEnabled\(event\.target\.checked\)\}/);
+    assert.doesNotMatch(switchMarkup, /router\.(push|replace)|\/admin\/properties/);
+    assert.match(company, /setAdminToolsEnabled\(false\);\s*\}, \[activePropertyId, userRole\]\)/);
   });
 
-  test('localizes visible labels and destination announcements', () => {
-    for (const label of [
-      'Admin View',
-      'Hotel View',
-      'Vista de administrador',
-      'Vista del hotel',
-      'Switch to Admin View',
-      'Switch to Hotel View',
-      'Cambiar a la vista de administrador',
-      'Cambiar a la vista del hotel',
-    ]) {
-      assert.match(concourse, new RegExp(label));
-    }
-    assert.match(barView, /aria-label=\{viewSwitch\.ariaLabel\}/);
-  });
-});
-
-describe('responsive workspace navigation', () => {
-  test('puts the phone action in its own View area before department sections', () => {
-    const viewIndex = mobile.indexOf('{viewSwitch ? (');
-    const sectionsIndex = mobile.indexOf('<div className={styles.eyebrow}>{sectionsLabel}</div>');
-    assert.ok(viewIndex >= 0 && sectionsIndex > viewIndex);
-    assert.match(mobile, /<nav className=\{styles\.sectionList\} aria-label=\{viewSectionLabel\}>/);
-    assert.match(mobile, /className=\{`\$\{styles\.navRow\} \$\{styles\.viewSwitchRow\}`\}/);
-    assert.match(mobile, /aria-label=\{viewSwitch\.ariaLabel\}/);
+  test('unlocks only independently authorized hotel-team tools and remounts dialogs on mode changes', () => {
+    assert.match(company, /\/api\/admin\/company-access-preview\?pid=/);
+    assert.match(company, /normalized\.viewerContext\?\.kind !== ['"]staxis_admin_preview['"]/);
+    assert.match(company, /normalized\.viewerContext\.readOnly !== true/);
+    assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminToolsEnabled \? ['"]admin['"] : ['"]preview['"]\}`\}/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
+    assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
+    assert.match(company, /const adminActionHotelName = activeProperty\?\.name/);
+    assert.match(company, /enabled for \$\{adminActionHotelName\}/);
+    assert.doesNotMatch(company, /enabled for \$\{adminViewerContext\.targetName\}/);
+    assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
+    assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
   });
 
-  test('keeps the desktop workspace switch ahead of collapsible departments', () => {
-    const switchIndex = barView.indexOf('className="cx-pill cx-utility-pill cx-view-switch"');
-    const itemsIndex = barView.indexOf('{items.map((it) => (');
-    assert.ok(switchIndex >= 0 && itemsIndex > switchIndex);
-    assert.match(concourse, /showHome=\{pathname !== homeHref && !isAdminWorkspace\}/);
-    assert.match(mobileCss, /\.eyebrow \{[\s\S]*?color: #687067;/);
-    assert.match(concourseCss, /@media \(min-width:761px\) and \(max-width:1100px\)[\s\S]*?\.cx-pill\{height:44px;\}[\s\S]*?\.cx-gear\{width:44px;height:44px;\}/);
-    assert.doesNotMatch(mobile, /<h1 className=\{styles\.pageTitle\}/);
-  });
-
-  test('has visible focus, a 52px mobile target, and reduced-motion handling', () => {
-    assert.match(mobileCss, /\.navRow \{[\s\S]*?min-height: 52px;/);
-    assert.match(mobileCss, /\.viewSwitchRow \{/);
-    assert.match(mobileCss, /\.navRow:focus-visible,[\s\S]*?outline: 2px solid #3e5c48;/);
-    assert.match(concourseCss, /\.cx-pill:focus-visible,\.cx-gear:focus-visible\{outline:2px solid #3E5C48/);
-    const reducedMotion = concourseCss.slice(concourseCss.indexOf('@media (prefers-reduced-motion: reduce)'));
-    assert.match(reducedMotion, /\.cx-pill,\.cx-pill \.cx-labw,\.cx-gear\{transition:none;\}/);
+  test('is admin-only, compact, keyboard visible, mobile safe, and reduced-motion safe', () => {
+    assert.match(company, /\{adminPreview \? \(\s*<label className=\{styles\.adminViewSwitch\}>/);
+    assert.match(companyCss, /\.adminViewSwitch \{[\s\S]*?min-height: 48px;/);
+    assert.match(companyCss, /\.adminViewSwitchTrack \{[\s\S]*?width: 48px;[\s\S]*?height: 28px;/);
+    assert.match(companyCss, /\.adminViewSwitch input:focus-visible \+ \.adminViewSwitchTrack \{[\s\S]*?outline:/);
+    const mobileRules = companyCss.slice(companyCss.indexOf('@media (max-width: 800px)'));
+    assert.match(mobileRules, /\.heroActions \{[\s\S]*?grid-column: 1 \/ -1;[\s\S]*?justify-content: space-between;/);
+    const reducedMotion = companyCss.slice(companyCss.indexOf('@media (prefers-reduced-motion: reduce)'));
+    assert.match(reducedMotion, /\.adminViewSwitchTrack,[\s\S]*?\.adminViewSwitchHandle,/);
   });
 });

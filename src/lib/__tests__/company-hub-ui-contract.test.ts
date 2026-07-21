@@ -143,8 +143,9 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /staffViewerKey === `\$\{user\.uid\}:\$\{activePropertyId\}`/);
     assert.match(company, /['"]Hotel roster unavailable['"]/);
     assert.match(company, /hotelId=\{activeProperty\.id\}/);
-    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\)\}/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
+    assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
     assert.match(company, /statusLabel\(membership\.status, lang\)/);
     assert.match(hotelTeam, /responseTeam\.filter\(\(member\) => !member\.isPlatformAdmin && member\.role !== ['"]admin['"]\)/);
   });

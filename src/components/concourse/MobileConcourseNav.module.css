@@ -192,29 +192,6 @@
   background: rgba(158, 183, 166, 0.14);
 }
 
-.viewSwitchRow {
-  border: 1px solid rgba(92, 122, 96, 0.18);
-  color: #356b4c;
-  background: rgba(158, 183, 166, 0.1);
-}
-
-.viewSwitchRow:hover {
-  background: rgba(158, 183, 166, 0.16);
-}
-
-.viewSwitchRow:active {
-  background: rgba(158, 183, 166, 0.22);
-}
-
-.viewSwitchRow .iconChip {
-  color: #3e5c48;
-  background: rgba(92, 122, 96, 0.14);
-}
-
-.viewSwitchRow .rowLabel {
-  font-weight: 600;
-}
-
 .iconChip {
   display: grid;
   flex: none;

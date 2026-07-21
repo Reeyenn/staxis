@@ -317,6 +317,7 @@ function CompanyAccessContent() {
   const [requestOpen, setRequestOpen] = React.useState(false);
   const [reviewRequest, setReviewRequest] = React.useState<CompanyAccessRequest | null>(null);
   const [lifecycleAction, setLifecycleAction] = React.useState<CompanyLifecycleAction | null>(null);
+  const [adminToolsEnabled, setAdminToolsEnabled] = React.useState(false);
   const previewHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const focusPreviewAfterRetryRef = React.useRef(false);
 
@@ -333,6 +334,12 @@ function CompanyAccessContent() {
   const currentStaffSettled = staffBelongsToCurrentViewer
     && (staffLoaded || staffLoadFailed);
   const currentStaffUnavailable = staffBelongsToCurrentViewer && staffLoadFailed;
+
+  // Admin tools are an explicit, hotel-scoped choice. Never carry an enabled
+  // mutation surface into a different hotel or a different signed-in role.
+  React.useEffect(() => {
+    setAdminToolsEnabled(false);
+  }, [activePropertyId, userRole]);
 
   React.useEffect(() => {
     if (!user || authLoading || propertyLoading) return;
@@ -519,6 +526,15 @@ function CompanyAccessContent() {
     || propertyRosterLoading;
   const adminPreviewFailed = adminPreview && !showLoading && Boolean(currentLoadError) && !currentData;
   const adminViewerContext = adminPreview ? resolved.viewerContext : undefined;
+  const adminToolsActive = Boolean(
+    adminPreview
+    && adminToolsEnabled
+    && adminViewerContext
+    && adminDataMatchesSelection,
+  );
+  const adminActionHotelName = activeProperty?.name
+    ?? adminViewerContext?.targetName
+    ?? localized(lang, 'this hotel', 'este hotel');
   const workspaceTitle = adminPreview
     ? (adminViewerContext?.scope === 'organization'
         ? localized(lang, 'Company Hub', 'Centro de empresa')
@@ -558,17 +574,25 @@ function CompanyAccessContent() {
           <div className={styles.heroCopy}>
             <div className={styles.eyebrow}>
               {adminPreview
-                ? localized(lang, 'Staxis admin preview', 'Vista previa de administrador de Staxis')
+                ? adminToolsActive
+                  ? localized(lang, 'Staxis admin view', 'Vista de administrador de Staxis')
+                  : localized(lang, 'Staxis hotel view', 'Vista del hotel de Staxis')
                 : localized(lang, 'Company workspace', 'Espacio de empresa')}
             </div>
             <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
             <p>
               {adminPreview
-                ? localized(
-                    lang,
-                    'Review the customer workspace for the selected hotel. Changes are disabled.',
-                    'Revisa el espacio del cliente para el hotel seleccionado. Los cambios están desactivados.',
-                  )
+                ? adminToolsActive
+                  ? localized(
+                      lang,
+                      'Manage this hotel without leaving My Hotel.',
+                      'Administra este hotel sin salir de Mi hotel.',
+                    )
+                  : localized(
+                      lang,
+                      'Review this hotel in read-only mode.',
+                      'Revisa este hotel en modo de solo lectura.',
+                    )
                 : localized(
                     lang,
                     'See your hotels, team, and exactly why you have access.',
@@ -576,31 +600,64 @@ function CompanyAccessContent() {
                   )}
             </p>
           </div>
-          {!showLoading && contextLabel ? (
-            <div className={styles.contextBadge}>
-              <MapPinned size={15} aria-hidden="true" />
-              <span>{contextLabel}</span>
-            </div>
-          ) : null}
+          <div className={styles.heroActions}>
+            {!showLoading && contextLabel ? (
+              <div className={styles.contextBadge}>
+                <MapPinned size={15} aria-hidden="true" />
+                <span>{contextLabel}</span>
+              </div>
+            ) : null}
+            {adminPreview ? (
+              <label className={styles.adminViewSwitch}>
+                <span className={styles.adminViewSwitchLabel}>
+                  {localized(lang, 'Admin view', 'Vista de administrador')}
+                  <small>{adminToolsActive
+                    ? localized(lang, 'On', 'Activada')
+                    : localized(lang, 'Off', 'Desactivada')}</small>
+                </span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={adminToolsActive}
+                  aria-checked={adminToolsActive}
+                  disabled={showLoading || !adminViewerContext}
+                  onChange={(event) => setAdminToolsEnabled(event.target.checked)}
+                />
+                <span className={styles.adminViewSwitchTrack} aria-hidden="true">
+                  <span className={styles.adminViewSwitchHandle} />
+                </span>
+              </label>
+            ) : null}
+          </div>
         </header>
 
         {adminViewerContext ? (
-          <div className={styles.adminPreviewNotice} role="status">
+          <div className={`${styles.adminPreviewNotice}${adminToolsActive ? ` ${styles.adminToolsNotice}` : ''}`} role="status">
             <ShieldCheck size={18} aria-hidden="true" />
             <div>
-              <strong>{localized(lang, 'Admin preview · Read-only', 'Vista de administrador · Solo lectura')}</strong>
+              <strong>{adminToolsActive
+                ? localized(lang, 'Admin view · Hotel tools enabled', 'Vista de administrador · Herramientas del hotel activadas')
+                : localized(lang, 'Hotel view · Read-only', 'Vista del hotel · Solo lectura')}</strong>
               <span>
-                {localized(
-                  lang,
-                  `Reviewing the customer workspace for ${adminViewerContext.targetName}.`,
-                  `Revisando el espacio del cliente para ${adminViewerContext.targetName}.`,
-                )}
+                {adminToolsActive
+                  ? localized(
+                      lang,
+                      `Hotel accounts, invitations, and approvals are enabled for ${adminActionHotelName}.`,
+                      `Las cuentas, invitaciones y aprobaciones del hotel están activadas para ${adminActionHotelName}.`,
+                    )
+                  : localized(
+                      lang,
+                      `Reviewing the hotel workspace for ${adminActionHotelName}.`,
+                      `Revisando el espacio del hotel para ${adminActionHotelName}.`,
+                    )}
               </span>
             </div>
-            <button type="button" onClick={() => router.push('/admin/properties#live')}>
-              {localized(lang, 'Back to Admin', 'Volver a Admin')}
-              <ArrowRight size={14} aria-hidden="true" />
-            </button>
+            {!adminToolsActive ? (
+              <button type="button" onClick={() => router.push('/admin/properties#live')}>
+                {localized(lang, 'Back to Admin', 'Volver a Admin')}
+                <ArrowRight size={14} aria-hidden="true" />
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -733,6 +790,7 @@ function CompanyAccessContent() {
                   currentUser={user}
                   currentAccountId={user.accountId}
                   activeProperty={activeProperty}
+                  adminToolsEnabled={adminToolsActive}
                   canManageTeam={can('manage_team')}
                   onChanged={refreshStaff}
                   query={query}
@@ -942,7 +1000,7 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
   );
 }
 
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, canManageTeam, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -950,6 +1008,7 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   currentUser: AppUser;
   currentAccountId: string;
   activeProperty: Property | null;
+  adminToolsEnabled: boolean;
   canManageTeam: boolean;
   onChanged: () => void | Promise<void>;
   query: string;
@@ -991,15 +1050,16 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
 
       {activeProperty ? (
         <HotelTeamPanel
-          key={activeProperty.id}
+          key={`${activeProperty.id}:${adminToolsEnabled ? 'admin' : 'preview'}`}
           hotelId={activeProperty.id}
           hotelName={activeProperty.name}
           currentUser={currentUser}
           currentAccountId={currentAccountId}
           lang={lang === 'es' ? 'es' : 'en'}
           canManageTeam={canManageTeam}
-          readOnly={Boolean(data.viewerContext?.readOnly)}
+          readOnly={Boolean(data.viewerContext?.readOnly) && !adminToolsEnabled}
           adminPreview={data.viewerContext?.kind === 'staxis_admin_preview'}
+          allowAdminActions={adminToolsEnabled}
           staffProfiles={staff}
           onChanged={onChanged}
           onLinkageChange={setLinkage}
