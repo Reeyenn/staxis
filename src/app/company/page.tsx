@@ -63,10 +63,10 @@ import {
   type HotelTeamLinkageState,
 } from './_components/HotelTeamPanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
+import { OperationalStaffSection } from './_components/OperationalStaffSection';
 
 type TabId = 'overview' | 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
-type PeopleStatusFilter = 'all' | 'active' | 'not_active';
 
 interface TabDefinition {
   id: TabId;
@@ -312,7 +312,6 @@ function CompanyAccessContent() {
   });
   const [query, setQuery] = React.useState('');
   const [hotelStatusFilter, setHotelStatusFilter] = React.useState<HotelStatusFilter>('all');
-  const [peopleStatusFilter, setPeopleStatusFilter] = React.useState<PeopleStatusFilter>('all');
   const [selectedReceipt, setSelectedReceipt] = React.useState<EffectiveAccessReceipt | null>(null);
   const [inviteOpen, setInviteOpen] = React.useState(false);
   const [teamInviteHotelId, setTeamInviteHotelId] = React.useState<string | null>(null);
@@ -372,7 +371,6 @@ function CompanyAccessContent() {
       // Never leave another hotel's preview visible while the new target loads.
       setQuery('');
       setHotelStatusFilter('all');
-      setPeopleStatusFilter('all');
     }
     setLoading(true);
     setLoadError(null);
@@ -477,7 +475,6 @@ function CompanyAccessContent() {
     setTab(next);
     setQuery('');
     setHotelStatusFilter('all');
-    setPeopleStatusFilter('all');
     if (next !== 'people') setTeamInviteHotelId(null);
     if (requested !== null && !isTabId(requested)) {
       const params = new URLSearchParams(searchParams.toString());
@@ -499,7 +496,6 @@ function CompanyAccessContent() {
     setTab(next);
     setQuery('');
     setHotelStatusFilter('all');
-    setPeopleStatusFilter('all');
     if (next !== 'people') setTeamInviteHotelId(null);
     const params = new URLSearchParams(searchParams.toString());
     params.set('tab', next);
@@ -781,6 +777,7 @@ function CompanyAccessContent() {
                 />
               ) : tab === 'people' ? (
                 <PeoplePanel
+                  key={activeProperty?.id ?? 'no-hotel'}
                   data={resolved}
                   staff={currentStaff}
                   hotelRosterUnavailable={currentStaffUnavailable}
@@ -790,13 +787,10 @@ function CompanyAccessContent() {
                   activeProperty={activeProperty}
                   adminToolsEnabled={adminToolsActive}
                   canManageTeam={canManageTeam}
+                  canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
                   onChanged={refreshStaff}
-                  query={query}
-                  onQueryChange={setQuery}
-                  statusFilter={peopleStatusFilter}
-                  onStatusFilterChange={setPeopleStatusFilter}
                 />
               ) : (
                 <AccessPanel
@@ -1000,7 +994,7 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
   );
 }
 
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, inviteDialogOpen, onInviteDialogOpenChange, onChanged, query, onQueryChange, statusFilter, onStatusFilterChange }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1010,33 +1004,13 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   activeProperty: Property | null;
   adminToolsEnabled: boolean;
   canManageTeam: boolean;
+  canAddOperationalStaff: boolean;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   onChanged: () => void | Promise<void>;
-  query: string;
-  onQueryChange: (value: string) => void;
-  statusFilter: PeopleStatusFilter;
-  onStatusFilterChange: (value: PeopleStatusFilter) => void;
 }) {
   const [linkage, setLinkage] = React.useState<HotelTeamLinkageState>({ status: 'loading' });
   React.useEffect(() => setLinkage({ status: 'loading' }), [activeProperty?.id]);
-  const linkageReady = linkage.status === 'ready';
-  const linkedStaffIdSet = React.useMemo(
-    () => new Set(linkage.status === 'ready' ? linkage.staffIds : []),
-    [linkage],
-  );
-  const normalizedQuery = query.trim().toLowerCase();
-  // Organization memberships and their invitation lifecycle live in Access.
-  // People is deliberately hotel-scoped so the three identity systems never
-  // present one person as duplicate, conflicting rows.
-  const rosterFallback = staff.filter((member) => {
-    if (linkageReady && linkedStaffIdSet.has(member.id)) return false;
-    const textMatch = !normalizedQuery || `${member.name} ${member.department ?? ''}`.toLowerCase().includes(normalizedQuery);
-    const statusMatch = statusFilter === 'all'
-      || (statusFilter === 'active' && member.isActive !== false)
-      || (statusFilter === 'not_active' && member.isActive === false);
-    return textMatch && statusMatch;
-  });
 
   return (
     <div className={styles.stack}>
@@ -1066,89 +1040,19 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
         />
       )}
 
-      <SectionHeading
-        eyebrow={localized(lang, 'Operational roster', 'Registro operativo')}
-        title={linkageReady
-          ? localized(lang, 'Staff without a linked login', 'Personal sin acceso vinculado')
-          : localized(lang, 'Operational staff', 'Personal operativo')}
-        description={linkageReady
-          ? localized(
-              lang,
-              'These staff records are used for schedules and assignments but are not linked to an app account yet.',
-              'Estos registros se usan para horarios y asignaciones, pero todavía no están vinculados a una cuenta de la aplicación.',
-            )
-          : linkage.status === 'loading' && canManageTeam
-            ? localized(
-                lang,
-                'Checking which staff already have a hotel login before showing this list.',
-                'Comprobando qué empleados ya tienen acceso al hotel antes de mostrar esta lista.',
-              )
-            : localized(
-                lang,
-                'The complete staff roster used for schedules and assignments.',
-                'El registro completo del personal utilizado para horarios y asignaciones.',
-              )}
-      />
-
-      {linkage.status === 'loading' && canManageTeam ? (
-        <div className={styles.skeletonStack} role="status" aria-label={localized(lang, 'Checking staff login links', 'Comprobando accesos del personal')}>
-          <div className={styles.skeletonPanel} aria-hidden="true"><span /><strong /><small /><div /></div>
-        </div>
-      ) : (
-        <>
-          <FilterBar
-            lang={lang}
-            query={query}
-            onQueryChange={onQueryChange}
-            statusFilter={statusFilter}
-            onStatusFilterChange={onStatusFilterChange}
-            statusOptions={[
-              { value: 'all', label: localized(lang, 'All', 'Todos') },
-              { value: 'active', label: localized(lang, 'Active', 'Activos') },
-              { value: 'not_active', label: localized(lang, 'Not active', 'No activos') },
-            ]}
-            searchLabel={localized(lang, 'Search operational staff', 'Buscar personal operativo')}
-          />
-
-          {hotelRosterUnavailable ? (
-            <EmptyState
-              icon={AlertTriangle}
-              compact
-              title={localized(lang, 'Hotel roster unavailable', 'Registro del hotel no disponible')}
-              description={localized(lang, 'Team accounts are still available. The roster will reconnect automatically.', 'Las cuentas del equipo siguen disponibles. El registro se volverá a conectar automáticamente.')}
-            />
-          ) : rosterFallback.length > 0 ? (
-            <div className={styles.listCard} role="list">
-              {rosterFallback.map((member) => (
-                <div key={member.id} className={styles.personRow} role="listitem">
-                  <Avatar name={member.name} />
-                  <div className={styles.rowBody}>
-                    <strong>{member.name}</strong>
-                    <span>{titleCaseAccessValue(member.department ?? 'team member')}</span>
-                  </div>
-                  <span className={`${styles.status} ${member.isActive === false ? styles.statusMuted : styles.statusActive}`}>
-                    {member.isActive === false ? localized(lang, 'Inactive', 'Inactivo') : localized(lang, 'Team', 'Equipo')}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <EmptyState
-              icon={Users}
-              title={linkageReady
-                ? localized(lang, 'No unlinked staff match', 'Ningún empleado sin acceso coincide')
-                : localized(lang, 'No operational staff match', 'Ningún empleado operativo coincide')}
-              description={linkageReady
-                ? localized(
-                    lang,
-                    'Everyone may already have a linked login, or you can clear the search and status filter.',
-                    'Es posible que todos ya tengan un acceso vinculado, o puedes borrar la búsqueda y el filtro de estado.',
-                  )
-                : localized(lang, 'Try another search or clear the status filter.', 'Prueba otra búsqueda o borra el filtro de estado.')}
-            />
-          )}
-        </>
-      )}
+      {activeProperty ? (
+        <OperationalStaffSection
+          key={activeProperty.id}
+          hotelId={activeProperty.id}
+          staff={staff}
+          linkage={linkage}
+          rosterUnavailable={hotelRosterUnavailable}
+          lang={lang === 'es' ? 'es' : 'en'}
+          canAddStaff={canAddOperationalStaff}
+          canResolveLinkage={canManageTeam}
+          onChanged={onChanged}
+        />
+      ) : null}
     </div>
   );
 }

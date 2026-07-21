@@ -80,9 +80,17 @@ export async function setupRlsFixture(): Promise<PgliteFixture> {
     await pg.exec('begin');
     try {
       await pg.exec(`set local role authenticated`);
-      // request.jwt.claim.sub is plain text in a custom GUC; quote-safe via
-      // the parameter form. Use pg.query for parameterization.
+      // Mirror a normal authenticated session that completed MFA. The claims
+      // object feeds auth.jwt(); the legacy scalar GUCs continue to feed
+      // auth.uid()/auth.role(). Everything is transaction-local, so the
+      // anon-like checks outside runAsUser remain unverified.
       await pg.query(`select set_config('request.jwt.claim.sub', $1, true)`, [userId]);
+      await pg.query(`select set_config('request.jwt.claim.role', 'authenticated', true)`);
+      await pg.query(`select set_config('request.jwt.claims', $1, true)`, [JSON.stringify({
+        sub: userId,
+        role: 'authenticated',
+        mfa_verified: true,
+      })]);
       let result: { rows: Record<string, unknown>[] };
       if (params && params.length > 0) {
         result = (await pg.query(sql, params)) as { rows: Record<string, unknown>[] };

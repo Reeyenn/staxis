@@ -1,0 +1,488 @@
+.section,
+.dialogLayer {
+  --operational-ink: #1f231c;
+  --operational-ink-2: #5c625c;
+  --operational-muted: #70776f;
+  --operational-paper: #ffffff;
+  --operational-wash: #f3f6f2;
+  --operational-sage: #3e5c48;
+  --operational-sage-hover: #356b4c;
+  --operational-sage-2: #5c7a60;
+  --operational-sage-dim: rgba(92, 122, 96, 0.12);
+  --operational-rule: rgba(31, 35, 28, 0.09);
+  --operational-rust: #b85c3d;
+  --operational-rust-dim: rgba(184, 92, 61, 0.1);
+  box-sizing: border-box;
+  color: var(--operational-ink);
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.section *,
+.dialogLayer * {
+  box-sizing: border-box;
+}
+
+.section {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 11px;
+}
+
+.sectionHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 16px;
+}
+
+.headingCopy {
+  min-width: 0;
+}
+
+.headingCopy > span,
+.dialogHeader > div > span {
+  color: var(--operational-muted);
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 14px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.headingCopy h2 {
+  margin: 2px 0 0;
+  color: var(--operational-ink);
+  font-size: 14.5px;
+  font-weight: 650;
+  line-height: 20px;
+}
+
+.headingCopy p {
+  max-width: 620px;
+  margin: 3px 0 0;
+  color: var(--operational-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.addButton,
+.primaryButton,
+.secondaryButton {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  gap: 8px;
+  padding: 0 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 18px;
+  transition: background-color 150ms ease-out, border-color 150ms ease-out, box-shadow 150ms ease-out, transform 100ms ease-out;
+}
+
+.addButton,
+.primaryButton {
+  border: 1px solid var(--operational-sage);
+  color: #ffffff;
+  background: var(--operational-sage);
+  box-shadow: 0 8px 18px -12px rgba(62, 92, 72, 0.8);
+}
+
+.addButton:hover,
+.primaryButton:hover:not(:disabled) {
+  background: var(--operational-sage-hover);
+}
+
+.secondaryButton {
+  border: 1px solid rgba(31, 35, 28, 0.14);
+  color: var(--operational-sage);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.secondaryButton:hover:not(:disabled) {
+  border-color: rgba(92, 122, 96, 0.35);
+  background: var(--operational-sage-dim);
+}
+
+.addButton:active,
+.primaryButton:active:not(:disabled),
+.secondaryButton:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.primaryButton:disabled,
+.secondaryButton:disabled {
+  opacity: 0.44;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.addButton:focus-visible,
+.primaryButton:focus-visible,
+.secondaryButton:focus-visible,
+.iconButton:focus-visible,
+.field input:focus-visible,
+.field select:focus-visible {
+  outline: 2px solid var(--operational-sage-2);
+  outline-offset: 2px;
+}
+
+.staffList,
+.stateRow {
+  overflow: hidden;
+  border: 1px solid var(--operational-rule);
+  border-radius: 14px;
+  background: var(--operational-paper);
+  box-shadow: 0 9px 24px -22px rgba(31, 42, 32, 0.42);
+}
+
+.staffRow {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 13px;
+  border-bottom: 1px solid rgba(31, 35, 28, 0.055);
+}
+
+.staffRow:last-child {
+  border-bottom: 0;
+}
+
+.avatar {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  border: 1px solid rgba(92, 122, 96, 0.16);
+  border-radius: 999px;
+  color: var(--operational-sage);
+  background: var(--operational-sage-dim);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.rowBody {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.rowBody strong {
+  overflow: hidden;
+  color: var(--operational-ink);
+  font-size: 12.5px;
+  font-weight: 650;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rowBody span {
+  overflow: hidden;
+  color: var(--operational-ink-2);
+  font-size: 11.5px;
+  line-height: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusBadge {
+  flex: none;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--operational-sage);
+  background: var(--operational-sage-dim);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 15px;
+}
+
+.inactiveBadge {
+  color: var(--operational-muted);
+  background: rgba(31, 35, 28, 0.06);
+}
+
+.stateRow {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 13px 16px;
+  color: var(--operational-sage);
+  font-size: 11.5px;
+  line-height: 17px;
+  text-align: center;
+}
+
+.errorRow {
+  justify-content: flex-start;
+  border-color: rgba(184, 92, 61, 0.2);
+  color: var(--operational-rust);
+  background: var(--operational-rust-dim);
+  text-align: left;
+}
+
+.buttonSpinner {
+  flex: none;
+  animation: operational-spin 900ms linear infinite;
+}
+
+.dialogLayer {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+
+.dialogScrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(24, 29, 24, 0.42);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.dialog {
+  position: relative;
+  z-index: 1;
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  border: 1px solid rgba(31, 35, 28, 0.08);
+  border-radius: 16px;
+  background: var(--operational-paper);
+  box-shadow: 0 28px 72px -20px rgba(20, 28, 21, 0.42);
+}
+
+.dialogHeader {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 14px 11px 18px;
+  border-bottom: 1px solid var(--operational-rule);
+}
+
+.dialogIcon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: none;
+  place-items: center;
+  border-radius: 13px;
+  color: var(--operational-sage);
+  background: var(--operational-sage-dim);
+}
+
+.dialogHeader > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.dialogHeader h2 {
+  margin: 2px 0 0;
+  color: var(--operational-ink);
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 22px;
+  letter-spacing: -0.012em;
+}
+
+.iconButton {
+  display: grid;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--operational-ink-2);
+  background: transparent;
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  background: rgba(31, 35, 28, 0.055);
+}
+
+.iconButton:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dialogIntro {
+  margin: 0;
+  padding: 16px 18px 0;
+  color: var(--operational-ink-2);
+  font-size: 12.5px;
+  line-height: 19px;
+}
+
+.dialogForm {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 17px 18px 0;
+}
+
+.fieldGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field > span {
+  color: var(--operational-ink-2);
+  font-size: 11.5px;
+  font-weight: 650;
+  line-height: 16px;
+}
+
+.field input,
+.field select {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 12px;
+  border: 1px solid rgba(31, 35, 28, 0.14);
+  border-radius: 10px;
+  outline: none;
+  color: var(--operational-ink);
+  background: var(--operational-paper);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  transition: border-color 150ms ease-out, box-shadow 150ms ease-out;
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--operational-sage-2);
+  box-shadow: 0 0 0 3px rgba(92, 122, 96, 0.12);
+}
+
+.field input:disabled,
+.field select:disabled {
+  color: var(--operational-muted);
+  background: var(--operational-wash);
+  cursor: not-allowed;
+}
+
+.field input::placeholder {
+  color: var(--operational-muted);
+}
+
+.dialogError {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(184, 92, 61, 0.2);
+  border-radius: 10px;
+  color: var(--operational-rust);
+  background: var(--operational-rust-dim);
+  font-size: 11.5px;
+  line-height: 17px;
+}
+
+.dialogError svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.dialogFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 4px -18px 0;
+  padding: 14px 18px 18px;
+  border-top: 1px solid var(--operational-rule);
+}
+
+@keyframes operational-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 560px) {
+  .sectionHeader {
+    align-items: start;
+    gap: 12px;
+  }
+
+  .addButton {
+    min-width: 72px;
+    padding: 0 12px;
+  }
+
+  .staffRow {
+    min-height: 60px;
+    padding: 10px 12px;
+  }
+
+  .statusBadge {
+    padding: 4px 7px;
+  }
+
+  .dialogLayer {
+    align-items: end;
+    padding: 0;
+  }
+
+  .dialog {
+    width: 100%;
+    max-height: 92dvh;
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 18px 18px 0 0;
+  }
+
+  .fieldGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .dialogFooter {
+    padding-bottom: max(18px, env(safe-area-inset-bottom));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .addButton,
+  .primaryButton,
+  .secondaryButton,
+  .field input,
+  .field select {
+    transition: none;
+  }
+
+  .addButton:active,
+  .primaryButton:active:not(:disabled),
+  .secondaryButton:active:not(:disabled) {
+    transform: none;
+  }
+
+  .buttonSpinner {
+    animation: none;
+  }
+}

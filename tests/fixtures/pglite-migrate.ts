@@ -145,7 +145,12 @@ async function applyStubs(pg: PGlite): Promise<void> {
       select current_setting('request.jwt.claim.role', true);
     $$;
     create or replace function auth.jwt() returns jsonb
-      language sql stable as $$ select '{}'::jsonb; $$;
+      language sql stable as $$
+      select coalesce(
+        nullif(current_setting('request.jwt.claims', true), '')::jsonb,
+        '{}'::jsonb
+      );
+    $$;
 
     create table if not exists auth.users (
       id uuid primary key default gen_random_uuid(),
