@@ -1,6 +1,5 @@
 .root {
   position: relative;
-  width: 100%;
   max-width: 100%;
   min-height: 44px;
   color: var(--company-sage);

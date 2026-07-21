@@ -205,6 +205,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /requested !== null && !isTabId\(requested\)[\s\S]*params\.set\(['"]tab['"], ['"]overview['"]\)[\s\S]*router\.replace/);
     assert.match(companyCss, /\.hero \{[\s\S]*grid-template-columns: minmax\(0, 1fr\) auto minmax\(0, 1fr\);/);
     assert.match(hotelSwitcherCss, /\.trigger \{[\s\S]*min-height: 44px;[\s\S]*grid-template-columns: 24px minmax\(0, 1fr\) 24px;/);
+    assert.doesNotMatch(hotelSwitcherCss, /\.root \{[^}]*\n\s*width:/);
     assert.match(companyCss, /\.tabs \.teamInviteButton \{[\s\S]*min-height: 42px;[\s\S]*background: var\(--company-sage\);/);
   });
 
