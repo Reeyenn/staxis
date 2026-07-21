@@ -227,12 +227,12 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       is_active: s.is_active !== false,
       scheduled_today: s.scheduled_today !== false,
       // Surfaced for the board's Priority modal (current chip state) and
-      // the Send-links action (needs a phone to text the shift link).
+      // Send-links eligibility. The board only needs presence/absence; the
+      // raw contact stays behind the manage_team-gated contacts API.
       schedule_priority: (['priority', 'normal', 'excluded'].includes(s.schedule_priority ?? '')
         ? s.schedule_priority
         : 'normal') as 'priority' | 'normal' | 'excluded',
       has_phone: typeof s.phone === 'string' && s.phone.trim().length > 0,
-      phone: s.phone ?? null,
       workload_minutes: workloadByHk.get(s.id) ?? 0,
     }));
 

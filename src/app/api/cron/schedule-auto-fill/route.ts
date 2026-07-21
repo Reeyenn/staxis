@@ -40,6 +40,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
+const AUTO_FILL_STAFF_COLS = 'id, name, language, is_senior, department, scheduled_today, weekly_hours, max_weekly_hours, max_days_per_week, days_worked_this_week, vacation_dates, is_active, schedule_priority, last_paired_at';
+
 interface PropertyRow {
   id: string;
   name: string;
@@ -136,7 +138,7 @@ async function autoFillForProperty(
   //    the same rules the staff page's `isEligible` does.
   const { data: staffRows, error: staffErr } = await supabaseAdmin
     .from('staff')
-    .select('*')
+    .select(AUTO_FILL_STAFF_COLS)
     .eq('property_id', property.id);
   if (staffErr) {
     return {

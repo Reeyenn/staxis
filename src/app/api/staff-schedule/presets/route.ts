@@ -19,6 +19,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
 import { verifyTeamManager, callerCan } from '@/lib/team-auth';
+import { requireSectionEnabled } from '@/lib/sections/server';
 import { validateUuid } from '@/lib/api-validate';
 import { fromShiftPresetRow } from '@/lib/db-mappers';
 import type { StaffDepartment } from '@/types';
@@ -27,6 +28,8 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const VALID_DEPTS: StaffDepartment[] = ['housekeeping','front_desk','maintenance','other'];
+const MAX_PRESETS = 50;
+const MAX_PRESET_NAME = 80;
 
 // 'HH:MM' or 'HH:MM:SS'. Postgres `time` accepts both.
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
@@ -88,13 +91,29 @@ export async function PUT(req: NextRequest) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
+
   const presets = Array.isArray(body.presets) ? body.presets : [];
+  if (presets.length > MAX_PRESETS) {
+    return err(`presets must contain at most ${MAX_PRESETS} entries`, {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
   // Validate every preset before any DB write.
   for (const p of presets) {
-    if (!p.name?.trim()) return err('Preset name required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    if (!p.name?.trim() || p.name.trim().length > MAX_PRESET_NAME) {
+      return err(`Preset name required (1–${MAX_PRESET_NAME} chars)`, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    if (p.id && validateUuid(p.id, 'preset id').error) {
+      return err('Invalid preset id', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
     if (!VALID_DEPTS.includes(p.department)) return err('Invalid department', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     if (!TIME_RE.test(p.startTime) || !TIME_RE.test(p.endTime)) {
       return err('Invalid time format (HH:MM)', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    if (p.startTime.slice(0, 5) === p.endTime.slice(0, 5)) {
+      return err('Preset start and end times must differ', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
   }
 
@@ -102,8 +121,12 @@ export async function PUT(req: NextRequest) {
   // Simpler approach (one less round-trip) is "delete all, insert all", but that
   // would null out scheduled_shifts.preset_id for kept presets too. So do the
   // diff manually.
-  const { data: existing } = await supabaseAdmin
+  const { data: existing, error: existingErr } = await supabaseAdmin
     .from('property_shift_presets').select('id').eq('property_id', hotelId);
+  if (existingErr) {
+    log.error('[presets:PUT] existing query failed', { requestId, msg: errToString(existingErr) });
+    return err('Failed to read presets', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
   const existingIds = new Set((existing ?? []).map(r => String(r.id)));
   const keepIds = new Set<string>();
   const toUpdate: { id: string; row: Record<string, unknown> }[] = [];
@@ -127,17 +150,9 @@ export async function PUT(req: NextRequest) {
   });
   const toDelete = [...existingIds].filter(id => !keepIds.has(id));
 
-  if (toDelete.length) {
-    const { error } = await supabaseAdmin
-      .from('property_shift_presets').delete().in('id', toDelete);
-    if (error) {
-      log.error('[presets:PUT] delete failed', { requestId, msg: errToString(error) });
-      return err('Failed to remove presets', { requestId, status: 500, code: ApiErrorCode.InternalError });
-    }
-  }
   for (const u of toUpdate) {
     const { error } = await supabaseAdmin
-      .from('property_shift_presets').update(u.row).eq('id', u.id);
+      .from('property_shift_presets').update(u.row).eq('id', u.id).eq('property_id', hotelId);
     if (error) {
       log.error('[presets:PUT] update failed', { requestId, msg: errToString(error) });
       return err('Failed to update preset', { requestId, status: 500, code: ApiErrorCode.InternalError });
@@ -149,6 +164,17 @@ export async function PUT(req: NextRequest) {
     if (error) {
       log.error('[presets:PUT] insert failed', { requestId, msg: errToString(error) });
       return err('Failed to create presets', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+  }
+  // Delete last so a failed update/insert cannot wipe working presets.
+  if (toDelete.length) {
+    const { error } = await supabaseAdmin
+      .from('property_shift_presets').delete()
+      .eq('property_id', hotelId)
+      .in('id', toDelete);
+    if (error) {
+      log.error('[presets:PUT] delete failed', { requestId, msg: errToString(error) });
+      return err('Failed to remove presets', { requestId, status: 500, code: ApiErrorCode.InternalError });
     }
   }
 

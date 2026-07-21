@@ -190,7 +190,11 @@ function ShiftRow({
   shRef.current = sh;
 
   const left = ((sh.startMin - rangeStart) / span) * 100;
-  const width = ((sh.endMin - sh.startMin) / span) * 100;
+  // Overnight shifts retain their full duration for hours/pay calculations,
+  // but this single-day track ends at midnight. Clip the visual block at the
+  // track edge; the exact end still appears in its label/editor.
+  const visualEnd = Math.min(sh.endMin, rangeEnd);
+  const width = ((visualEnd - sh.startMin) / span) * 100;
   const name = shortName(nameOf(sh.staffId));
 
   // Entrance: the row's space opens, then the block slides in and the
@@ -240,6 +244,12 @@ function ShiftRow({
     const perMin = w / span;
     const x0 = e.clientX, y0 = e.clientY;
     const s0 = shRef.current.startMin, e0 = shRef.current.endMin, dur = e0 - s0;
+    // Editing an overnight span on a one-day drag track is ambiguous (the end
+    // lives on tomorrow). A tap still opens the precise clock-time editor.
+    if (e0 > 24 * 60) {
+      if (mode === 'move') onTapShift(sh.id);
+      return;
+    }
     // Tap vs drag: the gesture (undo snapshot + save-on-release) only starts
     // once the pointer actually travels; a clean tap opens the time editor.
     let started = false;

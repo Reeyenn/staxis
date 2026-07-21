@@ -7,21 +7,24 @@ import type { InventoryItem } from '@/types';
 import { supabase, logErr, subscribeTable, asRecordRows } from './_common';
 import { toInventoryRow, fromInventoryRow } from '../db-mappers';
 
+// Browser inventory reads are intentionally operational-only. Postgres RLS
+// scopes rows but cannot conditionally hide cost columns from a line-staff
+// member who legitimately needs stock counts. Finance-capable managers receive
+// those fields from the server-gated financial-evidence route instead.
+export const INVENTORY_OPERATIONAL_COLUMNS =
+  'id,property_id,created_at,created_by,archived_at,archived_by,name,category,custom_category_id,current_stock,set_aside,par_level,reorder_at,unit,notes,updated_at,usage_per_checkout,usage_per_stayover,reorder_lead_days,vendor_name,vendor_id,last_ordered_at,last_alerted_at,last_counted_at,opening_adjustment_quantity,opening_adjustment_at,opening_adjustment_request_id,pack_size,case_unit';
+
 export function subscribeToInventory(
   _uid: string, pid: string,
   callback: (items: InventoryItem[]) => void,
   onError?: (error: unknown) => void,
-  includeFinancials = true,
 ): () => void {
   return subscribeTable<InventoryItem>(
     `inventory:${pid}`, 'inventory', `property_id=eq.${pid}`,
     async () => {
-      const columns = includeFinancials
-        ? '*'
-        : 'id,property_id,created_at,created_by,archived_at,archived_by,name,category,custom_category_id,current_stock,set_aside,par_level,reorder_at,unit,notes,updated_at,usage_per_checkout,usage_per_stayover,reorder_lead_days,vendor_name,vendor_id,last_ordered_at,last_alerted_at,last_counted_at,pack_size,case_unit';
       const { data, error } = await supabase
         .from('inventory')
-        .select(columns)
+        .select(INVENTORY_OPERATIONAL_COLUMNS)
         .eq('property_id', pid)
         .is('archived_at', null);
       if (error) throw error;

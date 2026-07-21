@@ -19,7 +19,7 @@ import {
 } from '@/lib/db';
 import type { ScheduledShift, ShiftPreset, StaffMember, TimeOffRequest, StaffDepartment } from '@/types';
 import {
-  addDaysYmd, sundayOf, toMin, toHHMM, sameShiftSet, ymdToday,
+  addDaysYmd, sundayOf, toMin, toHHMM, normalizeShiftEnd, sameShiftSet, ymdToday,
   type BoardShift,
 } from '@/lib/schedule-board';
 import { asDeptKey } from '../_tokens';
@@ -87,24 +87,47 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   const [serverShifts, setServerShifts] = useState<ScheduledShift[]>([]);
   const [presets, setPresets] = useState<ShiftPreset[]>([]);
   const [tor, setTor] = useState<TimeOffRequest[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const requestedKey = propertyId ? `${propertyId}:${windowStart}:${windowEnd}` : null;
+  const loading = requestedKey !== null && loadedKey !== requestedKey && !loadError;
+  const retry = useCallback(() => setRetryNonce(n => n + 1), []);
 
   useEffect(() => {
     if (!propertyId) {
-      setServerShifts([]); setPresets([]); setTor([]); setLoading(false);
+      setServerShifts([]); setPresets([]); setTor([]);
+      setLoadedKey(null); setLoadError(null);
       return;
     }
-    setLoading(true);
+    const subscriptionKey = `${propertyId}:${windowStart}:${windowEnd}`;
+    setServerShifts([]); setPresets([]); setTor([]);
+    setLoadedKey(null);
+    setLoadError(null);
+    const pending = new Set(['shifts', 'presets', 'time-off']);
+    const done = (part: string) => {
+      pending.delete(part);
+      if (pending.size === 0) setLoadedKey(subscriptionKey);
+    };
+    const fail = () => {
+      setLoadError('Could not load the schedule. Check your connection and try again.');
+    };
     const unsubs = [
       subscribeToScheduledShifts('', propertyId, windowStart, windowEnd, rows => {
         setServerShifts(rows);
-        setLoading(false);
-      }),
-      subscribeToShiftPresets('', propertyId, setPresets),
-      subscribeToTimeOffRequests('', propertyId, setTor),
+        done('shifts');
+      }, fail),
+      subscribeToShiftPresets('', propertyId, rows => {
+        setPresets(rows);
+        done('presets');
+      }, fail),
+      subscribeToTimeOffRequests('', propertyId, rows => {
+        setTor(rows);
+        done('time-off');
+      }, undefined, fail),
     ];
     return () => { unsubs.forEach(u => { try { u(); } catch { /* ignore */ } }); };
-  }, [propertyId, windowStart, windowEnd]);
+  }, [propertyId, windowStart, windowEnd, retryNonce]);
 
   // ── Server day map (assigned shifts only), stable name order ──────────
   const nameOf = useMemo(() => {
@@ -115,11 +138,11 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
 
   const serverDayMap = useMemo(() => {
     const map: Record<string, BoardShift[]> = {};
+    if (loadedKey !== requestedKey) return map;
     for (const s of serverShifts) {
       if (s.kind !== 'shift' || !s.staffId) continue;
       const startMin = toMin(s.startTime);
-      let endMin = toMin(s.endTime);
-      if (endMin <= startMin) endMin = 24 * 60; // legacy overnight rows: clamp at midnight
+      const endMin = normalizeShiftEnd(startMin, toMin(s.endTime));
       (map[s.shiftDate] ??= []).push({
         id: s.id,
         staffId: s.staffId,
@@ -133,7 +156,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
       map[date].sort((a, b) => nameOf(a.staffId).localeCompare(nameOf(b.staffId)));
     }
     return map;
-  }, [serverShifts, nameOf]);
+  }, [serverShifts, nameOf, loadedKey, requestedKey]);
 
   // ── Optimistic per-day overrides ──────────────────────────────────────
   // liveOv is the SYNCHRONOUS source of truth for local edits — saves fired
@@ -209,6 +232,9 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   // across upcoming weeks, undo of one) go out as sequential week chunks.
   const saveDays = useCallback((entries: DayEntry[]): Promise<FillResult> => {
     if (!propertyId) return Promise.reject(new Error('No property selected'));
+    if (!requestedKey || loadedKey !== requestedKey) {
+      return Promise.reject(new Error('Wait for the schedule to finish loading before making changes'));
+    }
     const dates = entries.map(e => e.date);
     for (const d of dates) {
       pendingSaves.current.set(d, (pendingSaves.current.get(d) ?? 0) + 1);
@@ -241,7 +267,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
                   staffId: s.staffId,
                   department: s.dept,
                   startTime: toHHMM(s.startMin),
-                  endTime: toHHMM(Math.min(s.endMin, 24 * 60 - 1)),
+                  endTime: toHHMM(s.endMin),
                   note: s.note ?? null,
                   ...(s.overrideTimeOff ? { overrideTimeOff: true } : {}),
                 })),
@@ -296,7 +322,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
       }
     });
     return run;
-  }, [propertyId, clearOverrides, getDayLive]);
+  }, [propertyId, requestedKey, loadedKey, clearOverrides, getDayLive]);
 
   /** Persist the current local state of a single day (gesture end). */
   const commitDay = useCallback((date: string) => {
@@ -367,7 +393,11 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   const deleteTemplate = useCallback(async (id: string) => {
     if (!propertyId) return;
     const res = await fetchWithAuth(`/api/staff-schedule/templates?hotelId=${propertyId}&id=${id}`, { method: 'DELETE' });
-    if (res.ok) setTemplates(prev => prev.filter(t => t.id !== id));
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body?.error || 'Failed to delete template');
+    }
+    setTemplates(prev => prev.filter(t => t.id !== id));
   }, [propertyId]);
 
   // ── Week sign-offs ("Finish week") ────────────────────────────────────
@@ -449,7 +479,7 @@ export function useScheduleData(propertyId: string | null, staff: StaffMember[])
   }, [serverDayMap, overrides]);
 
   return {
-    today, windowStart, windowEnd, extendBack, canExtendBack, loading,
+    today, windowStart, windowEnd, extendBack, canExtendBack, loading, loadError, retry,
     presets, nameOf,
     getDay, countByDate,
     setDayLocal, beginGesture, endGesture, commitDay, applyDays,

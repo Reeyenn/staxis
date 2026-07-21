@@ -17,10 +17,8 @@ import {
   upsertInventoryCustomCategory,
   deleteInventoryCustomCategory,
   updateProperty,
-  monthToDateSpendDetail,
   sectionBudgetKey,
   saveInventoryCountAtomic,
-  type MonthSpendDetail,
 } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { generateId } from '@/lib/utils';
@@ -35,7 +33,6 @@ import {
 } from '@/lib/inventory-quick-count-attempt';
 import { fetchOccupancyBundle, type OccupancyBundle } from '@/lib/inventory-estimate';
 import {
-  inventoryCloseWindow,
   inventoryMonthKeyInZone,
   type InventoryMonthCloseDashboard,
 } from '@/lib/inventory-month-close';
@@ -78,6 +75,22 @@ import { missingPriceItemNames } from './inventory-value';
 import mobileStyles from './MobileInventoryTriage.module.css';
 import { inventoryOverlayAfterCountSave } from './inventory-count-navigation';
 import {
+  inventoryFinancialDataEnabled,
+  inventoryOperationalDetailsFailed,
+} from './inventory-financial-access';
+import {
+  EMPTY_INVENTORY_FINANCIAL_EVIDENCE,
+  hydrateInventoryCounts,
+  hydrateInventoryDeliveries,
+  hydrateInventoryDiscards,
+  hydrateInventoryItems,
+  inventoryBoardRequestIsCurrent,
+  inventoryFinancialEvidenceFromPayload,
+  inventoryFinancialRequestIsCurrent,
+  type InventoryFinancialEvidence,
+  type InventoryFinancialRequestScope,
+} from './inventory-financial-evidence';
+import {
   inventoryAuditDeliveryForActiveProperty,
   inventoryAuditMatchesProperty,
 } from './inventory-audit-state';
@@ -107,7 +120,7 @@ import { t, invLang, dateLocale } from './inv-i18n';
 // stays manual. `?action=ai` deep-links to it.
 type OverlayKey =
   | 'count'
-  | 'scan'
+  | 'delivery'
   | 'reports'
   | 'compare'
   | 'history'
@@ -119,7 +132,9 @@ type OverlayKey =
   | 'delivery-correction'
   | null;
 
-const VALID_QUERY_ACTIONS: ReadonlyArray<Exclude<OverlayKey, null>> = [
+type QueryAction = Exclude<OverlayKey, null> | 'scan';
+
+const VALID_QUERY_ACTIONS: ReadonlyArray<QueryAction> = [
   'count', 'scan', 'reports', 'compare', 'history', 'budgets', 'close', 'ai', 'add',
 ];
 
@@ -131,6 +146,14 @@ const NOTICE_STYLE: React.CSSProperties = {
   fontFamily: fonts.sans,
   color: T.ink2,
 };
+
+// The live board consumes only the whole-property purchase subtotal and its
+// completeness bit. Category/custom-section budget actuals come from immutable
+// month-close evidence, never from this receipt subtotal.
+interface InventoryCurrentMonthSpend {
+  total: number;
+  complete: boolean;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -259,7 +282,21 @@ export function InventoryShell() {
   // Reports + Budgets panels, the reorder budget meters) AND the budget/spend
   // data fetch below, so the figures never reach a line-staff browser. Stock
   // counts + low-stock badges stay visible to everyone. (Access cleanup 2026-06-26.)
-  const canViewFinancials = inventoryContextReady && can('view_financials');
+  const canViewFinancials = inventoryFinancialDataEnabled({
+    contextReady: inventoryContextReady,
+    hasCapability: can('view_financials'),
+    enabledSections: activeProperty?.enabledSections,
+  });
+  const canScanInvoices = canManage && canViewFinancials;
+  const boardRequestScope: InventoryFinancialRequestScope | null = capabilityViewerKey && activePropertyId
+    ? {
+        propertyId: activePropertyId,
+        viewerKey: capabilityViewerKey,
+        financialsEnabled: canViewFinancials,
+      }
+    : null;
+  const boardRequestScopeRef = React.useRef<InventoryFinancialRequestScope | null>(boardRequestScope);
+  boardRequestScopeRef.current = boardRequestScope;
   // PropertyContext hydrates the stored IANA zone. Until it is available (or
   // if a legacy row is invalid), use deterministic UTC — never the browser or
   // a different hotel's hard-coded calendar.
@@ -276,6 +313,9 @@ export function InventoryShell() {
   // separate /inventory/ai report screen.
   const EMPTY_ML_RATES: Map<string, number> = useMemo(() => new Map(), []);
   const [items, setItems] = useState<InventoryItem[]>([]);
+  const financialEvidenceRef = React.useRef<InventoryFinancialEvidence>(
+    EMPTY_INVENTORY_FINANCIAL_EVIDENCE,
+  );
   const [occupancy, setOccupancy] = useState<OccupancyBundle | null>(null);
   const [averages, setAverages] = useState<DailyAverages | null>(null);
   const [counts, setCounts] = useState<InventoryCount[]>([]);
@@ -290,9 +330,7 @@ export function InventoryShell() {
   const [budgetMode, setBudgetMode] = useState<InventoryBudgetMode>(
     activeProperty?.inventoryBudgetMode ?? 'sections',
   );
-  const [spendDetail, setSpendDetail] = useState<MonthSpendDetail>({
-    byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
-    byItem: {},
+  const [spendDetail, setSpendDetail] = useState<InventoryCurrentMonthSpend>({
     total: 0,
     complete: true,
   });
@@ -368,6 +406,7 @@ export function InventoryShell() {
   // the manager can open the same delivery again.
   const [auditDeliveryLookupRevision, setAuditDeliveryLookupRevision] = useState(0);
   const auditLoadSequence = React.useRef(0);
+  const boardLoadSequence = React.useRef(0);
   // A successful first page is a same-property snapshot that can stay visible
   // while the next open revalidates it. The property/capability lifecycle effect
   // below clears this tag before a different response shape may be requested.
@@ -402,6 +441,7 @@ export function InventoryShell() {
   useEffect(() => {
     if (!uid || !activePropertyId || !inventoryContextReady) return;
     setInventoryDataViewerKey(capabilityViewerKey);
+    financialEvidenceRef.current = EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
     setItems([]);
     setOccupancy(null);
     setAverages(null);
@@ -411,8 +451,6 @@ export function InventoryShell() {
     setBudgets([]);
     setBudgetSections([]);
     setSpendDetail({
-      byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
-      byItem: {},
       total: 0,
       complete: false,
     });
@@ -448,7 +486,7 @@ export function InventoryShell() {
           window.clearTimeout(retryTimer);
           retryTimer = null;
         }
-        setItems(snap);
+        setItems(hydrateInventoryItems(snap, financialEvidenceRef.current.inventory));
         setItemsLoadError(false);
         setItemsLoaded(true);
       }, (error) => {
@@ -467,7 +505,7 @@ export function InventoryShell() {
         window.clearTimeout(timeout);
         setItemsLoadError(true);
         setItemsLoaded(true);
-      }, canViewFinancials);
+      });
     };
     subscribe(0);
 
@@ -485,6 +523,11 @@ export function InventoryShell() {
   // days-left) + counts/orders/budgets/spend only. No ML predicted-rate fetch,
   // no auto-fill map, no ai-status/ai-mode call.
   const fetchBoardData = useCallback(async (uid: string, pid: string) => {
+    const requestScope: InventoryFinancialRequestScope = {
+      propertyId: pid,
+      viewerKey: `${uid}:${pid}`,
+      financialsEnabled: canViewFinancials,
+    };
     const safe = async <T,>(label: string, promise: Promise<T>): Promise<T | null> => {
       try {
         return await promise;
@@ -497,30 +540,40 @@ export function InventoryShell() {
     // Never calculate hotel money in a UTC fallback when its stored timezone
     // is invalid. Physical inventory remains available; finance sources are
     // marked unavailable and can be retried after configuration is fixed.
-    const monthWindow = financialDataReady
-      ? inventoryCloseWindow(
-          inventoryMonthKeyInZone(new Date(), propertyTimezone),
-          propertyTimezone,
-        )
-      : null;
+    const financialEvidencePromise: Promise<InventoryFinancialEvidence | null> = canViewFinancials && financialDataReady
+      ? fetchWithAuth(`/api/inventory/financial-evidence?propertyId=${encodeURIComponent(pid)}`, {
+          cache: 'no-store',
+        }).then(async (response) => {
+          // A section/capability may be revoked between the client snapshot and
+          // this request. That 401/403 is an expected no-finance result; the
+          // physical inventory snapshot remains valid and must still load.
+          if (response.status === 401 || response.status === 403) return null;
+          if (!response.ok) throw new Error(`financial evidence load failed (${response.status})`);
+          const evidence = inventoryFinancialEvidenceFromPayload(await response.json());
+          if (!evidence) throw new Error('financial evidence response was invalid');
+          return evidence;
+        })
+      : Promise.resolve(null);
     const closeDashboardPromise: Promise<InventoryMonthCloseDashboard | null> = canViewFinancials && financialDataReady
       ? fetchWithAuth(`/api/inventory/month-close?propertyId=${encodeURIComponent(pid)}`, { cache: 'no-store' })
           .then(async (response) => {
+            if (response.status === 401 || response.status === 403) return null;
             if (!response.ok) throw new Error(`month close load failed (${response.status})`);
             const dashboard = monthCloseDashboardFromPayload(await response.json());
             if (!dashboard) throw new Error('month close response was invalid');
             return dashboard;
           })
       : Promise.resolve(null);
-    const [occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats] = await Promise.all([
+    const [occ, avg, ctRaw, deliveryRowsRaw, lossRowsRaw, financialEvidence, bd, sec, closeDashboard, cats] = await Promise.all([
       safe('occupancy', fetchOccupancyBundle(pid, daysAgo(14))),
       safe('daily averages', fetchDailyAverages(pid, 14)),
       // A 40-item hotel counting daily generates 1,120 rows in four weeks.
       // Keep enough local history for a full field-test month rather than
       // silently truncating the reconciliation timeline after five saves.
-      safe('counts', listInventoryCounts(uid, pid, 2000, canViewFinancials)),
+      safe('counts', listInventoryCounts(uid, pid, 2000)),
       safe('delivery history', listEffectiveInventoryDeliveries(uid, pid, 200, canViewFinancials)),
-      safe('loss history', listInventoryDiscards(uid, pid, 2_000, canViewFinancials)),
+      safe('loss history', listInventoryDiscards(uid, pid, 2_000)),
+      safe('financial evidence', financialEvidencePromise),
       // Budget + spend are money — only fetch them for the money capability
       // so the dollar figures never reach a line-staff browser.
       canViewFinancials && financialDataReady
@@ -529,30 +582,44 @@ export function InventoryShell() {
       canViewFinancials && financialDataReady
         ? safe('budget sections', listInventoryBudgetSections(uid, pid))
         : Promise.resolve(canViewFinancials ? null : [] as InventoryBudgetSection[]),
-      canViewFinancials && financialDataReady && monthWindow
-        ? safe('purchase totals', monthToDateSpendDetail(uid, pid, monthWindow.monthStart, monthWindow.endExclusive))
-        : Promise.resolve(canViewFinancials ? null : {
-            byCat: { housekeeping: 0, maintenance: 0, breakfast: 0 },
-            byItem: {},
-            total: 0,
-            complete: true,
-          } as MonthSpendDetail),
       canViewFinancials && financialDataReady ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
       // Custom category tabs are not money — everyone who can see inventory
       // sees the tabs.
       safe('custom categories', listInventoryCustomCategories(uid, pid)),
     ]);
+    const ct = ctRaw == null
+      ? null
+      : hydrateInventoryCounts(ctRaw, financialEvidence?.counts ?? {});
+    const deliveryRows = deliveryRowsRaw == null
+      ? null
+      : hydrateInventoryDeliveries(deliveryRowsRaw, financialEvidence?.orders ?? {});
+    const lossRows = lossRowsRaw == null
+      ? null
+      : hydrateInventoryDiscards(lossRowsRaw, financialEvidence?.discards ?? {});
+    const spend: InventoryCurrentMonthSpend | null = canViewFinancials
+      ? financialEvidence == null
+        ? null
+        : financialEvidence.currentMonthSpend
+      : {
+          total: 0,
+          complete: true,
+        };
     const requiredResults = [occ, avg, ct, deliveryRows, lossRows, cats];
     // Finance panels expose their own unavailable/pending states. A failed or
     // intentionally skipped finance source must not masquerade as a failure of
     // the operational inventory connection.
     return {
+      requestScope,
+      financialEvidence,
       occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats,
-      partialFailure: requiredResults.some((value) => value == null),
+      partialFailure: inventoryOperationalDetailsFailed(requiredResults),
     };
-  }, [canViewFinancials, financialTimezoneValid, propertyTimezone]);
+  }, [canViewFinancials, financialTimezoneValid]);
 
   const applyBoardData = useCallback((d: Awaited<ReturnType<typeof fetchBoardData>>) => {
+    const financialEvidence = d.financialEvidence ?? EMPTY_INVENTORY_FINANCIAL_EVIDENCE;
+    financialEvidenceRef.current = financialEvidence;
+    setItems((current) => hydrateInventoryItems(current, financialEvidence.inventory));
     if (d.occ != null) setOccupancy(d.occ);
     if (d.avg != null) setAverages(d.avg);
     if (d.ct != null) setCounts(d.ct);
@@ -563,6 +630,8 @@ export function InventoryShell() {
     if (d.spend != null) {
       setSpendDetail(d.spend);
       setSpendDataAvailable(true);
+    } else {
+      setSpendDataAvailable(false);
     }
     if (d.closeDashboard != null) setMonthCloseDashboard(d.closeDashboard);
     if (d.cats != null) setCustomCategories(d.cats);
@@ -571,20 +640,25 @@ export function InventoryShell() {
   useEffect(() => {
     if (!uid || !activePropertyId || !inventoryContextReady) return;
     let cancelled = false;
+    const sequence = ++boardLoadSequence.current;
     setBundleLoaded(false);
     setBundleLoadError(false);
 
     void (async () => {
       try {
         const d = await fetchBoardData(uid, activePropertyId);
-        if (cancelled) return;
+        if (
+          cancelled
+          || sequence !== boardLoadSequence.current
+          || !inventoryBoardRequestIsCurrent(d.requestScope, boardRequestScopeRef.current)
+        ) return;
         applyBoardData(d);
         setBundleLoadError(d.partialFailure);
       } catch (err) {
         console.error('[inventory] data load failed', err);
-        if (!cancelled) setBundleLoadError(true);
+        if (!cancelled && sequence === boardLoadSequence.current) setBundleLoadError(true);
       } finally {
-        if (!cancelled) setBundleLoaded(true);
+        if (!cancelled && sequence === boardLoadSequence.current) setBundleLoaded(true);
       }
     })();
 
@@ -646,37 +720,50 @@ export function InventoryShell() {
   ): Promise<EffectiveInventoryDelivery | null> => {
     const requestedPropertyId = activePropertyId;
     const requestedUid = uid;
-    if (!requestedPropertyId || !requestedUid || !canManage || !canViewFinancials) return null;
+    const requestedScope = boardRequestScopeRef.current;
+    if (
+      !requestedPropertyId || !requestedUid || !canManage || !canViewFinancials
+      || !requestedScope?.financialsEnabled
+    ) return null;
     const delivery = await getEffectiveInventoryDelivery(
       requestedUid,
       requestedPropertyId,
       rootOrderId,
       true,
     );
+    const hydrated = delivery
+      ? hydrateInventoryDeliveries([delivery], financialEvidenceRef.current.orders)[0] ?? null
+      : null;
+    if (!inventoryFinancialRequestIsCurrent(requestedScope, boardRequestScopeRef.current)) return null;
     return inventoryAuditDeliveryForActiveProperty(
       requestedPropertyId,
       activePropertyIdRef.current,
       rootOrderId,
-      delivery,
+      hydrated,
     );
   }, [activePropertyId, uid, canManage, canViewFinancials]);
 
   // ── Honour ?action= deep links once on mount + when property switches ──
   useEffect(() => {
     const action = searchParams.get('action');
-    if (action && VALID_QUERY_ACTIONS.includes(action as Exclude<OverlayKey, null>)) {
+    if (action && VALID_QUERY_ACTIONS.includes(action as QueryAction)) {
       // The budget/spend overlays are money — never honour a ?action= deep link
       // to them for a non-money role (closes the deep-link back door).
       if ((action === 'reports' || action === 'compare' || action === 'budgets' || action === 'close') && !canViewFinancials) return;
-      if ((action === 'scan' || action === 'close') && !canManage) return;
+      // `?action=scan` is the historical direct link to invoice OCR. Manual
+      // delivery entry uses the distinct `delivery` overlay and stays usable
+      // for Inventory-only hotels without exposing a route that will 403.
+      if (action === 'scan' && !canScanInvoices) return;
+      if (action === 'delivery' && !canManage) return;
+      if (action === 'close' && !canManage) return;
       // A deep-linked add opens a NEW item — clear any stale edited item (we no
       // longer clear it on close, see closeOverlay).
       if (action === 'add') setEditItem(null);
-      setOverlay(action as OverlayKey);
+      setOverlay(action === 'scan' ? 'delivery' : action as OverlayKey);
     }
     // Run only on initial mount + param changes — we want sticky URLs.
 
-  }, [searchParams, canViewFinancials, canManage]);
+  }, [searchParams, canViewFinancials, canManage, canScanInvoices]);
 
   // ── Derived display items ──────────────────────────────────────────
   // Fully manual: no ML rates and no "ai-tracked" graduation marks. Empty
@@ -907,7 +994,7 @@ export function InventoryShell() {
   const openOverlay = useCallback((k: SidebarAction | 'add') => {
     // The "AI Helper" rail button opens the AI report as a large overlay like
     // any other action — the inventory tab itself stays manual.
-    if (k === 'scan' && !canManage) return;
+    if (k === 'delivery' && !canManage) return;
     if ((k === 'reports' || k === 'compare' || k === 'budgets' || k === 'close') && !canViewFinancials) return;
     if (k === 'close' && !canManage) return;
     if (k === 'count') setCountForMonthClose(false);
@@ -1283,14 +1370,21 @@ export function InventoryShell() {
   const refreshData = useCallback(async () => {
     if (!uid || !activePropertyId || !inventoryContextReady) return;
     const requestedPropertyId = activePropertyId;
+    const sequence = ++boardLoadSequence.current;
     try {
       const data = await fetchBoardData(uid, requestedPropertyId);
-      if (activePropertyIdRef.current !== requestedPropertyId) return;
+      if (
+        sequence !== boardLoadSequence.current
+        || activePropertyIdRef.current !== requestedPropertyId
+        || !inventoryBoardRequestIsCurrent(data.requestScope, boardRequestScopeRef.current)
+      ) return;
       applyBoardData(data);
       setBundleLoadError(data.partialFailure);
     } catch (err) {
       console.error('[inventory] refresh failed', err);
-      if (activePropertyIdRef.current === requestedPropertyId) setBundleLoadError(true);
+      if (sequence === boardLoadSequence.current && activePropertyIdRef.current === requestedPropertyId) {
+        setBundleLoadError(true);
+      }
     }
   }, [uid, activePropertyId, inventoryContextReady, fetchBoardData, applyBoardData]);
 
@@ -1735,7 +1829,7 @@ export function InventoryShell() {
         timezone={propertyTimezone}
         canCorrectDeliveries={canManage && canViewFinancials}
         onCorrectDelivery={onCorrectDelivery}
-        onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('scan'); }}
+        onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('delivery'); }}
         auditPropertyId={auditMatchesActiveProperty ? auditPropertyId : null}
         auditEvents={!auditMatchesActiveProperty ? [] : auditStatus === 'error' ? null : auditEvents}
         auditLoading={!auditMatchesActiveProperty || auditStatus === 'idle' || auditStatus === 'loading'}
@@ -1762,7 +1856,7 @@ export function InventoryShell() {
           setOverlay('history');
           void refreshData();
         }}
-        onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('scan'); }}
+        onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('delivery'); }}
       />
 
       <BudgetsPanel
@@ -1792,23 +1886,24 @@ export function InventoryShell() {
         onClose={closeOverlay}
       />
 
-      {/* "Add a delivery" — chooser over the scan flow + a typed-in path.
-          Keeps the 'scan' overlay key so ?action=scan deep links still work. */}
+      {/* "Add a delivery" — chooser over invoice OCR + a typed-in path. The
+          legacy ?action=scan link maps here only when scan access is allowed. */}
       <DeliverySheet
         lang={L}
-        open={overlay === 'scan' && canManage}
+        open={overlay === 'delivery' && canManage}
         onClose={() => { closeOverlay(); void refreshData(); }}
         display={display}
         timezone={propertyTimezone}
         customCategories={customCategories}
         tabLayout={tabLayout}
         canViewFinancials={canViewFinancials}
+        canScanInvoices={canScanInvoices}
       />
 
       <AddItemSheet
         lang={L}
         open={overlay === 'add'}
-        onClose={() => { closeOverlay(); }}
+        onClose={() => { closeOverlay(); void refreshData(); }}
         item={editItem}
         canViewFinancials={canViewFinancials}
         defaultCategory={addDefaultCategory}

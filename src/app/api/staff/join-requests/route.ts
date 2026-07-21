@@ -194,18 +194,36 @@ export async function PUT(req: NextRequest) {
   const nextAccess = Array.isArray(account.property_access) && account.property_access.includes(hotelId)
     ? account.property_access
     : [...(account.property_access ?? []), hotelId];
-  const { error: linkErr } = await supabaseAdmin
+  const { data: linkedAccount, error: linkErr } = await supabaseAdmin
     .from('accounts')
     .update({ staff_id: staffId, property_access: nextAccess })
     .eq('id', request.account_id)
-    .is('staff_id', null);
-  if (linkErr) {
-    log.error('[join-requests:PUT] account link failed', { requestId, msg: errToString(linkErr) });
+    .is('staff_id', null)
+    .select('id')
+    .maybeSingle();
+  if (linkErr || !linkedAccount) {
+    if (linkErr) {
+      log.error('[join-requests:PUT] account link failed', { requestId, msg: errToString(linkErr) });
+    } else {
+      log.warn('[join-requests:PUT] account link lost concurrency race', {
+        requestId,
+        accountId: request.account_id,
+      });
+    }
     await supabaseAdmin.from('staff').delete().eq('id', staffId).then(({ error: delErr }) => {
       if (delErr) log.error('[join-requests:PUT] staff rollback failed', { requestId, staffId, msg: errToString(delErr) });
     });
     await revertClaim();
-    return err('Failed to link their login — try again.', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err(
+      linkErr
+        ? 'Failed to link their login — try again.'
+        : 'That login was linked to another staff member. Refresh and try again.',
+      {
+        requestId,
+        status: linkErr ? 500 : 409,
+        code: linkErr ? ApiErrorCode.InternalError : ApiErrorCode.IdempotencyConflict,
+      },
+    );
   }
 
   await writeAudit({

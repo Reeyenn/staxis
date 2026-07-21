@@ -5864,6 +5864,10 @@ export type Database = {
         }
         Returns: Json
       }
+      staxis_list_inventory_financial_evidence: {
+        Args: { p_property_id: string }
+        Returns: Json
+      }
       staxis_parse_finite_numeric: {
         Args: { p_label: string; p_value: string }
         Returns: number

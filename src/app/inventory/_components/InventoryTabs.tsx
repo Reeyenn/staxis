@@ -360,6 +360,9 @@ export function InventoryTabs({
             type="button"
             // Done commits a typed-but-unsubmitted tab name (same as Enter);
             // without this, "type a name → tap Done" silently lost the name.
+            // Keep pointer focus on the input until click has read its value;
+            // otherwise the input's blur handler clears it first.
+            onPointerDown={(e) => { if (editing && adding) e.preventDefault(); }}
             onClick={() => { if (editing) commitNew(); setEditing((v) => !v); setAdding(false); }}
             style={editing ? {
               height: 36, padding: '0 18px', borderRadius: 999, cursor: 'pointer', marginLeft: 4,

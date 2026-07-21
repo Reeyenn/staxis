@@ -45,7 +45,8 @@ function validShiftList(list: unknown): list is TemplateShift[] {
     && Number.isInteger((s as TemplateShift).startMin)
     && Number.isInteger((s as TemplateShift).endMin)
     && (s as TemplateShift).startMin >= 0
-    && (s as TemplateShift).endMin <= 24 * 60
+    && (s as TemplateShift).startMin < 24 * 60
+    && (s as TemplateShift).endMin <= 2 * 24 * 60
     && (s as TemplateShift).endMin > (s as TemplateShift).startMin,
   );
 }

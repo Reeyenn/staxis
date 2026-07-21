@@ -117,8 +117,10 @@ export async function POST(req: NextRequest) {
       if (!TIME_RE.test(s.startTime) || !TIME_RE.test(s.endTime)) {
         return err('Invalid time format (HH:MM)', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
-      if (toMin(s.endTime) <= toMin(s.startTime)) {
-        return err('endTime must be after startTime', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+      // end < start is an overnight shift (for example 23:00–07:00).
+      // Equal clocks would be an ambiguous zero/24-hour shift, so reject it.
+      if (toMin(s.endTime) === toMin(s.startTime)) {
+        return err('startTime and endTime must differ', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
       }
     }
   }
@@ -138,10 +140,20 @@ export async function POST(req: NextRequest) {
   // Approved time-off in the affected window → those (staff, date) pairs are
   // skipped, exactly like the old Copy Last Week behaviour.
   const dates = days.map(d => d.date).sort();
-  const { data: tor } = await supabaseAdmin
+  const { data: tor, error: torErr } = await supabaseAdmin
     .from('time_off_requests').select('staff_id, request_date')
     .eq('property_id', hotelId).eq('status', 'approved')
     .gte('request_date', dates[0]).lte('request_date', dates[dates.length - 1]);
+  if (torErr) {
+    // Fail closed. Treating a failed time-off lookup as "no time off" could
+    // silently schedule people on approved leave.
+    log.error('[fill:POST] time-off query failed', { requestId, msg: errToString(torErr) });
+    return err('Failed to verify approved time off', {
+      requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
+  }
   const torKeys = new Set((tor ?? []).map(r => `${r.staff_id}:${r.request_date}`));
 
   let inserted = 0, updated = 0, deleted = 0, skippedTimeOff = 0, skippedUnknown = 0;
@@ -190,17 +202,6 @@ export async function POST(req: NextRequest) {
         status: String(row.status),
         note: row.note == null ? null : String(row.note),
       });
-    }
-
-    if (toDelete.length > 0) {
-      const { error: delErr } = await supabaseAdmin
-        .from('scheduled_shifts').delete()
-        .eq('property_id', hotelId).in('id', toDelete);
-      if (delErr) {
-        log.error('[fill:POST] delete failed', { requestId, msg: errToString(delErr) });
-        return err('Failed to clear replaced shifts', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      deleted += toDelete.length;
     }
 
     const toInsert: Record<string, unknown>[] = [];
@@ -253,6 +254,19 @@ export async function POST(req: NextRequest) {
         return err('Failed to add shifts', { requestId, status: 500, code: ApiErrorCode.InternalError });
       }
       inserted += toInsert.length;
+    }
+
+    // Delete stale rows last. If an update/insert fails, preserving extra old
+    // shifts is recoverable; deleting first could leave the whole day blank.
+    if (toDelete.length > 0) {
+      const { error: delErr } = await supabaseAdmin
+        .from('scheduled_shifts').delete()
+        .eq('property_id', hotelId).in('id', toDelete);
+      if (delErr) {
+        log.error('[fill:POST] delete failed', { requestId, msg: errToString(delErr) });
+        return err('Failed to clear replaced shifts', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      }
+      deleted += toDelete.length;
     }
   }
 

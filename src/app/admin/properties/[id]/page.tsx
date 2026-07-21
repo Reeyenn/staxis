@@ -76,7 +76,7 @@ interface HealthData {
     started_at: string | null;
     completed_at: string | null;
   }>;
-  staff: { count: number; sample: Array<{ id: string; name: string; phone: string | null; language: string; department: string; is_active: boolean }> };
+  staff: { count: number; sample: Array<{ id: string; name: string; language: string; department: string; is_active: boolean }> };
   owner: { email: string | null; displayName: string | null; username: string | null } | null;
 }
 

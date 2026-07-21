@@ -25,7 +25,10 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { EXPECTED_CRONS } from '@/app/api/admin/doctor/route';
+import {
+  ALLOWED_EXTRA_APPLIED_MIGRATIONS,
+  EXPECTED_CRONS,
+} from '@/app/api/admin/doctor/route';
 // Doctor exports EXPECTED_MIGRATIONS too, via the same const exports
 // pattern. Importing the array directly keeps this test honest — it
 // can't accidentally test against a stale copy.
@@ -80,6 +83,19 @@ function listMigrationFiles(): { version: string; filename: string; content: str
 }
 
 describe('migration bookkeeping', () => {
+  it('only suppresses the operator-verified historical production aliases', () => {
+    assert.deepEqual(
+      [...ALLOWED_EXTRA_APPLIED_MIGRATIONS].sort(),
+      [
+        '0205b',
+        '0234_status_log_changed_at_default',
+        '0264',
+        '0273',
+        '0279',
+      ],
+    );
+  });
+
   it('every migration either self-registers OR is in BACKFILLED_BASELINE OR is a stub', () => {
     const files = listMigrationFiles();
     const offenders: string[] = [];

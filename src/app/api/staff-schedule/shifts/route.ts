@@ -27,8 +27,16 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const VALID_DEPTS: StaffDepartment[] = ['housekeeping','front_desk','maintenance','other'];
+const VALID_KINDS: ScheduledShiftKind[] = ['shift', 'open'];
 const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/;
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_NOTE_LEN = 300;
+
+function cleanOptionalText(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
 
 interface ShiftInput {
   id?: string;
@@ -67,21 +75,54 @@ export async function POST(req: NextRequest) {
   if (!TIME_RE.test(s.startTime) || !TIME_RE.test(s.endTime)) {
     return err('Invalid time format (HH:MM)', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
+  if (s.startTime.slice(0, 5) === s.endTime.slice(0, 5)) {
+    return err('Shift start and end times must differ', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
   const kind: ScheduledShiftKind = s.kind ?? 'shift';
+  if (!VALID_KINDS.includes(kind)) {
+    return err('kind must be shift or open', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  if (kind === 'shift' && !s.staffId) {
+    return err('staffId is required for an assigned shift', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  const note = cleanOptionalText(s.note);
+  const reason = cleanOptionalText(s.reason);
+  if ((note?.length ?? 0) > MAX_NOTE_LEN || (reason?.length ?? 0) > MAX_NOTE_LEN) {
+    return err(`note and reason must be ${MAX_NOTE_LEN} characters or fewer`, {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
 
   // Validate staff_id belongs to this property when present.
   if (s.staffId) {
     const sidCheck = validateUuid(s.staffId, 'staffId');
     if (sidCheck.error) return err(sidCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-    const { data: staffRow } = await supabaseAdmin
-      .from('staff').select('id, property_id').eq('id', sidCheck.value!).maybeSingle();
-    if (!staffRow || staffRow.property_id !== hotelId) {
+    const { data: staffRow, error: staffErr } = await supabaseAdmin
+      .from('staff').select('id, property_id, is_active').eq('id', sidCheck.value!).maybeSingle();
+    if (staffErr) {
+      log.error('[shifts:POST] staff lookup failed', { requestId, msg: errToString(staffErr) });
+      return err('Failed to verify staff record', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+    if (!staffRow || staffRow.property_id !== hotelId || staffRow.is_active === false) {
       return err('Staff record not in this hotel', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
   }
   if (s.presetId) {
     const pidCheck = validateUuid(s.presetId, 'presetId');
     if (pidCheck.error) return err(pidCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    const { data: preset, error: presetErr } = await supabaseAdmin
+      .from('property_shift_presets')
+      .select('id')
+      .eq('id', pidCheck.value!)
+      .eq('property_id', hotelId)
+      .maybeSingle();
+    if (presetErr) {
+      log.error('[shifts:POST] preset lookup failed', { requestId, msg: errToString(presetErr) });
+      return err('Failed to verify preset', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+    if (!preset) {
+      return err('Preset not in this hotel', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
   }
 
   const row = {
@@ -93,8 +134,8 @@ export async function POST(req: NextRequest) {
     end_time:    s.endTime,
     kind,
     preset_id:   s.presetId ?? null,
-    note:        s.note ?? null,
-    reason:      s.reason ?? null,
+    note,
+    reason,
   };
 
   let savedId: string | null = null;

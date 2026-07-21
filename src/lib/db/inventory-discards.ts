@@ -38,12 +38,11 @@ export async function listInventoryDiscards(
   _uid: string,
   pid: string,
   limit = 200,
-  includeFinancials = true,
 ): Promise<InventoryDiscard[]> {
   const boundedLimit = Math.max(1, Math.min(2_000, Math.trunc(limit)));
-  const columns = includeFinancials
-    ? '*'
-    : 'id,property_id,activity_sequence,item_id,item_name,quantity,reason,discarded_at,discarded_by,notes,request_id,expected_stock,stock_before,stock_after,recorded_by_user_id,created_at';
+  // Cost evidence is hydrated separately through the finance-gated server
+  // route. Never let a caller opt a browser PostgREST query into cost columns.
+  const columns = 'id,property_id,activity_sequence,item_id,item_name,quantity,reason,discarded_at,discarded_by,notes,request_id,expected_stock,stock_before,stock_after,recorded_by_user_id,created_at';
   const { data, error } = await supabase
     .from('inventory_discards')
     .select(columns)

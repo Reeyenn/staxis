@@ -238,7 +238,7 @@ describe('scanned invoice reference hard block', () => {
     );
     assert.match(
       scanSource,
-      /listEffectiveInventoryDeliveries\(\s*user\.uid,\s*requestScope\.propertyId,\s*2000,\s*true,?\s*\)/,
+      /listEffectiveInventoryDeliveries\(\s*user\.uid,\s*requestScope\.propertyId,\s*2000,\s*false,?\s*\)/,
     );
     assert.match(scanSource, /actionable === 0 \|\| !invoiceReferenceReady \|\| duplicateBlocked/);
     assert.match(scanSource, /!retryLocked && \(!invoiceReferenceReady \|\| duplicateBlocked/);
@@ -277,8 +277,8 @@ describe('scanned invoice reference hard block', () => {
       '../../app/inventory/_components/overlays/DeliverySheet.tsx', import.meta.url,
     )), 'utf8');
 
-    assert.match(deliverySource, /mode === 'scan' && canViewFinancials/);
-    assert.match(deliverySource, /\{canViewFinancials && <OptionRow title=\{ds\.scanOption\}/);
+    assert.match(deliverySource, /mode === 'scan' && canScanInvoices/);
+    assert.match(deliverySource, /\{canScanInvoices && <OptionRow title=\{ds\.scanOption\}/);
     assert.match(deliverySource, /unitCost: canViewFinancials \? values\.totalCost \/ values\.quantity : null/);
     assert.match(deliverySource, /!canViewFinancials && <div role="note"/);
   });

@@ -24,7 +24,9 @@ import { fmtRange } from '@/lib/schedule-board';
 
 export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } = {}) {
   const { user } = useAuth();
-  const { activeProperty, activePropertyId, staff } = useProperty();
+  const {
+    activeProperty, activePropertyId, staff, staffLoaded, staffLoadFailed,
+  } = useProperty();
   const [requestOpen, setRequestOpen] = useState(false);
   const weekStart = useMemo(() => mondayOf(new Date()), []);
 
@@ -33,10 +35,20 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
   const staffId = previewStaffId !== undefined ? previewStaffId : (user?.staffId ?? null);
   const me = useMemo(() => staff.find(s => s.id === staffId) ?? null, [staff, staffId]);
   const {
-    days, byStaff, openShifts, torByStaff, publishedDates, presets,
+    days, byStaff, openShifts, torByStaff, publishedDates,
+    loading: shiftsLoading, loadError: shiftsLoadError, retry: retryShifts,
   } = useWeekShifts(activePropertyId, weekStart, staffId);
 
   const propName = activeProperty?.name ?? 'Your property';
+
+  if (staffId && (!staffLoaded || staffLoadFailed)) {
+    return (
+      <MyShiftsLoadState
+        error={staffLoadFailed}
+        onRetry={() => window.location.reload()}
+      />
+    );
+  }
 
   if (!staffId || !me) {
     return (
@@ -48,6 +60,15 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
   }
 
   const es = me.language === 'es';
+  if (shiftsLoading || shiftsLoadError) {
+    return (
+      <MyShiftsLoadState
+        error={!!shiftsLoadError}
+        onRetry={retryShifts}
+        es={es}
+      />
+    );
+  }
   const meDept = deptMeta[asDeptKey(me.department)];
   // Only show *published* shifts (drafts are manager-side). Past dates
   // still render even if not in a published week — they ran historically.
@@ -89,7 +110,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
   });
 
   return (
-    <div style={{
+    <div className="my-shifts-shell" style={{
       background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
       padding: '28px 48px 130px',
     }}>
@@ -99,6 +120,10 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
         @media (max-width: 900px) {
           .my-shifts-week-strip { grid-template-columns: 1fr 1fr; }
           .my-shifts-extras { grid-template-columns: 1fr; }
+        }
+        @media (max-width: 640px) {
+          .my-shifts-shell { padding: 18px 16px 110px !important; }
+          .my-shifts-week-strip { grid-template-columns: 1fr; }
         }
       `}</style>
 
@@ -224,6 +249,38 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
           es={es}
         />
       )}
+    </div>
+  );
+}
+
+function MyShiftsLoadState({
+  error, onRetry, es = false,
+}: {
+  error: boolean;
+  onRetry: () => void;
+  es?: boolean;
+}) {
+  return (
+    <div style={{
+      minHeight: 360, display: 'grid', placeItems: 'center', padding: 24,
+      color: T.ink, fontFamily: fonts.sans,
+    }}>
+      <div role={error ? 'alert' : 'status'} aria-live="polite" style={{
+        width: 'min(100%, 420px)', textAlign: 'center', padding: '28px 24px',
+        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+        boxShadow: T.cardShadow,
+      }}>
+        <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
+          {error
+            ? (es ? 'No se pudieron cargar tus turnos' : "Couldn't load your shifts")
+            : (es ? 'Cargando tus turnos…' : 'Loading your shifts…')}
+        </div>
+        {error && (
+          <Btn variant="primary" size="md" onClick={onRetry} style={{ marginTop: 10 }}>
+            {es ? 'Reintentar' : 'Retry'}
+          </Btn>
+        )}
+      </div>
     </div>
   );
 }

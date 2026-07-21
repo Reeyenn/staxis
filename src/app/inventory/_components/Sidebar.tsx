@@ -12,7 +12,7 @@ import type { InventoryBudgetActualState } from '@/lib/inventory-budget-actual';
 
 export type SidebarAction =
   | 'count'
-  | 'scan'
+  | 'delivery'
   | 'close'
   | 'reports'
   | 'compare'
@@ -81,7 +81,7 @@ export function Sidebar({
     >
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.do}</Caps>
       <RailBtn label={tx.startCount} badge={totalItems} primary onClick={() => onAction('count')} />
-      {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('scan')} />}
+      {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('delivery')} />}
       {canManage && canViewFinancials && <RailBtn label={tx.monthClose} onClick={() => onAction('close')} />}
       <Divider />
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.look}</Caps>

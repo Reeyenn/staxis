@@ -58,6 +58,9 @@ interface DeliverySheetProps {
   /** Costs and invoice OCR are financial evidence and stay out of browsers
    * whose hotel role lacks view_financials. */
   canViewFinancials: boolean;
+  /** Invoice OCR additionally requires inventory-management access. Keeping
+   * this explicit prevents a future non-manager caller from exposing scan. */
+  canScanInvoices: boolean;
 }
 
 // Delivery rows and stock increments commit in one database transaction. A
@@ -146,7 +149,7 @@ function validDeliveryDraft(value: unknown): DeliveryOverlayDraft | null {
 
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
-export function DeliverySheet({ lang, open, onClose, display, timezone, customCategories = [], tabLayout, canViewFinancials }: DeliverySheetProps) {
+export function DeliverySheet({ lang, open, onClose, display, timezone, customCategories = [], tabLayout, canViewFinancials, canScanInvoices }: DeliverySheetProps) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ds = dsStrings(lang);
@@ -226,7 +229,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
   if (!open) return null;
 
   // Scan path — the existing invoice flow, whole. Its close exits the sheet.
-  if (mode === 'scan' && canViewFinancials) {
+  if (mode === 'scan' && canScanInvoices) {
     return (
       <ScanInvoiceSheet
         lang={lang}
@@ -261,7 +264,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
       <Overlay open onClose={requestClose} hasUnsavedChanges={dirty} width={520} title={ds.title}>
         {draftRestored && <div role="status" style={deliveryDraftStyle}>{ds.draftRestored}</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {canViewFinancials && <OptionRow title={ds.scanOption} onPick={pickScan} />}
+          {canScanInvoices && <OptionRow title={ds.scanOption} onPick={pickScan} />}
           <OptionRow title={ds.manualOption} onPick={() => setMode('manual')} />
         </div>
       </Overlay>

@@ -24,11 +24,10 @@ export async function listInventoryOrders(
   _uid: string,
   pid: string,
   limit = 200,
-  includeFinancials = true,
 ): Promise<InventoryOrder[]> {
-  const columns = includeFinancials
-    ? '*'
-    : 'id,property_id,activity_sequence,item_id,item_name,quantity,quantity_cases,vendor_name,ordered_at,received_at,notes';
+  // Cost evidence is hydrated separately through the finance-gated server
+  // route. This projection remains safe for every property member.
+  const columns = 'id,property_id,activity_sequence,item_id,item_name,quantity,quantity_cases,vendor_name,ordered_at,received_at,notes,entry_kind,corrects_order_id,correction_event_id,created_at';
   const { data, error } = await supabase
     .from('inventory_orders')
     .select(columns)
@@ -99,7 +98,7 @@ export async function listEffectiveInventoryDeliveries(
   limit = 200,
   includeFinancials = true,
 ): Promise<EffectiveInventoryDelivery[]> {
-  const orders = await listInventoryOrders(uid, pid, limit, includeFinancials);
+  const orders = await listInventoryOrders(uid, pid, limit);
   const corrections = await listInventoryDeliveryCorrections(
     uid,
     pid,
@@ -125,9 +124,7 @@ export async function getEffectiveInventoryDelivery(
     [rootOrderId],
     includeFinancials,
   );
-  const columns = includeFinancials
-    ? '*'
-    : 'id,property_id,activity_sequence,item_id,item_name,quantity,quantity_cases,vendor_name,ordered_at,received_at,notes';
+  const columns = 'id,property_id,activity_sequence,item_id,item_name,quantity,quantity_cases,vendor_name,ordered_at,received_at,notes,entry_kind,corrects_order_id,correction_event_id,created_at';
   const { data, error } = await supabase
     .from('inventory_orders')
     .select(columns)

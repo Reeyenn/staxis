@@ -9,7 +9,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  toMin, toHHMM, fmtMin, fmtMinRange, fmtTime, fmtRange,
+  toMin, toHHMM, normalizeShiftEnd, fmtMin, fmtMinRange, fmtTime, fmtRange,
   addDaysYmd, sundayOf, daysBetween, dayInfo, weekLabel, buildWeeks,
   deptDefaultTimes, presetBoundaries, snapMin, boardRange, boardTicks,
   sameShiftSet, shortName, weekMinutesByStaff, fmtHours,
@@ -39,6 +39,15 @@ describe('minutes ↔ HH:MM ↔ display', () => {
     assert.equal(fmtMinRange(480, 960), '8a–4p');
     assert.equal(fmtRange('08:00', '16:00'), '8a–4p');
     assert.equal(fmtTime('15:30'), '3:30p');
+  });
+
+  test('overnight ends retain duration but serialize/display as clock time', () => {
+    const start = toMin('23:00');
+    const end = normalizeShiftEnd(start, toMin('07:00'));
+    assert.equal(end, 31 * 60);
+    assert.equal(toHHMM(end), '07:00');
+    assert.equal(fmtMinRange(start, end), '11p–7a');
+    assert.equal(normalizeShiftEnd(start, start), start, 'equal clocks remain invalid/zero length');
   });
 });
 
@@ -91,6 +100,16 @@ describe('presets, snapping, board geometry', () => {
   test('deptDefaultTimes prefers the first preset, falls back to static', () => {
     assert.deepEqual(deptDefaultTimes('housekeeping', PRESETS), { s: 480, e: 960 });
     assert.deepEqual(deptDefaultTimes('front_desk', PRESETS), { s: 420, e: 900 });
+  });
+
+  test('deptDefaultTimes represents an overnight preset on a monotonic timeline', () => {
+    const overnight = [{
+      id: 'p3', propertyId: 'x', name: 'Overnight', department: 'front_desk',
+      startTime: '23:00', endTime: '07:00', sortOrder: 0,
+      createdAt: new Date(), updatedAt: new Date(),
+    }] as ShiftPreset[];
+    assert.deepEqual(deptDefaultTimes('front_desk', overnight), { s: 1380, e: 1860 });
+    assert.deepEqual(presetBoundaries('front_desk', overnight, 'end'), [1860]);
   });
 
   test('snapMin pulls toward preset boundaries within 22min, else 15-grid', () => {
@@ -157,6 +176,13 @@ describe('weekly hours', () => {
     assert.equal(m.get('s1'), 480 + 510);
     assert.equal(m.get('s2'), 480);
     assert.equal(m.get('s3'), undefined);
+  });
+
+  test('weekMinutesByStaff counts an overnight 23:00–07:00 shift as 8h', () => {
+    const m = weekMinutesByStaff([[
+      { id: 'night', staffId: 's1', dept: 'front_desk', startMin: 1380, endMin: 1860 },
+    ]]);
+    assert.equal(m.get('s1'), 480);
   });
 
   test('fmtHours', () => {

@@ -16,13 +16,22 @@ export function toMin(t: string): number {
 }
 
 export function toHHMM(min: number): string {
-  const m = Math.max(0, Math.min(24 * 60, Math.round(min)));
+  // Board shifts may carry an overnight end as minutes beyond midnight
+  // (23:00–07:00 = 1380–1860). Database `time` values are clock times, so
+  // serialize on a 24-hour clock instead of clamping the end to 23:59.
+  const m = Math.max(0, Math.round(min)) % (24 * 60);
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+}
+
+/** Convert a clock end into a monotonic board end for an overnight shift. */
+export function normalizeShiftEnd(startMin: number, endClockMin: number): number {
+  return endClockMin < startMin ? endClockMin + 24 * 60 : endClockMin;
 }
 
 /** 480 → '8a' · 510 → '8:30a' · 720 → '12p' */
 export function fmtMin(min: number): string {
-  const h = Math.floor(min / 60), mm = min % 60;
+  const clock = Math.max(0, Math.round(min)) % (24 * 60);
+  const h = Math.floor(clock / 60), mm = clock % 60;
   const ap = h >= 12 ? 'p' : 'a';
   let h12 = h % 12; if (h12 === 0) h12 = 12;
   return mm ? `${h12}:${String(mm).padStart(2, '0')}${ap}` : `${h12}${ap}`;
@@ -174,7 +183,7 @@ export function deptDefaultTimes(
 ): { s: number; e: number } {
   const p = presets.find(x => x.department === dept);
   if (p) {
-    const s = toMin(p.startTime), e = toMin(p.endTime);
+    const s = toMin(p.startTime), e = normalizeShiftEnd(s, toMin(p.endTime));
     if (e > s) return { s, e };
   }
   return DEFAULT_DEPT_TIMES[dept];
@@ -186,7 +195,12 @@ export function presetBoundaries(
 ): number[] {
   return presets
     .filter(p => p.department === dept)
-    .map(p => toMin(which === 'start' ? p.startTime : p.endTime));
+    .map(p => {
+      const start = toMin(p.startTime);
+      return which === 'start'
+        ? start
+        : normalizeShiftEnd(start, toMin(p.endTime));
+    });
 }
 
 /**

@@ -90,4 +90,22 @@ describe('inventory manager workflow regressions', () => {
     assert.match(ask, /width:44px;height:44px/);
     assert.match(ask, /\.asx-mobile-sheet-inventory \.asx-mobile-composer\{padding-right:12px;\}/);
   });
+
+  test('tab editing commits a typed name before input blur can clear it', () => {
+    const tabs = source('app', 'inventory', '_components', 'InventoryTabs.tsx');
+
+    assert.match(tabs, /onBlur=\{cancelNew\}/);
+    assert.match(tabs, /onPointerDown=\{\(e\) => \{ if \(editing && adding\) e\.preventDefault\(\); \}\}[\s\S]*?onClick=\{\(\) => \{ if \(editing\) commitNew\(\)/);
+  });
+
+  test('tab removal confirmation is named, focus-contained, touch-safe, and motion-safe', () => {
+    const dialog = source('app', 'inventory', '_components', 'ConfirmDialog.tsx');
+
+    assert.match(dialog, /aria-labelledby=\{titleId\}/);
+    assert.match(dialog, /aria-describedby=\{message \? messageId : undefined\}/);
+    assert.match(dialog, /e\.key === 'Tab'[\s\S]*?actions\[next\]\?\.focus\(\)/);
+    assert.match(dialog, /returnFocusRef[\s\S]*?target\?\.isConnected[\s\S]*?target\.focus\(\)/);
+    assert.match(dialog, /prefers-reduced-motion: reduce/);
+    assert.equal((dialog.match(/minHeight: 44/g) ?? []).length, 2);
+  });
 });

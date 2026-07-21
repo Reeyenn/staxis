@@ -51,7 +51,7 @@ test('active inventory subscriptions and summaries exclude archived rows', () =>
 
 test('count history keeps enough rows for a multi-week hotel trial', () => {
   const shell = source('src', 'app', 'inventory', '_components', 'InventoryShell.tsx');
-  assert.match(shell, /listInventoryCounts\(uid,\s*pid,\s*2000,/);
+  assert.match(shell, /listInventoryCounts\(uid,\s*pid,\s*2000\)/);
 });
 
 test('account deletion blocks hotel owners before deleting their auth user', () => {

@@ -270,7 +270,7 @@ export function ScanInvoiceSheet({
         user.uid,
         requestScope.propertyId,
         2000,
-        true,
+        false,
       );
       if (!requestCurrent()) return 'stale' as const;
       // A fully voided invoice may be re-entered through the audited database

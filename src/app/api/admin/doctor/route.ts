@@ -576,7 +576,8 @@ const STORAGE_BUCKET_RLS_ALLOWLIST = new Set<string>([
  *   - applied_migrations table missing entirely → warn (0015 itself not applied yet)
  *   - subset applied → fail with the specific missing version list
  *   - all applied → ok, with the count
- *   - extras in DB not in code → warn (someone applied a hand-rolled migration)
+ *   - unknown extras in DB not in code → warn (someone applied a hand-rolled migration)
+ *   - documented historical aliases/renumbered migrations → ignore
  */
 
 // Static fallback list — used when the filesystem-globbing approach fails
@@ -728,6 +729,30 @@ function discoverMigrationsFromDisk(): ReadonlyArray<string> | null {
 export const EXPECTED_MIGRATIONS: ReadonlyArray<string> =
   discoverMigrationsFromDisk() ?? EXPECTED_MIGRATIONS_STATIC;
 
+/**
+ * Historical production rows that intentionally have no same-named file.
+ *
+ * These are not pending schema and must not keep the doctor permanently
+ * yellow. Each row is already superseded by a canonical numbered migration:
+ *
+ * - 0205b: emergency post-cutover cleanup that became 0205/0206 follow-ups.
+ * - 0234_status_log_changed_at_default: filename-style alias for 0234; both
+ *   rows were recorded when the hotfix was applied before the file landed.
+ * - 0264: parallel AI Agent Builder migration; 0265 documents the collision.
+ * - 0273: one-off join-code reconciliation later represented in auth code.
+ * - 0279: CUA human-loop migration renumbered after a reserved-slot collision.
+ *
+ * New entries require an operator-verified applied_migrations description and
+ * a comment here. This must never become a blanket prefix/shape allowlist.
+ */
+export const ALLOWED_EXTRA_APPLIED_MIGRATIONS: ReadonlySet<string> = new Set([
+  '0205b',
+  '0234_status_log_changed_at_default',
+  '0264',
+  '0273',
+  '0279',
+]);
+
 async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
     const { data, error } = await supabaseAdmin
@@ -760,7 +785,9 @@ async function checkAppliedMigrations(): Promise<Omit<Check, 'name' | 'durationM
     const PENDING_INTENTIONALLY: ReadonlySet<string> = new Set(['0162']);
     const missing = EXPECTED_MIGRATIONS.filter(v =>
       !applied.has(v) && !PENDING_INTENTIONALLY.has(v));
-    const unexpected = [...applied].filter(v => !EXPECTED_MIGRATIONS.includes(v));
+    const unexpected = [...applied].filter(
+      v => !EXPECTED_MIGRATIONS.includes(v) && !ALLOWED_EXTRA_APPLIED_MIGRATIONS.has(v),
+    );
     if (missing.length > 0) {
       return {
         status: 'fail',

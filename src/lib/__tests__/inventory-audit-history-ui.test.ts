@@ -297,6 +297,7 @@ describe('inventory audit-history financial access boundary', () => {
     assert.doesNotMatch(auditRequestLoader, /includeFinancials|view_financials|canViewFinancials/);
     assert.match(route, /const includeFinancials = canViewFinancials\(role\)/);
     assert.match(route, /canForProperty\(\{ role \}, 'view_financials', propertyId\)/);
+    assert.match(route, /isSectionEnabledForProperty\(propertyId, 'financials'\)/);
     assert.match(route, /includeFinancials,/);
     assert.match(panel, /historyEventsForViewer\(events, canViewFinancials\)/);
     assert.match(shell, /canCorrectDeliveries=\{canManage && canViewFinancials\}/);

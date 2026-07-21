@@ -16,11 +16,10 @@ export async function listInventoryCounts(
   _uid: string,
   pid: string,
   limit = 200,
-  includeFinancials = true,
 ): Promise<InventoryCount[]> {
-  const columns = includeFinancials
-    ? '*'
-    : 'id,property_id,activity_sequence,count_session_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes';
+  // Cost evidence is hydrated separately through the finance-gated server
+  // route. Never let a caller opt a browser PostgREST query into cost columns.
+  const columns = 'id,property_id,activity_sequence,count_session_id,item_id,item_name,counted_stock,estimated_stock,variance,counted_at,counted_by,notes,created_at';
   // Paged: PostgREST caps every response at 1000 rows, so a bare
   // .limit(2000) would silently return half the requested history
   // (see supabase-paginate.ts).

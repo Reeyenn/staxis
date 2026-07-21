@@ -75,6 +75,11 @@ interface TeamMember {
   staffId: string | null;
 }
 
+interface ContactSnapshot {
+  propertyId: string;
+  contacts: Record<string, string | null>;
+}
+
 const DEPT_ES: Record<string, string> = {
   housekeeping: 'Limpieza', front_desk: 'Recepción', maintenance: 'Mantenimiento', other: 'Otros',
 };
@@ -90,6 +95,8 @@ export function ManagerDirectory() {
 
   const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
+  const activePidRef = useRef(pid);
+  activePidRef.current = pid;
   // Wages are payroll-private and management-only. ManagerDirectory is only
   // mounted for managers (see /staff/page.tsx), but we still gate the wage
   // column + the wage fetch on the role so payroll can never render or be
@@ -171,11 +178,57 @@ export function ManagerDirectory() {
   // anon `staff` payload from useProperty(), so member.hourlyWage is always
   // undefined now and we read wages from this map instead.
   const [wages, setWages] = useState<Record<string, number | null>>({});
+  // Phone numbers follow the same least-privilege shape as wages: the shared
+  // browser roster never contains them. Keep the map tagged with its property
+  // so a property switch can never render the previous hotel's contacts while
+  // the next request is in flight.
+  const [contactSnapshot, setContactSnapshot] = useState<ContactSnapshot | null>(null);
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [contactsError, setContactsError] = useState<string | null>(null);
+  const contacts = useMemo(
+    () => contactSnapshot?.propertyId === pid ? contactSnapshot.contacts : {},
+    [contactSnapshot, pid],
+  );
+  const contactsReady = contactSnapshot?.propertyId === pid;
   // Did the user actually edit the wage field this modal session? Wage writes
   // fire ONLY when true — so a save can never clear a wage just because the
   // modal opened before GET /api/staff/wages resolved (the field starts blank,
   // and an untouched blank must not overwrite a real wage).
   const [wageTouched, setWageTouched] = useState(false);
+  const [phoneTouched, setPhoneTouched] = useState(false);
+
+  useEffect(() => {
+    if (!isManager || !pid) {
+      setContactSnapshot(null);
+      setContactsLoading(false);
+      setContactsError(null);
+      return;
+    }
+    let active = true;
+    setContactsLoading(true);
+    setContactsError(null);
+    fetchWithAuth(`/api/staff/contacts?propertyId=${pid}`)
+      .then(async r => {
+        if (r.ok) return r.json();
+        const body = await r.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `Contact request failed (${r.status})`);
+      })
+      .then((body: { data?: { contacts?: Record<string, string | null> } }) => {
+        if (active) {
+          setContactSnapshot({ propertyId: pid, contacts: body.data?.contacts ?? {} });
+        }
+      })
+      .catch(err => {
+        console.error('[ManagerDirectory] contacts fetch failed', err);
+        if (active) {
+          setContactsError(lang === 'es'
+            ? 'No se pudieron cargar los teléfonos. Intenta actualizar.'
+            : "Couldn't load phone numbers. Try refreshing.");
+        }
+      })
+      .finally(() => { if (active) setContactsLoading(false); });
+    return () => { active = false; };
+  }, [isManager, pid, lang]);
 
   // Load the wage map when the directory mounts (managers only). Refreshed
   // locally after each successful wage write in performSave().
@@ -201,6 +254,16 @@ export function ManagerDirectory() {
     const loaded = wages[editMember.id] ?? undefined;
     setForm(f => (f.hourlyWage === loaded ? f : { ...f, hourlyWage: loaded }));
   }, [wages, showModal, editMember, wageTouched]);
+
+  // As with wages, hydrate an already-open edit modal only while the manager
+  // has not typed in the phone field. A late contact response must never
+  // overwrite in-progress input, and an untouched blank must never clear the
+  // stored number when the manager saves quickly.
+  useEffect(() => {
+    if (!showModal || !editMember || phoneTouched || !contactsReady) return;
+    const loaded = contacts[editMember.id] ?? undefined;
+    setForm(f => (f.phone === loaded ? f : { ...f, phone: loaded }));
+  }, [contacts, contactsReady, showModal, editMember, phoneTouched]);
 
   // Fetch team list once per modal open (so newly-added staff see the latest
   // accounts list without a full page reload).
@@ -235,6 +298,7 @@ export function ManagerDirectory() {
     createdIdRef.current = null;
     setForm({ ...EMPTY_FORM, department: dept });
     setWageTouched(false);
+    setPhoneTouched(false);
     setLinkedAccountId(null);
     setOriginalLinkedAccountId(null);
     setSaveError(null);
@@ -247,7 +311,7 @@ export function ManagerDirectory() {
     createdIdRef.current = null;
     setForm({
       name: member.name,
-      phone: member.phone,
+      phone: contacts[member.id] ?? undefined,
       language: member.language,
       department: asDeptKey(member.department) as StaffDepartment,
       isSenior: member.isSenior,
@@ -260,6 +324,7 @@ export function ManagerDirectory() {
       isActive: member.isActive ?? true,
     });
     setWageTouched(false);
+    setPhoneTouched(false);
     // linkedAccountId is set once the team list arrives — we look up the
     // account whose staff_id matches this member.id.
     setLinkedAccountId(null);
@@ -290,7 +355,6 @@ export function ManagerDirectory() {
         .filter(s => /^\d{4}-\d{2}-\d{2}$/.test(s));
       const data = {
         name: form.name.trim(),
-        phone: form.phone?.trim() ?? '',
         language: form.language,
         department: form.department,
         isSenior: form.isSenior,
@@ -322,6 +386,35 @@ export function ManagerDirectory() {
       });
       try { await Promise.race([writePromise, timeoutPromise]); }
       finally { if (timeoutId) clearTimeout(timeoutId); }
+
+      // The generic Supabase roster helper strips phone writes so a line-staff
+      // browser cannot overwrite contact data via devtools. Persist contacts
+      // only through the management-gated, property-scoped API. For edits we
+      // write only after real user input; for a new record we always initialize
+      // the field (and retry it if a later partial step failed).
+      if (savedStaffId && (!editMember || phoneTouched)) {
+        const desiredPhone = form.phone?.trim() ?? '';
+        const contactRes = await fetchWithAuth('/api/staff/contacts', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, phone: desiredPhone }),
+        });
+        if (!contactRes.ok) {
+          throw new Error(lang === 'es'
+            ? 'Detalles guardados, pero no se pudo actualizar el teléfono. Inténtalo de nuevo.'
+            : "Details saved, but the phone couldn't be updated. Try again.");
+        }
+        const sid = savedStaffId;
+        setContactSnapshot(current => {
+          // A hotel switch while this request was in flight must not replace
+          // the new hotel's contact snapshot with the old hotel's response.
+          if (activePidRef.current !== pid) return current;
+          return {
+            propertyId: pid,
+            contacts: { ...(current?.propertyId === pid ? current.contacts : {}), [sid]: desiredPhone || null },
+          };
+        });
+      }
 
       // ── Account link writes ────────────────────────────────────────────
       // Two cases:
@@ -448,15 +541,18 @@ export function ManagerDirectory() {
   }, [team, originalLinkedAccountId]);
 
   return (
-    <div style={{
+    <div className="staff-directory-shell" style={{
       background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%',
       padding: '24px 48px 130px',
     }}>
       <style>{`
         .staff-dir-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; align-items: flex-start; }
         @media (max-width: 900px) { .staff-dir-grid { grid-template-columns: 1fr; } }
+        .staff-directory-shell { padding: 24px 48px 130px; }
         .staff-dir-row { cursor: pointer; transition: background 0.3s cubic-bezier(.22,1,.36,1); }
         .staff-dir-row:hover { background: rgba(31,35,28,0.04); }
+        .staff-dir-row:focus-visible { outline: 2px solid ${T.brand}; outline-offset: -2px; }
+        @media (max-width: 640px) { .staff-directory-shell { padding: 16px 16px 110px !important; } }
       `}</style>
 
       {/* Slim action row — Invite Staff (managers only). The page header was
@@ -468,6 +564,14 @@ export function ManagerDirectory() {
             {lang === 'es' ? 'Invitar Personal' : 'Invite Staff'}
           </Btn>
         </div>
+      )}
+
+      {isManager && contactsError && (
+        <div role="alert" style={{
+          marginBottom: 12, padding: '10px 14px', borderRadius: 12,
+          color: '#B85C3D', background: 'rgba(184,92,61,0.08)',
+          border: '1px solid rgba(184,92,61,0.25)', fontSize: 13,
+        }}>{contactsError}</div>
       )}
 
       {/* Waiting-to-approve queue (managers only, hidden when empty) */}
@@ -571,7 +675,14 @@ export function ManagerDirectory() {
               </div>
               <div>
                 {g.list.map(s => (
-                  <DirRow key={s.id} member={s} onClick={() => openEdit(s)}/>
+                  <DirRow
+                    key={s.id}
+                    member={s}
+                    phone={contacts[s.id]}
+                    contactsReady={contactsReady}
+                    contactsUnavailable={Boolean(contactsError) && !contactsLoading}
+                    onClick={() => openEdit(s)}
+                  />
                 ))}
               </div>
               <button
@@ -631,6 +742,7 @@ export function ManagerDirectory() {
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}
           showWage={isManager}
+          markPhoneTouched={() => setPhoneTouched(true)}
           markWageTouched={() => setWageTouched(true)}
           lang={lang}
         />
@@ -640,13 +752,24 @@ export function ManagerDirectory() {
 }
 
 // ── Directory row ────────────────────────────────────────────────────────
-function DirRow({ member, onClick }: { member: StaffMember; onClick: () => void }) {
+function DirRow({
+  member, phone, contactsReady, contactsUnavailable, onClick,
+}: {
+  member: StaffMember;
+  phone: string | null | undefined;
+  contactsReady: boolean;
+  contactsUnavailable: boolean;
+  onClick: () => void;
+}) {
   const ring = member.scheduledToday ? '#5C7A60' : null; // sage accent = on shift
   return (
-    <div
+    <button
+      type="button"
       className="staff-dir-row"
       onClick={onClick}
+      aria-label={`Edit ${member.name}`}
       style={{
+        width: '100%', textAlign: 'left', background: 'transparent', border: 0,
         display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px',
         opacity: member.isActive === false ? 0.45 : 1,
         borderBottom: `1px solid ${T.ruleSoft}`,
@@ -664,7 +787,13 @@ function DirRow({ member, onClick }: { member: StaffMember; onClick: () => void 
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 3 }}>
           <span style={{
             fontFamily: fonts.sans, fontSize: 11.5, color: T.ink3,
-          }}>{member.phone ? formatPhone(member.phone) : 'No phone'}</span>
+          }}>{contactsUnavailable
+              ? 'Unavailable'
+              : !contactsReady
+                ? 'Loading…'
+                : phone
+                  ? formatPhone(phone)
+                  : 'No phone'}</span>
           <span style={{ fontSize: 10, color: T.ink3 }}>·</span>
           <span style={{
             fontFamily: fonts.mono, fontSize: 11, color: T.ink3,
@@ -672,7 +801,7 @@ function DirRow({ member, onClick }: { member: StaffMember; onClick: () => void 
         </div>
       </div>
       <HoursBar hrs={member.weeklyHours ?? 0} max={member.maxWeeklyHours ?? 40} width={56}/>
-    </div>
+    </button>
   );
 }
 
@@ -686,7 +815,8 @@ function formatPhone(p: string): string {
 // ── Modal ────────────────────────────────────────────────────────────────
 function StaffEditModal({
   editMember, form, setForm, saving, saveError, onClose, onSave, onDelete,
-  linkableAccounts, linkedAccountId, setLinkedAccountId, showWage, markWageTouched, lang,
+  linkableAccounts, linkedAccountId, setLinkedAccountId, showWage,
+  markPhoneTouched, markWageTouched, lang,
 }: {
   editMember: StaffMember | null;
   form: StaffFormData;
@@ -700,6 +830,7 @@ function StaffEditModal({
   linkedAccountId: string | null;
   setLinkedAccountId: (id: string | null) => void;
   showWage: boolean;
+  markPhoneTouched: () => void;
   markWageTouched: () => void;
   lang: 'en' | 'es';
 }) {
@@ -779,7 +910,10 @@ function StaffEditModal({
           <Field label={lang === 'es' ? 'Teléfono' : 'Phone'}>
             <input
               type="tel" value={form.phone ?? ''}
-              onChange={e => setForm(f => ({ ...f, phone: e.target.value }))}
+              onChange={e => {
+                markPhoneTouched();
+                setForm(f => ({ ...f, phone: e.target.value }));
+              }}
               placeholder="(409) 555-1234"
               style={inputStyle}
             />

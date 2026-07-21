@@ -11,7 +11,9 @@
 import type { NextRequest } from 'next/server';
 import { ok, err } from '@/lib/api-response';
 import { requireOrderingAccess } from '@/lib/ordering/api-gate';
-import { requireSectionEnabled } from '@/lib/sections/server';
+import { isSectionEnabledForProperty, requireSectionEnabled } from '@/lib/sections/server';
+import { canForProperty } from '@/lib/capabilities/server';
+import { canViewFinancials } from '@/lib/roles';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
@@ -64,6 +66,22 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (body.budgetMode !== 'total' && body.budgetMode !== 'sections') {
       return err('budgetMode must be total or sections', {
         requestId, status: 400, code: 'validation_failed',
+      });
+    }
+    // Budget mode changes the dimension whose dollar caps are snapshotted at
+    // month close.  The tab-layout half of this endpoint is operational, but
+    // budget configuration must keep the same manager floor + per-property
+    // view_financials restriction as the budget rows themselves.  Do not rely
+    // on the client hiding the Budgets panel: this route uses service role and
+    // would otherwise let any delivery-capable hotel member change accounting
+    // behavior with a direct request.
+    if (
+      !canViewFinancials(gate.role)
+      || !(await canForProperty({ role: gate.role }, 'view_financials', pid))
+      || !(await isSectionEnabledForProperty(pid, 'financials'))
+    ) {
+      return err('You do not have permission to change inventory budget settings.', {
+        requestId, status: 403, code: 'forbidden_role',
       });
     }
     update.inventory_budget_mode = body.budgetMode;

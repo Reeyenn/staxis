@@ -201,7 +201,6 @@ export interface StaffRow {
   id: string;
   property_id: string;
   name: string;
-  phone: string | null;
   department: string | null;
   is_active: boolean;
 }
@@ -218,7 +217,6 @@ function parseStaffRow(raw: unknown): StaffRow | null {
     id,
     property_id,
     name,
-    phone: parseStringField(r.phone) ?? null,
     department: parseStringField(r.department) ?? null,
     is_active: parseBoolField(r.is_active) ?? false,
   };
@@ -260,7 +258,7 @@ export async function resolveStaffByName(
   if (STAFF_UUID_RE.test(raw)) {
     const { data } = await supabaseAdmin
       .from('staff')
-      .select('id, property_id, name, phone, department, is_active')
+      .select('id, property_id, name, department, is_active')
       .eq('property_id', propertyId)
       .eq('id', raw)
       .maybeSingle();
@@ -271,7 +269,7 @@ export async function resolveStaffByName(
 
   const { data, error } = await supabaseAdmin
     .from('staff')
-    .select('id, property_id, name, phone, department, is_active')
+    .select('id, property_id, name, department, is_active')
     .eq('property_id', propertyId)
     .eq('is_active', true);
   if (error || !data) {

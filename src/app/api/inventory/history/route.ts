@@ -14,6 +14,7 @@ import { isUuid } from '@/lib/api-validate';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { canForProperty } from '@/lib/capabilities/server';
 import { canViewFinancials, type AppRole } from '@/lib/roles';
+import { isSectionEnabledForProperty } from '@/lib/sections/server';
 import {
   listInventoryAuditHistory,
   parseInventoryAuditLimit,
@@ -60,7 +61,8 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   const includeFinancials = canViewFinancials(role)
-    && await canForProperty({ role }, 'view_financials', propertyId);
+    && await canForProperty({ role }, 'view_financials', propertyId)
+    && await isSectionEnabledForProperty(propertyId, 'financials');
   try {
     const page = await listInventoryAuditHistory(supabaseAdmin, {
       propertyId,

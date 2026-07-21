@@ -36,7 +36,6 @@ export interface BoardHk {
   scheduled_today: boolean;
   schedule_priority: 'priority' | 'normal' | 'excluded';
   has_phone: boolean;
-  phone: string | null;
   workload_minutes: number;
 }
 

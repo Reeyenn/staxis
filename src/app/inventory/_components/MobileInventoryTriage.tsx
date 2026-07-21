@@ -115,7 +115,7 @@ export function MobileInventoryTriage({
     // desktop rail. openOverlay already blocks the tap for non-managers;
     // gating here too avoids showing a button that silently does nothing.
     if (canManage) {
-      next.push({ key: 'scan', label: tx.addDelivery, variant: 'sage', leading: 'arrow' });
+      next.push({ key: 'delivery', label: tx.addDelivery, variant: 'sage', leading: 'arrow' });
     }
     if (canManage && canViewFinancials) {
       next.push({ key: 'close', label: tx.monthClose });

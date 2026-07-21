@@ -16,7 +16,7 @@
 //   • presets[]         — full preset list for the property (cell-edit
 //                         popover offers these as one-click picks)
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   subscribeToScheduledShifts, subscribeToTimeOffRequests,
   subscribeToWeekPublications, subscribeToShiftPresets,
@@ -55,6 +55,8 @@ export interface WeekShiftsResult {
   publishedDates: Set<string>;
   presets: ShiftPreset[];
   loading: boolean;
+  loadError: string | null;
+  retry: () => void;
 }
 
 // ── Date helpers ──────────────────────────────────────────────────────────
@@ -119,42 +121,63 @@ export function useWeekShifts(
   const [tor, setTor] = useState<TimeOffRequest[]>([]);
   const [pubs, setPubs] = useState<WeekPublication[]>([]);
   const [presets, setPresets] = useState<ShiftPreset[]>([]);
-  const [loadingFlags, setLoadingFlags] = useState({
-    shifts: true, tor: true, pubs: true, presets: true,
-  });
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const requestedKey = propertyId && staffId
+    ? `${propertyId}:${weekStart}:${weekEnd}:${staffId}`
+    : null;
+  const loading = requestedKey !== null && loadedKey !== requestedKey && !loadError;
+  const retry = useCallback(() => setRetryNonce(n => n + 1), []);
 
   useEffect(() => {
-    if (!propertyId) {
+    if (!propertyId || !staffId || !requestedKey) {
       setShifts([]); setTor([]); setPubs([]); setPresets([]);
-      setLoadingFlags({ shifts: false, tor: false, pubs: false, presets: false });
+      setLoadedKey(null);
+      setLoadError(null);
       return;
     }
-    setLoadingFlags({ shifts: true, tor: true, pubs: true, presets: true });
+    const subscriptionKey = requestedKey;
+    const pending = new Set(['shifts', 'tor', 'pubs', 'presets']);
+    const done = (part: string) => {
+      pending.delete(part);
+      if (pending.size === 0) setLoadedKey(subscriptionKey);
+    };
+    const fail = () => setLoadError('Could not load your shifts. Check your connection and try again.');
+    setShifts([]); setTor([]); setPubs([]); setPresets([]);
+    setLoadedKey(null);
+    setLoadError(null);
     const unSubs = [
       subscribeToScheduledShifts('', propertyId, weekStart, weekEnd, (rows) => {
         setShifts(rows);
-        setLoadingFlags(f => ({ ...f, shifts: false }));
-      }),
+        done('shifts');
+      }, fail),
       subscribeToTimeOffRequests('', propertyId, (rows) => {
         setTor(rows);
-        setLoadingFlags(f => ({ ...f, tor: false }));
-      }, staffId),
+        done('tor');
+      }, staffId, fail),
       subscribeToWeekPublications('', propertyId, (rows) => {
         setPubs(rows);
-        setLoadingFlags(f => ({ ...f, pubs: false }));
-      }),
+        done('pubs');
+      }, fail),
       subscribeToShiftPresets('', propertyId, (rows) => {
         setPresets(rows);
-        setLoadingFlags(f => ({ ...f, presets: false }));
-      }),
+        done('presets');
+      }, fail),
     ];
     return () => { unSubs.forEach(u => { try { u(); } catch { /* ignore */ } }); };
-  }, [propertyId, weekStart, weekEnd, staffId]);
+  }, [propertyId, weekStart, weekEnd, staffId, requestedKey, retryNonce]);
+
+  const snapshotReady = loadedKey === requestedKey;
+  const visibleShifts = snapshotReady ? shifts : [];
+  const visibleTor = snapshotReady ? tor : [];
+  const visiblePubs = snapshotReady ? pubs : [];
+  const visiblePresets = snapshotReady ? presets : [];
 
   // Bucket assigned shifts per (staff, day). Open shifts collected separately.
   const byStaff: Record<string, WeekShiftCell[]> = {};
   const openShifts: ScheduledShift[] = [];
-  for (const s of shifts) {
+  for (const s of visibleShifts) {
     if (s.kind === 'open') { openShifts.push(s); continue; }
     if (!s.staffId) continue;
     const dayIdx = days.findIndex(d => d.date === s.shiftDate);
@@ -166,7 +189,7 @@ export function useWeekShifts(
   // TOR indices scoped to the visible week.
   const torPending: Record<string, TimeOffRequest> = {};
   const torByStaff: Record<string, TimeOffRequest[]> = {};
-  for (const r of tor) {
+  for (const r of visibleTor) {
     if (r.requestDate >= weekStart && r.requestDate <= weekEnd && r.status === 'pending') {
       torPending[`${r.staffId}:${r.requestDate}`] = r;
     }
@@ -177,7 +200,7 @@ export function useWeekShifts(
   // Published dates — latest publication wins per week. We expand each
   // week_start into its 7 days.
   const latestByWeek = new Map<string, WeekPublication>();
-  for (const p of pubs) {
+  for (const p of visiblePubs) {
     const existing = latestByWeek.get(p.weekStart);
     if (!existing || p.publishedAt.getTime() > existing.publishedAt.getTime()) {
       latestByWeek.set(p.weekStart, p);
@@ -188,11 +211,8 @@ export function useWeekShifts(
     for (let i = 0; i < 7; i++) publishedDates.add(addDays(p.weekStart, i));
   }
 
-  const loading = loadingFlags.shifts || loadingFlags.tor
-    || loadingFlags.pubs || loadingFlags.presets;
-
   return {
     days, byStaff, openShifts, torPending, torByStaff,
-    publishedDates, presets, loading,
+    publishedDates, presets: visiblePresets, loading, loadError, retry,
   };
 }

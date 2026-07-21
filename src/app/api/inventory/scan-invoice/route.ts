@@ -15,9 +15,9 @@
  * Response (UNCHANGED — merged across pages):
  *   { ok: true, vendor_name, invoice_date, invoice_number, items: [...] }
  *
- * Capability check: pid must be a uuid, and the route uses supabaseAdmin so
- * the property ownership check happens implicitly via the inventory write
- * paths the client makes after confirming the extraction.
+ * Authorization: invoice OCR returns financial evidence and incurs provider
+ * spend, so it requires the central finance gate, the inventory-ordering
+ * capability, and an enabled Inventory section before calling Vision.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -27,11 +27,13 @@ import { AiFeatureDisabledError } from '@/lib/ai/runtime';
 import { mergeInvoicePages, type ExtractedInvoice } from '@/lib/invoice-scan-merge';
 import { errToString } from '@/lib/utils';
 import { log } from '@/lib/log';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { assertAudioBudget, recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { captureException } from '@/lib/sentry';
+import { requireFinanceAccess } from '@/lib/financials/api-gate';
+import { canForProperty } from '@/lib/capabilities/server';
+import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -101,12 +103,6 @@ function validateInvoice(raw: unknown): ExtractedInvoice {
 
 export async function POST(req: NextRequest) {
   const visionDeadlineAt = Date.now() + 52_000;
-  // Auth gate: this route hits the Anthropic Vision API on each request.
-  // Without a session check, anyone with a guessed property UUID could
-  // submit unlimited images and burn through ANTHROPIC_API_KEY budget.
-  const session = await requireSession(req);
-  if (!session.ok) return session.response;
-
   let body: unknown;
   try {
     body = await req.json();
@@ -122,9 +118,17 @@ export async function POST(req: NextRequest) {
   if (!isUuid(pid)) {
     return NextResponse.json({ ok: false, error: 'invalid_pid' }, { status: 400 });
   }
-  if (!(await userHasPropertyAccess(session.userId, pid))) {
+  const financeGate = await requireFinanceAccess(req, pid);
+  if (!financeGate.ok) return financeGate.response;
+  if (!(await canForProperty(
+    { role: financeGate.role },
+    'manage_inventory_orders',
+    financeGate.pid,
+  ))) {
     return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
   }
+  const inventorySectionGate = await requireSectionEnabled(req, financeGate.pid, 'inventory');
+  if (!inventorySectionGate.ok) return inventorySectionGate.response;
 
   // ── Normalize the three body shapes ────────────────────────────────
   // 1. legacy   { imageBase64, mediaType }        → one-entry pages array
@@ -210,20 +214,13 @@ export async function POST(req: NextRequest) {
   // instead of silently piling up Anthropic charges. We also need the
   // caller's `accounts.id` to attribute the spend (auth.userId is the
   // Supabase user, not the accounts PK that agent_costs.user_id FKs to).
-  const { data: accountRow } = await supabaseAdmin
-    .from('accounts')
-    .select('id')
-    .eq('data_user_id', session.userId)
-    .maybeSingle();
-  const accountId = accountRow?.id as string | undefined;
-  if (accountId) {
-    const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
-    if (!budget.ok) {
-      return NextResponse.json(
-        { ok: false, error: budget.message, code: budget.reason },
-        { status: 429 },
-      ) as NextResponse;
-    }
+  const accountId = financeGate.accountId;
+  const budget = await assertAudioBudget({ userId: accountId, propertyId: pid });
+  if (!budget.ok) {
+    return NextResponse.json(
+      { ok: false, error: budget.message, code: budget.reason },
+      { status: 429 },
+    ) as NextResponse;
   }
 
   // Capture vision usage so we can book the spend post-call. Each page's

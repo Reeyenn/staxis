@@ -38,6 +38,7 @@ import {
 export function subscribeToShiftPresets(
   _uid: string, pid: string,
   callback: (presets: ShiftPreset[]) => void,
+  onFetchError?: (error: unknown) => void,
 ): () => void {
   return subscribeTable<ShiftPreset>(
     `property_shift_presets:${pid}`,
@@ -54,6 +55,9 @@ export function subscribeToShiftPresets(
       return (data ?? []).map(fromShiftPresetRow);
     },
     callback,
+    undefined,
+    undefined,
+    onFetchError,
   );
 }
 
@@ -68,6 +72,7 @@ export function subscribeToShiftPresets(
 export function subscribeToScheduledShifts(
   _uid: string, pid: string, weekStart: string, weekEnd: string,
   callback: (shifts: ScheduledShift[]) => void,
+  onFetchError?: (error: unknown) => void,
 ): () => void {
   return subscribeTable<ScheduledShift>(
     `scheduled_shifts:${pid}:${weekStart}`,
@@ -91,6 +96,8 @@ export function subscribeToScheduledShifts(
         !!d && d >= weekStart && d <= weekEnd;
       return inWindow(newDate) || inWindow(oldDate);
     },
+    undefined,
+    onFetchError,
   );
 }
 
@@ -105,6 +112,7 @@ export function subscribeToTimeOffRequests(
   // linked staff record) → empty list. The realtime channel filter stays
   // property-wide; events for other staff just trigger a cheap refetch.
   staffId?: string | null,
+  onFetchError?: (error: unknown) => void,
 ): () => void {
   return subscribeTable<TimeOffRequest>(
     `time_off_requests:${pid}`,
@@ -122,6 +130,9 @@ export function subscribeToTimeOffRequests(
       return (data ?? []).map(fromTimeOffRequestRow);
     },
     callback,
+    undefined,
+    undefined,
+    onFetchError,
   );
 }
 
@@ -135,6 +146,7 @@ export function subscribeToTimeOffRequests(
 export function subscribeToWeekPublications(
   _uid: string, pid: string,
   callback: (publications: WeekPublication[]) => void,
+  onFetchError?: (error: unknown) => void,
 ): () => void {
   return subscribeTable<WeekPublication>(
     `week_publications:${pid}`,
@@ -150,5 +162,8 @@ export function subscribeToWeekPublications(
       return (data ?? []).map(fromWeekPublicationRow);
     },
     callback,
+    undefined,
+    undefined,
+    onFetchError,
   );
 }

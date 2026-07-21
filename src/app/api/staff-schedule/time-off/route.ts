@@ -22,14 +22,14 @@ import { errToString } from '@/lib/utils';
 import { requireSession } from '@/lib/api-auth';
 import { verifyTeamManager, callerCan } from '@/lib/team-auth';
 import { requireSectionEnabled } from '@/lib/sections/server';
-import { validateUuid } from '@/lib/api-validate';
+import { validateDateStr, validateUuid } from '@/lib/api-validate';
 import { fromTimeOffRequestRow } from '@/lib/db-mappers';
 import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MAX_REASON_LEN = 500;
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -42,8 +42,17 @@ export async function POST(req: NextRequest) {
   const hotelIdCheck = validateUuid(body.hotelId, 'hotelId');
   if (hotelIdCheck.error) return err(hotelIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const hotelId = hotelIdCheck.value!;
-  if (!body.requestDate || !DATE_RE.test(body.requestDate)) {
-    return err('requestDate YYYY-MM-DD required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const dateCheck = validateDateStr(body.requestDate, {
+    label: 'requestDate', allowPastDays: 0, allowFutureDays: 730,
+  });
+  if (dateCheck.error) {
+    return err(dateCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if (reason.length > MAX_REASON_LEN) {
+    return err(`reason must be ${MAX_REASON_LEN} characters or fewer`, {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
 
   // Look up which staff record this account is linked to.
@@ -63,19 +72,45 @@ export async function POST(req: NextRequest) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
+  const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
+  if (!sectionGate.ok) return sectionGate.response;
+
   // Sanity: staff record belongs to this property.
-  const { data: staffRow } = await supabaseAdmin
-    .from('staff').select('id, property_id').eq('id', acct.staff_id).maybeSingle();
-  if (!staffRow || staffRow.property_id !== hotelId) {
+  const { data: staffRow, error: staffErr } = await supabaseAdmin
+    .from('staff').select('id, property_id, is_active').eq('id', acct.staff_id).maybeSingle();
+  if (staffErr) {
+    log.error('[time-off:POST] staff lookup failed', { requestId, msg: errToString(staffErr) });
+    return err('Failed to verify staff link', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  if (!staffRow || staffRow.property_id !== hotelId || staffRow.is_active === false) {
     return err('Staff link out of sync', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+
+  const { data: existing, error: existingErr } = await supabaseAdmin
+    .from('time_off_requests')
+    .select('id')
+    .eq('property_id', hotelId)
+    .eq('staff_id', acct.staff_id)
+    .eq('request_date', dateCheck.value!)
+    .in('status', ['pending', 'approved'])
+    .limit(1)
+    .maybeSingle();
+  if (existingErr) {
+    log.error('[time-off:POST] duplicate lookup failed', { requestId, msg: errToString(existingErr) });
+    return err('Failed to verify existing requests', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  }
+  if (existing) {
+    return err('You already have a time-off request for that date', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
   }
 
   const { data, error } = await supabaseAdmin
     .from('time_off_requests').insert({
       property_id:  hotelId,
       staff_id:     acct.staff_id,
-      request_date: body.requestDate,
-      reason:       body.reason?.trim() || null,
+      request_date: dateCheck.value!,
+      reason:       reason || null,
       status:       'pending',
     }).select('*').single();
   if (error) {

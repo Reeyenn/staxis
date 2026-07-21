@@ -6,7 +6,9 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { toMin, toHHMM, fmtMinRange, type BoardShift } from '@/lib/schedule-board';
+import {
+  toMin, toHHMM, normalizeShiftEnd, fmtMinRange, type BoardShift,
+} from '@/lib/schedule-board';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn } from '../_tokens';
 import { Avatar } from '../_people';
 
@@ -26,7 +28,7 @@ export function ShiftEditorModal({
   const es = lang === 'es';
   const m = deptMeta[asDeptKey(shift.dept)];
   const [start, setStart] = useState(toHHMM(shift.startMin));
-  const [end, setEnd] = useState(toHHMM(Math.min(shift.endMin, 24 * 60 - 1)));
+  const [end, setEnd] = useState(toHHMM(shift.endMin));
   const [note, setNote] = useState(shift.note ?? '');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -41,11 +43,12 @@ export function ShiftEditorModal({
       setErrorMsg(es ? 'Usa HH:MM — ej. 08:00' : 'Use HH:MM — e.g. 08:00');
       return;
     }
-    const s = toMin(start.trim()), e = toMin(end.trim());
-    if (e <= s) {
-      setErrorMsg(es ? 'El fin debe ser después del inicio' : 'End must be after start');
+    const s = toMin(start.trim()), endClock = toMin(end.trim());
+    if (endClock === s) {
+      setErrorMsg(es ? 'El inicio y el fin no pueden ser iguales' : 'Start and end cannot be the same');
       return;
     }
+    const e = normalizeShiftEnd(s, endClock);
     onSave({ startMin: s, endMin: e, note: note.trim() ? note.trim().slice(0, 300) : null });
   };
 

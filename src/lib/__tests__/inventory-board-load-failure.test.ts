@@ -12,7 +12,7 @@ const shell = fs.readFileSync(shellPath, 'utf8');
 test('inventory board keeps core item work available while failed supporting data stays unavailable', () => {
   assert.match(shell, /const \[bundleLoadError, setBundleLoadError\] = useState\(false\)/);
   assert.match(shell, /const safe = async <T,>\(label: string, promise: Promise<T>\): Promise<T \| null>/);
-  assert.match(shell, /partialFailure: requiredResults\.some\(\(value\) => value == null\)/);
+  assert.match(shell, /partialFailure: inventoryOperationalDetailsFailed\(requiredResults\)/);
   assert.doesNotMatch(shell, /partialFailure: .*financialResults/);
   assert.match(shell, /if \(itemsLoadError\) \{/);
   assert.doesNotMatch(shell, /if \(itemsLoadError \|\| bundleLoadError\)/);
@@ -26,6 +26,9 @@ test('initial loads and refreshes expose partial failure without cross-hotel rep
     /setBundleLoadError\(d\.partialFailure\)/,
   );
   assert.match(shell, /const requestedPropertyId = activePropertyId/);
-  assert.match(shell, /if \(activePropertyIdRef\.current !== requestedPropertyId\) return/);
+  assert.match(
+    shell,
+    /activePropertyIdRef\.current !== requestedPropertyId[\s\S]*?inventoryBoardRequestIsCurrent\(data\.requestScope, boardRequestScopeRef\.current\)/,
+  );
   assert.match(shell, /setBundleLoadError\(data\.partialFailure\)/);
 });

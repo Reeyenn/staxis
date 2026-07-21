@@ -41,6 +41,18 @@ describe('inventory usage-budget UI contract', () => {
     process.cwd(),
     'src/lib/db/inventory-budgets.ts',
   ), 'utf8');
+  const propertyConfigRoute = readFileSync(join(
+    process.cwd(),
+    'src/app/api/inventory/property-config/route.ts',
+  ), 'utf8');
+  const financialEvidenceRoute = readFileSync(join(
+    process.cwd(),
+    'src/app/api/inventory/financial-evidence/route.ts',
+  ), 'utf8');
+  const scanInvoiceRoute = readFileSync(join(
+    process.cwd(),
+    'src/app/api/inventory/scan-invoice/route.ts',
+  ), 'utf8');
 
   it('filters planning values to usage rows and visibly acknowledges legacy purchase caps', () => {
     assert.match(panel, /budget\.basis === 'usage'/);
@@ -53,6 +65,34 @@ describe('inventory usage-budget UI contract', () => {
     assert.match(shell, /b\.basis !== 'usage'/);
     assert.match(dataAccess, /basis: 'usage'/);
     assert.match(dataAccess, /property_id,category,month_start,basis/);
+  });
+
+  it('finance-gates budget-mode changes even though tab layout stays operational', () => {
+    assert.match(propertyConfigRoute, /body\.budgetMode !== undefined/);
+    assert.match(propertyConfigRoute, /canViewFinancials\(gate\.role\)/);
+    assert.match(
+      propertyConfigRoute,
+      /canForProperty\(\{ role: gate\.role \}, 'view_financials', pid\)/,
+    );
+    assert.match(propertyConfigRoute, /isSectionEnabledForProperty\(pid, 'financials'\)/);
+  });
+
+  it('hydrates hidden cost fields only through the central finance gate', () => {
+    assert.match(financialEvidenceRoute, /requireFinanceAccess\(/);
+    assert.match(financialEvidenceRoute, /staxis_list_inventory_financial_evidence/);
+    assert.match(financialEvidenceRoute, /currentMonthSpend/);
+    assert.match(financialEvidenceRoute, /private, no-store/);
+    assert.doesNotMatch(financialEvidenceRoute, /userHasPropertyAccess/);
+  });
+
+  it('keeps invoice OCR behind finance, ordering, and Inventory-section gates', () => {
+    assert.match(scanInvoiceRoute, /requireFinanceAccess\(req, pid\)/);
+    assert.match(
+      scanInvoiceRoute,
+      /canForProperty\([\s\S]*?'manage_inventory_orders',[\s\S]*?financeGate\.pid/,
+    );
+    assert.match(scanInvoiceRoute, /requireSectionEnabled\(req, financeGate\.pid, 'inventory'\)/);
+    assert.doesNotMatch(scanInvoiceRoute, /userHasPropertyAccess/);
   });
 
   it('keeps the monthly limits section concise without the removed helper paragraph', () => {

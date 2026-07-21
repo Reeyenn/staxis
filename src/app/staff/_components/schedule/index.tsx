@@ -40,6 +40,37 @@ export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory: () => vo
   const { activePropertyId, activeProperty, staff } = useProperty();
   const { lang } = useLang();
   const data = useScheduleData(activePropertyId, staff);
+  if (data.loading || data.loadError) {
+    const es = lang === 'es';
+    return (
+      <div style={{
+        minHeight: 360, display: 'grid', placeItems: 'center', padding: 24,
+        color: T.ink, fontFamily: fonts.sans,
+      }}>
+        <div role={data.loadError ? 'alert' : 'status'} aria-live="polite" style={{
+          width: 'min(100%, 440px)', textAlign: 'center', padding: '28px 24px',
+          background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
+          boxShadow: T.cardShadow,
+        }}>
+          <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
+            {data.loadError
+              ? (es ? 'No se pudo cargar el horario' : "Couldn't load the schedule")
+              : (es ? 'Cargando el horario…' : 'Loading the schedule…')}
+          </div>
+          <div style={{ fontSize: 13, color: T.ink3, lineHeight: 1.45 }}>
+            {data.loadError
+              ? (es ? 'Revisa tu conexión e inténtalo de nuevo.' : 'Check your connection and try again.')
+              : (es ? 'Los controles estarán disponibles cuando los turnos estén listos.' : 'Controls will be available once shifts are ready.')}
+          </div>
+          {data.loadError && (
+            <Btn variant="primary" size="md" onClick={data.retry} style={{ marginTop: 16 }}>
+              {es ? 'Reintentar' : 'Retry'}
+            </Btn>
+          )}
+        </div>
+      </div>
+    );
+  }
   // Key by property so a hotel switch remounts the view — selection, undo
   // visibility, and open modals all reset instead of leaking across hotels.
   return (
@@ -514,7 +545,17 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
 
   // ── render ─────────────────────────────────────────────────────────────
   return (
-    <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%', padding: '22px 48px 130px' }}>
+    <div className="staff-schedule-shell" style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%', padding: '22px 48px 130px' }}>
+      <style>{`
+        @media (max-width: 640px) {
+          .staff-schedule-shell { padding: 16px 16px 110px !important; }
+          .staff-schedule-toolbar {
+            width: 100%; flex: 1 1 100% !important; flex-wrap: wrap;
+            justify-content: flex-start; min-width: 0;
+          }
+          .staff-schedule-toolbar-separator { display: none; }
+        }
+      `}</style>
 
       {/* header */}
       <div style={{
@@ -550,7 +591,12 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
             </>
           )}
         </h1>
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+        <div
+          className="staff-schedule-toolbar"
+          role="toolbar"
+          aria-label={es ? 'Controles del horario' : 'Schedule controls'}
+          style={{ display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}
+        >
           {view === 'week' && (
             weekDone ? (
               <Btn variant="sage" size="md" onClick={toggleWeekDone}>✓ {es ? 'Lista' : 'Done'}</Btn>
@@ -565,7 +611,7 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
           <Btn variant="ghost" size="md" onClick={onUndo} disabled={!data.undoCount}
             title={es ? 'Deshacer tu último cambio' : 'Undo your last change'}>↩ {es ? 'Deshacer' : 'Undo'}</Btn>
           <Btn variant="ghost" size="md" onClick={() => setFillOpen(true)}>{es ? 'Llenar' : 'Fill'}</Btn>
-          <span style={{ width: 1, height: 24, background: T.rule, margin: '0 4px' }}/>
+          <span className="staff-schedule-toolbar-separator" aria-hidden="true" style={{ width: 1, height: 24, background: T.rule, margin: '0 4px' }}/>
           <Btn variant="ghost" size="md" style={ghostSq}
             disabled={view === 'day' ? dayBackDisabled : weekBackDisabled}
             onClick={() => (view === 'day' ? stepDay(-1) : stepWeek(-1))}>‹</Btn>
@@ -711,14 +757,6 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
           fontSize: 13, fontWeight: 600, color: T.sageDeep,
           boxShadow: '0 18px 36px -20px rgba(62,92,72,0.5)', whiteSpace: 'nowrap',
         }}>✓ {toast}</div>
-      )}
-
-      {/* loading hint */}
-      {data.loading && (
-        <div style={{
-          position: 'fixed', bottom: 14, right: 14, zIndex: 1200,
-          fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.08em',
-        }}>{es ? 'CARGANDO…' : 'LOADING…'}</div>
       )}
 
       {/* modals */}

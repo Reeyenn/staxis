@@ -145,7 +145,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     staffCount = count ?? 0;
     const { data } = await supabaseAdmin
       .from('staff')
-      .select('id, name, phone, language, department, is_active')
+      .select('id, name, language, department, is_active')
       .eq('property_id', pid)
       .order('name')
       .limit(5);
@@ -156,7 +156,6 @@ export async function GET(req: NextRequest): Promise<Response> {
       return {
         id: String(r.id ?? ''),
         name: String(r.name ?? ''),
-        phone: (r.phone as string | null) ?? null,
         language: String(r.language ?? 'en'),
         department: String(r.department ?? 'other'),
         is_active: (r.is_active as boolean | null) ?? true,
