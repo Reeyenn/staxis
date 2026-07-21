@@ -16,6 +16,7 @@ import type { DisplayItem } from './types';
 import { partitionMobileInventory } from './mobile-inventory-triage';
 import { SetAsideTag } from './SetAsideTag';
 import { ShelfValueWarning } from './ShelfValueWarning';
+import { missingPriceItemNames } from './inventory-value';
 import styles from './MobileInventoryTriage.module.css';
 
 export interface MobileInventoryTriageProps {
@@ -28,7 +29,6 @@ export interface MobileInventoryTriageProps {
   tabs: InvTab[];
   stockHealth: number | null;
   shelfValue: number;
-  shelfValueComplete: boolean;
   canManage: boolean;
   canViewFinancials: boolean;
   onAction: (action: SidebarAction) => void;
@@ -69,7 +69,6 @@ export function MobileInventoryTriage({
   tabs,
   stockHealth,
   shelfValue,
-  shelfValueComplete,
   canManage,
   canViewFinancials,
   onAction,
@@ -90,9 +89,17 @@ export function MobileInventoryTriage({
   const activeTabValue = activeTab
     ? items.filter((d) => inBucket(d, bucket)).reduce((s, d) => s + d.value, 0)
     : 0;
-  const activeTabValueComplete = !activeTab || items
-    .filter((d) => inBucket(d, bucket))
-    .every((d) => (d.raw.currentStock ?? 0) <= 0 || d.raw.unitCost != null);
+  const activeTabMissingPriceItems = activeTab
+    ? missingPriceItemNames(items.filter((d) => inBucket(d, bucket)))
+    : [];
+  const shelfMissingPriceItems = missingPriceItemNames(items);
+
+  const warningCopy = {
+    label: tx.shelfCostsMissing,
+    intro: tx.shelfValueWarningIntro,
+    listLabel: tx.shelfValueWarningList,
+    resolution: tx.shelfValueWarningResolution,
+  };
 
   const actions = useMemo<MobileAction[]>(() => {
     const next: MobileAction[] = [
@@ -186,16 +193,18 @@ export function MobileInventoryTriage({
             <MobileStat
               label={compactTabLabel(activeTab, lang)}
               value={fmtMoney(activeTabValue, { digits: 0 })}
-              warning={activeTabValueComplete ? undefined : tx.shelfValueWarning}
-              warningLabel={tx.shelfCostsMissing}
+              warning={activeTabMissingPriceItems.length > 0
+                ? { ...warningCopy, itemNames: activeTabMissingPriceItems }
+                : undefined}
             />
           ) : null}
           {canViewFinancials ? (
             <MobileStat
               label={tx.onTheShelf}
               value={fmtMoney(shelfValue, { digits: 0 })}
-              warning={shelfValueComplete ? undefined : tx.shelfValueWarning}
-              warningLabel={tx.shelfCostsMissing}
+              warning={shelfMissingPriceItems.length > 0
+                ? { ...warningCopy, itemNames: shelfMissingPriceItems }
+                : undefined}
             />
           ) : null}
         </div>
@@ -387,20 +396,18 @@ function MobileStat({
   value,
   critical = false,
   warning,
-  warningLabel,
 }: {
   label: string;
   value: string;
   critical?: boolean;
-  warning?: string;
-  warningLabel?: string;
+  warning?: React.ComponentProps<typeof ShelfValueWarning>;
 }) {
   return (
     <div className={styles.stat}>
       <span className={styles.statLabel}>{label}</span>
       <span className={critical ? styles.statValueCritical : styles.statValue}>
         {value}
-        {warning && warningLabel ? <ShelfValueWarning label={warningLabel} message={warning} /> : null}
+        {warning ? <ShelfValueWarning {...warning} /> : null}
       </span>
     </div>
   );

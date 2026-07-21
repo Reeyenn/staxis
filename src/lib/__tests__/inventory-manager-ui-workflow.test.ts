@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 
 import { inventoryOverlayAfterCountSave } from '@/app/inventory/_components/inventory-count-navigation';
+import { missingPriceItemNames } from '@/app/inventory/_components/inventory-value';
+import type { DisplayItem } from '@/app/inventory/_components/types';
 
 function source(...parts: string[]) {
   return readFileSync(join(process.cwd(), 'src', ...parts), 'utf8');
@@ -63,8 +65,22 @@ describe('inventory manager workflow regressions', () => {
     assert.equal((mobile.match(/warning=\{/g) ?? []).length, 2);
     assert.match(warning, /aria-describedby=\{tooltipId\}/);
     assert.match(warning, /role="tooltip"/);
+    assert.match(warning, /itemNames\.map/);
     assert.match(warningCss, /\.trigger\s*\{[\s\S]*?width:\s*14px;[\s\S]*?height:\s*14px;/);
-    assert.match(strings, /shelfValueWarning: 'Some item prices are missing\. Total may be higher\.'/);
+    assert.match(strings, /shelfValueWarningIntro: 'This total is incomplete because prices are missing\.'/);
+    assert.match(strings, /shelfValueWarningList: 'Missing prices:'/);
+    assert.match(strings, /shelfValueWarningResolution: 'Once added, the total will update automatically\.'/);
+  });
+
+  test('lists only stocked items whose prices are missing', () => {
+    const items = [
+      { id: 'towels', name: 'Bath Towels', counted: 12, raw: { unitCost: null } },
+      { id: 'soap', name: 'Soap', counted: 4, raw: { unitCost: 1.25 } },
+      { id: 'pillows', name: 'Pillows', counted: 0, raw: { unitCost: null } },
+      { id: 'sheets', name: 'Sheets', counted: 8, raw: { unitCost: null } },
+    ] as unknown as DisplayItem[];
+
+    assert.deepEqual(missingPriceItemNames(items), ['Bath Towels', 'Sheets']);
   });
 
   test('Ask Staxis docks in the inventory header instead of covering count controls', () => {

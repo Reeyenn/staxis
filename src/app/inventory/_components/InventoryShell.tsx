@@ -74,6 +74,7 @@ import { LedgerTable } from './LedgerTable';
 import { StockList } from './StockList';
 import { MobileInventoryTriage } from './MobileInventoryTriage';
 import { ShelfValueWarning } from './ShelfValueWarning';
+import { missingPriceItemNames } from './inventory-value';
 import mobileStyles from './MobileInventoryTriage.module.css';
 import { inventoryOverlayAfterCountSave } from './inventory-count-navigation';
 import {
@@ -690,10 +691,8 @@ export function InventoryShell() {
   // counts; it doesn't drift with occupancy). Live-updates as quick counts land,
   // since applyDraft rewrites `value` for drafted items.
   const shelfValue = useMemo(() => effectiveDisplay.reduce((s, d) => s + d.value, 0), [effectiveDisplay]);
-  const shelfValueComplete = useMemo(
-    () => effectiveDisplay.every((d) => (d.raw.currentStock ?? 0) <= 0 || d.raw.unitCost != null),
-    [effectiveDisplay],
-  );
+  const shelfMissingPriceItems = useMemo(() => missingPriceItemNames(effectiveDisplay), [effectiveDisplay]);
+  const shelfValueComplete = shelfMissingPriceItems.length === 0;
   // Per-tab valuation for the masthead: selecting a tab (General / Breakfast /
   // a custom tab) slides that tab's total value in to the left of "On the
   // shelf"; selecting All slides it back out. Same valuation basis as
@@ -706,12 +705,13 @@ export function InventoryShell() {
         : 0,
     [activeTab, bucket, effectiveDisplay],
   );
-  const activeTabValueComplete = useMemo(
-    () => !activeTab || effectiveDisplay
-      .filter((d) => inBucket(d, bucket))
-      .every((d) => (d.raw.currentStock ?? 0) <= 0 || d.raw.unitCost != null),
+  const activeTabMissingPriceItems = useMemo(
+    () => !activeTab
+      ? []
+      : missingPriceItemNames(effectiveDisplay.filter((d) => inBucket(d, bucket))),
     [activeTab, bucket, effectiveDisplay],
   );
+  const activeTabValueComplete = activeTabMissingPriceItems.length === 0;
   // Defaults for the Add-item sheet, honoring the hotel's visible tabs: an
   // add from All must never file the item into a HIDDEN built-in bucket
   // (it would then appear under no named tab). General hidden → first custom
@@ -1435,7 +1435,6 @@ export function InventoryShell() {
         tabs={visibleTabs}
         stockHealth={stockHealth}
         shelfValue={shelfValue}
-        shelfValueComplete={shelfValueComplete}
         canManage={canManage}
         canViewFinancials={canViewFinancials}
         onAction={openOverlay}
@@ -1512,7 +1511,13 @@ export function InventoryShell() {
                     <span style={{ display: 'inline-flex', alignItems: 'center' }}>
                       <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
                       {!activeTabValueComplete && (
-                        <ShelfValueWarning label={tx.shelfCostsMissing} message={tx.shelfValueWarning} />
+                        <ShelfValueWarning
+                          label={tx.shelfCostsMissing}
+                          intro={tx.shelfValueWarningIntro}
+                          listLabel={tx.shelfValueWarningList}
+                          itemNames={activeTabMissingPriceItems}
+                          resolution={tx.shelfValueWarningResolution}
+                        />
                       )}
                     </span>
                   </HStat>
@@ -1526,7 +1531,13 @@ export function InventoryShell() {
               <span style={{ display: 'inline-flex', alignItems: 'center' }}>
                 <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
                 {!shelfValueComplete && (
-                  <ShelfValueWarning label={tx.shelfCostsMissing} message={tx.shelfValueWarning} />
+                  <ShelfValueWarning
+                    label={tx.shelfCostsMissing}
+                    intro={tx.shelfValueWarningIntro}
+                    listLabel={tx.shelfValueWarningList}
+                    itemNames={shelfMissingPriceItems}
+                    resolution={tx.shelfValueWarningResolution}
+                  />
                 )}
               </span>
             </HStat>

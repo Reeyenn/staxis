@@ -67,7 +67,9 @@ const STRINGS = {
     orderNow: 'Order now',
     onTheShelf: 'On the shelf',
     shelfCostsMissing: 'some item costs are missing',
-    shelfValueWarning: 'Some item prices are missing. Total may be higher.',
+    shelfValueWarningIntro: 'This total is incomplete because prices are missing.',
+    shelfValueWarningList: 'Missing prices:',
+    shelfValueWarningResolution: 'Once added, the total will update automatically.',
     allClear: 'All clear',
     allClearSub: 'nothing needs ordering',
     // ── Sidebar ──
@@ -176,7 +178,9 @@ const STRINGS = {
     orderNow: 'Pedir ahora',
     onTheShelf: 'En estante',
     shelfCostsMissing: 'faltan costos de algunos artículos',
-    shelfValueWarning: 'Faltan precios de algunos artículos. El total puede ser mayor.',
+    shelfValueWarningIntro: 'Este total está incompleto porque faltan precios.',
+    shelfValueWarningList: 'Precios faltantes:',
+    shelfValueWarningResolution: 'Al agregarlos, el total se actualizará automáticamente.',
     allClear: 'Todo en orden',
     allClearSub: 'no hay nada que pedir',
     // ── Sidebar ──
