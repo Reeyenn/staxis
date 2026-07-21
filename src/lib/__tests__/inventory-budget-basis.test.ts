@@ -54,4 +54,21 @@ describe('inventory usage-budget UI contract', () => {
     assert.match(dataAccess, /basis: 'usage'/);
     assert.match(dataAccess, /property_id,category,month_start,basis/);
   });
+
+  it('keeps the monthly limits section concise without the removed helper paragraph', () => {
+    assert.match(panel, /<BudgetSection title=\{bp\.setLimitsTitle\}>/);
+    assert.doesNotMatch(panel, /setLimitsSub/);
+    assert.doesNotMatch(panel, /Choose a month and year/);
+  });
+
+  it('shares one compact row for Add section and Copy to year', () => {
+    assert.match(
+      panel,
+      /data-budget-row-actions="true"[\s\S]*?bp\.addSection[\s\S]*?bp\.copyMonthToYear\(MONTHS\[month\], year\)/,
+    );
+    assert.equal(
+      (panel.match(/bp\.copyMonthToYear\(MONTHS\[month\], year\)/g) ?? []).length,
+      1,
+    );
+  });
 });

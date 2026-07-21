@@ -98,7 +98,6 @@ function bpStrings(lang: Lang) {
       sectionsTitle: 'By category or section',
       sectionsSub: 'Housekeeping, maintenance, food & beverage — plus your own sections.',
       setLimitsTitle: 'Set monthly budget limits',
-      setLimitsSub: 'Choose a month and year, then enter the maximum inventory cost the hotel plans to use. Leave an amount blank for no limit.',
       month: 'Month',
       year: 'Year',
       wholeInventory: 'Whole inventory',
@@ -172,7 +171,6 @@ function bpStrings(lang: Lang) {
       sectionsTitle: 'Por categoría o sección',
       sectionsSub: 'Limpieza, mantenimiento, alimentos y bebidas — más tus propias secciones.',
       setLimitsTitle: 'Establece límites mensuales',
-      setLimitsSub: 'Elige un mes y un año, luego ingresa el costo máximo de inventario que el hotel planea usar. Deja el monto en blanco si no deseas fijar un límite.',
       month: 'Mes',
       year: 'Año',
       wholeInventory: 'Todo el inventario',
@@ -680,7 +678,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
           </div>
         </BudgetSection>
 
-        <BudgetSection title={bp.setLimitsTitle} description={bp.setLimitsSub}>
+        <BudgetSection title={bp.setLimitsTitle}>
           {/* Month + year selectors are kept on distinct labelled rows so the
               year chips are not mistaken for additional months. */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -779,12 +777,6 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
             </div>
           )}
 
-          {mode === 'sections' && !formOpen && (
-            <div style={{ padding: '12px 0', borderTop: rows.length > 0 ? `1px solid ${T.ruleSoft}` : 'none' }}>
-              <TextBtn onClick={openCreateForm} size={13}>{bp.addSection}</TextBtn>
-            </div>
-          )}
-
           {mode === 'sections' && formOpen && (
             <div style={{ padding: '14px 0 16px', borderTop: `1px solid ${T.ruleSoft}`, display: 'flex', flexDirection: 'column', gap: 10 }}>
               <input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder={bp.sectionNamePh} maxLength={60} style={textInput} />
@@ -825,16 +817,31 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
               </div>
             </div>
           )}
-          </div>
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+
+          <div
+            data-budget-row-actions="true"
+            style={{
+              alignItems: 'center',
+              borderTop: `1px solid ${T.ruleSoft}`,
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              justifyContent: 'space-between',
+              padding: '8px 0 6px',
+            }}
+          >
+            {mode === 'sections' && !formOpen && (
+              <TextBtn onClick={openCreateForm} size={13}>{bp.addSection}</TextBtn>
+            )}
             <Btn
               variant="ghost"
               size="md"
               onClick={copyToYear}
-              style={{ maxWidth: '100%', height: 'auto', minHeight: 38, padding: '8px 16px', whiteSpace: 'normal', lineHeight: 1.3, textAlign: 'center' }}
+              style={{ marginLeft: 'auto', maxWidth: '100%', height: 'auto', minHeight: 44, padding: '8px 16px', whiteSpace: 'normal', lineHeight: 1.3, textAlign: 'center' }}
             >
               {bp.copyMonthToYear(MONTHS[month], year)}
             </Btn>
+          </div>
           </div>
         </BudgetSection>
 
@@ -944,7 +951,7 @@ function BudgetSection({
   children,
 }: {
   title: string;
-  description: string;
+  description?: string;
   contained?: boolean;
   children: React.ReactNode;
 }) {
@@ -981,18 +988,20 @@ function BudgetSection({
         >
           {title}
         </h2>
-        <p
-          style={{
-            maxWidth: 620,
-            margin: '4px 0 0',
-            fontFamily: fonts.sans,
-            fontSize: 13,
-            lineHeight: 1.5,
-            color: T.ink2,
-          }}
-        >
-          {description}
-        </p>
+        {description && (
+          <p
+            style={{
+              maxWidth: 620,
+              margin: '4px 0 0',
+              fontFamily: fonts.sans,
+              fontSize: 13,
+              lineHeight: 1.5,
+              color: T.ink2,
+            }}
+          >
+            {description}
+          </p>
+        )}
       </header>
       {children}
     </section>
