@@ -15,6 +15,7 @@ const mobileCss = source('src', 'components', 'concourse', 'MobileConcourseNav.m
 const company = source('src', 'app', 'company', 'page.tsx');
 const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
 const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
+const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
 
 describe('in-place admin hotel view', () => {
   test('removes the admin destination action from desktop and phone navigation', () => {
@@ -52,11 +53,14 @@ describe('in-place admin hotel view', () => {
     assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
   });
 
-  test('removes the duplicate admin-only status banner without weakening read-only mode', () => {
+  test('removes both duplicate admin-only status banners without weakening read-only mode', () => {
     assert.doesNotMatch(company, /styles\.adminPreviewNotice|styles\.adminToolsNotice/);
     assert.doesNotMatch(company, /Hotel view · Read-only|Reviewing the hotel workspace/);
     assert.doesNotMatch(companyCss, /\.adminPreviewNotice|\.adminToolsNotice/);
+    assert.doesNotMatch(hotelTeam, /styles\.readOnlyNotice|Read-only preview|You can review this hotel/);
+    assert.doesNotMatch(hotelTeamCss, /\.readOnlyNotice/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
+    assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
   });
 
   test('is admin-only, compact, keyboard visible, mobile safe, and reduced-motion safe', () => {

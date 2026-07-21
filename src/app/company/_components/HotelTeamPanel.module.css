@@ -166,7 +166,6 @@
   outline-offset: 2px;
 }
 
-.readOnlyNotice,
 .permissionState,
 .infoNotice,
 .warningNotice,
@@ -179,7 +178,6 @@
   border-radius: 12px;
 }
 
-.readOnlyNotice,
 .permissionState,
 .infoNotice {
   border: 1px solid rgba(92, 122, 96, 0.2);
@@ -187,7 +185,6 @@
   background: var(--team-sage-dim);
 }
 
-.readOnlyNotice > div,
 .permissionState > div,
 .deliveryNotice > div,
 .successNotice > div {
@@ -198,7 +195,6 @@
   gap: 2px;
 }
 
-.readOnlyNotice strong,
 .permissionState h3,
 .deliveryNotice strong,
 .successNotice strong {
@@ -209,7 +205,6 @@
   line-height: 18px;
 }
 
-.readOnlyNotice span,
 .permissionState p,
 .deliveryNotice span,
 .successNotice span {

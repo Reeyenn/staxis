@@ -457,16 +457,6 @@ export function HotelTeamPanel({
         </button>
       </div>
 
-      {locked ? (
-        <div className={styles.readOnlyNotice} role="status">
-          <ShieldCheck size={18} aria-hidden="true" />
-          <div>
-            <strong>{copy(lang, 'Read-only preview', 'Vista de solo lectura')}</strong>
-            <span>{copy(lang, 'You can review this hotel, but no account or invitation changes are available.', 'Puedes revisar este hotel, pero no puedes cambiar cuentas ni invitaciones.')}</span>
-          </div>
-        </div>
-      ) : null}
-
       <section className={styles.subsection} aria-labelledby="team-members-title">
         <div className={styles.subheading}>
           <div>
