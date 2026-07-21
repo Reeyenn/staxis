@@ -532,9 +532,6 @@ function CompanyAccessContent() {
     && adminViewerContext
     && adminDataMatchesSelection,
   );
-  const adminActionHotelName = activeProperty?.name
-    ?? adminViewerContext?.targetName
-    ?? localized(lang, 'this hotel', 'este hotel');
   const workspaceTitle = adminPreview
     ? (adminViewerContext?.scope === 'organization'
         ? localized(lang, 'Company Hub', 'Centro de empresa')
@@ -630,36 +627,6 @@ function CompanyAccessContent() {
             ) : null}
           </div>
         </header>
-
-        {adminViewerContext ? (
-          <div className={`${styles.adminPreviewNotice}${adminToolsActive ? ` ${styles.adminToolsNotice}` : ''}`} role="status">
-            <ShieldCheck size={18} aria-hidden="true" />
-            <div>
-              <strong>{adminToolsActive
-                ? localized(lang, 'Admin view · Hotel tools enabled', 'Vista de administrador · Herramientas del hotel activadas')
-                : localized(lang, 'Hotel view · Read-only', 'Vista del hotel · Solo lectura')}</strong>
-              <span>
-                {adminToolsActive
-                  ? localized(
-                      lang,
-                      `Hotel accounts, invitations, and approvals are enabled for ${adminActionHotelName}.`,
-                      `Las cuentas, invitaciones y aprobaciones del hotel están activadas para ${adminActionHotelName}.`,
-                    )
-                  : localized(
-                      lang,
-                      `Reviewing the hotel workspace for ${adminActionHotelName}.`,
-                      `Revisando el espacio del hotel para ${adminActionHotelName}.`,
-                    )}
-              </span>
-            </div>
-            {!adminToolsActive ? (
-              <button type="button" onClick={() => router.push('/admin/properties#live')}>
-                {localized(lang, 'Back to Admin', 'Volver a Admin')}
-                <ArrowRight size={14} aria-hidden="true" />
-              </button>
-            ) : null}
-          </div>
-        ) : null}
 
         {currentLoadError && currentData ? (
           <div className={styles.partialNotice} role="status">

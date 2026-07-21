@@ -48,11 +48,15 @@ describe('in-place admin hotel view', () => {
     assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminToolsEnabled \? ['"]admin['"] : ['"]preview['"]\}`\}/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
     assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
-    assert.match(company, /const adminActionHotelName = activeProperty\?\.name/);
-    assert.match(company, /enabled for \$\{adminActionHotelName\}/);
-    assert.doesNotMatch(company, /enabled for \$\{adminViewerContext\.targetName\}/);
     assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
     assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);
+  });
+
+  test('removes the duplicate admin-only status banner without weakening read-only mode', () => {
+    assert.doesNotMatch(company, /styles\.adminPreviewNotice|styles\.adminToolsNotice/);
+    assert.doesNotMatch(company, /Hotel view · Read-only|Reviewing the hotel workspace/);
+    assert.doesNotMatch(companyCss, /\.adminPreviewNotice|\.adminToolsNotice/);
+    assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
   });
 
   test('is admin-only, compact, keyboard visible, mobile safe, and reduced-motion safe', () => {
