@@ -143,6 +143,7 @@ function rpStrings(lang: Lang) {
 
 type YtdRow = InventoryAccountingYtdContract;
 type SummaryShape = InventoryAccountingSummaryContract;
+type PropertySummary = { propertyId: string; data: SummaryShape };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value);
@@ -152,17 +153,22 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const rp = rpStrings(lang);
-  const [summary, setSummary] = useState<SummaryShape | null>(null);
+  const [propertySummary, setPropertySummary] = useState<PropertySummary | null>(null);
   const [loading, setLoading] = useState(false);
-  const [loadFailed, setLoadFailed] = useState(false);
+  const [failedPropertyId, setFailedPropertyId] = useState<string | null>(null);
   const [reloadSequence, setReloadSequence] = useState(0);
+  // Keep a successful response available when this same property's report is
+  // reopened, but never show it after the user switches hotels.
+  const summary = propertySummary?.propertyId === activePropertyId
+    ? propertySummary.data
+    : null;
+  const loadFailed = failedPropertyId === activePropertyId;
 
   useEffect(() => {
     if (!open || !user || !activePropertyId) return;
     let cancelled = false;
     setLoading(true);
-    setLoadFailed(false);
-    setSummary(null);
+    setFailedPropertyId(null);
     void (async () => {
       try {
         const res = await fetchWithAuth(
@@ -170,7 +176,12 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
           { cache: 'no-store' },
         );
         if (!res.ok) {
-          if (!cancelled) setLoadFailed(true);
+          if (!cancelled) {
+            setPropertySummary((current) => (
+              current?.propertyId === activePropertyId ? null : current
+            ));
+            setFailedPropertyId(activePropertyId);
+          }
           return;
         }
         const json: unknown = await res.json();
@@ -180,13 +191,21 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
           && json.ok === true
           && isInventoryAccountingSummaryPayload(json.data)
         ) {
-          setSummary(json.data);
+          setPropertySummary({ propertyId: activePropertyId, data: json.data });
         } else {
-          setLoadFailed(true);
+          setPropertySummary((current) => (
+            current?.propertyId === activePropertyId ? null : current
+          ));
+          setFailedPropertyId(activePropertyId);
         }
       } catch (err) {
         console.error('[reports] load failed', err);
-        if (!cancelled) setLoadFailed(true);
+        if (!cancelled) {
+          setPropertySummary((current) => (
+            current?.propertyId === activePropertyId ? null : current
+          ));
+          setFailedPropertyId(activePropertyId);
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -294,6 +313,9 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
     timezone,
   );
   const reportMonthLabel = formatInventoryMonthKey(reportMonthKey, lang === 'es' ? 'es' : 'en');
+  // This is deliberately independent of `loading`: effects run after paint,
+  // so checking `loading` would briefly render a KPI-only, undersized dialog.
+  const showInitialLoading = !summary && !loadFailed;
 
 
   return (
@@ -305,7 +327,14 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
       suffix={`${reportMonthLabel}, ${rp.mtd}`}
       width={1080}
     >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div
+        className={styles.reportContent}
+        aria-busy={loading || showInitialLoading}
+        style={{
+          '--reports-skeleton-bg': T.ruleSoft,
+          '--reports-skeleton-shine': T.paper,
+        } as React.CSSProperties}
+      >
         {/* Row 1 — always-real, day-one stats */}
         <div className={styles.kpiGrid}>
           <KPI
@@ -342,12 +371,8 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
           />
         </div>
 
-        {loading && !summary ? (
-          <Card title={rp.thisMonth}>
-            <div role="status" aria-live="polite">
-              <EmptyText>{rp.loading}</EmptyText>
-            </div>
-          </Card>
+        {showInitialLoading ? (
+          <ReportsLoadingState rp={rp} />
         ) : loadFailed && !summary ? (
           <div role="alert">
             <Card title={rp.unavailableTitle}>
@@ -401,11 +426,7 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
             )}
           </Card>
           <Card title={rp.thisMonth}>
-            {loading && !summary ? (
-              <EmptyText>{rp.loading}</EmptyText>
-            ) : loadFailed && !summary ? (
-              <EmptyText>{rp.loadFailed}</EmptyText>
-            ) : actualUsage != null ? (
+            {actualUsage != null ? (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 <div style={{ fontFamily: fonts.sans, fontSize: 34, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>
                   {fmtMoney(actualUsage)}
@@ -481,6 +502,37 @@ export function ReportsPanel({ lang, open, onClose, display, customNameById, tim
         ) : null}
       </div>
     </Overlay>
+  );
+}
+
+function ReportsLoadingState({ rp }: { rp: ReturnType<typeof rpStrings> }) {
+  return (
+    <div className={styles.loadingState} role="status" aria-live="polite">
+      <span className={styles.srOnly}>{rp.loading}</span>
+      <div className={styles.loadingVisual} aria-hidden="true">
+        <div className={styles.primaryGrid}>
+          <LoadingCard title={rp.valueByCategory} />
+          <LoadingCard title={rp.thisMonth} strong />
+        </div>
+        <LoadingCard title={rp.usageByMonth} />
+        <div className={styles.secondaryGrid}>
+          <LoadingCard title={rp.shrinkageRate} />
+          <LoadingCard title={rp.costPerOccRoom} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LoadingCard({ title, strong = false }: { title: string; strong?: boolean }) {
+  return (
+    <Card title={title}>
+      <div className={styles.loadingCardContent}>
+        {strong ? <span className={`${styles.skeletonLine} ${styles.skeletonStrong}`} /> : null}
+        <span className={styles.skeletonLine} />
+        <span className={`${styles.skeletonLine} ${styles.skeletonShort}`} />
+      </div>
+    </Card>
   );
 }
 

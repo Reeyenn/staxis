@@ -6,6 +6,82 @@
   min-width: 0;
 }
 
+.reportContent,
+.loadingVisual {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.reportContent {
+  min-height: min(700px, calc(90vh - 120px));
+}
+
+.loadingState {
+  min-width: 0;
+}
+
+.loadingCardContent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.skeletonLine {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--reports-skeleton-bg);
+}
+
+.skeletonLine::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--reports-skeleton-shine),
+    transparent
+  );
+  content: '';
+  opacity: 0.7;
+  transform: translateX(-100%);
+  animation: reportsSkeletonShimmer 1.5s ease-in-out infinite;
+}
+
+.skeletonStrong {
+  width: 42%;
+  height: 30px;
+  border-radius: 6px;
+}
+
+.skeletonShort {
+  width: 68%;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes reportsSkeletonShimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
 .kpiGrid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -42,6 +118,10 @@
 }
 
 @media (max-width: 760px) {
+  .reportContent {
+    min-height: 0;
+  }
+
   .kpiGrid,
   .primaryGrid,
   .secondaryGrid {
@@ -67,6 +147,12 @@
   .chartBars {
     gap: 14px;
     min-width: 480px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonLine::after {
+    animation: none;
   }
 }
 
