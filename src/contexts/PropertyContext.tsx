@@ -35,6 +35,12 @@ interface PropertyContextType {
   /** The active hotel's capability restrictions (admin's Access-tab toggles).
    *  Empty = everyone-everything (the default). Drives useCan(). */
   capabilityOverrides: CapabilityOverrideMap;
+  /** Identity + hotel key for the capability snapshot currently exposed. Null
+   *  while the active identity/property is unresolved or still loading. */
+  capabilityOverridesViewerKey: string | null;
+  /** Hotel id carried by the exposed capability snapshot. Kept separately from
+   *  the viewer key so consumers can make property readiness explicit. */
+  capabilityOverridesPropertyId: string | null;
   loading: boolean;
   setActivePropertyId: (id: string) => void;
   refreshProperty: () => Promise<void>;
@@ -55,6 +61,8 @@ const PropertyContext = createContext<PropertyContextType>({
   publicAreas: [],
   laundryConfig: [],
   capabilityOverrides: {},
+  capabilityOverridesViewerKey: null,
+  capabilityOverridesPropertyId: null,
   loading: true,
   setActivePropertyId: () => {},
   refreshProperty: async () => {},
@@ -64,9 +72,19 @@ const PropertyContext = createContext<PropertyContextType>({
   refreshCapabilities: async () => {},
 });
 
+const EMPTY_CAPABILITY_OVERRIDES: CapabilityOverrideMap = {};
+
+interface CapabilityOverrideSnapshot {
+  viewerKey: string;
+  propertyId: string;
+  overrides: CapabilityOverrideMap;
+}
+
 /** Read one hotel's capability override map via the service-role-backed route
- *  (the table is deny-all RLS, so a direct browser read would return []). Any
- *  failure falls back to {} = everyone-everything; the server re-checks anyway.
+ *  (the table is deny-all RLS, so a direct browser read would return []). A
+ *  failure falls back to {} = everyone-everything (the existing UI-hint
+ *  behavior). The provider still tags that settled fallback to its identity +
+ *  hotel so consumers can wait without ever pairing it with stale permissions.
  *
  *  CRITICAL — this MUST fail soft, never force a logout. We pass our OWN
  *  Authorization header, which makes fetchWithAuth treat the call as "caller
@@ -112,7 +130,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const [staffViewerKey, setStaffViewerKey] = useState<string | null>(null);
   const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
   const [laundryConfig, setLaundryConfig] = useState<LaundryCategory[]>([]);
-  const [capabilityOverrides, setCapabilityOverrides] = useState<CapabilityOverrideMap>({});
+  const [capabilitySnapshot, setCapabilitySnapshot] = useState<CapabilityOverrideSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Derived from properties list - no async needed, always in sync
@@ -140,6 +158,9 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       toPropertyId: id,
       source: 'selector',
     })) return;
+    // Clear in the same event as the hotel change. No render may pair the new
+    // hotel with the previous hotel's capability map.
+    setCapabilitySnapshot(null);
     setActivePropertyIdState(id);
     localStorage.setItem('hotelops-active-property', id);
   };
@@ -158,6 +179,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
           toPropertyId: next,
           source: 'cross-tab',
         })) return;
+        setCapabilitySnapshot(null);
         setActivePropertyIdState(next);
       }
     };
@@ -212,6 +234,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
         const stored = localStorage.getItem('hotelops-active-property');
         const pid = stored && props.find(p => p.id === stored) ? stored : props[0]?.id ?? null;
+        setCapabilitySnapshot(null);
         setActivePropertyIdState(pid);
       } catch (err) {
         if (cancelled) return;
@@ -318,6 +341,21 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // for a real property the user has access to, and it still re-runs (and seeds)
   // the moment a genuinely new property resolves. (Fix 2026-06-18.)
   const resolvedPropertyId = activeProperty?.id ?? null;
+  const expectedCapabilityViewerKey = userUid && resolvedPropertyId
+    ? `${userUid}:${resolvedPropertyId}`
+    : null;
+  const expectedCapabilityViewerKeyRef = useRef(expectedCapabilityViewerKey);
+  expectedCapabilityViewerKeyRef.current = expectedCapabilityViewerKey;
+  // Never expose a snapshot from a previous identity/property while the next
+  // request settles, even for the render before the clearing effect runs.
+  const exposedCapabilitySnapshot = capabilitySnapshot
+    && capabilitySnapshot.viewerKey === expectedCapabilityViewerKey
+    && capabilitySnapshot.propertyId === resolvedPropertyId
+    ? capabilitySnapshot
+    : null;
+  const capabilityOverrides = exposedCapabilitySnapshot?.overrides ?? EMPTY_CAPABILITY_OVERRIDES;
+  const capabilityOverridesViewerKey = exposedCapabilitySnapshot?.viewerKey ?? null;
+  const capabilityOverridesPropertyId = exposedCapabilitySnapshot?.propertyId ?? null;
   useEffect(() => {
     if (!user || !resolvedPropertyId) return;
     let cancelled = false;
@@ -360,8 +398,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // server enforces. Same identity-primitive dependency reasoning as above — we
   // don't want a token refresh to re-fetch.
   useEffect(() => {
-    if (!user || !activePropertyId) {
-      setCapabilityOverrides({});
+    if (!user || !resolvedPropertyId || !expectedCapabilityViewerKey) {
+      setCapabilitySnapshot(null);
       return;
     }
     // Don't fire this protected call while the property is still mid-onboarding.
@@ -370,27 +408,41 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     // anyway. Firing it the instant a freshly-created 1-property owner verifies
     // is exactly what raced a `requires_2fa` 401 into a forced logout → /signin.
     if (activeOnboardingInProgress) {
-      setCapabilityOverrides({});
+      setCapabilitySnapshot({
+        viewerKey: expectedCapabilityViewerKey,
+        propertyId: resolvedPropertyId,
+        overrides: EMPTY_CAPABILITY_OVERRIDES,
+      });
       return;
     }
     let cancelled = false;
+    setCapabilitySnapshot(null);
     void (async () => {
-      try {
-        const map = await fetchOverridesFor(activePropertyId);
-        if (!cancelled) setCapabilityOverrides(map);
-      } catch {
-        if (!cancelled) setCapabilityOverrides({});
+      const map = await fetchOverridesFor(resolvedPropertyId);
+      if (
+        !cancelled
+        && expectedCapabilityViewerKeyRef.current === expectedCapabilityViewerKey
+      ) {
+        setCapabilitySnapshot({
+          viewerKey: expectedCapabilityViewerKey,
+          propertyId: resolvedPropertyId,
+          overrides: map,
+        });
       }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, activePropertyId, activeOnboardingInProgress]);
+  }, [userUid, resolvedPropertyId, activeOnboardingInProgress]);
 
   const refreshCapabilities = useCallback(async () => {
-    if (!activePropertyId) { setCapabilityOverrides({}); return; }
-    try { setCapabilityOverrides(await fetchOverridesFor(activePropertyId)); }
-    catch { setCapabilityOverrides({}); }
-  }, [activePropertyId]);
+    const viewerKey = expectedCapabilityViewerKey;
+    const propertyId = resolvedPropertyId;
+    setCapabilitySnapshot(null);
+    if (!viewerKey || !propertyId) return;
+    const map = await fetchOverridesFor(propertyId);
+    if (expectedCapabilityViewerKeyRef.current !== viewerKey) return;
+    setCapabilitySnapshot({ viewerKey, propertyId, overrides: map });
+  }, [expectedCapabilityViewerKey, resolvedPropertyId]);
 
   const refreshProperty = async () => {
     if (!user || !activePropertyId) return;
@@ -436,6 +488,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         publicAreas,
         laundryConfig,
         capabilityOverrides,
+        capabilityOverridesViewerKey,
+        capabilityOverridesPropertyId,
         loading,
         setActivePropertyId,
         refreshProperty,

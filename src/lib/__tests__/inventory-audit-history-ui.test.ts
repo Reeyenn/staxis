@@ -43,6 +43,11 @@ const orderDb = source('lib', 'db', 'inventory-orders.ts');
 const auditPresentation = source('app', 'inventory', '_components', 'overlays', 'inventory-audit-presentation.ts');
 const auditLoader = section(shell, 'const loadAuditHistory = useCallback', '// ── Honour ?action=');
 const auditRequestLoader = auditLoader.slice(0, auditLoader.indexOf('  useEffect(() => {'));
+const auditFirstPageSetup = section(
+  auditRequestLoader,
+  'const revalidatingCurrentProperty',
+  '    try {',
+);
 const boardLoader = section(shell, 'const fetchBoardData = useCallback', 'const applyBoardData = useCallback');
 const auditFeed = section(panel, 'function AuditHistoryFeed(', 'function MonthCloseDetail(');
 const auditFinancials = section(
@@ -124,7 +129,7 @@ describe('inventory audit-history route wiring', () => {
     assert.match(auditLoader, /setAuditNextCursor\(page\.nextCursor\)/);
     assert.match(
       shell,
-      /onLoadOlder=\{\(\) => \{\s*if \(auditMatchesActiveProperty && auditNextCursor && !auditLoadingMore\) \{\s*void loadAuditHistory\(auditNextCursor, true\);/,
+      /onLoadOlder=\{\(\) => \{\s*if \(auditMatchesActiveProperty && auditNextCursor && !auditLoadingMore && !auditRefreshing\) \{\s*void loadAuditHistory\(auditNextCursor, true\);/,
     );
     assert.match(auditFeed, /\{hasMore && onLoadOlder && \(/);
     assert.match(auditFeed, /onClick=\{onLoadOlder\}/);
@@ -133,10 +138,13 @@ describe('inventory audit-history route wiring', () => {
     assert.match(auditFeed, /loadingMore \? hp\.loadingHistory : hp\.loadOlder/);
   });
 
-  test('falls back only on an initial error, preserves prior pages, and retries from the first page', () => {
+  test('falls back only without a cached page, preserves prior pages, and retries from the first page', () => {
     assert.match(auditLoader, /if \(!response\.ok\) throw new Error/);
     assert.match(auditLoader, /if \(!page\) throw new Error\('inventory history response was invalid'\)/);
-    assert.match(auditLoader, /setAuditStatus\(append \? 'ready' : 'error'\)/);
+    assert.match(
+      auditLoader,
+      /setAuditStatus\(append \|\| revalidatingCurrentProperty \? 'ready' : 'error'\)/,
+    );
     assert.doesNotMatch(
       section(auditLoader, '} catch (error) {', '} finally {'),
       /setAuditEvents\(\[\]\)|setAuditNextCursor\(null\)/,
@@ -190,6 +198,22 @@ describe('inventory audit-history route wiring', () => {
     assert.match(auditFeed, /role="status" aria-live="polite"/);
     assert.match(auditFeed, /\{hp\.loadingHistory\}/);
   });
+
+  test('revalidates a successful same-property page without clearing visible rows', () => {
+    assert.match(
+      auditFirstPageSetup,
+      /auditSnapshotPropertyIdRef\.current === propertyId/,
+    );
+    assert.doesNotMatch(auditFirstPageSetup, /setAuditEvents\(\[\]\)/);
+    assert.match(
+      auditFirstPageSetup,
+      /if \(!revalidatingCurrentProperty\) setAuditStatus\('loading'\)/,
+    );
+    assert.match(auditRequestLoader, /auditSnapshotPropertyIdRef\.current = propertyId/);
+    assert.match(auditRequestLoader, /setAuditRefreshing\(revalidatingCurrentProperty\)/);
+    assert.match(auditRequestLoader, /if \(!append\) setAuditRefreshing\(false\)/);
+    assert.match(shell, /auditRefreshing=\{auditMatchesActiveProperty && auditRefreshing\}/);
+  });
 });
 
 describe('inventory audit-history presentation contract', () => {
@@ -240,6 +264,31 @@ describe('inventory audit-history presentation contract', () => {
     assert.match(panelCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.auditArrow\s*\{\s*transition: none !important;/);
     assert.match(auditFeed, /type="search"[\s\S]*?height: 44/);
     assert.match(auditFeed, /onClick=\{onLoadOlder\}[\s\S]*?minHeight: 44/);
+  });
+
+  test('opens with stable full-size loading geometry and a shape-matched skeleton', () => {
+    assert.match(
+      panel,
+      /className=\{styles\.historyContent\}[\s\S]*?aria-busy=\{auditLoading \|\| auditRefreshing \|\| auditLoadingMore\}/,
+    );
+    assert.match(auditFeed, /return <HistoryLoadingState hp=\{hp\} \/>/);
+    assert.match(auditFeed, /className=\{styles\.loadingState\} role="status" aria-live="polite"/);
+    assert.match(auditFeed, /className=\{styles\.loadingVisual\} aria-hidden="true"/);
+    assert.match(auditFeed, /styles\.loadingTools/);
+    assert.match(auditFeed, /styles\.loadingList/);
+    assert.match(auditFeed, /Array\.from\(\{ length: 7 \}/);
+    assert.match(
+      panelCss,
+      /\.historyContent\s*\{[\s\S]*?min-height:\s*min\(700px, calc\(90vh - 120px\)\)/,
+    );
+    assert.match(
+      panelCss,
+      /@media \(max-width: 760px\)[\s\S]*?\.historyContent\s*\{[\s\S]*?min-height:\s*0/,
+    );
+    assert.match(
+      panelCss,
+      /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.skeleton::after\s*\{[\s\S]*?animation:\s*none/,
+    );
   });
 });
 
@@ -297,7 +346,10 @@ describe('inventory audit-history property lifecycle', () => {
   test('tags, invalidates, and synchronously masks audit state on property changes', () => {
     assert.match(shell, /const \[auditPropertyId, setAuditPropertyId\] = useState<string \| null>\(null\)/);
     assert.match(shell, /auditLoadSequence\.current \+= 1/);
+    assert.match(shell, /auditSnapshotPropertyIdRef\.current = null/);
     assert.match(shell, /setAuditPropertyId\(uid \? activePropertyId : null\)/);
+    assert.match(shell, /setAuditEvents\(\[\]\)/);
+    assert.match(shell, /setAuditRefreshing\(false\)/);
     assert.match(shell, /inventoryAuditMatchesProperty\(activePropertyId, auditPropertyId\)/);
     assert.match(shell, /auditPropertyId=\{auditMatchesActiveProperty \? auditPropertyId : null\}/);
     assert.match(shell, /auditEvents=\{!auditMatchesActiveProperty \? \[\]/);

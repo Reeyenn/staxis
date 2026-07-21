@@ -10,6 +10,7 @@ import { Serif } from '../Serif';
 import { type Lang } from '../inv-i18n';
 import { Overlay } from './Overlay';
 import { aiStrings, type AiStrings } from './ai-i18n';
+import styles from './AiReportSheet.module.css';
 import {
   IconClipboard,
   IconGauge,
@@ -68,7 +69,10 @@ interface ReportData {
   items: ReportItem[];
 }
 
-type LoadState = 'loading' | 'ready' | 'error';
+interface PropertyReport {
+  propertyId: string;
+  data: ReportData;
+}
 
 interface AiReportSheetProps {
   lang: Lang;
@@ -85,8 +89,9 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
   const { activePropertyId } = useProperty();
   const ai = aiStrings(lang);
 
-  const [state, setState] = useState<LoadState>('loading');
-  const [data, setData] = useState<ReportData | null>(null);
+  const [propertyReport, setPropertyReport] = useState<PropertyReport | null>(null);
+  const [loadingPropertyId, setLoadingPropertyId] = useState<string | null>(null);
+  const [failedPropertyId, setFailedPropertyId] = useState<string | null>(null);
 
   // Guide layer — stacked ON TOP of the tracker. While it's open, the
   // tracker overlay must ignore its own ESC/scrim close (both listen on
@@ -96,38 +101,60 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
   useEffect(() => { guideOpenRef.current = guideOpen; }, [guideOpen]);
   useEffect(() => { if (!open) setGuideOpen(false); }, [open]);
 
-  // Fetch fresh on every open. Reset to loading first so a reopen never
-  // flashes the previous property's stale report.
+  // Fetch fresh on every open. A successful response remains visible while the
+  // SAME property's refresh is in flight, so reopening is immediate. Every
+  // render still gates that response by property id; a hotel switch therefore
+  // paints the loading skeleton synchronously and can never flash another
+  // property's report while this effect catches up.
   useEffect(() => {
     if (!open || !activePropertyId) return;
     let cancelled = false;
-    setState('loading');
-    setData(null);
+    const propertyId = activePropertyId;
+    setLoadingPropertyId(propertyId);
+    setFailedPropertyId((current) => current === propertyId ? null : current);
     void (async () => {
       try {
         const res = await fetchWithAuth(
-          `/api/inventory/ai-report?propertyId=${activePropertyId}`,
+          `/api/inventory/ai-report?propertyId=${propertyId}`,
           { cache: 'no-store' },
         );
         if (!res.ok) throw new Error(`status ${res.status}`);
         const json = (await res.json()) as { data?: ReportData };
         if (cancelled) return;
         if (json.data) {
-          setData(json.data);
-          setState('ready');
+          setPropertyReport({ propertyId, data: json.data });
+          setFailedPropertyId((current) => current === propertyId ? null : current);
         } else {
-          setState('error');
+          setPropertyReport((current) => current?.propertyId === propertyId ? null : current);
+          setFailedPropertyId(propertyId);
         }
       } catch (err) {
         console.error('[inventory-ai] report load failed', err);
-        if (!cancelled) setState('error');
+        if (!cancelled) {
+          setPropertyReport((current) => current?.propertyId === propertyId ? null : current);
+          setFailedPropertyId(propertyId);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoadingPropertyId((current) => current === propertyId ? null : current);
+        }
       }
     })();
     return () => { cancelled = true; };
   }, [open, activePropertyId]);
 
+  const data = propertyReport?.propertyId === activePropertyId
+    ? propertyReport.data
+    : null;
+  const loading = loadingPropertyId === activePropertyId;
+  const loadFailed = failedPropertyId === activePropertyId;
   const summary = data?.summary ?? null;
   const items = data?.items ?? [];
+  // This is deliberately independent of the effect-driven `loading` flag:
+  // effects run after paint, so a first open or hotel switch must choose the
+  // full-size loading layout during render rather than briefly showing an
+  // error or another property's content.
+  const showInitialLoading = !summary && !loadFailed;
 
   const noJobsYet =
     !!summary &&
@@ -147,11 +174,20 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
       italic={ai.title}
       width={1100}
     >
-      {state === 'loading' && <Centered text={ai.loading} />}
-      {state === 'error' && <Centered text={ai.loadError} tone="warm" />}
-
-      {state === 'ready' && summary && (
-        <>
+      <div
+        className={styles.reportContent}
+        aria-busy={loading || showInitialLoading}
+        style={{
+          '--ai-report-skeleton-bg': T.ruleSoft,
+          '--ai-report-skeleton-shine': T.paper,
+        } as React.CSSProperties}
+      >
+        {showInitialLoading ? (
+          <AiReportLoadingState ai={ai} />
+        ) : loadFailed || !summary ? (
+          <Centered text={ai.loadError} tone="warm" />
+        ) : (
+          <>
           {/* ── The hero: how far to trusted predictions, measured by DATA.
                  Centered; the little "How it works" box sits top-right in its
                  own row so it can never overlap the centered text. ── */}
@@ -211,9 +247,44 @@ export function AiReportSheet({ lang, open, onClose }: AiReportSheetProps) {
           >
             <VisualGuide ai={ai} />
           </Overlay>
-        </>
-      )}
+          </>
+        )}
+      </div>
     </Overlay>
+  );
+}
+
+function AiReportLoadingState({ ai }: { ai: AiStrings }) {
+  return (
+    <div className={styles.loadingState} role="status" aria-live="polite">
+      <span className={styles.srOnly}>{ai.loading}</span>
+      <div className={styles.loadingVisual} aria-hidden="true">
+        <div className={styles.loadingButtonRow}>
+          <span className={`${styles.skeleton} ${styles.skeletonButton}`} />
+        </div>
+        <div className={styles.loadingHero}>
+          <div className={styles.loadingHeroValue}>
+            <span className={`${styles.skeleton} ${styles.skeletonPercent}`} />
+            <span className={`${styles.skeleton} ${styles.skeletonCaption}`} />
+          </div>
+          <span className={`${styles.skeleton} ${styles.skeletonTrack}`} />
+          <span className={`${styles.skeleton} ${styles.skeletonHeroLine}`} />
+          <span className={`${styles.skeleton} ${styles.skeletonHeroLineShort}`} />
+        </div>
+        <div className={styles.loadingTiles}>
+          {[0, 1, 2, 3].map((index) => (
+            <div className={styles.loadingTile} key={index}>
+              <span className={`${styles.skeleton} ${styles.skeletonRing}`} />
+              <span className={styles.loadingTileCopy}>
+                <span className={`${styles.skeleton} ${styles.skeletonTileTitle}`} />
+                <span className={`${styles.skeleton} ${styles.skeletonTileValue}`} />
+                <span className={`${styles.skeleton} ${styles.skeletonTileDetail}`} />
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -622,4 +693,3 @@ function fmtRate(v: number): string {
   if (Math.abs(v) >= 10) return Math.round(v).toLocaleString('en-US');
   return v.toFixed(2);
 }
-

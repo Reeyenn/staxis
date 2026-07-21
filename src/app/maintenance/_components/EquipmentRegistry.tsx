@@ -8,7 +8,7 @@
 // equipment table is deny-all RLS). Create / edit / delete are management-gated
 // both server-side (isManager) and here (canManageTeam hides the controls).
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -351,12 +351,13 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
 }
 
 function EquipmentDetailModal({
-  open, onClose, detail, loading, lang, isMgr, onEdit, onDelete, onRetry,
+  open, onClose, detail, loading, loadError, lang, isMgr, onEdit, onDelete, onRetry,
 }: {
   open: boolean;
   onClose: () => void;
   detail: EquipmentDetail | null;
   loading: boolean;
+  loadError: boolean;
   lang: string;
   isMgr: boolean;
   onEdit: (e: Equipment) => void;
@@ -365,43 +366,56 @@ function EquipmentDetailModal({
 }) {
   const eq = detail?.equipment ?? null;
   const w = useMemo(() => (eq ? warrantyInfo(eq.warrantyExpiresAt, lang) : null), [eq, lang]);
+  const initialLoading = loading && !eq;
 
   return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      title={eq ? eq.name : tr(lang, 'Equipment', 'Equipo')}
-      subtitle={eq ? `${catLabel(eq.category, lang)}${eq.location ? ` · ${eq.location}` : ''}` : undefined}
-      width={680}
-      footer={
-        <>
-          {eq && isMgr && (
-            <>
-              <Btn variant="ghost" size="md" onClick={() => onDelete(eq)} style={{ color: T.warm, marginRight: 'auto' }}>
-                {tr(lang, 'Delete', 'Eliminar')}
-              </Btn>
-              <Btn variant="ghost" size="md" onClick={() => onEdit(eq)}>{tr(lang, 'Edit', 'Editar')}</Btn>
-            </>
-          )}
-          <Btn variant="primary" size="md" onClick={onClose}>{tr(lang, 'Close', 'Cerrar')}</Btn>
-        </>
-      }
-    >
-      {loading ? (
-        <div style={{ padding: '40px 0', textAlign: 'center', fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
-          {tr(lang, 'Loading…', 'Cargando…')}
-        </div>
-      ) : !detail || !eq ? (
-        // Fetch settled with nothing — an error (or a deleted asset). The old
-        // code fell back to "Loading…" here and hung forever.
-        <div style={{ padding: '36px 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
-          <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2 }}>
-            {tr(lang, "Couldn't load this asset — check your connection.", 'No se pudo cargar este activo — revisa la conexión.')}
-          </span>
-          <Btn variant="primary" size="md" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <>
+      <EquipmentDetailStyles />
+      <Modal
+        open={open}
+        onClose={onClose}
+        title={eq ? eq.name : tr(lang, 'Equipment', 'Equipo')}
+        subtitle={eq ? `${catLabel(eq.category, lang)}${eq.location ? ` · ${eq.location}` : ''}` : undefined}
+        width={680}
+        footer={
+          <>
+            {eq && isMgr && (
+              <>
+                <Btn variant="ghost" size="md" onClick={() => onDelete(eq)} style={{ color: T.warm, marginRight: 'auto' }}>
+                  {tr(lang, 'Delete', 'Eliminar')}
+                </Btn>
+                <Btn variant="ghost" size="md" onClick={() => onEdit(eq)}>{tr(lang, 'Edit', 'Editar')}</Btn>
+              </>
+            )}
+            <Btn variant="primary" size="md" onClick={onClose}>{tr(lang, 'Close', 'Cerrar')}</Btn>
+          </>
+        }
+      >
+        <div className="equipment-detail-viewport" aria-busy={loading || undefined}>
+          {initialLoading ? (
+            <EquipmentDetailLoading lang={lang} />
+          ) : !detail || !eq ? (
+            // Fetch settled with nothing — an error (or a deleted asset). The
+            // fixed viewport keeps this state the same size as loaded content.
+            <div className="equipment-detail-error" role="alert">
+              <span>
+                {tr(lang, "Couldn't load this asset — check your connection.", 'No se pudo cargar este activo — revisa la conexión.')}
+              </span>
+              <Btn variant="primary" size="md" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+              {loading && (
+                <span className="equipment-detail-sr-status" role="status" aria-live="polite">
+                  {tr(lang, 'Refreshing equipment details…', 'Actualizando detalles del equipo…')}
+                </span>
+              )}
+              {loadError && (
+                <div className="equipment-detail-refresh-error" role="alert">
+                  <span>{tr(lang, "Couldn't refresh this asset. Showing the last saved details.", 'No se pudo actualizar este activo. Se muestran los últimos detalles guardados.')}</span>
+                  <Btn variant="ghost" size="sm" onClick={onRetry}>↻ {tr(lang, 'Retry', 'Reintentar')}</Btn>
+                </div>
+              )}
           {/* status + warranty */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <StatusPill s={eq.status} lang={lang} />
@@ -479,10 +493,123 @@ function EquipmentDetailModal({
               </div>
             )}
           </div>
+            </div>
+          )}
         </div>
-      )}
-    </Modal>
+      </Modal>
+    </>
   );
+}
+
+function EquipmentDetailLoading({ lang }: { lang: string }) {
+  return (
+    <div className="equipment-detail-loading" role="status" aria-live="polite">
+      <span className="equipment-detail-loading-label">{tr(lang, 'Loading equipment details…', 'Cargando detalles del equipo…')}</span>
+      <div className="equipment-detail-skeleton" aria-hidden="true">
+        <span className="equipment-detail-skeleton-chip" />
+        <div className="equipment-detail-skeleton-metrics">
+          <span /><span /><span />
+        </div>
+        <div className="equipment-detail-skeleton-fields">
+          {Array.from({ length: 9 }, (_, index) => <span key={index} />)}
+        </div>
+        <span className="equipment-detail-skeleton-heading" />
+        <span className="equipment-detail-skeleton-row" />
+        <span className="equipment-detail-skeleton-row" />
+        <span className="equipment-detail-skeleton-row" />
+      </div>
+    </div>
+  );
+}
+
+function EquipmentDetailStyles() {
+  return <style>{`
+    .equipment-detail-viewport {
+      height: clamp(340px, calc(100dvh - 300px), 560px);
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .equipment-detail-error {
+      min-height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 24px;
+      text-align: center;
+      box-sizing: border-box;
+      color: ${T.ink2};
+      font-family: ${FONT_SANS};
+      font-size: 13px;
+    }
+    .equipment-detail-refresh-error {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border: 1px solid rgba(184,92,61,.24);
+      border-radius: 10px;
+      color: ${T.warm};
+      background: rgba(184,92,61,.07);
+      font-family: ${FONT_SANS};
+      font-size: 12px;
+    }
+    .equipment-detail-sr-status {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0,0,0,0);
+      white-space: nowrap;
+      border: 0;
+    }
+    .equipment-detail-loading { min-height: 100%; }
+    .equipment-detail-loading-label {
+      display: block;
+      margin-bottom: 16px;
+      color: ${T.ink2};
+      font-family: ${FONT_SANS};
+      font-size: 13px;
+    }
+    .equipment-detail-skeleton { display: flex; flex-direction: column; gap: 13px; }
+    .equipment-detail-skeleton span {
+      position: relative;
+      display: block;
+      overflow: hidden;
+      border-radius: 9px;
+      background: ${T.ruleSoft};
+    }
+    .equipment-detail-skeleton span::after {
+      position: absolute;
+      inset: 0;
+      content: '';
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.72), transparent);
+      transform: translateX(-100%);
+      animation: equipment-detail-shimmer 1.35s ease-in-out infinite;
+    }
+    .equipment-detail-skeleton-chip { width: 28%; height: 24px; }
+    .equipment-detail-skeleton-metrics,
+    .equipment-detail-skeleton-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .equipment-detail-skeleton-metrics > span { height: 62px; }
+    .equipment-detail-skeleton-fields > span { height: 34px; }
+    .equipment-detail-skeleton-heading { width: 42%; height: 16px; }
+    .equipment-detail-skeleton-row { width: 100%; height: 48px; }
+    @keyframes equipment-detail-shimmer { to { transform: translateX(100%); } }
+    @media (max-width: 640px) {
+      .equipment-detail-viewport { height: clamp(300px, calc(100dvh - 260px), 520px); }
+      .equipment-detail-skeleton-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .equipment-detail-refresh-error { align-items: stretch; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .equipment-detail-skeleton span::after { animation: none; display: none; }
+    }
+  `}</style>;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -531,6 +658,10 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
   const [detailId, setDetailId] = useState<string | null>(null);
   const [detail, setDetail] = useState<EquipmentDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLoadError, setDetailLoadError] = useState(false);
+  const [detailCacheScope, setDetailCacheScope] = useState<string | null>(null);
+  const detailScopeRef = useRef<string | null>(null);
+  const detailRequestSequence = useRef(0);
 
   const [formOpen, setFormOpen] = useState(false);
   const [editTarget, setEditTarget] = useState<Equipment | null>(null);
@@ -559,21 +690,43 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
   useEffect(() => { void refresh(); }, [refresh]);
 
   // fetchEquipmentDetail returns null on ANY failure — treat that as an error
-  // state instead of leaving the modal on "Loading…" forever.
+  // state instead of leaving the modal on "Loading…" forever. A sequence +
+  // entity guard prevents a late response from landing under another asset.
   const loadDetail = useCallback(async (id: string) => {
     if (!pid) return;
+    const scope = `${pid}:${id}`;
+    detailScopeRef.current = scope;
+    const sequence = ++detailRequestSequence.current;
     setDetailLoading(true);
+    setDetailLoadError(false);
     const d = await fetchEquipmentDetail(pid, id).catch(() => null);
-    setDetail(d);
+    if (sequence !== detailRequestSequence.current || detailScopeRef.current !== scope) return;
+    if (d?.equipment.id === id) {
+      setDetail(d);
+      setDetailCacheScope(scope);
+    }
+    else setDetailLoadError(true);
     setDetailLoading(false);
   }, [pid]);
 
   const openDetail = (e: Equipment) => {
+    const scope = pid ? `${pid}:${e.id}` : null;
+    detailScopeRef.current = scope;
     setDetailId(e.id);
-    setDetail(null);
+    setDetail((current) => detailCacheScope === scope && current?.equipment.id === e.id ? current : null);
+    setDetailLoadError(false);
     void loadDetail(e.id);
   };
-  const closeDetail = () => { setDetailId(null); setDetail(null); };
+  const closeDetail = () => {
+    detailRequestSequence.current += 1;
+    detailScopeRef.current = null;
+    setDetailId(null);
+    setDetailLoading(false);
+    setDetailLoadError(false);
+    // Keep the last-good detail in memory. openDetail only reuses it when its
+    // property + equipment id scope exactly matches, so another asset can
+    // never see it.
+  };
 
   const openAdd = () => { setEditTarget(null); setFormOpen(true); };
   const openEdit = (e: Equipment) => { setEditTarget(e); setFormOpen(true); };
@@ -611,6 +764,9 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
       `${e.name} ${e.location ?? ''} ${e.manufacturer ?? ''} ${e.modelNumber ?? ''} ${e.serialNumber ?? ''} ${catLabel(e.category, lang)}`
         .toLowerCase().includes(needle));
   }, [list, q, lang]);
+
+  const activeDetailScope = pid && detailId ? `${pid}:${detailId}` : null;
+  const scopedDetail = detailCacheScope === activeDetailScope ? detail : null;
 
   return (
     <div style={{ padding: '24px 48px 48px', background: 'transparent', color: T.ink, fontFamily: FONT_SANS, minHeight: 'calc(100dvh - 130px)' }}>
@@ -672,8 +828,9 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
       <EquipmentDetailModal
         open={detailId !== null}
         onClose={closeDetail}
-        detail={detail}
+        detail={scopedDetail}
         loading={detailLoading}
+        loadError={detailLoadError}
         lang={lang}
         isMgr={isMgr}
         onEdit={(e) => { closeDetail(); openEdit(e); }}

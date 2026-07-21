@@ -288,6 +288,25 @@ function BusyLabel({ lang, en, es }: { lang: HotelTeamLang; en: string; es: stri
   return <><span className={styles.buttonSpinner} aria-hidden="true" />{copy(lang, en, es)}</>;
 }
 
+function InviteSectionSkeleton({ label, rows = 3 }: { label: string; rows?: number }) {
+  return (
+    <div className={styles.inviteSkeleton} role="status" aria-live="polite">
+      <span className={styles.visuallyHidden}>{label}</span>
+      <div className={styles.inviteSkeletonVisual} aria-hidden="true">
+        {Array.from({ length: rows }, (_, index) => (
+          <span key={index} className={styles.inviteSkeletonRow}>
+            <span className={styles.inviteSkeletonCopy}>
+              <span className={styles.inviteSkeletonLine} />
+              <span className={`${styles.inviteSkeletonLine} ${styles.inviteSkeletonLineShort}`} />
+            </span>
+            <span className={styles.inviteSkeletonAction} />
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function HotelMemberDialog({
   hotelId,
   hotelName,
@@ -1018,7 +1037,7 @@ export function HotelInviteDialog({
       busy={busy}
       wide
     >
-      <div className={styles.inviteBody}>
+      <div className={styles.inviteBody} aria-busy={codeLoading || invitesLoading}>
         <section className={styles.inviteSection} aria-labelledby="staff-invite-heading">
           <div className={styles.inviteSectionHeading}>
             <span className={styles.sectionIcon}><Link2 size={18} aria-hidden="true" /></span>
@@ -1029,7 +1048,7 @@ export function HotelInviteDialog({
           </div>
 
           {codeLoading ? (
-            <div className={styles.sectionLoading} role="status"><span className={styles.spinner} aria-hidden="true" />{copy(lang, 'Loading invite link…', 'Cargando enlace…')}</div>
+            <InviteSectionSkeleton label={copy(lang, 'Loading invite link…', 'Cargando enlace…')} rows={3} />
           ) : codeError && !code ? (
             <div className={styles.sectionError} role="alert">
               <AlertCircle size={17} aria-hidden="true" /><span>{codeError}</span>
@@ -1157,7 +1176,7 @@ export function HotelInviteDialog({
             {!invitesLoading && !invitesError ? <span>{invites.length}</span> : null}
           </div>
           {invitesLoading ? (
-            <div className={styles.sectionLoading} role="status"><span className={styles.spinner} aria-hidden="true" />{copy(lang, 'Loading invitations…', 'Cargando invitaciones…')}</div>
+            <InviteSectionSkeleton label={copy(lang, 'Loading invitations…', 'Cargando invitaciones…')} rows={3} />
           ) : invitesError ? (
             <div className={styles.sectionError} role="alert">
               <AlertCircle size={17} aria-hidden="true" /><span>{invitesError}</span>

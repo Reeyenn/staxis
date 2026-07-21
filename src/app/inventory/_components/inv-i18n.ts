@@ -60,6 +60,7 @@ const STRINGS = {
     // ── Shell ──
     loading: 'Loading…',
     loadFailed: 'Inventory could not load. Check the connection and try again.',
+    detailsLoadFailed: 'Some inventory details are unavailable. Try again.',
     retry: 'Try again',
     quickCountSaveFailed: 'A quick count did not fully save. Refresh before trying that item again.',
     pageTitle: 'Inventory',
@@ -171,6 +172,7 @@ const STRINGS = {
     // ── Shell ──
     loading: 'Cargando…',
     loadFailed: 'No se pudo cargar el inventario. Revisa la conexión e inténtalo de nuevo.',
+    detailsLoadFailed: 'Algunos detalles del inventario no están disponibles. Inténtalo de nuevo.',
     retry: 'Intentar de nuevo',
     quickCountSaveFailed: 'Un conteo rápido no se guardó por completo. Actualiza antes de intentar ese artículo otra vez.',
     pageTitle: 'Inventario',

@@ -43,6 +43,7 @@ interface HistoryPanelProps {
    * the recent operational feed below remains available as a safe fallback. */
   auditEvents?: InventoryAuditEvent[] | null;
   auditLoading?: boolean;
+  auditRefreshing?: boolean;
   auditLoadingMore?: boolean;
   auditNextCursor?: string | null;
   auditPropertyId?: string | null;
@@ -273,6 +274,7 @@ export function HistoryPanel({
   onAddDelivery,
   auditEvents,
   auditLoading = false,
+  auditRefreshing = false,
   auditLoadingMore = false,
   auditNextCursor = null,
   auditPropertyId = null,
@@ -393,6 +395,15 @@ export function HistoryPanel({
       suffix={`${suffixCount} ${(auditEvents?.length ?? visibleEvents.length) === 1 ? hp.event : hp.events}`}
       width={860}
     >
+      <div
+        className={styles.historyContent}
+        aria-busy={auditLoading || auditRefreshing || auditLoadingMore}
+        style={{
+          '--history-skeleton-bg': T.ruleSoft,
+          '--history-skeleton-shine': T.paper,
+          '--history-skeleton-border': T.rule,
+        } as React.CSSProperties}
+      >
       {auditEvents !== undefined && auditEvents !== null ? (
         <AuditHistoryFeed
           key={auditPropertyId ?? 'no-property'}
@@ -602,6 +613,7 @@ export function HistoryPanel({
           </div>
         </>
       )}
+      </div>
     </Overlay>
   );
 }
@@ -752,11 +764,7 @@ function AuditHistoryFeed({
   });
 
   if (loading && events.length === 0) {
-    return (
-      <div role="status" aria-live="polite" style={{ color: T.ink2, fontFamily: fonts.sans, padding: '44px 20px', textAlign: 'center' }}>
-        {hp.loadingHistory}
-      </div>
-    );
+    return <HistoryLoadingState hp={hp} />;
   }
 
   return (
@@ -957,6 +965,33 @@ function AuditHistoryFeed({
           {loadingMore ? hp.loadingHistory : hp.loadOlder}
         </button>
       )}
+    </div>
+  );
+}
+
+function HistoryLoadingState({ hp }: { hp: ReturnType<typeof hpStrings> }) {
+  return (
+    <div className={styles.loadingState} role="status" aria-live="polite">
+      <span className={styles.srOnly}>{hp.loadingHistory}</span>
+      <div className={styles.loadingVisual} aria-hidden="true">
+        <div className={styles.loadingTools}>
+          <span className={`${styles.skeleton} ${styles.loadingSearch}`} />
+          <span className={`${styles.skeleton} ${styles.loadingFilter}`} />
+        </div>
+        <div className={styles.loadingList}>
+          {Array.from({ length: 7 }, (_, index) => (
+            <div className={styles.loadingRow} key={index}>
+              <span className={`${styles.skeleton} ${styles.loadingDate}`} />
+              <span className={styles.loadingSummary}>
+                <span className={`${styles.skeleton} ${styles.loadingTitle}`} />
+                <span className={`${styles.skeleton} ${styles.loadingSubtitle}`} />
+              </span>
+              <span className={`${styles.skeleton} ${styles.loadingMeta}`} />
+              <span className={`${styles.skeleton} ${styles.loadingArrow}`} />
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }

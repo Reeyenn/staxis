@@ -17,13 +17,14 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Sparkles, X, Check, Ban, Clock, AlertTriangle, Loader2 } from 'lucide-react';
+import { Sparkles, X, Check, Ban, Clock, AlertTriangle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { canManageTeam } from '@/lib/roles';
 import { groupByDay, ACTIVITY_PAGE_SIZE, type ActivityItem, type ActivityOutcome } from '@/lib/agent/activity-view';
+import styles from './AiActivityButton.module.css';
 
 const C = {
   bg:       'var(--snow-bg, #FFFFFF)',
@@ -38,6 +39,12 @@ const C = {
 const FONT_SANS = "var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif";
 const FONT_MONO = "var(--font-geist-mono), ui-monospace, monospace";
 const PAGE_SIZE = ACTIVITY_PAGE_SIZE;
+
+interface ActivityCache {
+  propertyId: string;
+  items: ActivityItem[];
+  hasMore: boolean;
+}
 
 // ── Outcome → bilingual label + color role (matches existing status badges) ──
 interface OutcomeStyle {
@@ -62,10 +69,15 @@ export function AiActivityButton() {
   const es = lang === 'es';
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [activityCache, setActivityCache] = useState<ActivityCache | null>(null);
   useEffect(() => setMounted(true), []);
 
   // Manager-tier only, and only with an active property to scope the feed to.
   const canSee = !!user && canManageTeam(user.role) && !!activePropertyId;
+  const scopedCache = activityCache?.propertyId === activePropertyId ? activityCache : null;
+  const rememberActivity = useCallback((propertyId: string, items: ActivityItem[], hasMore: boolean) => {
+    setActivityCache({ propertyId, items, hasMore });
+  }, []);
 
   return (
     <>
@@ -104,7 +116,10 @@ export function AiActivityButton() {
 
       {mounted && open && activePropertyId && createPortal(
         <ActivityOverlay
+          key={activePropertyId}
           propertyId={activePropertyId}
+          initialData={scopedCache}
+          onSnapshot={rememberActivity}
           onClose={() => setOpen(false)}
         />,
         document.body,
@@ -114,13 +129,25 @@ export function AiActivityButton() {
 }
 
 // ─── The centered review overlay ────────────────────────────────────────────
-function ActivityOverlay({ propertyId, onClose }: { propertyId: string; onClose: () => void }) {
+function ActivityOverlay({
+  propertyId,
+  initialData,
+  onSnapshot,
+  onClose,
+}: {
+  propertyId: string;
+  initialData: ActivityCache | null;
+  onSnapshot: (propertyId: string, items: ActivityItem[], hasMore: boolean) => void;
+  onClose: () => void;
+}) {
   const { lang } = useLang();
   const es = lang === 'es';
-  const [items, setItems] = useState<ActivityItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<ActivityItem[]>(() => initialData?.items ?? []);
+  const itemsRef = useRef(items);
+  const [loading, setLoading] = useState(initialData === null);
+  const [loadedOnce, setLoadedOnce] = useState(initialData !== null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(false);
+  const [hasMore, setHasMore] = useState(initialData?.hasMore ?? false);
   const [error, setError] = useState<string | null>(null);
   // Guards a stale-property response landing after a fast close/reopen.
   const reqSeq = useRef(0);
@@ -140,18 +167,29 @@ function ActivityOverlay({ propertyId, onClose }: { propertyId: string; onClose:
         return;
       }
       const page = json.data as { items: ActivityItem[]; hasMore: boolean };
-      setItems((prev) => (offset === 0 ? page.items : [...prev, ...page.items]));
+      const nextItems = offset === 0 ? page.items : [...itemsRef.current, ...page.items];
+      itemsRef.current = nextItems;
+      setItems(nextItems);
       setHasMore(page.hasMore);
+      setLoadedOnce(true);
+      onSnapshot(propertyId, nextItems, page.hasMore);
     } catch {
       if (seq === reqSeq.current) {
         setError(es ? 'No se pudo cargar la actividad.' : 'Could not load activity.');
       }
     } finally {
-      if (seq === reqSeq.current) { setLoading(false); setLoadingMore(false); }
+      if (seq === reqSeq.current) {
+        setLoadedOnce(true);
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [propertyId, es]);
+  }, [propertyId, es, onSnapshot]);
 
-  useEffect(() => { void load(0); }, [load]);
+  useEffect(() => {
+    void load(0);
+    return () => { reqSeq.current += 1; };
+  }, [load]);
 
   // Close on Escape.
   useEffect(() => {
@@ -161,6 +199,7 @@ function ActivityOverlay({ propertyId, onClose }: { propertyId: string; onClose:
   }, [onClose]);
 
   const groups = groupByDay(items, lang);
+  const initialLoading = loading && !loadedOnce;
 
   return (
     <div
@@ -179,9 +218,9 @@ function ActivityOverlay({ propertyId, onClose }: { propertyId: string; onClose:
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        className={styles.activityCard}
         style={{
           width: 'min(560px, 94vw)',
-          maxHeight: '82vh',
           display: 'flex',
           flexDirection: 'column',
           background: C.bg,
@@ -220,10 +259,10 @@ function ActivityOverlay({ propertyId, onClose }: { propertyId: string; onClose:
         </div>
 
         {/* Scrollable body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 18px 18px' }}>
-          {loading ? (
-            <Centered><Loader2 size={22} className="staxis-spin" color={C.ink3} /></Centered>
-          ) : error ? (
+        <div className={styles.activityBody} aria-busy={loading || loadingMore} style={{ flex: 1, overflowY: 'auto', padding: '8px 18px 18px' }}>
+          {initialLoading ? (
+            <ActivityLoadingState es={es} />
+          ) : error && items.length === 0 ? (
             <Centered>
               <div style={{ textAlign: 'center', color: C.ink2, fontSize: 13.5 }}>
                 {error}
@@ -244,6 +283,14 @@ function ActivityOverlay({ propertyId, onClose }: { propertyId: string; onClose:
             </Centered>
           ) : (
             <>
+              {error && (
+                <div className={styles.refreshError} role="status">
+                  <span>{error}</span>
+                  <button style={retryBtn} onClick={() => void load(0)}>
+                    {es ? 'Reintentar' : 'Try again'}
+                  </button>
+                </div>
+              )}
               {groups.map((g) => (
                 <div key={g.key} style={{ marginTop: 14 }}>
                   <div style={{
@@ -275,6 +322,25 @@ function ActivityOverlay({ propertyId, onClose }: { propertyId: string; onClose:
             </>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ActivityLoadingState({ es }: { es: boolean }) {
+  return (
+    <div className={styles.loadingState} role="status" aria-live="polite">
+      <span className={styles.srOnly}>{es ? 'Cargando actividad…' : 'Loading activity…'}</span>
+      <div className={styles.loadingVisual} aria-hidden="true">
+        {Array.from({ length: 6 }, (_, index) => (
+          <span key={index} className={styles.skeletonRow}>
+            <span className={styles.skeletonCopy}>
+              <span className={styles.skeletonLine} />
+              <span className={`${styles.skeletonLine} ${styles.skeletonLineShort}`} />
+            </span>
+            <span className={styles.skeletonPill} />
+          </span>
+        ))}
       </div>
     </div>
   );

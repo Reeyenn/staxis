@@ -132,6 +132,7 @@ export function DetailModal({
   pid,
   lang,
   project,
+  refreshing = false,
   loadError,
   onRetryLoad,
   onClose,
@@ -141,6 +142,8 @@ export function DetailModal({
   pid: string;
   lang: Lang;
   project: CapexProject | null;
+  /** True while the exact project's binder is being loaded or refreshed. */
+  refreshing?: boolean;
   /** Set when the binder fetch failed (and there's no last-good project). */
   loadError?: string | null;
   onRetryLoad?: () => void;
@@ -163,11 +166,24 @@ export function DetailModal({
 
   if (!project) {
     // A failed binder fetch must not spin "Loading…" forever — show the
-    // standard tap-to-retry notice instead.
+    // standard tap-to-retry notice instead. The viewport and footer are the
+    // same size as the loaded binder, so the modal never grows after opening.
     return (
-      <Modal open onClose={onClose} title="…">
-        {loadError != null ? <Notice text={S.errorLoading} onRetry={onRetryLoad} /> : <Notice text={S.loading} />}
-      </Modal>
+      <>
+        <CapexDetailStyles />
+        <Modal
+          open
+          onClose={onClose}
+          title="…"
+          footer={<Btn variant="ghost" onClick={onClose}>{S.close}</Btn>}
+        >
+          <CapexDetailViewport busy={!loadError}>
+            {loadError != null
+              ? <Notice text={S.errorLoading} onRetry={onRetryLoad} />
+              : <CapexDetailLoading label={S.loading} />}
+          </CapexDetailViewport>
+        </Modal>
+      </>
     );
   }
   const spent = project.spentCents ?? 0;
@@ -254,19 +270,22 @@ export function DetailModal({
   };
 
   return (
-    <Modal
-      open
-      onClose={onClose}
-      title={project.name}
-      subtitle={`${capexStatusLabel(lang, project.status)}${project.vendor ? ` · ${project.vendor}` : ''}`}
-      footer={
-        <>
-          <Btn variant="danger" onClick={() => void delProject()}>{S.deleteProject}</Btn>
-          <Btn variant="ghost" onClick={onClose}>{S.close}</Btn>
-        </>
-      }
-    >
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <>
+      <CapexDetailStyles />
+      <Modal
+        open
+        onClose={onClose}
+        title={project.name}
+        subtitle={`${capexStatusLabel(lang, project.status)}${project.vendor ? ` · ${project.vendor}` : ''}`}
+        footer={
+          <>
+            <Btn variant="danger" onClick={() => void delProject()}>{S.deleteProject}</Btn>
+            <Btn variant="ghost" onClick={onClose}>{S.close}</Btn>
+          </>
+        }
+      >
+        <CapexDetailViewport busy={refreshing}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Workflow actions */}
         {isPending && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: 4 }}>
@@ -357,10 +376,86 @@ export function DetailModal({
           {lineError && <span style={{ display: 'block', marginTop: 8, fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>{lineError}</span>}
         </Section>
 
-        {actionError && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>{actionError}</span>}
-      </div>
-    </Modal>
+            {actionError && <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>{actionError}</span>}
+          </div>
+        </CapexDetailViewport>
+      </Modal>
+    </>
   );
+}
+
+function CapexDetailViewport({ busy, children }: { busy: boolean; children: React.ReactNode }) {
+  return (
+    <div className="capex-detail-viewport" aria-busy={busy || undefined}>
+      {children}
+    </div>
+  );
+}
+
+function CapexDetailLoading({ label }: { label: string }) {
+  return (
+    <div className="capex-detail-loading" role="status" aria-live="polite">
+      <span className="capex-detail-loading-label">{label}</span>
+      <div className="capex-detail-skeleton" aria-hidden="true">
+        <span className="capex-detail-skeleton-actions" />
+        <span className="capex-detail-skeleton-card" />
+        <span className="capex-detail-skeleton-line capex-detail-skeleton-line-wide" />
+        <span className="capex-detail-skeleton-line" />
+        <span className="capex-detail-skeleton-card capex-detail-skeleton-card-short" />
+        <span className="capex-detail-skeleton-line capex-detail-skeleton-line-wide" />
+        <span className="capex-detail-skeleton-line" />
+      </div>
+    </div>
+  );
+}
+
+function CapexDetailStyles() {
+  return <style>{`
+    .capex-detail-viewport {
+      height: clamp(340px, calc(100dvh - 300px), 560px);
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+    }
+    .capex-detail-loading { min-height: 100%; }
+    .capex-detail-loading-label {
+      display: block;
+      margin-bottom: 16px;
+      color: ${T.ink2};
+      font-family: ${FONT_SANS};
+      font-size: 13px;
+    }
+    .capex-detail-skeleton { display: flex; flex-direction: column; gap: 13px; }
+    .capex-detail-skeleton > span {
+      position: relative;
+      display: block;
+      overflow: hidden;
+      border-radius: 10px;
+      background: ${T.ruleSoft};
+    }
+    .capex-detail-skeleton > span::after {
+      position: absolute;
+      inset: 0;
+      content: '';
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,.72), transparent);
+      transform: translateX(-100%);
+      animation: capex-detail-shimmer 1.35s ease-in-out infinite;
+    }
+    .capex-detail-skeleton-actions { width: 48%; height: 40px; }
+    .capex-detail-skeleton-card { width: 100%; height: 112px; }
+    .capex-detail-skeleton-card-short { height: 72px; }
+    .capex-detail-skeleton-line { width: 68%; height: 16px; }
+    .capex-detail-skeleton-line-wide { width: 92%; }
+    @keyframes capex-detail-shimmer { to { transform: translateX(100%); } }
+    @media (max-width: 640px) {
+      .capex-detail-viewport { height: clamp(300px, calc(100dvh - 260px), 520px); }
+      .capex-detail-skeleton-actions { width: 72%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .capex-detail-skeleton > span::after { animation: none; display: none; }
+    }
+  `}</style>;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

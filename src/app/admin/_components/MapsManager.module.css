@@ -1,0 +1,100 @@
+.modalCard {
+  box-sizing: border-box;
+  height: min(720px, 88vh);
+  max-height: 88vh;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.loadingState {
+  min-height: 520px;
+}
+
+.loadingVisual {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.skeletonFamily {
+  display: flex;
+  min-height: 104px;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.skeletonHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.skeletonLine {
+  position: relative;
+  display: block;
+  width: 34%;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.11);
+}
+
+.skeletonBadge {
+  width: 18%;
+  height: 18px;
+  border-radius: 999px;
+}
+
+.skeletonRow {
+  width: 82%;
+  height: 10px;
+}
+
+.skeletonRowShort {
+  width: 56%;
+  height: 10px;
+}
+
+.skeletonLine::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.18), transparent);
+  content: '';
+  transform: translateX(-100%);
+  animation: mapsSkeletonShimmer 1.5s ease-in-out infinite;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes mapsSkeletonShimmer {
+  to { transform: translateX(100%); }
+}
+
+@media (max-width: 560px) {
+  .modalCard {
+    width: calc(100vw - 24px) !important;
+    height: calc(100dvh - 24px);
+    max-height: calc(100dvh - 24px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeletonLine::after {
+    animation: none;
+  }
+}

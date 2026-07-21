@@ -13,6 +13,7 @@ import {
   UserCheck,
   UserPlus,
   Users,
+  X,
 } from 'lucide-react';
 
 import type { AppUser } from '@/contexts/AuthContext';
@@ -243,13 +244,128 @@ function resolveActions(
   return { canEdit, canChangeRole, canResetPassword, canRemove, roleIsSharedAcrossHotels };
 }
 
-function DialogLoading({ lang }: { lang: HotelTeamLang }) {
+type DialogLoadingVariant = 'invite' | 'member' | 'remove' | 'decision';
+
+function DialogLoading({
+  lang,
+  hotelName,
+  variant,
+  onClose,
+}: {
+  lang: HotelTeamLang;
+  hotelName: string;
+  variant: DialogLoadingVariant;
+  onClose: () => void;
+}) {
+  const closeRef = React.useRef<HTMLButtonElement | null>(null);
+  const titleId = React.useId();
+  const loadingLabel = copy(lang, 'Opening dialog…', 'Abriendo diálogo…');
+  const title = variant === 'invite'
+    ? copy(lang, 'Invite hotel staff', 'Invitar personal del hotel')
+    : variant === 'member'
+      ? copy(lang, 'Hotel account details', 'Detalles de la cuenta del hotel')
+      : variant === 'remove'
+        ? copy(lang, 'Remove hotel access', 'Quitar acceso al hotel')
+        : copy(lang, 'Review join request', 'Revisar solicitud de acceso');
+  const shellClass = variant === 'invite'
+    ? `${styles.dialogWide} ${styles.dialogLoadingInvite}`
+    : variant === 'member'
+      ? styles.dialogLoadingMember
+      : styles.dialogLoadingConfirmation;
+
+  React.useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    closeRef.current?.focus({ preventScroll: true });
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onClose();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [onClose]);
+
   return createPortal(
-    <div className={styles.dialogLoading} role="status">
-      <span className={styles.spinner} aria-hidden="true" />
-      {copy(lang, 'Opening…', 'Abriendo…')}
+    <div className={styles.dialogLayer}>
+      <button
+        type="button"
+        className={styles.dialogScrim}
+        onClick={onClose}
+        aria-label={copy(lang, 'Close dialog', 'Cerrar diálogo')}
+      />
+      <div
+        className={`${styles.dialog} ${styles.dialogLoadingShell} ${shellClass}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        aria-busy="true"
+      >
+        <div className={styles.dialogHeader}>
+          <span className={`${styles.dialogIcon} ${styles.dialogLoadingIcon}`} aria-hidden="true" />
+          <div>
+            <span>{hotelName}</span>
+            <h2 id={titleId}>{title}</h2>
+          </div>
+          <button
+            ref={closeRef}
+            type="button"
+            className={styles.iconButton}
+            onClick={onClose}
+            aria-label={copy(lang, 'Close', 'Cerrar')}
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
+        </div>
+
+        <div className={styles.dialogLoadingIntro} aria-hidden="true">
+          <span />
+        </div>
+
+        <div className={styles.dialogLoadingBody} role="status" aria-live="polite">
+          <span className={styles.visuallyHidden}>{loadingLabel}</span>
+          {variant === 'invite' ? (
+            <>
+              <DialogLoadingSection rows={4} tall />
+              <DialogLoadingSection rows={3} />
+            </>
+          ) : variant === 'member' ? (
+            <DialogLoadingFields rows={5} />
+          ) : (
+            <DialogLoadingFields rows={2} compact />
+          )}
+        </div>
+
+        <div className={styles.dialogFooter} aria-hidden="true">
+          <span className={styles.dialogLoadingButton} />
+        </div>
+      </div>
     </div>,
     document.body,
+  );
+}
+
+function DialogLoadingSection({ rows, tall = false }: { rows: number; tall?: boolean }) {
+  return (
+    <div className={`${styles.dialogLoadingSection}${tall ? ` ${styles.dialogLoadingSectionTall}` : ''}`} aria-hidden="true">
+      <span className={styles.dialogLoadingHeading} />
+      {Array.from({ length: rows }, (_, index) => (
+        <span key={index} className={styles.dialogLoadingRow} />
+      ))}
+    </div>
+  );
+}
+
+function DialogLoadingFields({ rows, compact = false }: { rows: number; compact?: boolean }) {
+  return (
+    <div className={`${styles.dialogLoadingFields}${compact ? ` ${styles.dialogLoadingFieldsCompact}` : ''}`} aria-hidden="true">
+      {Array.from({ length: rows }, (_, index) => (
+        <span key={index} className={styles.dialogLoadingField} />
+      ))}
+    </div>
   );
 }
 
@@ -408,6 +524,29 @@ export function HotelTeamPanel({
     await Promise.all([loadTeam(), loadRequests()]);
     await changedRef.current?.();
   }, [loadRequests, loadTeam]);
+
+  const loadingDialogVariant: DialogLoadingVariant = editMember
+    ? 'member'
+    : removeMember
+      ? 'remove'
+      : inviteDialogOpen
+        ? 'invite'
+        : 'decision';
+  const closeLoadingDialog = React.useCallback(() => {
+    if (editMember) {
+      setEditMember(null);
+      return;
+    }
+    if (removeMember) {
+      setRemoveMember(null);
+      return;
+    }
+    if (inviteDialogOpen) {
+      onInviteDialogOpenChange(false);
+      return;
+    }
+    setDecision(null);
+  }, [editMember, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
 
   if (!hotelId) {
     return (
@@ -588,7 +727,14 @@ export function HotelTeamPanel({
         )}
       </section>
 
-      <React.Suspense fallback={<DialogLoading lang={lang} />}>
+      <React.Suspense fallback={(
+        <DialogLoading
+          lang={lang}
+          hotelName={hotelName}
+          variant={loadingDialogVariant}
+          onClose={closeLoadingDialog}
+        />
+      )}>
         {editMember ? (
           <LazyMemberDialog
             hotelId={hotelId}

@@ -11,7 +11,7 @@
 // All reads/writes go through /api/financials/capex* behind the owner/GM
 // finance gate. Money is integer cents.
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { shortDateFromYmd } from '@/lib/format-date';
@@ -68,7 +68,22 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
     `/api/financials/capex?pid=${pid}&id=${openId ?? ''}`,
     { enabled: openId != null, keepDataOnError: true },
   );
-  const detail = detailRes.data?.project ?? null;
+  // Keep the last-good binder only for the exact project it belongs to. This
+  // makes a same-project reopen/refresh immediate without ever showing one
+  // project's financial data under another project's loading state.
+  const [detailCache, setDetailCache] = useState<{ propertyId: string; id: string; project: CapexProject } | null>(null);
+  const freshDetail = detailRes.data?.project?.propertyId === pid
+    && detailRes.data.project.id === openId
+    ? detailRes.data.project
+    : null;
+  useEffect(() => {
+    if (openId && freshDetail) setDetailCache({ propertyId: pid, id: openId, project: freshDetail });
+  }, [freshDetail, openId, pid]);
+  const detail = freshDetail ?? (
+    detailCache?.propertyId === pid && detailCache.id === openId
+      ? detailCache.project
+      : null
+  );
 
   const afterChange = (focusId?: string) => {
     setNonce((n) => n + 1);
@@ -255,6 +270,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
           pid={pid}
           lang={lang}
           project={detail}
+          refreshing={detailRes.loading}
           loadError={detail == null ? detailRes.error : null}
           onRetryLoad={() => void detailRes.reload()}
           onClose={() => setOpenId(null)}

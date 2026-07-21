@@ -31,6 +31,7 @@ import { Backdrop, MODAL_CARD } from './surface-kit';
 import {
   Btn, Pill, Caps, Dot, FONT_SERIF, FONT_SANS, FONT_MONO, riseIn,
 } from './kit';
+import styles from './CoveragePickerModal.module.css';
 
 // ── Shape of the coverage list this modal consumes ───────────────────────
 // Mirrors the additive fields the GET /api/admin/pms-coverage backend adds.
@@ -95,6 +96,10 @@ export function CoveragePickerModal({
   // are valid assignment targets — assigning to a never-learned family would
   // strand the hotel (the backend 409s on it too; we just don't show it).
   const learned = (rows ?? []).filter((r) => r.recipe !== null);
+  // Effects run after the first paint, so `rows === null` is the reliable
+  // initial-loading signal. Reserving the option area now prevents the card
+  // from opening short and then growing when the coverage list arrives.
+  const initialLoading = rows === null && loadError === null;
 
   const confirm = async () => {
     if (!selected || saving) return;
@@ -143,24 +148,36 @@ export function CoveragePickerModal({
           watching its feeds right away.
         </p>
 
-        {/* Loading / load-error / empty / list */}
-        {loadError ? (
-          <div style={errorBox}>{loadError}</div>
-        ) : rows === null ? (
-          <div style={{ padding: '32px 0', textAlign: 'center' }}>
-            <span className="spinner" style={{ width: 22, height: 22, display: 'inline-block' }} />
-          </div>
-        ) : learned.length === 0 ? (
-          <div style={{
-            padding: '24px 18px', textAlign: 'center',
-            border: '1px dashed var(--rule)', borderRadius: 12,
-            color: 'var(--dim)', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 13,
-          }}>
-            No systems have been learned yet — finish onboarding a PMS first, then
-            you can assign hotels to it.
-          </div>
-        ) : (
-          <div role="radiogroup" aria-label="Available coverage" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {/* Keep every async branch in one fixed option viewport. */}
+        <div className={styles.optionRegion} aria-busy={initialLoading}>
+          {loadError ? (
+            <div className={styles.centeredState} style={errorBox}>{loadError}</div>
+          ) : initialLoading ? (
+            <div className={styles.loadingState} role="status" aria-live="polite">
+              <span className={styles.srOnly}>Loading coverage options…</span>
+              <div className={styles.loadingVisual} aria-hidden="true">
+                {Array.from({ length: 4 }, (_, index) => (
+                  <span key={index} className={styles.skeletonOption}>
+                    <span className={styles.skeletonDot} />
+                    <span className={styles.skeletonCopy}>
+                      <span className={styles.skeletonLine} />
+                      <span className={`${styles.skeletonLine} ${styles.skeletonLineShort}`} />
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : learned.length === 0 ? (
+            <div className={styles.centeredState} style={{
+              padding: '24px 18px', textAlign: 'center',
+              border: '1px dashed var(--rule)', borderRadius: 12,
+              color: 'var(--dim)', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 13,
+            }}>
+              No systems have been learned yet — finish onboarding a PMS first, then
+              you can assign hotels to it.
+            </div>
+          ) : (
+            <div role="radiogroup" aria-label="Available coverage" className={styles.optionList}>
             {learned.map((r) => {
               const isSel = selected === r.pmsType;
               const liveCount = r.perFeed.filter((f) => f.state === 'live').length;
@@ -215,8 +232,9 @@ export function CoveragePickerModal({
                 </button>
               );
             })}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
 
         {saveError && <div style={{ ...errorBox, marginTop: 14 }}>{saveError}</div>}
 

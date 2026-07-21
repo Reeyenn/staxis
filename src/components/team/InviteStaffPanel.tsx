@@ -27,6 +27,8 @@ import { Copy, Check, RefreshCw, Trash2, Mail } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { AssignableRole } from '@/lib/roles';
 
+import styles from './InviteStaffPanel.module.css';
+
 interface CodeRow {
   id: string;
   code: string;
@@ -272,15 +274,25 @@ export function InviteStaffPanel({
   };
 
   const body = (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+    <div
+      className={styles.panelBody}
+      aria-busy={codeLoading || regenerating || inviteSubmitting}
+    >
       {/* Header */}
       {variant === 'modal' ? (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <h2 style={{ margin: 0, fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: '16px', color: 'var(--text-primary)' }}>
+        <div className={styles.modalHeader}>
+          <h2>
             {lang === 'es' ? 'Invitar personal' : 'Invite staff'}
           </h2>
           {onClose && (
-            <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: '20px', lineHeight: 1, padding: '2px 6px' }}>×</button>
+            <button
+              type="button"
+              className={styles.closeButton}
+              onClick={onClose}
+              aria-label={lang === 'es' ? 'Cerrar' : 'Close'}
+            >
+              ×
+            </button>
           )}
         </div>
       ) : (
@@ -298,8 +310,24 @@ export function InviteStaffPanel({
 
       {/* Loading / error / content */}
       {codeLoading ? (
-        <div style={{ padding: '28px 0', display: 'flex', justifyContent: 'center' }}>
-          <div className="spinner" style={{ width: '22px', height: '22px' }} />
+        <div className={styles.primarySkeleton} role="status" aria-live="polite">
+          <span className={styles.visuallyHidden}>
+            {lang === 'es' ? 'Cargando enlace de invitación…' : 'Loading invite link…'}
+          </span>
+          <div className={styles.skeletonLink} aria-hidden="true">
+            <span className={styles.skeletonLabel} />
+            <div className={styles.skeletonFieldRow}>
+              <span className={styles.skeletonField} />
+              <span className={styles.skeletonButton} />
+            </div>
+          </div>
+          <span className={styles.skeletonQr} aria-hidden="true" />
+          <div className={styles.skeletonCode} aria-hidden="true">
+            <span className={styles.skeletonCodeLine} />
+            <span className={styles.skeletonHint} />
+            <span className={styles.skeletonHint} />
+          </div>
+          <span className={styles.skeletonButton} aria-hidden="true" />
         </div>
       ) : codeError ? (
         <p style={{ fontSize: '13px', color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.2))', borderRadius: 'var(--radius-sm)', padding: '10px 12px', margin: 0 }}>
@@ -316,7 +344,7 @@ export function InviteStaffPanel({
               <span style={{ flex: 1, minWidth: 0, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 'var(--radius-md)', padding: '10px 12px', fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--text-secondary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {link}
               </span>
-              <button onClick={() => doCopy(link, 'link')} style={smallBtn} aria-label={lang === 'es' ? 'Copiar enlace' : 'Copy link'}>
+              <button type="button" onClick={() => doCopy(link, 'link')} style={smallBtn} aria-label={lang === 'es' ? 'Copiar enlace' : 'Copy link'}>
                 {copied === 'link'
                   ? <><Check size={14} strokeWidth={3} />{lang === 'es' ? '¡Copiado!' : 'Copied!'}</>
                   : <><Copy size={14} />{lang === 'es' ? 'Copiar' : 'Copy'}</>}
@@ -343,7 +371,7 @@ export function InviteStaffPanel({
               <span style={{ fontFamily: 'var(--font-mono)', fontSize: '26px', fontWeight: 700, letterSpacing: '0.12em', color: 'var(--text-primary)' }}>
                 {code.code}
               </span>
-              <button onClick={() => doCopy(code.code, 'code')} style={{ ...smallBtn, height: '30px', padding: '0 10px' }} aria-label={lang === 'es' ? 'Copiar código' : 'Copy code'}>
+              <button type="button" onClick={() => doCopy(code.code, 'code')} style={{ ...smallBtn, height: '30px', padding: '0 10px' }} aria-label={lang === 'es' ? 'Copiar código' : 'Copy code'}>
                 {copied === 'code'
                   ? <Check size={13} strokeWidth={3} />
                   : <Copy size={13} />}
@@ -361,7 +389,7 @@ export function InviteStaffPanel({
 
           {/* New link */}
           <div style={{ display: 'flex', justifyContent: 'center' }}>
-            <button onClick={handleNewLink} disabled={regenerating} style={{ ...smallBtn, opacity: regenerating ? 0.6 : 1, cursor: regenerating ? 'not-allowed' : 'pointer' }}>
+            <button type="button" onClick={handleNewLink} disabled={regenerating} style={{ ...smallBtn, opacity: regenerating ? 0.6 : 1, cursor: regenerating ? 'not-allowed' : 'pointer' }}>
               <RefreshCw size={14} />
               {regenerating
                 ? (lang === 'es' ? 'Creando…' : 'Creating…')
@@ -393,6 +421,7 @@ export function InviteStaffPanel({
             style={{ flex: 1, minWidth: '160px', height: '38px', borderRadius: 'var(--radius-md)', background: 'var(--bg-card)', border: '1px solid var(--border)', padding: '0 12px', color: 'var(--text-primary)', fontSize: '13px', fontFamily: 'var(--font-sans)', outline: 'none' }}
           />
           <button
+            type="button"
             onClick={handleSendInvite}
             disabled={inviteSubmitting || !inviteEmail.trim()}
             style={{
@@ -428,7 +457,7 @@ export function InviteStaffPanel({
                     {lang === 'es' ? 'pendiente · caduca' : 'pending · expires'} {new Date(iv.expires_at).toLocaleDateString()}
                   </div>
                 </div>
-                <button onClick={() => handleRevokeInvite(iv.id)} aria-label={lang === 'es' ? 'Revocar' : 'Revoke'} style={{ width: '30px', height: '30px', borderRadius: 'var(--radius-sm)', background: 'transparent', border: '1px solid var(--red-border, rgba(239,68,68,0.3))', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--red)' }}>
+                <button type="button" onClick={() => handleRevokeInvite(iv.id)} aria-label={lang === 'es' ? 'Revocar' : 'Revoke'} style={{ width: '30px', height: '30px', borderRadius: 'var(--radius-sm)', background: 'transparent', border: '1px solid var(--red-border, rgba(239,68,68,0.3))', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer', color: 'var(--red)' }}>
                   <Trash2 size={13} />
                 </button>
               </div>

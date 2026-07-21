@@ -136,6 +136,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** One fresh-login retry is useful for JWT/RLS propagation and short transport
+ * failures, but schema/data-contract errors should fail immediately. */
+function retryableInitialInventoryError(error: unknown): boolean {
+  const candidate = isRecord(error) ? error : {};
+  const code = String(candidate.code ?? '').toUpperCase();
+  const status = Number(candidate.status ?? 0);
+  const message = String(candidate.message ?? error ?? '').toLowerCase();
+  return code === 'PGRST301'
+    || code === '42501'
+    || code.startsWith('PGRST0')
+    || code.startsWith('08')
+    || [401, 403, 408, 425, 429].includes(status)
+    || status >= 500
+    || /jwt|unauth|permission|network|failed to fetch|timeout|timed out|connection/.test(message);
+}
+
 function monthCloseDashboardFromPayload(payload: unknown): InventoryMonthCloseDashboard | null {
   if (!isRecord(payload)) return null;
   const data = isRecord(payload.data) ? payload.data : null;
@@ -213,7 +229,12 @@ export function InventoryShell() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user } = useAuth();
-  const { activePropertyId, activeProperty } = useProperty();
+  const {
+    activePropertyId,
+    activeProperty,
+    capabilityOverridesViewerKey,
+    capabilityOverridesPropertyId,
+  } = useProperty();
   const { lang } = useLang();
   const L = invLang(lang);
   const tx = t(L);
@@ -225,12 +246,20 @@ export function InventoryShell() {
   const lastUserRef = React.useRef(user);
   if (user) lastUserRef.current = user;
   const stableUser = user ?? lastUserRef.current;
-  const canManage = !!stableUser && can('manage_inventory_orders');
+  const uid = stableUser?.uid ?? null;
+  const capabilityViewerKey = uid && activePropertyId ? `${uid}:${activePropertyId}` : null;
+  const inventoryContextReady = Boolean(
+    capabilityViewerKey
+    && activeProperty?.id === activePropertyId
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === capabilityViewerKey
+  );
+  const canManage = inventoryContextReady && can('manage_inventory_orders');
   // Money capability — gates every budget/spend surface (sidebar spend strip,
   // Reports + Budgets panels, the reorder budget meters) AND the budget/spend
   // data fetch below, so the figures never reach a line-staff browser. Stock
   // counts + low-stock badges stay visible to everyone. (Access cleanup 2026-06-26.)
-  const canViewFinancials = !!stableUser && can('view_financials');
+  const canViewFinancials = inventoryContextReady && can('view_financials');
   // PropertyContext hydrates the stored IANA zone. Until it is available (or
   // if a legacy row is invalid), use deterministic UTC — never the browser or
   // a different hotel's hard-coded calendar.
@@ -321,6 +350,7 @@ export function InventoryShell() {
   // "everything reloads five times" bug.
   const [itemsLoaded, setItemsLoaded] = useState(false);
   const [bundleLoaded, setBundleLoaded] = useState(false);
+  const [inventoryDataViewerKey, setInventoryDataViewerKey] = useState<string | null>(null);
   const [itemsLoadError, setItemsLoadError] = useState(false);
   const [bundleLoadError, setBundleLoadError] = useState(false);
   const [inventoryReload, setInventoryReload] = useState(0);
@@ -331,12 +361,17 @@ export function InventoryShell() {
   const [auditNextCursor, setAuditNextCursor] = useState<string | null>(null);
   const [auditStatus, setAuditStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [auditLoadingMore, setAuditLoadingMore] = useState(false);
+  const [auditRefreshing, setAuditRefreshing] = useState(false);
   // Exact delivery lookups inside History are cached so expanding old events
   // stays fast. Advance this generation after an immutable correction/void so
   // the old component (and any late lookup continuation) is discarded before
   // the manager can open the same delivery again.
   const [auditDeliveryLookupRevision, setAuditDeliveryLookupRevision] = useState(0);
   const auditLoadSequence = React.useRef(0);
+  // A successful first page is a same-property snapshot that can stay visible
+  // while the next open revalidates it. The property/capability lifecycle effect
+  // below clears this tag before a different response shape may be requested.
+  const auditSnapshotPropertyIdRef = React.useRef<string | null>(null);
   const auditMatchesActiveProperty = inventoryAuditMatchesProperty(activePropertyId, auditPropertyId);
 
   // ── Subscribe + fetch when property loads ──────────────────────────
@@ -345,7 +380,6 @@ export function InventoryShell() {
   // auth-state re-fire), and an object dep would tear down + resubscribe on
   // every rebuild, replaying the board's entrance each time (the "inventory
   // reloads five times" bug). Same identity-primitive rule PropertyContext uses.
-  const uid = stableUser?.uid ?? null;
   // Async quick-count responses may arrive after the operator switches hotels.
   // Read the live property from a ref before touching visible draft/lock state,
   // so an old hotel's response can never paint an item into the new hotel.
@@ -356,15 +390,18 @@ export function InventoryShell() {
     // lifecycle transition, including a temporary/null selection. The render
     // guard below hides the old property synchronously before this effect runs.
     auditLoadSequence.current += 1;
+    auditSnapshotPropertyIdRef.current = null;
     setAuditPropertyId(uid ? activePropertyId : null);
     setAuditEvents([]);
     setAuditNextCursor(null);
     setAuditStatus('idle');
     setAuditLoadingMore(false);
+    setAuditRefreshing(false);
   }, [uid, activePropertyId, canViewFinancials]);
 
   useEffect(() => {
-    if (!uid || !activePropertyId) return;
+    if (!uid || !activePropertyId || !inventoryContextReady) return;
+    setInventoryDataViewerKey(capabilityViewerKey);
     setItems([]);
     setOccupancy(null);
     setAverages(null);
@@ -386,31 +423,61 @@ export function InventoryShell() {
     setBundleLoaded(false);
     setItemsLoadError(false);
     setBundleLoadError(false);
-    let settled = false;
+    let disposed = false;
+    let initialSettled = false;
+    let retryTimer: number | null = null;
+    let activeUnsubscribe: (() => void) | null = null;
     const timeout = window.setTimeout(() => {
-      if (settled) return;
-      settled = true;
+      if (disposed || initialSettled) return;
+      initialSettled = true;
+      if (retryTimer != null) {
+        window.clearTimeout(retryTimer);
+        retryTimer = null;
+      }
       setItemsLoadError(true);
       setItemsLoaded(true);
     }, 8000);
-    const unsub = subscribeToInventory(uid, activePropertyId, (snap) => {
-      settled = true;
-      window.clearTimeout(timeout);
-      setItems(snap);
-      setItemsLoadError(false);
-      setItemsLoaded(true);
-    }, () => {
-      settled = true;
-      window.clearTimeout(timeout);
-      setItemsLoadError(true);
-      setItemsLoaded(true);
-    }, canViewFinancials);
-    return () => {
-      settled = true;
-      window.clearTimeout(timeout);
-      unsub();
+
+    const subscribe = (attempt: 0 | 1) => {
+      if (disposed) return;
+      activeUnsubscribe = subscribeToInventory(uid, activePropertyId, (snap) => {
+        if (disposed) return;
+        initialSettled = true;
+        window.clearTimeout(timeout);
+        if (retryTimer != null) {
+          window.clearTimeout(retryTimer);
+          retryTimer = null;
+        }
+        setItems(snap);
+        setItemsLoadError(false);
+        setItemsLoaded(true);
+      }, (error) => {
+        if (disposed) return;
+        if (!initialSettled && attempt === 0 && retryableInitialInventoryError(error)) {
+          // Retire the failed realtime channel before the one permitted retry.
+          activeUnsubscribe?.();
+          activeUnsubscribe = null;
+          retryTimer = window.setTimeout(() => {
+            retryTimer = null;
+            subscribe(1);
+          }, 250);
+          return;
+        }
+        initialSettled = true;
+        window.clearTimeout(timeout);
+        setItemsLoadError(true);
+        setItemsLoaded(true);
+      }, canViewFinancials);
     };
-  }, [uid, activePropertyId, inventoryReload, canViewFinancials]);
+    subscribe(0);
+
+    return () => {
+      disposed = true;
+      window.clearTimeout(timeout);
+      if (retryTimer != null) window.clearTimeout(retryTimer);
+      activeUnsubscribe?.();
+    };
+  }, [uid, activePropertyId, capabilityViewerKey, inventoryContextReady, inventoryReload, canViewFinancials]);
 
   // ONE assembly of the board's data fetch — shared by the initial-load effect
   // and refreshData so the two query sets can never drift apart.
@@ -444,9 +511,7 @@ export function InventoryShell() {
             if (!dashboard) throw new Error('month close response was invalid');
             return dashboard;
           })
-      : canViewFinancials
-        ? Promise.reject(new Error('month close financial data is unavailable'))
-        : Promise.resolve(null);
+      : Promise.resolve(null);
     const [occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats] = await Promise.all([
       safe('occupancy', fetchOccupancyBundle(pid, daysAgo(14))),
       safe('daily averages', fetchDailyAverages(pid, 14)),
@@ -472,16 +537,18 @@ export function InventoryShell() {
             total: 0,
             complete: true,
           } as MonthSpendDetail),
-      canViewFinancials ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
+      canViewFinancials && financialDataReady ? safe('month close', closeDashboardPromise) : Promise.resolve(null),
       // Custom category tabs are not money — everyone who can see inventory
       // sees the tabs.
       safe('custom categories', listInventoryCustomCategories(uid, pid)),
     ]);
     const requiredResults = [occ, avg, ct, deliveryRows, lossRows, cats];
-    const financialResults = canViewFinancials ? [bd, sec, spend, closeDashboard] : [];
+    // Finance panels expose their own unavailable/pending states. A failed or
+    // intentionally skipped finance source must not masquerade as a failure of
+    // the operational inventory connection.
     return {
       occ, avg, ct, deliveryRows, lossRows, bd, sec, spend, closeDashboard, cats,
-      partialFailure: [...requiredResults, ...financialResults].some((value) => value == null),
+      partialFailure: requiredResults.some((value) => value == null),
     };
   }, [canViewFinancials, financialTimezoneValid, propertyTimezone]);
 
@@ -502,7 +569,7 @@ export function InventoryShell() {
   }, []);
 
   useEffect(() => {
-    if (!uid || !activePropertyId) return;
+    if (!uid || !activePropertyId || !inventoryContextReady) return;
     let cancelled = false;
     setBundleLoaded(false);
     setBundleLoadError(false);
@@ -524,18 +591,21 @@ export function InventoryShell() {
     return () => {
       cancelled = true;
     };
-  }, [uid, activePropertyId, fetchBoardData, applyBoardData, inventoryReload]);
+  }, [uid, activePropertyId, inventoryContextReady, fetchBoardData, applyBoardData, inventoryReload]);
 
   const loadAuditHistory = useCallback(async (cursor: string | null, append: boolean) => {
     const propertyId = activePropertyId;
     if (!propertyId || !uid) return;
     const sequence = ++auditLoadSequence.current;
+    const revalidatingCurrentProperty = !append
+      && auditSnapshotPropertyIdRef.current === propertyId;
     if (append) setAuditLoadingMore(true);
     else {
       setAuditPropertyId(propertyId);
-      setAuditStatus('loading');
-      setAuditEvents([]);
-      setAuditNextCursor(null);
+      setAuditRefreshing(revalidatingCurrentProperty);
+      // Keep a successful same-property page visible. A first load (or a
+      // property/capability transition) still uses the full loading skeleton.
+      if (!revalidatingCurrentProperty) setAuditStatus('loading');
     }
     try {
       const params = new URLSearchParams({ propertyId, limit: '50' });
@@ -547,6 +617,7 @@ export function InventoryShell() {
       const page = inventoryAuditPageFromPayload(await response.json());
       if (!page) throw new Error('inventory history response was invalid');
       if (sequence !== auditLoadSequence.current || activePropertyIdRef.current !== propertyId) return;
+      auditSnapshotPropertyIdRef.current = propertyId;
       setAuditEvents((current) => append
         ? [...current, ...page.events.filter((event) => !current.some((row) => row.id === event.id))]
         : page.events);
@@ -555,11 +626,12 @@ export function InventoryShell() {
     } catch (error) {
       console.error('[inventory] audit history load failed', error);
       if (sequence === auditLoadSequence.current && activePropertyIdRef.current === propertyId) {
-        setAuditStatus(append ? 'ready' : 'error');
+        setAuditStatus(append || revalidatingCurrentProperty ? 'ready' : 'error');
       }
     } finally {
       if (sequence === auditLoadSequence.current && activePropertyIdRef.current === propertyId) {
         setAuditLoadingMore(false);
+        if (!append) setAuditRefreshing(false);
       }
     }
   }, [activePropertyId, uid]);
@@ -1209,7 +1281,7 @@ export function InventoryShell() {
   }, [activePropertyId, uid, submitQuickCountAttempt]);
 
   const refreshData = useCallback(async () => {
-    if (!uid || !activePropertyId) return;
+    if (!uid || !activePropertyId || !inventoryContextReady) return;
     const requestedPropertyId = activePropertyId;
     try {
       const data = await fetchBoardData(uid, requestedPropertyId);
@@ -1220,7 +1292,7 @@ export function InventoryShell() {
       console.error('[inventory] refresh failed', err);
       if (activePropertyIdRef.current === requestedPropertyId) setBundleLoadError(true);
     }
-  }, [uid, activePropertyId, fetchBoardData, applyBoardData]);
+  }, [uid, activePropertyId, inventoryContextReady, fetchBoardData, applyBoardData]);
 
   // ── Custom category tabs (0307) — add / delete ──────────────────────
   const addCustomCategory = useCallback(async (name: string) => {
@@ -1300,7 +1372,9 @@ export function InventoryShell() {
   // refreshes transiently null the user; without the latch each blip
   // unmounted the whole board back to the loading branch and replayed the
   // entrance — the "UI pops up over and over" bug.
-  const dataReady = !!stableUser && !!activePropertyId && itemsLoaded && bundleLoaded;
+  const inventoryDataMatchesViewer = inventoryContextReady
+    && inventoryDataViewerKey === capabilityViewerKey;
+  const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;
   const [revealed, setRevealed] = useState(false);
   useEffect(() => { if (dataReady) setRevealed(true); }, [dataReady]);
   useEffect(() => {
@@ -1310,30 +1384,32 @@ export function InventoryShell() {
   const pageRef = useRiseIn<HTMLDivElement>([revealed], { step: 75, dist: 16 });
 
   if (itemsLoadError) {
-    return (
-      <div role="alert" style={NOTICE_STYLE}>
-        <div style={{ marginBottom: 14 }}>{tx.loadFailed}</div>
-        <button
-          type="button"
-          onClick={() => setInventoryReload((n) => n + 1)}
-          style={{
-            minHeight: 44,
-            padding: '0 18px',
-            borderRadius: 10,
-            border: 0,
-            background: T.brand,
-            color: '#fff',
-            cursor: 'pointer',
-            fontWeight: 600,
-          }}
-        >
-          {tx.retry}
-        </button>
-      </div>
-    );
+    if (inventoryDataMatchesViewer) {
+      return (
+        <div role="alert" style={NOTICE_STYLE}>
+          <div style={{ marginBottom: 14 }}>{tx.loadFailed}</div>
+          <button
+            type="button"
+            onClick={() => setInventoryReload((n) => n + 1)}
+            style={{
+              minHeight: 44,
+              padding: '0 18px',
+              borderRadius: 10,
+              border: 0,
+              background: T.brand,
+              color: '#fff',
+              cursor: 'pointer',
+              fontWeight: 600,
+            }}
+          >
+            {tx.retry}
+          </button>
+        </div>
+      );
+    }
   }
 
-  if (!revealed || !itemsLoaded) {
+  if (!inventoryDataMatchesViewer || !revealed || !itemsLoaded) {
     // Byte-identical to InventoryLoading in ../page.tsx (the SSR Suspense
     // fallback); any drift between the two makes React hydration re-render
     // the whole tree and the loading text visibly flash mid-load.
@@ -1375,7 +1451,7 @@ export function InventoryShell() {
             gap: 12,
           }}
         >
-          <span>{tx.loadFailed}</span>
+          <span>{tx.detailsLoadFailed}</span>
           <button
             type="button"
             onClick={() => setInventoryReload((n) => n + 1)}
@@ -1663,10 +1739,11 @@ export function InventoryShell() {
         auditPropertyId={auditMatchesActiveProperty ? auditPropertyId : null}
         auditEvents={!auditMatchesActiveProperty ? [] : auditStatus === 'error' ? null : auditEvents}
         auditLoading={!auditMatchesActiveProperty || auditStatus === 'idle' || auditStatus === 'loading'}
+        auditRefreshing={auditMatchesActiveProperty && auditRefreshing}
         auditLoadingMore={auditMatchesActiveProperty && auditLoadingMore}
         auditNextCursor={auditMatchesActiveProperty ? auditNextCursor : null}
         onLoadOlder={() => {
-          if (auditMatchesActiveProperty && auditNextCursor && !auditLoadingMore) {
+          if (auditMatchesActiveProperty && auditNextCursor && !auditLoadingMore && !auditRefreshing) {
             void loadAuditHistory(auditNextCursor, true);
           }
         }}

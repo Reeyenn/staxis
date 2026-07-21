@@ -12,7 +12,8 @@ const shell = fs.readFileSync(shellPath, 'utf8');
 test('inventory board keeps core item work available while failed supporting data stays unavailable', () => {
   assert.match(shell, /const \[bundleLoadError, setBundleLoadError\] = useState\(false\)/);
   assert.match(shell, /const safe = async <T,>\(label: string, promise: Promise<T>\): Promise<T \| null>/);
-  assert.match(shell, /partialFailure: \[\.\.\.requiredResults, \.\.\.financialResults\]\.some\(\(value\) => value == null\)/);
+  assert.match(shell, /partialFailure: requiredResults\.some\(\(value\) => value == null\)/);
+  assert.doesNotMatch(shell, /partialFailure: .*financialResults/);
   assert.match(shell, /if \(itemsLoadError\) \{/);
   assert.doesNotMatch(shell, /if \(itemsLoadError \|\| bundleLoadError\)/);
   assert.match(shell, /\{bundleLoadError && \(/);

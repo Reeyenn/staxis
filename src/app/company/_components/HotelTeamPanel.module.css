@@ -1,6 +1,5 @@
 .root,
-.dialogLayer,
-.dialogLoading {
+.dialogLayer {
   --team-ink: #1f231c;
   --team-ink-2: #5c625c;
   --team-ink-3: #687067;
@@ -22,8 +21,7 @@
 }
 
 .root *,
-.dialogLayer *,
-.dialogLoading * {
+.dialogLayer * {
   box-sizing: border-box;
 }
 
@@ -634,27 +632,6 @@
   to { transform: rotate(360deg); }
 }
 
-.dialogLoading {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  color: var(--team-ink-2);
-  background: rgba(31, 35, 28, 0.3);
-  font-size: 12px;
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
-}
-
-.dialogLoading .spinner {
-  color: #ffffff;
-  border-color: rgba(255, 255, 255, 0.35);
-  border-top-color: #ffffff;
-}
-
 .dialogLayer {
   position: fixed;
   inset: 0;
@@ -696,6 +673,134 @@
 
 .dialogWide {
   width: min(760px, calc(100vw - 40px));
+}
+
+.dialogLoadingShell {
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.dialogLoadingInvite {
+  height: min(800px, calc(100dvh - 40px));
+}
+
+.dialogLoadingMember {
+  height: min(680px, calc(100dvh - 40px));
+}
+
+.dialogLoadingConfirmation {
+  height: min(420px, calc(100dvh - 40px));
+}
+
+.dialogLoadingIcon,
+.dialogLoadingIntro > span,
+.dialogLoadingHeading,
+.dialogLoadingRow,
+.dialogLoadingField,
+.dialogLoadingButton {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: rgba(31, 35, 28, 0.08);
+}
+
+.dialogLoadingIcon {
+  border-radius: 13px;
+}
+
+.dialogLoadingIntro {
+  padding: 15px 18px 0;
+}
+
+.dialogLoadingIntro > span {
+  width: min(460px, 72%);
+  height: 10px;
+  border-radius: 4px;
+}
+
+.dialogLoadingBody {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+  padding: 17px 18px 0;
+}
+
+.dialogLoadingSection {
+  display: flex;
+  min-height: 188px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 15px;
+  border: 1px solid var(--team-rule);
+  border-radius: 14px;
+  background: var(--team-paper);
+}
+
+.dialogLoadingSectionTall {
+  min-height: 300px;
+  flex: 1;
+}
+
+.dialogLoadingHeading {
+  width: min(240px, 54%);
+  height: 14px;
+  margin-bottom: 3px;
+  border-radius: 5px;
+}
+
+.dialogLoadingRow {
+  width: 100%;
+  height: 48px;
+  flex: 1;
+  border-radius: 10px;
+}
+
+.dialogLoadingFields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dialogLoadingFieldsCompact {
+  grid-template-columns: 1fr;
+}
+
+.dialogLoadingField {
+  min-height: 76px;
+  border-radius: 11px;
+}
+
+.dialogLoadingFields:not(.dialogLoadingFieldsCompact) .dialogLoadingField:first-child,
+.dialogLoadingFields:not(.dialogLoadingFieldsCompact) .dialogLoadingField:last-child {
+  grid-column: 1 / -1;
+}
+
+.dialogLoadingButton {
+  width: 112px;
+  height: 44px;
+  border-radius: 10px;
+}
+
+.dialogLoadingIcon::after,
+.dialogLoadingIntro > span::after,
+.dialogLoadingHeading::after,
+.dialogLoadingRow::after,
+.dialogLoadingField::after,
+.dialogLoadingButton::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  content: '';
+  transform: translateX(-100%);
+  animation: dialogLoadingShimmer 1.45s ease-in-out infinite;
+}
+
+@keyframes dialogLoadingShimmer {
+  to { transform: translateX(100%); }
 }
 
 @keyframes scrimEnter {
@@ -945,9 +1050,79 @@
 
 .inviteBody {
   display: flex;
+  min-height: min(610px, calc(100dvh - 190px));
   flex-direction: column;
   gap: 16px;
   padding: 17px 18px 0;
+}
+
+.inviteSkeleton,
+.inviteSkeletonVisual {
+  display: flex;
+  flex-direction: column;
+}
+
+.inviteSkeletonVisual {
+  gap: 8px;
+}
+
+.inviteSkeletonRow {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--team-rule);
+  border-radius: 10px;
+  background: var(--team-wash);
+}
+
+.inviteSkeletonCopy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.inviteSkeletonLine,
+.inviteSkeletonAction {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: rgba(31, 35, 28, 0.08);
+}
+
+.inviteSkeletonLine {
+  width: 64%;
+  height: 10px;
+  border-radius: 4px;
+}
+
+.inviteSkeletonLineShort {
+  width: 42%;
+  height: 8px;
+}
+
+.inviteSkeletonAction {
+  width: 74px;
+  height: 30px;
+  flex: none;
+  border-radius: 999px;
+}
+
+.inviteSkeletonLine::after,
+.inviteSkeletonAction::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.75), transparent);
+  content: '';
+  transform: translateX(-100%);
+  animation: inviteSkeletonShimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes inviteSkeletonShimmer {
+  to { transform: translateX(100%); }
 }
 
 .inviteSection {
@@ -1442,6 +1617,18 @@
     border-radius: 18px 18px 0 0;
   }
 
+  .dialogLoadingInvite {
+    height: calc(100dvh - 24px);
+  }
+
+  .dialogLoadingMember {
+    height: min(680px, calc(100dvh - 24px));
+  }
+
+  .dialogLoadingConfirmation {
+    height: min(420px, calc(100dvh - 24px));
+  }
+
   .dialogHeader {
     padding: 15px 14px 12px;
   }
@@ -1452,9 +1639,28 @@
 
   .dialogForm,
   .confirmBody,
-  .inviteBody {
+  .inviteBody,
+  .dialogLoadingBody,
+  .dialogLoadingIntro {
     padding-right: 14px;
     padding-left: 14px;
+  }
+
+  .dialogLoadingSection {
+    padding: 12px;
+  }
+
+  .dialogLoadingFields {
+    grid-template-columns: 1fr;
+  }
+
+  .dialogLoadingFields:not(.dialogLoadingFieldsCompact) .dialogLoadingField:first-child,
+  .dialogLoadingFields:not(.dialogLoadingFieldsCompact) .dialogLoadingField:last-child {
+    grid-column: auto;
+  }
+
+  .inviteBody {
+    min-height: min(560px, calc(100dvh - 180px));
   }
 
   .dialogForm > .dialogFooter {
@@ -1470,7 +1676,8 @@
 
   .dialogFooter .primaryButton,
   .dialogFooter .secondaryButton,
-  .dialogFooter .dangerButton {
+  .dialogFooter .dangerButton,
+  .dialogLoadingButton {
     width: 100%;
   }
 
@@ -1555,6 +1762,17 @@
   .skeletonList > span,
   .spinner,
   .buttonSpinner {
+    animation: none;
+  }
+
+  .inviteSkeletonLine::after,
+  .inviteSkeletonAction::after,
+  .dialogLoadingIcon::after,
+  .dialogLoadingIntro > span::after,
+  .dialogLoadingHeading::after,
+  .dialogLoadingRow::after,
+  .dialogLoadingField::after,
+  .dialogLoadingButton::after {
     animation: none;
   }
 

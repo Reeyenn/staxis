@@ -19,6 +19,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { canManageTeam } from '@/lib/roles';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import { InviteStaffPanel } from '@/components/team/InviteStaffPanel';
+import invitePanelStyles from '@/components/team/InviteStaffPanel.module.css';
 import type { StaffMember, StaffDepartment } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from './_tokens';
 import { StaffAvatar, SeniorTag, HoursBar } from './_people';
@@ -594,21 +595,16 @@ export function ManagerDirectory() {
           while the sheet was open shows up immediately. */}
       {showInvite && (
         <div
+          className={invitePanelStyles.modalLayer}
           onClick={() => { setShowInvite(false); void loadRequests(); }}
-          style={{
-            position: 'fixed', inset: 0, zIndex: 1000,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'rgba(31,35,28,0.42)', backdropFilter: 'blur(8px)', padding: 16,
-          }}
         >
           <div
+            className={invitePanelStyles.modalDialog}
+            role="dialog"
+            aria-modal="true"
+            aria-label={lang === 'es' ? 'Invitar personal' : 'Invite staff'}
+            tabIndex={-1}
             onClick={e => e.stopPropagation()}
-            style={{
-              background: T.paper, borderRadius: 18,
-              width: '100%', maxWidth: 440, maxHeight: '88vh', overflowY: 'auto',
-              padding: '20px 22px',
-              boxShadow: '0 24px 60px -8px rgba(31,42,32,0.24), 0 0 0 1px rgba(31,35,28,0.04)',
-            }}
           >
             <InviteStaffPanel
               hotelId={pid}

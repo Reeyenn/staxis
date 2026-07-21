@@ -1,0 +1,182 @@
+.reportContent {
+  min-width: 0;
+  min-height: min(700px, calc(90vh - 120px));
+}
+
+.loadingState,
+.loadingVisual {
+  min-width: 0;
+}
+
+.loadingVisual {
+  display: flex;
+  flex-direction: column;
+}
+
+.loadingButtonRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 2px;
+}
+
+.loadingHero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 760px);
+  margin: 0 auto;
+  padding-top: 6px;
+}
+
+.loadingHeroValue {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.loadingTiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.loadingTile {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--ai-report-skeleton-bg);
+  border-radius: 13px;
+}
+
+.loadingTileCopy {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.skeleton {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--ai-report-skeleton-bg);
+}
+
+.skeleton::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--ai-report-skeleton-shine),
+    transparent
+  );
+  content: '';
+  opacity: 0.72;
+  transform: translateX(-100%);
+  animation: aiReportSkeletonShimmer 1.5s ease-in-out infinite;
+}
+
+.skeletonButton {
+  width: 126px;
+  height: 40px;
+  border-radius: 12px;
+}
+
+.skeletonPercent {
+  width: 118px;
+  height: 44px;
+  border-radius: 8px;
+}
+
+.skeletonCaption {
+  width: min(42%, 260px);
+  height: 14px;
+}
+
+.skeletonTrack {
+  width: calc(100% - 74px);
+  height: 10px;
+  margin-right: 74px;
+  border-radius: 6px;
+}
+
+.skeletonHeroLine {
+  width: min(66%, 430px);
+  height: 13px;
+  margin-top: 20px;
+}
+
+.skeletonHeroLineShort {
+  width: min(48%, 310px);
+  height: 11px;
+  margin-top: 7px;
+}
+
+.skeletonRing {
+  flex: 0 0 auto;
+  width: 58px;
+  height: 58px;
+  border-radius: 999px;
+}
+
+.skeletonTileTitle {
+  width: 72%;
+  height: 13px;
+}
+
+.skeletonTileValue {
+  width: 44%;
+  height: 19px;
+}
+
+.skeletonTileDetail {
+  width: 86%;
+  height: 11px;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+@keyframes aiReportSkeletonShimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@media (max-width: 760px) {
+  .reportContent {
+    min-height: 0;
+  }
+
+  .loadingTiles {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .skeletonCaption {
+    width: 48%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton::after {
+    animation: none;
+  }
+}

@@ -657,11 +657,43 @@ function PurchaseOption({
 
 function LoadingState({ copy }: { copy: ReturnType<typeof monthCloseStrings> }) {
   return (
-    <div role="status" aria-live="polite" className="mc-state-panel">
-      <span className="mc-spinner" aria-hidden="true" />
-      <div>
-        <div className="mc-state-title">{copy.loadingTitle}</div>
-        <div className="mc-state-body">{copy.loadingBody}</div>
+    <div role="status" aria-live="polite" className="mc-loading-state">
+      <span className="mc-sr-only">{copy.loadingTitle}. {copy.loadingBody}</span>
+      <div className="mc-loading-visual" aria-hidden="true">
+        <div className="mc-loading-section">
+          <span className="mc-skeleton mc-skeleton-badge" />
+          <span className="mc-skeleton mc-skeleton-title" />
+          <span className="mc-skeleton mc-skeleton-copy" />
+          <div className="mc-loading-equation">
+            {[0, 1, 2, 3].map((index) => (
+              <span className="mc-loading-equation-card" key={index}>
+                <span className="mc-skeleton mc-skeleton-label" />
+                <span className="mc-skeleton mc-skeleton-value" />
+                <span className="mc-skeleton mc-skeleton-detail" />
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="mc-loading-section">
+          <span className="mc-skeleton mc-skeleton-title mc-skeleton-title-short" />
+          <span className="mc-skeleton mc-skeleton-copy" />
+          <div className="mc-loading-options">
+            {[0, 1, 2].map((index) => (
+              <span className="mc-loading-option" key={index}>
+                <span className="mc-skeleton mc-skeleton-radio" />
+                <span className="mc-skeleton mc-skeleton-option-copy" />
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="mc-loading-readiness">
+          {[0, 1].map((index) => (
+            <span className="mc-loading-check" key={index}>
+              <span className="mc-skeleton mc-skeleton-check-copy" />
+              <span className="mc-skeleton mc-skeleton-check-badge" />
+            </span>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -670,9 +702,9 @@ function LoadingState({ copy }: { copy: ReturnType<typeof monthCloseStrings> }) 
 export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }: MonthClosePanelProps) {
   const { activePropertyId } = useProperty();
   const copy = useMemo(() => monthCloseStrings(lang), [lang]);
-  const [dashboard, setDashboard] = useState<MonthCloseDashboardView | null>(null);
+  const [propertyDashboard, setPropertyDashboard] = useState<MonthCloseDashboardView | null>(null);
   const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState(false);
+  const [failedPropertyId, setFailedPropertyId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmingClose, setConfirmingClose] = useState(false);
   const [committedRefreshPending, setCommittedRefreshPending] = useState(false);
@@ -691,9 +723,16 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
   const formId = useId();
   const purchaseHelpId = useId();
   const manualHelpId = useId();
+  // The state stays mounted between opens. Gate it synchronously so a hotel
+  // switch can never paint the previous property's financial checklist while
+  // the next request's effect is still waiting to run.
+  const dashboard = propertyDashboard?.propertyId === activePropertyId
+    ? propertyDashboard
+    : null;
+  const loadError = failedPropertyId === activePropertyId;
 
   const applyDashboard = useCallback((next: MonthCloseDashboardView) => {
-    setDashboard(next);
+    setPropertyDashboard(next);
     setCommittedRefreshPending(false);
     setPurchaseSource(next.purchase.source ?? 'logged_deliveries');
     setManualPurchase(centsToInput(next.purchase.manualPurchaseCents));
@@ -712,33 +751,34 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
 
   const loadDashboard = useCallback(async (showLoading = true): Promise<MonthCloseDashboardView | null> => {
     if (!activePropertyId) {
-      setDashboard(null);
-      setLoadError(false);
+      setPropertyDashboard(null);
+      setFailedPropertyId(null);
       setLoading(false);
       return null;
     }
 
+    const propertyId = activePropertyId;
     const sequence = ++requestSequence.current;
     loadAbort.current?.abort();
     const controller = new AbortController();
     loadAbort.current = controller;
     if (showLoading) setLoading(true);
-    setLoadError(false);
+    setFailedPropertyId((current) => current === propertyId ? null : current);
 
     try {
       const response = await fetchWithAuth(
-        `/api/inventory/month-close?propertyId=${encodeURIComponent(activePropertyId)}`,
+        `/api/inventory/month-close?propertyId=${encodeURIComponent(propertyId)}`,
         { cache: 'no-store', signal: controller.signal },
       );
       const payload = await responseJson(response);
       if (!response.ok) throw new Error(apiMessage(payload) ?? `HTTP ${response.status}`);
-      const next = normalizeMonthCloseDashboardForProperty(payload, activePropertyId);
+      const next = normalizeMonthCloseDashboardForProperty(payload, propertyId);
       if (!next) throw new Error('INVALID_MONTH_CLOSE_DASHBOARD');
       if (sequence === requestSequence.current) applyDashboard(next);
       return next;
     } catch {
       if (controller.signal.aborted) return null;
-      if (sequence === requestSequence.current) setLoadError(true);
+      if (sequence === requestSequence.current) setFailedPropertyId(propertyId);
       return null;
     } finally {
       if (sequence === requestSequence.current) setLoading(false);
@@ -920,6 +960,10 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
     || negativeActual;
 
   const title = dashboard ? monthLabel(dashboard.month, lang) : copy.fallbackTitle;
+  // Effects run after paint, so `loading` alone cannot describe the very first
+  // frame. This keeps the initial render in the full-size loading layout rather
+  // than briefly presenting an error panel before the request starts.
+  const showInitialLoading = Boolean(activePropertyId) && !dashboard && !loadError;
   const showPartialNotice = dashboard?.isPartial === true;
   const partialDate = formatDate(
     dashboard?.activityStartAt ?? dashboard?.baselineAt ?? null,
@@ -1133,12 +1177,35 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
       footer={footer}
     >
       <style>{`
-        .mc-root { color: ${T.ink}; font-family: ${fonts.sans}; }
+        .mc-root { color: ${T.ink}; font-family: ${fonts.sans}; min-height: min(700px, calc(90vh - 120px)); }
         .mc-stack { display: flex; flex-direction: column; gap: 16px; }
         .mc-state-panel { align-items: center; background: ${T.inkWash}; border: 1px solid ${T.rule}; border-radius: 14px; display: flex; gap: 14px; min-height: 128px; padding: 24px; }
         .mc-state-title { color: ${T.ink}; font-size: 15px; font-weight: 650; line-height: 1.35; }
         .mc-state-body { color: ${T.ink2}; font-size: 12.5px; line-height: 1.55; margin-top: 4px; }
         .mc-spinner { animation: mc-spin .8s linear infinite; border: 2px solid ${T.rule}; border-radius: 50%; border-top-color: ${T.brand}; display: block; flex: 0 0 auto; height: 24px; width: 24px; }
+        .mc-loading-state, .mc-loading-visual { min-width: 0; }
+        .mc-loading-visual { display: flex; flex-direction: column; gap: 16px; }
+        .mc-loading-section { background: ${T.paper}; border: 1px solid ${T.rule}; border-radius: 14px; padding: 17px; }
+        .mc-loading-equation { display: grid; gap: 8px; grid-template-columns: repeat(4,minmax(0,1fr)); margin-top: 17px; }
+        .mc-loading-equation-card { border: 1px solid ${T.rule}; border-radius: 14px; display: flex; flex-direction: column; gap: 9px; min-height: 112px; padding: 15px 14px; }
+        .mc-loading-options { display: grid; gap: 9px; margin-top: 14px; }
+        .mc-loading-option { align-items: center; border: 1px solid ${T.controlBorder}; border-radius: 12px; display: grid; gap: 11px; grid-template-columns: 20px minmax(0,1fr); min-height: 58px; padding: 13px 14px; }
+        .mc-loading-readiness { display: grid; gap: 9px; grid-template-columns: repeat(2,minmax(0,1fr)); }
+        .mc-loading-check { align-items: center; background: ${T.inkWash}; border: 1px solid ${T.rule}; border-radius: 11px; display: flex; gap: 14px; justify-content: space-between; min-height: 66px; padding: 12px; }
+        .mc-skeleton { background: ${T.ruleSoft}; border-radius: 4px; display: block; overflow: hidden; position: relative; }
+        .mc-skeleton::after { animation: mc-skeleton-shimmer 1.5s ease-in-out infinite; background: linear-gradient(90deg,transparent,${T.paper},transparent); content: ''; inset: 0; opacity: .72; position: absolute; transform: translateX(-100%); }
+        .mc-skeleton-badge { border-radius: 999px; height: 28px; width: 118px; }
+        .mc-skeleton-title { height: 18px; margin-top: 13px; width: 46%; }
+        .mc-skeleton-title-short { margin-top: 0; width: 34%; }
+        .mc-skeleton-copy { height: 12px; margin-top: 7px; width: 76%; }
+        .mc-skeleton-label { height: 10px; width: 54%; }
+        .mc-skeleton-value { height: 21px; width: 72%; }
+        .mc-skeleton-detail { height: 10px; width: 88%; }
+        .mc-skeleton-radio { border-radius: 999px; height: 20px; width: 20px; }
+        .mc-skeleton-option-copy { height: 13px; width: 68%; }
+        .mc-skeleton-check-copy { height: 13px; width: 54%; }
+        .mc-skeleton-check-badge { border-radius: 999px; height: 24px; width: 68px; }
+        .mc-sr-only { border: 0; clip: rect(0,0,0,0); height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; white-space: nowrap; width: 1px; }
         .mc-section { background: ${T.paper}; border: 1px solid ${T.rule}; border-radius: 14px; padding: 17px; }
         .mc-section-head { align-items: flex-start; display: flex; gap: 16px; justify-content: space-between; }
         .mc-section-title { color: ${T.ink}; font-size: 14px; font-weight: 670; line-height: 1.35; }
@@ -1190,6 +1257,11 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
         .mc-confirm-meta dt { color: ${T.ink3}; font-family: ${fonts.mono}; font-size: 9.5px; font-weight: 650; letter-spacing: .055em; text-transform: uppercase; }
         .mc-confirm-meta dd { color: ${T.ink}; font-size: 13px; font-weight: 650; line-height: 1.4; margin: 5px 0 0; }
         @keyframes mc-spin { to { transform: rotate(360deg); } }
+        @keyframes mc-skeleton-shimmer { to { transform: translateX(100%); } }
+        @media (max-width: 760px) {
+          .mc-root { min-height: 0; }
+          .mc-loading-equation { grid-template-columns: repeat(2,minmax(0,1fr)); }
+        }
         @media (max-width: 680px) {
           .mc-equation { grid-template-columns: 1fr; }
           .mc-operator { min-height: 16px; }
@@ -1201,11 +1273,18 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
         }
         @media (prefers-reduced-motion: reduce) {
           .mc-spinner { animation: none; }
+          .mc-skeleton::after { animation: none; }
           .mc-purchase-option, .mc-button { transition: none !important; }
         }
       `}</style>
 
-      <form id={formId} className="mc-root mc-stack" onSubmit={submit} noValidate>
+      <form
+        id={formId}
+        className="mc-root mc-stack"
+        onSubmit={submit}
+        noValidate
+        aria-busy={loading || showInitialLoading}
+      >
         {statusMessage && (
           <div aria-live="polite" aria-atomic="true">
             <Notice tone="success" title={statusMessage} role="status">{dashboard?.status === 'closed' ? copy.closedBody : copy.openIntro}</Notice>
@@ -1268,7 +1347,7 @@ export function MonthClosePanel({ lang, open, onClose, onStartCount, onChanged }
           </section>
         ) : !activePropertyId ? (
           <Notice tone="info" title={copy.noPropertyTitle}>{copy.noPropertyBody}</Notice>
-        ) : loading ? (
+        ) : loading || showInitialLoading ? (
           <LoadingState copy={copy} />
         ) : loadError || !dashboard ? (
           <div className="mc-state-panel" role={committedRefreshPending ? 'status' : 'alert'}>

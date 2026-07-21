@@ -24,6 +24,7 @@ import { fetchWithAuth } from '@/lib/api-fetch';
 import { RefreshCw, Map as MapIcon, AlertTriangle, X, ChevronRight, ChevronDown, ExternalLink, Layers } from 'lucide-react';
 import { FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn } from '@/app/admin/_components/studio/kit';
 import { Backdrop, MODAL_CARD } from '@/app/admin/_components/studio/surface-kit';
+import styles from './MapsManager.module.css';
 
 const dim = (a: number) => `rgba(255,255,255,${a})`;
 
@@ -496,6 +497,7 @@ function FeedsPanel({ familyLabel, state, onView, onEdit, onDelete }: {
 export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const [families, setFamilies] = useState<FamilyGroup[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadedOnce, setLoadedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [pending, setPending] = useState<PendingAction | null>(null);
@@ -517,6 +519,7 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
       setError((err as Error).message);
     } finally {
       setLoading(false);
+      setLoadedOnce(true);
     }
   }, []);
 
@@ -684,14 +687,19 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
   if (!open) return null;
 
   const totalMaps = families.reduce((n, f) => n + f.maps.length, 0);
+  // `loading` flips in an effect, after the first paint. `loadedOnce` makes
+  // the very first frame use the full-size skeleton instead of a tiny empty
+  // card. Later refreshes keep the last good map list visible.
+  const initialLoading = !loadedOnce && totalMaps === 0 && error === null;
 
   return (
     <Backdrop onClose={onClose}>
       <div
         onClick={(e) => e.stopPropagation()}
-        className="admin-studio"
+        className={`admin-studio ${styles.modalCard}`}
+        aria-busy={loading || initialLoading}
         style={{
-          width: 'min(720px, 94vw)', maxHeight: '88vh', overflowY: 'auto',
+          width: 'min(720px, 94vw)', overflowY: 'auto',
           background: 'var(--ink)', color: '#fff',
           border: `1px solid ${dim(.14)}`, borderRadius: 16,
           padding: '22px 24px 28px', position: 'relative',
@@ -726,7 +734,9 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
             </div>
           )}
 
-          {totalMaps === 0 && !loading && !error ? (
+          {initialLoading ? (
+            <MapsLoadingState />
+          ) : totalMaps === 0 && !loading && !error ? (
             <Empty text="No maps learned yet — the robot writes one here the first time it maps a PMS." />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -820,5 +830,25 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
         );
       })()}
     </Backdrop>
+  );
+}
+
+function MapsLoadingState() {
+  return (
+    <div className={styles.loadingState} role="status" aria-live="polite">
+      <span className={styles.srOnly}>Loading learned maps…</span>
+      <div className={styles.loadingVisual} aria-hidden="true">
+        {Array.from({ length: 4 }, (_, index) => (
+          <span key={index} className={styles.skeletonFamily}>
+            <span className={styles.skeletonHeader}>
+              <span className={styles.skeletonLine} />
+              <span className={`${styles.skeletonLine} ${styles.skeletonBadge}`} />
+            </span>
+            <span className={`${styles.skeletonLine} ${styles.skeletonRow}`} />
+            <span className={`${styles.skeletonLine} ${styles.skeletonRowShort}`} />
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
