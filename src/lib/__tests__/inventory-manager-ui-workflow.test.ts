@@ -49,6 +49,24 @@ describe('inventory manager workflow regressions', () => {
     assert.match(css, /\.quickSaving > span\s*\{[\s\S]*?animation:\s*mobileInventorySpin/);
   });
 
+  test('shelf totals use a small missing-price alert instead of a greater-than symbol', () => {
+    const shell = source('app', 'inventory', '_components', 'InventoryShell.tsx');
+    const mobile = source('app', 'inventory', '_components', 'MobileInventoryTriage.tsx');
+    const warning = source('app', 'inventory', '_components', 'ShelfValueWarning.tsx');
+    const warningCss = source('app', 'inventory', '_components', 'ShelfValueWarning.module.css');
+    const strings = source('app', 'inventory', '_components', 'inv-i18n.ts');
+
+    assert.doesNotMatch(shell, /aria-hidden>≥/);
+    assert.doesNotMatch(mobile, /activeTabValueComplete \? '' : '≥ '/);
+    assert.doesNotMatch(mobile, /shelfValueComplete \? '' : '≥ '/);
+    assert.equal((shell.match(/<ShelfValueWarning/g) ?? []).length, 2);
+    assert.equal((mobile.match(/warning=\{/g) ?? []).length, 2);
+    assert.match(warning, /aria-describedby=\{tooltipId\}/);
+    assert.match(warning, /role="tooltip"/);
+    assert.match(warningCss, /\.trigger\s*\{[\s\S]*?width:\s*14px;[\s\S]*?height:\s*14px;/);
+    assert.match(strings, /shelfValueWarning: 'Some item prices are missing\. Total may be higher\.'/);
+  });
+
   test('Ask Staxis docks in the inventory header instead of covering count controls', () => {
     const ask = source('components', 'agent', 'AskStaxisBar.tsx');
     assert.match(ask, /onInventory \? ' asx-mobile-fab-inventory' : ''/);

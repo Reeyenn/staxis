@@ -61,6 +61,12 @@ describe('inventory usage-budget UI contract', () => {
     assert.doesNotMatch(panel, /Choose a month and year/);
   });
 
+  it('keeps the budget method chooser concise without its helper paragraph', () => {
+    assert.match(panel, /<BudgetSection title=\{bp\.chooseMethodTitle\}>/);
+    assert.doesNotMatch(panel, /chooseMethodSub/);
+    assert.doesNotMatch(panel, /Use one monthly limit for all inventory/);
+  });
+
   it('shares one compact row for Add section and Copy to year', () => {
     assert.match(
       panel,
@@ -70,5 +76,21 @@ describe('inventory usage-budget UI contract', () => {
       (panel.match(/bp\.copyMonthToYear\(MONTHS\[month\], year\)/g) ?? []).length,
       1,
     );
+  });
+
+  it('places the pending budget notice after the final history section', () => {
+    const historySection = panel.indexOf('<BudgetSection contained title={bp.compareMonthsTitle}');
+    const pendingNotice = panel.indexOf('data-budget-pending-notice="bottom"');
+    assert.ok(historySection >= 0);
+    assert.ok(pendingNotice > historySection);
+    assert.equal((panel.match(/data-budget-pending-notice="bottom"/g) ?? []).length, 1);
+  });
+
+  it('keeps the current-month review concise and explains why usage is pending', () => {
+    assert.match(panel, /actualPendingShort: 'Pending'/);
+    assert.match(panel, /actualPendingReason: 'Usage is calculated when the month closes\.'/);
+    assert.match(panel, /isCurrentMonth \? undefined : bp\.reviewSelectedSub/);
+    assert.doesNotMatch(panel, /reviewCurrentSub/);
+    assert.match(panel, /noBudgetsYet: 'No budget set\.'/);
   });
 });

@@ -1,0 +1,63 @@
+.wrapper {
+  position: relative;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  margin-left: 5px;
+  vertical-align: 0.14em;
+}
+
+.trigger {
+  display: inline-grid;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  place-items: center;
+  border: 1.5px solid currentColor;
+  border-radius: 9999px;
+  background: transparent;
+  cursor: help;
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.trigger:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 10000;
+  box-sizing: border-box;
+  width: 210px;
+  max-width: calc(100vw - 16px);
+  padding: 6px 9px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 15px;
+  letter-spacing: 0;
+  pointer-events: none;
+  white-space: normal;
+  animation: shelfValueTooltipIn 150ms ease both;
+}
+
+@keyframes shelfValueTooltipIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tooltip {
+    animation: none;
+  }
+}

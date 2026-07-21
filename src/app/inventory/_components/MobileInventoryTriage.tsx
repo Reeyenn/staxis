@@ -15,6 +15,7 @@ import {
 import type { DisplayItem } from './types';
 import { partitionMobileInventory } from './mobile-inventory-triage';
 import { SetAsideTag } from './SetAsideTag';
+import { ShelfValueWarning } from './ShelfValueWarning';
 import styles from './MobileInventoryTriage.module.css';
 
 export interface MobileInventoryTriageProps {
@@ -184,13 +185,17 @@ export function MobileInventoryTriage({
           {canViewFinancials && activeTab ? (
             <MobileStat
               label={compactTabLabel(activeTab, lang)}
-              value={`${activeTabValueComplete ? '' : '≥ '}${fmtMoney(activeTabValue, { digits: 0 })}`}
+              value={fmtMoney(activeTabValue, { digits: 0 })}
+              warning={activeTabValueComplete ? undefined : tx.shelfValueWarning}
+              warningLabel={tx.shelfCostsMissing}
             />
           ) : null}
           {canViewFinancials ? (
             <MobileStat
               label={tx.onTheShelf}
-              value={`${shelfValueComplete ? '' : '≥ '}${fmtMoney(shelfValue, { digits: 0 })}`}
+              value={fmtMoney(shelfValue, { digits: 0 })}
+              warning={shelfValueComplete ? undefined : tx.shelfValueWarning}
+              warningLabel={tx.shelfCostsMissing}
             />
           ) : null}
         </div>
@@ -381,15 +386,22 @@ function MobileStat({
   label,
   value,
   critical = false,
+  warning,
+  warningLabel,
 }: {
   label: string;
   value: string;
   critical?: boolean;
+  warning?: string;
+  warningLabel?: string;
 }) {
   return (
     <div className={styles.stat}>
       <span className={styles.statLabel}>{label}</span>
-      <span className={critical ? styles.statValueCritical : styles.statValue}>{value}</span>
+      <span className={critical ? styles.statValueCritical : styles.statValue}>
+        {value}
+        {warning && warningLabel ? <ShelfValueWarning label={warningLabel} message={warning} /> : null}
+      </span>
     </div>
   );
 }

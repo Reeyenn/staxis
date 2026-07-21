@@ -91,7 +91,6 @@ function bpStrings(lang: Lang) {
       saving: 'Saving…',
       save: 'Save budgets',
       chooseMethodTitle: 'Choose how to budget',
-      chooseMethodSub: 'Use one monthly limit for all inventory, or set separate limits by category and custom section.',
       totalTitle: 'One total budget',
       totalSub: 'A single number for the whole inventory.',
       totalCovers: 'This one budget covers every category — housekeeping, maintenance, food & beverage, and any custom sections.',
@@ -128,6 +127,8 @@ function bpStrings(lang: Lang) {
       noBudget: (used: string) => `${used} used · no budget set`,
       thisMonthActual: 'Actual inventory used',
       actualPending: 'Budget check pending until month close.',
+      actualPendingShort: 'Pending',
+      actualPendingReason: 'Usage is calculated when the month closes.',
       partialActual: 'This first tracking period is partial, so it is not compared with a full-month budget.',
       unallocatedActual: 'Only the whole-inventory actual is available because purchases were entered as one monthly total.',
       comparisonUnavailable: 'Budget comparison unavailable — this older close did not save a budget snapshot.',
@@ -138,13 +139,12 @@ function bpStrings(lang: Lang) {
       trackingNotStarted: 'Start monthly tracking to calculate actual usage.',
       totalBudget: 'Total budget',
       summaryOf: (cap: string) => `of ${cap}`,
-      noBudgetsYet: 'No budgets set for this month. Add limits above to compare with closed usage.',
+      noBudgetsYet: 'No budget set.',
       overBanner: (names: string) => `Over budget based on closed usage: ${names}.`,
       nearBanner: (names: string) => `Close to budget based on closed usage: ${names}.`,
       planningNote: (m: string, y: number) => `Planning ${m} ${y} — actual usage appears after that month closes.`,
       reviewCurrentTitle: 'Review this month',
       reviewSelectedTitle: 'Review the selected month',
-      reviewCurrentSub: 'Budget status uses inventory actually consumed, never purchases or shelf value.',
       reviewSelectedSub: 'Closed months compare actual usage with the budget limit you selected.',
       // History timeline
       compareMonthsTitle: 'Compare recent months',
@@ -164,7 +164,6 @@ function bpStrings(lang: Lang) {
       saving: 'Guardando…',
       save: 'Guardar presupuestos',
       chooseMethodTitle: 'Elige cómo presupuestar',
-      chooseMethodSub: 'Usa un límite mensual para todo el inventario o fija límites separados por categoría y sección personalizada.',
       totalTitle: 'Un presupuesto total',
       totalSub: 'Un solo número para todo el inventario.',
       totalCovers: 'Este presupuesto cubre todas las categorías: limpieza, mantenimiento, alimentos y bebidas, además de cualquier sección personalizada.',
@@ -201,6 +200,8 @@ function bpStrings(lang: Lang) {
       noBudget: (used: string) => `${used} usado · sin presupuesto`,
       thisMonthActual: 'Inventario realmente usado',
       actualPending: 'La revisión del presupuesto queda pendiente hasta el cierre mensual.',
+      actualPendingShort: 'Pendiente',
+      actualPendingReason: 'El uso se calcula al cerrar el mes.',
       partialActual: 'Este primer período es parcial y no se compara con un presupuesto mensual completo.',
       unallocatedActual: 'Solo está disponible el total porque las compras se ingresaron como un monto mensual único.',
       comparisonUnavailable: 'La comparación no está disponible porque este cierre anterior no guardó una copia del presupuesto.',
@@ -211,13 +212,12 @@ function bpStrings(lang: Lang) {
       trackingNotStarted: 'Inicia el seguimiento mensual para calcular el uso real.',
       totalBudget: 'Presupuesto total',
       summaryOf: (cap: string) => `de ${cap}`,
-      noBudgetsYet: 'Sin presupuestos este mes. Agrega límites arriba para compararlos con el uso cerrado.',
+      noBudgetsYet: 'Sin presupuesto.',
       overBanner: (names: string) => `Sobre presupuesto según el uso cerrado: ${names}.`,
       nearBanner: (names: string) => `Cerca del límite según el uso cerrado: ${names}.`,
       planningNote: (m: string, y: number) => `Planeando ${m} ${y} — el uso real aparece después del cierre.`,
       reviewCurrentTitle: 'Revisa este mes',
       reviewSelectedTitle: 'Revisa el mes seleccionado',
-      reviewCurrentSub: 'El estado usa inventario realmente consumido, nunca compras ni valor en estante.',
       reviewSelectedSub: 'Los meses cerrados comparan el uso real con el límite seleccionado.',
       // History timeline
       compareMonthsTitle: 'Compara los meses recientes',
@@ -651,12 +651,6 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
         {alerts.over.length === 0 && alerts.near.length > 0 && (
           <div style={bannerStyle(T.caramel)}>{bp.nearBanner(alerts.near.join(', '))}</div>
         )}
-        {alerts.over.length === 0 && alerts.near.length === 0 && totalActual.state === 'pending' && isCurrentMonth && (
-          <div role="status" style={bannerStyle(T.ink2)}>
-            {selectedPeriod ? bp.actualPending : bp.trackingNotStarted}
-            {selectedPurchaseCopy ? ` ${selectedPurchaseCopy}.` : ''}
-          </div>
-        )}
         {alerts.over.length === 0 && alerts.near.length === 0 && totalActual.state === 'partial' && (
           <div role="status" style={bannerStyle(T.caramel)}>{bp.partialActual}</div>
         )}
@@ -671,7 +665,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
         )}
 
         {/* Mode: one total number, or per-section. */}
-        <BudgetSection title={bp.chooseMethodTitle} description={bp.chooseMethodSub}>
+        <BudgetSection title={bp.chooseMethodTitle}>
           <div style={{ display: 'flex', gap: 8 }}>
             <ModeBtn active={mode === 'total'} onClick={() => setMode('total')} title={bp.totalTitle} sub={bp.totalSub} />
             <ModeBtn active={mode === 'sections'} onClick={() => setMode('sections')} title={bp.sectionsTitle} sub={bp.sectionsSub} />
@@ -851,7 +845,7 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
           title={isCurrentMonth ? bp.reviewCurrentTitle : bp.reviewSelectedTitle}
           description={selectedComparisonUnavailable
             ? bp.comparisonUnavailable
-            : isCurrentMonth ? bp.reviewCurrentSub : bp.reviewSelectedSub}
+            : isCurrentMonth ? undefined : bp.reviewSelectedSub}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <div>
@@ -879,11 +873,11 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
                       ? bp.partialActual
                       : totalActual.state === 'unallocated'
                         ? bp.unallocatedActual
-                        : bp.actualPending}
+                        : bp.actualPendingShort}
                   </div>
-                  {selectedPurchaseCopy && (
+                  {totalActual.state === 'pending' && (
                     <div style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink2, marginTop: 4 }}>
-                      {selectedPurchaseCopy}
+                      {bp.actualPendingReason}
                     </div>
                   )}
                 </div>
@@ -939,6 +933,13 @@ export function BudgetsPanel({ lang, open, onClose, budgets, sections, mode: sav
             </div>
           )}
         </BudgetSection>
+
+        {alerts.over.length === 0 && alerts.near.length === 0 && totalActual.state === 'pending' && isCurrentMonth && (
+          <div data-budget-pending-notice="bottom" role="status" style={bannerStyle(T.ink2)}>
+            {selectedPeriod ? bp.actualPending : bp.trackingNotStarted}
+            {selectedPurchaseCopy ? ` ${selectedPurchaseCopy}.` : ''}
+          </div>
+        )}
       </div>
     </Overlay>
   );

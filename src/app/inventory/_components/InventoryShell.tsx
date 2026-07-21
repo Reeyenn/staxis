@@ -73,6 +73,7 @@ import type { InvTab } from './InventoryTabs';
 import { LedgerTable } from './LedgerTable';
 import { StockList } from './StockList';
 import { MobileInventoryTriage } from './MobileInventoryTriage';
+import { ShelfValueWarning } from './ShelfValueWarning';
 import mobileStyles from './MobileInventoryTriage.module.css';
 import { inventoryOverlayAfterCountSave } from './inventory-count-navigation';
 import {
@@ -1508,14 +1509,11 @@ export function InventoryShell() {
               {tabStat && (
                 <div ref={tabStatInnerRef} style={{ minWidth: 'max-content' }}>
                   <HStat eyebrow={tabStat.label}>
-                    <span
-                      title={activeTabValueComplete ? undefined : tx.shelfCostsMissing}
-                      aria-label={activeTabValueComplete
-                        ? fmtMoney(tabStat.value, { digits: 0 })
-                        : `${fmtMoney(tabStat.value, { digits: 0 })} minimum; ${tx.shelfCostsMissing}`}
-                    >
-                      {!activeTabValueComplete && <span aria-hidden>≥ </span>}
+                    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
                       <CountUp value={tabStat.value} format={(n) => fmtMoney(n, { digits: 0 })} />
+                      {!activeTabValueComplete && (
+                        <ShelfValueWarning label={tx.shelfCostsMissing} message={tx.shelfValueWarning} />
+                      )}
                     </span>
                   </HStat>
                 </div>
@@ -1525,14 +1523,11 @@ export function InventoryShell() {
           {/* "On the shelf" is an inventory dollar valuation — money-capability only. */}
           {canViewFinancials && (
             <HStat eyebrow={tx.onTheShelf}>
-              <span
-                title={shelfValueComplete ? undefined : tx.shelfCostsMissing}
-                aria-label={shelfValueComplete
-                  ? fmtMoney(shelfValue, { digits: 0 })
-                  : `${fmtMoney(shelfValue, { digits: 0 })} minimum; ${tx.shelfCostsMissing}`}
-              >
-                {!shelfValueComplete && <span aria-hidden>≥ </span>}
+              <span style={{ display: 'inline-flex', alignItems: 'center' }}>
                 <CountUp value={shelfValue} format={(n) => fmtMoney(n, { digits: 0 })} />
+                {!shelfValueComplete && (
+                  <ShelfValueWarning label={tx.shelfCostsMissing} message={tx.shelfValueWarning} />
+                )}
               </span>
             </HStat>
           )}
