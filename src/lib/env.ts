@@ -180,12 +180,10 @@ const ServerSchema = z.object({
   // dev/test boot without it and lets test cases exercise the
   // "unset → reject" branch directly.
   CRON_SECRET: z.string().optional(),
-  LOCAL_SYNC_SECRET: z.string().optional(),
   // Bearer secret for /api/claude-heartbeat. Distinct from CRON_SECRET so
   // this dev-tool channel can be rotated independently of cron auth.
   // Local Claude Code PostToolUse/Stop hooks attach this from tokens.env.
   HEARTBEAT_SECRET: z.string().optional(),
-  GITHUB_WEBHOOK_SECRET: z.string().optional(),
 
   // Dev/local escape hatch for promoteMap's tamper-seal guard: when set to
   // '1', a NULL-signature (unsigned) knowledge file may still be promoted to

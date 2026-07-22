@@ -21,7 +21,7 @@
    both light and dark studio surfaces — the surface decides text color.
    ─────────────────────────────────────────────────────────────────────── */
 
-import React, { useEffect, useLayoutEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect } from 'react';
 
 // ── Font stacks (mirror studio.css --serif/--sans/--mono) ───────────────
 export const FONT_SERIF = 'var(--serif)';

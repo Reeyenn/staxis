@@ -20,10 +20,9 @@
  * Auth: gated on HEARTBEAT_SECRET (2026-05-20 security audit M2).
  * The local hooks source tokens.env and attach the bearer header; see
  * ~/.claude/hooks/heartbeat.sh and ~/.claude/hooks/stop.sh. Distinct
- * env var from CRON_SECRET and LOCAL_SYNC_SECRET so this dev-tool
- * channel can be rotated independently. Fail-closed in production
- * (refuses if env var unset); pass-through in dev so local sessions
- * without the secret still work.
+ * env var from CRON_SECRET so this dev-tool channel can be rotated
+ * independently. Fail-closed in production (refuses if env var unset);
+ * pass-through in dev so local sessions without the secret still work.
  */
 
 import { NextRequest, NextResponse } from 'next/server';

@@ -66,15 +66,15 @@ const KNOWN_GUARDS = [
   // accept bearer tokens directly instead of going through requireSession).
   'supabaseAdmin.auth.getUser',
   // Webhook signature verification — each of these IS the route's auth.
-  // External webhook helpers (Stripe, Twilio, ElevenLabs, GitHub, Sentry).
+  // External webhook helpers (Stripe, Twilio, ElevenLabs, Sentry).
   'verifyWebhookSignature', // Stripe (in src/lib/stripe.ts)
   'verifyTwilioRequest',
   'requireTwilioSignature',
   'verifyStripeSignature',
   'verifyElevenLabsSignature',
   'validateRequest', // twilio.validateRequest()
-  // Inline HMAC verification — github-webhook, sentry-webhook, magic-link
-  // consume paths construct their own HMAC + timingSafeEqual. The pair of
+  // Inline HMAC verification — sentry-webhook and magic-link consume paths
+  // construct their own HMAC + timingSafeEqual. The pair of
   // these in a file is a strong signal that the route is doing signature
   // auth itself rather than skipping it.
   'createHmac',
