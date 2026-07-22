@@ -98,6 +98,14 @@ describe('offline action queue', () => {
     assert.match(source, /JSON\.stringify\(\{ \.\.\.body, actionId \}\)/);
   });
 
+  test('a drain trigger that arrives mid-drain schedules another pass', () => {
+    const hookPath = fileURLToPath(new URL('../offline-sync/use-offline-sync.ts', import.meta.url));
+    const source = readFileSync(hookPath, 'utf8');
+    assert.match(source, /const drainRequestSeqRef = useRef\(0\)/);
+    assert.match(source, /drainRequestSeqRef\.current \+= 1[\s\S]*if \(drainingRef\.current\) return/);
+    assert.match(source, /requestSeqAtStart !== drainRequestSeqRef\.current\) continue/);
+  });
+
   test('drainQueue replays queued actions and removes on 200', async () => {
     await enqueueAction({
       endpoint: '/api/housekeeper/add-note',

@@ -51,6 +51,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     headers: gate.headers,
   });
   if (!roomR.ok) return roomR.response;
+  const completedAt = roomR.room.completed_at;
 
   const w = await writeWorkflowFields(gate.pid, body.roomId, {
     status: 'dirty',
@@ -79,7 +80,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // Discard the latest non-discarded cleaning_events row for this room so a
+  // Discard the matching non-discarded cleaning_events row for this room so a
   // re-clean doesn't double-count. Mirrors the legacy room-action 'reset' path
   // the redesigned page replaced: complete-clean already wrote a 'recorded'
   // event, and without discarding it a subsequent re-clean inserts a SECOND
@@ -87,23 +88,32 @@ export async function POST(req: NextRequest): Promise<Response> {
   // the supply-ML training set. Non-fatal: the assignment reset already landed.
   const roomDate = roomR.room.date;
   const roomNumber = roomR.room.number;
-  if (roomDate && roomNumber) {
-    const { data: latest } = await supabaseAdmin
+  // complete-clean writes the same completed_at timestamp to the assignment
+  // and event, so it is an exact idempotency anchor. Selecting merely the
+  // latest event lets a delayed duplicate reset discard an older legitimate
+  // re-clean after the first reset has already handled its own event.
+  if (roomDate && roomNumber && completedAt) {
+    const { data: matching, error: lookupErr } = await supabaseAdmin
       .from('cleaning_events')
       .select('id')
       .eq('property_id', gate.pid)
       .eq('date', roomDate)
       .eq('room_number', roomNumber)
       .eq('staff_id', gate.staffId)
+      .eq('completed_at', completedAt)
       .in('status', ['recorded', 'flagged'])
-      .order('completed_at', { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (latest?.id) {
+    if (lookupErr) {
+      log.error('reset-clean: cleaning_events lookup failed (non-fatal)', {
+        requestId: gate.requestId, pid: gate.pid, staffId: gate.staffId, err: lookupErr,
+      });
+    } else if (matching?.id) {
       const { error: discardErr } = await supabaseAdmin
         .from('cleaning_events')
         .update({ status: 'discarded', flag_reason: 'reset_by_user' })
-        .eq('id', latest.id as string);
+        .eq('id', matching.id as string)
+        .eq('property_id', gate.pid);
       if (discardErr) {
         log.error('reset-clean: cleaning_events discard failed (non-fatal)', {
           requestId: gate.requestId, pid: gate.pid, staffId: gate.staffId, err: discardErr,

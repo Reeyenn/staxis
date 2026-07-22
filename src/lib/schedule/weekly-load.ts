@@ -62,15 +62,19 @@ export async function computeWeeklyLoadByStaff(
   targetDate: string,
 ): Promise<Map<string, WeeklyLoad>> {
   const windowStart = addDaysInTz(targetDate, -6);
-  const { data, error } = await supabaseAdmin
-    .from('scheduled_shifts')
-    .select('staff_id, shift_date, start_time, end_time')
-    .eq('property_id', propertyId)
-    .eq('kind', 'shift')
-    .neq('status', 'declined')
-    .not('staff_id', 'is', null)
-    .gte('shift_date', windowStart)
-    .lte('shift_date', targetDate);
-  if (error || !data) return new Map();
-  return aggregateWeeklyLoad(data as WeeklyLoadShiftRow[]);
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('scheduled_shifts')
+      .select('staff_id, shift_date, start_time, end_time')
+      .eq('property_id', propertyId)
+      .eq('kind', 'shift')
+      .neq('status', 'declined')
+      .not('staff_id', 'is', null)
+      .gte('shift_date', windowStart)
+      .lte('shift_date', targetDate);
+    if (error || !data) return new Map();
+    return aggregateWeeklyLoad(data as WeeklyLoadShiftRow[]);
+  } catch {
+    return new Map();
+  }
 }

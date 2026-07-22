@@ -87,15 +87,15 @@ def compute_same_dow_baseline_errors(
     window (rows there have mutable actual_value).
 
     The naive predictor at date D is the median of the last 4 same-DOW
-    actuals from cleaning_minutes_per_day_view.total_approved_minutes
-    BEFORE date D. We compute the naive prediction PER DATE because
-    same-DOW for D-7 may include different dates than same-DOW for D.
+    actuals BEFORE date D. Demand uses the full-property totals from
+    cleaning_minutes_per_day_view; supply uses the same per-predicted-pair
+    population as its scored prediction_log rows.
 
     For supply layer, we aggregate the per-(room, staff) prediction_log
     rows to a per-(property, date) total before pairing. This is the
-    same grain as the demand layer and the cleaning_minutes_per_day_view
-    actuals — the test then says "does the day-aggregate prediction
-    beat naive day-aggregate baseline?"
+    same daily aggregate grain as demand, while retaining supply's narrower
+    population — the test then asks whether the day-aggregate prediction
+    beats its matching naive day-aggregate baseline.
 
     Pure read. Used by compute_rolling_mae_vs_baseline.
     """

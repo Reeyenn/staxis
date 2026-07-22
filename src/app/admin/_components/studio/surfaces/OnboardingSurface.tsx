@@ -964,7 +964,15 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
     try {
       const res = await fetchWithAuth('/api/admin/coverage/bulk-assign', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pmsFamily: pms.pmsType }) });
       const json = await res.json();
-      if (json.ok) { const n = json.data?.appliedCount ?? 0; setMsg(`Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}.`); await loadHotels(); void onRepaired(); }
+      if (json.ok) {
+        const n = json.data?.appliedCount ?? 0;
+        const failed = json.data?.failedCount ?? 0;
+        setMsg(failed > 0
+          ? `Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}; ${failed} failed to start. Retry or check Live Hotels.`
+          : `Applied to ${n} ${n === 1 ? 'hotel' : 'hotels'}.`);
+        await loadHotels();
+        void onRepaired();
+      }
       else setMsg(`Failed: ${json.error ?? 'unknown'}`);
     } catch (err) { setMsg(`Network error: ${(err as Error).message}`); }
     finally { setActionBusy(null); }

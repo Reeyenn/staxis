@@ -337,6 +337,10 @@ export function subscribeTable<T>(
   let requestSeq = 0;
   let lastPublishedSeq = -1;
   let currentRows: readonly T[] = [];
+  // Counts relevant realtime events independently of fetch/reducer ordering.
+  // This lets the initial-load gate detect that a fetch which began before an
+  // event may be a stale snapshot even when it is still the newest fetch.
+  let observedChangeSeq = 0;
   // The reducer (applyPayload) must not run until the initial snapshot has
   // landed: a change event that arrives before the first doFetch resolves would
   // apply the reducer to an empty currentRows, publish that, and bump
@@ -352,12 +356,17 @@ export function subscribeTable<T>(
   const fire = () => {
     if (!active) return;
     const myReq = ++requestSeq;
+    const changeSeqAtStart = observedChangeSeq;
     doFetch()
       .then(rows => {
         if (!active) return;
         if (myReq <= lastPublishedSeq) return;  // a newer fetch already published
         lastPublishedSeq = myReq;
-        initialLoaded = true;  // a full snapshot has now landed → reducer may apply
+        // Do not enable payload reduction if a relevant event arrived while
+        // this fetch was in flight. Its debounced follow-up fetch must land
+        // first; otherwise a second payload could reduce against this stale
+        // snapshot and cancel the pending recovery fetch.
+        if (!initialLoaded && observedChangeSeq === changeSeqAtStart) initialLoaded = true;
         publish(rows);
       })
       .catch(err => {
@@ -401,6 +410,7 @@ export function subscribeTable<T>(
   const onChange = (payload: PostgresChangesPayload) => {
     if (!active) return;
     if (shouldRefetch && !shouldRefetch(payload)) return;
+    observedChangeSeq += 1;
     // Only apply the reducer once the initial snapshot has landed; before that,
     // fall back to the debounced refetch (which produces a full snapshot and
     // can't be clobbered by the guard). See the initialLoaded declaration.

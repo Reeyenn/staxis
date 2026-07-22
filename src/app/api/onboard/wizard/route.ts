@@ -46,7 +46,7 @@ import {
   type OnboardingState,
 } from '@/lib/onboarding/state';
 import { parseSectionFlags, normalizeSectionFlags } from '@/lib/sections/registry';
-import { validPropertyTimezone } from '@/lib/property-timezone';
+import { validatePropertyUpdateField } from '@/lib/onboarding/property-update-validation';
 
 /**
  * Extract a stable IP for rate-limit keying. Vercel sets `x-forwarded-for`;
@@ -277,59 +277,6 @@ const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
   'region', 'climate_zone', 'size_tier', 'services_enabled',
   'enabled_sections',
 ]);
-
-/**
- * Validate/normalize a single allow-listed property field from the wizard.
- * Being on the allow-list only means the client MAY set the column — it does
- * NOT mean the value is trustworthy. Previously every field except
- * enabled_sections was written straight through, so a bad timezone (breaks all
- * the property-local date math), a negative/NaN total_rooms, or a malformed
- * services_enabled map persisted directly into the properties row. Mirror the
- * admin property-create validators.
- */
-function validatePropertyUpdateField(
-  key: string,
-  value: unknown,
-): { ok: true; value: unknown } | { ok: false; error: string } {
-  switch (key) {
-    case 'total_rooms': {
-      if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 2000) {
-        return { ok: false, error: 'total_rooms must be an integer between 1 and 2000' };
-      }
-      return { ok: true, value };
-    }
-    case 'timezone': {
-      const tz = validPropertyTimezone(typeof value === 'string' ? value : null);
-      if (!tz) return { ok: false, error: 'timezone must be a valid IANA name' };
-      return { ok: true, value: tz };
-    }
-    case 'services_enabled': {
-      if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-        return { ok: false, error: 'services_enabled must be an object of booleans' };
-      }
-      const entries = Object.entries(value as Record<string, unknown>);
-      if (entries.length > 50 || entries.some(([, v]) => typeof v !== 'boolean')) {
-        return { ok: false, error: 'services_enabled must be an object of booleans' };
-      }
-      return { ok: true, value };
-    }
-    // Free-text columns — enforce type + a sane length cap only.
-    case 'name':
-    case 'brand':
-    case 'property_kind':
-    case 'region':
-    case 'climate_zone':
-    case 'size_tier': {
-      if (typeof value !== 'string' || value.length > 120) {
-        return { ok: false, error: `${key} must be a string up to 120 characters` };
-      }
-      return { ok: true, value: value.trim() };
-    }
-    default:
-      // enabled_sections is validated separately; nothing else is allow-listed.
-      return { ok: true, value };
-  }
-}
 
 // Back-navigation allow-list. Clearing one of these completion markers makes
 // deriveCurrentStep return the step that produced it, so the operator walks

@@ -61,6 +61,11 @@ export function useOfflineSync() {
     draining: false,
   }));
   const drainingRef = useRef(false);
+  // Every trigger records a generation, including triggers that arrive while
+  // a drain is already running. The active runner loops when the generation
+  // changes so an action enqueued mid-drain cannot be stranded until the next
+  // remount or browser online event.
+  const drainRequestSeqRef = useRef(0);
 
   // Sync queueLength when the component mounts.
   useEffect(() => {
@@ -79,22 +84,33 @@ export function useOfflineSync() {
   }, []);
 
   const triggerDrain = useCallback(async () => {
+    drainRequestSeqRef.current += 1;
     if (drainingRef.current) return;
     drainingRef.current = true;
     setState((s) => ({ ...s, draining: true }));
-    try {
-      const result = await drainQueue();
-      const newLen = await getQueueLength();
+    while (true) {
+      const requestSeqAtStart = drainRequestSeqRef.current;
+      let result: DrainProgress | null = null;
+      let newLen: number | null = null;
+      try {
+        result = await drainQueue();
+        newLen = await getQueueLength();
+      } catch {
+        // Best-effort. A newer trigger still causes another pass below.
+      }
+      if (requestSeqAtStart !== drainRequestSeqRef.current) continue;
+
+      // No await between this equality check and releasing the runner: a new
+      // trigger can therefore either change the generation above or observe
+      // drainingRef=false and become the next runner; neither path is lost.
+      drainingRef.current = false;
       setState((s) => ({
         ...s,
-        lastDrain: result,
-        queueLength: newLen,
+        lastDrain: result ?? s.lastDrain,
+        queueLength: newLen ?? s.queueLength,
         draining: false,
       }));
-    } catch {
-      setState((s) => ({ ...s, draining: false }));
-    } finally {
-      drainingRef.current = false;
+      return;
     }
   }, []);
 

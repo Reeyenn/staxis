@@ -71,6 +71,39 @@ def test_same_dow_baseline_returns_observation_for_each_mature_date():
         assert ne >= 0
 
 
+def test_supply_baseline_uses_prediction_log_actual_population():
+    """Supply's active and naive errors must score the same predicted pairs."""
+    today = date.today()
+    target = today - timedelta(days=10)
+    sql_calls = []
+
+    def _execute_sql(sql):
+        sql_calls.append(sql)
+        if "total_approved_minutes" in sql:
+            return [
+                {
+                    "date": (target - timedelta(weeks=k)).isoformat(),
+                    "total_approved_minutes": 90.0 + k,
+                }
+                for k in range(1, 5)
+            ]
+        return [{
+            "date": target.isoformat(),
+            "predicted_value": 100.0,
+            "actual_value": 120.0,
+        }]
+
+    fake = make_fake_supabase(execute_sql=_execute_sql)
+    with patch("src.monitoring.shadow_mae.get_supabase_client", return_value=fake):
+        obs = compute_same_dow_baseline_errors(PROPERTY_ID, "supply")
+
+    assert len(obs) == 1
+    assert len(sql_calls) == 2
+    assert all("from prediction_log" in sql for sql in sql_calls)
+    assert all("cleaning_minutes_per_day_view" not in sql for sql in sql_calls)
+    assert "layer = 'supply'" in sql_calls[1]
+
+
 def test_compute_rolling_mae_returns_none_when_under_min_paired_days():
     """Fewer than auto_rollback_min_paired_days mature observations
     → returns None (test underpowered).

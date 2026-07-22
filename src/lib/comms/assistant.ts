@@ -60,6 +60,40 @@ function assertAssistantCanContinue(deadlineAt: number, signal?: AbortSignal): v
 const ASSISTANT_TOOL_START_RESERVE_MS = 2_000;
 const ASSISTANT_KNOWLEDGE_SEARCH_START_RESERVE_MS = 31_000;
 
+type AssistantFallbackKind = 'unavailable' | 'exhausted' | 'error';
+
+const ASSISTANT_FALLBACKS: Record<CommsLang, Record<AssistantFallbackKind, string>> = {
+  en: {
+    unavailable: 'The assistant is unavailable right now. Please try again later.',
+    exhausted: 'I did what I could — check the chat for the result.',
+    error: 'Sorry, I hit an error. Please try again.',
+  },
+  es: {
+    unavailable: 'El asistente no está disponible en este momento. Inténtalo de nuevo más tarde.',
+    exhausted: 'Hice lo que pude; revisa el chat para ver el resultado.',
+    error: 'Lo siento, ocurrió un error. Inténtalo de nuevo.',
+  },
+  ht: {
+    unavailable: 'Asistan an pa disponib kounye a. Tanpri eseye ankò pita.',
+    exhausted: 'Mwen fè sa mwen te kapab; tcheke chat la pou rezilta a.',
+    error: 'Padon, te gen yon erè. Tanpri eseye ankò.',
+  },
+  tl: {
+    unavailable: 'Hindi available ang assistant ngayon. Pakisubukang muli mamaya.',
+    exhausted: 'Ginawa ko ang kaya ko—tingnan ang chat para sa resulta.',
+    error: 'Paumanhin, nagkaroon ng error. Pakisubukang muli.',
+  },
+  vi: {
+    unavailable: 'Trợ lý hiện không khả dụng. Vui lòng thử lại sau.',
+    exhausted: 'Tôi đã làm những gì có thể; hãy xem kết quả trong cuộc trò chuyện.',
+    error: 'Xin lỗi, đã xảy ra lỗi. Vui lòng thử lại.',
+  },
+};
+
+export function assistantFallback(lang: CommsLang | undefined, kind: AssistantFallbackKind): string {
+  return ASSISTANT_FALLBACKS[lang ?? 'en'][kind];
+}
+
 function assertAssistantHasToolStartReserve(toolName: string, deadlineAt: number): void {
   const reserveMs = toolName === 'search_knowledge'
     ? ASSISTANT_KNOWLEDGE_SEARCH_START_RESERVE_MS
@@ -472,7 +506,7 @@ export async function runStaxisAssistant(args: {
   ai?: AiCallOptions;
 }): Promise<AssistantResult> {
   const c = anthropic();
-  if (!c) return { answer: 'The assistant is unavailable right now. Please try again later.', actions: [] };
+  if (!c) return { answer: assistantFallback(args.lang, 'unavailable'), actions: [] };
 
   // Fail CLOSED on role (see resolveAssistantRole): a missing/invalid role can
   // never widen access to manager-only Knowledge.
@@ -603,10 +637,10 @@ export async function runStaxisAssistant(args: {
       }
       messages.push({ role: 'user', content: results });
     }
-    return { answer: 'I did what I could — check the chat for the result.', actions };
+    return { answer: assistantFallback(args.lang, 'exhausted'), actions };
   } catch (err) {
     log.warn('comms.runStaxisAssistant failed', { requestId: args.requestId, err: err instanceof Error ? err.message : String(err) });
-    return { answer: 'Sorry, I hit an error. Please try again.', actions };
+    return { answer: assistantFallback(args.lang, 'error'), actions };
   } finally {
     if (usageMerged) args.ai?.onUsage?.(usageMerged);
   }

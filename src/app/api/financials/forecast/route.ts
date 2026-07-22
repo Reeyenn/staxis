@@ -16,7 +16,6 @@ import { requireFinanceAccess } from '@/lib/financials/api-gate';
 import { ok, err } from '@/lib/api-response';
 import {
   isMonthKey,
-  monthKey,
   daysInMonth as daysInMonthOf,
   daysElapsedInMonth,
   priorMonthKey,
@@ -27,6 +26,7 @@ import { forecastDepartmentOverspend } from '@/lib/financials/forecast';
 import { detectDepartmentSpikes } from '@/lib/financials/anomaly';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { todayInTz } from '@/lib/forecast';
+import { propertyTimezoneOrUTC } from '@/lib/property-timezone';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,9 +35,6 @@ export async function GET(req: NextRequest): Promise<Response> {
   const pid = req.nextUrl.searchParams.get('pid');
   const gate = await requireFinanceAccess(req, pid);
   if (!gate.ok) return gate.response;
-
-  const monthParam = req.nextUrl.searchParams.get('month');
-  const month = monthParam && isMonthKey(monthParam) ? monthParam : monthKey(new Date());
 
   try {
     // Pace the projection against the property's LOCAL day-of-month, not UTC.
@@ -50,8 +47,10 @@ export async function GET(req: NextRequest): Promise<Response> {
       .select('timezone')
       .eq('id', gate.pid)
       .maybeSingle<{ timezone: string | null }>();
-    const timezone = propRow?.timezone || 'America/Chicago';
+    const timezone = propertyTimezoneOrUTC(propRow?.timezone);
     const todayISO = todayInTz(timezone);
+    const monthParam = req.nextUrl.searchParams.get('month');
+    const month = monthParam && isMonthKey(monthParam) ? monthParam : todayISO.slice(0, 7);
     // Anchor at UTC midnight of the LOCAL date so daysElapsedInMonth's
     // getUTCDate()/monthKey() read the property-local day-of-month.
     const localAnchor = new Date(`${todayISO}T00:00:00Z`);

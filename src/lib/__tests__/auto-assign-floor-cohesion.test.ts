@@ -32,7 +32,8 @@ function makeRoom(num: string, type: 'checkout' | 'stayover', stayoverDay?: numb
 }
 
 function floorOf(num: string): string {
-  return num.length >= 3 ? num[0] : '1';
+  const digits = num.replace(/[^0-9]/g, '');
+  return digits.length >= 3 ? String(parseInt(digits.slice(0, -2), 10)) : '1';
 }
 
 function summarize(
@@ -75,6 +76,22 @@ describe('autoAssignRooms — floor cohesion (2026-04-30 redesign)', () => {
     assert.equal(Object.keys(floorsByStaff).length, 2);
     for (const sid of Object.keys(floorsByStaff)) {
       assert.equal(floorsByStaff[sid].size, 1, `staff ${sid} should own one floor`);
+    }
+  });
+
+  test('keeps four-digit high-rise room numbers on their physical floors', () => {
+    const rooms = [
+      makeRoom('1001', 'stayover'), makeRoom('1002', 'stayover'),
+      makeRoom('1003', 'stayover'), makeRoom('1004', 'stayover'),
+      makeRoom('1101', 'stayover'), makeRoom('1102', 'stayover'),
+      makeRoom('1103', 'stayover'), makeRoom('1104', 'stayover'),
+    ];
+    const out = autoAssignRooms(rooms, [makeStaff('a'), makeStaff('b')]);
+    const { floorsByStaff } = summarize(out, rooms);
+
+    assert.equal(Object.keys(floorsByStaff).length, 2, 'both housekeepers should receive a floor');
+    for (const floors of Object.values(floorsByStaff)) {
+      assert.equal(floors.size, 1, 'floors 10 and 11 must not collapse into one bucket');
     }
   });
 
