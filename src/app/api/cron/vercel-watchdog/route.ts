@@ -9,25 +9,24 @@
  *   thorough nightly-sweep style watcher.
  *
  *   THIS watchdog runs every 5 minutes. It's the fast-loop alarm. Its
- *   job is to catch HARD failures (any check 'fail') within 15 min and
- *   fire SMS — same SLA the Railway watchdog had.
+ *   job is to catch HARD failures (any check 'fail') within 15 min.
  *
- * Loss of cross-platform redundancy (acknowledged in Plan v4):
- *   The Railway watchdog ran in a different cloud than Vercel, so a
- *   Vercel outage couldn't silence it. This new cron runs ON Vercel, so
- *   a Vercel control-plane outage would silence it too. We accept this:
- *   Railway is being deleted anyway, GitHub Actions scraper-health
- *   continues to provide one external watcher, and adding a third
- *   external monitor (Uptime Robot, Better Stack, etc.) is the right
- *   long-term solution if this matters.
+ * How a red watchdog reaches a human (SMS was removed with Twilio, 2026-07):
+ *   1. Sentry — this route calls captureMessage(..., 'error'), raising an
+ *      ERROR-level Sentry event. A Sentry issue-alert rule (email/push on
+ *      error) must be configured for it to actually notify anyone.
+ *   2. Vercel — the route also returns HTTP 503 on red (see below), so
+ *      Vercel logs the cron invocation as FAILED even if Sentry is
+ *      unconfigured or down. That's the backstop channel.
+ *
+ * Known gap (acknowledged): this cron runs ON Vercel, so a Vercel
+ *   control-plane outage silences it. The real 2am alarm is a third
+ *   monitor that pings /api/admin/doctor from OUTSIDE Vercel (Uptime
+ *   Robot / Better Stack / Cronitor) → SMS/push. Set that up.
  *
  * De-duplication: tracked via Sentry's event fingerprinting (same
  * failing checks → same fingerprint → grouped). No need to maintain a
  * consecutive-fail counter in the DB.
- *
- * Business-hours-only SMS escalation: matches the Railway watchdog
- * convention. After-hours failures land in Sentry email; SMS waits for
- * 6am Central.
  *
  * Auth: CRON_SECRET bearer (Vercel auto-attaches).
  */
@@ -43,23 +42,6 @@ import { runAllChecks } from '@/app/api/admin/doctor/route';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
-
-/** Hours-of-day (Central) during which a fail-state SMS fires. Outside
- *  this window, failures still go to Sentry (which sends email) but
- *  don't wake Reeyen at 3am. Matches old vercel-watchdog.js policy. */
-const BUSINESS_HOURS_START = 6;
-const BUSINESS_HOURS_END = 22;
-const TIMEZONE = 'America/Chicago';
-
-function inBusinessHours(): boolean {
-  const hourStr = new Intl.DateTimeFormat('en-US', {
-    timeZone: TIMEZONE,
-    hour: 'numeric',
-    hour12: false,
-  }).format(new Date());
-  const hour = Number.parseInt(hourStr.replace(/[^0-9]/g, ''), 10);
-  return hour >= BUSINESS_HOURS_START && hour < BUSINESS_HOURS_END;
-}
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -97,7 +79,6 @@ export async function GET(req: NextRequest) {
   // (failing-check names), so a sustained failure across many 5-min
   // ticks groups into one Sentry issue + one SMS rather than 12/hour.
   const checkNames = failing.map((c) => c.name).join(',');
-  const isBusinessHours = inBusinessHours();
   const title = `vercel-watchdog: ${failing.length} failing — ${checkNames.slice(0, 100)}`;
 
   log.warn('vercel-watchdog detected failing doctor checks', {
@@ -105,20 +86,21 @@ export async function GET(req: NextRequest) {
     failCount: failing.length,
     warnCount: warning.length,
     checks: failing.map((c) => ({ name: c.name, detail: c.detail })),
-    businessHours: isBusinessHours,
   });
 
-  // captureMessage takes (message, extras). Severity goes into extras
-  // via the conventional `_level` key — the Sentry integration that
-  // routes to SMS looks for failing-check signals + business-hours
-  // gating in the extras blob.
-  captureMessage(title, {
-    requestId,
-    cron: 'vercel-watchdog',
-    failingChecks: failing.map((c) => ({ name: c.name, detail: c.detail, fix: c.fix })),
-    businessHours: isBusinessHours,
-    _level: isBusinessHours ? 'error' : 'warning',
-  });
+  // Raise an ERROR-level Sentry event (3rd arg). Sentry de-dupes by
+  // fingerprint (failing-check names), so a sustained failure groups into
+  // one issue. Configure a Sentry alert rule (email/push on error) for this
+  // to notify a human; the 503 return below is the Vercel-side backstop.
+  captureMessage(
+    title,
+    {
+      requestId,
+      cron: 'vercel-watchdog',
+      failingChecks: failing.map((c) => ({ name: c.name, detail: c.detail, fix: c.fix })),
+    },
+    'error',
+  );
 
   return ok(
     {
@@ -127,7 +109,7 @@ export async function GET(req: NextRequest) {
       failCount: failing.length,
       warnCount: warning.length,
       failingNames: failing.map((c) => c.name),
-      alertedBusinessHours: isBusinessHours,
+      sentryLevel: 'error',
     },
     // A red watchdog must be visible even when Sentry is unconfigured or its
     // transport is down. Non-2xx makes Vercel record the cron invocation as a

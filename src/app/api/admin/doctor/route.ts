@@ -27,23 +27,25 @@
  *      where reasonable.
  *
  * ─── What's checked ──────────────────────────────────────────────────────
+ * Slimmed 2026-07-17 (owner's call) to three signals. The live registry is
+ * the `checks` array below — THIS list must match it. The 6 checks that run:
  *
- *   env_vars                — every required env var is present and non-empty
- *   supabase_admin_auth     — preflight read using the service_role key
- *                             (catches stale/revoked keys)
- *   supabase_jwt_expiry     — decodes the anon + service_role JWTs and
- *                             warns if the exp claim is within 30 days
- *                             (silent auth failure is the #1 future-break risk)
- *   supabase_rls_enabled    — verifies RLS is still enabled on every
- *                             user-facing table (catches accidental
- *                             `ALTER TABLE … DISABLE ROW LEVEL SECURITY`)
- *   scraper_health_cron     — GitHub Actions' scraper-health cron last ran
- *                             within 25h (catches silently-disabled workflows)
- *   twilio_credentials      — Twilio REST API accepts our sid+token
- *   alert_phone_shape       — MANAGER_PHONE is in E.164 format so
- *                             sendSms() won't silently drop alerts
- *   cron_secret_shape       — CRON_SECRET is set and looks like a secret
- *                             (not accidentally left as "changeme")
+ *   env_vars                    — every required env var is present + non-empty
+ *   supabase_admin_auth         — preflight read using the service_role key
+ *                                 (catches stale/revoked keys)
+ *   supabase_migrations_applied — every migration file is registered as applied
+ *                                 in prod (catches schema drift)
+ *   cua_sessions_alive          — each enabled hotel's 24/7 CUA session is
+ *                                 heartbeating (deploy-gate FAIL if not)
+ *   cua_cost_cap_paused         — warns if a hotel's CUA is paused on the
+ *                                 $5/day Claude cost cap
+ *   cua_mfa_pending             — warns if a CUA session is stuck on PMS 2FA
+ *
+ * NOT run here (enforced elsewhere): RLS-enabled / RLS-policy-coverage /
+ * storage-bucket-RLS / PII-bucket-private invariants are checked at LINT time
+ * by scripts/audit-rls-*.mjs + audit-storage-bucket-rls.mjs (in `npm run lint`,
+ * CI-gated). The RLS_REQUIRED_TABLES / *_ALLOWLIST / PRIVATE_BUCKETS lists below
+ * are the retained reference twins of those lint audits, not runtime checks.
  *
  * ─── Auth ────────────────────────────────────────────────────────────────
  * Same Bearer-CRON_SECRET pattern as the cron routes — so CI and drift-
@@ -909,50 +911,6 @@ export const EXPECTED_CRONS: Array<{ name: string; cadenceHours: number; descrip
 
 
 
-async function checkLayerPredictionsFresh(opts: {
-  layer: string;
-  table: string;
-  dateCol: string;
-  fix: string;
-}): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data: activeModels, error: modelErr } = await supabaseAdmin
-      .from('model_runs')
-      .select('property_id')
-      .eq('layer', opts.layer)
-      .eq('is_active', true)
-      .eq('is_shadow', false)
-      .limit(1);
-    if (modelErr) {
-      return { status: 'warn', detail: `model_runs read failed: ${errToString(modelErr)}` };
-    }
-    if (!activeModels || activeModels.length === 0) {
-      return {
-        status: 'skipped',
-        detail: `no active ${opts.layer} models — training prereqs probably still unmet (attendance labels, min-rows-per-property)`,
-      };
-    }
-    const today = new Date().toISOString().slice(0, 10);
-    const { data: preds, error: predErr } = await supabaseAdmin
-      .from(opts.table)
-      .select('property_id')
-      .gte(opts.dateCol, today)
-      .limit(1);
-    if (predErr) {
-      return { status: 'warn', detail: `${opts.table} read failed: ${errToString(predErr)}` };
-    }
-    if (!preds || preds.length === 0) {
-      return {
-        status: 'fail',
-        detail: `Active ${opts.layer} models exist but no predictions for today (${today}) or beyond.`,
-        fix: opts.fix,
-      };
-    }
-    return { status: 'ok', detail: `${opts.table} has fresh rows for ${today} or later` };
-  } catch (err) {
-    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
-  }
-}
 
 // ─── CUA checks (Plan v4 universal CUA rebuild — 2026-05-23) ──────────────
 
@@ -1184,146 +1142,6 @@ export async function runAllChecks(useCache: boolean = true): Promise<DoctorRepo
 
 
 
-/**
- * rooms_today_seeded — three-part check:
- *
- *   1. (INV-24, Round 15) total_rooms must agree with array_length(room_inventory).
- *      Drift between the two sources means the AI could under-report.
- *   2. (INV-24) When total_rooms > 0 but room_inventory is empty,
- *      phantom-seed can't run → warn so the operator backfills inventory.
- *   3. (INV-23, Round 14) Today's rooms row count must equal the
- *      expected total (max of inventory length and total_rooms).
- *      Gap >= 4 or > 10% → fail. 1-3 → warn.
- *
- * Codex round-2 review (2026-05-14) flagged that the original Round-14
- * version only used `room_inventory` and SKIPPED empty-inventory
- * properties, so a stale or empty inventory passed status=ok while the
- * AI still reported a wrong total. This expansion closes that gap.
- *
- * INV-23 + INV-24 doctrine.
- */
-async function checkRoomsTodaySeeded(): Promise<Omit<Check, 'name' | 'durationMs'>> {
-  try {
-    const { data: properties, error: propsErr } = await supabaseAdmin
-      .from('properties')
-      .select('id, name, timezone, room_inventory, total_rooms');
-    if (propsErr) {
-      return { status: 'warn', detail: `Could not read properties: ${propsErr.message}` };
-    }
-
-    type DriftEntry = { id: string; name: string; inventoryLength: number; totalRooms: number };
-    type EmptyEntry = { id: string; name: string; totalRooms: number };
-    type GapEntry = { id: string; name: string; gap: number; expected: number; seeded: number; pct: number };
-
-    const drifts: DriftEntry[] = [];
-    const missingInventory: EmptyEntry[] = [];
-    const gaps: GapEntry[] = [];
-
-    for (const propRaw of (properties ?? [])) {
-      const prop = propRaw as {
-        id: string;
-        name: string | null;
-        timezone: string | null;
-        room_inventory: string[] | null;
-        total_rooms: number | null;
-      };
-      const inv = Array.isArray(prop.room_inventory) ? prop.room_inventory : [];
-      const inventoryLength = inv.length;
-      const totalRooms = Number(prop.total_rooms ?? 0);
-      const propName = prop.name ?? prop.id;
-
-      // Pre-onboarding: both sources empty/zero. Skip — no seeding expected.
-      if (inventoryLength === 0 && totalRooms === 0) continue;
-
-      // Branch 1: drift between the two sources (both populated, they disagree).
-      if (inventoryLength > 0 && totalRooms > 0 && inventoryLength !== totalRooms) {
-        drifts.push({ id: prop.id, name: propName, inventoryLength, totalRooms });
-      }
-      // Branch 2: total_rooms set, inventory not yet configured.
-      else if (inventoryLength === 0 && totalRooms > 0) {
-        missingInventory.push({ id: prop.id, name: propName, totalRooms });
-      }
-
-      // Branch 3: seed gap. expected = max of the two signals so we catch
-      // under-seeding regardless of which source is authoritative.
-      const expected = Math.max(inventoryLength, totalRooms);
-      if (expected === 0) continue;
-
-      // Plan v4: the canonical room list is pms_rooms_inventory (synced by
-      // the persistent CUA), not a per-day `rooms` seed. Count it against the
-      // expected floor size to catch a PMS inventory that hasn't fully synced.
-      const { count, error: cntErr } = await supabaseAdmin
-        .from('pms_rooms_inventory')
-        .select('*', { count: 'exact', head: true })
-        .eq('property_id', prop.id);
-      if (cntErr) {
-        return { status: 'warn', detail: `Could not count rooms for ${propName}: ${cntErr.message}` };
-      }
-      const seeded = count ?? 0;
-      const gap = Math.max(0, expected - seeded);
-      const pct = expected > 0 ? gap / expected : 0;
-      if (gap > 0) {
-        gaps.push({ id: prop.id, name: propName, gap, expected, seeded, pct });
-      }
-    }
-
-    // Priority 1: drift between total_rooms and inventory (INV-24 fail).
-    if (drifts.length > 0) {
-      const detail = drifts
-        .map(d => `${d.name}: total_rooms=${d.totalRooms}, inventory.length=${d.inventoryLength}`)
-        .join('; ');
-      return {
-        status: 'fail',
-        detail: `INV-24 drift: ${drifts.length} ${drifts.length === 1 ? 'property has' : 'properties have'} total_rooms ≠ array_length(room_inventory). ${detail}.`,
-        fix: 'Either update properties.room_inventory to match total_rooms, or update total_rooms to match the inventory length (whichever reflects the real floor plan).',
-      };
-    }
-
-    // Priority 2: gap (INV-23 fail/warn). Done before missing-inventory because
-    // a gap is a more pressing operational issue than an unconfigured inventory.
-    if (gaps.length > 0) {
-      const worst = gaps.reduce((a, b) => (b.gap > a.gap ? b : a));
-      const summary = gaps
-        .map(g => `${g.name}: ${g.seeded}/${g.expected} (gap ${g.gap})`)
-        .join('; ');
-      if (worst.gap >= 4 || worst.pct > 0.10) {
-        return {
-          status: 'fail',
-          detail: `${gaps.length} ${gaps.length === 1 ? 'property has' : 'properties have'} a seeding gap. Worst: ${worst.name} missing ${worst.gap} of ${worst.expected} rooms. All: ${summary}`,
-          fix: 'Check this property\'s CUA session is live and polling at /admin/property-sessions — room counts derive from the CUA\'s latest poll into pms_room_status_log.',
-        };
-      }
-      // Fall through to warn-level if only minor gaps.
-      const gapWarn = `Minor seeding drift in ${gaps.length} ${gaps.length === 1 ? 'property' : 'properties'}: ${summary}.`;
-      if (missingInventory.length === 0) {
-        return { status: 'warn', detail: `${gapWarn} The CUA's next poll should populate the missing rooms.` };
-      }
-      // Continue to combine with missing-inventory warn below.
-      const inv = missingInventory.map(m => `${m.name} (total_rooms=${m.totalRooms})`).join('; ');
-      return {
-        status: 'warn',
-        detail: `${gapWarn} Also, ${missingInventory.length} ${missingInventory.length === 1 ? 'property has' : 'properties have'} no room_inventory configured: ${inv}.`,
-      };
-    }
-
-    // Priority 3: missing inventory only (warn, no fail — phantom-seed
-    // can't run but the agent's max-of-three formula still reports
-    // total_rooms, so the AI doesn't lie. Operator action needed but
-    // not urgent enough for a phone buzz at 3am.).
-    if (missingInventory.length > 0) {
-      const detail = missingInventory.map(m => `${m.name} (total_rooms=${m.totalRooms})`).join('; ');
-      return {
-        status: 'warn',
-        detail: `${missingInventory.length} ${missingInventory.length === 1 ? 'property has' : 'properties have'} total_rooms set but no room_inventory configured: ${detail}. Phantom-seed cannot populate vacant-clean rooms for these properties.`,
-        fix: 'Populate properties.room_inventory with the master list of room numbers for these properties (see migration 0025 for the Comfort Suites example).',
-      };
-    }
-
-    return { status: 'ok', detail: 'Every property has today\'s rooms fully seeded, and total_rooms agrees with inventory length.' };
-  } catch (e) {
-    return { status: 'warn', detail: `rooms_today_seeded check errored: ${e instanceof Error ? e.message : String(e)}` };
-  }
-}
 
 
 

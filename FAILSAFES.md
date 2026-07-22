@@ -92,24 +92,24 @@ Each workflow uses `CRON_SECRET` from GitHub repo secrets, prints the full respo
 
 ---
 
-## 5. Railway-hosted Vercel watchdog (`scraper/vercel-watchdog.js`)
+## 5. Vercel watchdog cron (`src/app/api/cron/vercel-watchdog/route.ts`)
 
-The Railway scraper pings `/api/admin/doctor` every 5 min — **cross-platform failsafe**, completely independent of GitHub Actions. Catches Vercel outages and CRON_SECRET drift even if GitHub itself is down.
+**RETIRED & REPLACED.** The original Railway-hosted `scraper/vercel-watchdog.js` (with SMS alerts, business-hours gating, and `scraper_status` state) was deleted with the Railway scraper during the Plan v4 cutover. The SMS/Twilio transport it alerted through was retired entirely on 2026-07-17. The current watchdog is a Vercel cron that runs every 5 min and pings `/api/admin/doctor`.
 
-- 3-failure threshold (15 min) before SMS alerts, to absorb transient 502s.
-- `auth_mismatch` (HTTP 401) short-circuits the threshold — alerts on first occurrence (auth drift is never transient).
-- Alerts only during business hours (6am–10pm Central) to avoid 3am SMS noise.
-- 6h re-alert interval to avoid SMS spam during ongoing outages.
-- State persisted in Postgres `scraper_status` table (key=`vercelWatchdog`).
-- Wrapped in its own try/catch inside `scraper.js` so it can **never crash the main scraper loop** — if watchdog code has a bug, scraper keeps running and logs `[watchdog] crashed (non-fatal)`.
-- Gracefully **no-ops if `CRON_SECRET` is missing** on Railway (no crash) — defensive default so missing env var doesn't break the scraper.
+How a red watchdog now reaches a human (no SMS):
+
+- **Sentry** — the route calls `captureMessage(title, extras, 'error')`, raising an ERROR-level Sentry event, de-duped by fingerprint. A Sentry issue-alert rule (email/push on error) must be configured for this to actually notify.
+- **Vercel** — the route returns **HTTP 503 on red**, so Vercel logs the cron invocation as FAILED even if Sentry is unconfigured or down. This is the backstop channel and must not be softened to a 200.
+
+### Known gap (do not pretend it's covered)
+
+This cron runs ON Vercel, so a Vercel control-plane outage silences it. There is **no external monitor** yet. The real 2am alarm is a third-party monitor (Uptime Robot / Better Stack / Cronitor) pinging `/api/admin/doctor` from outside Vercel → SMS/push. **This is the single highest-leverage ops fix and is still open.**
 
 ### Rules for editing
 
-- **Don't remove the try/catch wrapper around `runVercelWatchdog()` in `scraper.js tick()`.** The isolation is the whole point. A bug in watchdog code must never bring down the main scraper.
-- To temporarily disable the watchdog: unset `CRON_SECRET` on Railway → watchdog no-ops automatically. Don't comment out the call.
-- Don't tighten the threshold below 3 — transient 502s during Vercel deploys are normal.
-- Don't expand alert hours. 3am SMS makes Reeyen distrust the system.
+- **Don't change the red-path return from 503 to 200.** The non-2xx is what makes a red watchdog visible in Vercel's cron history when Sentry is down. It's the last backstop.
+- Keep the Sentry event at `'error'` level (not the default `'info'`) so an alert rule can fire on it.
+- When you add an external monitor, update the "Known gap" above and the doctor's alert story so the docs stay true.
 
 ---
 

@@ -203,14 +203,18 @@ export function captureException(err: unknown, extra?: Record<string, unknown>):
  * captureMessage clutters the issue list quickly. Real errors should go
  * through captureException.
  */
-export function captureMessage(message: string, extra?: Record<string, unknown>): void {
+export function captureMessage(
+  message: string,
+  extra?: Record<string, unknown>,
+  level: Sentry.SeverityLevel = 'info',
+): void {
   if (extra) {
     Sentry.withScope((scope) => {
       scope.setExtras(extra);
       setPropertyContextOnScope(scope, extra);
-      Sentry.captureMessage(message);
+      Sentry.captureMessage(message, level);
     });
   } else {
-    Sentry.captureMessage(message);
+    Sentry.captureMessage(message, level);
   }
 }
