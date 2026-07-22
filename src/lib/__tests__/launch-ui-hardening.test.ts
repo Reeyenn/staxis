@@ -101,7 +101,14 @@ test('static legal pages render inside the root document without nested document
 
 test('financial and settings reads wait for a matching authorized property context', () => {
   const financials = source('src', 'app', 'financials', 'page.tsx');
-  const notifications = source('src', 'app', 'settings', 'notifications', 'page.tsx');
+  const notifications = source(
+    'src',
+    'app',
+    'settings',
+    'notifications',
+    '_components',
+    'NotificationsPanel.tsx',
+  );
   const users = source('src', 'app', 'settings', 'users', 'page.tsx');
 
   assert.match(financials, /const allowed = accessContextReady && financialsEnabled/);
