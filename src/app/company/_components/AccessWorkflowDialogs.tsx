@@ -98,6 +98,15 @@ function useDialogBehavior(onClose: () => void, busy = false) {
   const dialogRef = React.useRef<HTMLDivElement | null>(null);
   const busyRef = React.useRef(busy);
   busyRef.current = busy;
+  // Hold onClose in a ref so the focus-trap effect below can depend on [] and
+  // run exactly once per real open. Call sites pass a fresh inline arrow for
+  // onClose on every parent render; if the effect depended on [onClose] it
+  // would tear down + re-run on any unrelated re-render (a live roster update,
+  // token refresh, etc.) while the dialog is open — stealing focus back onto
+  // the close (X) button mid-typing, so the user's next Space/Enter silently
+  // closes the dialog and discards what they typed.
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
 
   React.useEffect(() => {
     const returnFocusElement = document.activeElement instanceof HTMLElement
@@ -110,7 +119,7 @@ function useDialogBehavior(onClose: () => void, busy = false) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         event.preventDefault();
-        if (!busyRef.current) onClose();
+        if (!busyRef.current) onCloseRef.current();
         return;
       }
       if (event.key !== 'Tab' || !dialogRef.current) return;
@@ -137,7 +146,11 @@ function useDialogBehavior(onClose: () => void, busy = false) {
         returnFocusElement.focus({ preventScroll: true });
       }
     };
-  }, [onClose]);
+    // Deps intentionally empty: onClose is read via onCloseRef, so this effect
+    // runs once per real open — not on every parent re-render (which would steal
+    // focus back onto the close button mid-typing). No reactive prop/state is
+    // read directly here, so exhaustive-deps is already satisfied.
+  }, []);
 
   return { closeRef, dialogRef };
 }

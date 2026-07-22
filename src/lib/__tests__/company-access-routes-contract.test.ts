@@ -205,6 +205,6 @@ describe('normalized-only operational-link safety', () => {
     assert.match(page, /returnFocusElement\.focus\(\{ preventScroll: true \}\)/);
     assert.match(dialog, /const returnFocusElement = document\.activeElement instanceof HTMLElement/);
     assert.match(dialog, /returnFocusElement\.focus\(\{ preventScroll: true \}\)/);
-    assert.match(dialog, /if \(!busyRef\.current\) onClose\(\)/);
+    assert.match(dialog, /if \(!busyRef\.current\) onCloseRef\.current\(\)/);
   });
 });
