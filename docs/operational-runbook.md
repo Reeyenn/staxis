@@ -25,6 +25,24 @@ prod state.
 
 ---
 
+## 2026-07-22 — My Hotel account access controls
+
+### Migration applied to prod (via `scripts/apply-migration.ts`)
+
+| File | What | How to verify |
+|---|---|---|
+| `0335_account_lifecycle_intents.sql` | Adds durable, service-role-only account disable/reactivate operations; atomic hotel-role and ownership guards; normalized organization-owner protection; lifecycle fences; and complete per-hotel/admin audit writes. | Migration `0335` has one row, `account_lifecycle_intents` exists, no browser role can read it or execute lifecycle RPCs, and the account lifecycle guards are present on `accounts`. |
+
+Applied with:
+
+```text
+npx tsx scripts/apply-migration.ts supabase/migrations/0335_account_lifecycle_intents.sql
+```
+
+Post-apply verification: `npx tsx scripts/check-migrations-applied.ts` reported all 284 production-required migrations applied. Direct production checks confirmed one `0335` row, the intent table, both account guards, all required lifecycle/role functions, zero pending or processing intents, zero browser table grants, and zero browser-executable lifecycle RPCs. Roll back only after deploying code that no longer calls these RPCs. Preserve lifecycle intents and audit rows; disabling the UI/code path is safer than dropping durable intent history. If a schema rollback is unavoidable, first export the intent and audit evidence, then remove the guards/functions/table in dependency order.
+
+---
+
 ## 2026-07-20 — My Hotel account and team security
 
 ### Migrations applied to prod (via `scripts/apply-migration.ts`)

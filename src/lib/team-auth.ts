@@ -17,7 +17,13 @@ import {
   capabilityDecisionForProperty,
   type CapabilityDecision,
 } from '@/lib/capabilities/server';
-import { MANAGER_FLOOR_CAPABILITIES, type CapabilityKey } from '@/lib/capabilities/registry';
+import { can, type CapabilityOverrideMap } from '@/lib/capabilities/can';
+import {
+  isCapabilityKey,
+  isHotelRole,
+  MANAGER_FLOOR_CAPABILITIES,
+  type CapabilityKey,
+} from '@/lib/capabilities/registry';
 
 export interface TeamCaller {
   accountId: string;
@@ -43,10 +49,10 @@ export async function verifyTeamManager(
 
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access')
+    .select('id, role, property_access, active')
     .eq('data_user_id', session.userId)
     .maybeSingle();
-  if (acctErr || !account) return null;
+  if (acctErr || !account || account.active !== true) return null;
 
   const role = account.role as AppRole;
   // Gate: when the caller names a capability, use the per-hotel resolver
@@ -114,6 +120,65 @@ export async function callerCapabilityDecision(
 ): Promise<CapabilityDecision> {
   if (!canManageHotel(caller, hotelId)) return 'denied';
   return capabilityDecisionForProperty({ role: caller.role }, capability, hotelId);
+}
+
+/**
+ * Uncached capability resolution for the last authorization check immediately
+ * before a sensitive write. Ordinary route reads use the request cache; a CAS
+ * retry must instead observe an override revoked earlier in the same request.
+ */
+export async function callerCapabilityDecisionFresh(
+  caller: TeamCaller,
+  capability: CapabilityKey,
+  hotelId: string,
+): Promise<CapabilityDecision> {
+  if (!canManageHotel(caller, hotelId)) return 'denied';
+  if (caller.isAdmin) return 'allowed';
+
+  const { data, error } = await supabaseAdmin
+    .from('capability_overrides')
+    .select('capability, role, allowed')
+    .eq('property_id', hotelId);
+  if (error || !Array.isArray(data)) return 'unavailable';
+
+  const overrides: CapabilityOverrideMap = {};
+  for (const row of data as Array<{ capability: string; role: string; allowed: boolean }>) {
+    if (!isCapabilityKey(row.capability) || !isHotelRole(row.role)) continue;
+    (overrides[row.capability] ??= {})[row.role] = !!row.allowed;
+  }
+  return can({ role: caller.role }, capability, overrides) ? 'allowed' : 'denied';
+}
+
+/**
+ * Account roles, display names, passwords, and lifecycle state are global even
+ * when the UI starts from one hotel. A non-admin caller may make one of those
+ * changes only when they both have access to every target hotel and hold the
+ * required capability at every one. Wildcard target access remains admin-only.
+ */
+export async function callerControlsEveryTargetHotel(
+  caller: TeamCaller,
+  capability: CapabilityKey,
+  targetAccess: readonly string[],
+  opts?: { fresh?: boolean },
+): Promise<CapabilityDecision> {
+  if (caller.isAdmin) return 'allowed';
+  const hotelIds = [...new Set(targetAccess.filter((hotelId) => hotelId.length > 0))];
+  if (hotelIds.length === 0 || hotelIds.includes('*')) return 'denied';
+
+  if (!caller.propertyAccess.includes('*')
+    && hotelIds.some((hotelId) => !caller.propertyAccess.includes(hotelId))) {
+    return 'denied';
+  }
+
+  const decisions = await Promise.all(
+    hotelIds.map((hotelId) => (
+      opts?.fresh
+        ? callerCapabilityDecisionFresh(caller, capability, hotelId)
+        : callerCapabilityDecision(caller, capability, hotelId)
+    )),
+  );
+  if (decisions.includes('unavailable')) return 'unavailable';
+  return decisions.every((decision) => decision === 'allowed') ? 'allowed' : 'denied';
 }
 
 /**

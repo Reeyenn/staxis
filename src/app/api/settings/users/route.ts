@@ -8,26 +8,21 @@
  *     from non-admin viewers.
  *
  *   PUT
- *     Body: { propertyId, accountId, action, ...payload }
- *       action: 'change_role'        — { newRole }
- *               'deactivate'         — sets active=false
- *               'reactivate'         — sets active=true
- *               'transfer_ownership' — { newOwnerAccountId } — promotes
- *                                       newOwnerAccountId to 'owner' and
- *                                       demotes the caller to 'general_manager'.
+ *     Body: { propertyId, accountId, action: 'transfer_ownership',
+ *             newOwnerAccountId }
+ *     Role and lifecycle changes moved to My Hotel. This legacy endpoint keeps
+ *     only the atomic ownership-transfer operation for the existing Settings UI.
  *
- * Every action writes a row to role_changes (the structured audit) AND
+ * Ownership transfer writes a row to role_changes (the structured audit) AND
  * a parallel admin_audit_log entry (the generic audit). The structured
  * table makes a future "show me the history of this user's role" UI
  * cheap; the generic table keeps the security-review trail intact.
  *
  * Role guardrails:
- *   - Only an owner can demote another owner OR run transfer_ownership.
- *   - GMs can manage all non-owner/admin roles.
+ *   - Only an owner can run transfer_ownership.
  *   - Nobody can modify an admin account from this UI.
- *   - Nobody can deactivate their own account.
  *   - Transfer-ownership requires the caller to actually be an owner and
- *     for the target to currently be a GM or front_desk staff member.
+ *     for the target to be an active member of this hotel.
  *
  * Auth: requireSession (the manager/owner) — NOT requireCronSecret.
  */
@@ -37,13 +32,10 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { writeAudit } from '@/lib/audit';
-import { writeRoleChange } from '@/lib/audit-role-changes';
 import { validateUuid } from '@/lib/api-validate';
-import { isAssignableRole, type AppRole } from '@/lib/roles';
+import type { AppRole } from '@/lib/roles';
 import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { denyRoleChange } from '@/lib/settings-user-role-change';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,21 +46,26 @@ interface CallerContext {
   accountId: string;
   role: AppRole;
   propertyAccess: string[];
+  active: boolean;
+  lifecycleIntentVersion: number;
 }
 
 async function loadCaller(authUserId: string, authEmail: string | null): Promise<CallerContext | null> {
   const { data, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access')
+    .select('id, role, property_access, active, lifecycle_intent_version')
     .eq('data_user_id', authUserId)
     .maybeSingle();
-  if (error || !data) return null;
+  if (error || !data || data.active !== true
+      || typeof data.lifecycle_intent_version !== 'number') return null;
   return {
     authUserId,
     authEmail,
     accountId: data.id,
     role: data.role as AppRole,
     propertyAccess: Array.isArray(data.property_access) ? data.property_access : [],
+    active: data.active === true,
+    lifecycleIntentVersion: data.lifecycle_intent_version,
   };
 }
 
@@ -96,10 +93,7 @@ export async function GET(req: NextRequest) {
 
   const caller = await loadCaller(session.userId, session.email);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  // The "who can manage users" gate moved below to a per-hotel manage_users
-  // capability check (needs the property id). Default: every role; an admin can
-  // switch a role OFF per hotel. The fine-grained owner/GM privilege-escalation
-  // rules in validateRoleChange still apply on top of this.
+  // The management gate is a per-hotel manage_users capability check below.
 
   const url = new URL(req.url);
   const pidV = validateUuid(url.searchParams.get('propertyId'), 'propertyId');
@@ -169,9 +163,19 @@ interface ActionBody {
   propertyId?: unknown;
   accountId?: unknown;
   action?: unknown;
-  newRole?: unknown;
   newOwnerAccountId?: unknown;
+  operationId?: unknown;
   reason?: unknown;
+}
+
+const MOVED_TO_MY_HOTEL_ACTIONS = new Set(['change_role', 'deactivate', 'reactivate']);
+
+function isPendingLifecycleFenceError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const record = error as { code?: unknown; message?: unknown };
+  return record.code === '55000'
+    || (typeof record.message === 'string'
+      && record.message.toLowerCase().includes('account lifecycle change pending'));
 }
 
 export async function PUT(req: NextRequest) {
@@ -184,25 +188,10 @@ export async function PUT(req: NextRequest) {
 
   const caller = await loadCaller(session.userId, session.email);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  // The "who can manage users" gate moved below to a per-hotel manage_users
-  // capability check (needs the property id). Default: every role; an admin can
-  // switch a role OFF per hotel. The fine-grained owner/GM privilege-escalation
-  // rules in validateRoleChange still apply on top of this.
+  // The management gate is a per-hotel manage_users capability check below.
 
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerCanManageProperty(caller, pidV.value!)) {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
-  const capabilityDecision = await capabilityDecisionForProperty(
-    { role: caller.role },
-    'manage_users',
-    pidV.value!,
-  );
-  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
-  if (capabilityDecision === 'denied') {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-  }
 
   const accountIdV = validateUuid(body.accountId, 'accountId');
   if (accountIdV.error) return err(accountIdV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
@@ -211,263 +200,178 @@ export async function PUT(req: NextRequest) {
   const propertyId = pidV.value!;
   const accountId = accountIdV.value!;
 
-  // Load the target row. We need data_user_id so deactivate/reactivate
-  // can flip ban_duration on the matching auth.users row — without that,
-  // the deactivated user could still sign in (auth is fully client-side
-  // via Supabase Auth; the active column alone is not a sign-in gate).
-  const { data: target, error: tErr } = await supabaseAdmin
+  if (MOVED_TO_MY_HOTEL_ACTIONS.has(action)) {
+    return err('Manage roles and account status from My Hotel.', {
+      requestId,
+      status: 409,
+      code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (action !== 'transfer_ownership') {
+    return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+
+  const operationIdV = validateUuid(body.operationId, 'operationId');
+  if (operationIdV.error) {
+    return err(operationIdV.error, {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const operationId = operationIdV.value!;
+  const newOwnerV = validateUuid(body.newOwnerAccountId, 'newOwnerAccountId');
+  if (newOwnerV.error) return err(newOwnerV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const newOwnerId = newOwnerV.value!;
+  if (newOwnerId !== accountId) {
+    return err('accountId must identify the proposed new owner', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  if (newOwnerId === caller.accountId) {
+    return err('You are already the owner', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  }
+  const reason = typeof body.reason === 'string' && body.reason.trim()
+    ? body.reason.trim().slice(0, 500)
+    : null;
+
+  // This is only an optimistic snapshot. The guarded RPC locks and rechecks
+  // both accounts, caller Auth identity, capabilities, hotel sets, and pending
+  // lifecycle state in the transaction that changes both global roles.
+  const { data: newOwner, error: noErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, active, property_access, display_name, data_user_id')
-    .eq('id', accountId)
+    .select('id, role, active, data_user_id, property_access, lifecycle_intent_version')
+    .eq('id', newOwnerId)
     .maybeSingle();
-  if (tErr || !target) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!Array.isArray(target.property_access) || !target.property_access.includes(propertyId)) {
-    return err('Account is not associated with this hotel', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  if (noErr || !newOwner) return err('Proposed new owner not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  if (typeof newOwner.data_user_id !== 'string'
+      || typeof newOwner.lifecycle_intent_version !== 'number'
+      || !Array.isArray(newOwner.property_access)) {
+    return err('Ownership transfer is temporarily unavailable. It is safe to try again.', {
+      requestId,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
+    });
   }
-  if (target.role === 'admin') {
-    return err('Cannot modify admin accounts here', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  if (!newOwner.property_access.includes(propertyId)) {
+    return err('Proposed new owner does not have access to this hotel', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  const isSelf = accountId === caller.accountId;
 
-  const reason = typeof body.reason === 'string' && body.reason.trim() ? body.reason.trim().slice(0, 500) : null;
-
-  switch (action) {
-    case 'change_role': {
-      if (typeof body.newRole !== 'string' || !isAssignableRole(body.newRole)) {
-        return err('Invalid newRole', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      }
-      const newRole = body.newRole;
-      const denied = denyRoleChange({
-        caller,
-        targetCurrentRole: target.role as AppRole,
-        newRole,
-        isSelf,
-      });
-      if (denied) return err(denied, { requestId, status: 403, code: ApiErrorCode.Forbidden });
-      if (newRole === target.role) return ok({ noop: true }, { requestId });
-
-      const { error: upErr } = await supabaseAdmin
-        .from('accounts')
-        .update({ role: newRole })
-        .eq('id', accountId);
-      if (upErr) {
-        log.error('[settings/users:PUT] change_role failed', { requestId, err: upErr.message });
-        return err('Failed to update role', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-
-      await writeRoleChange({
-        accountId, propertyId,
-        changedByAccountId: caller.accountId,
-        oldRole: target.role as AppRole,
-        newRole,
-        changeKind: 'role_change',
-        reason,
-      });
-      await writeAudit({
-        action: 'account.role_change',
-        actorUserId: caller.authUserId, actorEmail: caller.authEmail ?? undefined,
-        targetType: 'account', targetId: accountId, hotelId: propertyId,
-        metadata: { old_role: target.role, new_role: newRole, reason },
-      });
-      return ok({ accountId, newRole }, { requestId });
-    }
-
-    case 'deactivate': {
-      if (isSelf) return err('Cannot deactivate your own account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      if (target.role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
-        return err('Only an owner or admin can deactivate an owner account', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-      }
-      // Multi-hotel protection (audit #12): deactivating BANS the auth user
-      // globally — it locks them out of EVERY hotel they work at, not just this
-      // one. A non-admin manager may only deactivate someone whose hotel access
-      // is fully within the manager's own control (same rule as the team-route
-      // password reset). (2026-06-18.)
-      if (caller.role !== 'admin' && !caller.propertyAccess.includes('*')) {
-        const targetHotels = Array.isArray(target.property_access) ? (target.property_access as string[]) : [];
-        const outside = targetHotels.filter((h) => h !== '*' && !caller.propertyAccess.includes(h));
-        if (outside.length > 0) {
-          return err('This person also has access to another hotel — only an admin can deactivate them.', {
-            requestId, status: 403, code: ApiErrorCode.Forbidden,
-          });
-        }
-      }
-      if (target.active === false) return ok({ noop: true }, { requestId });
-
-      // Block sign-in FIRST via Supabase Auth's ban_duration. If this
-      // succeeds and the subsequent accounts update fails, the user is
-      // still blocked at the auth layer — which is the actual security
-      // boundary. We use a far-future ban (100y) rather than 'permanent'
-      // because the gotrue API expects a Go-duration string. Reactivate
-      // sets it back to 'none' to clear.
-      const { error: banErr } = await supabaseAdmin.auth.admin.updateUserById(
-        target.data_user_id as string,
-        { ban_duration: '876000h' },
-      );
-      if (banErr) {
-        log.error('[settings/users:PUT] deactivate ban failed', { requestId, err: banErr.message });
-        return err('Failed to block sign-in for account', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-
-      const { error: upErr } = await supabaseAdmin
-        .from('accounts')
-        .update({ active: false })
-        .eq('id', accountId);
-      if (upErr) {
-        // Roll back the auth ban so we don't leave the user signed-out
-        // but flagged active in the app DB (the inverse split-brain).
-        await supabaseAdmin.auth.admin.updateUserById(target.data_user_id as string, { ban_duration: 'none' });
-        log.error('[settings/users:PUT] deactivate failed (rolled back ban)', { requestId, err: upErr.message });
-        return err('Failed to deactivate account', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      await writeRoleChange({
-        accountId, propertyId,
-        changedByAccountId: caller.accountId,
-        oldRole: target.role as AppRole,
-        newRole: target.role as AppRole,
-        changeKind: 'deactivate',
-        reason,
-      });
-      await writeAudit({
-        action: 'account.deactivate',
-        actorUserId: caller.authUserId, actorEmail: caller.authEmail ?? undefined,
-        targetType: 'account', targetId: accountId, hotelId: propertyId,
-        metadata: { role: target.role, reason, sign_in_blocked: true },
-      });
-      return ok({ accountId, active: false }, { requestId });
-    }
-
-    case 'reactivate': {
-      if (target.active === true) return ok({ noop: true }, { requestId });
-
-      // Clear the auth ban first so the user can sign in immediately
-      // once the accounts row flips. Symmetric to deactivate: even if
-      // the accounts update fails, the user becomes signable-in (which
-      // is the right product outcome — reactivation should be lenient).
-      const { error: banErr } = await supabaseAdmin.auth.admin.updateUserById(
-        target.data_user_id as string,
-        { ban_duration: 'none' },
-      );
-      if (banErr) {
-        log.error('[settings/users:PUT] reactivate ban-clear failed', { requestId, err: banErr.message });
-        return err('Failed to unblock sign-in for account', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-
-      const { error: upErr } = await supabaseAdmin
-        .from('accounts')
-        .update({ active: true })
-        .eq('id', accountId);
-      if (upErr) {
-        log.error('[settings/users:PUT] reactivate failed', { requestId, err: upErr.message });
-        return err('Failed to reactivate account', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      await writeRoleChange({
-        accountId, propertyId,
-        changedByAccountId: caller.accountId,
-        oldRole: target.role as AppRole,
-        newRole: target.role as AppRole,
-        changeKind: 'reactivate',
-        reason,
-      });
-      await writeAudit({
-        action: 'account.reactivate',
-        actorUserId: caller.authUserId, actorEmail: caller.authEmail ?? undefined,
-        targetType: 'account', targetId: accountId, hotelId: propertyId,
-        metadata: { role: target.role, reason, sign_in_blocked: false },
-      });
-      return ok({ accountId, active: true }, { requestId });
-    }
-
-    case 'transfer_ownership': {
-      if (caller.role !== 'admin' && caller.role !== 'owner') {
-        return err('Only the current owner can transfer ownership', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-      }
-      const newOwnerV = validateUuid(body.newOwnerAccountId, 'newOwnerAccountId');
-      if (newOwnerV.error) return err(newOwnerV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      const newOwnerId = newOwnerV.value!;
-      if (newOwnerId === caller.accountId) {
-        return err('You are already the owner', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      }
-
-      // Pre-load the new owner so we can fail fast with a friendly
-      // message (the DB function repeats these checks atomically so a
-      // race between the read here and the RPC can't slip through).
-      const { data: newOwner, error: noErr } = await supabaseAdmin
-        .from('accounts')
-        .select('id, role, active, property_access')
-        .eq('id', newOwnerId)
-        .maybeSingle();
-      if (noErr || !newOwner) return err('Proposed new owner not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-      if (newOwner.role === 'admin') return err('Cannot transfer ownership to an admin account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      if (newOwner.active === false) return err('Cannot transfer ownership to a deactivated account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      if (!Array.isArray(newOwner.property_access) || !newOwner.property_access.includes(propertyId)) {
-        return err('Proposed new owner does not have access to this hotel', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      }
-
-      const oldOwnerOldRole = caller.role as AppRole;
-      const newOwnerOldRole = newOwner.role as AppRole;
-
-      // Atomic swap inside one transaction via the SECURITY DEFINER
-      // helper added by migration 0220. Replaces the prior two-step
-      // UPDATE pattern, which could leave the hotel with two owners
-      // (or zero) if the second update failed and the rollback also
-      // failed.
-      const { data: rpcRes, error: rpcErr } = await supabaseAdmin.rpc(
-        'staxis_transfer_ownership',
-        {
-          p_property_id: propertyId,
-          p_old_owner_account_id: caller.accountId,
-          p_new_owner_account_id: newOwnerId,
-        },
-      );
-      if (rpcErr) {
-        log.error('[settings/users:PUT] transfer rpc failed', { requestId, err: rpcErr.message });
-        return err('Failed to transfer ownership', { requestId, status: 500, code: ApiErrorCode.InternalError });
-      }
-      // The function returns a JSON-shaped TEXT — Supabase wraps it as
-      // `data: "<string>"`. Parse it once to surface the guard error
-      // (e.g. "caller is not currently the owner") as a 400 the UI can
-      // show verbatim.
-      let parsed: { ok?: boolean; error?: string } = {};
-      try { parsed = JSON.parse(typeof rpcRes === 'string' ? rpcRes : ''); } catch { /* fall through */ }
-      if (!parsed.ok) {
-        return err(parsed.error ?? 'Ownership transfer rejected by the database guard', {
-          requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-        });
-      }
-
-      await Promise.all([
-        writeRoleChange({
-          accountId: newOwnerId, propertyId,
-          changedByAccountId: caller.accountId,
-          oldRole: newOwnerOldRole, newRole: 'owner',
-          changeKind: 'transfer_ownership',
-          reason,
-        }),
-        writeRoleChange({
-          accountId: caller.accountId, propertyId,
-          changedByAccountId: caller.accountId,
-          oldRole: oldOwnerOldRole, newRole: 'general_manager',
-          changeKind: 'transfer_ownership',
-          reason,
-        }),
-        writeAudit({
-          action: 'account.transfer_ownership',
-          actorUserId: caller.authUserId, actorEmail: caller.authEmail ?? undefined,
-          targetType: 'account', targetId: newOwnerId,
-          hotelId: propertyId,
-          metadata: {
-            from_account_id: caller.accountId,
-            from_old_role: oldOwnerOldRole,
-            to_old_role: newOwnerOldRole,
-            reason,
-          },
-        }),
-      ]);
-
-      return ok({ newOwnerId, oldOwnerId: caller.accountId }, { requestId });
-    }
-
-    default:
-      return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  let rpcRes: unknown = null;
+  let rpcErr: { message?: string; code?: string } | null = null;
+  try {
+    const result = await supabaseAdmin.rpc(
+      'staxis_transfer_ownership_guarded',
+      {
+        p_operation_id: operationId,
+        p_actor_account_id: caller.accountId,
+        p_actor_auth_user_id: caller.authUserId,
+        p_actor_email: caller.authEmail,
+        p_property_id: propertyId,
+        p_old_owner_account_id: caller.accountId,
+        p_new_owner_account_id: newOwnerId,
+        p_expected_old_active: caller.active,
+        p_expected_old_role: caller.role,
+        p_expected_old_auth_user_id: caller.authUserId,
+        p_expected_old_property_access: caller.propertyAccess,
+        p_expected_old_intent_version: caller.lifecycleIntentVersion,
+        p_expected_new_active: newOwner.active !== false,
+        p_expected_new_role: newOwner.role,
+        p_expected_new_auth_user_id: newOwner.data_user_id,
+        p_expected_new_property_access: newOwner.property_access,
+        p_expected_new_intent_version: newOwner.lifecycle_intent_version,
+        p_reason: reason,
+        p_request_id: requestId,
+      },
+    );
+    rpcRes = result.data;
+    rpcErr = result.error;
+  } catch (error) {
+    rpcErr = error && typeof error === 'object'
+      ? error as { message?: string; code?: string }
+      : { message: String(error) };
   }
+  if (rpcErr) {
+    log.error('[settings/users:PUT] guarded transfer rpc failed', {
+      requestId, err: rpcErr.message ?? 'unknown error',
+    });
+    if (isPendingLifecycleFenceError(rpcErr)) {
+      return err('Finish the pending account status change before transferring ownership.', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    // Missing RPC/schema cache during rolling deploy must fail closed. The
+    // legacy three-argument RPC remains only for older already-running code;
+    // this route never falls back to its non-atomic audit behavior.
+    return err('Ownership transfer is temporarily unavailable. It is safe to try again.', {
+      requestId,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
+    });
+  }
+
+  const parsed = rpcRes && typeof rpcRes === 'object' && !Array.isArray(rpcRes)
+    ? rpcRes as { status?: string; reason?: string }
+    : null;
+  if (parsed?.status === 'ok' || parsed?.status === 'already_applied') {
+    return ok({
+      newOwnerId,
+      oldOwnerId: caller.accountId,
+      operationId,
+      replayed: parsed.status === 'already_applied',
+    }, { requestId });
+  }
+  if (parsed?.status === 'pending_conflict') {
+    return err('Finish the pending account status change before transferring ownership.', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (parsed?.status === 'retry') {
+    return err('Ownership transfer is temporarily unavailable. It is safe to try again.', {
+      requestId,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
+    });
+  }
+  if (parsed?.status === 'conflict') {
+    const message = parsed.reason === 'hotel_access_mismatch'
+      ? 'Ownership can only be transferred between accounts with the same hotel access.'
+      : 'This ownership transfer changed in another session. Refresh and try again.';
+    return err(message, {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      details: { operationId },
+    });
+  }
+  if (parsed?.status === 'forbidden') {
+    const normalizedOwner = parsed.reason === 'normalized_organization_owner';
+    return err(
+      normalizedOwner
+        ? 'Manage company ownership separately before changing this hotel owner.'
+        : 'Only the current owner can transfer ownership to an eligible account.',
+      {
+        requestId,
+        status: normalizedOwner ? 409 : 403,
+        code: normalizedOwner ? ApiErrorCode.IdempotencyConflict : ApiErrorCode.Forbidden,
+      },
+    );
+  }
+  if (parsed?.status === 'not_found') {
+    return err('An account or hotel in this transfer no longer exists.', {
+      requestId, status: 404, code: ApiErrorCode.NotFound,
+    });
+  }
+  if (parsed?.status === 'invalid') {
+    return err('Ownership transfer request is no longer valid. Refresh and try again.', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  return err('Ownership transfer is temporarily unavailable. It is safe to try again.', {
+    requestId,
+    status: 503,
+    code: ApiErrorCode.UpstreamFailure,
+    headers: { 'Retry-After': '5' },
+  });
 }

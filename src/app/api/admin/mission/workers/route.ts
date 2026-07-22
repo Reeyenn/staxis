@@ -84,6 +84,7 @@ function tierOf(name: string): WorkerTier {
 
 const WORKER_META: Record<string, { description: string; group: WorkerGroup }> = {
   'agent-sweep-reservations':            { description: 'Frees up AI budget if a task crashes mid-way.',              group: 'Agent' },
+  'sweep-account-lifecycle':             { description: 'Finishes interrupted login disable or reactivate changes.', group: 'Cleanup' },
   'process-agent-schedules':             { description: 'Delivers reminders and creates recurring team tasks.',       group: 'Agent' },
   'agent-summarize-long-conversations':  { description: 'Tidies up long AI chats so they stay fast.',                group: 'Agent' },
   'agent-consolidate-memory':            { description: "Cleans up the AI assistant's memory overnight.",            group: 'Agent' },

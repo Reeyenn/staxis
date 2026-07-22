@@ -48,6 +48,7 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // compliance-anomaly-sweep were deleted outright the same day with the
   // whole compliance section.)
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
+  { heartbeatName: 'sweep-account-lifecycle',           source: { kind: 'vercel', cronPath: '/api/cron/sweep-account-lifecycle' },           cronExpr: '*/5 * * * *' },
   { heartbeatName: 'process-agent-schedules',           source: { kind: 'vercel', cronPath: '/api/cron/process-agent-schedules' },           cronExpr: '*/5 * * * *' },
   { heartbeatName: 'agent-summarize-long-conversations',source: { kind: 'vercel', cronPath: '/api/cron/agent-summarize-long-conversations' },cronExpr: '*/30 * * * *' },
   { heartbeatName: 'agent-consolidate-memory',          source: { kind: 'vercel', cronPath: '/api/cron/agent-consolidate-memory' },          cronExpr: '0 5 * * *' },

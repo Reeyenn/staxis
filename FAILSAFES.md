@@ -59,6 +59,7 @@ We deliberately split crons across two schedulers because they have different re
 |---|---|---|
 | `/api/cron/process-agent-schedules` | every 5 min | Delivers agent reminders + materializes recurring Communications tasks |
 | `/api/cron/agent-sweep-reservations` | every 5 min | Releases stale AI cost reservations |
+| `/api/cron/sweep-account-lifecycle` | every 5 min | Finishes interrupted account disable/reactivate operations from their durable intent |
 | `/api/cron/vercel-watchdog` | every 5 min | Checks the production app/doctor and fails visibly on red |
 
 Vercel Pro guarantees per-minute precision. Operational sub-30-minute jobs stay here because GitHub Actions has previously delayed tight schedules by 7–17×. The Twilio-backed `process-sms-jobs` worker was retired on 2026-07-17; reminders and recurring in-app tasks must remain independent of any SMS transport.

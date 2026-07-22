@@ -10,6 +10,10 @@
       "schedule": "*/5 * * * *"
     },
     {
+      "path": "/api/cron/sweep-account-lifecycle",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/process-agent-schedules",
       "schedule": "*/5 * * * *"
     },

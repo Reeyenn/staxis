@@ -25,8 +25,10 @@ import { ASSIGNABLE_ROLES, type AppRole, type AssignableRole } from '@/lib/roles
 
 import type {
   HotelJoinRequest,
+  HotelTeamLifecycleAction,
   HotelTeamLang,
   HotelTeamMember,
+  HotelTeamPendingLifecycleOperation,
 } from './HotelTeamPanel';
 import styles from './HotelTeamPanel.module.css';
 
@@ -34,14 +36,25 @@ interface Envelope<T> {
   ok?: boolean;
   data?: T;
   error?: unknown;
+  details?: unknown;
 }
 
 interface DialogActions {
   canEdit: boolean;
   canChangeRole: boolean;
   canResetPassword: boolean;
+  canDeactivate: boolean;
+  canReactivate: boolean;
   canRemove: boolean;
   roleIsSharedAcrossHotels: boolean;
+}
+
+type LifecycleAction = HotelTeamLifecycleAction;
+
+interface LifecycleOperation {
+  action: LifecycleAction;
+  operationId: string;
+  submitted: boolean;
 }
 
 interface JoinCode {
@@ -74,6 +87,92 @@ function copy(lang: HotelTeamLang, en: string, es: string): string {
 
 function mutationSignal(): AbortSignal {
   return AbortSignal.timeout(15_000);
+}
+
+const LIFECYCLE_OPERATION_STORAGE_PREFIX = 'staxis:hotel-account-lifecycle:';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function lifecycleOperationStorageKey(accountId: string, action: LifecycleAction): string {
+  return `${LIFECYCLE_OPERATION_STORAGE_PREFIX}${accountId}:${action}`;
+}
+
+function createLifecycleOperationId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === 'function') return cryptoApi.randomUUID();
+  if (typeof cryptoApi?.getRandomValues !== 'function') {
+    throw new Error('Secure UUID generation is unavailable');
+  }
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function readLifecycleOperation(accountId: string, action: LifecycleAction): Omit<LifecycleOperation, 'action'> | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(lifecycleOperationStorageKey(accountId, action));
+    if (!raw) return null;
+    // A plain UUID is treated as previously submitted for forward compatibility
+    // with an earlier client format; retaining it is the safe retry behavior.
+    if (UUID_PATTERN.test(raw)) return { operationId: raw, submitted: true };
+    const parsed = JSON.parse(raw) as { operationId?: unknown; submitted?: unknown };
+    if (typeof parsed.operationId !== 'string' || !UUID_PATTERN.test(parsed.operationId)) return null;
+    return { operationId: parsed.operationId, submitted: parsed.submitted === true };
+  } catch {
+    return null;
+  }
+}
+
+function persistLifecycleOperation(accountId: string, operation: LifecycleOperation): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      lifecycleOperationStorageKey(accountId, operation.action),
+      JSON.stringify({ operationId: operation.operationId, submitted: operation.submitted }),
+    );
+  } catch {
+    // The in-memory ref still prevents duplicate sends for this open dialog.
+  }
+}
+
+function getOrCreateLifecycleOperation(accountId: string, action: LifecycleAction): LifecycleOperation {
+  const stored = readLifecycleOperation(accountId, action);
+  const operation: LifecycleOperation = stored
+    ? { action, ...stored }
+    : { action, operationId: createLifecycleOperationId(), submitted: false };
+  persistLifecycleOperation(accountId, operation);
+  return operation;
+}
+
+function clearLifecycleOperation(accountId: string, operation: LifecycleOperation): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const stored = readLifecycleOperation(accountId, operation.action);
+    if (stored?.operationId === operation.operationId) {
+      window.localStorage.removeItem(lifecycleOperationStorageKey(accountId, operation.action));
+    }
+  } catch {
+    // A failed cleanup is safe: the server treats the operation UUID idempotently.
+  }
+}
+
+function lifecycleResponseIsDefinitivelyAborted(response: Response): boolean {
+  if (response.status < 400 || response.status >= 500) return false;
+  return response.status !== 408 && response.status !== 425 && response.status !== 429;
+}
+
+function lifecycleResponseNeedsReconciliation(
+  response: Response,
+  body: Envelope<unknown>,
+  operationId: string,
+): boolean {
+  if (response.status === 408 || response.status === 425 || response.status === 429) return true;
+  if (response.status !== 503) return false;
+  if (!body.details || typeof body.details !== 'object') return true;
+  const details = body.details as Record<string, unknown>;
+  return details.operationId === undefined || details.operationId === operationId;
 }
 
 function responseError(body: Envelope<unknown>, fallback: string): string {
@@ -120,6 +219,21 @@ function formatDate(value: string, lang: HotelTeamLang): string {
     day: 'numeric',
     year: 'numeric',
   }).format(parsed);
+}
+
+function lastSignInLabel(known: boolean, value: string | null, lang: HotelTeamLang): string {
+  if (!known) return copy(lang, 'Last sign-in unavailable', 'Último acceso no disponible');
+  if (!value) return copy(lang, 'No sign-ins yet', 'Aún no ha iniciado sesión');
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return copy(lang, 'Last sign-in unavailable', 'Último acceso no disponible');
+  }
+  const formatted = new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(parsed);
+  return copy(lang, `Last signed in ${formatted}`, `Último acceso: ${formatted}`);
 }
 
 function isUsable(code: JoinCode): boolean {
@@ -317,6 +431,7 @@ export function HotelMemberDialog({
   actions,
   onClose,
   onChanged,
+  onLifecyclePending,
   onSaved,
 }: {
   hotelId: string;
@@ -328,6 +443,7 @@ export function HotelMemberDialog({
   actions: DialogActions;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
+  onLifecyclePending: (operation: HotelTeamPendingLifecycleOperation) => void;
   onSaved: () => void | Promise<void>;
 }) {
   const self = member.accountId === currentAccountId;
@@ -339,23 +455,208 @@ export function HotelMemberDialog({
   const [error, setError] = React.useState('');
   const [partialSuccess, setPartialSuccess] = React.useState('');
   const [saving, setSaving] = React.useState(false);
+  const [lifecycleIntent, setLifecycleIntent] = React.useState<LifecycleAction | null>(null);
+  const [lifecycleSaving, setLifecycleSaving] = React.useState(false);
+  const [lifecycleError, setLifecycleError] = React.useState('');
+  const [lifecyclePending, setLifecyclePending] = React.useState(false);
+  const [discardConfirming, setDiscardConfirming] = React.useState(false);
+  const lifecycleConfirmationRef = React.useRef<HTMLDivElement | null>(null);
+  const lifecycleTriggerRef = React.useRef<HTMLButtonElement | null>(null);
+  const lifecycleOperationRef = React.useRef<LifecycleOperation | null>(null);
+  const lifecycleInFlightRef = React.useRef(false);
+  const discardConfirmationRef = React.useRef<HTMLDivElement | null>(null);
+  const discardReturnFocusRef = React.useRef<HTMLElement | null>(null);
+  const accountAccessHeadingId = React.useId();
+  const lifecycleHeadingId = React.useId();
+  const lifecycleDescriptionId = React.useId();
+  const lifecycleGuidanceId = React.useId();
+  const discardHeadingId = React.useId();
+  const discardDescriptionId = React.useId();
+  const busy = saving || lifecycleSaving;
+  const lifecycleConfirming = lifecycleIntent !== null;
+  const formLocked = busy || lifecycleConfirming || discardConfirming || lifecyclePending;
+  const canChangeLifecycle = member.active ? actions.canDeactivate : actions.canReactivate;
 
   const assignableRoles = React.useMemo(() => {
+    const ordinaryRoles = ASSIGNABLE_ROLES.filter((value) => value !== 'owner');
     const allowed = currentUser.role === 'general_manager'
-      ? ASSIGNABLE_ROLES.filter((value) => value !== 'owner' && value !== 'general_manager')
-      : [...ASSIGNABLE_ROLES];
+      ? ordinaryRoles.filter((value) => value !== 'general_manager')
+      : ordinaryRoles;
     return allowed as readonly AssignableRole[];
   }, [currentUser.role]);
 
   const trimmedName = displayName.trim();
-  const nameChanged = trimmedName.length > 0 && trimmedName !== savedDisplayName;
-  const roleChanged = actions.canChangeRole && role !== savedRole;
+  const nameChanged = displayName !== savedDisplayName;
+  const roleChanged = actions.canChangeRole && member.active && role !== savedRole;
   const passwordChanged = actions.canResetPassword && password.length > 0;
   const dirty = nameChanged || roleChanged || passwordChanged;
 
+  React.useEffect(() => {
+    if (!lifecycleIntent) return;
+    lifecycleConfirmationRef.current?.focus({ preventScroll: true });
+  }, [lifecycleIntent]);
+
+  React.useEffect(() => {
+    if (!discardConfirming) return;
+    discardConfirmationRef.current?.focus();
+  }, [discardConfirming]);
+
+  const openLifecycleConfirmation = (intent: LifecycleAction) => {
+    const allowed = intent === 'deactivate'
+      ? member.active && actions.canDeactivate
+      : !member.active && actions.canReactivate;
+    if (!allowed || busy || dirty || lifecyclePending) return;
+    try {
+      lifecycleOperationRef.current = getOrCreateLifecycleOperation(member.accountId, intent);
+      setLifecycleError('');
+    } catch (operationError) {
+      console.error('[HotelTeamPanel] lifecycle operation UUID failed', operationError);
+      setLifecycleError(copy(
+        lang,
+        "The login change couldn't be prepared securely. Reload and try again.",
+        'No se pudo preparar el cambio de acceso de forma segura. Recarga e intenta de nuevo.',
+      ));
+      return;
+    }
+    setLifecycleIntent(intent);
+  };
+
+  const cancelLifecycleConfirmation = () => {
+    if (lifecycleSaving || lifecycleInFlightRef.current) return;
+    if (lifecyclePending) {
+      onClose();
+      return;
+    }
+    const operation = lifecycleOperationRef.current;
+    if (operation && !operation.submitted) clearLifecycleOperation(member.accountId, operation);
+    lifecycleOperationRef.current = null;
+    setLifecycleIntent(null);
+    setLifecycleError('');
+    window.requestAnimationFrame(() => lifecycleTriggerRef.current?.focus({ preventScroll: true }));
+  };
+
+  const cancelDiscardConfirmation = () => {
+    setDiscardConfirming(false);
+    window.requestAnimationFrame(() => {
+      const returnTarget = discardReturnFocusRef.current;
+      if (returnTarget?.isConnected && !returnTarget.hasAttribute('disabled')) {
+        returnTarget.focus();
+      }
+    });
+  };
+
+  const discardChanges = () => {
+    if (busy) return;
+    onClose();
+  };
+
+  const requestDialogClose = () => {
+    if (busy || lifecycleInFlightRef.current) return;
+    if (lifecyclePending) {
+      onClose();
+      return;
+    }
+    if (lifecycleIntent) {
+      cancelLifecycleConfirmation();
+      return;
+    }
+    if (discardConfirming) {
+      cancelDiscardConfirmation();
+      return;
+    }
+    if (dirty) {
+      setDiscardConfirming(true);
+      return;
+    }
+    onClose();
+  };
+
+  const markLifecyclePending = (operation: LifecycleOperation) => {
+    setLifecyclePending(true);
+    onLifecyclePending({
+      accountId: member.accountId,
+      action: operation.action,
+      operationId: operation.operationId,
+      clearStoredOperation: () => clearLifecycleOperation(member.accountId, operation),
+    });
+  };
+
+  const submitLifecycle = async () => {
+    if (!lifecycleIntent || busy || lifecyclePending || lifecycleInFlightRef.current) return;
+    const actionStillAllowed = lifecycleIntent === 'deactivate'
+      ? member.active && actions.canDeactivate
+      : !member.active && actions.canReactivate;
+    if (!actionStillAllowed) return;
+
+    lifecycleInFlightRef.current = true;
+    setLifecycleSaving(true);
+    setLifecyclePending(false);
+    setLifecycleError('');
+    let submittedOperation: LifecycleOperation | null = null;
+    try {
+      let operation = lifecycleOperationRef.current;
+      if (!operation || operation.action !== lifecycleIntent) {
+        operation = getOrCreateLifecycleOperation(member.accountId, lifecycleIntent);
+      }
+      operation = { ...operation, submitted: true };
+      lifecycleOperationRef.current = operation;
+      persistLifecycleOperation(member.accountId, operation);
+      submittedOperation = operation;
+
+      const response = await fetchWithAuth('/api/auth/team/status', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hotelId,
+          accountId: member.accountId,
+          action: lifecycleIntent,
+          operationId: operation.operationId,
+        }),
+        signal: mutationSignal(),
+      });
+      const body = await response.json().catch(() => ({})) as Envelope<{ success?: boolean }>;
+      if (!response.ok || !body.ok) {
+        if (lifecycleResponseNeedsReconciliation(response, body, operation.operationId)) {
+          markLifecyclePending(operation);
+          return;
+        }
+        if (lifecycleResponseIsDefinitivelyAborted(response)) {
+          clearLifecycleOperation(member.accountId, operation);
+          lifecycleOperationRef.current = null;
+        }
+        setLifecycleError(responseError(
+          body,
+          lifecycleIntent === 'deactivate'
+            ? copy(lang, "Couldn't disable this login.", 'No se pudo desactivar este acceso.')
+            : copy(lang, "Couldn't reactivate this login.", 'No se pudo reactivar este acceso.'),
+        ));
+        return;
+      }
+      clearLifecycleOperation(member.accountId, operation);
+      lifecycleOperationRef.current = null;
+      await onSaved();
+    } catch (lifecycleFailure) {
+      console.error('[HotelTeamPanel] account lifecycle change failed', lifecycleFailure);
+      if (submittedOperation) {
+        // A lost response is ambiguous: the server may have durably registered
+        // or committed this exact UUID. Keep it and let the panel reconcile.
+        markLifecyclePending(submittedOperation);
+        return;
+      }
+      setLifecycleError(copy(
+        lang,
+        "The login status couldn't be changed. Check your connection and try again.",
+        'No se pudo cambiar el estado del acceso. Revisa tu conexión e intenta de nuevo.',
+      ));
+    } finally {
+      lifecycleInFlightRef.current = false;
+      setLifecycleSaving(false);
+    }
+  };
+
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!dirty || saving) return;
+    if (!dirty || formLocked) return;
     if (!trimmedName) {
       setError(copy(lang, 'Name is required.', 'El nombre es obligatorio.'));
       return;
@@ -376,7 +677,14 @@ export function HotelMemberDialog({
       if (nameChanged || roleChanged) {
         const profilePayload: Record<string, unknown> = { hotelId, accountId: member.accountId };
         if (nameChanged) profilePayload.displayName = trimmedName;
-        if (roleChanged) profilePayload.role = role;
+        if (roleChanged) {
+          profilePayload.role = role;
+          // The guarded role RPC must compare the row the person actually
+          // opened, not a fresh server read that could hide a concurrent edit.
+          profilePayload.expectedRole = member.role;
+          profilePayload.expectedDisplayName = member.displayName;
+          profilePayload.expectedUpdatedAt = member.updatedAt;
+        }
         const profileResponse = await fetchWithAuth('/api/auth/team', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -453,10 +761,16 @@ export function HotelMemberDialog({
       description={copy(lang, `Manage this login for ${hotelName}. Account-wide changes are labeled below.`, `Administra este acceso para ${hotelName}. Los cambios para toda la cuenta se indican abajo.`)}
       lang={lang}
       icon={<UserRoundCog size={21} aria-hidden="true" />}
-      onClose={onClose}
-      busy={saving}
+      onClose={requestDialogClose}
+      busy={busy}
     >
-      <form className={styles.dialogForm} onSubmit={submit}>
+      <form
+        className={styles.dialogForm}
+        onSubmit={submit}
+        onFocusCapture={(event) => {
+          if (!discardConfirming && !lifecycleIntent) discardReturnFocusRef.current = event.target as HTMLElement;
+        }}
+      >
         <label className={styles.field}>
           <span>{copy(lang, 'Display name', 'Nombre visible')}</span>
           <input
@@ -464,7 +778,7 @@ export function HotelMemberDialog({
             value={displayName}
             onChange={(event) => { setDisplayName(event.target.value); setError(''); setPartialSuccess(''); }}
             autoComplete="name"
-            disabled={!actions.canEdit || saving}
+            disabled={!actions.canEdit || formLocked}
             maxLength={100}
           />
           {member.globalImpact?.displayNameAffectsAllHotels ? (
@@ -487,10 +801,145 @@ export function HotelMemberDialog({
           <div className={styles.readOnlyField}>{member.email || copy(lang, 'Email unavailable', 'Correo no disponible')}</div>
         </div>
 
+        <section className={styles.accountAccessCard} aria-labelledby={accountAccessHeadingId}>
+          <div className={styles.accountAccessHeader}>
+            <div>
+              <span>{copy(lang, 'Account access', 'Acceso de la cuenta')}</span>
+              <h3 id={accountAccessHeadingId}>
+                {member.active
+                  ? copy(lang, 'Login is active', 'El acceso está activo')
+                  : copy(lang, 'Login is disabled', 'El acceso está desactivado')}
+              </h3>
+            </div>
+            <span className={`${styles.accountStatusBadge}${member.active ? '' : ` ${styles.accountStatusDisabled}`}`}>
+              {member.active
+                ? copy(lang, 'Active', 'Activa')
+                : copy(lang, 'Login disabled', 'Acceso desactivado')}
+            </span>
+          </div>
+          <p className={styles.accountAccessCopy}>
+            {member.active
+              ? copy(
+                  lang,
+                  'This person can sign in at every hotel their account can access.',
+                  'Esta persona puede iniciar sesión en todos los hoteles a los que su cuenta tiene acceso.',
+                )
+              : copy(
+                  lang,
+                  'Sign-in is blocked everywhere. Their account, hotel access, and records are still kept.',
+                  'El inicio de sesión está bloqueado en todas partes. Su cuenta, acceso a hoteles y registros se conservan.',
+                )}
+          </p>
+          <span className={styles.accountAccessMeta}>
+            {lastSignInLabel(member.lastSignInKnown, member.lastSignInAt, lang)}
+          </span>
+          {member.ownerProtected ? (
+            <small className={styles.cautionText}>{copy(
+              lang,
+              'This login stays active while this person is an organization owner. Transfer ownership before changing login status.',
+              'Este acceso permanece activo mientras esta persona sea propietaria de la organización. Transfiere la propiedad antes de cambiar el estado del acceso.',
+            )}</small>
+          ) : null}
+
+          {!lifecycleIntent && canChangeLifecycle ? (
+            <div className={styles.lifecycleActions}>
+              <button
+                ref={lifecycleTriggerRef}
+                type="button"
+                className={member.active ? styles.dangerButton : styles.primaryButton}
+                onClick={() => openLifecycleConfirmation(member.active ? 'deactivate' : 'reactivate')}
+                disabled={busy || dirty}
+                aria-describedby={dirty ? lifecycleGuidanceId : undefined}
+              >
+                {member.active
+                  ? copy(lang, 'Disable login everywhere', 'Desactivar acceso en todas partes')
+                  : copy(lang, 'Reactivate login', 'Reactivar acceso')}
+              </button>
+              {dirty ? (
+                <small id={lifecycleGuidanceId} className={styles.lifecycleGuidance}>
+                  {copy(
+                    lang,
+                    'Save or cancel your unsaved changes before changing login access.',
+                    'Guarda o cancela los cambios pendientes antes de cambiar el acceso.',
+                  )}
+                </small>
+              ) : null}
+            </div>
+          ) : null}
+          {!lifecycleIntent && lifecycleError ? <ErrorBanner message={lifecycleError} /> : null}
+
+          {lifecycleIntent ? (
+            <div
+              className={styles.lifecycleConfirmation}
+              ref={lifecycleConfirmationRef}
+              role={lifecyclePending ? 'status' : lifecycleIntent === 'deactivate' ? 'alert' : 'status'}
+              tabIndex={-1}
+              aria-labelledby={lifecycleHeadingId}
+              aria-describedby={lifecycleDescriptionId}
+            >
+              <h3 id={lifecycleHeadingId}>
+                {lifecyclePending
+                  ? copy(lang, 'Status change pending', 'Cambio de estado pendiente')
+                  : lifecycleIntent === 'deactivate'
+                  ? copy(lang, 'Disable login everywhere?', '¿Desactivar el acceso en todas partes?')
+                  : copy(lang, 'Reactivate login everywhere?', '¿Reactivar el acceso en todas partes?')}
+              </h3>
+              <p id={lifecycleDescriptionId}>
+                {lifecyclePending
+                  ? copy(
+                      lang,
+                      'The final login state is not confirmed yet. This page is checking for a short time with the same request. You can close this dialog; the hotel row will stay pending. If verification pauses, reload later to check the final status.',
+                      'El estado final del acceso aún no está confirmado. Esta página lo comprobará durante un breve periodo con la misma solicitud. Puedes cerrar este diálogo; la fila del hotel seguirá pendiente. Si la verificación se pausa, recarga más tarde para comprobar el estado final.',
+                    )
+                  : lifecycleIntent === 'deactivate'
+                  ? copy(
+                      lang,
+                      'This blocks sign-in at every hotel. The account, hotel access, and records stay in place, and you can reactivate it later.',
+                      'Esto bloquea el inicio de sesión en todos los hoteles. La cuenta, el acceso a hoteles y los registros permanecen, y puedes reactivarla después.',
+                    )
+                  : copy(
+                      lang,
+                      'This restores sign-in at every hotel this account can access. Existing hotel access and records stay unchanged, and you can disable it again later.',
+                      'Esto restaura el inicio de sesión en todos los hoteles a los que esta cuenta tiene acceso. El acceso y los registros existentes no cambian, y puedes volver a desactivarlo después.',
+                    )}
+              </p>
+              {lifecycleError ? <ErrorBanner message={lifecycleError} /> : null}
+              <div className={styles.lifecycleConfirmationActions}>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={lifecyclePending ? onClose : cancelLifecycleConfirmation}
+                  disabled={lifecycleSaving}
+                >
+                  {lifecyclePending
+                    ? copy(lang, 'Close while verifying', 'Cerrar durante la verificación')
+                    : lifecycleIntent === 'deactivate'
+                    ? copy(lang, 'Keep login active', 'Mantener acceso activo')
+                    : copy(lang, 'Keep login disabled', 'Mantener acceso desactivado')}
+                </button>
+                {!lifecyclePending ? (
+                  <button
+                    type="button"
+                    className={lifecycleIntent === 'deactivate' ? styles.dangerButton : styles.primaryButton}
+                    onClick={() => void submitLifecycle()}
+                    disabled={lifecycleSaving}
+                  >
+                    {lifecycleSaving
+                      ? <BusyLabel lang={lang} en="Saving…" es="Guardando…" />
+                      : lifecycleIntent === 'deactivate'
+                        ? copy(lang, 'Disable everywhere', 'Desactivar en todas partes')
+                        : copy(lang, 'Reactivate everywhere', 'Reactivar en todas partes')}
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
+        </section>
+
         {actions.canChangeRole ? (
           <label className={styles.field}>
             <span>{copy(lang, 'Hotel role', 'Rol del hotel')}</span>
-            <select value={role} onChange={(event) => { setRole(event.target.value); setError(''); setPartialSuccess(''); }} disabled={saving}>
+            <select value={role} onChange={(event) => { setRole(event.target.value); setError(''); setPartialSuccess(''); }} disabled={formLocked}>
               {!assignableRoles.includes(member.role as AssignableRole) ? (
                 <option value={member.role}>{roleLabel(member.role, lang)}</option>
               ) : null}
@@ -508,7 +957,25 @@ export function HotelMemberDialog({
           <div className={styles.field}>
             <span>{copy(lang, 'Hotel role', 'Rol del hotel')}</span>
             <div className={styles.readOnlyField}>{roleLabel(member.role, lang)}</div>
-            {actions.roleIsSharedAcrossHotels ? (
+            {member.ownerProtected ? (
+              <small>{copy(
+                lang,
+                'Organization-owner access is protected. Manage ownership from organization access, not this hotel role menu.',
+                'El acceso de propietario de la organización está protegido. Administra la propiedad desde el acceso de la organización, no desde este menú de roles del hotel.',
+              )}</small>
+            ) : member.role === 'owner' ? (
+              <small>{copy(
+                lang,
+                'Owner access is protected and cannot be changed in the ordinary role menu.',
+                'El acceso de propietario está protegido y no se puede cambiar en el menú de roles normal.',
+              )}</small>
+            ) : !member.active ? (
+              <small>{copy(
+                lang,
+                'Reactivate this login before changing its role.',
+                'Reactiva este acceso antes de cambiar su rol.',
+              )}</small>
+            ) : actions.roleIsSharedAcrossHotels ? (
               <small className={styles.cautionText}>{copy(
                 lang,
                 'This role is shared across multiple hotels, so it cannot be changed from one hotel.',
@@ -529,7 +996,7 @@ export function HotelMemberDialog({
               onChange={(event) => { setPassword(event.target.value); setError(''); setPartialSuccess(''); }}
               autoComplete="new-password"
               placeholder={copy(lang, 'At least 6 characters', 'Al menos 6 caracteres')}
-              disabled={saving}
+              disabled={formLocked}
               minLength={6}
             />
             {member.propertyAccess.filter((id) => id !== '*').length > 1 ? (
@@ -558,11 +1025,40 @@ export function HotelMemberDialog({
           </div>
         ) : null}
         {error ? <ErrorBanner message={error} /> : null}
+        {discardConfirming ? (
+          <div
+            ref={discardConfirmationRef}
+            className={styles.lifecycleConfirmation}
+            role="alert"
+            tabIndex={-1}
+            aria-labelledby={discardHeadingId}
+            aria-describedby={discardDescriptionId}
+          >
+            <h3 id={discardHeadingId}>
+              {copy(lang, 'Discard unsaved changes?', '¿Descartar los cambios pendientes?')}
+            </h3>
+            <p id={discardDescriptionId}>
+              {copy(
+                lang,
+                'Your name, role, or password edits will be lost. The account has not been changed yet.',
+                'Se perderán tus cambios de nombre, rol o contraseña. La cuenta aún no se ha modificado.',
+              )}
+            </p>
+            <div className={styles.lifecycleConfirmationActions}>
+              <button type="button" className={styles.secondaryButton} onClick={cancelDiscardConfirmation}>
+                {copy(lang, 'Keep editing', 'Seguir editando')}
+              </button>
+              <button type="button" className={styles.dangerButton} onClick={discardChanges}>
+                {copy(lang, 'Discard changes', 'Descartar cambios')}
+              </button>
+            </div>
+          </div>
+        ) : null}
         <div className={styles.dialogFooter}>
-          <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={saving}>
+          <button type="button" className={styles.secondaryButton} onClick={requestDialogClose} disabled={formLocked}>
             {copy(lang, 'Cancel', 'Cancelar')}
           </button>
-          <button type="submit" className={styles.primaryButton} disabled={!dirty || saving}>
+          <button type="submit" className={styles.primaryButton} disabled={!dirty || formLocked}>
             {saving
               ? <BusyLabel lang={lang} en="Saving…" es="Guardando…" />
               : copy(lang, 'Save changes', 'Guardar cambios')}

@@ -6,23 +6,25 @@ Source of truth: this document. If you add a new cron-shaped route, list it here
 
 ## Triggered by Vercel Cron (declared in `vercel.json`)
 
-These 13 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
+These 15 schedules run automatically as part of Vercel deploys. Auth via `CRON_SECRET` header set by Vercel.
 
 | Path | Schedule | Purpose |
 |---|---|---|
-| `/api/cron/expire-trials` | `0 9 * * *` | Daily 09:00 UTC. Expire trial accounts past their grace period. |
-| `/api/cron/process-sms-jobs` | `*/5 * * * *` | Every 5 min. Claim a batch of pending SMS jobs from `sms_jobs` and send via Twilio. |
-| `/api/cron/scraper-health` | `*/15 * * * *` | Every 15 min. Watchdog pulse for the PMS scraper service. |
-| `/api/agent/nudges/check` | `*/5 * * * *` | Every 5 min. For each property with recent agent activity (RPC `staxis_active_property_ids_for_nudges`, migration 0132), evaluate nudge conditions. |
+| `/api/cron/expire-help-requests` | `*/5 * * * *` | Expire stale robot help requests and clean up their screenshots. |
 | `/api/cron/agent-sweep-reservations` | `*/5 * * * *` | Every 5 min. Cancel agent_costs reservations stuck in 'reserved' state for >5 min. |
+| `/api/cron/sweep-account-lifecycle` | `*/5 * * * *` | Finish durable account disable/reactivate intents after an interrupted request. |
+| `/api/cron/process-agent-schedules` | `*/5 * * * *` | Deliver due agent reminders and recurring Communications tasks. |
 | `/api/cron/agent-archive-stale-conversations` | `0 3 * * *` | Daily 03:00 UTC. Move long-idle agent conversations to the archive tier. |
+| `/api/cron/claude-sessions-purge` | `30 3 * * *` | Purge expired AI browser sessions. |
 | `/api/cron/agent-summarize-long-conversations` | `*/30 * * * *` | Every 30 min. Fold conversations with >50 unsummarized messages into a summary turn (Haiku-driven). |
+| `/api/cron/agent-consolidate-memory` | `0 5 * * *` | Consolidate durable hotel memory overnight. |
 | `/api/cron/agent-heal-counters` | `0 4 * * *` | Daily 04:00 UTC. Reconcile agent_conversations counter drift via `staxis_heal_conversation_counters`. |
-| `/api/cron/agent-weekly-digest` | `0 9 * * 0` | Sundays 09:00 UTC. Per-property weekly activity digest email. |
-| `/api/cron/doctor-check` | `0 * * * *` | Hourly. Run the doctor health checks and persist results to `cron_heartbeats`. |
 | `/api/cron/walkthrough-heal-stale` | `*/30 * * * *` | Every 30 min. Recover stranded walkthrough_runs via `staxis_walkthrough_heal_stale`. |
-| `/api/cron/walkthrough-health-alert` | `*/10 * * * *` | Every 10 min. Page on walkthrough error spikes. |
-| `/api/cron/seed-rooms-daily` | `10 * * * *` | At minute 10 of every hour. Seed `rooms` rows for properties whose local-day has just rolled forward. |
+| `/api/cron/sweep-orphan-auth-users` | `0 7 * * *` | Remove incomplete sign-up auth users without an account row. |
+| `/api/cron/sweep-mfa-verified-sessions` | `0 */6 * * *` | Remove expired trusted-device verification sessions. |
+| `/api/cron/webhook-dedup-purge` | `15 4 * * *` | Purge expired webhook deduplication keys. |
+| `/api/cron/pms-auth-codes-purge` | `45 4 * * *` | Purge expired PMS authentication codes. |
+| `/api/cron/vercel-watchdog` | `*/5 * * * *` | Poll the production doctor and alert when the app is unhealthy. |
 
 ## Triggered externally (NOT in `vercel.json`)
 

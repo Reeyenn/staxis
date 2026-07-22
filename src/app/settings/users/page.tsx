@@ -4,14 +4,20 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { ChevronLeft, UserCog, UserX, UserCheck, Crown, ShieldCheck } from 'lucide-react';
+import { ArrowRight, ChevronLeft, UserCog, Crown, ShieldCheck } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { ASSIGNABLE_ROLES, roleLabel, type AppRole } from '@/lib/roles';
+import {
+  clearOwnershipTransferAttempt,
+  findOwnershipTransferAttempt,
+  getOrCreateOwnershipTransferAttempt,
+} from '@/lib/ownership-transfer-attempt';
+import { roleLabel, type AppRole } from '@/lib/roles';
 import { useCan } from '@/lib/capabilities/useCan';
 
 interface UserRow {
@@ -67,6 +73,12 @@ export default function UsersPage() {
   const [busyAccountId, setBusyAccountId] = useState<string | null>(null);
   const [transferTarget, setTransferTarget] = useState<UserRow | null>(null);
   const loadRequestRef = useRef(0);
+  const transferAttemptRef = useRef<{
+    key: string;
+    operationId: string;
+    reason: string | null;
+  } | null>(null);
+  const replayedTransferOperationsRef = useRef(new Set<string>());
   const activeScopeRef = useRef<string | null>(null);
   activeScopeRef.current = allowed ? propertyId : null;
 
@@ -77,6 +89,7 @@ export default function UsersPage() {
     setUsers([]);
     setError('');
     setTransferTarget(null);
+    transferAttemptRef.current = null;
     setLoading(true);
   }, [propertyId]);
 
@@ -111,34 +124,93 @@ export default function UsersPage() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const performAction = async (accountId: string, action: string, payload: Record<string, unknown> = {}) => {
+  const transferOwnership = async (accountId: string, reason: string) => {
     if (!allowed || !propertyId) return;
     const requestedPropertyId = propertyId;
+    const attemptKey = `${requestedPropertyId}:${accountId}`;
+    let storage: Storage | null = null;
+    try { storage = window.localStorage; } catch { /* storage is optional */ }
+    const persistedAttempt = transferAttemptRef.current?.key === attemptKey
+      ? transferAttemptRef.current
+      : getOrCreateOwnershipTransferAttempt(
+        storage,
+        requestedPropertyId,
+        accountId,
+        reason || null,
+        () => crypto.randomUUID(),
+      );
+    const operationId = persistedAttempt.operationId;
+    const persistedReason = persistedAttempt.reason;
+    // Keep the operation UUID across network errors and ambiguous server
+    // responses. A retry can then prove that the atomic transfer already
+    // committed without creating duplicate role/audit rows. Hotel or target
+    // changes get a fresh key and the property-change effect clears it too.
+    transferAttemptRef.current = { key: attemptKey, operationId, reason: persistedReason };
     setBusyAccountId(accountId);
     setError('');
     try {
       const res = await fetchWithAuth('/api/settings/users', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId, accountId, action, ...payload }),
+        body: JSON.stringify({
+          propertyId,
+          accountId,
+          action: 'transfer_ownership',
+          newOwnerAccountId: accountId,
+          operationId,
+          reason: persistedReason,
+        }),
       });
       const body = await res.json() as { ok?: boolean; error?: string };
+      const definitive = (res.ok && body.ok === true)
+        || (!res.ok && res.status >= 400 && res.status < 500);
+      if (definitive) {
+        clearOwnershipTransferAttempt(
+          storage,
+          requestedPropertyId,
+          accountId,
+          operationId,
+        );
+        if (transferAttemptRef.current?.operationId === operationId) {
+          transferAttemptRef.current = null;
+        }
+      }
       if (activeScopeRef.current !== requestedPropertyId) return;
       if (!res.ok || !body.ok) {
-        setError(body.error || (lang === 'es' ? 'La acción falló' : 'Action failed'));
+        setError(body.error || (lang === 'es' ? 'La transferencia de propiedad falló' : 'Ownership transfer failed'));
         return;
       }
       await load();
     } catch (err) {
       if (activeScopeRef.current !== requestedPropertyId) return;
-      // A network throw used to silently do nothing — the role select just
-      // snapped back and a deactivate looked like it succeeded.
-      console.error('[users:settings] action failed', err);
-      setError(lang === 'es' ? 'La acción falló — revisa tu conexión e intenta de nuevo' : 'Action failed — check your connection and try again');
+      console.error('[users:settings] ownership transfer failed', err);
+      setError(lang === 'es'
+        ? 'La transferencia de propiedad falló — revisa tu conexión e intenta de nuevo'
+        : 'Ownership transfer failed — check your connection and try again');
     } finally {
       setBusyAccountId(null);
     }
   };
+
+  useEffect(() => {
+    if (!allowed || loading || !propertyId || users.length === 0) return;
+    let storage: Storage | null = null;
+    try { storage = window.localStorage; } catch { return; }
+    const attempt = findOwnershipTransferAttempt(
+      storage,
+      propertyId,
+      users.map((row) => row.accountId),
+    );
+    if (!attempt || replayedTransferOperationsRef.current.has(attempt.operationId)) return;
+    replayedTransferOperationsRef.current.add(attempt.operationId);
+    // A persisted record exists only after an ambiguous/network outcome. Run
+    // the exact operation again on reload so a committed transfer can return
+    // already_applied even though the caller's current role is now GM.
+    void transferOwnership(attempt.newOwnerAccountId, attempt.reason ?? '');
+  // transferOwnership intentionally uses this render's authenticated hotel
+  // context; the operation UUID ref prevents an automatic replay loop.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowed, loading, propertyId, users]);
 
   const isOwnerCaller = user?.role === 'owner' || user?.role === 'admin';
 
@@ -189,12 +261,12 @@ export default function UsersPage() {
           </button>
           <h1 style={{ fontFamily: 'var(--font-sans)', fontWeight: 700, fontSize: 17, display: 'flex', alignItems: 'center', gap: 8 }}>
             <UserCog size={15} color="var(--navy)" />
-            {lang === 'es' ? 'Usuarios y roles' : 'Users & Roles'}
+            {lang === 'es' ? 'Usuarios y propiedad' : 'Users & ownership'}
           </h1>
           <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
             {lang === 'es'
-              ? 'Cambia el rol de tu equipo, desactiva cuentas que ya no se usan y transfiere la propiedad si es necesario.'
-              : 'Change your team\'s roles, deactivate accounts that aren\'t in use, and transfer ownership when you need to.'}
+              ? 'Consulta las cuentas del hotel y transfiere la propiedad cuando sea necesario. Los roles y el acceso ahora se administran en Mi hotel.'
+              : 'Review hotel accounts and transfer ownership when needed. Roles and login access are now managed in My Hotel.'}
           </p>
         </div>
 
@@ -206,6 +278,34 @@ export default function UsersPage() {
             </select>
           </div>
         )}
+
+        <section
+          aria-labelledby="my-hotel-people-handoff-title"
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+            flexWrap: 'wrap', padding: '14px 16px', background: 'var(--bg-card)',
+            border: '1px solid var(--border-bright)', borderRadius: 'var(--radius-lg)',
+          }}
+        >
+          <div style={{ minWidth: 0, flex: '1 1 320px' }}>
+            <h2 id="my-hotel-people-handoff-title" style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 700, color: 'var(--text-primary)' }}>
+              {lang === 'es' ? 'Administra roles y accesos en Mi hotel' : 'Manage roles and login access in My Hotel'}
+            </h2>
+            <p style={{ marginTop: 4, color: 'var(--text-muted)', fontSize: 12, lineHeight: 1.5 }}>
+              {lang === 'es'
+                ? `Abre Personas para ${activeProperty?.name ?? 'este hotel'}. Este marcador sigue mostrando las cuentas y la transferencia de propiedad.`
+                : `Open People for ${activeProperty?.name ?? 'this hotel'}. This bookmark still shows accounts and ownership transfer.`}
+            </p>
+          </div>
+          <Link
+            href="/company?tab=people"
+            className="btn btn-primary"
+            style={{ height: 44, padding: '0 16px', flex: '0 0 auto' }}
+          >
+            {lang === 'es' ? 'Abrir Personas en Mi hotel' : 'Open People in My Hotel'}
+            <ArrowRight size={15} aria-hidden="true" />
+          </Link>
+        </section>
 
         {error && (
           <p style={{ fontSize: 13, color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.2))', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
@@ -224,13 +324,11 @@ export default function UsersPage() {
             {sortedUsers.map(u => {
               const isSelf = u.accountId === user.accountId;
               const isOwner = u.role === 'owner';
-              const canBeChanged = u.role !== 'admin';
               return (
                 <div key={u.accountId} style={{
                   background: 'var(--bg-card)', border: '1px solid var(--border)',
                   borderRadius: 'var(--radius-lg)', padding: '14px 16px',
                   display: 'flex', flexDirection: 'column', gap: 10,
-                  opacity: u.active ? 1 : 0.62,
                 }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <div style={{
@@ -260,57 +358,22 @@ export default function UsersPage() {
                           ? `${lang === 'es' ? 'último ingreso' : 'last sign-in'} ${new Date(u.lastSignInAt).toLocaleDateString()}`
                           : (lang === 'es' ? 'sin ingresos aún' : 'no sign-ins yet')}
                       </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-secondary)', marginTop: 4 }}>
+                        {lang === 'es' ? 'Rol actual' : 'Current role'}: <strong>{roleLabel(u.role)}</strong>
+                      </div>
                     </div>
                   </div>
 
-                  {canBeChanged && (
+                  {isOwnerCaller && !isOwner && u.active && !isSelf && (
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
-                      <select
-                        value={u.role}
-                        onChange={e => performAction(u.accountId, 'change_role', { newRole: e.target.value })}
-                        disabled={busyAccountId === u.accountId || isSelf || !u.active}
-                        style={{ ...inputStyle, width: 'auto', height: 36, fontSize: 13 }}
+                      <button
+                        onClick={() => setTransferTarget(u)}
+                        disabled={busyAccountId === u.accountId}
+                        style={ghostBtnStyle('var(--amber)')}
                       >
-                        {ASSIGNABLE_ROLES.map(r => <option key={r} value={r}>{roleLabel(r)}</option>)}
-                      </select>
-
-                      {u.active ? (
-                        !isSelf && (
-                          <button
-                            onClick={() => {
-                              const msg = lang === 'es'
-                                ? `¿Desactivar la cuenta de ${u.displayName}? Ya no podrá ingresar y dejará de recibir reportes. Puedes reactivarla más tarde.`
-                                : `Deactivate ${u.displayName}'s account? They won't be able to sign in and will stop getting reports. You can reactivate them later.`;
-                              if (confirm(msg)) void performAction(u.accountId, 'deactivate');
-                            }}
-                            disabled={busyAccountId === u.accountId}
-                            style={ghostBtnStyle('#dc2626')}
-                          >
-                            <UserX size={13} />
-                            {lang === 'es' ? 'Desactivar' : 'Deactivate'}
-                          </button>
-                        )
-                      ) : (
-                        <button
-                          onClick={() => performAction(u.accountId, 'reactivate')}
-                          disabled={busyAccountId === u.accountId}
-                          style={ghostBtnStyle('#16a34a')}
-                        >
-                          <UserCheck size={13} />
-                          {lang === 'es' ? 'Reactivar' : 'Reactivate'}
-                        </button>
-                      )}
-
-                      {isOwnerCaller && !isOwner && u.active && !isSelf && (
-                        <button
-                          onClick={() => setTransferTarget(u)}
-                          disabled={busyAccountId === u.accountId}
-                          style={ghostBtnStyle('var(--amber)')}
-                        >
-                          <Crown size={13} />
-                          {lang === 'es' ? 'Hacer propietario' : 'Make owner'}
-                        </button>
-                      )}
+                        <Crown size={13} />
+                        {lang === 'es' ? 'Hacer propietario' : 'Make owner'}
+                      </button>
                     </div>
                   )}
                 </div>
@@ -324,10 +387,7 @@ export default function UsersPage() {
             target={transferTarget}
             onClose={() => setTransferTarget(null)}
             onConfirm={async (reason) => {
-              await performAction(transferTarget.accountId, 'transfer_ownership', {
-                newOwnerAccountId: transferTarget.accountId,
-                reason: reason || null,
-              });
+              await transferOwnership(transferTarget.accountId, reason);
               setTransferTarget(null);
             }}
           />
@@ -419,7 +479,7 @@ const inputStyle: React.CSSProperties = {
 
 function ghostBtnStyle(color: string): React.CSSProperties {
   return {
-    height: 36, padding: '0 12px', borderRadius: 'var(--radius-sm)',
+    height: 44, padding: '0 12px', borderRadius: 'var(--radius-sm)',
     background: 'transparent', border: `1px solid var(--border)`,
     color, fontSize: 12, fontWeight: 600, cursor: 'pointer',
     fontFamily: 'var(--font-sans)',

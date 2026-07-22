@@ -292,6 +292,8 @@ function CompanyAccessContent() {
     staffLoaded,
     staffLoadFailed,
     staffViewerKey,
+    capabilityOverridesViewerKey,
+    capabilityOverridesPropertyId,
     loading: propertyLoading,
     setActivePropertyId,
     refreshStaff,
@@ -327,7 +329,21 @@ function CompanyAccessContent() {
   const userRole = user?.role ?? null;
   const activePropertyId = activeProperty?.id ?? null;
   const adminPreview = userRole === 'admin';
-  const canManageTeam = can('manage_team');
+  const capabilityViewerKey = user?.uid && activePropertyId
+    ? `${user.uid}:${activePropertyId}`
+    : null;
+  const hotelCapabilitiesReady = Boolean(
+    activePropertyId
+    && capabilityViewerKey
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === capabilityViewerKey,
+  );
+  const hotelCapabilitiesLoading = Boolean(
+    user && activePropertyId && !hotelCapabilitiesReady,
+  );
+  // A hotel switch clears readiness synchronously. Never reuse the previous
+  // hotel's optimistic capability result while the next snapshot is loading.
+  const canManageTeam = hotelCapabilitiesReady && can('manage_team');
   const staffBelongsToCurrentViewer = Boolean(user?.uid && activePropertyId
     && staffViewerKey === `${user.uid}:${activePropertyId}`);
   const currentStaff = staffBelongsToCurrentViewer
@@ -525,7 +541,8 @@ function CompanyAccessContent() {
     || (adminPreview && !adminTargetIsCurrent)
     || (loading && !currentData)
     || viewerTransitionLoading
-    || propertyRosterLoading;
+    || propertyRosterLoading
+    || (tab === 'people' && hotelCapabilitiesLoading);
   const adminPreviewFailed = adminPreview && !showLoading && Boolean(currentLoadError) && !currentData;
   const adminViewerContext = adminPreview ? resolved.viewerContext : undefined;
   const adminToolsActive = Boolean(

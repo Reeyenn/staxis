@@ -217,6 +217,15 @@ describe('My Hotel account and team integration', () => {
     assert.match(companyCss, /\.tabs \.teamInviteButton \{[\s\S]*min-height: 42px;[\s\S]*background: var\(--company-sage\);/);
   });
 
+  test('waits for the exact hotel capability snapshot before showing team controls', () => {
+    assert.match(company, /capabilityOverridesPropertyId === activePropertyId/);
+    assert.match(company, /capabilityOverridesViewerKey === capabilityViewerKey/);
+    assert.match(company, /const canManageTeam = hotelCapabilitiesReady && can\(['"]manage_team['"]\)/);
+    assert.match(company, /tab === ['"]people['"] && hotelCapabilitiesLoading/);
+    assert.match(company, /tab === ['"]people['"] && activeProperty && canManageTeam/);
+    assert.match(company, /canManageTeam=\{canManageTeam\}/);
+  });
+
   test('uses a styled accessible hotel menu instead of a browser-native select', () => {
     assert.doesNotMatch(hotelSwitcher, /<select|<option/);
     assert.match(hotelSwitcher, /role="combobox"/);

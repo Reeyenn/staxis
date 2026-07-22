@@ -29,9 +29,20 @@ export interface HotelTeamActionFlags {
   canEditProfile?: boolean;
   canChangeRole?: boolean;
   canResetPassword?: boolean;
+  canDeactivate?: boolean;
+  canReactivate?: boolean;
   canRemove?: boolean;
   canRemoveHotelAccess?: boolean;
   reason?: string | null;
+}
+
+export type HotelTeamLifecycleAction = 'deactivate' | 'reactivate';
+
+export interface HotelTeamPendingLifecycleOperation {
+  accountId: string;
+  action: HotelTeamLifecycleAction;
+  operationId: string;
+  clearStoredOperation: () => void;
 }
 
 export interface HotelTeamMember {
@@ -40,6 +51,15 @@ export interface HotelTeamMember {
   displayName: string;
   email: string;
   role: AppRole;
+  active: boolean;
+  /** Exact account-row version observed when this member was loaded. */
+  updatedAt: string;
+  /** Effective normalized organization owners use the ownership workflow. */
+  ownerProtected: boolean;
+  lastSignInKnown: boolean;
+  lastSignInAt: string | null;
+  lifecyclePending?: boolean;
+  lifecycleDesiredActive?: boolean | null;
   propertyAccess: string[];
   staffId: string | null;
   createdAt?: string;
@@ -59,6 +79,8 @@ export interface HotelTeamMember {
   canEditProfile?: boolean;
   canChangeRole?: boolean;
   canResetPassword?: boolean;
+  canDeactivate?: boolean;
+  canReactivate?: boolean;
   canRemove?: boolean;
 }
 
@@ -103,12 +125,19 @@ interface Envelope<T> {
   ok?: boolean;
   data?: T;
   error?: unknown;
+  details?: unknown;
+}
+
+interface PendingLifecycleReconciliation extends HotelTeamPendingLifecycleOperation {
+  phase: 'polling' | 'paused';
 }
 
 interface ResolvedActions {
   canEdit: boolean;
   canChangeRole: boolean;
   canResetPassword: boolean;
+  canDeactivate: boolean;
+  canReactivate: boolean;
   canRemove: boolean;
   roleIsSharedAcrossHotels: boolean;
 }
@@ -145,6 +174,36 @@ function responseError(body: Envelope<unknown>, fallback: string): string {
     if (typeof record.error === 'string') return record.error;
   }
   return fallback;
+}
+
+const LIFECYCLE_RECONCILIATION_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
+const LIFECYCLE_SERVER_REFRESH_DELAYS_MS = [2_000, 4_000, 8_000, 16_000] as const;
+
+function lifecycleResponseNeedsReconciliation(
+  response: Response,
+  body: Envelope<unknown>,
+  operationId: string,
+): boolean {
+  if (response.status === 408 || response.status === 425 || response.status === 429) return true;
+  if (response.status !== 503) return false;
+  if (!body.details || typeof body.details !== 'object') return true;
+  const details = body.details as Record<string, unknown>;
+  return details.operationId === undefined || details.operationId === operationId;
+}
+
+function waitForLifecycleReconciliation(delayMs: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timeout = window.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, delayMs);
+    const onAbort = () => {
+      window.clearTimeout(timeout);
+      resolve(false);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function roleLabel(role: AppRole, lang: HotelTeamLang): string {
@@ -191,10 +250,25 @@ function timeAgo(value: string, lang: HotelTeamLang): string {
   return copy(lang, `${days}d ago`, `Hace ${days} d`);
 }
 
+function lastSignInLabel(known: boolean, value: string | null, lang: HotelTeamLang): string {
+  if (!known) return copy(lang, 'Last sign-in unavailable', 'Último acceso no disponible');
+  if (!value) return copy(lang, 'No sign-ins yet', 'Aún no ha iniciado sesión');
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return copy(lang, 'Last sign-in unavailable', 'Último acceso no disponible');
+  }
+  const formatted = new Intl.DateTimeFormat(lang === 'es' ? 'es-US' : 'en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(parsed);
+  return copy(lang, `Last signed in ${formatted}`, `Último acceso: ${formatted}`);
+}
+
 function actionFlag(
   member: HotelTeamMember,
   actionKeys: Array<keyof HotelTeamActionFlags>,
-  topLevel: 'canEditProfile' | 'canChangeRole' | 'canResetPassword' | 'canRemove',
+  topLevel: 'canEditProfile' | 'canChangeRole' | 'canResetPassword' | 'canDeactivate' | 'canReactivate' | 'canRemove',
   fallback: boolean,
 ): boolean {
   for (const key of actionKeys) {
@@ -219,11 +293,12 @@ function resolveActions(
   const targetAboveGm = member.role === 'owner' || member.role === 'general_manager';
   const hierarchyAllows = viewerIsAdmin || viewerIsOwner || (viewerIsGm && !targetAboveGm);
   const hotelIds = member.propertyAccess.filter((id) => id !== '*');
+  const targetHasAllHotels = member.propertyAccess.includes('*');
   const roleIsSharedAcrossHotels = member.hasOtherHotelAccess ?? hotelIds.length > 1;
   const viewerHotels = new Set(currentUser.propertyAccess);
   const viewerControlsEveryHotel = viewerIsAdmin
     || viewerHotels.has('*')
-    || hotelIds.every((id) => viewerHotels.has(id));
+    || (!targetHasAllHotels && hotelIds.length > 0 && hotelIds.every((id) => viewerHotels.has(id)));
 
   // These floors are deliberately stricter than presentation flags. A stale
   // or over-permissive API flag must never expose admin, self-removal, or
@@ -231,17 +306,47 @@ function resolveActions(
   const editFloor = !locked && !adminTarget && (self || hierarchyAllows);
   const editFallback = editFloor;
   const canEdit = editFloor && actionFlag(member, ['canEditProfile'], 'canEditProfile', editFallback);
-  const roleFloor = canEdit && !self;
+  // Role authority is projected independently from profile-edit authority.
+  // Keep only local hierarchy/state safety floors here; the canonical
+  // canChangeRole flag represents manage_users across every target hotel.
+  const roleFloor = !locked
+    && !self
+    && !adminTarget
+    && !member.ownerProtected
+    && hierarchyAllows
+    && member.active
+    && member.role !== 'owner';
   const canChangeRole = roleFloor
-    && actionFlag(member, ['canChangeRole'], 'canChangeRole', roleFloor);
+    && actionFlag(member, ['canChangeRole'], 'canChangeRole', false);
   const passwordFloor = canEdit && self;
   const canResetPassword = passwordFloor
     && actionFlag(member, ['canResetPassword'], 'canResetPassword', passwordFloor);
-  const removeFloor = !locked && !self && !adminTarget && hierarchyAllows;
+  const lifecycleFloor = !locked
+    && !self
+    && !adminTarget
+    && !member.ownerProtected
+    && hierarchyAllows
+    && viewerControlsEveryHotel;
+  const canDeactivate = lifecycleFloor
+    && member.active
+    && actionFlag(member, ['canDeactivate'], 'canDeactivate', false);
+  const canReactivate = lifecycleFloor
+    && !member.active
+    && actionFlag(member, ['canReactivate'], 'canReactivate', false);
+  const removeFloor = !locked && !self && !adminTarget
+    && !member.ownerProtected && hierarchyAllows;
   const canRemove = removeFloor
     && actionFlag(member, ['canRemoveHotelAccess', 'canRemove'], 'canRemove', removeFloor);
 
-  return { canEdit, canChangeRole, canResetPassword, canRemove, roleIsSharedAcrossHotels };
+  return {
+    canEdit,
+    canChangeRole,
+    canResetPassword,
+    canDeactivate,
+    canReactivate,
+    canRemove,
+    roleIsSharedAcrossHotels,
+  };
 }
 
 type DialogLoadingVariant = 'invite' | 'member' | 'remove' | 'decision';
@@ -258,6 +363,9 @@ function DialogLoading({
   onClose: () => void;
 }) {
   const closeRef = React.useRef<HTMLButtonElement | null>(null);
+  const dialogRef = React.useRef<HTMLDivElement | null>(null);
+  const onCloseRef = React.useRef(onClose);
+  onCloseRef.current = onClose;
   const titleId = React.useId();
   const loadingLabel = copy(lang, 'Opening dialog…', 'Abriendo diálogo…');
   const title = variant === 'invite'
@@ -274,20 +382,40 @@ function DialogLoading({
       : styles.dialogLoadingConfirmation;
 
   React.useEffect(() => {
+    const returnFocusElement = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeRef.current?.focus({ preventScroll: true });
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      onClose();
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
+        'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+      )).filter((element) => element.getAttribute('aria-hidden') !== 'true');
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       document.removeEventListener('keydown', onKeyDown);
+      if (returnFocusElement?.isConnected) returnFocusElement.focus({ preventScroll: true });
     };
-  }, [onClose]);
+  }, []);
 
   return createPortal(
     <div className={styles.dialogLayer}>
@@ -298,6 +426,7 @@ function DialogLoading({
         aria-label={copy(lang, 'Close dialog', 'Cerrar diálogo')}
       />
       <div
+        ref={dialogRef}
         className={`${styles.dialog} ${styles.dialogLoadingShell} ${shellClass}`}
         role="dialog"
         aria-modal="true"
@@ -393,6 +522,10 @@ export function HotelTeamPanel({
   const [requestsError, setRequestsError] = React.useState('');
   const [editMember, setEditMember] = React.useState<HotelTeamMember | null>(null);
   const [removeMember, setRemoveMember] = React.useState<HotelTeamMember | null>(null);
+  const [pendingLifecycleByAccount, setPendingLifecycleByAccount] = React.useState<
+    Record<string, PendingLifecycleReconciliation>
+  >({});
+  const [serverLifecyclePollingPaused, setServerLifecyclePollingPaused] = React.useState(false);
   const [decision, setDecision] = React.useState<{
     request: HotelJoinRequest;
     decision: 'approve' | 'deny';
@@ -518,12 +651,121 @@ export function HotelTeamPanel({
     return () => requestAbortRef.current?.abort();
   }, [loadRequests]);
 
+  const hasServerLifecyclePending = team.some((member) => member.lifecyclePending === true);
+
+  React.useEffect(() => {
+    setServerLifecyclePollingPaused(false);
+    if (!hasServerLifecyclePending) return;
+    const controller = new AbortController();
+
+    void (async () => {
+      for (const delayMs of LIFECYCLE_SERVER_REFRESH_DELAYS_MS) {
+        const shouldContinue = await waitForLifecycleReconciliation(delayMs, controller.signal);
+        if (!shouldContinue) return;
+        await loadTeam();
+        if (controller.signal.aborted) return;
+      }
+      setServerLifecyclePollingPaused(true);
+    })();
+
+    return () => controller.abort();
+  }, [hasServerLifecyclePending, hotelId, loadTeam]);
+
   React.useEffect(() => () => linkageRef.current?.({ status: 'unavailable' }), []);
 
   const refreshAfterChange = React.useCallback(async () => {
     await Promise.all([loadTeam(), loadRequests()]);
     await changedRef.current?.();
   }, [loadRequests, loadTeam]);
+
+  const reconcilePendingLifecycle = React.useCallback((operation: HotelTeamPendingLifecycleOperation) => {
+    setPendingLifecycleByAccount((current) => {
+      const existing = current[operation.accountId];
+      if (existing?.operationId === operation.operationId && existing.phase === 'polling') return current;
+      return {
+        ...current,
+        [operation.accountId]: { ...operation, phase: 'polling' },
+      };
+    });
+  }, []);
+
+  React.useEffect(() => {
+    const operations = Object.values(pendingLifecycleByAccount)
+      .filter((operation) => operation.phase === 'polling');
+    if (operations.length === 0) return;
+
+    const controller = new AbortController();
+    const settle = async (
+      operation: PendingLifecycleReconciliation,
+      clearStoredOperation: boolean,
+    ) => {
+      if (clearStoredOperation) operation.clearStoredOperation();
+      setPendingLifecycleByAccount((current) => {
+        if (current[operation.accountId]?.operationId !== operation.operationId) return current;
+        const next = { ...current };
+        delete next[operation.accountId];
+        return next;
+      });
+      setEditMember((current) => current?.accountId === operation.accountId ? null : current);
+      await refreshAfterChange();
+    };
+
+    for (const operation of operations) {
+      void (async () => {
+        for (const delayMs of LIFECYCLE_RECONCILIATION_DELAYS_MS) {
+          const shouldContinue = await waitForLifecycleReconciliation(delayMs, controller.signal);
+          if (!shouldContinue) return;
+
+          const requestController = new AbortController();
+          const abortRequest = () => requestController.abort();
+          controller.signal.addEventListener('abort', abortRequest, { once: true });
+          const requestTimeout = window.setTimeout(abortRequest, 15_000);
+          try {
+            const response = await fetchWithAuth('/api/auth/team/status', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                hotelId,
+                accountId: operation.accountId,
+                action: operation.action,
+                operationId: operation.operationId,
+              }),
+              signal: requestController.signal,
+            });
+            const body = await response.json().catch(() => ({})) as Envelope<{
+              operationId?: string;
+              active?: boolean;
+            }>;
+            if (response.ok && body.ok) {
+              await settle(operation, true);
+              return;
+            }
+            if (!lifecycleResponseNeedsReconciliation(response, body, operation.operationId)) {
+              await settle(operation, true);
+              return;
+            }
+          } catch (error) {
+            if (controller.signal.aborted) return;
+            console.error('[HotelTeamPanel] lifecycle reconciliation attempt failed', error);
+          } finally {
+            window.clearTimeout(requestTimeout);
+            controller.signal.removeEventListener('abort', abortRequest);
+          }
+        }
+
+        setPendingLifecycleByAccount((current) => {
+          const existing = current[operation.accountId];
+          if (existing?.operationId !== operation.operationId) return current;
+          return {
+            ...current,
+            [operation.accountId]: { ...existing, phase: 'paused' },
+          };
+        });
+      })();
+    }
+
+    return () => controller.abort();
+  }, [hotelId, pendingLifecycleByAccount, refreshAfterChange]);
 
   const loadingDialogVariant: DialogLoadingVariant = editMember
     ? 'member'
@@ -601,8 +843,19 @@ export function HotelTeamPanel({
           <div className={styles.teamList} role="list">
             {team.map((member) => {
               const self = member.accountId === currentAccountId;
-              const actions = resolveActions(member, currentUser, currentAccountId, locked);
-              const canOpenEditor = actions.canEdit && (actions.canChangeRole || actions.canResetPassword || self || member.role !== 'admin');
+              const pendingLifecycle = pendingLifecycleByAccount[member.accountId];
+              const lifecycleIsPending = Boolean(pendingLifecycle) || member.lifecyclePending === true;
+              const lifecyclePollingPaused = pendingLifecycle?.phase === 'paused'
+                || (!pendingLifecycle && member.lifecyclePending === true && serverLifecyclePollingPaused);
+              const availableActions = resolveActions(member, currentUser, currentAccountId, locked);
+              const actions = lifecycleIsPending
+                ? resolveActions(member, currentUser, currentAccountId, true)
+                : availableActions;
+              const canOpenEditor = availableActions.canEdit
+                || availableActions.canChangeRole
+                || availableActions.canResetPassword
+                || availableActions.canDeactivate
+                || availableActions.canReactivate;
               const staffProfile = member.staffId ? staffById.get(member.staffId) : undefined;
               const memberDetails = [
                 `@${member.username}`,
@@ -619,35 +872,72 @@ export function HotelTeamPanel({
                     </strong>
                     <span>{memberDetails}</span>
                     <span>{member.email || copy(lang, 'Email unavailable', 'Correo no disponible')}</span>
+                    <span className={styles.signInMetadata}>{lastSignInLabel(member.lastSignInKnown, member.lastSignInAt, lang)}</span>
+                    {lifecycleIsPending ? (
+                      <em className={styles.pendingLifecycleMeta}>
+                        {lifecyclePollingPaused
+                          ? copy(
+                              lang,
+                              'Verification paused. Reload to check the final status.',
+                              'La verificación está en pausa. Recarga para comprobar el estado final.',
+                            )
+                          : copy(lang, 'Verifying the account status…', 'Verificando el estado de la cuenta…')}
+                      </em>
+                    ) : null}
+                    {member.ownerProtected ? (
+                      <em>{copy(
+                        lang,
+                        'Organization owner access is protected',
+                        'El acceso de propietario de la organización está protegido',
+                      )}</em>
+                    ) : null}
                     {actions.roleIsSharedAcrossHotels ? (
                       <em>{copy(lang, 'Role shared across multiple hotels', 'Rol compartido entre varios hoteles')}</em>
                     ) : null}
                   </div>
-                  {member.staffId ? (
-                    <span className={styles.linkedBadge}>
-                      {staffProfile?.isActive === false
-                        ? copy(lang, 'Linked · inactive', 'Vinculada · inactiva')
-                        : copy(lang, 'Linked staff', 'Personal vinculado')}
+                  <div className={styles.rowBadges}>
+                    <span
+                      className={`${styles.accountStatusBadge}${
+                        lifecycleIsPending
+                          ? ` ${styles.accountStatusPending}`
+                          : member.active ? '' : ` ${styles.accountStatusDisabled}`
+                      }`}
+                      role={lifecycleIsPending ? 'status' : undefined}
+                    >
+                      {lifecycleIsPending
+                        ? copy(lang, 'Status change pending', 'Cambio de estado pendiente')
+                        : member.active
+                          ? copy(lang, 'Active', 'Activa')
+                          : copy(lang, 'Login disabled', 'Acceso desactivado')}
                     </span>
-                  ) : null}
-                  {(canOpenEditor || actions.canRemove) ? (
+                    {member.staffId ? (
+                      <span className={styles.linkedBadge}>
+                        {staffProfile?.isActive === false
+                          ? copy(lang, 'Linked · inactive', 'Vinculada · inactiva')
+                          : copy(lang, 'Linked staff', 'Personal vinculado')}
+                      </span>
+                    ) : null}
+                  </div>
+                  {(canOpenEditor || availableActions.canRemove) ? (
                     <div className={styles.rowActions}>
                       {canOpenEditor ? (
                         <button
                           type="button"
                           className={styles.editButton}
                           onClick={() => setEditMember(member)}
+                          disabled={lifecycleIsPending}
                           aria-label={copy(lang, `Edit ${member.displayName}`, `Editar a ${member.displayName}`)}
                         >
                           <Pencil size={15} aria-hidden="true" />
                           <span>{copy(lang, 'Edit', 'Editar')}</span>
                         </button>
                       ) : null}
-                      {actions.canRemove ? (
+                      {availableActions.canRemove ? (
                         <button
                           type="button"
                           className={styles.removeButton}
                           onClick={() => setRemoveMember(member)}
+                          disabled={lifecycleIsPending}
                           aria-label={copy(lang, `Remove ${member.displayName} from this hotel`, `Quitar a ${member.displayName} de este hotel`)}
                         >
                           <Trash2 size={15} aria-hidden="true" />
@@ -743,7 +1033,15 @@ export function HotelTeamPanel({
             currentUser={currentUser}
             currentAccountId={currentAccountId}
             lang={lang}
-            actions={resolveActions(editMember, currentUser, currentAccountId, locked)}
+            actions={resolveActions(
+              editMember,
+              currentUser,
+              currentAccountId,
+              locked
+                || Boolean(pendingLifecycleByAccount[editMember.accountId])
+                || editMember.lifecyclePending === true,
+            )}
+            onLifecyclePending={reconcilePendingLifecycle}
             onClose={() => setEditMember(null)}
             onChanged={refreshAfterChange}
             onSaved={async () => {

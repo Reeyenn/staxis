@@ -37,7 +37,9 @@ interface AccountFixture {
   created_at: string;
   data_user_id: string;
   staff_id: string | null;
+  active: boolean;
   updated_at: string;
+  lifecycle_intent_version: number;
   skip_2fa: boolean;
 }
 
@@ -45,14 +47,32 @@ interface TestState {
   accounts: AccountFixture[];
   accountUpdates: Array<{ accountId: string; values: Record<string, unknown> }>;
   passwordUpdates: Array<{ userId: string; password: string }>;
+  authBanUpdates: Array<{ userId: string; banDuration: string }>;
+  authBannedUntil: Map<string, string | null>;
+  authLookupError: { message: string } | null;
+  authUpdateResults: Array<{ message: string } | null>;
+  authUpdateHooks: Array<(() => void) | null>;
+  authListError: { message: string } | null;
+  authListOmittedUserIds: Set<string>;
   auditRows: Array<Record<string, unknown>>;
   roleChangeRows: Array<Record<string, unknown>>;
   rpcCalls: Array<{ fn: string; args: Record<string, unknown> }>;
   capabilityOverrides: Array<{ property_id: string; capability: string; role: string; allowed: boolean }>;
   capabilityOverrideError: { message: string } | null;
   staffLinks: Array<{ account_id: string; property_id: string; staff_id: string; is_active: boolean }>;
+  pendingLifecycleAccountIds: Set<string>;
+  lifecycleIntentQueryError: { message: string } | null;
+  ownerProtectedAccountIds: Set<string>;
+  ownerProtectionError: { message: string } | null;
+  roleRpcError: { message: string } | null;
   accountUpdateConflicts: Set<string>;
+  accountUpdateErrors: Map<string, { message: string; code?: string }>;
+  accountVersion: number;
+  revokeCallerOnConflict: boolean;
+  denyManageUsersOnConflict: boolean;
   removalConflicts: Set<string>;
+  removalErrors: Map<string, { message: string; code?: string }>;
+  removalRpcResults: Map<string, Record<string, unknown>>;
 }
 
 let state: TestState;
@@ -61,12 +81,14 @@ type FromFn = typeof supabaseAdmin.from;
 type RpcFn = typeof supabaseAdmin.rpc;
 type GetUserFn = typeof supabaseAdmin.auth.getUser;
 type ListUsersFn = typeof supabaseAdmin.auth.admin.listUsers;
+type GetUserByIdFn = typeof supabaseAdmin.auth.admin.getUserById;
 type UpdateUserFn = typeof supabaseAdmin.auth.admin.updateUserById;
 
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
 const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 const originalGetUser: GetUserFn = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
 const originalListUsers: ListUsersFn = supabaseAdmin.auth.admin.listUsers.bind(supabaseAdmin.auth.admin);
+const originalGetUserById: GetUserByIdFn = supabaseAdmin.auth.admin.getUserById.bind(supabaseAdmin.auth.admin);
 const originalUpdateUser: UpdateUserFn = supabaseAdmin.auth.admin.updateUserById.bind(supabaseAdmin.auth.admin);
 
 function fixture(
@@ -85,7 +107,9 @@ function fixture(
     created_at: '2026-07-01T12:00:00.000Z',
     data_user_id: dataUserId,
     staff_id: null,
+    active: true,
     updated_at: '2026-07-01T12:00:00.000Z',
+    lifecycle_intent_version: 0,
     skip_2fa: false,
   };
 }
@@ -101,14 +125,32 @@ function resetState(): void {
     ],
     accountUpdates: [],
     passwordUpdates: [],
+    authBanUpdates: [],
+    authBannedUntil: new Map(),
+    authLookupError: null,
+    authUpdateResults: [],
+    authUpdateHooks: [],
+    authListError: null,
+    authListOmittedUserIds: new Set(),
     auditRows: [],
     roleChangeRows: [],
     rpcCalls: [],
     capabilityOverrides: [],
     capabilityOverrideError: null,
     staffLinks: [],
+    pendingLifecycleAccountIds: new Set(),
+    lifecycleIntentQueryError: null,
+    ownerProtectedAccountIds: new Set(),
+    ownerProtectionError: null,
+    roleRpcError: null,
     accountUpdateConflicts: new Set(),
+    accountUpdateErrors: new Map(),
+    accountVersion: 0,
+    revokeCallerOnConflict: false,
+    denyManageUsersOnConflict: false,
     removalConflicts: new Set(),
+    removalErrors: new Map(),
+    removalRpcResults: new Map(),
   };
 }
 
@@ -120,29 +162,118 @@ function installSupabaseStub(): void {
 
   supabaseAdmin.auth.admin.listUsers = (async () => ({
     data: {
-      users: state.accounts.map((account) => ({
-        id: account.data_user_id,
-        email: `${account.username}@example.test`,
-      })),
+      users: state.accounts
+        .filter((account) => !state.authListOmittedUserIds.has(account.data_user_id))
+        .map((account) => ({
+          id: account.data_user_id,
+          email: `${account.username}@example.test`,
+          last_sign_in_at: '2026-07-20T10:30:00.000Z',
+        })),
       aud: 'authenticated',
       nextPage: null,
       lastPage: 1,
       total: state.accounts.length,
     },
-    error: null,
+    error: state.authListError,
   })) as unknown as ListUsersFn;
 
-  supabaseAdmin.auth.admin.updateUserById = (async (userId: string, attrs: { password?: string }) => {
+  supabaseAdmin.auth.admin.getUserById = (async (userId: string) => {
+    if (state.authLookupError) {
+      return { data: { user: null }, error: state.authLookupError };
+    }
+    const accountRow = state.accounts.find((row) => row.data_user_id === userId);
+    return {
+      data: {
+        user: accountRow ? {
+          id: userId,
+          email: `${accountRow.username}@example.test`,
+          banned_until: state.authBannedUntil.get(userId) ?? undefined,
+        } : null,
+      },
+      error: null,
+    };
+  }) as unknown as GetUserByIdFn;
+
+  supabaseAdmin.auth.admin.updateUserById = (async (
+    userId: string,
+    attrs: { password?: string; ban_duration?: string },
+  ) => {
     if (attrs.password) state.passwordUpdates.push({ userId, password: attrs.password });
+    if (attrs.ban_duration) {
+      state.authBanUpdates.push({ userId, banDuration: attrs.ban_duration });
+      const nextResult = state.authUpdateResults.shift();
+      if (nextResult) return { data: { user: null }, error: nextResult };
+      state.authBannedUntil.set(
+        userId,
+        attrs.ban_duration === 'none' ? null : '2126-07-01T12:00:00.000Z',
+      );
+      state.authUpdateHooks.shift()?.();
+    }
     return { data: { user: null }, error: null };
   }) as unknown as UpdateUserFn;
 
   supabaseAdmin.rpc = (async (fn: string, args?: Record<string, unknown>) => {
     const safeArgs = args ?? {};
     state.rpcCalls.push({ fn, args: safeArgs });
+    if (fn === 'staxis_list_normalized_organization_owner_account_ids') {
+      return {
+        data: state.ownerProtectionError ? null : [...state.ownerProtectedAccountIds],
+        error: state.ownerProtectionError,
+      };
+    }
+    if (fn === 'staxis_change_hotel_team_role_guarded') {
+      if (state.roleRpcError) return { data: null, error: state.roleRpcError };
+      const actor = state.accounts.find((row) => row.id === safeArgs.p_actor_account_id);
+      const target = state.accounts.find((row) => row.id === safeArgs.p_target_account_id);
+      if (!actor || !target) return { data: { status: 'not_found' }, error: null };
+      if (state.pendingLifecycleAccountIds.has(actor.id)
+          || state.pendingLifecycleAccountIds.has(target.id)) {
+        return { data: { status: 'pending_conflict' }, error: null };
+      }
+      if (state.ownerProtectedAccountIds.has(target.id)) {
+        return { data: { status: 'forbidden', reason: 'organization_owner' }, error: null };
+      }
+      const expectedAccess = safeArgs.p_expected_property_access;
+      const snapshotMatches = target.active === safeArgs.p_expected_active
+        && target.role === safeArgs.p_expected_role
+        && target.data_user_id === safeArgs.p_expected_auth_user_id
+        && JSON.stringify(target.property_access) === JSON.stringify(expectedAccess)
+        && target.display_name === safeArgs.p_expected_display_name
+        && target.updated_at === safeArgs.p_expected_updated_at
+        && target.lifecycle_intent_version === safeArgs.p_expected_intent_version;
+      if (!snapshotMatches) return { data: { status: 'conflict' }, error: null };
+
+      const nextRole = safeArgs.p_new_role;
+      if (typeof nextRole !== 'string') return { data: { status: 'invalid' }, error: null };
+      const previousRole = target.role;
+      target.role = nextRole as TestRole;
+      if (typeof safeArgs.p_new_display_name === 'string') {
+        target.display_name = safeArgs.p_new_display_name;
+      }
+      target.updated_at = nextAccountVersion();
+      for (const propertyId of target.property_access) {
+        state.roleChangeRows.push({
+          account_id: target.id,
+          property_id: propertyId,
+          old_role: previousRole,
+          new_role: target.role,
+          change_kind: 'role_change',
+        });
+      }
+      state.auditRows.push({
+        action: 'account.team_update',
+        target_id: target.id,
+        hotel_id: safeArgs.p_hotel_id,
+      });
+      return { data: { status: 'ok' }, error: null };
+    }
     if (fn === 'staxis_remove_property_access_guarded') {
       const target = state.accounts.find((account) => account.id === safeArgs.p_account_id);
       if (!target) return { data: { status: 'not_found' }, error: null };
+      const configuredError = state.removalErrors.get(target.id);
+      if (configuredError) return { data: null, error: configuredError };
+      const configuredResult = state.removalRpcResults.get(target.id);
+      if (configuredResult) return { data: configuredResult, error: null };
       if (state.removalConflicts.has(target.id)) {
         return { data: { status: 'conflict' }, error: null };
       }
@@ -220,6 +351,44 @@ function installSupabaseStub(): void {
       return builder;
     }
 
+    if (table === 'account_lifecycle_intents') {
+      let accountId: string | null = null;
+      let accountIds: string[] | null = null;
+      let status: string | null = null;
+      const rows = () => {
+        const candidates = accountIds ?? (accountId ? [accountId] : []);
+        return status === 'pending'
+          ? candidates
+            .filter((candidate) => state.pendingLifecycleAccountIds.has(candidate))
+            .map((candidate) => ({ account_id: candidate, desired_active: false }))
+          : [];
+      };
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        in: (column: string, values: unknown[]) => {
+          if (column === 'account_id') {
+            accountIds = values.filter((value): value is string => typeof value === 'string');
+          }
+          return builder;
+        },
+        eq: (column: string, value: unknown) => {
+          if (column === 'account_id') accountId = value as string;
+          if (column === 'status') status = value as string;
+          return builder;
+        },
+        limit: () => builder,
+        maybeSingle: async () => ({
+          data: !state.lifecycleIntentQueryError ? rows()[0] ?? null : null,
+          error: state.lifecycleIntentQueryError,
+        }),
+        then: (resolve: (value: unknown) => unknown) => resolve({
+          data: state.lifecycleIntentQueryError ? null : rows(),
+          error: state.lifecycleIntentQueryError,
+        }),
+      };
+      return builder;
+    }
+
     if (table === 'admin_audit_log') {
       return {
         insert: async (row: Record<string, unknown>) => {
@@ -269,16 +438,30 @@ function accountBuilder(): Record<string, unknown> {
   const result = () => {
     if (updateValues) {
       const accountId = equals.get('id');
+      if (typeof accountId === 'string') {
+        const configuredError = state.accountUpdateErrors.get(accountId);
+        if (configuredError) return { data: [], error: configuredError };
+      }
       if (typeof accountId === 'string' && state.accountUpdateConflicts.has(accountId)) {
+        state.accountUpdateConflicts.delete(accountId);
         const target = state.accounts.find((account) => account.id === accountId);
-        if (target) target.updated_at = '2026-07-01T12:00:02.000Z';
+        if (target) target.updated_at = nextAccountVersion();
+        if (state.revokeCallerOnConflict) account(CALLER_ID).active = false;
+        if (state.denyManageUsersOnConflict) {
+          state.capabilityOverrides.push({
+            property_id: HOTEL_A,
+            capability: 'manage_users',
+            role: account(CALLER_ID).role,
+            allowed: false,
+          });
+        }
       }
     }
     const rows = matching();
     if (updateValues) {
       for (const account of rows) {
         Object.assign(account, updateValues);
-        account.updated_at = '2026-07-01T12:00:01.000Z';
+        account.updated_at = nextAccountVersion();
         state.accountUpdates.push({ accountId: account.id, values: { ...updateValues } });
       }
     }
@@ -302,7 +485,11 @@ function accountBuilder(): Record<string, unknown> {
     },
     maybeSingle: async () => {
       const { data, error } = result();
-      return { data: data[0] ?? null, error };
+      const row = data[0];
+      return {
+        data: row ? { ...row, property_access: [...row.property_access] } : null,
+        error,
+      };
     },
     then: (resolve: (value: unknown) => unknown) => resolve(result()),
   };
@@ -327,6 +514,20 @@ function account(accountId: string): AccountFixture {
   return found;
 }
 
+function expectedRoleSnapshot(accountId: string): Record<string, unknown> {
+  const target = account(accountId);
+  return {
+    expectedRole: target.role,
+    expectedDisplayName: target.display_name,
+    expectedUpdatedAt: target.updated_at,
+  };
+}
+
+function nextAccountVersion(): string {
+  state.accountVersion += 1;
+  return new Date(Date.parse('2026-07-01T12:00:00.000Z') + state.accountVersion * 1000).toISOString();
+}
+
 beforeEach(() => {
   resetState();
   installSupabaseStub();
@@ -337,6 +538,7 @@ afterEach(() => {
   supabaseAdmin.rpc = originalRpc;
   supabaseAdmin.auth.getUser = originalGetUser;
   supabaseAdmin.auth.admin.listUsers = originalListUsers;
+  supabaseAdmin.auth.admin.getUserById = originalGetUserById;
   supabaseAdmin.auth.admin.updateUserById = originalUpdateUser;
 });
 
@@ -365,8 +567,13 @@ describe('GET /api/auth/team action contract', () => {
       canChangeRole: false,
       canResetPassword: true,
       canRemove: false,
+      canDeactivate: false,
+      canReactivate: false,
     });
     assert.equal(self.isSelf, true);
+    assert.equal(self.active, true);
+    assert.equal(self.lastSignInAt, '2026-07-20T10:30:00.000Z');
+    assert.equal(self.lastSignInKnown, true);
 
     const local = byId.get(LOCAL_ID)!;
     assert.deepEqual(local.actions, {
@@ -374,9 +581,13 @@ describe('GET /api/auth/team action contract', () => {
       canChangeRole: true,
       canResetPassword: false,
       canRemove: true,
+      canDeactivate: true,
+      canReactivate: false,
     });
     assert.equal(local.canChangeRole, true, 'flat alias matches grouped action');
     assert.equal(local.hasOtherHotelAccess, false);
+    assert.equal(local.updatedAt, account(LOCAL_ID).updated_at);
+    assert.equal(local.ownerProtected, false);
 
     const multi = byId.get(MULTI_ID)!;
     assert.deepEqual(multi.actions, {
@@ -384,6 +595,8 @@ describe('GET /api/auth/team action contract', () => {
       canChangeRole: false,
       canResetPassword: false,
       canRemove: true,
+      canDeactivate: false,
+      canReactivate: false,
     });
     assert.equal(multi.hotelAccessCount, 2);
     assert.equal(multi.hasOtherHotelAccess, true);
@@ -403,8 +616,120 @@ describe('GET /api/auth/team action contract', () => {
         canChangeRole: false,
         canResetPassword: false,
         canRemove: false,
+        canDeactivate: false,
+        canReactivate: false,
       });
     }
+  });
+
+  test('keeps roster access under manage_team while manage_users disables sensitive actions', async () => {
+    state.capabilityOverrides.push({
+      property_id: HOTEL_A,
+      capability: 'manage_users',
+      role: 'general_manager',
+      allowed: false,
+    });
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.actions.canEditProfile, true, 'manage_team still allows roster profile work');
+    assert.equal(local.actions.canChangeRole, false);
+    assert.equal(local.actions.canRemove, false);
+    assert.equal(local.actions.canDeactivate, false);
+    assert.equal(local.actions.canReactivate, false);
+  });
+
+  test('inactive accounts must be reactivated before role changes and expose only reactivate', async () => {
+    account(LOCAL_ID).active = false;
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.active, false);
+    assert.equal(local.actions.canChangeRole, false);
+    assert.equal(local.actions.canDeactivate, false);
+    assert.equal(local.actions.canReactivate, true);
+  });
+
+  test('projects a pending lifecycle change and disables every conflicting action', async () => {
+    state.pendingLifecycleAccountIds.add(LOCAL_ID);
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.lifecyclePending, true);
+    assert.equal(local.lifecycleDesiredActive, false);
+    assert.deepEqual(local.actions, {
+      canEditProfile: false,
+      canChangeRole: false,
+      canResetPassword: false,
+      canRemove: false,
+      canDeactivate: false,
+      canReactivate: false,
+    });
+  });
+
+  test('projects normalized organization-owner protection and disables role/status actions', async () => {
+    state.ownerProtectedAccountIds.add(LOCAL_ID);
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.ownerProtected, true);
+    assert.equal(local.actions.canEditProfile, true, 'owner protection does not hide ordinary profile fields');
+    assert.equal(local.actions.canChangeRole, false);
+    assert.equal(local.actions.canDeactivate, false);
+    assert.equal(local.actions.canReactivate, false);
+    assert.equal(local.actions.canRemove, false);
+  });
+
+  test('fails closed when normalized owner protection cannot be projected', async () => {
+    state.ownerProtectionError = { message: 'simulated organization graph outage' };
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '5');
+    assert.match((await response.json()).error, /team permissions.*temporarily unavailable/i);
+  });
+
+  test('fails closed when pending lifecycle state cannot be projected', async () => {
+    state.lifecycleIntentQueryError = { message: 'simulated lifecycle store outage' };
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '5');
+  });
+
+  test('a disabled caller is rejected even with an already-issued session token', async () => {
+    account(CALLER_ID).active = false;
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 403);
+  });
+
+  test('marks last-sign-in data unknown when Auth listing fails or omits the user', async () => {
+    state.authListOmittedUserIds.add(account(LOCAL_ID).data_user_id);
+    let response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    let body = await response.json();
+    let local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.equal(local.lastSignInAt, null);
+    assert.equal(local.lastSignInKnown, false);
+
+    state.authListError = { message: 'simulated Auth list failure' };
+    response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    body = await response.json();
+    local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.equal(local.lastSignInAt, null);
+    assert.equal(local.lastSignInKnown, false);
   });
 });
 
@@ -436,7 +761,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
     assert.equal(response.status, 403);
     const body = await response.json();
     assert.equal(body.ok, false);
-    assert.match(body.error, /manager of every hotel.*change this person's name/i);
+    assert.match(body.error, /authorized at every hotel.*change this person's name/i);
     assert.equal(account(MULTI_ID).display_name, 'Morgan Multi');
     assert.equal(state.accountUpdates.length, 0);
   });
@@ -445,12 +770,159 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
     const response = await PUT(request('PUT', '/api/auth/team', {
       hotelId: HOTEL_A,
       accountId: MULTI_ID,
+      ...expectedRoleSnapshot(MULTI_ID),
       role: 'maintenance',
     }));
     assert.equal(response.status, 403);
     const body = await response.json();
-    assert.match(body.error, /manager of every hotel.*change this person's role/i);
+    assert.match(body.error, /authorized at every hotel.*change this person's role/i);
     assert.equal(account(MULTI_ID).role, 'housekeeping');
+    assert.equal(state.roleChangeRows.length, 0);
+  });
+
+  test('role edits use manage_users rather than manage_team', async () => {
+    state.capabilityOverrides.push({
+      property_id: HOTEL_A,
+      capability: 'manage_users',
+      role: 'general_manager',
+      allowed: false,
+    });
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...expectedRoleSnapshot(LOCAL_ID),
+      role: 'maintenance',
+    }));
+    assert.equal(response.status, 403);
+    assert.equal(account(LOCAL_ID).role, 'housekeeping');
+    assert.equal(state.roleChangeRows.length, 0);
+  });
+
+  test('role edits require the exact dialog-open role, display name, and row version', async () => {
+    const requiredSnapshots = [
+      { expectedDisplayName: 'Leslie Local', expectedUpdatedAt: account(LOCAL_ID).updated_at },
+      { expectedRole: 'housekeeping', expectedUpdatedAt: account(LOCAL_ID).updated_at },
+      { expectedRole: 'housekeeping', expectedDisplayName: 'Leslie Local' },
+    ];
+    for (const partialSnapshot of requiredSnapshots) {
+      const response = await PUT(request('PUT', '/api/auth/team', {
+        hotelId: HOTEL_A,
+        accountId: LOCAL_ID,
+        role: 'maintenance',
+        ...partialSnapshot,
+      }));
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /account version shown when the editor was opened/i);
+    }
+    assert.equal(state.rpcCalls.some((call) => call.fn === 'staxis_change_hotel_team_role_guarded'), false);
+  });
+
+  test('a stale role dialog cannot overwrite a concurrent role change', async () => {
+    const openedSnapshot = expectedRoleSnapshot(LOCAL_ID);
+    account(LOCAL_ID).role = 'front_desk';
+    account(LOCAL_ID).updated_at = nextAccountVersion();
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...openedSnapshot,
+      role: 'maintenance',
+    }));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /changed while you were editing/i);
+    assert.equal(account(LOCAL_ID).role, 'front_desk');
+    const call = state.rpcCalls.find((entry) => entry.fn === 'staxis_change_hotel_team_role_guarded');
+    assert.equal(call?.args.p_expected_role, 'housekeeping');
+    assert.equal(call?.args.p_expected_updated_at, '2026-07-01T12:00:00.000Z');
+    assert.equal(state.roleChangeRows.length, 0);
+    assert.equal(state.auditRows.length, 0);
+  });
+
+  test('a stale role dialog cannot overwrite a concurrent display-name edit', async () => {
+    const openedSnapshot = expectedRoleSnapshot(LOCAL_ID);
+    account(LOCAL_ID).display_name = 'Leslie Changed Elsewhere';
+    account(LOCAL_ID).updated_at = nextAccountVersion();
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...openedSnapshot,
+      role: 'maintenance',
+    }));
+
+    assert.equal(response.status, 409);
+    assert.equal(account(LOCAL_ID).role, 'housekeeping');
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Changed Elsewhere');
+    const call = state.rpcCalls.find((entry) => entry.fn === 'staxis_change_hotel_team_role_guarded');
+    assert.equal(call?.args.p_expected_display_name, 'Leslie Local');
+    assert.equal(state.roleChangeRows.length, 0);
+  });
+
+  test('role RPC outages use role-specific retryable copy', async () => {
+    state.roleRpcError = { message: 'simulated role RPC outage' };
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...expectedRoleSnapshot(LOCAL_ID),
+      role: 'maintenance',
+    }));
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '5');
+    const body = await response.json();
+    assert.match(body.error, /role changes are temporarily unavailable/i);
+    assert.doesNotMatch(body.error, /account status/i);
+    assert.equal(account(LOCAL_ID).role, 'housekeeping');
+  });
+
+  test('a newly protected organization owner is rejected by the guarded role RPC', async () => {
+    const openedSnapshot = expectedRoleSnapshot(LOCAL_ID);
+    state.ownerProtectedAccountIds.add(LOCAL_ID);
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...openedSnapshot,
+      role: 'maintenance',
+    }));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /organization-owner access is protected/i);
+    assert.equal(account(LOCAL_ID).role, 'housekeeping');
+    assert.equal(state.roleChangeRows.length, 0);
+  });
+
+  test('ordinary role edits cannot assign owner, change an owner, or change an inactive account', async () => {
+    const promoteResponse = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...expectedRoleSnapshot(LOCAL_ID),
+      role: 'owner',
+    }));
+    assert.equal(promoteResponse.status, 400);
+    assert.match((await promoteResponse.json()).error, /transfer ownership/i);
+
+    account(CALLER_ID).role = 'owner';
+    const ownerResponse = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: OWNER_ID,
+      ...expectedRoleSnapshot(OWNER_ID),
+      role: 'maintenance',
+    }));
+    assert.equal(ownerResponse.status, 400);
+    assert.match((await ownerResponse.json()).error, /transfer ownership/i);
+
+    account(LOCAL_ID).active = false;
+    const inactiveResponse = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...expectedRoleSnapshot(LOCAL_ID),
+      role: 'maintenance',
+    }));
+    assert.equal(inactiveResponse.status, 409);
+    assert.match((await inactiveResponse.json()).error, /reactivate/i);
     assert.equal(state.roleChangeRows.length, 0);
   });
 
@@ -482,6 +954,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
     const profileResponse = await PUT(request('PUT', '/api/auth/team', {
       hotelId: HOTEL_A,
       accountId: MULTI_ID,
+      ...expectedRoleSnapshot(MULTI_ID),
       displayName: 'Morgan Updated',
       role: 'maintenance',
     }));
@@ -499,7 +972,13 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
     assert.equal(account(MULTI_ID).role, 'maintenance');
     assert.equal(state.passwordUpdates.length, 0);
     assert.equal(state.auditRows.length, 1);
-    assert.equal(state.roleChangeRows.length, 1);
+    assert.equal(state.roleChangeRows.length, 2, 'one role-change event per affected hotel');
+    assert.equal(
+      state.rpcCalls.some((call) => call.fn === 'staxis_change_hotel_team_role_guarded'),
+      true,
+      'role and optional name must commit through the guarded atomic RPC',
+    );
+    assert.equal(state.accountUpdates.length, 0, 'role RPC must not fall back to a direct account update');
   });
 
   test('rejects password combined with a name, role, or staff link before either store changes', async () => {
@@ -545,7 +1024,7 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
       displayName: 'Must Not Change',
     }));
     assert.equal(response.status, 403);
-    assert.match((await response.json()).error, /hotel you do not manage/i);
+    assert.match((await response.json()).error, /do not have permission.*change this person's name/i);
     assert.equal(account(MULTI_ID).display_name, 'Morgan Multi');
   });
 
@@ -576,12 +1055,64 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
     const response = await PUT(request('PUT', '/api/auth/team', {
       hotelId: HOTEL_A,
       accountId: MULTI_ID,
+      ...expectedRoleSnapshot(MULTI_ID),
       displayName: 'Admin Approved Name',
       role: 'front_desk',
     }));
     assert.equal(response.status, 200);
     assert.equal(account(MULTI_ID).display_name, 'Admin Approved Name');
     assert.equal(account(MULTI_ID).role, 'front_desk');
+  });
+
+  test('profile and role edits stop while a lifecycle intent is pending', async () => {
+    state.pendingLifecycleAccountIds.add(LOCAL_ID);
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      ...expectedRoleSnapshot(LOCAL_ID),
+      displayName: 'Must Wait',
+      role: 'maintenance',
+    }));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /pending account status change/i);
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Local');
+    assert.equal(account(LOCAL_ID).role, 'housekeeping');
+    assert.equal(state.accountUpdates.length, 0);
+    assert.equal(state.auditRows.length, 0);
+  });
+
+  test('profile mutation fails closed when lifecycle intent state is unavailable', async () => {
+    state.lifecycleIntentQueryError = { message: 'relation unavailable' };
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      displayName: 'Must Not Save',
+    }));
+
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('retry-after'), '5');
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Local');
+    assert.equal(state.accountUpdates.length, 0);
+    assert.equal(state.auditRows.length, 0);
+  });
+
+  test('database lifecycle fence wins if an intent appears after the profile pre-check', async () => {
+    state.accountUpdateErrors.set(LOCAL_ID, {
+      code: '55000',
+      message: 'account lifecycle change pending',
+    });
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      displayName: 'Must Lose The Race',
+    }));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /pending account status change/i);
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Local');
+    assert.equal(state.accountUpdates.length, 0);
+    assert.equal(state.auditRows.length, 0);
   });
 
   test('a concurrent account change makes the profile write return 409 without an audit', async () => {
@@ -620,5 +1151,97 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     assert.equal(response.status, 409);
     assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_A, HOTEL_B]);
     assert.equal(state.auditRows.length, 0);
+  });
+
+  test('does not detach a hotel while the target has a pending lifecycle intent', async () => {
+    state.pendingLifecycleAccountIds.add(MULTI_ID);
+    const response = await DELETE(request(
+      'DELETE',
+      `/api/auth/team?hotelId=${HOTEL_A}&accountId=${MULTI_ID}`,
+    ));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /pending account status change/i);
+    assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_A, HOTEL_B]);
+    assert.equal(state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded'), false);
+    assert.equal(state.auditRows.length, 0);
+  });
+
+  test('database lifecycle fence wins if an intent appears after the detach pre-check', async () => {
+    state.removalErrors.set(MULTI_ID, {
+      code: '55000',
+      message: 'account lifecycle change pending',
+    });
+    const response = await DELETE(request(
+      'DELETE',
+      `/api/auth/team?hotelId=${HOTEL_A}&accountId=${MULTI_ID}`,
+    ));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /pending account status change/i);
+    assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_A, HOTEL_B]);
+    assert.equal(state.auditRows.length, 0);
+  });
+
+  test('detach requires manage_users at the selected hotel', async () => {
+    state.capabilityOverrides.push({
+      property_id: HOTEL_A,
+      capability: 'manage_users',
+      role: 'general_manager',
+      allowed: false,
+    });
+    const response = await DELETE(request(
+      'DELETE',
+      `/api/auth/team?hotelId=${HOTEL_A}&accountId=${LOCAL_ID}`,
+    ));
+    assert.equal(response.status, 403);
+    assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_A]);
+    assert.equal(state.rpcCalls.length, 0);
+  });
+
+  test('an owner account must use ownership transfer before detach', async () => {
+    account(CALLER_ID).role = 'owner';
+    const response = await DELETE(request(
+      'DELETE',
+      `/api/auth/team?hotelId=${HOTEL_A}&accountId=${OWNER_ID}`,
+    ));
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /transfer ownership/i);
+    assert.deepEqual(account(OWNER_ID).property_access, [HOTEL_A]);
+  });
+
+  test('a normalized organization owner cannot be detached through a legacy hotel role', async () => {
+    state.ownerProtectedAccountIds.add(LOCAL_ID);
+
+    const response = await DELETE(request(
+      'DELETE',
+      `/api/auth/team?hotelId=${HOTEL_A}&accountId=${LOCAL_ID}`,
+    ));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /organization-owner access is protected/i);
+    assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_A]);
+    assert.equal(
+      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded'),
+      false,
+    );
+  });
+
+  test('maps guarded detach races to pending, retryable, and owner-protected responses', async () => {
+    for (const scenario of [
+      { result: { status: 'pending_conflict' }, expectedStatus: 409, message: /pending account status change/i },
+      { result: { status: 'retry' }, expectedStatus: 503, message: /team permissions.*temporarily unavailable/i },
+      { result: { status: 'forbidden', reason: 'organization_owner' }, expectedStatus: 409, message: /organization-owner access is protected/i },
+    ]) {
+      state.removalRpcResults.set(LOCAL_ID, scenario.result);
+      const response = await DELETE(request(
+        'DELETE',
+        `/api/auth/team?hotelId=${HOTEL_A}&accountId=${LOCAL_ID}`,
+      ));
+      assert.equal(response.status, scenario.expectedStatus);
+      assert.match((await response.json()).error, scenario.message);
+      assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_A]);
+      state.removalRpcResults.clear();
+    }
   });
 });
