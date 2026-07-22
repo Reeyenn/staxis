@@ -120,7 +120,7 @@ describe('company invitation accessibility', () => {
     assert.match(invitation, /id="company-invite-display-name"/);
     assert.match(invitation, /htmlFor="company-invite-password"/);
     assert.match(invitation, /htmlFor="company-invite-confirm-password"/);
-    assert.match(invitation, /aria-describedby=\{error \? ['"]company-invite-error['"]/);
+    assert.match(invitation, /aria-describedby=\{visibleError \? ['"]company-invite-error['"]/);
     assert.match(authShell, /role="alert" aria-live="assertive"/);
   });
 });

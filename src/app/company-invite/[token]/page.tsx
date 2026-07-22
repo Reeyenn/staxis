@@ -11,6 +11,7 @@ import AuthShell, { AuthError, AuthLabel, AuthPanel, authLinkStyle } from '@/com
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   clearCompanyInvitationHandoff,
   companyInvitationTokenFromPath,
@@ -33,6 +34,17 @@ interface Envelope<T> {
 function copy(lang: string, en: string, es: string): string {
   return lang === 'es' ? es : en;
 }
+
+const PREVIEW_ERROR_MESSAGES = [
+  ['This invitation link is invalid or is no longer available.', 'Este enlace de invitación no es válido o ya no está disponible.'],
+  ['Could not securely review this invitation.', 'No se pudo revisar esta invitación de forma segura.'],
+] as const satisfies readonly LocalizedMessagePair[];
+
+const INVITATION_ACTION_ERROR_MESSAGES = [
+  ['Could not accept invitation.', 'No se pudo aceptar la invitación.'],
+  ['Passwords do not match.', 'Las contraseñas no coinciden.'],
+  ['Could not create account.', 'No se pudo crear la cuenta.'],
+] as const satisfies readonly LocalizedMessagePair[];
 
 function responseError(body: Envelope<unknown>, fallback: string): string {
   if (typeof body.error === 'string') return body.error;
@@ -180,6 +192,9 @@ export default function CompanyInvitationPage() {
     }
   };
 
+  const visiblePreviewError = localizeKnownMessage(previewError, lang, PREVIEW_ERROR_MESSAGES);
+  const visibleError = localizeKnownMessage(error, lang, INVITATION_ACTION_ERROR_MESSAGES);
+
   return (
     <AuthShell subtitle={copy(lang, 'Review your secure company access invitation', 'Revisa tu invitación segura de acceso a la empresa')}>
       {loading || !tokenReady || previewLoading ? (
@@ -197,9 +212,9 @@ export default function CompanyInvitationPage() {
             {copy(lang, 'Sign in to Company & Access', 'Iniciar sesión en Empresa y acceso')}
           </Link>
         </AuthPanel>
-      ) : previewError || !preview ? (
+      ) : visiblePreviewError || !preview ? (
         <AuthPanel>
-          <AuthError style={{ textAlign: 'left' }}>{previewError || copy(lang, 'This invitation cannot be reviewed.', 'Esta invitación no se puede revisar.')}</AuthError>
+          <AuthError style={{ textAlign: 'left' }}>{visiblePreviewError || copy(lang, 'This invitation cannot be reviewed.', 'Esta invitación no se puede revisar.')}</AuthError>
           {token ? (
             <button
               type="button"
@@ -223,8 +238,8 @@ export default function CompanyInvitationPage() {
                   <span style={{ display: 'block', color: '#5C625C', fontSize: 12.5, lineHeight: 1.5, marginTop: 3 }}>{copy(lang, 'Staxis will confirm this invitation matches your account email before granting anything.', 'Staxis confirmará que esta invitación coincida con el correo de tu cuenta antes de conceder acceso.')}</span>
                 </div>
               </div>
-              {error ? <AuthError id="company-invite-error">{error}</AuthError> : null}
-              <button type="button" aria-describedby={error ? 'company-invite-error' : undefined} className={`si-btn ${submitting ? 'si-btn-off' : 'si-btn-on'}`} disabled={submitting} onClick={acceptExisting}>
+              {visibleError ? <AuthError id="company-invite-error">{visibleError}</AuthError> : null}
+              <button type="button" aria-describedby={visibleError ? 'company-invite-error' : undefined} className={`si-btn ${submitting ? 'si-btn-off' : 'si-btn-on'}`} disabled={submitting} onClick={acceptExisting}>
                 {submitting ? copy(lang, 'Verifying…', 'Verificando…') : copy(lang, 'Accept invitation', 'Aceptar invitación')}
               </button>
               <Link href="/company" style={{ ...authLinkStyle, textAlign: 'center' }}>{copy(lang, 'Return to Company & Access', 'Volver a Empresa y acceso')}</Link>
@@ -239,7 +254,7 @@ export default function CompanyInvitationPage() {
               <div style={{ height: 1, background: 'rgba(31,35,28,.10)' }} />
               <form
                 onSubmit={register}
-                aria-describedby={error ? 'company-invite-error' : undefined}
+                aria-describedby={visibleError ? 'company-invite-error' : undefined}
                 style={{ display: 'flex', flexDirection: 'column', gap: 12 }}
               >
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -254,7 +269,7 @@ export default function CompanyInvitationPage() {
                   <AuthLabel htmlFor="company-invite-confirm-password">{copy(lang, 'Confirm password', 'Confirmar contraseña')}</AuthLabel>
                   <input id="company-invite-confirm-password" className="si-input" type="password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} autoComplete="new-password" required minLength={8} maxLength={128} disabled={submitting} />
                 </div>
-                {error ? <AuthError id="company-invite-error">{error}</AuthError> : null}
+                {visibleError ? <AuthError id="company-invite-error">{visibleError}</AuthError> : null}
                 <button
                   type="submit"
                   className={`si-btn ${submitting || displayName.trim().length < 2 || password.length < 8 || !confirmPassword ? 'si-btn-off' : 'si-btn-on'}`}
