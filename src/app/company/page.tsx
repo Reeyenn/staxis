@@ -770,7 +770,10 @@ function CompanyAccessContent() {
                   );
                 })}
               </nav>
-              {tab === 'people' && activeProperty && canManageTeam ? (
+            </div>
+
+            {tab === 'people' && activeProperty && canManageTeam ? (
+              <div className={styles.teamInviteRow}>
                 <button
                   type="button"
                   className={styles.teamInviteButton}
@@ -784,8 +787,8 @@ function CompanyAccessContent() {
                   <UserPlus size={16} aria-hidden="true" />
                   {localized(lang, 'Invite staff', 'Invitar personal')}
                 </button>
-              ) : null}
-            </div>
+              </div>
+            ) : null}
 
             <section
               id={`company-panel-${tab}`}
