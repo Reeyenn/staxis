@@ -24,6 +24,7 @@ import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { exportBlob, filenameFromDisposition } from '@/lib/export-blob';
 import { T, fonts, Btn, Caps } from '@/app/staff/_components/_tokens';
+import { NotificationsPanel } from '@/app/settings/notifications/_components/NotificationsPanel';
 import { formatCell } from '@/lib/reports/catalog/format';
 import {
   propertyReportRange,
@@ -75,11 +76,13 @@ export default function ReportsPage() {
   const { activeProperty } = useProperty();
   const { lang } = useLang();
   const can = useCan();
+  const canReports = can('run_reports');
+  const canDelivery = can('manage_notifications');
 
   if (!uid) {
     return <AppLayout><div style={{ padding: 24 }}>{lang === 'es' ? 'Inicia sesión para continuar.' : 'Sign in to continue.'}</div></AppLayout>;
   }
-  if (!can('run_reports')) {
+  if (!canReports && !canDelivery) {
     return (
       <AppLayout>
         <div style={{ padding: 24, maxWidth: 520, margin: '40px auto', textAlign: 'center' }}>
@@ -105,12 +108,18 @@ export default function ReportsPage() {
         pid={pid ?? ''}
         lang={lang}
         timezone={propertyTimezoneOrUTC(activeProperty?.timezone)}
+        canReports={canReports}
+        canDelivery={canDelivery}
       />
     </AppLayout>
   );
 }
 
-function ReportsBody({ pid, lang, timezone }: { pid: string; lang: Lang; timezone: string }) {
+function ReportsBody({ pid, lang, timezone, canReports, canDelivery }: { pid: string; lang: Lang; timezone: string; canReports: boolean; canDelivery: boolean }) {
+  // Two tabs: "Run a report" (the catalog) and "Auto-send" (report delivery,
+  // formerly the standalone Notifications page). Default to whichever the
+  // viewer can actually use; only show the switcher when they have both.
+  const [tab, setTab] = useState<'reports' | 'delivery'>(canReports ? 'reports' : 'delivery');
   const [catalog, setCatalog] = useState<CatalogEntry[]>([]);
   const [favorites, setFavorites] = useState<Set<string>>(new Set());
   const [loadingCatalog, setLoadingCatalog] = useState(false);
@@ -118,7 +127,7 @@ function ReportsBody({ pid, lang, timezone }: { pid: string; lang: Lang; timezon
   const [selected, setSelected] = useState<CatalogEntry | null>(null);
 
   const loadCatalog = useCallback(async () => {
-    if (!pid) return;
+    if (!pid || !canReports) return;
     setLoadingCatalog(true);
     setError(null);
     try {
@@ -133,7 +142,7 @@ function ReportsBody({ pid, lang, timezone }: { pid: string; lang: Lang; timezon
     } finally {
       setLoadingCatalog(false);
     }
-  }, [pid]);
+  }, [pid, canReports]);
 
   useEffect(() => { void loadCatalog(); }, [loadCatalog]);
 
@@ -155,6 +164,42 @@ function ReportsBody({ pid, lang, timezone }: { pid: string; lang: Lang; timezon
       await loadCatalog();
     }
   }, [pid, loadCatalog]);
+
+  // Shared top chrome — the back link + title, plus the tab switcher (only when
+  // the viewer has both capabilities). Reused by the Auto-send and Library views.
+  const header = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <Link href="/settings" style={{ textDecoration: 'none', color: T.ink2 }}>
+        <Btn variant="ghost" size="sm"><ChevronLeft size={14} /> {lang === 'es' ? 'Ajustes' : 'Settings'}</Btn>
+      </Link>
+      <h1 style={{ fontFamily: fonts.serif, fontSize: 26, lineHeight: 1.1, color: T.ink, margin: 0, letterSpacing: '-0.01em' }}>
+        {lang === 'es' ? 'Reportes' : 'Reports'}
+      </h1>
+    </div>
+  );
+  const tabsEl = (canReports && canDelivery) ? (
+    <div style={{ display: 'inline-flex', alignSelf: 'flex-start', background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 999, padding: 3, gap: 2 }}>
+      <button onClick={() => setTab('reports')} style={segTabStyle(tab === 'reports')}>
+        {lang === 'es' ? 'Generar reporte' : 'Run a report'}
+      </button>
+      <button onClick={() => setTab('delivery')} style={segTabStyle(tab === 'delivery')}>
+        {lang === 'es' ? 'Envío automático' : 'Auto-send'}
+      </button>
+    </div>
+  ) : null;
+
+  // Auto-send (report delivery) tab.
+  if (tab === 'delivery') {
+    return (
+      <div style={{ padding: '16px 16px 40px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1100, margin: '0 auto', width: '100%' }}>
+        {header}
+        {tabsEl}
+        <div style={{ maxWidth: 720, width: '100%' }}>
+          <NotificationsPanel />
+        </div>
+      </div>
+    );
+  }
 
   if (selected) {
     return (
@@ -178,14 +223,8 @@ function ReportsBody({ pid, lang, timezone }: { pid: string; lang: Lang; timezon
 
   return (
     <div style={{ padding: '16px 16px 40px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 1100, margin: '0 auto', width: '100%' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Link href="/settings" style={{ textDecoration: 'none', color: T.ink2 }}>
-          <Btn variant="ghost" size="sm"><ChevronLeft size={14} /> {lang === 'es' ? 'Ajustes' : 'Settings'}</Btn>
-        </Link>
-        <h1 style={{ fontFamily: fonts.serif, fontSize: 26, lineHeight: 1.1, color: T.ink, margin: 0, letterSpacing: '-0.01em' }}>
-          {lang === 'es' ? 'Reportes' : 'Reports'}
-        </h1>
-      </div>
+      {header}
+      {tabsEl}
       <p style={{ fontFamily: fonts.sans, fontSize: 14, color: T.ink2, margin: 0, maxWidth: 640 }}>
         {lang === 'es'
           ? 'Genera cualquier reporte cuando lo necesites, expórtalo o márcalo como favorito.'
@@ -444,3 +483,14 @@ const dateInputStyle: React.CSSProperties = {
   fontFamily: fonts.sans, fontSize: 12, padding: '4px 8px',
   border: `1px solid ${T.rule}`, borderRadius: 6, background: T.paper, color: T.ink,
 };
+
+function segTabStyle(active: boolean): React.CSSProperties {
+  return {
+    padding: '6px 14px', borderRadius: 999, border: 'none', cursor: 'pointer',
+    background: active ? T.ink : 'transparent',
+    color: active ? T.bg : T.ink2,
+    fontFamily: fonts.sans, fontSize: 13, fontWeight: active ? 600 : 500,
+    transition: 'background 140ms, color 140ms',
+    whiteSpace: 'nowrap',
+  };
+}
