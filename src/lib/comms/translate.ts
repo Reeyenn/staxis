@@ -240,16 +240,6 @@ export async function translateUiStrings(
  * comms_message_translations. Returns the translated body (or the original on
  * any failure / when target === source). NEVER throws.
  */
-export async function translateMessageBody(
-  messageId: string,
-  body: string,
-  sourceLang: string | null,
-  target: CommsLang,
-  opts: AiCallOptions = {},
-): Promise<string> {
-  return translateMessageBodyImpl(messageId, body, sourceLang, target, opts);
-}
-
 async function translateMessageBodyImpl(
   messageId: string,
   body: string,

@@ -70,19 +70,6 @@ export function DarkEmpty({ text }: { text: string }) {
   return <div style={{ padding: '16px 14px', textAlign: 'center', border: `1px dashed ${dimWhite(.18)}`, borderRadius: 12, color: dimWhite(.45), fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 13 }}>{text}</div>;
 }
 
-/** A surface header: dim caps eyebrow + serif headline with one italic span. */
-export function SurfaceHead({ caps, children, right }: { caps: string; children: React.ReactNode; right?: React.ReactNode }) {
-  return (
-    <header style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap', marginBottom: 22, position: 'relative' }}>
-      <div style={{ minWidth: 0 }}>
-        <span className="caps" style={{ color: dimWhite(.55) }}>{caps}</span>
-        <h1 style={{ fontFamily: FONT_SERIF, fontSize: 32, fontWeight: 400, letterSpacing: '-0.02em', margin: '4px 0 0', color: '#fff', lineHeight: 1.1 }}>{children}</h1>
-      </div>
-      {right}
-    </header>
-  );
-}
-
 // ── Modals — light card on a blurred ink backdrop, click-outside closes ──
 export const MODAL_CARD: React.CSSProperties = {
   background: '#fff',

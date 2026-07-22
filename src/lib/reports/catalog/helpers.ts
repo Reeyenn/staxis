@@ -67,63 +67,6 @@ export function utcBoundsForLocalRange(
   };
 }
 
-/** First-of-month UTC Date for the month containing a YYYY-MM-DD date. */
-export function monthStartUtc(dateIso: string): Date {
-  const [y, m] = dateIso.split('-').map(Number);
-  return new Date(Date.UTC(y, m - 1, 1));
-}
-
-/** The property-local "today" (YYYY-MM-DD) for a given instant. */
-export function localToday(timeZone: string, now: Date = new Date()): string {
-  const dtf = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  // en-CA formats as YYYY-MM-DD.
-  return dtf.format(now);
-}
-
-/** Property-local now broken into the parts a schedule's due-check needs. */
-export function localNowParts(
-  timeZone: string,
-  now: Date = new Date(),
-): { date: string; hour: number; dow: number; dom: number } {
-  const dtf = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
-  const map: Record<string, string> = {};
-  for (const p of dtf.formatToParts(now)) map[p.type] = p.value;
-  const date = `${map.year}-${map.month}-${map.day}`;
-  const hour = Number(map.hour) % 24; // some engines emit "24" at midnight
-  const dom = Number(map.day);
-  // Day-of-week of a calendar date is timezone-independent.
-  const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
-  return { date, hour, dow, dom };
-}
-
-/** Resolve a scheduled report's data window (YYYY-MM-DD) relative to today. */
-export function scheduleDateRange(
-  kind: 'last7' | 'last30' | 'mtd' | 'prev_month',
-  today: string,
-): { from: string; to: string } {
-  if (kind === 'last7') return { from: dateAddDays(today, -6), to: today };
-  if (kind === 'last30') return { from: dateAddDays(today, -29), to: today };
-  if (kind === 'mtd') return { from: `${today.slice(0, 7)}-01`, to: today };
-  // prev_month — first..last of the previous calendar month.
-  const [y, m] = today.split('-').map(Number);
-  const firstThis = new Date(Date.UTC(y, m - 1, 1));
-  const lastPrev = new Date(firstThis.getTime() - 86_400_000).toISOString().slice(0, 10);
-  return { from: `${lastPrev.slice(0, 7)}-01`, to: lastPrev };
-}
-
 // ─── tiny aggregation primitives ─────────────────────────────────────────────
 
 export function sum(xs: number[]): number {

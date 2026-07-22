@@ -13,11 +13,6 @@ export type MessageType =
   | 'text' | 'announcement' | 'handoff' | 'photo' | 'voice' | 'task' | 'system';
 export type SenderKind = 'staff' | 'staxis' | 'system';
 
-/** The four department channels, in display order. */
-export const CHANNELS: readonly ChannelKey[] = [
-  'all_staff', 'front_desk', 'housekeeping', 'maintenance',
-];
-
 /** English display labels for channels (translated client-side via t()/auto). */
 export const CHANNEL_LABELS: Record<ChannelKey, string> = {
   all_staff: 'All Staff',
@@ -189,20 +184,6 @@ export interface MemberDTO {
   dept: CommsDept;       // colour bucket
   onShift: boolean;      // online = activity heartbeat within the freshness window
   isMe: boolean;
-}
-
-/** Live presence of one teammate (sidebar dots + "N on shift"). */
-export interface PresenceDTO {
-  staffId: string;
-  onShift: boolean;
-}
-
-/** One ranked item in the AI "Catch up" popover. */
-export interface CatchUpItemDTO {
-  conversationId: string;
-  text: string;
-  dept: CommsDept;
-  urgent: boolean;
 }
 
 /** A search hit (channels / people / messages palette). */

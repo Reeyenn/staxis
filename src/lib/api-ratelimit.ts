@@ -150,8 +150,6 @@ export type RateLimitEndpoint =
   | 'housekeeping-notices-post'      // manager posts to the notice board
   | 'housekeeping-notices-read'      // housekeeper page polls notices
   | 'housekeeping-notice-dismiss'    // per-user dismissal
-  | 'housekeeping-room-notes-post'   // manager adds a note from RoomsTab
-  | 'housekeeping-room-notes-read'   // housekeeper page reads manager notes
   | 'housekeeper-structured-issue'   // structured issue → work order
   | 'housekeeper-photo-presign'      // request signed-upload URL
   | 'housekeeper-add-note'           // quick note from housekeeper page
@@ -395,8 +393,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeping-notices-post':     60,
   'housekeeping-notices-read':    600,
   'housekeeping-notice-dismiss':  100,
-  'housekeeping-room-notes-post':  60,
-  'housekeeping-room-notes-read': 600,
   'housekeeper-structured-issue': 200,
   'housekeeper-photo-presign':    200,
   'housekeeper-add-note':         200,

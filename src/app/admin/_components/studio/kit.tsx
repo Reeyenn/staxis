@@ -28,23 +28,6 @@ export const FONT_SERIF = 'var(--serif)';
 export const FONT_SANS  = 'var(--sans)';
 export const FONT_MONO  = 'var(--mono)';
 
-// ── Token object — literal values, for the rare inline use that can't go
-//    through a CSS var (e.g. computing a color in JS). Mirrors brand.css. ─
-export const S = {
-  bg: '#FFFFFF',
-  ink: '#181611',
-  inkSoft: '#3A372F',
-  dim: '#928C7F',
-  dim2: '#B4AEA2',
-  rule: 'rgba(24,22,17,0.12)',
-  ruleSoft: 'rgba(24,22,17,0.06)',
-  ruleStrong: 'rgba(24,22,17,0.22)',
-  forest: '#3C9C68', forestDeep: '#2F7E53', forestDim: 'rgba(60,156,104,0.12)',
-  terracotta: '#C2562E', terracottaDeep: '#9F4322', terracottaDim: 'rgba(194,86,46,0.12)',
-  gold: '#C99A2E', goldDeep: '#9A741F', goldDim: 'rgba(201,154,46,0.14)',
-  teal: '#3389A0', tealDeep: '#266B7E', tealDim: 'rgba(51,137,160,0.12)',
-} as const;
-
 export const EASE = 'cubic-bezier(.22,.61,.36,1)';
 export const EASE_OUT = 'cubic-bezier(.16,1,.3,1)';
 
@@ -89,26 +72,6 @@ export function useRiseIn<T extends HTMLElement>(
   }, deps);
 }
 
-// Physical flip, swapping faces at 90°. `onHalf` runs at the halfway point
-// so the caller can swap content/data. Under reduced motion the swap still
-// happens immediately (the state change is the point; the rotation is not).
-export function flip(el: El, onHalf?: () => void, { axis = 'X', dur = 560 }: { axis?: 'X' | 'Y'; dur?: number } = {}): Promise<void> {
-  if (!el) { onHalf?.(); return Promise.resolve(); }
-  if (prefersReducedMotion() || typeof el.animate !== 'function') { onHalf?.(); return Promise.resolve(); }
-  const half = dur / 2;
-  let swapped = false;
-  const a = el.animate(
-    [
-      { transform: `perspective(900px) rotate${axis}(0deg)`, offset: 0 },
-      { transform: `perspective(900px) rotate${axis}(-90deg)`, offset: 0.5, easing: 'cubic-bezier(.4,0,1,1)' },
-      { transform: `perspective(900px) rotate${axis}(0deg)`, offset: 1, easing: EASE_OUT },
-    ],
-    { duration: dur, fill: 'both' },
-  );
-  const t = setTimeout(() => { if (!swapped) { swapped = true; onHalf?.(); } }, half);
-  return a.finished.catch(() => {}).then(() => { clearTimeout(t); if (!swapped) onHalf?.(); });
-}
-
 // Count a number up from→to, writing formatted text into el. Resting value
 // is set first so it's correct even if the frame clock never advances.
 export function countUp(el: El, from: number, to: number, { dur = 900, fmt = (v: number) => Math.round(v).toLocaleString() }: { dur?: number; fmt?: (v: number) => string } = {}) {
@@ -140,28 +103,6 @@ export function sweepWidth(el: El, toPct: number, { dur = 760, delay = 0 }: { du
   el.style.width = w + '%';
   if (prefersReducedMotion() || typeof el.animate !== 'function') return;
   el.animate([{ width: '0%' }, { width: w + '%' }], { duration: dur, delay, easing: EASE_OUT, fill: 'both' });
-}
-
-// Hook: stagger-reveal direct children of a ref on mount / when deps change.
-export function useStagger(deps: React.DependencyList = [], { step = 60, dy = 14 }: { step?: number; dy?: number } = {}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useIsoLayoutEffect(() => {
-    const root = ref.current;
-    if (!root) return;
-    Array.from(root.children).forEach((k, i) => riseIn(k as HTMLElement, { delay: i * step, dy }));
-  }, deps);
-  return ref;
-}
-
-// Hook: count a ref's number up once mounted / when `to` changes.
-export function useCountUp(to: number, opts?: { dur?: number; fmt?: (v: number) => string }) {
-  const ref = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    countUp(ref.current, 0, to, opts);
-    // opts is render-time config, not a reactive dep — only re-run on `to`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [to]);
-  return ref;
 }
 
 // ── Formatters ──────────────────────────────────────────────────────────

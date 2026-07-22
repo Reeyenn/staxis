@@ -750,16 +750,6 @@ function previewOf(body: string, msgType: string): string {
   return t.length > 80 ? t.slice(0, 80) + '…' : t;
 }
 
-/** Total unread across all visible conversations (for the nav badge / dashboard tile). */
-export async function totalUnread(
-  pid: string, staffId: string, ctx: { isManager: boolean; dept: string | null; floorMode: boolean },
-): Promise<number> {
-  const convos = await listConversationsForStaff(pid, staffId, ctx);
-  // max(): a fully-read-but-unacked required announcement (unread=0, pendingAck>0)
-  // still lights the badge, without double-counting a brand-new one.
-  return convos.reduce((sum, c) => sum + Math.max(c.unread, c.pendingAck ?? 0), 0);
-}
-
 // ── Reading: messages in a conversation (translated for the reader) ──────────
 
 export async function getMessages(
