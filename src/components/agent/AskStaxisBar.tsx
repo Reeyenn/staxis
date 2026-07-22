@@ -16,10 +16,8 @@
 // can use :hover / ::after / masks / keyframes / color-mix that inline styles
 // can't express, without colliding with the app's global CSS.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import { usePathname } from 'next/navigation';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -596,16 +594,24 @@ export function AskStaxisBar() {
   );
 }
 
-// ── One message bubble ────────────────────────────────────────────────────
-function Bubble({ message: m }: { message: DisplayMessage }) {
-  if (m.role === 'user') {
-    return <div className="asx-msg asx-u">{m.text}</div>;
-  }
-  // Render only assistant prose; tool-call / tool-result rows are surfaced as
-  // the "thinking" dots, keeping the compact bar clean.
-  if (m.role === 'assistant' && m.text && !m.toolName) {
-    return (
-      <div className="asx-msg asx-a">
+// react-markdown + remark-gfm are ~60-100KB gzipped and are needed ONLY to
+// render an assistant reply — which never happens on a page where the user
+// doesn't open the bar and chat. Load them lazily on the first assistant
+// message (module-level promise so every bubble shares one fetch). Until it
+// resolves, show the raw text (whitespace preserved) so a streaming reply is
+// never blank; then swap in the full markdown renderer. If the import fails,
+// the plain-text fallback stays and the reply is still readable.
+type AssistantMarkdownRenderer = (props: { text: string }) => ReactElement;
+let markdownRendererPromise: Promise<AssistantMarkdownRenderer> | null = null;
+function loadMarkdownRenderer(): Promise<AssistantMarkdownRenderer> {
+  if (!markdownRendererPromise) {
+    markdownRendererPromise = Promise.all([
+      import('react-markdown'),
+      import('remark-gfm'),
+    ]).then(([rm, gfm]) => {
+      const ReactMarkdown = rm.default;
+      const remarkGfm = gfm.default;
+      const Renderer: AssistantMarkdownRenderer = ({ text }) => (
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
@@ -620,8 +626,39 @@ function Bubble({ message: m }: { message: DisplayMessage }) {
             ),
           }}
         >
-          {m.text}
+          {text}
         </ReactMarkdown>
+      );
+      return Renderer;
+    });
+  }
+  return markdownRendererPromise;
+}
+
+function AssistantMarkdown({ text }: { text: string }) {
+  const [Renderer, setRenderer] = useState<AssistantMarkdownRenderer | null>(null);
+  useEffect(() => {
+    let alive = true;
+    loadMarkdownRenderer()
+      .then((R) => { if (alive) setRenderer(() => R); })
+      .catch(() => { /* keep the plain-text fallback */ });
+    return () => { alive = false; };
+  }, []);
+  if (!Renderer) return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
+  return <Renderer text={text} />;
+}
+
+// ── One message bubble ────────────────────────────────────────────────────
+function Bubble({ message: m }: { message: DisplayMessage }) {
+  if (m.role === 'user') {
+    return <div className="asx-msg asx-u">{m.text}</div>;
+  }
+  // Render only assistant prose; tool-call / tool-result rows are surfaced as
+  // the "thinking" dots, keeping the compact bar clean.
+  if (m.role === 'assistant' && m.text && !m.toolName) {
+    return (
+      <div className="asx-msg asx-a">
+        <AssistantMarkdown text={m.text} />
       </div>
     );
   }

@@ -226,14 +226,18 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
     dirty, retryLocked, currentDraft,
   ]);
 
-  if (!open) return null;
+  // No `if (!open) return null` here on purpose: the shared Overlay (and
+  // ScanInvoiceSheet's own Overlay) own presence and play a ~190ms exit after
+  // `open` flips false. Bailing on !open tore the subtree down in one frame, so
+  // the delivery / scan sheet snapped shut instead of fading. Each branch below
+  // forwards open={open} so that exit can play.
 
   // Scan path — the existing invoice flow, whole. Its close exits the sheet.
   if (mode === 'scan' && canScanInvoices) {
     return (
       <ScanInvoiceSheet
         lang={lang}
-        open
+        open={open}
         onClose={onClose}
         display={display}
         timezone={timezone}
@@ -261,7 +265,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
       setMode('scan');
     };
     return (
-      <Overlay open onClose={requestClose} hasUnsavedChanges={dirty} width={520} title={ds.title}>
+      <Overlay open={open} onClose={requestClose} hasUnsavedChanges={dirty} width={520} title={ds.title}>
         {draftRestored && <div role="status" style={deliveryDraftStyle}>{ds.draftRestored}</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {canScanInvoices && <OptionRow title={ds.scanOption} onPick={pickScan} />}
@@ -376,7 +380,7 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
 
   return (
     <Overlay
-      open
+      open={open}
       onClose={requestClose}
       hasUnsavedChanges={dirty}
       italic={ds.title}

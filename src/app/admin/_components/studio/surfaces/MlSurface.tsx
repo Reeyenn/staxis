@@ -40,7 +40,7 @@ import { SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite } from '../sur
 import { DividerRow } from '../ui-kit';
 import {
   FONT_SERIF, FONT_SANS, FONT_MONO, Caps, Pill, Dot, Btn,
-  countUp, sweepWidth, riseIn, age, ageIn, prefersReducedMotion,
+  countUp, sweepWidth, useRiseIn, age, ageIn, prefersReducedMotion,
   EASE_OUT, type DotTone,
 } from '../kit';
 
@@ -460,7 +460,7 @@ function Card({ children, title, caps, right, riseDelay }: {
   children: React.ReactNode; title: string; caps: string; right?: React.ReactNode; riseDelay?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { riseIn(ref.current, { dy: 12, delay: riseDelay ?? 0, dur: 460 }); }, [riseDelay]);
+  useRiseIn(ref, { dy: 12, delay: riseDelay ?? 0, dur: 460 }, [riseDelay]);
   return (
     <div ref={ref} style={{ background: dimWhite(.06), border: `1px solid ${dimWhite(.14)}`, borderRadius: 16, padding: '16px 18px' }}>
       <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 10, marginBottom: 12 }}>
