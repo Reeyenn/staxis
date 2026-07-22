@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -101,18 +102,31 @@ import { fmtMoney } from './format';
 import type { DisplayItem } from './types';
 import type { StockBucket, StockStatus } from './tokens';
 
-import { CountSheet } from './overlays/CountSheet';
-import { ComparePanel } from './overlays/ComparePanel';
-import { ReportsPanel } from './overlays/ReportsPanel';
-import { HistoryPanel } from './overlays/HistoryPanel';
-import { BudgetsPanel } from './overlays/BudgetsPanel';
-import { DeliverySheet } from './overlays/DeliverySheet';
-import { AddItemSheet } from './overlays/AddItemSheet';
-import { AiReportSheet } from './overlays/AiReportSheet';
-import { MonthClosePanel } from './overlays/MonthClosePanel';
-import { StockLossSheet } from './overlays/StockLossSheet';
-import { DeliveryCorrectionSheet } from './overlays/DeliveryCorrectionSheet';
 import { t, invLang, dateLocale } from './inv-i18n';
+
+// ── Lazy-loaded overlays ─────────────────────────────────────────────────────
+// The inventory page is opened many times a day just to view stock. These 11
+// overlays total ~9,600 lines (CountSheet, MonthClose, AddItem, History,
+// Budgets, Reports, AiReport, Compare, Delivery+ScanInvoice, StockLoss,
+// DeliveryCorrection) and most visits never open most of them. Loading them via
+// next/dynamic keeps them out of the initial inventory JS chunk; the mount is
+// additionally gated on `loadedOverlays` (in the component below) so a panel's
+// chunk isn't even requested until the user first opens it. Each panel stays
+// mounted after first open (loadedOverlays is append-only) so in-progress
+// draft/scroll state survives close and the shared Overlay's exit animation
+// still plays. ssr:false — these are click-triggered client overlays with no
+// SSR content and no layout shift.
+const CountSheet = dynamic(() => import('./overlays/CountSheet').then((m) => m.CountSheet), { ssr: false });
+const ComparePanel = dynamic(() => import('./overlays/ComparePanel').then((m) => m.ComparePanel), { ssr: false });
+const ReportsPanel = dynamic(() => import('./overlays/ReportsPanel').then((m) => m.ReportsPanel), { ssr: false });
+const HistoryPanel = dynamic(() => import('./overlays/HistoryPanel').then((m) => m.HistoryPanel), { ssr: false });
+const BudgetsPanel = dynamic(() => import('./overlays/BudgetsPanel').then((m) => m.BudgetsPanel), { ssr: false });
+const DeliverySheet = dynamic(() => import('./overlays/DeliverySheet').then((m) => m.DeliverySheet), { ssr: false });
+const AddItemSheet = dynamic(() => import('./overlays/AddItemSheet').then((m) => m.AddItemSheet), { ssr: false });
+const AiReportSheet = dynamic(() => import('./overlays/AiReportSheet').then((m) => m.AiReportSheet), { ssr: false });
+const MonthClosePanel = dynamic(() => import('./overlays/MonthClosePanel').then((m) => m.MonthClosePanel), { ssr: false });
+const StockLossSheet = dynamic(() => import('./overlays/StockLossSheet').then((m) => m.StockLossSheet), { ssr: false });
+const DeliveryCorrectionSheet = dynamic(() => import('./overlays/DeliveryCorrectionSheet').then((m) => m.DeliveryCorrectionSheet), { ssr: false });
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
 // Helper" rail button opens the AI report as a large overlay (`ai`) right on
@@ -393,6 +407,17 @@ export function InventoryShell() {
   // realtime snapshot catches up (then reconciled away below). Optimistic UI.
   const [draftCounts, setDraftCounts] = useState<Map<string, number>>(() => new Map());
   const [overlay, setOverlay] = useState<OverlayKey>(null);
+  // Append-only set of overlays that have been opened at least once. Gates the
+  // lazy overlay mounts at the bottom of the render so each panel's JS chunk is
+  // fetched only on first open, not on page load. Never removes an entry — a
+  // panel stays mounted after first open so its draft/scroll state persists and
+  // the shared Overlay's exit animation can still play on close.
+  const [loadedOverlays, setLoadedOverlays] = useState<ReadonlySet<Exclude<OverlayKey, null>>>(() => new Set());
+  useEffect(() => {
+    if (overlay) {
+      setLoadedOverlays((prev) => (prev.has(overlay) ? prev : new Set(prev).add(overlay)));
+    }
+  }, [overlay]);
   const [countForMonthClose, setCountForMonthClose] = useState(false);
   const [editItem, setEditItem] = useState<InventoryItem | null>(null);
   const [stockLossItem, setStockLossItem] = useState<InventoryItem | null>(null);
@@ -1885,6 +1910,7 @@ export function InventoryShell() {
       </div>
       </div>
 
+      {loadedOverlays.has('count') && (
       <CountSheet
         lang={L}
         open={overlay === 'count'}
@@ -1903,7 +1929,9 @@ export function InventoryShell() {
         customCategories={customCategories}
         tabLayout={tabLayout}
       />
+      )}
 
+      {loadedOverlays.has('reports') && (
       <ReportsPanel
         lang={L}
         open={overlay === 'reports' && canViewFinancials}
@@ -1912,14 +1940,18 @@ export function InventoryShell() {
         customNameById={customNameById}
         timezone={propertyTimezone}
       />
+      )}
 
+      {loadedOverlays.has('compare') && (
       <ComparePanel
         lang={L}
         open={overlay === 'compare' && canViewFinancials}
         onClose={closeOverlay}
         timezone={propertyTimezone}
       />
+      )}
 
+      {loadedOverlays.has('history') && (
       <HistoryPanel
         key={`${activePropertyId ?? 'no-property'}:${auditDeliveryLookupRevision}`}
         lang={L}
@@ -1945,7 +1977,9 @@ export function InventoryShell() {
         onRetryAudit={() => { void loadAuditHistory(null, false); }}
         onResolveAuditDelivery={resolveAuditDelivery}
       />
+      )}
 
+      {loadedOverlays.has('delivery-correction') && (
       <DeliveryCorrectionSheet
         lang={L}
         open={overlay === 'delivery-correction' && canManage && canViewFinancials}
@@ -1959,7 +1993,9 @@ export function InventoryShell() {
         }}
         onAddDelivery={() => { setDeliveryCorrection(null); setOverlay('delivery'); }}
       />
+      )}
 
+      {loadedOverlays.has('budgets') && (
       <BudgetsPanel
         lang={L}
         open={overlay === 'budgets' && canViewFinancials}
@@ -1972,7 +2008,9 @@ export function InventoryShell() {
         actualPeriods={actualPeriods}
         onChanged={(m) => { if (m) setBudgetMode(m); void refreshData(); }}
       />
+      )}
 
+      {loadedOverlays.has('close') && (
       <MonthClosePanel
         lang={L}
         open={overlay === 'close' && canManage && canViewFinancials}
@@ -1980,15 +2018,19 @@ export function InventoryShell() {
         onStartCount={() => { setCountForMonthClose(true); setOverlay('count'); }}
         onChanged={() => { void refreshData(); }}
       />
+      )}
 
+      {loadedOverlays.has('ai') && (
       <AiReportSheet
         lang={L}
         open={overlay === 'ai'}
         onClose={closeOverlay}
       />
+      )}
 
       {/* "Add a delivery" — chooser over invoice OCR + a typed-in path. The
           legacy ?action=scan link maps here only when scan access is allowed. */}
+      {loadedOverlays.has('delivery') && (
       <DeliverySheet
         lang={L}
         open={overlay === 'delivery' && canManage}
@@ -2000,7 +2042,9 @@ export function InventoryShell() {
         canViewFinancials={canViewFinancials}
         canScanInvoices={canScanInvoices}
       />
+      )}
 
+      {loadedOverlays.has('add') && (
       <AddItemSheet
         lang={L}
         open={overlay === 'add'}
@@ -2013,7 +2057,9 @@ export function InventoryShell() {
         hiddenBuiltins={tabLayout.hidden}
         onRecordStockLoss={canManage ? onRecordStockLoss : undefined}
       />
+      )}
 
+      {loadedOverlays.has('stock-loss') && (
       <StockLossSheet
         lang={L}
         open={overlay === 'stock-loss' && canManage}
@@ -2021,6 +2067,7 @@ export function InventoryShell() {
         onClose={closeOverlay}
         onSaved={() => { closeOverlay(); void refreshData(); }}
       />
+      )}
     </div>
   );
 }

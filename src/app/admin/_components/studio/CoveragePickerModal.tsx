@@ -29,7 +29,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Backdrop, MODAL_CARD } from './surface-kit';
 import {
-  Btn, Pill, Caps, Dot, FONT_SERIF, FONT_SANS, FONT_MONO, riseIn,
+  Btn, Pill, Caps, Dot, FONT_SERIF, FONT_SANS, FONT_MONO, useRiseIn,
 } from './kit';
 import styles from './CoveragePickerModal.module.css';
 
@@ -71,7 +71,7 @@ export function CoveragePickerModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  useEffect(() => { riseIn(cardRef.current, { dy: 26, dur: 440 }); }, []);
+  useRiseIn(cardRef, { dy: 26, dur: 440 });
 
   const load = useCallback(async () => {
     setLoadError(null);

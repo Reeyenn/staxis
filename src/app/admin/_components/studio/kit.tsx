@@ -21,7 +21,7 @@
    both light and dark studio surfaces — the surface decides text color.
    ─────────────────────────────────────────────────────────────────────── */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef } from 'react';
 
 // ── Font stacks (mirror studio.css --serif/--sans/--mono) ───────────────
 export const FONT_SERIF = 'var(--serif)';
@@ -65,6 +65,28 @@ export function riseIn(el: El, { delay = 0, dy = 14, dur = 520 }: { delay?: numb
     [{ opacity: 0, transform: `translateY(${dy}px)` }, { opacity: 1, transform: 'translateY(0)' }],
     { duration: dur, delay, easing: EASE_OUT, fill: 'both' },
   );
+}
+
+// SSR-safe layout effect (falls back to useEffect on the server so React does
+// not warn). Used by useRiseIn below.
+const useIsoLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+// Run riseIn as a LAYOUT effect so its from-keyframe (opacity 0) is applied
+// BEFORE the browser's first paint of the freshly-mounted element. Calling
+// riseIn from a plain post-paint useEffect paints the element once at its
+// resting (visible) style, then the animation snaps it to opacity 0 and eases
+// back — that "settled → gone → animate in" flash reads as a dialog popping
+// open twice. Mirrors the inventory Overlay entrance fix (2026-07-14). Safe by
+// construction: riseIn sets opacity:1 outright under reduced motion, and its
+// fill:'both' keyframes end visible, so nothing can be left stuck invisible.
+export function useRiseIn<T extends HTMLElement>(
+  ref: React.RefObject<T | null>,
+  opts?: { delay?: number; dy?: number; dur?: number },
+  deps: React.DependencyList = [],
+) {
+  useIsoLayoutEffect(() => {
+    riseIn(ref.current, opts);
+  }, deps);
 }
 
 // Physical flip, swapping faces at 90°. `onHalf` runs at the halfway point
@@ -123,11 +145,10 @@ export function sweepWidth(el: El, toPct: number, { dur = 760, delay = 0 }: { du
 // Hook: stagger-reveal direct children of a ref on mount / when deps change.
 export function useStagger(deps: React.DependencyList = [], { step = 60, dy = 14 }: { step?: number; dy?: number } = {}) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
+  useIsoLayoutEffect(() => {
     const root = ref.current;
     if (!root) return;
     Array.from(root.children).forEach((k, i) => riseIn(k as HTMLElement, { delay: i * step, dy }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   return ref;
 }

@@ -21,7 +21,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Backdrop, MODAL_CARD } from './surface-kit';
-import { Btn, Caps, FONT_SERIF, FONT_SANS, FONT_MONO, riseIn } from './kit';
+import { Btn, Caps, FONT_SERIF, FONT_SANS, FONT_MONO, useRiseIn } from './kit';
 import { SECTION_LIST, type AppSection } from '@/lib/sections/registry';
 
 export interface SectionsModalProps {
@@ -45,7 +45,7 @@ export function SectionsModal({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  useEffect(() => { riseIn(cardRef.current, { dy: 26, dur: 440 }); }, []);
+  useRiseIn(cardRef, { dy: 26, dur: 440 });
 
   const load = useCallback(async () => {
     setLoadError(null);

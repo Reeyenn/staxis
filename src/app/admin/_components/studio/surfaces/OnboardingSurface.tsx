@@ -30,7 +30,7 @@ import { CreateHotelModal } from '@/app/admin/_components/CreateHotelModal';
 import { MapsManagerModal } from '@/app/admin/_components/MapsManager';
 import {
   FONT_SERIF, Caps, Pill, Dot, Btn,
-  countUp, sweepWidth, riseIn, age, type DotTone,
+  countUp, sweepWidth, useRiseIn, age, type DotTone,
 } from '../kit';
 import { SurfaceShell, DarkEmpty, Backdrop, MODAL_CARD, dimWhite as dim } from '../surface-kit';
 import { RowButton } from '../ui-kit';
@@ -438,7 +438,7 @@ function JourneyRow({ p, j, job, expanded, onClick }: { p: PropertyRow; j: Journ
   const fillRef = useRef<HTMLDivElement>(null);
   const current = j.step - 1; // 0-based index of the in-progress node
   const fillPct = TOTAL_STEPS > 1 ? (current / (TOTAL_STEPS - 1)) * 100 : 0;
-  useEffect(() => { riseIn(rowRef.current, { dy: 10, dur: 420 }); }, []);
+  useRiseIn(rowRef, { dy: 10, dur: 420 });
   useEffect(() => { sweepWidth(fillRef.current, fillPct, { dur: 700 }); }, [fillPct]);
   const accentTone: DotTone = j.needsYou && j.kind ? HELP_DOT[j.kind] : 'gold';
   const accent = `var(--${accentTone})`;
@@ -646,7 +646,7 @@ function JourneyPanel({ propertyId, j }: { propertyId: string; j: Journey }) {
     } catch (e) { setErr(`Network error: ${(e as Error).message}`); }
   }, [propertyId]);
 
-  useEffect(() => { riseIn(panelRef.current, { dy: 6, dur: 360 }); }, []);
+  useRiseIn(panelRef, { dy: 6, dur: 360 });
   useEffect(() => {
     void fetchDetail();
     const t = setInterval(() => { void fetchDetail(); }, 5000);
@@ -908,7 +908,7 @@ function PmsDetail({ pms, onClose, onRepaired }: { pms: PMSCoverage; onClose: ()
   const [hotelsErr, setHotelsErr] = useState<string | null>(null);
   // Per-row in-flight attach/detach — keyed by hotel id.
   const [rowBusy, setRowBusy] = useState<string | null>(null);
-  useEffect(() => { riseIn(ref.current, { dy: 30, dur: 440 }); }, []);
+  useRiseIn(ref, { dy: 30, dur: 440 });
 
   // Load the hotels on this coverage family (attached + attach-candidates).
   const loadHotels = React.useCallback(async () => {
@@ -1219,7 +1219,7 @@ function ProspectModal({ p, onClose, onSaved }: { p: Prospect; onClose: () => vo
   const ref = useRef<HTMLDivElement>(null);
   const [d, setD] = useState<Prospect>(p);
   const [saving, setSaving] = useState(false);
-  useEffect(() => { riseIn(ref.current, { dy: 30, dur: 440 }); }, []);
+  useRiseIn(ref, { dy: 30, dur: 440 });
   const dirty = JSON.stringify(d) !== JSON.stringify(p);
 
   const save = async () => {

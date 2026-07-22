@@ -2,10 +2,10 @@
 
 import React, { useEffect } from 'react';
 import { usePathname } from 'next/navigation';
+import dynamic from 'next/dynamic';
 import { ConcourseBar } from '@/components/concourse/ConcourseBar';
 import { ActivityTracker } from './ActivityTracker';
 import { FeedbackButton } from './FeedbackButton';
-import { AskStaxisBar } from '@/components/agent/AskStaxisBar';
 import { AiActivityButton } from '@/components/agent/AiActivityButton';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -14,6 +14,15 @@ import { t } from '@/lib/translations';
 import { WifiOff, RefreshCw } from 'lucide-react';
 import { GlobalAutoTranslate } from '@/components/i18n/GlobalAutoTranslate';
 import { sectionForPath, isSectionEnabled } from '@/lib/sections/registry';
+
+// The "Ask Staxis" command bar (~900 lines + react-markdown) sits on every
+// authenticated page but starts collapsed and empty. Load it lazily so it stays
+// out of each page's initial JS bundle; it pops in post-hydration with no layout
+// shift (fixed-position pill). ssr:false — nothing to server-render at rest.
+const AskStaxisBar = dynamic(
+  () => import('@/components/agent/AskStaxisBar').then((m) => m.AskStaxisBar),
+  { ssr: false, loading: () => null },
+);
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const { lang } = useLang();

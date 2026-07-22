@@ -848,7 +848,11 @@ export function CountSheet({
     setReviewMissing(0);
   };
 
-  if (!open) return null;
+  // No `if (!open) return null` here on purpose: the shared Overlay owns
+  // presence — it stays mounted ~190ms after `open` flips false to play its
+  // exit, then unmounts itself. Bailing on !open (as this used to) tore the
+  // subtree down in one frame, so the Count sheet snapped shut instead of
+  // fading like every other overlay. Each <Overlay> below forwards open={open}.
 
   // STEP 1 — the chooser: one row per visible tab (General / Breakfast / each
   // custom tab), plus "Count everything". "Everything" always appears when a
@@ -858,7 +862,7 @@ export function CountSheet({
     const showEverything = scopeOptions.length !== 1
       || display.some((d) => !inBucket(d, scopeOptions[0].bucket));
     return (
-      <Overlay open onClose={requestClose} hasUnsavedChanges={dirty} width={560} title={cs.title}>
+      <Overlay open={open} onClose={requestClose} hasUnsavedChanges={dirty} width={560} title={cs.title}>
         {draftRestored && <div role="status" style={restoredDraftStyle}>{cs.draftRestored}</div>}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {scopeOptions.map((o) => (
@@ -1044,7 +1048,7 @@ export function CountSheet({
   if (review) {
     return (
       <Overlay
-        open
+        open={open}
         onClose={requestClose}
         hasUnsavedChanges={dirty}
         accent={statusColor.good}
@@ -1159,7 +1163,7 @@ export function CountSheet({
 
   return (
     <Overlay
-      open
+      open={open}
       onClose={requestClose}
       hasUnsavedChanges={dirty}
       accent={statusColor.good}

@@ -30,7 +30,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { fetchWithAuth } from '@/lib/api-fetch';
 import {
   FONT_SERIF, FONT_MONO, Caps, Pill, Dot, Btn, SerifNum,
-  countUp, riseIn, freshLabel, age,
+  countUp, useRiseIn, freshLabel, age,
   type PillTone, type DotTone,
 } from '../kit';
 import {
@@ -1292,7 +1292,7 @@ function MapCard({
   const tone = cardTone(h);
   const unassigned = h.pmsType === null;
   const sectionsOff = APP_SECTIONS.filter((s) => h.enabledSections[s] === false).length;
-  useEffect(() => { riseIn(ref.current, { dy: 10, dur: 320 }); }, []);
+  useRiseIn(ref, { dy: 10, dur: 320 });
   return (
     <article
       ref={ref}
@@ -1429,7 +1429,7 @@ function CreateOrganizationModal({ onClose, onCreated }: { onClose: () => void; 
   const [error, setError] = useState<string | null>(null);
   const cleanName = name.trim();
 
-  useEffect(() => { riseIn(ref.current, { dy: 24, dur: 340 }); }, []);
+  useRiseIn(ref, { dy: 24, dur: 340 });
   useDialogKeyboard(ref, onClose, saving);
 
   const submit = async (event: React.FormEvent) => {
@@ -1534,7 +1534,7 @@ function AssignHotelModal({
   const hotel = hotels.find((candidate) => candidate.id === propertyId);
   const canAssign = organization?.status === 'active' && !!hotel && !saving;
 
-  useEffect(() => { riseIn(ref.current, { dy: 24, dur: 340 }); }, []);
+  useRiseIn(ref, { dy: 24, dur: 340 });
   useDialogKeyboard(ref, onClose, saving);
 
   const submit = async (event: React.FormEvent) => {
@@ -1642,7 +1642,7 @@ function MakeIndependentModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => { riseIn(ref.current, { dy: 24, dur: 340 }); }, []);
+  useRiseIn(ref, { dy: 24, dur: 340 });
   useDialogKeyboard(ref, onClose, saving);
 
   const submit = async (event: React.FormEvent) => {
@@ -1737,7 +1737,7 @@ function DeleteHotelModal({ h, onClose, onDeleted }: {
   const nameMatches =
     (h.name ?? '').trim().length > 0 &&
     confirmText.trim().toLowerCase() === (h.name ?? '').trim().toLowerCase();
-  useEffect(() => { riseIn(ref.current, { dy: 26, dur: 380 }); }, []);
+  useRiseIn(ref, { dy: 26, dur: 380 });
   useDialogKeyboard(ref, onClose, deleting);
 
   const doDelete = async () => {
@@ -1816,7 +1816,7 @@ function MapDetail({ h, onClose, onPickCoverage, onOpenSections, onDetached, onR
   const hasSystem = h.pmsType !== null;
   const [detaching, setDetaching] = useState(false);
   const [detachError, setDetachError] = useState<string | null>(null);
-  useEffect(() => { riseIn(ref.current, { dy: 26, dur: 440 }); }, []);
+  useRiseIn(ref, { dy: 26, dur: 440 });
   useDialogKeyboard(ref, onClose, detaching);
 
   // Detach this hotel from its current coverage. Mirrors the FeedbackRow

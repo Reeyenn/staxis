@@ -21,7 +21,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { Backdrop, MODAL_CARD } from './surface-kit';
-import { Btn, Caps, FONT_SERIF, FONT_SANS, FONT_MONO, riseIn } from './kit';
+import { Btn, Caps, FONT_SERIF, FONT_SANS, FONT_MONO, useRiseIn } from './kit';
 
 export interface AddHotelModalProps {
   /** Close without creating (Backdrop / Cancel). */
@@ -54,7 +54,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
   const [created, setCreated] = useState<CreatedResult | null>(null);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => { riseIn(cardRef.current, { dy: 26, dur: 440 }); }, []);
+  useRiseIn(cardRef, { dy: 26, dur: 440 });
   useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
 
   const submit = async () => {
