@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 // Bilingual via useLang() inline ternaries — matches the sibling settings
 // pages (e.g. settings/shifts) rather than the giant translations.ts map.
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
@@ -74,6 +74,14 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
+  // Read the current language inside the load effect via a ref so it is NOT
+  // an effect dependency — otherwise toggling EN/ES would re-run the fetch and
+  // clobber unsaved draft edits (and flash the LOADING state). Clean times are
+  // plain numbers, so nothing about a language change needs a refetch. Mirrors
+  // the sibling settings/shifts page.
+  const langRef = useRef(lang);
+  langRef.current = lang;
+
   useEffect(() => {
     if (!pid) { setLoading(false); return; }
     let active = true;
@@ -110,14 +118,14 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         console.error('[clean-times:settings] load failed', err);
         if (active) {
           setLoadFailed(true);
-          setError(lang === 'es'
+          setError(langRef.current === 'es'
             ? 'No se pudieron cargar los tiempos de limpieza. Recarga la página para intentar de nuevo.'
             : 'Couldn’t load your clean times. Refresh the page to try again.');
           setLoading(false);
         }
       });
     return () => { active = false; };
-  }, [pid, lang]);
+  }, [pid]);
 
   const setVal = (type: string, v: string) => {
     // Keep only digits; cap length so the field stays sane.

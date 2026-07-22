@@ -9,7 +9,7 @@
 // fetchWithAuth) AND the x-account-id header — the server-side admin gate
 // requires the pair. Do not drop either header.
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Plus, Trash2, Pencil, X, Check, Shield, User } from 'lucide-react';
 
 import { useProperty } from '@/contexts/PropertyContext';
@@ -43,6 +43,12 @@ const BLANK_FORM: FormState = {
 export function AdminAccountsCrud({ user }: { user: AppUser }) {
   const { properties } = useProperty();
   const { lang } = useLang();
+  // Read language via a ref so loadAccounts() below does not depend on `lang` —
+  // otherwise toggling EN/ES recreates it, refires the load effect, flashes the
+  // loading state and refetches the account list, which isn't language-
+  // dependent. `lang` is used only for the error string.
+  const langRef = useRef(lang);
+  langRef.current = lang;
 
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -78,12 +84,12 @@ export function AdminAccountsCrud({ user }: { user: AppUser }) {
       if (!body || !body.ok) throw new Error(body?.error ?? 'Failed to load accounts');
       setAccounts(body.data?.accounts ?? []);
     } catch (err) {
-      setError(lang === 'es' ? 'No se pudieron cargar las cuentas' : 'Failed to load accounts');
+      setError(langRef.current === 'es' ? 'No se pudieron cargar las cuentas' : 'Failed to load accounts');
       captureException(err, { route: 'settings/accounts', op: 'loadAccounts' });
     } finally {
       setLoading(false);
     }
-  }, [user, lang]);
+  }, [user]);
 
   useEffect(() => { void loadAccounts(); }, [loadAccounts]);
 

@@ -40,6 +40,12 @@ export function NotificationsPanel() {
     setActivePropertyId,
   } = useProperty();
   const { lang } = useLang();
+  // Read language via a ref so the load() callback below does not depend on
+  // `lang` — otherwise toggling EN/ES recreates load(), refires the effect, and
+  // flashes the loading state / refetches even though notification prefs aren't
+  // language-dependent. `lang` is used only for error strings.
+  const langRef = useRef(lang);
+  langRef.current = lang;
   const can = useCan();
   const capabilityViewerKey = user?.uid && activePropertyId
     ? `${user.uid}:${activePropertyId}`
@@ -91,7 +97,7 @@ export function NotificationsPanel() {
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
       if (requestId !== loadRequestRef.current || activeScopeRef.current !== requestedPropertyId) return;
       if (!res.ok || !body.ok || !body.data) {
-        setError(body.error || (lang === 'es' ? 'No se pudieron cargar las preferencias' : 'Failed to load preferences'));
+        setError(body.error || (langRef.current === 'es' ? 'No se pudieron cargar las preferencias' : 'Failed to load preferences'));
         return;
       }
       setPrefs(body.data.preferences);
@@ -100,11 +106,11 @@ export function NotificationsPanel() {
       // A network throw used to escape as an unhandled rejection — the page
       // rendered blank (prefs null) with no error at all.
       console.error('[notifications:settings] load failed', err);
-      setError(lang === 'es' ? 'No se pudieron cargar las preferencias — revisa tu conexión' : 'Failed to load preferences — check your connection');
+      setError(langRef.current === 'es' ? 'No se pudieron cargar las preferencias — revisa tu conexión' : 'Failed to load preferences — check your connection');
     } finally {
       if (requestId === loadRequestRef.current && activeScopeRef.current === requestedPropertyId) setLoading(false);
     }
-  }, [propertyId, lang, allowed]);
+  }, [propertyId, allowed]);
 
   useEffect(() => { void load(); }, [load]);
 

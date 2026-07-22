@@ -199,6 +199,12 @@ export function ManagerDirectory() {
   const [wageTouched, setWageTouched] = useState(false);
   const [phoneTouched, setPhoneTouched] = useState(false);
 
+  // Read language via a ref so the contacts-load effect below does not depend on
+  // `lang` — otherwise toggling EN/ES refetches /api/staff/contacts on every
+  // switch. `lang` is used only for the error string.
+  const contactsLangRef = useRef(lang);
+  contactsLangRef.current = lang;
+
   useEffect(() => {
     if (!isManager || !pid) {
       setContactSnapshot(null);
@@ -223,14 +229,14 @@ export function ManagerDirectory() {
       .catch(err => {
         console.error('[ManagerDirectory] contacts fetch failed', err);
         if (active) {
-          setContactsError(lang === 'es'
+          setContactsError(contactsLangRef.current === 'es'
             ? 'No se pudieron cargar los teléfonos. Intenta actualizar.'
             : "Couldn't load phone numbers. Try refreshing.");
         }
       })
       .finally(() => { if (active) setContactsLoading(false); });
     return () => { active = false; };
-  }, [isManager, pid, lang]);
+  }, [isManager, pid]);
 
   // Load the wage map when the directory mounts (managers only). Refreshed
   // locally after each successful wage write in performSave().
