@@ -87,6 +87,23 @@ describe('inventory overlay usability contracts', () => {
     }
   });
 
+  test('heavy sheets preserve exit motion without rebuilding forever while closed', () => {
+    const overlay = readFileSync(join(
+      process.cwd(), 'src', 'app', 'inventory', '_components', 'overlays', 'Overlay.tsx',
+    ), 'utf8');
+    assert.match(overlay, /export function useOverlayPresence\(open: boolean\)/);
+    assert.match(overlay, /return open \|\| present/);
+    for (const file of ['CountSheet.tsx', 'DeliverySheet.tsx']) {
+      const source = readFileSync(join(
+        process.cwd(), 'src', 'app', 'inventory', '_components', 'overlays', file,
+      ), 'utf8');
+      assert.match(source, /const present = useOverlayPresence\(open\)/);
+      assert.match(source, /if \(!present\) return null/);
+      assert.doesNotMatch(source, /if \(!open\) return null/);
+      assert.match(source, /open=\{open\}/);
+    }
+  });
+
   test('count inline Add Item carries the same operational fields as the main form', () => {
     const count = readFileSync(join(
       process.cwd(), 'src', 'app', 'inventory', '_components', 'overlays', 'CountSheet.tsx',

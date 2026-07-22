@@ -11,6 +11,7 @@
 
 import React from 'react';
 import { useLang } from '@/contexts/LanguageContext';
+import { ASK_EVENT, dispatchAskCommand } from '@/components/agent/ask-command-bridge';
 
 export interface AskHeroViewProps {
   placeholder: string;
@@ -40,7 +41,7 @@ export function AskHeroView({ placeholder, onSubmit }: AskHeroViewProps) {
 }
 
 /** Fired at the global AskStaxisBar, which owns the live conversation. */
-export const ASK_EVENT = 'staxis:ask';
+export { ASK_EVENT };
 
 export function AskHero() {
   const { lang } = useLang();
@@ -49,9 +50,7 @@ export function AskHero() {
       placeholder={lang === 'es'
         ? 'Pregunta o da una orden — “¿quién limpia la 204?”'
         : 'Ask or command — “who’s cleaning 204?”'}
-      onSubmit={(text) => {
-        window.dispatchEvent(new CustomEvent(ASK_EVENT, { detail: { text } }));
-      }}
+      onSubmit={(text) => { dispatchAskCommand(text); }}
     />
   );
 }

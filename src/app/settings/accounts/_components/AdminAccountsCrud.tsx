@@ -17,6 +17,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { t } from '@/lib/translations';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { captureException } from '@/lib/sentry';
+import { localizeKnownMessage } from '@/lib/localized-ui-message';
 import { ALL_ROLES, roleLabel, type AppRole } from '@/lib/roles';
 import type { AppUser } from '@/contexts/AuthContext';
 
@@ -62,6 +63,10 @@ export function AdminAccountsCrud({ user }: { user: AppUser }) {
   const [saving, setSaving] = useState(false);
 
   const isAdmin = user.role === 'admin';
+  const visibleLoadError = localizeKnownMessage(error, lang, [[
+    'Failed to load accounts',
+    'No se pudieron cargar las cuentas',
+  ]]);
 
   const loadAccounts = useCallback(async () => {
     // Only admin can list all accounts; owners/GMs use the team panel below.
@@ -238,8 +243,8 @@ export function AdminAccountsCrud({ user }: { user: AppUser }) {
         <div style={{ display: 'flex', justifyContent: 'center', padding: '32px' }}>
           <div className="spinner" style={{ width: '28px', height: '28px' }} />
         </div>
-      ) : error ? (
-        <p style={{ color: 'var(--red)', fontSize: '14px' }}>{error}</p>
+      ) : visibleLoadError ? (
+        <p style={{ color: 'var(--red)', fontSize: '14px' }}>{visibleLoadError}</p>
       ) : (
         <div className="animate-in stagger-2" style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {accounts.map(acct => (

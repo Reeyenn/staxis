@@ -206,5 +206,8 @@ describe('normalized-only operational-link safety', () => {
     assert.match(dialog, /const returnFocusElement = document\.activeElement instanceof HTMLElement/);
     assert.match(dialog, /returnFocusElement\.focus\(\{ preventScroll: true \}\)/);
     assert.match(dialog, /if \(!busyRef\.current\) onCloseRef\.current\(\)/);
+    assert.match(dialog, /!dialogRef\.current\.contains\(document\.activeElement\)/);
+    assert.match(dialog, /\(event\.shiftKey \? last : first\)\.focus\(\)/);
+    assert.match(dialog, /tabIndex=\{-1\}/);
   });
 });

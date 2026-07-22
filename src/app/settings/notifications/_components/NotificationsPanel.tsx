@@ -16,6 +16,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { Bell, Mail, MessageSquare, Plus, X, Save } from 'lucide-react';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { useCan } from '@/lib/capabilities/useCan';
+import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 
 interface Preferences {
   propertyId: string;
@@ -27,6 +28,20 @@ interface Preferences {
 }
 
 const DELIVERY_OPTIONS = ['16:00', '18:00', '20:00', '22:00'];
+
+const NOTIFICATION_ERROR_MESSAGES = [
+  ['Failed to load preferences', 'No se pudieron cargar las preferencias'],
+  [
+    'Failed to load preferences — check your connection',
+    'No se pudieron cargar las preferencias — revisa tu conexión',
+  ],
+  ['Failed to save', 'No se pudo guardar'],
+  [
+    'Failed to save — check your connection and try again',
+    'No se pudo guardar — revisa tu conexión e intenta de nuevo',
+  ],
+  ['That email is already in the list', 'Ese correo ya está en la lista'],
+] as const satisfies readonly LocalizedMessagePair[];
 
 export function NotificationsPanel() {
   const { user, loading: authLoading } = useAuth();
@@ -72,6 +87,7 @@ export function NotificationsPanel() {
   const loadRequestRef = useRef(0);
   const activeScopeRef = useRef<string | null>(null);
   activeScopeRef.current = allowed ? propertyId : null;
+  const visibleError = localizeKnownMessage(error, lang, NOTIFICATION_ERROR_MESSAGES);
 
   useEffect(() => {
     // Invalidate any response for the previous hotel and remove its settings
@@ -220,9 +236,9 @@ export function NotificationsPanel() {
         </div>
       )}
 
-      {error && (
+      {visibleError && (
         <p style={{ fontSize: 13, color: 'var(--red)', background: 'var(--red-dim)', border: '1px solid var(--red-border, rgba(239,68,68,0.2))', borderRadius: 'var(--radius-sm)', padding: '10px 12px' }}>
-          {error}
+          {visibleError}
         </p>
       )}
 

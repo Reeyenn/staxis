@@ -16,6 +16,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   EDITABLE_CLEANING_TYPES,
   CLEAN_TIME_DEFAULT_MINUTES,
@@ -39,6 +40,17 @@ const TYPE_META: Record<EditableCleaningType, { en: string; es: string; enHint: 
   room_check:      { en: 'Room check',            es: 'Revisión de habitación',       enHint: 'Quick verify the room is ready',                         esHint: 'Verificación rápida de que la habitación está lista' },
   inspection_only: { en: 'Inspection only',       es: 'Solo inspección',              enHint: 'Senior inspection, no cleaning',                         esHint: 'Inspección por personal sénior, sin limpieza' },
 };
+
+const CLEAN_TIMES_ERROR_MESSAGES = [
+  [
+    'Couldn’t load your clean times. Refresh the page to try again.',
+    'No se pudieron cargar los tiempos de limpieza. Recarga la página para intentar de nuevo.',
+  ],
+  ...EDITABLE_CLEANING_TYPES.map((type) => [
+    `"${TYPE_META[type].en}" must be a whole number between ${MIN_CLEAN_MINUTES} and ${MAX_CLEAN_MINUTES}.`,
+    `"${TYPE_META[type].es}" debe ser un número entero entre ${MIN_CLEAN_MINUTES} y ${MAX_CLEAN_MINUTES}.`,
+  ] as const),
+] as const satisfies readonly LocalizedMessagePair[];
 
 export default function CleanTimesPage() {
   const { uid, pid } = useScope();
@@ -133,6 +145,8 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     setDrafts(prev => ({ ...prev, [type]: cleaned }));
   };
 
+  const visibleError = localizeKnownMessage(error, lang, CLEAN_TIMES_ERROR_MESSAGES);
+
   const resetToDefaults = () => {
     const next: Record<string, string> = {};
     for (const t of EDITABLE_CLEANING_TYPES) {
@@ -226,7 +240,7 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
             padding: '14px 16px', background: 'rgba(160,74,44,0.08)',
             border: '1px solid rgba(160,74,44,0.25)', borderRadius: 12,
             color: '#A04A2C', fontSize: 13, lineHeight: 1.5,
-          }}>{error}</div>
+          }}>{visibleError}</div>
         ) : (
           <>
             <section style={{
@@ -271,12 +285,12 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
               })}
             </section>
 
-            {error && (
+            {visibleError && (
               <div role="alert" style={{
                 padding: '10px 14px', background: 'rgba(160,74,44,0.08)',
                 border: '1px solid rgba(160,74,44,0.25)', borderRadius: 12,
                 color: '#A04A2C', fontSize: 13, marginTop: 12,
-              }}>{error}</div>
+              }}>{visibleError}</div>
             )}
 
             <div style={{

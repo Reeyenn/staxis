@@ -34,7 +34,7 @@ import { SetAsideTag } from '../SetAsideTag';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
 import { toDisplayItem } from '../adapter';
-import { Overlay } from './Overlay';
+import { Overlay, useOverlayPresence } from './Overlay';
 import { intGuard, numGuard, warnBannerStyle } from './form-kit';
 import {
   clearInlineAddAttempt,
@@ -273,6 +273,7 @@ export function CountSheet({
   customCategories,
   tabLayout,
 }: CountSheetProps) {
+  const present = useOverlayPresence(open);
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const cs = csStrings(lang);
@@ -848,11 +849,10 @@ export function CountSheet({
     setReviewMissing(0);
   };
 
-  // No `if (!open) return null` here on purpose: the shared Overlay owns
-  // presence — it stays mounted ~190ms after `open` flips false to play its
-  // exit, then unmounts itself. Bailing on !open (as this used to) tore the
-  // subtree down in one frame, so the Count sheet snapped shut instead of
-  // fading like every other overlay. Each <Overlay> below forwards open={open}.
+  // Keep the component's draft state mounted between opens, but stop rebuilding
+  // this large JSX tree after the shared Overlay's exit window has elapsed.
+  // A direct `if (!open)` would tear down the subtree before the exit animation.
+  if (!present) return null;
 
   // STEP 1 — the chooser: one row per visible tab (General / Breakfast / each
   // custom tab), plus "Count everything". "Everything" always appears when a
