@@ -338,16 +338,23 @@ export async function drainQueue(opts: DrainOptions = {}): Promise<DrainProgress
       // let the next online tick try again.
       break;
     } catch (caughtErr) {
-      // Network error — almost certainly we're offline again. Bail.
+      // Network error — the device is (again) offline. A fetch throw says
+      // NOTHING about whether the action is valid, so it must NEVER consume the
+      // permanent-failure budget (unlike a genuine 4xx). Previously this used
+      // the same `attempts >= maxAttempts` rule as the 5xx branch, so five
+      // transient connectivity blips — which the caller's backoff loop can burn
+      // through in ~15s while navigator.onLine flickers — permanently dropped a
+      // valid queued mutation (e.g. a room-clean that then never synced). Keep
+      // it retryable and back off; it replays when connectivity truly returns.
+      const attempts = action.attempts + 1;
       const updated: QueuedAction = {
         ...action,
-        attempts: action.attempts + 1,
+        attempts,
         lastError: caughtErr instanceof Error ? caughtErr.message : String(caughtErr),
-        permanentFailure: action.attempts + 1 >= maxAttempts,
+        permanentFailure: false,
       };
       await updateAction(updated);
-      if (updated.permanentFailure) failed += 1;
-      else retryAfterMs = retryBackoffMs(updated.attempts);
+      retryAfterMs = retryBackoffMs(attempts);
       emit();
       break;
     }

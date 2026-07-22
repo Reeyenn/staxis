@@ -229,4 +229,20 @@ describe('offline action queue', () => {
     assert.equal(items[0].permanentFailure, true);
     assert.ok(items[0].attempts >= 3);
   });
+
+  test('drainQueue keeps NETWORK errors retryable forever (never permanent)', async () => {
+    // Regression: a fetch throw means the device is offline and says nothing
+    // about whether the action is valid. Draining many times (as the online
+    // backoff loop does while navigator.onLine flickers) must NOT drop a valid
+    // queued mutation — otherwise a housekeeper's room-clean is silently lost.
+    await enqueueAction({ endpoint: '/api/x', body: {}, label: 'x' });
+    for (let i = 0; i < 8; i += 1) {
+      const { fn } = makeFakeFetch([{ status: 0, throwError: true }]);
+      await drainQueue({ fetchImpl: fn, maxAttempts: 3 });
+    }
+    const items = await getQueueItems();
+    assert.equal(items.length, 1, 'action is still queued, not dropped');
+    assert.equal(items[0].permanentFailure, false, 'network error never becomes permanent');
+    assert.ok(items[0].attempts >= 3);
+  });
 });

@@ -32,6 +32,7 @@ import { autoAssignRooms } from '@/lib/calculations';
 import { runWithConcurrency } from '@/lib/parallel';
 import { propertyLocalDateOffset } from '@/lib/schedule/local-date';
 import { selectActiveCrewWithReasons } from '@/lib/schedule/active-crew';
+import { computeWeeklyLoadByStaff } from '@/lib/schedule/weekly-load';
 import { fromStaffRow, parseStringField, parseNumberField } from '@/lib/db-mappers';
 import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import type { StaffMember } from '@/types';
@@ -151,6 +152,18 @@ async function autoFillForProperty(
     fromStaffRow(r as Record<string, unknown>),
   );
 
+  // Overlay each housekeeper's REAL committed weekly load (hours + days worked
+  // this week, from scheduled_shifts) onto the roster before the eligibility
+  // check. staff.weekly_hours / staff.days_worked_this_week are never populated,
+  // so without this the weekly-hour and weekly-day caps in checkCrewEligibility
+  // never fire and the cron would happily schedule a housekeeper a 6th day / past
+  // 40h. Degrades to the stale columns on query failure (empty map).
+  const weeklyLoad = await computeWeeklyLoadByStaff(property.id, targetDate);
+  const staffWithLoad: StaffMember[] = allStaff.map((s) => {
+    const load = weeklyLoad.get(s.id);
+    return load ? { ...s, weeklyHours: load.hours, daysWorkedThisWeek: load.days } : s;
+  });
+
   // 2b. Load approved time_off_requests for this date — they're per-day,
   //     orthogonal to the staff.vacation_dates list. Manager approving a
   //     TOR (e.g. "doctor appt Thu") should skip that housekeeper on
@@ -165,7 +178,7 @@ async function autoFillForProperty(
     (torRows ?? []).map((r) => String(r.staff_id)),
   );
 
-  const { eligible: activeCrew, excluded } = selectActiveCrewWithReasons(allStaff, {
+  const { eligible: activeCrew, excluded } = selectActiveCrewWithReasons(staffWithLoad, {
     targetDate,
     requirePhone: false,  // cron writes the schedule; SMS-send is separate
     respectSchedulePriority: true,

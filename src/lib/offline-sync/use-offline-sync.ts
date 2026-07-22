@@ -155,6 +155,19 @@ export function useOfflineSync() {
         setState((s) => ({ ...s, queueLength: newLen }));
         return { ok: true, queued: true, data: { actionId: queued.id, queued: true } };
       }
+      // Online, but if OLDER actions are still queued (from a prior offline
+      // stretch), sending this newer write directly would let it hit the server
+      // BEFORE those replay — and the later drain would then overwrite it with
+      // stale state. Route it through the queue so everything replays in
+      // enqueue order, and kick a drain.
+      const pending = await getQueueLength().catch(() => 0);
+      if (pending > 0) {
+        const queued = await enqueueAction({ endpoint, body, label });
+        setState((s) => ({ ...s, queueLength: pending + 1 }));
+        void triggerDrain();
+        return { ok: true, queued: true, data: { actionId: queued.id, queued: true } };
+      }
+      // Queue empty → safe to send directly (fast path).
       // Always send an idempotency key on the FIRST online attempt. The queue
       // generator includes a UUID fallback for older browsers; leaving this
       // undefined there would make a response-loss replay a distinct action.
@@ -182,7 +195,7 @@ export function useOfflineSync() {
         return { ok: true, queued: true, data: { actionId: queued.id, queued: true } };
       }
     },
-    [],
+    [triggerDrain],
   );
 
   const dismissFailures = useCallback(async () => {

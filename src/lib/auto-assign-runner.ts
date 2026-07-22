@@ -33,6 +33,7 @@ import {
   type AssignmentTaskPriority,
 } from '@/lib/assignment-engine';
 import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
+import { computeWeeklyLoadByStaff } from '@/lib/schedule/weekly-load';
 
 // ───────────────────────────────────────────────────────────────────────
 // Status windows
@@ -84,7 +85,7 @@ type CleaningTaskRow = {
   status: string;
 };
 
-function staffRowToHk(s: StaffRow): AssignmentHousekeeper {
+function staffRowToHk(s: StaffRow, weeklyHours: number): AssignmentHousekeeper {
   return {
     id: s.id,
     name: s.name,
@@ -92,7 +93,10 @@ function staffRowToHk(s: StaffRow): AssignmentHousekeeper {
     isSenior: s.is_senior === true,
     isActive: s.is_active !== false,
     homeFloor: null,
-    weeklyHours: s.weekly_hours ?? 0,
+    // Real committed hours this week (from scheduled_shifts) — NOT the stale
+    // staff.weekly_hours column, which is never populated. This is what makes
+    // the overtime penalty (scoreOvertime) actually fire near the cap.
+    weeklyHours,
     maxWeeklyHours: s.max_weekly_hours ?? 40,
     // The runner pre-filters the working set below, so anyone reaching the
     // engine is genuinely working — never let isOutToday re-exclude them.
@@ -254,7 +258,10 @@ export async function runAutoAssignForProperty(
     if (respectPriority && s.schedule_priority === 'excluded') return false;
     return true;
   });
-  const workingHks = working.map(staffRowToHk);
+  // Committed weekly hours per housekeeper (from scheduled_shifts) so the
+  // engine's overtime penalty reflects reality instead of a constant 0.
+  const weeklyLoad = await computeWeeklyLoadByStaff(propertyId, todayDate);
+  const workingHks = working.map(s => staffRowToHk(s, weeklyLoad.get(s.id)?.hours ?? 0));
 
   if (workingHks.length === 0) {
     return {

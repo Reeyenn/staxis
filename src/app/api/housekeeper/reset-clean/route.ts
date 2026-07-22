@@ -15,6 +15,8 @@ import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { gateHousekeeperRequest, loadRoomForStaff } from '@/lib/housekeeper-workflow/auth';
 import { writeWorkflowFields } from '@/lib/housekeeper-workflow/workflow-store';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { log } from '@/lib/log';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -75,6 +77,39 @@ export async function POST(req: NextRequest): Promise<Response> {
       code: ApiErrorCode.InternalError,
       headers: gate.headers,
     });
+  }
+
+  // Discard the latest non-discarded cleaning_events row for this room so a
+  // re-clean doesn't double-count. Mirrors the legacy room-action 'reset' path
+  // the redesigned page replaced: complete-clean already wrote a 'recorded'
+  // event, and without discarding it a subsequent re-clean inserts a SECOND
+  // event — counting the single physical clean twice in Performance metrics and
+  // the supply-ML training set. Non-fatal: the assignment reset already landed.
+  const roomDate = roomR.room.date;
+  const roomNumber = roomR.room.number;
+  if (roomDate && roomNumber) {
+    const { data: latest } = await supabaseAdmin
+      .from('cleaning_events')
+      .select('id')
+      .eq('property_id', gate.pid)
+      .eq('date', roomDate)
+      .eq('room_number', roomNumber)
+      .eq('staff_id', gate.staffId)
+      .in('status', ['recorded', 'flagged'])
+      .order('completed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (latest?.id) {
+      const { error: discardErr } = await supabaseAdmin
+        .from('cleaning_events')
+        .update({ status: 'discarded', flag_reason: 'reset_by_user' })
+        .eq('id', latest.id as string);
+      if (discardErr) {
+        log.error('reset-clean: cleaning_events discard failed (non-fatal)', {
+          requestId: gate.requestId, pid: gate.pid, staffId: gate.staffId, err: discardErr,
+        });
+      }
+    }
   }
 
   return ok({ roomId: body.roomId }, { requestId: gate.requestId, headers: gate.headers });
