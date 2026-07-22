@@ -126,10 +126,17 @@ function useDialogBehavior(onClose: () => void, busy = false) {
       const focusable = Array.from(dialogRef.current.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
       ));
-      if (focusable.length === 0) return;
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current.focus();
+        return;
+      }
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
+      if (!dialogRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -184,6 +191,7 @@ function WorkflowDialog({ title, eyebrow, description, lang, onClose, children, 
         aria-labelledby={titleId}
         aria-describedby={descriptionId}
         aria-busy={busy}
+        tabIndex={-1}
       >
         <div className={styles.dialogHeader}>
           <span className={styles.dialogIcon}><KeyRound size={21} aria-hidden="true" /></span>

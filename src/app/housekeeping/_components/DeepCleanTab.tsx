@@ -25,6 +25,7 @@ import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   getDeepCleanConfig, setDeepCleanConfig, getDeepCleanRecords,
   assignRoomDeepClean,
@@ -88,7 +89,7 @@ export function DeepCleanTab() {
   // though nothing about the data changed. The ref is used only for the
   // error-toast string, which stays correctly localized.
   const langRef = useRef(es);
-  useEffect(() => { langRef.current = es; }, [es]);
+  langRef.current = es;
 
   const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
   // True when the config fetch itself failed (distinct from a genuine
@@ -217,6 +218,10 @@ export function DeepCleanTab() {
   };
 
   const parDays = config?.frequencyDays ?? 90;
+  const visibleToast = localizeKnownMessage(toast, lang, [[
+    'Could not load deep clean data',
+    'No se pudo cargar limpieza profunda',
+  ]] as const satisfies readonly LocalizedMessagePair[]);
 
   // ── Derived per-room info ──────────────────────────────────────────────
   const allInfo: RoomInfo[] = useMemo(() => allRoomNumbers.map(num => {
@@ -621,7 +626,7 @@ export function DeepCleanTab() {
           color:      toastKind === 'error' ? T.warm     : T.sageDeep,
           border: `1px solid ${toastKind === 'error' ? 'rgba(184,92,61,0.3)' : 'rgba(92,122,96,0.3)'}`,
           borderRadius: 999, fontFamily: FONT_SANS, fontSize: 13, fontWeight: 500,
-        }}>{toast}</div>,
+        }}>{visibleToast}</div>,
         document.body,
       )}
     </div>

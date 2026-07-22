@@ -24,6 +24,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useAgentChat } from './useAgentChat';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { DisplayMessage } from './MessageList';
+import { subscribeToAskCommands } from './ask-command-bridge';
 
 type ChatState = 'empty' | 'active' | 'collapsed';
 
@@ -313,16 +314,12 @@ export function AskStaxisBar() {
   // Stop any live dictation if the bar unmounts.
   useEffect(() => () => { try { recognitionRef.current?.stop(); } catch { /* noop */ } }, []);
 
-  // The Concourse hub's hero Ask bar hands its input here over a window
-  // event, so there is exactly ONE conversation brain (history, approvals,
-  // streaming) no matter which surface the user typed into.
+  // The Concourse hub's hero Ask bar hands its input here through a durable
+  // event bridge, so there is exactly ONE conversation brain (history,
+  // approvals, streaming) no matter which surface the user typed into. The
+  // bridge also replays a command submitted before this dynamic chunk mounted.
   useEffect(() => {
-    const onAsk = (e: Event) => {
-      const text = (e as CustomEvent).detail?.text;
-      if (typeof text === 'string' && text.trim()) submit(text);
-    };
-    window.addEventListener('staxis:ask', onAsk);
-    return () => window.removeEventListener('staxis:ask', onAsk);
+    return subscribeToAskCommands(submit);
   }, [submit]);
 
   const dockClass = useMemo(() => [
@@ -605,7 +602,7 @@ type AssistantMarkdownRenderer = (props: { text: string }) => ReactElement;
 let markdownRendererPromise: Promise<AssistantMarkdownRenderer> | null = null;
 function loadMarkdownRenderer(): Promise<AssistantMarkdownRenderer> {
   if (!markdownRendererPromise) {
-    markdownRendererPromise = Promise.all([
+    const load = Promise.all([
       import('react-markdown'),
       import('remark-gfm'),
     ]).then(([rm, gfm]) => {
@@ -630,6 +627,13 @@ function loadMarkdownRenderer(): Promise<AssistantMarkdownRenderer> {
         </ReactMarkdown>
       );
       return Renderer;
+    });
+    markdownRendererPromise = load.catch((error) => {
+      // A transient chunk/network failure should not poison the module cache
+      // forever. The current bubble remains readable as plain text; a later
+      // assistant bubble gets a fresh chance to load the renderer.
+      markdownRendererPromise = null;
+      throw error;
     });
   }
   return markdownRendererPromise;

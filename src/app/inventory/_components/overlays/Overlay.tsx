@@ -61,6 +61,27 @@ function prefersReducedMotion() {
   return matchesMedia('(prefers-reduced-motion: reduce)');
 }
 
+// Heavy sheet components keep their hook state mounted between opens, but can
+// skip rebuilding their full JSX tree once Overlay's exit window has elapsed.
+// Returning `open || present` makes a reopen render synchronously even before
+// this hook's passive effect updates its internal presence bit.
+export function useOverlayPresence(open: boolean): boolean {
+  const [present, setPresent] = useState(open);
+  useEffect(() => {
+    if (open) {
+      if (!present) setPresent(true);
+      return;
+    }
+    if (!present) return;
+    const timer = setTimeout(
+      () => setPresent(false),
+      prefersReducedMotion() ? 0 : EXIT_MS + 30,
+    );
+    return () => clearTimeout(timer);
+  }, [open, present]);
+  return open || present;
+}
+
 function isMobileViewport() {
   return matchesMedia('(max-width: 760px)');
 }

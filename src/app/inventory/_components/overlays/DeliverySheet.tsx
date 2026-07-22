@@ -21,7 +21,7 @@ import { T, fonts } from '../tokens';
 import { Btn } from '../Btn';
 import { Serif } from '../Serif';
 import { Motion } from '../motion';
-import { Overlay } from './Overlay';
+import { Overlay, useOverlayPresence } from './Overlay';
 import { numGuard, warnBannerStyle } from './form-kit';
 import { ScanInvoiceSheet } from './ScanInvoiceSheet';
 import {
@@ -150,6 +150,7 @@ function validDeliveryDraft(value: unknown): DeliveryOverlayDraft | null {
 const CAT_ORDER: InvCat[] = ['housekeeping', 'maintenance', 'breakfast'];
 
 export function DeliverySheet({ lang, open, onClose, display, timezone, customCategories = [], tabLayout, canViewFinancials, canScanInvoices }: DeliverySheetProps) {
+  const present = useOverlayPresence(open);
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const ds = dsStrings(lang);
@@ -226,11 +227,10 @@ export function DeliverySheet({ lang, open, onClose, display, timezone, customCa
     dirty, retryLocked, currentDraft,
   ]);
 
-  // No `if (!open) return null` here on purpose: the shared Overlay (and
-  // ScanInvoiceSheet's own Overlay) own presence and play a ~190ms exit after
-  // `open` flips false. Bailing on !open tore the subtree down in one frame, so
-  // the delivery / scan sheet snapped shut instead of fading. Each branch below
-  // forwards open={open} so that exit can play.
+  // Keep draft state mounted between opens, but stop rebuilding this large tree
+  // after the shared Overlay / ScanInvoiceSheet exit window has elapsed. A
+  // direct `if (!open)` would still tear down the exit animation immediately.
+  if (!present) return null;
 
   // Scan path — the existing invoice flow, whole. Its close exits the sheet.
   if (mode === 'scan' && canScanInvoices) {

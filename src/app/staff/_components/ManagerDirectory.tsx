@@ -14,6 +14,7 @@ import { UserPlus } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { localizeKnownMessage } from '@/lib/localized-ui-message';
 import { addStaffMember, updateStaffMember, deleteStaffMember } from '@/lib/db';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { canManageTeam } from '@/lib/roles';
@@ -191,6 +192,10 @@ export function ManagerDirectory() {
     () => contactSnapshot?.propertyId === pid ? contactSnapshot.contacts : {},
     [contactSnapshot, pid],
   );
+  const visibleContactsError = localizeKnownMessage(contactsError, lang, [[
+    "Couldn't load phone numbers. Try refreshing.",
+    'No se pudieron cargar los teléfonos. Intenta actualizar.',
+  ]]);
   const contactsReady = contactSnapshot?.propertyId === pid;
   // Did the user actually edit the wage field this modal session? Wage writes
   // fire ONLY when true — so a save can never clear a wage just because the
@@ -574,12 +579,12 @@ export function ManagerDirectory() {
         </div>
       )}
 
-      {isManager && contactsError && (
+      {isManager && visibleContactsError && (
         <div role="alert" style={{
           marginBottom: 12, padding: '10px 14px', borderRadius: 12,
           color: '#B85C3D', background: 'rgba(184,92,61,0.08)',
           border: '1px solid rgba(184,92,61,0.25)', fontSize: 13,
-        }}>{contactsError}</div>
+        }}>{visibleContactsError}</div>
       )}
 
       {/* Waiting-to-approve queue (managers only, hidden when empty) */}

@@ -34,6 +34,7 @@ import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { useCan } from '@/lib/capabilities/useCan';
+import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   EMPTY_COMPANY_ACCESS,
   legacyAccessProfile,
@@ -103,6 +104,19 @@ const MANAGER_PROFILES = new Set([
 function localized(lang: string, en: string, es: string): string {
   return lang === 'es' ? es : en;
 }
+
+const COMPANY_LOAD_ERROR_MESSAGES = [
+  ['Select a hotel before opening Hotel View.', 'Selecciona un hotel antes de abrir la vista del hotel.'],
+  [
+    'Hotel View is unavailable for the selected hotel. Try again or return to Admin.',
+    'La vista del hotel no está disponible para el hotel seleccionado. Inténtalo de nuevo o vuelve a Admin.',
+  ],
+  ['Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'],
+  [
+    'The admin preview response did not match the selected hotel.',
+    'La vista previa de administrador no coincidió con el hotel seleccionado.',
+  ],
+] as const satisfies readonly LocalizedMessagePair[];
 
 function formatDate(value: string | null | undefined, lang: string): string {
   if (!value) return localized(lang, 'No expiration', 'Sin vencimiento');
@@ -466,7 +480,11 @@ function CompanyAccessContent() {
     && data.viewerContext.requestedPropertyId === activePropertyId,
   );
   const currentData = adminTargetIsCurrent && dataBelongsToCurrentViewer && adminDataMatchesSelection ? data : null;
-  const currentLoadError = adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null;
+  const currentLoadError = localizeKnownMessage(
+    adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null,
+    lang,
+    COMPANY_LOAD_ERROR_MESSAGES,
+  );
   const resolved = currentData ?? EMPTY_COMPANY_ACCESS;
   const hasCompanyScope = resolved.effectiveAccess.some((receipt) => {
     const profile = receipt.accessProfile.toLowerCase();
