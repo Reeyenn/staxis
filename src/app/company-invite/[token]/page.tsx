@@ -84,12 +84,19 @@ export default function CompanyInvitationPage() {
     setTokenReady(true);
   }, [routeToken]);
 
+  // Read language via a ref so this preview-loading effect does NOT depend on
+  // `lang` — otherwise toggling EN/ES aborts + refetches the invitation preview
+  // and flashes the spinner, even though the preview isn't language-dependent
+  // (only the error copy is). See the deps array below.
+  const langRef = React.useRef(lang);
+  langRef.current = lang;
+
   React.useEffect(() => {
     if (!tokenReady) return;
     if (!token) {
       setPreview(null);
       setPreviewLoading(false);
-      setPreviewError(copy(lang, 'This invitation link is invalid or is no longer available.', 'Este enlace de invitación no es válido o ya no está disponible.'));
+      setPreviewError(copy(langRef.current, 'This invitation link is invalid or is no longer available.', 'Este enlace de invitación no es válido o ya no está disponible.'));
       return;
     }
     const controller = new AbortController();
@@ -108,20 +115,20 @@ export default function CompanyInvitationPage() {
         });
         const body = await response.json().catch(() => ({})) as Envelope<CompanyInvitationPreview>;
         if (!response.ok || !body.ok || !body.data) {
-          throw new Error(responseError(body, copy(lang, 'Could not securely review this invitation.', 'No se pudo revisar esta invitación de forma segura.')));
+          throw new Error(responseError(body, copy(langRef.current, 'Could not securely review this invitation.', 'No se pudo revisar esta invitación de forma segura.')));
         }
         setPreview(body.data);
       } catch (caught) {
         if (controller.signal.aborted) return;
         setPreviewError(caught instanceof Error
           ? caught.message
-          : copy(lang, 'Could not securely review this invitation.', 'No se pudo revisar esta invitación de forma segura.'));
+          : copy(langRef.current, 'Could not securely review this invitation.', 'No se pudo revisar esta invitación de forma segura.'));
       } finally {
         if (!controller.signal.aborted) setPreviewLoading(false);
       }
     })();
     return () => controller.abort();
-  }, [lang, previewNonce, token, tokenReady]);
+  }, [previewNonce, token, tokenReady]);
 
   const acceptExisting = async () => {
     if (submitting || !preview || !token) return;

@@ -359,6 +359,15 @@ function CompanyAccessContent() {
     setAdminToolsEnabled(false);
   }, [activePropertyId, userRole]);
 
+  // Read language via a ref so the company-access load effect below does not
+  // depend on `lang` — otherwise toggling EN/ES tears down the request, flashes
+  // the loading state and refetches /api/company-access (or the admin preview),
+  // clobbering the already-loaded workspace. `lang` is used only for error copy
+  // inside this effect; every render-time localized(lang, …) still uses the
+  // reactive `lang`.
+  const langRef = React.useRef(lang);
+  langRef.current = lang;
+
   React.useEffect(() => {
     if (!user || authLoading || propertyLoading) return;
     const requestedPropertyId = user.role === 'admin' ? activePropertyId : null;
@@ -367,7 +376,7 @@ function CompanyAccessContent() {
       setAdminTargetPropertyId(null);
       setData(null);
       setDataViewerKey(null);
-      setLoadError(localized(lang, 'Select a hotel before opening Hotel View.', 'Selecciona un hotel antes de abrir la vista del hotel.'));
+      setLoadError(localized(langRef.current, 'Select a hotel before opening Hotel View.', 'Selecciona un hotel antes de abrir la vista del hotel.'));
       setLoadErrorViewerKey(requestedViewerKey);
       setLoading(false);
       return;
@@ -402,11 +411,11 @@ function CompanyAccessContent() {
         if (!response.ok || !body.ok || !body.data) {
           throw new Error(user.role === 'admin'
             ? localized(
-                lang,
+                langRef.current,
                 'Hotel View is unavailable for the selected hotel. Try again or return to Admin.',
                 'La vista del hotel no está disponible para el hotel seleccionado. Inténtalo de nuevo o vuelve a Admin.',
               )
-            : body.error || localized(lang, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
+            : body.error || localized(langRef.current, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
         }
         const normalized = normalizeCompanyData(body.data);
         if (user.role === 'admin' && (
@@ -414,7 +423,7 @@ function CompanyAccessContent() {
           || normalized.viewerContext.readOnly !== true
           || normalized.viewerContext.requestedPropertyId !== requestedPropertyId
         )) {
-          throw new Error(localized(lang, 'The admin preview response did not match the selected hotel.', 'La vista previa de administrador no coincidió con el hotel seleccionado.'));
+          throw new Error(localized(langRef.current, 'The admin preview response did not match the selected hotel.', 'La vista previa de administrador no coincidió con el hotel seleccionado.'));
         }
         if (!cancelled) {
           setData(normalized);
@@ -437,7 +446,7 @@ function CompanyAccessContent() {
         }
         setLoadError(error instanceof Error
           ? error.message
-          : localized(lang, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
+          : localized(langRef.current, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
         setLoadErrorViewerKey(requestedViewerKey);
       } finally {
         if (!cancelled) setLoading(false);
@@ -445,7 +454,7 @@ function CompanyAccessContent() {
     })();
 
     return () => { cancelled = true; };
-  }, [accountId, activePropertyId, authLoading, lang, propertyKey, propertyLoading, retryKey, userRole]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [accountId, activePropertyId, authLoading, propertyKey, propertyLoading, retryKey, userRole]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const adminTargetIsCurrent = !adminPreview || adminTargetPropertyId === activePropertyId;
   const currentViewerKey = accountId && userRole

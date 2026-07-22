@@ -81,6 +81,14 @@ export function DeepCleanTab() {
   const { lang } = useLang();
   const todayStrReactive = useTodayStr();
   const es = lang === 'es';
+  // Keep the current language in a ref so `refreshRecords` (below) does NOT
+  // depend on `es`. Without this, toggling EN/ES changes refreshRecords'
+  // identity, which re-runs the mount effect — flashing the whole tab back to
+  // the "Loading deep clean…" spinner and re-fetching config+records even
+  // though nothing about the data changed. The ref is used only for the
+  // error-toast string, which stays correctly localized.
+  const langRef = useRef(es);
+  useEffect(() => { langRef.current = es; }, [es]);
 
   const [config, setConfigState] = useState<DeepCleanConfig | null>(null);
   // True when the config fetch itself failed (distinct from a genuine
@@ -147,14 +155,14 @@ export function DeepCleanTab() {
       console.error('[DeepCleanTab] records fetch failed:', err);
       if (!opts?.silent) {
         setToastKind('error');
-        setToast(es ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data');
+        setToast(langRef.current ? 'No se pudo cargar limpieza profunda' : 'Could not load deep clean data');
         if (toastTimer.current) clearTimeout(toastTimer.current);
         toastTimer.current = setTimeout(() => setToast(null), 3500);
       }
     } finally {
       setLoaded(true);
     }
-  }, [uid, pid, es]);
+  }, [uid, pid]);
 
   // Load config + records on mount / property-change. Resets local state
   // immediately when uid/pid changes so a slow response from the previous
