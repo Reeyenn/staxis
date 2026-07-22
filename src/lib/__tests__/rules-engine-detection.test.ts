@@ -53,6 +53,26 @@ describe('detectHasPet', () => {
   test('"celebrate" alone ⇒ false (no pet keyword overlap)', () => {
     assert.equal(detectHasPet({ notes: 'birthday — celebrate quietly' }), false);
   });
+
+  // Regression: bare substring 'pet' used to match 'carpet' (and 'dog'
+  // 'watchdog'), spawning phantom pet-clean tasks. Now word-boundary matched.
+  test('"carpet" does NOT trip pet detection', () => {
+    assert.equal(detectHasPet({ notes: 'deep clean the carpet, please' }), false);
+  });
+
+  test('"watchdog" / "trumpet" do NOT trip pet detection', () => {
+    assert.equal(detectHasPet({ special_requests: 'left a trumpet in the room' }), false);
+    assert.equal(detectHasPet({ notes: 'neighborhood watchdog program flyer' }), false);
+  });
+
+  // 'esa' (Spanish for "that") was dropped so bilingual notes don't false-fire.
+  test('Spanish "esa" does NOT trip pet detection', () => {
+    assert.equal(detectHasPet({ special_requests: 'limpiar esa habitación primero' }), false);
+  });
+
+  test('"dog" as a whole word still ⇒ true', () => {
+    assert.equal(detectHasPet({ notes: 'guest has a small dog' }), true);
+  });
 });
 
 describe('detectEcoStay', () => {
@@ -70,6 +90,19 @@ describe('detectEcoStay', () => {
 
   test('"eco hotel awards" ⇒ false (no opt-in phrase)', () => {
     assert.equal(detectEcoStay({ notes: 'mentioned eco hotel awards' }), false);
+  });
+
+  // Regression: bare 'no service' used to flip eco-stay (which downgrades a
+  // room to a 5-min visual check) on any incidental mention. Now requires a
+  // specific housekeeping opt-out phrase.
+  test('incidental "no service" does NOT flip eco-stay', () => {
+    assert.equal(detectEcoStay({ notes: 'guest says cell has no service in 210' }), false);
+    assert.equal(detectEcoStay({ special_requests: 'ice machine no service on 2nd floor' }), false);
+  });
+
+  test('explicit "no housekeeping" / "decline service" ⇒ true', () => {
+    assert.equal(detectEcoStay({ special_requests: 'guest requested no housekeeping' }), true);
+    assert.equal(detectEcoStay({ notes: 'will decline service for the stay' }), true);
   });
 });
 

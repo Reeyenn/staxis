@@ -194,7 +194,13 @@ export function autoAssignRooms(
   //     so the cleaning sequence makes sense for the HK doing them.
 
   function getFloor(num: string): string {
-    return num.length >= 3 ? num[0] : '1';
+    // Mirror parseFloor() in assignment-engine/scoring.ts: the last two digits
+    // are the room slot, everything before is the floor. Taking num[0] is
+    // wrong for 4-digit high-rise rooms — "1001" (floor 10) and "101" (floor 1)
+    // would both collapse into bucket "1", so whole physical floors get merged.
+    const digits = num.replace(/[^0-9]/g, '');
+    if (digits.length >= 3) return String(parseInt(digits.slice(0, digits.length - 2), 10));
+    return '1';
   }
 
   // Group rooms by floor and pre-compute minutes per room.

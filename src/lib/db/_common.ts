@@ -337,6 +337,12 @@ export function subscribeTable<T>(
   let requestSeq = 0;
   let lastPublishedSeq = -1;
   let currentRows: readonly T[] = [];
+  // The reducer (applyPayload) must not run until the initial snapshot has
+  // landed: a change event that arrives before the first doFetch resolves would
+  // apply the reducer to an empty currentRows, publish that, and bump
+  // lastPublishedSeq past the in-flight initial fetch — which the ordering
+  // guard then drops, permanently losing the full initial snapshot.
+  let initialLoaded = false;
 
   const publish = (rows: T[]) => {
     currentRows = rows;
@@ -351,6 +357,7 @@ export function subscribeTable<T>(
         if (!active) return;
         if (myReq <= lastPublishedSeq) return;  // a newer fetch already published
         lastPublishedSeq = myReq;
+        initialLoaded = true;  // a full snapshot has now landed → reducer may apply
         publish(rows);
       })
       .catch(err => {
@@ -394,7 +401,10 @@ export function subscribeTable<T>(
   const onChange = (payload: PostgresChangesPayload) => {
     if (!active) return;
     if (shouldRefetch && !shouldRefetch(payload)) return;
-    if (applyPayload) {
+    // Only apply the reducer once the initial snapshot has landed; before that,
+    // fall back to the debounced refetch (which produces a full snapshot and
+    // can't be clobbered by the guard). See the initialLoaded declaration.
+    if (applyPayload && initialLoaded) {
       const next = applyPayload(payload, currentRows);
       if (next !== null) {
         // Bump the seq so any in-flight doFetch with a lower id will be

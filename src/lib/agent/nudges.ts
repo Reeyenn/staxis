@@ -65,7 +65,12 @@ export async function runNudgeChecksForProperty(propertyId: string): Promise<Nud
   try {
     if (await shouldFireDailySummary(propertyId)) {
       const summary = await buildDailySummary(propertyId);
-      const dedupeKey = `daily_summary:${new Date().toISOString().slice(0, 10)}`;
+      // dedupe_key MUST be property-scoped: the unique partial index is on
+      // (user_id, category, dedupe_key) with NO property_id, and a single
+      // owner/GM account can be a recipient for multiple properties. Without
+      // the propertyId here, the second property's daily summary collides on
+      // the same key and is swallowed as a 23505 duplicate.
+      const dedupeKey = `daily_summary:${propertyId}:${new Date().toISOString().slice(0, 10)}`;
       for (const userId of recipients) {
         const inserted = await insertNudgeIfNew({
           userId,
@@ -262,7 +267,10 @@ async function checkOperationalAlerts(propertyId: string): Promise<NudgeDraft[]>
       },
       // r.id is the composite "${date}:${room_number}" — stable per day,
       // so the dedupe key behaves the same as the old per-room-row id.
-      dedupeKey: `overdue_room:${r.id}`,
+      // Property-scoped so two properties sharing a room number (e.g. "302")
+      // on the same date don't collide on the (user, category, dedupe_key)
+      // unique index for a multi-property owner.
+      dedupeKey: `overdue_room:${propertyId}:${r.id}`,
     });
   }
 
@@ -290,7 +298,7 @@ async function checkOperationalAlerts(propertyId: string): Promise<NudgeDraft[]>
         roomNumber: r.number,
         minutesAgo,
       },
-      dedupeKey: `unresolved_help:${r.id}`,
+      dedupeKey: `unresolved_help:${propertyId}:${r.id}`,
     });
   }
 
@@ -392,8 +400,17 @@ async function buildDailySummary(propertyId: string): Promise<Record<string, unk
   const totalLabor = (events ?? []).reduce((acc, e) => acc + Number(e.duration_minutes ?? 0), 0);
   const uniqueStaff = new Set((events ?? []).map(e => e.staff_id)).size;
 
+  // When the occupancy feed is untrusted, clean/dirty are null (never zero).
+  // Don't interpolate null into the sentence — the labor figures still come
+  // from cleaning_events and are valid, so report those and flag the counts
+  // as unavailable instead of writing the literal word "null".
+  const hours = Math.round((totalLabor / 60) * 10) / 10;
+  const summaryText = clean === null
+    ? `Today: ${uniqueStaff} housekeeper${uniqueStaff === 1 ? '' : 's'} logged ${hours}h of cleaning. Room counts unavailable — the PMS occupancy feed isn't synced for this hotel.`
+    : `Today: ${clean} rooms cleaned by ${uniqueStaff} housekeepers (${hours}h total). ${dirty} dirty rooms remaining, ${issues} flagged issues.`;
+
   return {
-    summary: `Today: ${clean} rooms cleaned by ${uniqueStaff} housekeepers (${Math.round(totalLabor / 60 * 10) / 10}h total). ${dirty} dirty rooms remaining, ${issues} flagged issues.`,
+    summary: summaryText,
     type: 'daily_summary',
     date: today,
     roomsCleaned: clean,
@@ -447,7 +464,7 @@ async function checkInventory(propertyId: string): Promise<NudgeDraft[]> {
           unit: i.unit ?? null,
         })),
       },
-      dedupeKey: `inventory_low:${new Date().toISOString().slice(0, 10)}`,
+      dedupeKey: `inventory_low:${propertyId}:${new Date().toISOString().slice(0, 10)}`,
     });
   }
   return drafts;

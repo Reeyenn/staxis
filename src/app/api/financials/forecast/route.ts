@@ -25,6 +25,8 @@ import { budgetVsActual, sumExpensesByDepartment } from '@/lib/financials/db';
 import { getOccupancyPacingFactor } from '@/lib/financials/revenue';
 import { forecastDepartmentOverspend } from '@/lib/financials/forecast';
 import { detectDepartmentSpikes } from '@/lib/financials/anomaly';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { todayInTz } from '@/lib/forecast';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,10 +40,23 @@ export async function GET(req: NextRequest): Promise<Response> {
   const month = monthParam && isMonthKey(monthParam) ? monthParam : monthKey(new Date());
 
   try {
-    const now = new Date();
-    const todayISO = now.toISOString().slice(0, 10);
+    // Pace the projection against the property's LOCAL day-of-month, not UTC.
+    // A raw new Date() on Vercel (server TZ = UTC) advances the day-of-month
+    // several hours early each evening for US-timezone hotels, inflating
+    // daysElapsed and skewing the end-of-month spend projection. Mirror the
+    // sibling /api/dashboard/labor-cost route's timezone anchor.
+    const { data: propRow } = await supabaseAdmin
+      .from('properties')
+      .select('timezone')
+      .eq('id', gate.pid)
+      .maybeSingle<{ timezone: string | null }>();
+    const timezone = propRow?.timezone || 'America/Chicago';
+    const todayISO = todayInTz(timezone);
+    // Anchor at UTC midnight of the LOCAL date so daysElapsedInMonth's
+    // getUTCDate()/monthKey() read the property-local day-of-month.
+    const localAnchor = new Date(`${todayISO}T00:00:00Z`);
     const dim = daysInMonthOf(month);
-    const elapsed = daysElapsedInMonth(month, now);
+    const elapsed = daysElapsedInMonth(month, localAnchor);
 
     const [vsActual, priorByDept, occFactor] = await Promise.all([
       budgetVsActual(gate.pid, month),

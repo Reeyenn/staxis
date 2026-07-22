@@ -27,12 +27,13 @@ export async function assignPropertyToFamily(
   propertyId: string,
   pmsFamily: string,
 ): Promise<AssignResult> {
-  const { error: propErr } = await supabaseAdmin
-    .from('properties')
-    .update({ pms_type: pmsFamily })
-    .eq('id', propertyId);
-  if (propErr) return { ok: false, error: 'could not set the hotel’s PMS' };
-
+  // These two writes aren't wrapped in one transaction (that would need an
+  // RPC). Do the session upsert FIRST so a partial failure fails toward
+  // RUNNING: the supervisor boots drivers from property_sessions, not from
+  // properties.pms_type, so if the second write fails the robot still starts
+  // for the right family and only the display field lags. The reverse order
+  // fails toward a hotel shown as "on" the family with NO driver ever booting —
+  // silent and unmonitored, the worst outcome.
   const now = new Date().toISOString();
   const { error: sessErr } = await supabaseAdmin
     .from('property_sessions')
@@ -41,6 +42,12 @@ export async function assignPropertyToFamily(
       { onConflict: 'property_id' },
     );
   if (sessErr) return { ok: false, error: 'could not start the coverage session' };
+
+  const { error: propErr } = await supabaseAdmin
+    .from('properties')
+    .update({ pms_type: pmsFamily })
+    .eq('id', propertyId);
+  if (propErr) return { ok: false, error: 'could not set the hotel’s PMS' };
 
   return { ok: true };
 }

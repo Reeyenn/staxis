@@ -169,17 +169,41 @@ def compute_same_dow_baseline_errors(
     # WIDER window — looking back another 28 days to have enough same-DOWs
     # before each prediction date.
     naive_window_start = window_start - timedelta(days=28)
-    naive_sql = f"""
-        select
-          date::text as date,
-          total_approved_minutes
-        from cleaning_minutes_per_day_view
-        where property_id = '{pid}'
-          and date >= date '{naive_window_start.isoformat()}'
-          and date <  date '{window_end_excl.isoformat()}'
-          and total_approved_minutes is not null
-        order by date asc
-    """
+    if layer == "supply":
+        # The naive same-DOW baseline MUST be built from the SAME actuals
+        # population the active model is scored against. For supply, `actual`
+        # (below) is the per-date SUM of prediction_log.actual_value — the
+        # approved minutes of the scheduled (room,staff) pairs that were
+        # predicted, NOT the property's full-day approved total. Using
+        # cleaning_minutes_per_day_view (a full-day total) here would compare
+        # active_error and naive_error on different populations and bias the
+        # auto-rollback decision. Rebuild the baseline history from the supply
+        # prediction_log actuals, aliased to the column name the parser reads.
+        naive_sql = f"""
+            select
+              date::text as date,
+              sum(actual_value)::numeric as total_approved_minutes
+            from prediction_log
+            where property_id = '{pid}'
+              and layer = 'supply'
+              and date >= date '{naive_window_start.isoformat()}'
+              and date <  date '{window_end_excl.isoformat()}'
+              and actual_value is not null
+            group by date
+            order by date asc
+        """
+    else:  # demand — full-day approved minutes is the matching population
+        naive_sql = f"""
+            select
+              date::text as date,
+              total_approved_minutes
+            from cleaning_minutes_per_day_view
+            where property_id = '{pid}'
+              and date >= date '{naive_window_start.isoformat()}'
+              and date <  date '{window_end_excl.isoformat()}'
+              and total_approved_minutes is not null
+            order by date asc
+        """
     try:
         actual_rows = client.execute_sql(naive_sql)
     except Exception as exc:

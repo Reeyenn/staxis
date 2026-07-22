@@ -1,7 +1,7 @@
 /**
  * POST /api/admin/coverage/bulk-assign
  *   body: { pmsFamily: string, propertyIds?: string[] }
- *   → { ok, data: { appliedCount: number } } | 409 { code:'no_active_map' }
+ *   → { ok, data: { appliedCount, failedCount, failed: string[] } } | 409 { code:'no_active_map' }
  *
  * feature/cua-coverage-mgmt — BULK match: put EVERY hotel already on a PMS
  * family back onto its (active) coverage, PLUS any explicitly-passed
@@ -102,5 +102,8 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('could not assign any hotels', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
   }
 
-  return ok({ appliedCount }, { requestId });
+  // Surface partial failures rather than reporting a clean success: a hotel
+  // that failed to assign is left assigned-but-not-running, and hiding it here
+  // means the admin thinks every hotel is live when some silently aren't.
+  return ok({ appliedCount, failedCount: failures.length, failed: failures }, { requestId });
 }

@@ -10,7 +10,6 @@
 
 import { registerTool, type ToolContext, type ToolResult } from '../tools';
 import {
-  monthKey,
   priorMonthKey,
   formatCents,
   departmentLabel,
@@ -20,6 +19,8 @@ import {
 } from '@/lib/financials/shared';
 import { getFinanceSummary, budgetVsActual, sumExpensesByDepartment } from '@/lib/financials/db';
 import { canForProperty } from '@/lib/capabilities/server';
+import { supabaseAdmin } from '@/lib/supabase-admin';
+import { inventoryMonthKeyInZone } from '@/lib/inventory-month-close';
 
 type Period = 'this_month' | 'last_month';
 const FINANCE_ROLES = ['admin', 'owner', 'general_manager'] as const;
@@ -37,13 +38,34 @@ async function financeGuard(ctx: ToolContext): Promise<ToolResult | null> {
   return { ok: false, error: 'Financials are restricted for your role at this property.' };
 }
 
-function resolveMonth(period?: Period): { month: string; label: string } {
-  const now = new Date();
-  if (period === 'last_month') {
-    const m = priorMonthKey(monthKey(now));
-    return { month: m, label: 'last month' };
+function financeMonthTimezone(value: unknown): string {
+  const candidate = typeof value === 'string' && value.trim() ? value.trim() : 'America/Chicago';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: candidate }).format(new Date(0));
+    return candidate;
+  } catch {
+    return 'America/Chicago';
   }
-  return { month: monthKey(now), label: 'this month' };
+}
+
+async function resolveMonth(ctx: ToolContext, period?: Period): Promise<{ month: string; label: string }> {
+  // Resolve "this month" in the PROPERTY's timezone, not the server's. On
+  // Vercel the server runs in UTC, so a raw new Date() flips to the next month
+  // several hours early for US hotels on the evening of the last day of the
+  // month — the assistant would then report the wrong month's numbers. Mirror
+  // the inventory accounting tool (resolveInventoryAccountingMonth), which is
+  // already timezone-correct.
+  const { data } = await supabaseAdmin
+    .from('properties')
+    .select('timezone')
+    .eq('id', ctx.propertyId)
+    .maybeSingle();
+  const tz = financeMonthTimezone((data as { timezone?: string | null } | null)?.timezone);
+  const current = inventoryMonthKeyInZone(new Date(), tz);
+  if (period === 'last_month') {
+    return { month: priorMonthKey(current), label: 'last month' };
+  }
+  return { month: current, label: 'this month' };
 }
 
 // ─── get_finance_summary ───────────────────────────────────────────────────
@@ -63,7 +85,7 @@ registerTool<{ period?: Period }>({
   handler: async ({ period }, ctx): Promise<ToolResult> => {
     const denied = await financeGuard(ctx);
     if (denied) return denied;
-    const { month, label } = resolveMonth(period);
+    const { month, label } = await resolveMonth(ctx, period);
     const s = await getFinanceSummary(ctx.propertyId, month);
     return {
       ok: true,
@@ -102,7 +124,7 @@ registerTool<{ period?: Period }>({
   handler: async ({ period }, ctx): Promise<ToolResult> => {
     const denied = await financeGuard(ctx);
     if (denied) return denied;
-    const { month, label } = resolveMonth(period);
+    const { month, label } = await resolveMonth(ctx, period);
     const rows = await budgetVsActual(ctx.propertyId, month);
     const budgeted = rows.filter((r) => r.budgetCents > 0);
     const over = budgeted.filter((r) => r.status === 'over');
@@ -159,7 +181,7 @@ registerTool<{ department?: string; period?: Period }>({
   handler: async ({ department, period }, ctx): Promise<ToolResult> => {
     const denied = await financeGuard(ctx);
     if (denied) return denied;
-    const { month, label } = resolveMonth(period);
+    const { month, label } = await resolveMonth(ctx, period);
     const byDept = await sumExpensesByDepartment(ctx.propertyId, month);
     if (department && isDepartment(department)) {
       const dept = department as Department;

@@ -70,7 +70,11 @@ export const POST = defineRoute({
       senderStaffId: null,
       senderKind: 'staxis',
       body: result.answer,
-      sourceLang: 'en',
+      // The assistant generates its answer in the ASKER's language (see the
+      // `lang: ctx.lang` passed to runStaxisAssistant above), so the stored
+      // message must be labelled with that language. Hardcoding 'en' mislabels
+      // a Spanish answer as English, breaking the per-reader auto-translation.
+      sourceLang: ctx.lang,
       msgType: 'text',
       meta: { actions: result.actions },
     });

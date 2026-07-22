@@ -978,7 +978,7 @@ async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs
   try {
     const { data, error } = await supabaseAdmin
       .from('property_sessions')
-      .select('property_id, status, last_alive_at, created_at, pms_family')
+      .select('property_id, status, last_alive_at, created_at, updated_at, pms_family')
       .neq('status', 'stopped');
     if (error) {
       return { status: 'warn', detail: `property_sessions read failed: ${errToString(error)}` };
@@ -990,7 +990,7 @@ async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs
       };
     }
     const now = Date.now();
-    type SessionRow = { property_id: string; status: string; last_alive_at: string | null; created_at: string | null; pms_family: string };
+    type SessionRow = { property_id: string; status: string; last_alive_at: string | null; created_at: string | null; updated_at: string | null; pms_family: string };
     const rows = data as SessionRow[];
     const aliveRows = rows.filter((r) => r.status === 'alive');
 
@@ -1016,8 +1016,14 @@ async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs
     const attention = rows.filter((r) => {
       if (r.status === 'failed_restart' || r.status === 'paused_circuit_breaker') return true;
       if (r.status === 'starting') {
-        const sinceTs = r.last_alive_at
-          ? new Date(r.last_alive_at).getTime()
+        // Measure boot age from updated_at (bumped by the set_updated_at
+        // trigger on EVERY write, including the restart/resume that set
+        // status='starting'), NOT last_alive_at. last_alive_at is only written
+        // once a driver reaches 'alive', so restarting a previously
+        // crashed/paused session carries a stale last_alive_at and would be
+        // falsely flagged 'stuck starting' the instant it begins booting.
+        const sinceTs = r.updated_at
+          ? new Date(r.updated_at).getTime()
           : r.created_at
             ? new Date(r.created_at).getTime()
             : now;

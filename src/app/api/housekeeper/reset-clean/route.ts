@@ -62,6 +62,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     exception_note: null,
     exception_at: null,
     is_dnd: false,
+    // Reopening a finished room invalidates its inspection sign-off — clear it
+    // so re-cleaning doesn't re-derive a false 'inspected' state (which would
+    // also drop the room from the re-inspection queue).
+    inspected_at: null,
+    inspected_by: null,
   });
   if (!w.ok) {
     return err('Internal server error', {

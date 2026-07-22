@@ -386,6 +386,15 @@ export async function applyRoomUpdate(
   if (partial.markedForInspectionAt !== undefined) {
     workflowPatch.marked_for_inspection_at = toIso(partial.markedForInspectionAt as Date | string | null);
   }
+  // Resetting a room back to dirty (not_started) invalidates any prior
+  // inspection sign-off. Clear inspected_at/inspected_by here so a later
+  // re-clean doesn't make deriveStatus re-derive 'inspected' from a stale
+  // inspected_at (a false green sign-off that also skips re-inspection).
+  // Don't clobber an explicit inspected value passed in the same update.
+  if (statusPatch.status === 'not_started') {
+    if (partial.inspectedAt === undefined) workflowPatch.inspected_at = null;
+    if (partial.inspectedBy === undefined) workflowPatch.inspected_by = null;
+  }
   const hasWorkflowField = Object.keys(workflowPatch).length > 0;
 
   // ── No-op pre-check (Codex Major #1) ─────────────────────────────────

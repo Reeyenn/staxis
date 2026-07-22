@@ -51,22 +51,25 @@ const VIP_KEYWORDS = [
   'celebrity',
 ];
 
-const PET_KEYWORDS = [
-  'pet',
-  'dog',
-  ' cat ',
-  'service animal',
-  'service dog',
-  'esa',
-  'emotional support',
-  'kennel',
-];
+// Short, ambiguous tokens are matched as WHOLE WORDS — a bare substring 'pet'
+// hits the very common housekeeping word 'carpet' (also 'trumpet'), 'dog' hits
+// 'watchdog', and 'cat' hits 'located'. 'esa' is deliberately omitted: it is a
+// common Spanish word ("esa habitación") that would false-fire on bilingual
+// notes; genuine ESA cases are caught by 'emotional support' below.
+const PET_WORD_RX = /\b(?:pets?|dogs?|cats?)\b/i;
+// Unambiguous multi-word markers, matched as plain substrings.
+const PET_SUBSTRINGS = ['service animal', 'service dog', 'emotional support', 'kennel'];
 
 const ECO_KEYWORDS = [
   'eco stay',
   'eco-stay',
   'no daily clean',
-  'no service',
+  // Was 'no service' — far too broad. It flipped eco-stay (which downgrades a
+  // room to a 5-min visual check) on any incidental "no service" mention
+  // ("cell has no service in 210", "ice machine no service"). Use specific
+  // housekeeping opt-out phrases instead.
+  'no housekeeping',
+  'decline service',
   'skip clean',
   'skip cleaning',
   'green choice',
@@ -132,9 +135,7 @@ export function detectHasPet(input: {
   package_name?: string | null;
 }): boolean {
   const text = flat(input.notes, input.special_requests, input.rate_code, input.package_name);
-  // Pad with spaces so " cat " word-boundary check works on first/last words too.
-  const padded = ` ${text} `;
-  return containsAny(padded, PET_KEYWORDS);
+  return PET_WORD_RX.test(text) || containsAny(text, PET_SUBSTRINGS);
 }
 
 export function detectEcoStay(input: {
