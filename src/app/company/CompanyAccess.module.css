@@ -392,19 +392,18 @@
 
 .tabList {
   display: flex;
-  flex: 4 0 448px;
+  flex: 1 0 448px;
   align-items: stretch;
   gap: 4px;
   min-width: 0;
 }
 
-.tabs button {
+.tabs button,
+.teamInviteButton {
   position: relative;
   display: inline-flex;
-  flex: 1 0 auto;
   align-items: center;
   justify-content: center;
-  min-width: 112px;
   min-height: 42px;
   gap: 8px;
   padding: 0 16px;
@@ -415,6 +414,11 @@
   cursor: pointer;
   font: 550 12.5px/18px inherit;
   transition: color 200ms cubic-bezier(0.2, 0, 0, 1), background-color 200ms cubic-bezier(0.2, 0, 0, 1), box-shadow 200ms cubic-bezier(0.2, 0, 0, 1);
+}
+
+.tabs button {
+  flex: 1 0 auto;
+  min-width: 112px;
 }
 
 .tabs button:hover:not(:disabled) {
@@ -433,10 +437,16 @@
   transform: scale(0.99);
 }
 
-.tabs .teamInviteButton {
-  flex: 1 0 172px;
+.teamInviteRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+
+.teamInviteButton {
+  width: calc((100% - 12px) / 4);
   min-width: 172px;
-  min-height: 42px;
   padding: 0 17px;
   border: 1px solid var(--company-sage);
   color: #ffffff;
@@ -448,18 +458,23 @@
   line-height: 18px;
 }
 
-.tabs .teamInviteButton:hover:not(:disabled) {
+.teamInviteButton:hover:not(:disabled) {
   color: #ffffff;
   background: #356b4c;
 }
 
-.tabs .teamInviteButton:disabled {
+.teamInviteButton:active {
+  transform: scale(0.99);
+}
+
+.teamInviteButton:disabled {
   opacity: 0.42;
   cursor: not-allowed;
   box-shadow: none;
 }
 
 .tabs button:focus-visible,
+.teamInviteButton:focus-visible,
 .filterChips button:focus-visible,
 .searchField:focus-within,
 .primaryButton:focus-visible,
@@ -2120,8 +2135,12 @@
   }
 
   .heroHotelSwitcher,
-  .tabs .teamInviteButton {
+  .teamInviteButton {
     min-height: 44px;
+  }
+
+  .teamInviteButton {
+    width: 100%;
   }
 
   .panel {
@@ -2289,6 +2308,7 @@
   }
 
   .tabs button,
+  .teamInviteButton,
   .adminViewSwitchTrack,
   .adminViewSwitchHandle,
   .primaryButton,
@@ -2300,6 +2320,7 @@
   }
 
   .tabs button:active,
+  .teamInviteButton:active,
   .primaryButton:active,
   .secondaryButton:active,
   .adminPreviewErrorActions button:active {
