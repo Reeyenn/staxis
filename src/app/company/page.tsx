@@ -772,24 +772,6 @@ function CompanyAccessContent() {
               </nav>
             </div>
 
-            {tab === 'people' && activeProperty && canManageTeam ? (
-              <div className={styles.teamInviteRow}>
-                <button
-                  type="button"
-                  className={styles.teamInviteButton}
-                  onClick={() => setTeamInviteHotelId(activeProperty.id)}
-                  disabled={hotelTeamLocked}
-                  aria-haspopup="dialog"
-                  title={hotelTeamLocked
-                    ? localized(lang, 'Unavailable in read-only preview', 'No disponible en la vista de solo lectura')
-                    : undefined}
-                >
-                  <UserPlus size={16} aria-hidden="true" />
-                  {localized(lang, 'Invite staff', 'Invitar personal')}
-                </button>
-              </div>
-            ) : null}
-
             <section
               id={`company-panel-${tab}`}
               role="tabpanel"

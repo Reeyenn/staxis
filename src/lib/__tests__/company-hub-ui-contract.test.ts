@@ -187,7 +187,7 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeam, /<h2 id="team-members-title">/);
   });
 
-  test('centers hotel switching, keeps four connected tabs, and places invite staff below them', () => {
+  test('keeps four connected tabs and moves the team count and invite action into the roster header', () => {
     const heroIndex = company.indexOf('<header className={styles.hero}>');
     const hotelSlotIndex = company.indexOf('<div className={styles.heroHotelSlot}>', heroIndex);
     const switcherIndex = company.indexOf('<HotelSwitcher', hotelSlotIndex);
@@ -196,18 +196,22 @@ describe('My Hotel account and team integration', () => {
     const tabListIndex = company.indexOf('className={styles.tabList}', tabsIndex);
     const tabListEnd = company.indexOf('</nav>', tabListIndex);
     const tabsEnd = company.indexOf('</div>', tabListEnd);
-    const inviteRowIndex = company.indexOf('<div className={styles.teamInviteRow}>', tabsEnd);
-    const inviteIndex = company.indexOf('className={styles.teamInviteButton}', inviteRowIndex);
-    const panelIndex = company.indexOf('<section', inviteIndex);
+    const panelIndex = company.indexOf('<section', tabsEnd);
+    const subheadingIndex = hotelTeam.indexOf('<div className={styles.subheading}>');
+    const titleRowIndex = hotelTeam.indexOf('<div className={styles.subheadingTitleRow}>', subheadingIndex);
+    const countIndex = hotelTeam.indexOf('<strong aria-label=', titleRowIndex);
+    const inviteIndex = hotelTeam.indexOf('styles.headingInviteButton', countIndex);
+    const teamListIndex = hotelTeam.indexOf('className={styles.teamList}', inviteIndex);
 
     assert.ok(heroIndex >= 0 && hotelSlotIndex > heroIndex && switcherIndex > hotelSlotIndex && heroEnd > switcherIndex);
     assert.ok(tabsIndex > heroEnd && tabListIndex > tabsIndex && tabListEnd > tabListIndex && tabsEnd > tabListEnd);
-    assert.ok(inviteRowIndex > tabsEnd && inviteIndex > inviteRowIndex && panelIndex > inviteIndex);
+    assert.ok(panelIndex > tabsEnd);
+    assert.ok(subheadingIndex >= 0 && titleRowIndex > subheadingIndex && countIndex > titleRowIndex && inviteIndex > countIndex && teamListIndex > inviteIndex);
     assert.match(company.slice(switcherIndex, heroEnd), /label=\{localized\(lang, ['"]Choose hotel to manage['"]/);
-    assert.match(company, /tab === ['"]people['"] && activeProperty && canManageTeam/);
-    assert.match(company, /onClick=\{\(\) => setTeamInviteHotelId\(activeProperty\.id\)\}/);
-    assert.match(company, /disabled=\{hotelTeamLocked\}/);
-    assert.match(company, /aria-haspopup="dialog"/);
+    assert.doesNotMatch(company, /styles\.teamInviteRow|styles\.teamInviteButton/);
+    assert.match(hotelTeam, /onClick=\{\(\) => onInviteDialogOpenChange\(true\)\}/);
+    assert.match(hotelTeam, /disabled=\{locked\}/);
+    assert.match(hotelTeam, /aria-haspopup="dialog"/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
     assert.doesNotMatch(company, /styles\.hotelSwitcher/);
     assert.doesNotMatch(company, /Hotel being managed|Hotel administrado/);
@@ -218,8 +222,9 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelSwitcherCss, /\.trigger \{[\s\S]*min-height: 44px;[\s\S]*grid-template-columns: 24px minmax\(0, 1fr\) 24px;/);
     assert.doesNotMatch(hotelSwitcherCss, /\.root \{[^}]*\n\s*width:/);
     assert.match(companyCss, /\.tabList \{[\s\S]*flex: 1 0 448px;/);
-    assert.match(companyCss, /\.teamInviteRow \{[\s\S]*justify-content: flex-end;[\s\S]*margin-top: 8px;/);
-    assert.match(companyCss, /\.teamInviteButton \{[\s\S]*width: calc\(\(100% - 12px\) \/ 4\);[\s\S]*min-width: 172px;[\s\S]*background: var\(--company-sage\);/);
+    assert.doesNotMatch(companyCss, /\.teamInviteRow|\.teamInviteButton/);
+    assert.match(hotelTeamCss, /\.subheadingTitleRow \{[\s\S]*display: flex;[\s\S]*gap: 8px;/);
+    assert.match(hotelTeamCss, /\.headingInviteButton \{[\s\S]*width: calc\(\(100% - 12px\) \/ 4\);[\s\S]*min-width: 172px;/);
   });
 
   test('waits for the exact hotel capability snapshot before showing team controls', () => {
@@ -227,8 +232,8 @@ describe('My Hotel account and team integration', () => {
     assert.match(company, /capabilityOverridesViewerKey === capabilityViewerKey/);
     assert.match(company, /const canManageTeam = hotelCapabilitiesReady && can\(['"]manage_team['"]\)/);
     assert.match(company, /tab === ['"]people['"] && hotelCapabilitiesLoading/);
-    assert.match(company, /tab === ['"]people['"] && activeProperty && canManageTeam/);
     assert.match(company, /canManageTeam=\{canManageTeam\}/);
+    assert.match(hotelTeam, /if \(!canManageTeam\) \{[\s\S]*Hotel account settings are private/);
   });
 
   test('uses a styled accessible hotel menu instead of a browser-native select', () => {
@@ -366,9 +371,10 @@ describe('mobile Company Hub touch targets', () => {
     assert.match(mobile, /\.reviewButton,[\s\S]*\.actionMenu summary,[\s\S]*\.actionMenu button \{\s*min-height: 44px;/);
     assert.match(mobile, /\.searchField > button,[\s\S]*\.iconButton \{\s*width: 44px;\s*height: 44px;/);
     assert.match(mobile, /\.filterChips button \{[\s\S]*min-height: 44px;/);
-    assert.match(mobile, /\.heroHotelSwitcher,[\s\S]*\.teamInviteButton \{\s*min-height: 44px;/);
+    assert.match(mobile, /\.heroHotelSwitcher \{\s*min-height: 44px;/);
     assert.match(hotelSwitcherCss, /\.option \{[\s\S]*min-height: 44px;/);
     const hotelTeamMobile = hotelTeamCss.slice(hotelTeamCss.indexOf('@media (max-width: 560px)'));
+    assert.match(hotelTeamMobile, /\.headingInviteButton \{\s*width: 100%;/);
     assert.match(hotelTeamMobile, /\.editButton,[\s\S]*\.approveButton,[\s\S]*\.denyButton \{\s*min-height: 44px;/);
   });
 });

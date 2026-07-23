@@ -198,15 +198,26 @@
   gap: 14px;
 }
 
+.subheadingCopy {
+  min-width: 0;
+}
+
+.subheadingTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .subheading h2 {
-  margin: 2px 0 0;
+  margin: 0;
   color: var(--team-ink);
   font-size: 14.5px;
   font-weight: 650;
   line-height: 20px;
 }
 
-.subheading > strong,
+.subheadingTitleRow > strong,
 .inviteListHeading > span {
   display: grid;
   min-width: 26px;
@@ -217,6 +228,11 @@
   color: var(--team-sage);
   background: var(--team-sage-dim);
   font: 650 10px/1 var(--font-geist-mono), ui-monospace, monospace;
+}
+
+.headingInviteButton {
+  width: calc((100% - 12px) / 4);
+  min-width: 172px;
 }
 
 .teamList,
@@ -1690,6 +1706,16 @@
 @media (max-width: 560px) {
   .root {
     gap: 20px;
+  }
+
+  .subheading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .headingInviteButton {
+    width: 100%;
   }
 
   .teamRow,
