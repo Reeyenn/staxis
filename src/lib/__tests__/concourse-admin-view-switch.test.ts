@@ -50,7 +50,7 @@ describe('in-place admin hotel view', () => {
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
     assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
     assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(\(adminPreview \|\| resolved\.viewerContext\?\.readOnly === true\) && !adminToolsActive\)/);
-    assert.match(company, /className=\{styles\.teamInviteButton\}[\s\S]*?disabled=\{hotelTeamLocked\}/);
+    assert.match(hotelTeam, /styles\.headingInviteButton[\s\S]*?disabled=\{locked\}/);
     assert.match(company, /inviteDialogOpen=\{teamInviteHotelId === activeProperty\?\.id\}/);
     assert.match(hotelTeam, /const locked = readOnly \|\| \(adminPreview && !allowAdminActions\)/);
     assert.match(hotelTeam, /const nextTeam = \(adminPreview \|\| readOnly\)[\s\S]*?!member\.isPlatformAdmin/);

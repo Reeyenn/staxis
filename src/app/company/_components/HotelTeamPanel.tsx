@@ -820,11 +820,30 @@ export function HotelTeamPanel({
     <div className={styles.root}>
       <section className={styles.subsection} aria-labelledby="team-members-title">
         <div className={styles.subheading}>
-          <div>
+          <div className={styles.subheadingCopy}>
             <span>{copy(lang, 'Access roster', 'Registro de acceso')}</span>
-            <h2 id="team-members-title">{copy(lang, 'Hotel team accounts', 'Cuentas del equipo del hotel')}</h2>
+            <div className={styles.subheadingTitleRow}>
+              <h2 id="team-members-title">{copy(lang, 'Hotel team accounts', 'Cuentas del equipo del hotel')}</h2>
+              {!teamLoading && !teamError ? (
+                <strong aria-label={copy(lang, `${team.length} hotel team accounts`, `${team.length} cuentas del equipo del hotel`)}>
+                  {team.length}
+                </strong>
+              ) : null}
+            </div>
           </div>
-          {!teamLoading && !teamError ? <strong>{team.length}</strong> : null}
+          <button
+            type="button"
+            className={`${styles.primaryButton} ${styles.headingInviteButton}`}
+            onClick={() => onInviteDialogOpenChange(true)}
+            disabled={locked}
+            aria-haspopup="dialog"
+            title={locked
+              ? copy(lang, 'Unavailable in read-only preview', 'No disponible en la vista de solo lectura')
+              : undefined}
+          >
+            <UserPlus size={16} aria-hidden="true" />
+            {copy(lang, 'Invite staff', 'Invitar personal')}
+          </button>
         </div>
 
         {teamLoading ? (
