@@ -47,7 +47,7 @@ registerTool<{ roomNumber: string }>({
   mutates: true,
   approval: 'quick',
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
-    const room = await findRoomByNumber(ctx.propertyId, roomNumber);
+    const room = await findRoomByNumber(ctx.db, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found in this property.` };
 
     const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
@@ -109,7 +109,7 @@ registerTool<{ roomNumber: string }>({
   mutates: true,
   approval: 'quick',
   handler: async ({ roomNumber }, ctx): Promise<ToolResult> => {
-    const room = await findRoomByNumber(ctx.propertyId, roomNumber);
+    const room = await findRoomByNumber(ctx.db, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
 
     const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
@@ -160,7 +160,7 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
   mutates: true,
   approval: 'quick',
   handler: async ({ roomNumber, on, note }, ctx): Promise<ToolResult> => {
-    const room = await findRoomByNumber(ctx.propertyId, roomNumber);
+    const room = await findRoomByNumber(ctx.db, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
 
     const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
@@ -208,7 +208,7 @@ registerTool<{ roomNumber: string; note: string }>({
   mutates: true,
   approval: 'quick',
   handler: async ({ roomNumber, note }, ctx): Promise<ToolResult> => {
-    const room = await findRoomByNumber(ctx.propertyId, roomNumber);
+    const room = await findRoomByNumber(ctx.db, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
 
     const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
@@ -259,7 +259,7 @@ registerTool<{ roomNumber?: string; message?: string }>({
     // help on any room (operational override).
     let roomFlagged: string | null = null;
     if (roomNumber) {
-      const room = await findRoomByNumber(ctx.propertyId, roomNumber);
+      const room = await findRoomByNumber(ctx.db, roomNumber);
       if (room) {
         const scopeError = assertFloorRoleCanMutateRoom(room, ctx);
         if (scopeError) return { ok: false, error: scopeError };

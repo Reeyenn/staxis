@@ -2,12 +2,12 @@
 // number, find a staff member by name, etc. — centralized so the lookups
 // are consistent across the catalog.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { parseStringField, parseBoolField } from '@/lib/db-mappers';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { todayStr } from '@/lib/utils';
 import type { AppRole } from '@/lib/roles';
 import type { ToolContext } from '../tools';
+import type { ScopedDb } from '../scoped-db';
 
 export interface RoomRow {
   id: string;
@@ -108,15 +108,14 @@ export function computeOccupancySummary(
  * exists — the legacy `null`-when-empty contract had no remaining callers
  * (findRoomByNumber is the only consumer, and it tolerates the fallback).
  */
-export async function getCurrentRoomsDate(propertyId: string): Promise<string> {
+export async function getCurrentRoomsDate(db: ScopedDb): Promise<string> {
   // Bound to ON OR BEFORE today: a pre-loaded FUTURE assignment (tomorrow's
   // plan) must never become the default mutation date, or agent/voice commands
   // (mark clean, reset, DND, flag, assign) would silently write tomorrow's row.
   const today = todayStr();
-  const { data } = await supabaseAdmin
+  const { data } = await db
     .from('pms_housekeeping_assignments')
     .select('date')
-    .eq('property_id', propertyId)
     .lte('date', today)
     .order('date', { ascending: false })
     .limit(1);
@@ -134,7 +133,7 @@ export async function getCurrentRoomsDate(propertyId: string): Promise<string> {
  * in this property" to the user.
  */
 export async function findRoomByNumber(
-  propertyId: string,
+  db: ScopedDb,
   roomNumber: string | number,
 ): Promise<RoomRow | null> {
   // Claude usually emits roomNumber as a string per our JSON Schema, but
@@ -142,10 +141,10 @@ export async function findRoomByNumber(
   // Coerce defensively so a string-only method like .trim() doesn't blow up.
   const normalized = String(roomNumber ?? '').trim();
   if (!normalized) return null;
-  const date = await getCurrentRoomsDate(propertyId);
+  const date = await getCurrentRoomsDate(db);
   let rooms;
   try {
-    rooms = await mergePmsRoomsForDate(propertyId, date);
+    rooms = await mergePmsRoomsForDate(db.propertyId, date);
   } catch {
     return null;
   }
@@ -244,7 +243,7 @@ export type StaffResolution =
 const STAFF_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export async function resolveStaffByName(
-  propertyId: string,
+  db: ScopedDb,
   query: string,
 ): Promise<StaffResolution> {
   const raw = String(query ?? '').trim();
@@ -256,10 +255,9 @@ export async function resolveStaffByName(
   // e2e 2026-07-06; the phantom column dated back to findStaffByName on main).
   // Keep these select lists to real columns only.
   if (STAFF_UUID_RE.test(raw)) {
-    const { data } = await supabaseAdmin
+    const { data } = await db
       .from('staff')
       .select('id, property_id, name, department, is_active')
-      .eq('property_id', propertyId)
       .eq('id', raw)
       .maybeSingle();
     const parsed = data ? parseStaffRow(data) : null;
@@ -267,15 +265,14 @@ export async function resolveStaffByName(
     return { kind: 'none' };
   }
 
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await db
     .from('staff')
     .select('id, property_id, name, department, is_active')
-    .eq('property_id', propertyId)
     .eq('is_active', true);
   if (error || !data) {
     // A query/schema error here would otherwise read as "person not found" —
     // which is exactly how the phantom-column bug hid. Log loudly, fail closed.
-    if (error) console.error('[agent/_helpers] resolveStaffByName query failed', { propertyId, err: error.message });
+    if (error) console.error('[agent/_helpers] resolveStaffByName query failed', { propertyId: db.propertyId, err: error.message });
     return { kind: 'none' };
   }
 
@@ -297,10 +294,10 @@ export async function resolveStaffByName(
  * canonical resolveStaffByName so all name-matching shares one implementation.
  */
 export async function findStaffByName(
-  propertyId: string,
+  db: ScopedDb,
   nameQuery: string,
 ): Promise<StaffRow | null> {
-  const res = await resolveStaffByName(propertyId, nameQuery);
+  const res = await resolveStaffByName(db, nameQuery);
   if (res.kind === 'ok') return res.staff;
   if (res.kind === 'ambiguous') return res.candidates[0] ?? null;
   return null;

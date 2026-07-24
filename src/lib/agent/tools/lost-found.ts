@@ -5,7 +5,7 @@
 // Writes via the shared store (supabaseAdmin); role + property access are
 // already enforced by executeTool before the handler runs.
 
-import { registerTool, type ToolResult, type ToolContext } from '../tools';
+import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import { findRoomByNumber } from './_helpers';
 import { createItem, fetchRegister } from '@/lib/lost-and-found/store';
 import { LAF_CATEGORIES } from '@/lib/lost-and-found/types';
@@ -53,7 +53,7 @@ registerTool<{ itemDescription: string; roomOrLocation?: string; category?: stri
     const loc = roomOrLocation ? String(roomOrLocation).trim().slice(0, 200) : '';
     if (loc) {
       if (/^[A-Za-z0-9-]{1,10}$/.test(loc)) {
-        const room = await findRoomByNumber(ctx.propertyId, loc);
+        const room = await findRoomByNumber(ctx.db, loc);
         if (room) {
           roomNumber = room.number;
           location = `Room ${room.number}`;
@@ -141,7 +141,7 @@ registerTool<SearchLostFoundArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
   // Chat-only (default) — the whole new ability set is scoped to the chat surface.
   // (log_found_item above stays voice-enabled; this READ tool does not.)
-  handler: async ({ query, from, to, type, limit }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ query, from, to, type, limit }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const q = String(query ?? '').trim().toLowerCase();
     const typeFilter = type === 'lost' ? 'lost' : type === 'all' ? 'all' : 'found';
     const max = Math.min(Math.max(1, Number.isFinite(limit) ? Number(limit) : 15), 50);

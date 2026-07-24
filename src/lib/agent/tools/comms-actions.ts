@@ -20,7 +20,7 @@
 // NOTE (parallel branches): this file is ADDITIVE. It self-registers on import;
 // add `import './comms-actions';` to tools/index.ts.
 
-import { registerTool, type ToolResult, type ToolContext } from '../tools';
+import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import {
   ensureDmConversation,
   postMessage,
@@ -31,6 +31,7 @@ import {
 import { canForProperty } from '@/lib/capabilities/server';
 import { registerAddon } from '../approval';
 import { resolveStaffByName, type StaffResolution } from './_helpers';
+import type { ScopedDb } from '../scoped-db';
 
 // ─── Shared: resolve a recipient staff member by name (or id) ──────────────
 // Ambiguity is a first-class outcome: when several active staff match, we
@@ -45,10 +46,10 @@ import { resolveStaffByName, type StaffResolution } from './_helpers';
 type RecipientResolution = StaffResolution;
 
 async function resolveRecipient(
-  propertyId: string,
+  db: ScopedDb,
   recipient: string,
 ): Promise<RecipientResolution> {
-  return resolveStaffByName(propertyId, recipient);
+  return resolveStaffByName(db, recipient);
 }
 
 const ALL_STAFF_ROLES = [
@@ -84,14 +85,14 @@ registerTool<SendMessageArgs>({
   allowedRoles: [...ALL_STAFF_ROLES],
   mutates: true,
   approval: 'card',
-  handler: async ({ recipient, message }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ recipient, message }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const body = String(message ?? '').trim().slice(0, 2000);
     if (!body) return { ok: false, error: 'There is nothing to send — the message is empty.' };
     if (!ctx.staffId) {
       return { ok: false, error: 'Your account isn\'t linked to a staff record on this property, so I can\'t send a message as you. Ask a manager to link it.' };
     }
 
-    const res = await resolveRecipient(ctx.propertyId, recipient);
+    const res = await resolveRecipient(ctx.db, recipient);
     if (res.kind === 'none') {
       return { ok: false, error: `No active staff member matching "${recipient}" on this property.` };
     }
@@ -193,7 +194,7 @@ registerTool<CreateTodoArgs>({
   allowedRoles: [...ALL_STAFF_ROLES],
   mutates: true,
   approval: 'card',
-  handler: async ({ title, notes, assignee, department, dueAt, priority }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ title, notes, assignee, department, dueAt, priority }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const cleanTitle = String(title ?? '').trim().slice(0, 200);
     if (!cleanTitle) return { ok: false, error: 'Give the to-do a short title.' };
     // Post AS the caller — a to-do created by "nobody" is an orphaned row that
@@ -219,7 +220,7 @@ registerTool<CreateTodoArgs>({
     let assignedStaffId: string | null = null;
     let assignedName: string | null = null;
     if (assignee && String(assignee).trim()) {
-      const res = await resolveRecipient(ctx.propertyId, assignee);
+      const res = await resolveRecipient(ctx.db, assignee);
       if (res.kind === 'none') return { ok: false, error: `No active staff member matching "${assignee}".` };
       if (res.kind === 'ambiguous') {
         return {
@@ -289,7 +290,7 @@ registerTool<AddLogbookEntryArgs>({
   allowedRoles: [...ALL_STAFF_ROLES],
   mutates: true,
   approval: 'card',
-  handler: async ({ title, body, category }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ title, body, category }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const cleanTitle = String(title ?? '').trim().slice(0, 200);
     if (!cleanTitle) return { ok: false, error: 'Give the log entry a short title.' };
     // Log book entries are attributed to their author — refuse rather than
@@ -347,7 +348,7 @@ registerTool<PostAnnouncementArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   mutates: true,
   approval: 'card',
-  handler: async ({ message, requiresAck }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ message, requiresAck }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const text = String(message ?? '').trim().slice(0, 2000);
     if (!text) return { ok: false, error: 'The announcement is empty.' };
 

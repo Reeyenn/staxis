@@ -26,9 +26,9 @@ registerTool<{ roomNumber: string; staffName: string }>({
   mutates: true,
   approval: 'card',
   handler: async ({ roomNumber, staffName }, ctx): Promise<ToolResult> => {
-    const room = await findRoomByNumber(ctx.propertyId, roomNumber);
+    const room = await findRoomByNumber(ctx.db, roomNumber);
     if (!room) return { ok: false, error: `Room ${roomNumber} not found.` };
-    const staff = await findStaffByName(ctx.propertyId, staffName);
+    const staff = await findStaffByName(ctx.db, staffName);
     if (!staff) return { ok: false, error: `No active staff member matching "${staffName}".` };
 
     // Codex post-merge review 2026-05-13 (F2): dryRun gate.

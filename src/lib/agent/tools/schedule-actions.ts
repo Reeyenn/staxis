@@ -177,7 +177,7 @@ registerTool<RemoveFromShiftArgs>({
     const target = resolveScheduleDate(date);
     if (!target) return { ok: false, error: 'I couldn\'t read that date. Use "tomorrow" or a date like 2026-07-08.' };
 
-    const res = await resolveStaffByName(ctx.propertyId, staffName);
+    const res = await resolveStaffByName(ctx.db, staffName);
     if (res.kind === 'none') return { ok: false, error: `No active staff member matching "${staffName}".` };
     if (res.kind === 'ambiguous') {
       return {
@@ -255,7 +255,7 @@ registerTool<AssignShiftArgs>({
     const start = startTime && TIME_RE.test(startTime) ? startTime : DEFAULT_START;
     const end = endTime && TIME_RE.test(endTime) ? endTime : DEFAULT_END;
 
-    const res = await resolveStaffByName(ctx.propertyId, staffName);
+    const res = await resolveStaffByName(ctx.db, staffName);
     if (res.kind === 'none') return { ok: false, error: `No active staff member matching "${staffName}".` };
     if (res.kind === 'ambiguous') {
       return {

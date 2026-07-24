@@ -85,7 +85,7 @@ registerTool<CreateReminderArgs>({
     let targetStaffId: string | null = null;
     let targetName: string | null = null;
     if (hasRecipient) {
-      const res = await resolveStaffByName(ctx.propertyId, recipient as string);
+      const res = await resolveStaffByName(ctx.db, recipient as string);
       if (res.kind === 'none') return { ok: false, error: `No active staff member matching "${recipient}".` };
       if (res.kind === 'ambiguous') {
         return {

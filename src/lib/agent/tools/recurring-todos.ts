@@ -96,7 +96,7 @@ registerTool<CreateRecurringTodoArgs>({
     let assignedStaffId: string | null = null;
     let assignedName: string | null = null;
     if (assignee && String(assignee).trim()) {
-      const res = await resolveStaffByName(ctx.propertyId, assignee);
+      const res = await resolveStaffByName(ctx.db, assignee);
       if (res.kind === 'none') return { ok: false, error: `No active staff member matching "${assignee}".` };
       if (res.kind === 'ambiguous') {
         return {
