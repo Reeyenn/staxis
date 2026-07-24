@@ -81,6 +81,63 @@ module.exports = [
   },
 
   {
+    // ─── The AI layer's one-hotel boundary (INV-25) ────────────────────────
+    // Everything under src/lib/agent/** must reach the database through
+    // `ctx.db` / `scopedDb(propertyId)` so the hotel filter cannot be
+    // forgotten. Importing the service-role client directly bypasses that.
+    //
+    // `patterns` is NOT redundant with `paths`: `paths` only matches the exact
+    // specifier '@/lib/supabase-admin', so a relative '../supabase-admin'
+    // would sail straight through.
+    //
+    // TYPE-ONLY IMPORTS ARE BANNED TOO (decided up front rather than settled
+    // ad hoc at the first violation): supabase-admin exports no type worth
+    // importing — take `SupabaseClient` from '@supabase/supabase-js'.
+    //
+    // The `ignores` list is an explicitly shrinking allowlist. scoped-db.ts is
+    // permanent (it IS the door). The rest are the cron/route-driven modules
+    // that have not been converted yet; deleting an entry is how that work
+    // lands. scripts/audit-service-role-imports.mjs fails if an entry is stale.
+    files: ['src/lib/agent/**/*.ts'],
+    ignores: [
+      'src/lib/agent/scoped-db.ts',
+      // ── not yet converted (cron/route-driven, not model-driven) ──
+      'src/lib/agent/activity.ts',
+      'src/lib/agent/archival.ts',
+      'src/lib/agent/context.ts',
+      'src/lib/agent/cost-controls.ts',
+      'src/lib/agent/evals/runner.ts',
+      'src/lib/agent/memory.ts',
+      'src/lib/agent/memory-consolidate.ts',
+      'src/lib/agent/nudges.ts',
+      'src/lib/agent/operational-signals.ts',
+      'src/lib/agent/pending-actions.ts',
+      'src/lib/agent/prompts-store.ts',
+      'src/lib/agent/summarizer.ts',
+    ],
+    rules: {
+      'no-restricted-imports': ['error', {
+        paths: [{
+          name: '@/lib/supabase-admin',
+          message:
+            'The AI layer must query through ctx.db / scopedDb(propertyId). ' +
+            'For a genuine exception, import unscopedBecause from ' +
+            '@/lib/agent/scoped-db with an enumerated reason and bump the ' +
+            'pinned count in scripts/audit-service-role-imports.mjs.',
+        }],
+        patterns: [{
+          group: ['**/supabase-admin'],
+          message:
+            'The AI layer must query through ctx.db / scopedDb(propertyId). ' +
+            'For a genuine exception, import unscopedBecause from ' +
+            '@/lib/agent/scoped-db with an enumerated reason and bump the ' +
+            'pinned count in scripts/audit-service-role-imports.mjs.',
+        }],
+      }],
+    },
+  },
+
+  {
     // Promise-safety rules. Type-aware, so we opt into projectService for
     // the src/ tree only — scraper/ is JS and cua-service/ is its own
     // tsconfig (already excluded by the top-level tsconfig.json).
