@@ -16,7 +16,7 @@
 //
 // ADDITIVE + self-registering — add `import './recurring-todos';` to index.ts.
 
-import { registerTool, type ToolResult, type ToolContext } from '../tools';
+import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import {
   createTemplate,
   stopTemplate,
@@ -75,7 +75,7 @@ registerTool<CreateRecurringTodoArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
   approval: 'card',
-  handler: async ({ title, cadence, weekday, assignee, department, priority }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ title, cadence, weekday, assignee, department, priority }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const cleanTitle = String(title ?? '').trim().slice(0, 200);
     if (!cleanTitle) return { ok: false, error: 'Give the recurring to-do a short title.' };
 
@@ -164,7 +164,7 @@ registerTool<StopRecurringTodoArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
   approval: 'card',
-  handler: async ({ templateId }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ templateId }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const id = String(templateId ?? '').trim();
     if (!id) return { ok: false, error: 'Which recurring to-do? I need its id (from the list).' };
 
@@ -194,14 +194,13 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   // Chat-only (default) — the whole new ability set is scoped to the chat surface.
-  handler: async (_args, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async (_args, ctx: ToolHandlerContext): Promise<ToolResult> => {
     try {
       const templates = await listActiveTemplates(ctx.propertyId);
       const staffIds = Array.from(new Set(templates.map((t) => t.assignedStaffId).filter((x): x is string => !!x)));
       const nameById = new Map<string, string>();
       if (staffIds.length) {
-        const { supabaseAdmin } = await import('@/lib/supabase-admin');
-        const { data } = await supabaseAdmin.from('staff').select('id, name').eq('property_id', ctx.propertyId).in('id', staffIds);
+        const { data } = await ctx.db.from('staff').select('id, name').in('id', staffIds);
         for (const s of data ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
       }
       const rows = templates.map((t) => ({

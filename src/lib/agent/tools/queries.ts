@@ -29,8 +29,8 @@
 // marker. They were empty in practice anyway (CUA doesn't write them), so
 // behaviour is preserved, not regressed.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
+import type { ScopedDb } from '../scoped-db';
 import { buildHotelSnapshot } from '../context';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
@@ -47,13 +47,12 @@ import type { Room } from '@/types';
 // can no longer work — `rooms` is empty and has no usable date column.
 // Exported so the PMS money/booking feed tools (tools/pms-feeds.ts) share the
 // same property-local "today" derivation.
-export async function getPropertyToday(propertyId: string): Promise<string> {
+export async function getPropertyToday(db: ScopedDb): Promise<string> {
   let timezone: string | null = null;
   try {
-    const { data } = await supabaseAdmin
+    const { data } = await db
       .from('properties')
       .select('timezone')
-      .eq('id', propertyId)
       .maybeSingle();
     timezone = (data?.timezone as string) ?? null;
   } catch {
@@ -132,7 +131,7 @@ registerTool<Record<string, never>>({
     // filter to this housekeeper's assignments. Date scoping is mandatory —
     // mergePmsRoomsForDate is per-(property, date), so the user only sees
     // today, not every day they've ever been assigned.
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     let rooms: Room[];
     try {
       rooms = await mergePmsRoomsForDate(ctx.propertyId, today);
@@ -175,7 +174,7 @@ registerTool<Record<string, never>>({
     if (!ctx.staffId) {
       return { ok: false, error: 'Your account isn\'t linked to a staff record on this property. Ask the manager to link it before using the chat.' };
     }
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     let rooms: Room[];
     try {
       rooms = await mergePmsRoomsForDate(ctx.propertyId, today);
@@ -231,7 +230,7 @@ registerTool<{ roomNumber: string }>({
     const normalized = String(roomNumber ?? '').trim();
     if (!normalized) return { ok: false, error: `Room ${roomNumber} not found.` };
 
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     let rooms: Room[];
     try {
       rooms = await mergePmsRoomsForDate(ctx.propertyId, today);
@@ -286,13 +285,12 @@ registerTool<Record<string, never>>({
     //
     // cleaning_events is LEFT UNCHANGED (labor audit source) — same property
     // + today filter as before.
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     const [counts, { data: events }] = await Promise.all([
       fetchTodayPropertyCounts(ctx.propertyId, today),
-      supabaseAdmin
+      ctx.db
         .from('cleaning_events')
         .select('staff_id, duration_minutes, status')
-        .eq('property_id', ctx.propertyId)
         .eq('date', today)
         .neq('status', 'discarded'),
     ]);
@@ -390,7 +388,7 @@ registerTool<Record<string, never>>({
     // filter ScheduleTab uses against the merged Room (the "Stay · full"
     // bucket), so the queue is consistent with what the housekeeping board
     // shows. Replaces the old `rooms.stayover_day = 2` query.
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     let rooms: Room[];
     try {
       rooms = await mergePmsRoomsForDate(ctx.propertyId, today);

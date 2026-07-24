@@ -12,7 +12,7 @@
 // getInventoryAccountingSummary; the agent never re-derives or substitutes a
 // live purchase total for usage.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
+import { unscopedBecause } from '../scoped-db';
 import {
   getInventoryAccountingSummary,
   localMonthWindowUTC,
@@ -353,10 +353,9 @@ registerTool<InventoryAccountingArgs>({
       return { ok: false, error: 'Choose all, housekeeping, maintenance, or breakfast inventory.' };
     }
 
-    const { data: property, error: propertyError } = await supabaseAdmin
+    const { data: property, error: propertyError } = await ctx.db
       .from('properties')
       .select('timezone')
-      .eq('id', ctx.propertyId)
       .maybeSingle();
     if (propertyError) return { ok: false, error: 'Failed to load this hotel\'s inventory calendar.' };
     const timezone = inventoryAccountingTimezone(
@@ -369,15 +368,18 @@ registerTool<InventoryAccountingArgs>({
     const window = localMonthWindowUTC(year, month1, timezone);
     try {
       const [summary, shelfResult] = await Promise.all([
-        getInventoryAccountingSummary(supabaseAdmin, ctx.propertyId, window.start, {
+        // getInventoryAccountingSummary is a SHARED src/lib helper that takes
+        // the raw client plus its own `pid` and does its own scoping — there
+        // is no builder for the accessor to wrap, so this is one of the
+        // enumerated escape hatches rather than a ctx.db call.
+        getInventoryAccountingSummary(unscopedBecause('shared-lib-client-param'), ctx.propertyId, window.start, {
           endExclusive: window.endExclusive,
           budgetMonthKey: window.budgetMonthKey,
           timeZone: timezone,
         }),
-        supabaseAdmin
+        ctx.db
           .from('inventory')
           .select('category,current_stock,unit_cost')
-          .eq('property_id', ctx.propertyId)
           .is('archived_at', null),
       ]);
       if (shelfResult.error) return { ok: false, error: 'Failed to load current shelf value.' };

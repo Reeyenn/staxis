@@ -28,8 +28,7 @@
 //
 // ADDITIVE + self-registering — add `import './schedule-actions';` to index.ts.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { registerTool, type ToolResult, type ToolContext } from '../tools';
+import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import { resolveStaffByName } from './_helpers';
 import { todayStr } from '@/lib/utils';
 
@@ -84,17 +83,16 @@ registerTool<GetScheduleArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   // Chat-only (default). Kept off voice so the whole new ability set lands on one
   // reviewed surface; a spoken "who's working?" read can be added later.
-  handler: async ({ date, department }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ date, department }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const target = resolveScheduleDate(date);
     if (!target) {
       return { ok: false, error: 'I couldn\'t read that date. Give me a day like "tomorrow" or a date like 2026-07-08.' };
     }
     const dept = department && (SHIFT_DEPARTMENTS as readonly string[]).includes(department) ? department : null;
 
-    let shiftQ = supabaseAdmin
+    let shiftQ = ctx.db
       .from('scheduled_shifts')
       .select('staff_id, department, start_time, end_time, kind, status')
-      .eq('property_id', ctx.propertyId)
       .eq('shift_date', target);
     if (dept) shiftQ = shiftQ.eq('department', dept);
     const { data: shiftRows, error: shiftErr } = await shiftQ;
@@ -103,10 +101,9 @@ registerTool<GetScheduleArgs>({
     // Approved time-off for the day — surfaced so the manager sees who's OUT,
     // and so we never report someone as "working" whose day was approved off
     // after the shift row was written.
-    const { data: offRows } = await supabaseAdmin
+    const { data: offRows } = await ctx.db
       .from('time_off_requests')
       .select('staff_id')
-      .eq('property_id', ctx.propertyId)
       .eq('request_date', target)
       .eq('status', 'approved');
     const offStaffIds = new Set((offRows ?? []).map((r) => r.staff_id as string).filter(Boolean));
@@ -116,10 +113,9 @@ registerTool<GetScheduleArgs>({
     const staffIds = Array.from(new Set(rows.map((r) => r.staff_id as string).filter(Boolean).concat(...offStaffIds)));
     const nameById = new Map<string, string>();
     if (staffIds.length) {
-      const { data: staffRows } = await supabaseAdmin
+      const { data: staffRows } = await ctx.db
         .from('staff')
         .select('id, name')
-        .eq('property_id', ctx.propertyId)
         .in('id', staffIds);
       for (const s of staffRows ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
     }
@@ -177,7 +173,7 @@ registerTool<RemoveFromShiftArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
   approval: 'card',
-  handler: async ({ staffName, date }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ staffName, date }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const target = resolveScheduleDate(date);
     if (!target) return { ok: false, error: 'I couldn\'t read that date. Use "tomorrow" or a date like 2026-07-08.' };
 
@@ -194,10 +190,9 @@ registerTool<RemoveFromShiftArgs>({
 
     // Confirm they actually have an assigned shift that day — otherwise we'd
     // approve a card that deletes nothing and the manager would think it worked.
-    const { data: existing, error: exErr } = await supabaseAdmin
+    const { data: existing, error: exErr } = await ctx.db
       .from('scheduled_shifts')
       .select('id')
-      .eq('property_id', ctx.propertyId)
       .eq('staff_id', staff.id)
       .eq('shift_date', target)
       .eq('kind', 'shift');
@@ -210,10 +205,9 @@ registerTool<RemoveFromShiftArgs>({
       return { ok: true, data: { dryRun: true, staffName: staff.name, date: target, removed: existing.length } };
     }
 
-    const { error: delErr } = await supabaseAdmin
+    const { error: delErr } = await ctx.db
       .from('scheduled_shifts')
       .delete()
-      .eq('property_id', ctx.propertyId)
       .eq('staff_id', staff.id)
       .eq('shift_date', target)
       .eq('kind', 'shift');
@@ -254,7 +248,7 @@ registerTool<AssignShiftArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager'],
   mutates: true,
   approval: 'card',
-  handler: async ({ staffName, date, startTime, endTime, department }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ staffName, date, startTime, endTime, department }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const target = resolveScheduleDate(date);
     if (!target) return { ok: false, error: 'I couldn\'t read that date. Use "tomorrow" or a date like 2026-07-08.' };
 
@@ -283,8 +277,8 @@ registerTool<AssignShiftArgs>({
       return { ok: true, data: { dryRun: true, staffName: staff.name, date: target, start, end, department: dept } };
     }
 
+    // property_id is injected by the accessor — see scoped-db.ts.
     const row = {
-      property_id: ctx.propertyId,
       staff_id: staff.id,
       department: dept,
       shift_date: target,
@@ -296,14 +290,13 @@ registerTool<AssignShiftArgs>({
     // INSERT, retrying as an UPDATE on the exclusion-constraint conflict (23P01)
     // — mirrors /api/staff-schedule/shifts so a re-scheduled day overwrites the
     // existing cell instead of erroring.
-    const { data: inserted, error: insErr } = await supabaseAdmin
+    const { data: inserted, error: insErr } = await ctx.db
       .from('scheduled_shifts').insert(row).select('id').single();
     if (insErr) {
       if (insErr.code === '23P01') {
-        const { data: upd, error: upErr } = await supabaseAdmin
+        const { data: upd, error: upErr } = await ctx.db
           .from('scheduled_shifts')
           .update({ department: dept, start_time: start, end_time: end })
-          .eq('property_id', ctx.propertyId)
           .eq('staff_id', staff.id)
           .eq('shift_date', target)
           .eq('kind', 'shift')

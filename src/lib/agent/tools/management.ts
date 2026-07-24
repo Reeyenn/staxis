@@ -1,7 +1,6 @@
 // ─── Manager-tier tools ───────────────────────────────────────────────────
 // Assignment, staff performance, scheduling, SMS coordination.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, findStaffByName } from './_helpers';
 import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
@@ -86,10 +85,9 @@ registerTool<{ period?: 'today' | 'week' | 'month' }>({
     }
     const sinceDate = since.toISOString().slice(0, 10);
 
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await ctx.db
       .from('cleaning_events')
       .select('staff_id, staff_name, duration_minutes, status, flag_reason')
-      .eq('property_id', ctx.propertyId)
       .gte('date', sinceDate)
       .neq('status', 'discarded');
     if (error) return { ok: false, error: 'Failed to fetch performance.' };
@@ -201,10 +199,9 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   handler: async (_, ctx): Promise<ToolResult> => {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await ctx.db
       .from('property_sessions')
       .select('status, paused_reason, last_poll_at, updated_at')
-      .eq('property_id', ctx.propertyId)
       .maybeSingle();
     if (error) return { ok: false, error: 'Failed to read PMS status.' };
     if (!data) {
@@ -250,10 +247,9 @@ registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
       ? (status as typeof TOR_STATUS_FILTERS[number])
       : 'pending';
 
-    let query = supabaseAdmin
+    let query = ctx.db
       .from('time_off_requests')
-      .select('id, staff_id, request_date, reason, status, submitted_at')
-      .eq('property_id', ctx.propertyId);
+      .select('id, staff_id, request_date, reason, status, submitted_at');
     if (filter !== 'all') query = query.eq('status', filter);
 
     const { data, error } = await query.order('request_date', { ascending: true }).limit(100);
@@ -263,7 +259,7 @@ registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
     // Resolve staff names in one batched lookup.
     const ids = Array.from(new Set(rows.map(r => r.staff_id as string).filter(Boolean)));
     const { data: staffRows } = ids.length
-      ? await supabaseAdmin.from('staff').select('id, name').in('id', ids)
+      ? await ctx.db.from('staff').select('id, name').in('id', ids)
       : { data: [] };
     const nameById = new Map<string, string>();
     for (const s of staffRows ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
@@ -317,10 +313,9 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
     // Strict name resolution — a MUTATING decision must never act on the wrong
     // person, so we refuse an ambiguous match instead of picking the first one
     // (unlike findStaffByName, which is fine for non-destructive lookups).
-    const { data: staffRows, error: staffErr } = await supabaseAdmin
+    const { data: staffRows, error: staffErr } = await ctx.db
       .from('staff')
       .select('id, name')
-      .eq('property_id', ctx.propertyId)
       .eq('is_active', true);
     if (staffErr) return { ok: false, error: 'Failed to look up staff.' };
     const nameQuery = staffName.trim().toLowerCase();
@@ -338,10 +333,9 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
     }
     const staff = matches[0];
 
-    let q = supabaseAdmin
+    let q = ctx.db
       .from('time_off_requests')
       .select('id, request_date, reason')
-      .eq('property_id', ctx.propertyId)
       .eq('staff_id', staff.id)
       .eq('status', 'pending');
     if (date) q = q.eq('request_date', date);

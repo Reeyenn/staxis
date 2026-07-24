@@ -7,11 +7,12 @@
 //   • get_recent_cancellations → pms_cancellations
 //
 // These pms_* tables are RLS deny-all-browser (migration 0276) — they MUST be
-// read with the service-role client and scoped by ctx.propertyId (tenant
-// isolation). Money is stored as integer cents; surfaced to the model as USD
-// strings + raw cents. All read-only (mutates:false).
+// read with the service-role client and scoped to one hotel. That scoping is
+// no longer hand-written: every read goes through `ctx.db` (scoped-db.ts),
+// which applies the property filter before the builder is handed back.
+// Money is stored as integer cents; surfaced to the model as USD strings +
+// raw cents. All read-only (mutates:false).
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { getPropertyToday } from './queries';
 
@@ -44,10 +45,9 @@ registerTool<Record<string, never>>({
   allowedRoles: FEED_ROLES,
   mutates: false,
   handler: async (_, ctx): Promise<ToolResult> => {
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await ctx.db
       .from('pms_guest_balances')
       .select('pms_folio_id, pms_reservation_id, guest_name, room_number, balance_cents, deposit_cents, folio_status, captured_at')
-      .eq('property_id', ctx.propertyId)
       .gt('balance_cents', 0)
       .order('balance_cents', { ascending: false })
       .limit(50);
@@ -94,22 +94,20 @@ registerTool<{ date?: string }>({
   requiresCapability: 'view_financials',
   mutates: false,
   handler: async ({ date }, ctx): Promise<ToolResult> => {
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     const target = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : today;
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await ctx.db
       .from('pms_payments_daily')
       .select('business_date, cash_collected_cents, card_collected_cents, deposits_collected_cents, total_collected_cents, captured_at')
-      .eq('property_id', ctx.propertyId)
       .eq('business_date', target)
       .maybeSingle();
     if (error) return { ok: false, error: 'Could not load payments summary.' };
     if (!data) {
       // Fall back to the most recent day we have, so the model can still answer.
-      const { data: latest } = await supabaseAdmin
+      const { data: latest } = await ctx.db
         .from('pms_payments_daily')
         .select('business_date, cash_collected_cents, card_collected_cents, deposits_collected_cents, total_collected_cents')
-        .eq('property_id', ctx.propertyId)
-        .order('business_date', { ascending: false })
+          .order('business_date', { ascending: false })
         .limit(1)
         .maybeSingle();
       if (!latest) {
@@ -157,13 +155,12 @@ registerTool<{ startDate?: string; endDate?: string }>({
   allowedRoles: FEED_ROLES,
   mutates: false,
   handler: async ({ startDate, endDate }, ctx): Promise<ToolResult> => {
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     const start = typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate) ? startDate : today;
     const end = typeof endDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : addDays(start, 14);
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await ctx.db
       .from('pms_future_bookings')
       .select('pms_reservation_id, guest_name, room_number, room_type, arrival_date, departure_date, rate_per_night_cents, total_amount_cents, status, channel_name')
-      .eq('property_id', ctx.propertyId)
       .gte('arrival_date', start)
       .lte('arrival_date', end)
       .order('arrival_date', { ascending: true })
@@ -214,13 +211,12 @@ registerTool<{ nights?: number }>({
   allowedRoles: FEED_ROLES,
   mutates: false,
   handler: async ({ nights }, ctx): Promise<ToolResult> => {
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     const back = Number.isFinite(nights) && (nights as number) > 0 ? Math.floor(nights as number) : 1;
     const cutoff = addDays(today, -back);
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await ctx.db
       .from('pms_no_shows')
       .select('pms_reservation_id, guest_name, room_number, arrival_date, rate_per_night_cents, total_amount_cents, channel_name, no_show_date')
-      .eq('property_id', ctx.propertyId)
       .gte('arrival_date', cutoff)
       .order('arrival_date', { ascending: false })
       .limit(100);
@@ -258,13 +254,12 @@ registerTool<{ days?: number }>({
   allowedRoles: FEED_ROLES,
   mutates: false,
   handler: async ({ days }, ctx): Promise<ToolResult> => {
-    const today = await getPropertyToday(ctx.propertyId);
+    const today = await getPropertyToday(ctx.db);
     const back = Number.isFinite(days) && (days as number) > 0 ? Math.floor(days as number) : 7;
     const cutoff = addDays(today, -back);
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await ctx.db
       .from('pms_cancellations')
       .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, reason')
-      .eq('property_id', ctx.propertyId)
       .gte('cancelled_date', cutoff)
       .order('cancelled_date', { ascending: false })
       .limit(100);

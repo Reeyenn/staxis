@@ -28,9 +28,9 @@
 //
 // ADDITIVE + self-registering — add `import './inventory-actions';` to index.ts.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ASSISTANT_COUNT_NOTE } from '@/lib/inventory-note-tags';
-import { registerTool, type ToolResult, type ToolContext } from '../tools';
+import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
+import type { ScopedDb } from '../scoped-db';
 
 const INVENTORY_CATEGORIES = ['housekeeping', 'maintenance', 'breakfast'] as const;
 type StockStatus = 'good' | 'low' | 'critical';
@@ -67,13 +67,12 @@ type ItemResolution =
   | { kind: 'none' }
   | { kind: 'ambiguous'; candidates: InvItemRow[] };
 
-async function resolveInventoryItem(propertyId: string, query: string): Promise<ItemResolution> {
+async function resolveInventoryItem(db: ScopedDb, query: string): Promise<ItemResolution> {
   const raw = String(query ?? '').trim();
   if (!raw) return { kind: 'none' };
-  const { data, error } = await supabaseAdmin
+  const { data, error } = await db
     .from('inventory')
     .select(INV_SELECT)
-    .eq('property_id', propertyId)
     .is('archived_at', null);
   if (error || !data) return { kind: 'none' };
   const rows = data as unknown as InvItemRow[];
@@ -108,12 +107,11 @@ registerTool<GetLowStockArgs>({
   },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   // Chat-only (default) — the whole new ability set is scoped to the chat surface.
-  handler: async ({ category, includeAll }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ category, includeAll }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const cat = category && (INVENTORY_CATEGORIES as readonly string[]).includes(category) ? category : null;
-    let q = supabaseAdmin
+    let q = ctx.db
       .from('inventory')
       .select(INV_SELECT)
-      .eq('property_id', ctx.propertyId)
       .is('archived_at', null);
     if (cat) q = q.eq('category', cat);
     const { data, error } = await q;
@@ -177,7 +175,7 @@ registerTool<AdjustStockArgs>({
   requiresCapability: 'manage_inventory_orders',
   mutates: true,
   approval: 'card',
-  handler: async ({ itemName, newCount, markOrdered }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ itemName, newCount, markOrdered }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const wantsCount = typeof newCount === 'number' && Number.isFinite(newCount);
     const wantsOrder = markOrdered === true;
     if (!wantsCount && !wantsOrder) {
@@ -187,7 +185,7 @@ registerTool<AdjustStockArgs>({
       return { ok: false, error: 'The stock count can\'t be negative.' };
     }
 
-    const res = await resolveInventoryItem(ctx.propertyId, itemName);
+    const res = await resolveInventoryItem(ctx.db, itemName);
     if (res.kind === 'none') return { ok: false, error: `No inventory item matching "${itemName}" at this property.` };
     if (res.kind === 'ambiguous') {
       return {
@@ -225,7 +223,7 @@ registerTool<AdjustStockArgs>({
     //    request UUID makes an ambiguous retry safe: the database receipt and
     //    both operational writes commit together, or none of them do.
     if (wantsCount && count !== null) {
-      const { error: countErr } = await supabaseAdmin.rpc('staxis_save_inventory_count_for_actor', {
+      const { error: countErr } = await ctx.db.rpc('staxis_save_inventory_count_for_actor', {
         p_property_id: ctx.propertyId,
         p_request_id: crypto.randomUUID(),
         p_counted_at: nowIso,
@@ -247,7 +245,7 @@ registerTool<AdjustStockArgs>({
     //    a row there. The actor-aware RPC updates the operational reminder and
     //    appends a durable non-purchase audit event in one transaction.
     if (wantsOrder) {
-      const { error: intentErr } = await supabaseAdmin.rpc('staxis_record_inventory_order_intent', {
+      const { error: intentErr } = await ctx.db.rpc('staxis_record_inventory_order_intent', {
         p_property_id: ctx.propertyId,
         p_item_id: item.id,
         p_request_id: crypto.randomUUID(),

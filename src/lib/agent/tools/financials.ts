@@ -8,7 +8,7 @@
 // All reads go through the same property-scoped financials/db helpers the API
 // uses, so the agent can never see another hotel's books (ctx.propertyId scope).
 
-import { registerTool, type ToolContext, type ToolResult } from '../tools';
+import { registerTool, type ToolContext, type ToolHandlerContext, type ToolResult } from '../tools';
 import {
   priorMonthKey,
   formatCents,
@@ -19,7 +19,6 @@ import {
 } from '@/lib/financials/shared';
 import { getFinanceSummary, budgetVsActual, sumExpensesByDepartment } from '@/lib/financials/db';
 import { canForProperty } from '@/lib/capabilities/server';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { inventoryMonthKeyInZone } from '@/lib/inventory-month-close';
 
 type Period = 'this_month' | 'last_month';
@@ -48,17 +47,16 @@ function financeMonthTimezone(value: unknown): string {
   }
 }
 
-async function resolveMonth(ctx: ToolContext, period?: Period): Promise<{ month: string; label: string }> {
+async function resolveMonth(ctx: ToolHandlerContext, period?: Period): Promise<{ month: string; label: string }> {
   // Resolve "this month" in the PROPERTY's timezone, not the server's. On
   // Vercel the server runs in UTC, so a raw new Date() flips to the next month
   // several hours early for US hotels on the evening of the last day of the
   // month — the assistant would then report the wrong month's numbers. Mirror
   // the inventory accounting tool (resolveInventoryAccountingMonth), which is
   // already timezone-correct.
-  const { data } = await supabaseAdmin
+  const { data } = await ctx.db
     .from('properties')
     .select('timezone')
-    .eq('id', ctx.propertyId)
     .maybeSingle();
   const tz = financeMonthTimezone((data as { timezone?: string | null } | null)?.timezone);
   const current = inventoryMonthKeyInZone(new Date(), tz);

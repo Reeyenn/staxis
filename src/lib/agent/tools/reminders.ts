@@ -16,7 +16,7 @@
 //
 // ADDITIVE + self-registering — add `import './reminders';` to index.ts.
 
-import { registerTool, type ToolResult, type ToolContext } from '../tools';
+import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import {
   createReminder,
   cancelReminder,
@@ -55,7 +55,7 @@ registerTool<CreateReminderArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   mutates: true,
   approval: 'card',
-  handler: async ({ body, fireAt, recipient, department }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ body, fireAt, recipient, department }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const text = String(body ?? '').trim().slice(0, 1000);
     if (!text) return { ok: false, error: 'The reminder is empty — tell me what it should say.' };
     if (!ctx.staffId) {
@@ -142,7 +142,7 @@ registerTool<CancelReminderArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   mutates: true,
   approval: 'quick',
-  handler: async ({ reminderId }, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async ({ reminderId }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const id = String(reminderId ?? '').trim();
     if (!id) return { ok: false, error: 'Which reminder? I need its id (from the reminder list).' };
 
@@ -172,15 +172,14 @@ registerTool<Record<string, never>>({
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   // Chat-only (default) — the whole new ability set is scoped to the chat surface.
-  handler: async (_args, ctx: ToolContext): Promise<ToolResult> => {
+  handler: async (_args, ctx: ToolHandlerContext): Promise<ToolResult> => {
     try {
       const rows = await listPendingReminders(ctx.propertyId);
       // Resolve target staff names in one batched read.
       const staffIds = Array.from(new Set(rows.map((r) => r.targetStaffId).filter((x): x is string => !!x)));
       const nameById = new Map<string, string>();
       if (staffIds.length) {
-        const { supabaseAdmin } = await import('@/lib/supabase-admin');
-        const { data } = await supabaseAdmin.from('staff').select('id, name').eq('property_id', ctx.propertyId).in('id', staffIds);
+        const { data } = await ctx.db.from('staff').select('id, name').in('id', staffIds);
         for (const s of data ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
       }
       const reminders = rows.map((r) => ({

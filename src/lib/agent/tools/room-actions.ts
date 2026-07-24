@@ -5,7 +5,7 @@
 //
 // These bypass the public-link /api/housekeeper/room-action route — those
 // callers don't have a Supabase Auth session. The agent caller IS a
-// signed-in user, so we just write directly via supabaseAdmin with our own
+// signed-in user, so we just write directly via the scoped accessor with our own
 // auth check (role + property access already verified by executeTool).
 //
 // Floor-role scope enforcement: every housekeeping/maintenance-allowed
@@ -14,7 +14,6 @@
 // review fix C2 (2026-05-13): previously only mark_room_clean had this
 // check, so a housekeeper could reset/DND/flag any room in the property.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, assertFloorRoleCanMutateRoom } from './_helpers';
 import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
@@ -328,9 +327,9 @@ registerTool<{ roomNumber?: string; message?: string }>({
     let alreadyPending = 0;
     let hardErrors = 0;
     for (const managerAccountId of recipients) {
-      const { error } = await supabaseAdmin.from('agent_nudges').insert({
+      // property_id is injected by the accessor — see scoped-db.ts.
+      const { error } = await ctx.db.from('agent_nudges').insert({
         user_id: managerAccountId,
-        property_id: ctx.propertyId,
         category: 'operational',
         severity: 'urgent',
         payload: {

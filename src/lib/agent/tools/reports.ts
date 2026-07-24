@@ -3,7 +3,6 @@
 // stubs until the underlying data sources are wired up — we return an
 // honest "not yet available" message rather than making numbers up.
 
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
 import { computeRoomTotal } from './_helpers';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
@@ -35,10 +34,9 @@ registerTool<Record<string, never>>({
     // properties.total_rooms, and now the RPC's total_rooms — so a stale or
     // empty source can't silently shrink the hotel. The doctor check still
     // fails loud when inventory and total_rooms disagree (INV-24).
-    const { data: propRow } = await supabaseAdmin
+    const { data: propRow } = await ctx.db
       .from('properties')
       .select('room_inventory, total_rooms, timezone')
-      .eq('id', ctx.propertyId)
       .maybeSingle();
 
     const inventory = (propRow?.room_inventory as string[] | null) ?? [];
@@ -189,10 +187,9 @@ registerTool<{ category?: 'housekeeping' | 'maintenance' | 'breakfast' | 'all' }
     // with column `reorder_at` and categories housekeeping/maintenance/
     // breakfast (per supabase/migrations/0001_initial_schema.sql:285-301).
     // Old code ALWAYS returned the misleading "not set up" note.
-    let q = supabaseAdmin
+    let q = ctx.db
       .from('inventory')
       .select('name, category, current_stock, reorder_at, unit')
-      .eq('property_id', ctx.propertyId)
       .is('archived_at', null);
     if (category !== 'all') q = q.eq('category', category);
     const { data, error } = await q;
