@@ -15,6 +15,7 @@
 import type { AppRole } from '@/lib/roles';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
 import { canForProperty } from '@/lib/capabilities/server';
+import { scopedDb, type ScopedDb } from './scoped-db';
 import {
   isSectionEnabled,
   type AppSection,
@@ -101,6 +102,23 @@ export interface ToolContext {
    *  prod data. Codex post-merge review 2026-05-13 (F2). */
   dryRun?: boolean;
 }
+
+/**
+ * What a tool handler actually receives: the ToolContext the route built, plus
+ * `db` — a database accessor that can only reach `ctx.propertyId` (see
+ * `scoped-db.ts`). Handlers use `ctx.db.from(...)` instead of importing the
+ * service-role client, so the hotel filter cannot be forgotten.
+ *
+ * `ToolContext` itself is deliberately UNCHANGED: every caller that builds a
+ * context (llm.ts, the resolve-action route, the eval harness, every test)
+ * keeps compiling untouched. `db` is attached here, at the one place that runs
+ * a handler.
+ *
+ * It is a lazy getter on purpose — a tool that never touches the database
+ * (surface-gate stubs, walkthrough tools) must not be forced to have a
+ * well-formed property UUID.
+ */
+export type ToolHandlerContext = ToolContext & { readonly db: ScopedDb };
 
 export interface ToolResult {
   ok: boolean;
@@ -195,8 +213,9 @@ export interface ToolDefinition<TArgs = unknown> {
    * the hotel's section map is unavailable, every section is treated as ON.
    */
   section?: AppSection;
-  /** Implementation — typically wraps an existing API handler. */
-  handler: (args: TArgs, ctx: ToolContext) => Promise<ToolResult>;
+  /** Implementation — typically wraps an existing API handler. Receives the
+   *  hotel-scoped database accessor as `ctx.db`. */
+  handler: (args: TArgs, ctx: ToolHandlerContext) => Promise<ToolResult>;
 }
 
 // ─── Registry ──────────────────────────────────────────────────────────────
@@ -377,7 +396,17 @@ export async function executeTool(
     }
   }
   try {
-    return await tool.handler(args, ctx);
+    // Attach the one-hotel database accessor. Built here rather than at the
+    // route boundary so EVERY execution path (chat, voice, walkthrough,
+    // approval resolve, evals) gets it without a single call site changing.
+    let db: ScopedDb | null = null;
+    const handlerCtx: ToolHandlerContext = {
+      ...ctx,
+      get db(): ScopedDb {
+        return (db ??= scopedDb(ctx.propertyId));
+      },
+    };
+    return await tool.handler(args, handlerCtx);
   } catch (err) {
     return {
       ok: false,
