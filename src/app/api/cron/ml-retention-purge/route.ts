@@ -31,10 +31,30 @@ interface RetentionEntry {
   days: number;
 }
 
+// ─── Retention windows ─────────────────────────────────────────────────────
+// 2026-07-24: the first three windows were RAISED from 365/90/90 to 5 years.
+// They were sized in May 2026 to bound table bloat for a single hotel. That
+// reasoning is obsolete: these three tables ARE the longitudinal corpus the
+// product's strategy depends on — operational history, AI spend history, and
+// predicted-vs-actual accuracy pairs. A 90-day window silently destroys the
+// asset. Concretely, app_events' oldest row was 2026-05-09 (76 days) when this
+// was caught, i.e. daily deletion of real history was ~2 weeks away.
+//
+// Volume math (why 5 years is safe): app_events runs ~330 rows/day at one
+// property, so 5 years ≈ 600k rows — trivial for Postgres, and the whole DB
+// is currently 42 MB. Revisit only if a table passes ~10M rows, and archive
+// rather than delete when that happens (see agent_conversations_archived /
+// agent_messages_archived, migration 0105, for the established pattern).
+//
+// NOT a blanket "keep everything" change: phone_pairings stays at 2 days
+// because hoarding short-lived auth capability rows is a privacy negative,
+// not an asset. Retention is per-table on purpose.
+const CORPUS_RETENTION_DAYS = 1825; // 5 years
+
 const RETENTION: ReadonlyArray<RetentionEntry> = [
-  { table: 'prediction_log', column: 'logged_at',  days: 365 },
-  { table: 'app_events',     column: 'ts',         days:  90 },
-  { table: 'agent_costs',    column: 'created_at', days:  90 },
+  { table: 'prediction_log', column: 'logged_at',  days: CORPUS_RETENTION_DAYS },
+  { table: 'app_events',     column: 'ts',         days: CORPUS_RETENTION_DAYS },
+  { table: 'agent_costs',    column: 'created_at', days: CORPUS_RETENTION_DAYS },
   // Every pairing capability expires within roughly two minutes. Two days
   // from creation guarantees at least a full day of operational audit after
   // the terminal/expiry event; the daily job then bounds removal to 2–3 days
