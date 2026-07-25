@@ -405,6 +405,14 @@ export interface FindingRunSummary {
   detectorsChecked: number;
   detectorsSkipped: number;
   detectorsFailed: number;
+  /**
+   * Checks this hotel has ignored all the way to rest (see demotion.ts).
+   * Counted apart from `detectorsSkipped` on purpose: skipped means the data
+   * was not there, resting means this hotel's own behaviour switched it off.
+   * A run summary that conflated them would report a healthy hotel as a starved
+   * one every night.
+   */
+  detectorsDormant: number;
   findingsOpened: number;
   findingsUpdated: number;
   findingsSuppressed: number;
@@ -414,6 +422,12 @@ export interface FindingRunSummary {
   errors: Array<{ detectorId: string; error: string }>;
   /** Per-detector detail. Not persisted — returned for the cron response. */
   skipped: Array<{ detectorId: string; because: string }>;
+  /** "N checks resting" — which ones, and since when. Not persisted; the state
+   *  itself lives in finding_detector_state and outlives any one run. */
+  dormant: Array<{ detectorId: string; since: string | null }>;
+  /** Rungs stepped down tonight. The transition log is in the state row; this
+   *  is what the cron response says happened. */
+  demotions: Array<{ detectorId: string; from: string; to: string; reason: string }>;
   /**
    * What the judge did. Part of the null result for the same reason the
    * detector counts are: a night with nothing new to judge and a night where

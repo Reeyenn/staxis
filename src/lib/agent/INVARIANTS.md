@@ -890,3 +890,130 @@ this hotel?". These four invariants are what the unified ledger promises.
   `findings-detectors.test.ts`. Verified by relaxing the CHECK to `>=` and
   watching the point-estimate case go green.
 - **History:** Findings-engine Phase 1, 2026-07-26.
+
+## The learning loop (migration 0362)
+
+Phase 3 is the half of the findings layer that can make it SMALLER, and the half
+that can make it BIGGER. Both directions carry a failure mode that is invisible
+from the outside — a check that quietly stopped watching, and a detector that
+quietly carries one hotel's data to every hotel on its PMS family — so both get
+an invariant rather than a comment.
+
+- **INV-FIND-5 — a sweep hypothesis reproduces or it dies.** Everything the
+  weekly sweep's model returns is a HYPOTHESIS. It becomes nothing at all —
+  no card, no proposal, no memory — unless a deterministic reproducer re-queries
+  the hotel's data and confirms it. The reproducer is handed the check kind and
+  the subject and NOT the model's sentence, so a claim cannot argue its way
+  through, and it runs against a SECOND, FRESH read rather than the snapshot the
+  model was shown: a claim that only holds against the exact bytes in the prompt
+  is a claim about the prompt. Every death is written to
+  `finding_sweep_runs.irreproducible` and to `detail.hypotheses` with its reason;
+  that count is the hallucination filter's visible miss rate, kept in the open
+  for the same reason the prose guard's rejection count is.
+- **Enforced by:** structure — `sweepProperty` has exactly one path from a
+  hypothesis to a finding and it runs through `reproduceHypothesis`; the model's
+  output contract (`parseSweepReplyStrict`) has no field for a number, a
+  threshold or a sentence anybody will read, and any unknown key refuses the
+  WHOLE reply.
+- **NOT ENFORCED at the DB level:** nothing in Postgres can tell a reproduced
+  finding from an invented one. The counts are recorded so the ratio is
+  auditable after the fact.
+- **Assumed by:** every card `ai_sweep` writes; the promotion path, which only
+  ever sees reproduced candidates.
+- **Tested by:** `findings-sweep.test.ts` — "an irreproducible hypothesis dies,
+  is counted, and reaches nobody", "a flat series does not reproduce a spike,
+  however confidently it was claimed", "the reproducer never reads the model's
+  sentence" (an identical hostile claim produces a byte-identical verdict).
+  Verified by making the runner treat every hypothesis as reproduced and
+  watching the death case go red.
+- **History:** Findings-engine Phase 3, 2026-07-26.
+
+- **INV-FIND-6 — a promoted detector's content is property-agnostic, and the
+  rule is "no digits".** Anything the sweep proposes into `knowledge_promotions`
+  contains no digit and no currency mark anywhere in its topic, claim, proposed
+  content or evidence summary, and none of the source hotel's own identifying
+  strings. Structural constants of a derivation are spelled in words
+  (`THRESHOLD_DERIVATIONS`); a threshold measured at the source hotel cannot
+  survive being written that way, because a number is how such a threshold is
+  written down. Softer rules ("nothing hotel-specific") are judgement calls a
+  reviewer makes correctly forty times and wrongly once.
+- **Enforced by:** `propertyAgnosticViolations`, applied to the ASSEMBLED payload
+  and sitting in front of the RPC call, not behind it. Belt and braces: the
+  payload is also built by construction from a fixed per-check template plus the
+  derivation enum, with no parameter through which the hotel's evidence could
+  reach it. A refusal is logged at ERROR — nothing leaked, but the assembly path
+  grew a hole.
+- **Also enforced by:** `staxis_propose_promotion`'s own bar (0353) — an origin
+  other than `authored` needs two supporting hotels for family tier — and by the
+  sweep proposing only at FAMILY tier and only when two hotels have
+  independently reproduced the same property-agnostic signature. The signature
+  of an item-shaped check collapses to `any_item` so an item id (which is that
+  hotel's data) is never the thing two hotels agree on.
+- **Assumed by:** every hotel that would inherit a promoted detector.
+- **Tested by:** `findings-sweep.test.ts` — "the assembled proposal contains no
+  digit anywhere" (every check kind), "every threshold derivation is expressed
+  in words", "a literal-bearing payload is caught: a room range, an amount, an
+  item name", "a candidate carrying the source hotel's own words is refused
+  before the RPC", "one hotel is a quirk, and stays local". Verified by
+  neutering the digit rule, by lowering the supporting-hotel bar to one, and by
+  moving the guard behind the RPC — each turns a case red.
+- **History:** Findings-engine Phase 3, 2026-07-26.
+
+- **INV-FIND-7 — demotion is per hotel.** How far a detector has fallen down
+  `propose → recommend → fyi → resting` is a fact about ONE hotel's behaviour.
+  One hotel ignoring the supply-spend card must never quieten it at a hotel
+  where it is the most useful thing on the screen, and no operator action, cron
+  parameter or bug may express a fleet-wide demotion.
+- **Enforced by:** the shape of the state — `finding_detector_state` is keyed
+  `(property_id, detector_id)` with a unique index (0362), read and written
+  exclusively through `scopedDb(propertyId)`. There is no row that could hold a
+  fleet-wide verdict. The re-arm path refuses to run without a named hotel.
+- **NOT ENFORCED at the DB level:** the THRESHOLDS (ten shows, zero engagement,
+  three weeks) and the one-rung-per-stretch rule are code. They fail SAFE — a
+  broken state read leaves every detector at full volume — and `baseline_shown` /
+  `baseline_acted` / `baseline_at` move forward on every transition so one
+  stretch of being ignored buys exactly one rung, never three.
+- **Assumed by:** the run summary's "N checks resting", which is counted apart
+  from `detectorsSkipped` because starved and resting are different problems.
+- **Tested by:** `findings-learning-loop.integration.test.ts` — "one hotel
+  ignoring a check does not silence it at another", "below the threshold nothing
+  moves", "long enough is not enough if the manager ever engaged", "a demotion
+  cannot cascade on the same evidence", "out of rungs, the check rests —
+  visibly, and apart from 'no data'", "re-arming puts it back on duty and does
+  not immediately re-rest it"; the policy itself in `findings-demotion.test.ts`.
+  Verified by dropping the engagement veto, by not moving the baseline, and by
+  counting a resting check as skipped — each turns a case red.
+- **History:** Findings-engine Phase 3, 2026-07-26.
+
+- **INV-FIND-8 — an `ask` finding is asked through the drip pipeline, and only
+  there.** A finding the judge sorted as `ask` never renders as a card. It
+  becomes a candidate for the ONE question surface Staxis already has, and
+  inherits that surface's promises unchanged: at most one question per session,
+  never the same question twice, gone for the day when ignored, given up on
+  after three asks. Answering it resolves the finding — yes marks it a known
+  problem at the size the manager was shown, no resolves it and records the
+  decline in the question ledger.
+- **Enforced by:** `effectiveDisposition` (the judge's verdict wins over the
+  detector's default) feeding `isCardRenderable` in `/api/findings`, so an `ask`
+  finding is filtered out of the queue read; and by `ask-drip.ts` producing a
+  `QuestionCandidate` rather than a question — every never-be-obnoxious rule
+  lives in `selectQuestion` and none of it is duplicated. The link back is
+  `agent_knowledge_questions.finding_id` (0362), and `(property_id, topic)` is
+  unique, which is what makes "never twice" a database guarantee rather than a
+  convention.
+- **The bug this closes:** the queue read filtered on the DETECTOR's
+  disposition, so a judged-`ask` finding kept its detector default of
+  `recommend` and rendered as a card AND became a question — two surfaces asking
+  the same thing with different rules.
+- **Assumed by:** the drip card on the Staxis screen; the one-per-session cap in
+  `src/lib/drip-question-session.ts`.
+- **Tested by:** `findings-learning-loop.integration.test.ts` — "it becomes the
+  drip card, recorded against the finding", "it does not come back the same
+  day", "answered 'no' … the finding is resolved", "answered 'yes': the finding
+  becomes a known problem at the size they agreed to", "a replayed tap changes
+  nothing", "the card surface still refuses to render ask findings itself"; plus
+  `findings-demotion.test.ts` for the adapter and the selection rules, and
+  `findings-cards.test.ts` for the judged-verdict precedence. Verified by making
+  `effectiveDisposition` return the detector's value and by disconnecting the
+  answer from the finding — each turns a case red.
+- **History:** Findings-engine Phase 3, 2026-07-26.

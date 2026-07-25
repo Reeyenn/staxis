@@ -99,6 +99,27 @@ export const DAILY_CARD_CAP = 5;
 // ─── Which findings become cards at all ─────────────────────────────────────
 
 /**
+ * WHICH VERDICT GOVERNS: the judge's, when it has one.
+ *
+ * The detector's `disposition` is a default chosen before anything looked at
+ * this hotel's particular situation. The judge's is a decision made with the
+ * finding's numbers, its data age and the hotel's own knowledge in front of it,
+ * and `ask` / `drop` are verdicts ONLY the judge ever reaches.
+ *
+ * Reading the detector's value here was a real bug: a finding the judge sorted
+ * as `ask` still carried its detector default of `recommend`, so it rendered as
+ * a card AND became a drip question — the exact duplication the split exists to
+ * prevent. Falling back to the detector's value when the judge has not run
+ * keeps every card renderable with no model in the loop.
+ */
+export function effectiveDisposition(f: {
+  disposition: FindingDisposition;
+  judgedDisposition?: FindingDisposition | null;
+}): FindingDisposition {
+  return f.judgedDisposition ?? f.disposition;
+}
+
+/**
  * `ask` findings are QUESTIONS, and Staxis already has exactly one place it
  * asks a manager a question: the drip-question card. Rendering them here would
  * be a second question UI with different rules (that one asks at most once per
@@ -106,7 +127,8 @@ export const DAILY_CARD_CAP = 5;
  * saying "not worth surfacing" — kept in the ledger so the decision is
  * auditable, never shown.
  *
- * Wiring `ask` findings INTO the drip-question pipeline is Phase 3's job.
+ * The route feeds this the EFFECTIVE disposition (above), and the adapter that
+ * turns an `ask` finding into a drip question is src/lib/findings/ask-drip.ts.
  */
 export function isCardRenderable(f: Pick<QueueFinding, 'disposition'>): boolean {
   return f.disposition !== 'ask' && f.disposition !== 'drop';

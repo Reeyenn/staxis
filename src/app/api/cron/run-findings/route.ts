@@ -1,28 +1,47 @@
 /**
- * GET | POST /api/cron/run-findings
+ * GET | POST /api/cron/run-findings — THE NIGHTLY PASS, END TO END.
  *
- * Runs every registered detector for every hotel and reconciles what they found
- * against the findings ledger: a re-found problem UPDATES its existing row, a
- * silenced one stays quiet unless it outgrew the silence, and a problem that
- * stopped appearing expires. Writes only `findings` and `finding_runs` — the
- * detectors read, they never emit. cleaning_tasks, agent_nudges and agent_memory
- * are written by exactly the same code paths as before this route existed.
+ * One route, three stages, in this order and no other:
  *
- * DORMANT ON PURPOSE (2026-07-26). There is no vercel.json entry yet: the
- * ledger is inert until a later phase renders it, and the house convention
- * (see src/lib/cron-schedule-registry.ts) is that a route whose output nobody
- * can see yet stays unscheduled rather than burning a nightly pass per hotel.
- * To turn it on, four places:
+ *   1. DEMOTE   every check is measured against this hotel's own engagement.
+ *               A check shown and ignored long enough steps down a rung; one
+ *               that has run out of rungs rests and is not run tonight at all.
+ *   2. DETECT   every remaining detector runs and what it found is reconciled
+ *               against the ledger: a re-found problem UPDATES its existing row,
+ *               a silenced one stays quiet unless it outgrew the silence, and a
+ *               problem that stopped appearing expires.
+ *   3. JUDGE    one batched model call per hotel sorts and phrases what is
+ *               open, inside the per-hotel findings spend cap, falling back to
+ *               deterministic phrasing on any failure.
+ *
+ * Chained deliberately rather than split into two crons: judging a half-written
+ * picture of a hotel is worse than not judging it, and two schedules is two
+ * chances for the second one not to fire.
+ *
+ * Writes `findings`, `finding_runs` and `finding_detector_state` — the detectors
+ * read, they never emit. cleaning_tasks, agent_nudges and agent_memory are
+ * written by exactly the same code paths as before this route existed.
+ *
+ * DORMANT ON PURPOSE (2026-07-26). There is no vercel.json entry: the founder
+ * turns this on, not a deploy. To enable, four places:
  *   1. vercel.json                        → { "path": "/api/cron/run-findings", "schedule": "0 6 * * *" }
  *   2. src/lib/cron-schedule-registry.ts  → { heartbeatName: 'run-findings', source: { kind: 'vercel', cronPath: '/api/cron/run-findings' }, cronExpr: '0 6 * * *' }
  *   3. src/app/api/admin/doctor/route.ts  → EXPECTED_CRONS entry, cadenceHours: 24
  *   4. src/app/api/admin/mission/workers/route.ts → WORKER_META line
- * Until then it is callable by hand with the cron bearer, which is how Phase 2
- * will exercise it against a real hotel before scheduling it.
+ * Until then it is callable by hand with the cron bearer, which is how it gets
+ * exercised against a real hotel before it is ever scheduled.
  *
  * Query params:
  *   propertyId (optional, uuid)   — run only this hotel
- *   dryRun     (optional, 'true') — detect and reconcile in memory, write nothing
+ *   dryRun     (optional, 'true') — detect and reconcile in memory, write
+ *                                   nothing, and skip both the demotion pass
+ *                                   and the judge
+ *   rearm      (optional, string) — put one rested check back on duty at the
+ *                                   named hotel and run nothing else. Requires
+ *                                   propertyId. This is the "re-armable" half
+ *                                   of self-demotion; it lives here rather than
+ *                                   behind a new admin route because it is one
+ *                                   operator action on the same subsystem.
  *
  * Auth: CRON_SECRET bearer (shared with the rest of /api/cron/*).
  */
@@ -34,6 +53,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import {
+  rearmDetector,
   runFindingsForAllProperties,
   runFindingsForProperty,
   type FindingRunSummary,
@@ -51,6 +71,7 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const rawPropertyId = url.searchParams.get('propertyId');
   const dryRun = url.searchParams.get('dryRun') === 'true';
+  const rearm = (url.searchParams.get('rearm') ?? '').trim();
 
   if (rawPropertyId && !isUuid(rawPropertyId)) {
     return err('propertyId must be a UUID', {
@@ -58,6 +79,27 @@ export async function GET(req: NextRequest) {
       status: 400,
       code: ApiErrorCode.ValidationFailed,
     });
+  }
+
+  // Re-arming is a decision about ONE hotel's check, and doing it fleet-wide by
+  // forgetting a parameter would silently undo every demotion the system has
+  // ever earned. It requires the hotel to be named.
+  if (rearm) {
+    if (!rawPropertyId) {
+      return err('rearm requires propertyId', {
+        requestId,
+        status: 400,
+        code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    const result = await rearmDetector(rawPropertyId, rearm);
+    log.info('[run-findings] detector re-armed by hand', {
+      requestId,
+      propertyId: rawPropertyId,
+      detectorId: rearm,
+      changed: result.changed,
+    });
+    return ok({ rearmed: result }, { requestId });
   }
 
   try {
@@ -74,6 +116,10 @@ export async function GET(req: NextRequest) {
         detectorsChecked: acc.detectorsChecked + s.detectorsChecked,
         detectorsSkipped: acc.detectorsSkipped + s.detectorsSkipped,
         detectorsFailed: acc.detectorsFailed + s.detectorsFailed,
+        // "N checks resting" — a check this hotel ignored into silence. Counted
+        // apart from skipped, which means the data was not there.
+        detectorsDormant: acc.detectorsDormant + s.detectorsDormant,
+        demotions: acc.demotions + s.demotions.length,
         findingsOpened: acc.findingsOpened + s.findingsOpened,
         findingsUpdated: acc.findingsUpdated + s.findingsUpdated,
         findingsSuppressed: acc.findingsSuppressed + s.findingsSuppressed,
@@ -86,6 +132,8 @@ export async function GET(req: NextRequest) {
         detectorsChecked: 0,
         detectorsSkipped: 0,
         detectorsFailed: 0,
+        detectorsDormant: 0,
+        demotions: 0,
         findingsOpened: 0,
         findingsUpdated: 0,
         findingsSuppressed: 0,

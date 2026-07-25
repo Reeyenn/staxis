@@ -209,14 +209,21 @@ interface CardProps {
   lang: Lang;
   busy: boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
+  /** Fired the first time this card's numbers are opened. Optional so the view
+   *  can be rendered in a test without a network. */
+  onEngage?: (findingId: string) => void;
 }
 
-function FindingCard({ finding, lang, busy, onVerdict }: CardProps) {
+function FindingCard({ finding, lang, busy, onVerdict, onEngage }: CardProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
 
   const [showReceipt, setShowReceipt] = React.useState(false);
   const [confirmingMute, setConfirmingMute] = React.useState(false);
+  // Once per card, not once per toggle. Opening and closing the receipt three
+  // times is one manager reading it, and counting three would be inventing
+  // engagement out of a fidget.
+  const engaged = React.useRef(false);
 
   const price = formatPriceRange(finding.price);
   const seen = occurrenceLine(finding, lang);
@@ -319,7 +326,15 @@ function FindingCard({ finding, lang, busy, onVerdict }: CardProps) {
               <button
                 type="button"
                 className="fd-act"
-                onClick={() => setShowReceipt((v) => !v)}
+                onClick={() => {
+                  setShowReceipt((v) => {
+                    if (!v && !engaged.current) {
+                      engaged.current = true;
+                      onEngage?.(finding.id);
+                    }
+                    return !v;
+                  });
+                }}
                 aria-expanded={showReceipt}
               >
                 {showReceipt ? L('hideNumbers') : L('seeNumbers')}
@@ -346,6 +361,9 @@ export interface FindingCardsViewProps {
   saveFailed?: boolean;
   busyId?: string | null;
   onVerdict: (findingId: string, verdict: Verdict) => void;
+  /** Told when a manager opens a card's numbers. Counted as engagement, which
+   *  is what keeps a check somebody reads from demoting itself (0362). */
+  onEngage?: (findingId: string) => void;
 }
 
 /**
@@ -362,6 +380,7 @@ export function FindingCardsView({
   saveFailed = false,
   busyId = null,
   onVerdict,
+  onEngage,
 }: FindingCardsViewProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
@@ -413,6 +432,7 @@ export function FindingCardsView({
           lang={lang}
           busy={busyId === f.id}
           onVerdict={onVerdict}
+          onEngage={onEngage}
         />
       ))}
 
@@ -477,6 +497,29 @@ export function FindingCards({ lang }: { lang: Lang }) {
     [activePropertyId, reload],
   );
 
+  /**
+   * A manager opened the numbers. Nothing about the card changes, so this is
+   * deliberately fire-and-forget: no busy state, no reload, and a failure is
+   * swallowed. The worst case is that a check earns its rest slightly sooner
+   * than it should have, and stopping the manager's read to report a failed
+   * counter write would be a far worse trade.
+   */
+  const onEngage = React.useCallback(
+    (findingId: string) => {
+      if (!activePropertyId) return;
+      void fetchWithAuth('/api/findings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          propertyId: activePropertyId,
+          findingId,
+          action: 'receipt_opened',
+        }),
+      }).catch(() => {});
+    },
+    [activePropertyId],
+  );
+
   if (!canSee) return null;
 
   return (
@@ -489,6 +532,7 @@ export function FindingCards({ lang }: { lang: Lang }) {
       saveFailed={saveFailed}
       busyId={busyId}
       onVerdict={onVerdict}
+      onEngage={onEngage}
     />
   );
 }

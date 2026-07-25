@@ -16,6 +16,7 @@ import 'server-only';
 
 import { scopedDb } from '@/lib/agent/scoped-db';
 import { log } from '@/lib/log';
+import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 import type {
   Finding,
@@ -500,6 +501,125 @@ export async function expireStaleFindings(
   return ((data ?? []) as unknown[]).length;
 }
 
+// ─── Engagement: the evidence self-demotion runs on ─────────────────────────
+//
+// `shown_count`, `acted_count` and `ignored_count` were laid down as scaffold in
+// 0360 and nothing has ever written them. These two functions are the writers,
+// and between them they define what those words MEAN — which matters, because a
+// detector rests on this arithmetic.
+//
+//   shown   one per hotel-DAY a card was actually on the manager's screen.
+//           Not one per page load: a manager who refreshes eleven times has
+//           looked once, and counting eleven would let one anxious morning rest
+//           a detector for good. `last_shown_on` (0362) is that guard.
+//   acted   Known problem, Fixed, or the receipt opened. Any of the three is a
+//           manager engaging with the card, and one of them is enough to keep a
+//           detector at full volume.
+//   ignored a show on a card nothing has ever been done about. It is kept as
+//           its own column rather than derived, so "shown a lot and read" and
+//           "shown a lot and never once opened" are different rows instead of a
+//           subtraction every reader has to remember to do.
+
+/** The hotel's own calendar day. "Already shown today?" is a calendar question. */
+async function propertyToday(propertyId: string, now: Date): Promise<string> {
+  const { data } = await scopedDb(propertyId).from('properties').select('timezone').maybeSingle();
+  const tz = (data as { timezone?: string | null } | null)?.timezone ?? null;
+  return propertyLocalToday(now, tz);
+}
+
+/**
+ * Count these findings as SHOWN, at most once per hotel-day each.
+ *
+ * Returns how many rows it actually moved. Never throws: telemetry that can
+ * break the screen it measures is worse than no telemetry, and the only cost of
+ * a lost increment is that a detector earns its rest a day later.
+ */
+export async function recordFindingsShown(
+  propertyId: string,
+  findingIds: readonly string[],
+  now: Date = new Date(),
+): Promise<number> {
+  if (findingIds.length === 0) return 0;
+  try {
+    const today = await propertyToday(propertyId, now);
+    const db = scopedDb(propertyId);
+    const { data, error } = await db
+      .from('findings')
+      .select('id, shown_count, acted_count, ignored_count, last_shown_on')
+      .in('id', [...findingIds])
+      .limit(200);
+    if (error) throw new Error(error.message);
+
+    const rows = (data ?? []) as unknown as Array<{
+      id: string;
+      shown_count: number | string;
+      acted_count: number | string;
+      ignored_count: number | string;
+      last_shown_on: string | null;
+    }>;
+
+    let moved = 0;
+    for (const row of rows) {
+      if ((row.last_shown_on ?? '').slice(0, 10) === today) continue;
+      const acted = num(row.acted_count) ?? 0;
+      const ignored = num(row.ignored_count) ?? 0;
+      const { error: writeError } = await db
+        .from('findings')
+        .update({
+          shown_count: (num(row.shown_count) ?? 0) + 1,
+          // A card that has ever been engaged with is never "ignored" again,
+          // however long it sits — the manager already told us it was worth
+          // reading.
+          ignored_count: acted > 0 ? ignored : ignored + 1,
+          last_shown_on: today,
+        })
+        .eq('id', row.id);
+      if (!writeError) moved += 1;
+    }
+    return moved;
+  } catch (e) {
+    log.warn('[findings] shown-count write failed; demotion evidence is a day thinner', {
+      propertyId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return 0;
+  }
+}
+
+/**
+ * Count one finding as ACTED ON. Known problem, Fixed, or receipt opened.
+ *
+ * Every call counts, including a second tap on the same card: engagement is
+ * evidence that a manager is reading this detector's output, and there is no
+ * reason to cap how much of that evidence we will accept.
+ */
+export async function recordFindingActed(propertyId: string, findingId: string): Promise<boolean> {
+  try {
+    const db = scopedDb(propertyId);
+    const { data, error } = await db
+      .from('findings')
+      .select('id, acted_count')
+      .eq('id', findingId)
+      .limit(1);
+    if (error) throw new Error(error.message);
+    const rows = (data ?? []) as unknown as Array<{ id: string; acted_count: number | string }>;
+    if (rows.length === 0) return false;
+
+    const { error: writeError } = await db
+      .from('findings')
+      .update({ acted_count: (num(rows[0].acted_count) ?? 0) + 1 })
+      .eq('id', findingId);
+    if (writeError) throw new Error(writeError.message);
+    return true;
+  } catch (e) {
+    log.warn('[findings] acted-count write failed; demotion evidence is thinner', {
+      propertyId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return false;
+  }
+}
+
 /**
  * A manager's verdict. Moving to `known_problem` ALWAYS records the magnitude
  * they consented to — escalation is measured from there, and a silence with no
@@ -549,6 +669,11 @@ export async function recordRun(summary: FindingRunSummary, now: Date): Promise<
     detectors_checked: summary.detectorsChecked,
     detectors_skipped: summary.detectorsSkipped,
     detectors_failed: summary.detectorsFailed,
+    // Resting, not starved (0362). "3 checks could not run for want of data"
+    // and "3 checks this hotel ignores are asleep" describe different systems,
+    // and folding the second into the first would make a working one look
+    // broken.
+    detectors_dormant: summary.detectorsDormant,
     findings_opened: summary.findingsOpened,
     findings_updated: summary.findingsUpdated,
     findings_suppressed: summary.findingsSuppressed,

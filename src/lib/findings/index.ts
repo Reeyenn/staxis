@@ -139,3 +139,82 @@ export {
   deriveJudgeReservationUsd,
   findingsPropertyDailyCapUsd,
 } from './judge-budget';
+
+/**
+ * Self-demotion — the only part of this layer that makes it SMALLER. A check
+ * this hotel is shown and never engages with steps down propose → recommend →
+ * fyi and eventually rests. Per hotel, always: one hotel's indifference has no
+ * way to reach another's screen.
+ */
+export {
+  DEMOTION_LADDER,
+  DEMOTION_THRESHOLDS,
+  DORMANT,
+  applyDemotionPass,
+  demoteDisposition,
+  evaluateDemotion,
+  isDormantAt,
+  loadDetectorEngagement,
+  loadDetectorStates,
+  rearmDetector,
+  type DemotionThresholds,
+  type DemotionTransition,
+  type DetectorEngagement,
+  type DetectorState,
+  type EffectiveDisposition,
+} from './demotion';
+
+export { recordFindingActed, recordFindingsShown } from './store';
+
+/**
+ * The weekly sweep — discovery that has to survive being checked. The model
+ * proposes hypotheses from a closed vocabulary; deterministic queries reproduce
+ * them or kill them; survivors become a recommendation at that hotel, and only
+ * a candidate two hotels have independently reproduced may be PROPOSED (never
+ * registered) as shared knowledge.
+ */
+export {
+  MAX_HYPOTHESES,
+  SWEEP_RESERVATION_USD,
+  SWEEP_SAMPLE_SIZE,
+  SWEEP_SYSTEM_PROMPT,
+  SweepContractError,
+  buildSweepUserMessage,
+  parseSweepReplyStrict,
+  selectSweepSample,
+  sweepFleet,
+  sweepProperty,
+  type SweepCandidateProperty,
+  type SweepMode,
+  type SweepRunResult,
+} from './sweep';
+
+export {
+  CHECK_KINDS,
+  THRESHOLD_DERIVATIONS,
+  buildSweepSummary,
+  candidateSignature,
+  coveredBy,
+  reproduceHypothesis,
+  type CheckKind,
+  type Hypothesis,
+  type Reproduction,
+  type SweepFeeds,
+  type SweepSummary,
+  type ThresholdDerivation,
+} from './sweep-checks';
+
+/** "A promoted detector encoding one hotel's numbers is a tenant leak dressed
+ *  as a feature." The guard that makes that impossible by construction. */
+export {
+  MIN_SUPPORTING_HOTELS,
+  buildPromotionDraft,
+  propertyAgnosticViolations,
+  routeCandidateToPromotion,
+  type AgnosticViolation,
+  type PromotionDraft,
+  type PromotionOutcome,
+} from './sweep-promotion';
+
+/** A judged-`ask` finding, in the shape the ONE existing question card eats. */
+export { findingAskCandidates, findingQuestionTopic, toQuestionCandidate } from './ask-drip';

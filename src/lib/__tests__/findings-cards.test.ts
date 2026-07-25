@@ -24,6 +24,7 @@ import {
   cardPhrasing,
   dataAgeNote,
   distinctDetectors,
+  effectiveDisposition,
   formatPriceRange,
   isCardRenderable,
   isQuiet,
@@ -222,6 +223,28 @@ describe('a question is not a card', () => {
     for (const disposition of ['propose', 'recommend', 'fyi'] as const) {
       assert.equal(isCardRenderable(finding({ id: disposition, disposition })), true);
     }
+  });
+
+  // The judge is the only thing that ever reaches 'ask' or 'drop'. Reading the
+  // DETECTOR's default here meant a finding the judge turned into a question
+  // rendered as a card as well — two surfaces asking the same thing with
+  // different rules, which is the exact duplication the split exists to stop.
+  test("the judge's verdict wins: a judged-'ask' finding is not a card, whatever its detector said", () => {
+    assert.equal(
+      effectiveDisposition({ disposition: 'recommend', judgedDisposition: 'ask' }),
+      'ask',
+    );
+    assert.equal(
+      isCardRenderable({
+        disposition: effectiveDisposition({ disposition: 'recommend', judgedDisposition: 'ask' }),
+      }),
+      false,
+    );
+  });
+
+  test('with no judgement, the detector\'s own verdict still governs — a card never goes blank waiting for a model', () => {
+    assert.equal(effectiveDisposition({ disposition: 'propose', judgedDisposition: null }), 'propose');
+    assert.equal(effectiveDisposition({ disposition: 'fyi' }), 'fyi');
   });
 
   test('an fyi is quiet and offers no "fixed" button; a recommendation offers both', () => {

@@ -315,6 +315,16 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Puts the problems Staxis noticed overnight in the order a manager should read them and writes each one in plain English and Spanish. It never decides what is wrong — only how to say it and what to show first.',
     ['text'], HAIKU,
   ),
+  // Discovery, not decision. It picks from a fixed list of checks against a
+  // fixed list of subjects — there is no field in its output where a number
+  // could appear — and everything it suggests is then re-tested by a real query
+  // before anyone hears about it. A cheap model is not a compromise here: a
+  // smarter one would be allowed to author exactly as little.
+  'findings.sweep': defineFeature(
+    'findings.sweep', 'Agent', 'Weekly pattern sweep',
+    'Once a week, for a few hotels at a time, looks over the hotel\'s own totals and suggests things worth watching that nothing checks yet. Every suggestion is re-tested against the real numbers first, and anything that does not hold up is thrown away.',
+    ['text'], HAIKU,
+  ),
   'walkthrough.step_generation': defineFeature(
     'walkthrough.step_generation', 'Guidance', 'Guided walkthroughs',
     'Powers the step-by-step guided tours that walk someone through using the app.',

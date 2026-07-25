@@ -85,8 +85,8 @@ describe('drip questions: at most one, ever', () => {
     assert.ok(chosen, 'something should be asked');
     // The contract is a single object, not a list — there is no shape here that
     // could carry a second question to the client.
-    assert.equal(typeof chosen.signal.topic, 'string');
-    assert.equal(chosen.signal.topic, 'op_maint_a', 'the highest-ranked signal wins');
+    assert.equal(typeof chosen.topic, 'string');
+    assert.equal(chosen.topic, 'op_maint_a', 'the highest-ranked signal wins');
   });
 
   test('no signals at all — a brand-new hotel is never asked anything', () => {
@@ -133,7 +133,7 @@ describe('drip questions: a question is never asked twice', () => {
   test('an ignored question may return on a LATER day', () => {
     const chosen = pick({ records: [record({ status: 'asked', lastAskedOn: YESTERDAY, askCount: 1 })] });
     assert.ok(chosen, 'a new day is a fair second try');
-    assert.equal(chosen.signal.topic, 'op_maint_214_hvac');
+    assert.equal(chosen.topic, 'op_maint_214_hvac');
   });
 
   test('after the ask cap it is dropped for good, even on a new day', () => {
@@ -163,13 +163,13 @@ describe('drip questions: a question is never asked twice', () => {
       records: [record({ status: 'declined' })],
     });
     assert.ok(chosen);
-    assert.equal(chosen.signal.topic, 'op_maint_301_ac');
+    assert.equal(chosen.topic, 'op_maint_301_ac');
   });
 
   test('records for OTHER topics never suppress this one', () => {
     const chosen = pick({ records: [record({ topic: 'op_maint_999_other', status: 'declined' })] });
     assert.ok(chosen);
-    assert.equal(chosen.signal.topic, 'op_maint_214_hvac');
+    assert.equal(chosen.topic, 'op_maint_214_hvac');
   });
 });
 
@@ -260,7 +260,7 @@ describe('drip questions: the Spanish path is Spanish', () => {
       signals: [signal({ targetKind: null, targetValue: null }), signal({ topic: 'op_maint_7_ac', targetValue: '7' })],
     });
     assert.ok(chosen, 'an unphraseable signal must not block the next one');
-    assert.equal(chosen.signal.topic, 'op_maint_7_ac');
+    assert.equal(chosen.topic, 'op_maint_7_ac');
   });
 
   test('hostile text in a work-order category cannot smuggle markup into the fact', () => {

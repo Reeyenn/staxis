@@ -294,7 +294,18 @@ export interface ProposePromotionInput {
   proposedContent: string;
   targetTier: PromotionTier;
   origin: PromotionOrigin;
-  sourceKind: 'agent_memory' | 'consolidation' | 'eval' | 'extraction' | 'migration' | 'human';
+  // Mirrors knowledge_promotions_source_kind_ck. 'findings_sweep' (0362) is the
+  // weekly findings discovery pass: machine-authored, and worth being able to
+  // tell apart from a fact lifted out of a conversation when a human is
+  // deciding whether to make it everyone's.
+  sourceKind:
+    | 'agent_memory'
+    | 'consolidation'
+    | 'eval'
+    | 'extraction'
+    | 'migration'
+    | 'human'
+    | 'findings_sweep';
   pmsFamily?: string | null;
   sourceTier?: PromotionSourceTier | null;
   evidenceSummary?: string | null;

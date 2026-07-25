@@ -9,13 +9,21 @@
  *   this hotel has never been checked — the screen says nothing about checking
  *   rather than implying a clean night that never happened).
  *
- * POST { propertyId, findingId, action: 'known_problem' | 'muted' | 'resolved' }
+ * POST { propertyId, findingId, action }
  *   → { ok, data: { status } }
- *   known_problem  the manager armed the silencer: quiet from now on, EXCEPT
- *                  if the problem outgrows the size they consented to. The
- *                  store records that size; escalation is measured from it.
- *   muted          gone, unconditionally. Their call, no second-guessing.
- *   resolved       dealt with. A recurrence later is a genuinely new card.
+ *   known_problem   the manager armed the silencer: quiet from now on, EXCEPT
+ *                   if the problem outgrows the size they consented to. The
+ *                   store records that size; escalation is measured from it.
+ *   muted           gone, unconditionally. Their call, no second-guessing.
+ *   resolved        dealt with. A recurrence later is a genuinely new card.
+ *   receipt_opened  not a verdict at all — the manager expanded the numbers.
+ *                   Nothing about the card changes; it counts as engagement, so
+ *                   a detector somebody actually reads does not quietly demote
+ *                   itself for want of a button press (0362).
+ *
+ * The GET also records which cards were ON SCREEN, once per hotel-day. Both
+ * halves feed the same thing: src/lib/findings/demotion.ts, which is how a
+ * check this hotel ignores steps down and eventually rests.
  *
  * WHY THE property_id FILTER IS THE TENANT WALL HERE
  * `findings` and `finding_runs` are deny-all to anon and authenticated
@@ -43,10 +51,19 @@ import {
   judgedPhrasing,
   latestRunFacts,
   listFindings,
+  recordFindingActed,
+  recordFindingsShown,
   setFindingStatus,
 } from '@/lib/findings/store';
 import type { Finding, FindingStatus } from '@/lib/findings/types';
-import { DAILY_CARD_CAP, isCardRenderable, type QueueFinding } from '@/components/concourse/finding-cards';
+import {
+  DAILY_CARD_CAP,
+  effectiveDisposition,
+  isCardRenderable,
+  rankFindings,
+  splitByCap,
+  type QueueFinding,
+} from '@/components/concourse/finding-cards';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -55,6 +72,33 @@ export const dynamic = 'force-dynamic';
  *  'expired' and the like belong to the runner, not to a button. */
 const MANAGER_VERDICTS = ['known_problem', 'muted', 'resolved'] as const;
 type ManagerVerdict = typeof MANAGER_VERDICTS[number];
+
+/**
+ * Not a verdict — a record that the manager engaged with the card without
+ * deciding anything. Opening the receipt is someone reading, and a detector
+ * somebody reads has earned its place on the screen whether or not they pressed
+ * a button (see src/lib/findings/demotion.ts).
+ */
+const ENGAGEMENTS = ['receipt_opened'] as const;
+type Engagement = typeof ENGAGEMENTS[number];
+
+const POST_ACTIONS = [...MANAGER_VERDICTS, ...ENGAGEMENTS] as const;
+type PostAction = typeof POST_ACTIONS[number];
+
+function isEngagement(action: PostAction): action is Engagement {
+  return (ENGAGEMENTS as readonly string[]).includes(action);
+}
+
+/**
+ * Which verdicts count as engagement.
+ *
+ * `muted` is deliberately absent. It is a manager saying "never show me this
+ * again", and counting it as a reason to keep showing the detector at full
+ * volume would be reading a rejection as approval.
+ */
+function verdictIsEngagement(action: ManagerVerdict): boolean {
+  return action === 'known_problem' || action === 'resolved';
+}
 
 /** Stored row → wire shape. Everything the card renders, nothing it does not. */
 function toQueueFinding(f: Finding, phrased: { en: string | null; es: string | null } | undefined): QueueFinding {
@@ -66,7 +110,10 @@ function toQueueFinding(f: Finding, phrased: { en: string | null; es: string | n
     phrasedEn: phrased?.en ?? null,
     phrasedEs: phrased?.es ?? null,
     severity: f.severity,
-    disposition: f.disposition,
+    // The judge's verdict when it has one, the detector's default otherwise.
+    // Which buttons a card offers — and whether it is a card at all — follows
+    // the decision made WITH this hotel's numbers in front of it.
+    disposition: effectiveDisposition(f),
     status: f.status,
     magnitude: f.magnitude,
     price: f.price,
@@ -107,14 +154,31 @@ export async function GET(req: NextRequest) {
     // screen honours them by not asking again.
     const rows = await listFindings(propertyId, { statuses: ['open', 'updated'], limit: 200 });
 
-    // `ask` is a question and belongs to the drip-question card, not here;
-    // `drop` is the judge's "not worth surfacing", kept for audit, never shown.
-    const showable = rows.filter(isCardRenderable);
+    // `ask` is a question and belongs to the drip-question card, not here
+    // (src/lib/findings/ask-drip.ts routes it there); `drop` is the judge's
+    // "not worth surfacing", kept for audit, never shown. Judged FIRST, because
+    // both verdicts are ones only the judge ever reaches — filtering on the
+    // detector's default would render every ask finding as a card as well as a
+    // question.
+    const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f) }));
 
     const phrasing = await judgedPhrasing(propertyId, showable.map((f) => f.id));
     const findings = showable.map((f) => toQueueFinding(f, phrasing.get(f.id)));
 
     const run = await latestRunFacts(propertyId);
+
+    // ── what was actually SHOWN ─────────────────────────────────────────────
+    // Recorded here, on the server, through the SAME pure functions the screen
+    // ranks and folds with — so "shown" means "was above the fold on the
+    // manager's screen", not "was in a payload". A card behind "show all" has
+    // not been shown, and counting it would let a detector be demoted for cards
+    // nobody ever laid eyes on.
+    //
+    // A write on a GET is deliberate, and it is why this route is
+    // force-dynamic. It is also idempotent per hotel-day (store.ts holds that
+    // guarantee), so a refresh loop cannot inflate it.
+    const onScreen = splitByCap(rankFindings(findings), DAILY_CARD_CAP).prominent;
+    await recordFindingsShown(propertyId, onScreen.map((f) => f.id));
 
     return ok({ findings, run, cap: DAILY_CARD_CAP }, { requestId });
   } catch (e) {
@@ -160,7 +224,7 @@ export async function POST(req: NextRequest) {
     return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const actionV = validateEnum<ManagerVerdict>(body.action, MANAGER_VERDICTS, 'action');
+  const actionV = validateEnum<PostAction>(body.action, POST_ACTIONS, 'action');
   if (actionV.error) {
     return err(actionV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
@@ -186,10 +250,28 @@ export async function POST(req: NextRequest) {
   }
 
   try {
+    // Engagement, not a decision: the card stays exactly where it is and only
+    // the counters move.
+    if (isEngagement(actionV.value!)) {
+      const seen = await recordFindingActed(propertyId, idV.value!);
+      if (!seen) {
+        return err('No such finding', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      }
+      return ok({ status: 'unchanged' }, { requestId });
+    }
+
+    const verdict = actionV.value! as ManagerVerdict;
+    if (verdictIsEngagement(verdict)) {
+      // Before the status change, because a resolved card is still the card the
+      // manager engaged with — and after it the row may no longer be one this
+      // hotel's queue reads back.
+      await recordFindingActed(propertyId, idV.value!);
+    }
+
     const updated = await setFindingStatus(
       propertyId,
       idV.value!,
-      actionV.value! as FindingStatus,
+      verdict as FindingStatus,
       caller.accountId,
     );
     // Null means the hotel filter matched nothing: either the id is bogus or it

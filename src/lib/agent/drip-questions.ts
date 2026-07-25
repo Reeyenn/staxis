@@ -41,6 +41,8 @@ import { scopedDb } from './scoped-db';
 import { gatherOperationalSignals, type OperationalSignal } from './operational-signals';
 import { redactMemoryContent } from './memory-redact';
 import { storeMemory } from '@/lib/db/agent-memory';
+import { findingAskCandidates } from '@/lib/findings/ask-drip';
+import { setFindingStatus } from '@/lib/findings/store';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 import { log } from '@/lib/log';
 
@@ -59,21 +61,40 @@ export interface AskRecord {
   askCount: number;
 }
 
+/**
+ * Where a question came from. The five signal categories, plus `finding` for a
+ * question the findings judge produced (0362) — which is a different KIND of
+ * question, not one of the five wearing the closest available label.
+ */
+export type DripQuestionCategory = OperationalSignal['category'] | 'finding';
+
 /** What the manager is shown. Both languages are carried, never translated at
  *  render time — see `phraseSignal`. */
 export interface DripQuestion {
   topic: string;
-  category: OperationalSignal['category'];
+  category: DripQuestionCategory;
   en: string;
   es: string;
 }
 
-interface PhrasedSignal {
-  signal: OperationalSignal;
+/**
+ * One askable question, whatever produced it.
+ *
+ * The selection rules below — one per session, never twice, gone for the day
+ * when ignored, given up on after three asks — operate on THIS shape and know
+ * nothing about where a candidate came from. That is what lets the findings
+ * layer add a source without adding a second set of rules to keep in sync.
+ */
+export interface QuestionCandidate {
+  /** Stable identity. The ledger's "never twice" is keyed on it. */
+  topic: string;
+  category: DripQuestionCategory;
   en: string;
   es: string;
   /** The sentence a "yes" stores into agent_memory. */
   fact: string;
+  /** The findings row an answer resolves, when this came from one. */
+  findingId?: string | null;
 }
 
 // ─── Sanitising the hotel's own data ─────────────────────────────────────────
@@ -128,7 +149,7 @@ function usefulDetail(raw: string | null): string | null {
  * Spanish path is Spanish by construction. There is no render-time lookup that
  * could silently fall back to English.
  */
-export function phraseSignal(signal: OperationalSignal): PhrasedSignal | null {
+export function phraseSignal(signal: OperationalSignal): QuestionCandidate | null {
   const target = safeLabel(signal.targetValue, 16);
   if (!target || !signal.targetKind) return null;
   const n = signal.count;
@@ -191,7 +212,14 @@ export function phraseSignal(signal: OperationalSignal): PhrasedSignal | null {
   const safeFact = redactMemoryContent(fact.slice(0, 500)).content.trim();
   if (!safeFact) return null;
 
-  return { signal, en: en.slice(0, 300), es: es.slice(0, 300), fact: safeFact };
+  return {
+    topic: signal.topic,
+    category: signal.category,
+    en: en.slice(0, 300),
+    es: es.slice(0, 300),
+    fact: safeFact,
+    findingId: null,
+  };
 }
 
 // ─── Selection (pure — this is the never-be-obnoxious policy) ────────────────
@@ -199,6 +227,18 @@ export function phraseSignal(signal: OperationalSignal): PhrasedSignal | null {
 export interface SelectQuestionInput {
   /** Detected patterns, already ranked by `rankAndCapSignals`. */
   signals: OperationalSignal[];
+  /**
+   * Already-phrased candidates from another source — today, findings the judge
+   * sorted as `ask` (src/lib/findings/ask-drip.ts).
+   *
+   * They are considered FIRST, and the reason is a judgement about which
+   * question is worth a manager's single tap. A signal question is speculative
+   * ("we noticed a pattern; is it real?"). A findings `ask` is the opposite: a
+   * check already established that something is off and the judge concluded the
+   * data was too thin to say what to DO about it. Asking is not the fallback
+   * there, it is the correct response.
+   */
+  extra?: QuestionCandidate[];
   /** Everything this hotel has ever been asked. */
   records: AskRecord[];
   /** Topics whose memory row a human deactivated. They said their piece by
@@ -225,19 +265,28 @@ export interface SelectQuestionInput {
  * arrive pre-ranked (attention before info, then by count), so "first" means
  * "the one most worth a manager's single tap".
  */
-export function selectQuestion(input: SelectQuestionInput): PhrasedSignal | null {
+export function selectQuestion(input: SelectQuestionInput): QuestionCandidate | null {
   const maxAsks = input.maxAsks ?? MAX_ASKS_PER_TOPIC;
   const byTopic = new Map(input.records.map((r) => [r.topic, r]));
   const deactivated = new Set(input.deactivatedTopics);
 
+  const eligible = (topic: string): boolean => {
+    if (deactivated.has(topic)) return false;
+    const record = byTopic.get(topic);
+    if (!record) return true;
+    if (record.status !== 'asked') return false; // answered or declined — never again
+    if (record.lastAskedOn === input.today) return false; // already asked today
+    if (record.askCount >= maxAsks) return false; // asked enough; stop for good
+    return true;
+  };
+
+  // Candidates from elsewhere are already phrased and go first (see `extra`).
+  for (const candidate of input.extra ?? []) {
+    if (eligible(candidate.topic)) return candidate;
+  }
+
   for (const signal of input.signals) {
-    if (deactivated.has(signal.topic)) continue;
-    const record = byTopic.get(signal.topic);
-    if (record) {
-      if (record.status !== 'asked') continue; // answered or declined — never again
-      if (record.lastAskedOn === input.today) continue; // already asked today
-      if (record.askCount >= maxAsks) continue; // asked enough; stop for good
-    }
+    if (!eligible(signal.topic)) continue;
     const phrased = phraseSignal(signal);
     if (phrased) return phrased;
   }
@@ -275,8 +324,16 @@ export async function getDripQuestion(
   propertyId: string,
   now: Date = new Date(),
 ): Promise<DripQuestion | null> {
-  const signals = await gatherOperationalSignals(propertyId);
-  if (signals.length === 0) return null; // day zero — never invent a question
+  const [signals, extra] = await Promise.all([
+    gatherOperationalSignals(propertyId),
+    // Findings the judge decided were questions rather than instructions. They
+    // arrive already phrased and already guard-checked; this module's job is
+    // only to apply the same never-be-obnoxious rules to them.
+    findingAskCandidates(propertyId),
+  ]);
+  // Day zero — a hotel with neither a pattern nor a finding is never asked
+  // anything invented to fill the space.
+  if (signals.length === 0 && extra.length === 0) return null;
 
   const db = scopedDb(propertyId);
 
@@ -308,13 +365,14 @@ export async function getDripQuestion(
   const today = await hotelToday(db, now);
   const chosen = selectQuestion({
     signals,
+    extra,
     records,
     deactivatedTopics: ((memoryRes.data ?? []) as Array<{ topic: string }>).map((r) => r.topic),
     today,
   });
   if (!chosen) return null;
 
-  const existing = records.find((r) => r.topic === chosen.signal.topic);
+  const existing = records.find((r) => r.topic === chosen.topic);
   const nowIso = now.toISOString();
   const recorded = existing
     ? await db
@@ -327,19 +385,21 @@ export async function getDripQuestion(
           question_en: chosen.en,
           question_es: chosen.es,
           fact_content: chosen.fact,
+          finding_id: chosen.findingId ?? null,
         })
-        .eq('topic', chosen.signal.topic)
+        .eq('topic', chosen.topic)
         // Guard against a concurrent tab answering between the read and here.
         .eq('status', 'asked')
         .select('id')
     : await db
         .from('agent_knowledge_questions')
         .insert({
-          topic: chosen.signal.topic,
-          category: chosen.signal.category,
+          topic: chosen.topic,
+          category: chosen.category,
           question_en: chosen.en,
           question_es: chosen.es,
           fact_content: chosen.fact,
+          finding_id: chosen.findingId ?? null,
           status: 'asked',
           ask_count: 1,
           first_asked_at: nowIso,
@@ -361,8 +421,8 @@ export async function getDripQuestion(
   }
 
   return {
-    topic: chosen.signal.topic,
-    category: chosen.signal.category,
+    topic: chosen.topic,
+    category: chosen.category,
     en: chosen.en,
     es: chosen.es,
   };
@@ -403,14 +463,22 @@ export async function answerDripQuestion(
 ): Promise<AnswerDripQuestionResult> {
   const db = scopedDb(input.propertyId);
 
+  // `select('*')` rather than a column list, on purpose. `finding_id` arrives
+  // in migration 0362 and migrations are applied by hand: naming a column that
+  // is not there yet makes PostgREST error the whole query, this function reads
+  // the error as "no such question", and the drip card silently dies for every
+  // hotel with a green build and a green suite. That has happened three times
+  // in this codebase; asking for the whole row cannot do it a fourth.
   const { data, error } = await db
     .from('agent_knowledge_questions')
-    .select('id, topic, fact_content, status')
+    .select('*')
     .eq('topic', input.topic)
     .maybeSingle();
   if (error) return { ok: false, recorded: false, error: error.message };
 
-  const row = data as { id: string; topic: string; fact_content: string; status: string } | null;
+  const row = data as
+    | { id: string; topic: string; fact_content: string; status: string; finding_id?: string | null }
+    | null;
   if (!row || row.status !== 'asked') return { ok: true, recorded: false };
 
   let memoryId: string | null = null;
@@ -450,10 +518,40 @@ export async function answerDripQuestion(
     .eq('status', 'asked')
     .select('id');
   if (verdict.error) return { ok: false, recorded: false, error: verdict.error.message };
+  const recorded = (verdict.data ?? []).length > 0;
+
+  // ── the finding this question came from, if any ─────────────────────────
+  // Answering IS the verdict on the finding, so the card must not still be
+  // sitting in the queue tomorrow asking the same thing in a different shape.
+  //
+  //   yes → known_problem. The manager confirmed it and armed the silencer at
+  //         today's size; escalation is measured from there, exactly as if they
+  //         had tapped "known problem" on the card itself.
+  //   no  → resolved. They looked and it is not a problem. The decline is
+  //         separately recorded in the question ledger above, which is what
+  //         stops it ever being asked again.
+  //
+  // Best-effort: the answer is already recorded and the fact already stored, so
+  // a failure here costs a stale card, not the manager's decision.
+  if (recorded && row.finding_id) {
+    try {
+      await setFindingStatus(
+        input.propertyId,
+        row.finding_id,
+        input.answer === 'yes' ? 'known_problem' : 'resolved',
+        input.actor.accountId,
+      );
+    } catch (e) {
+      log.warn('[drip-questions] answered, but the finding it came from did not move', {
+        propertyId: input.propertyId,
+        err: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
 
   return {
     ok: true,
-    recorded: (verdict.data ?? []).length > 0,
+    recorded,
     storedFact: input.answer === 'yes' && memoryId !== null,
   };
 }

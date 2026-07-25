@@ -32,6 +32,12 @@ import type { MessagesClient } from '@/lib/agent/llm';
 
 import { judgeFindingsForProperty } from './judge';
 
+import {
+  DORMANT,
+  applyDemotionPass,
+  demoteDisposition,
+  type DetectorState,
+} from './demotion';
 import { allDetectors, requiredFeeds } from './registry';
 import { loadFeeds, resolveLoadEnv } from './feeds';
 import {
@@ -56,6 +62,7 @@ import type {
   DetectorContext,
   FeedId,
   FeedOutcome,
+  FindingDisposition,
   FindingRunSummary,
 } from './types';
 import { isFeedFailure } from './types';
@@ -80,6 +87,13 @@ export interface FindingsRunOptions {
   skipJudge?: boolean;
   /** Scripted model for the judge. Production never passes it. */
   judgeModelClient?: MessagesClient;
+  /**
+   * Skip the self-demotion pass: no state is read, no state is written, and
+   * every detector runs at its declared volume. Detector-focused tests and
+   * one-off operator re-runs use it — a hand-kicked run should not be able to
+   * rest a check by accident.
+   */
+  skipDemotion?: boolean;
 }
 
 /** Why a detector said nothing. Skipped ≠ found nothing. */
@@ -128,6 +142,7 @@ export async function runFindingsForProperty(
     detectorsChecked: 0,
     detectorsSkipped: 0,
     detectorsFailed: 0,
+    detectorsDormant: 0,
     findingsOpened: 0,
     findingsUpdated: 0,
     findingsSuppressed: 0,
@@ -136,16 +151,44 @@ export async function runFindingsForProperty(
     durationMs: 0,
     errors: [],
     skipped: [],
+    dormant: [],
+    demotions: [],
     judge: { mode: 'skipped', findings: 0, costUsd: 0, guardRejections: 0 },
   };
 
   const env = await resolveLoadEnv(propertyId, now);
   summary.runDate = env.businessDate;
 
-  const feeds = await loadFeeds(requiredFeeds(detectors), env);
+  // ── SELF-DEMOTION, BEFORE ANYTHING ELSE ─────────────────────────────────
+  // A check this hotel has ignored into rest should not cost a feed read
+  // tonight, and a check that just stepped down should say tonight's cards
+  // quietly rather than getting one more loud night first. Never throws (see
+  // demotion.ts) — on any failure every detector runs at its declared volume,
+  // which is the safe direction.
+  let states = new Map<string, DetectorState>();
+  if (!dryRun && !opts.skipDemotion) {
+    const pass = await applyDemotionPass(propertyId, detectors, now);
+    states = pass.states;
+    summary.demotions = pass.transitions.map((t) => ({
+      detectorId: t.detectorId,
+      from: String(t.from),
+      to: String(t.to),
+      reason: t.reason,
+    }));
+  }
+
+  const awake = detectors.filter((detector) => {
+    const state = states.get(detector.declaration.id);
+    if (!state?.dormant) return true;
+    summary.detectorsDormant += 1;
+    summary.dormant.push({ detectorId: detector.declaration.id, since: state.dormantSince });
+    return false;
+  });
+
+  const feeds = await loadFeeds(requiredFeeds(awake), env);
   const skips: SkipReason[] = [];
 
-  for (const detector of detectors) {
+  for (const detector of awake) {
     const declaration = detector.declaration;
 
     const unmet = unmetRequirement(detector, feeds);
@@ -218,7 +261,14 @@ export async function runFindingsForProperty(
             draft.weakestInputAgeDays ?? feedWeakestAge(feeds, declaration.inputs),
         },
         receiptQueryId: declaration.receiptQueryId,
-        disposition: draft.disposition ?? declaration.defaultDisposition,
+        // The declared volume, turned down by however many rungs THIS hotel's
+        // own indifference has bought. Applied to whichever disposition is in
+        // play — a detector that overrode its default per finding is no more
+        // exempt from being ignored than one that did not.
+        disposition: quietenedDisposition(
+          draft.disposition ?? declaration.defaultDisposition,
+          states.get(declaration.id)?.stepsDown ?? 0,
+        ),
         now,
       };
 
@@ -309,6 +359,23 @@ export async function runFindingsForProperty(
   return summary;
 }
 
+/**
+ * The disposition after demotion, guaranteed to be storable.
+ *
+ * `demoteDisposition` can land on DORMANT, which is a state, not a disposition
+ * — the schema has no such value and a run that reached here with a dormant
+ * detector would be a bug in the filter above. Falling back to 'fyi' rather
+ * than throwing means the worst case is a card that is quieter than intended,
+ * not a night with no findings.
+ */
+function quietenedDisposition(
+  base: FindingDisposition,
+  stepsDown: number,
+): FindingDisposition {
+  const quiet = demoteDisposition(base, stepsDown);
+  return quiet === DORMANT ? 'fyi' : quiet;
+}
+
 /** The oldest as-of across the feeds a detector declared. */
 function feedAsOf(feeds: Partial<Record<FeedId, FeedOutcome>>, inputs: readonly FeedId[]): Date | null {
   let oldest: Date | null = null;
@@ -371,6 +438,7 @@ export async function runFindingsForAllProperties(
           detectorsChecked: 0,
           detectorsSkipped: 0,
           detectorsFailed: 1,
+          detectorsDormant: 0,
           findingsOpened: 0,
           findingsUpdated: 0,
           findingsSuppressed: 0,
@@ -385,6 +453,8 @@ export async function runFindingsForAllProperties(
             },
           ],
           skipped: [],
+          dormant: [],
+          demotions: [],
           judge: { mode: 'skipped', findings: 0, costUsd: 0, guardRejections: 0 },
         } satisfies FindingRunSummary),
   );
