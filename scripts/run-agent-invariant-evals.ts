@@ -18,9 +18,13 @@
 // Each scenario is self-contained and resilient to other scenarios
 // running before/after.
 
-import 'dotenv/config';
+// See `./load-env` for why this replaced `dotenv/config`. Nothing imported here
+// reads env at module load, so a plain top-level call is enough.
+import { loadEnv } from './load-env';
 import { createClient } from '@supabase/supabase-js';
 import { Client } from 'pg';
+
+loadEnv();
 
 interface Scenario {
   name: string;

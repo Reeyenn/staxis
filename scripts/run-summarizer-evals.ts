@@ -14,9 +14,13 @@
 // ~$0.004 per full run. Worth it for catching regressions in the
 // summary prompt or the model.
 
-import 'dotenv/config';
+// See `./load-env` for why this replaced `dotenv/config`. The summarizer runner
+// is imported inside main() so the env file is loaded before supabase-admin —
+// which throws at module load on missing env — is ever pulled in.
+import { loadEnv } from './load-env';
 import { createClient } from '@supabase/supabase-js';
-import { runSummarizerEvals } from '../src/lib/agent/evals/summarizer/runner';
+
+loadEnv();
 
 async function main(): Promise<void> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -25,6 +29,7 @@ async function main(): Promise<void> {
     console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env.local');
     process.exit(1);
   }
+  const { runSummarizerEvals } = await import('../src/lib/agent/evals/summarizer/runner');
   const supabase = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 
   const propertyId = process.env.STAXIS_EVAL_PROPERTY_ID;

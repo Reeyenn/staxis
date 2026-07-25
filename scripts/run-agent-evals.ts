@@ -10,9 +10,15 @@
 // default in the runner (see runner.ts dryRun), but property choice should
 // also be explicit.
 
-import 'dotenv/config';
+// `./load-env` reads `.env.local` (see that file for why `dotenv/config` was
+// wrong). It must run before anything under src/lib is loaded — supabase-admin
+// THROWS at module load when its env vars are missing, by design. Imports are
+// hoisted, so the eval runner is pulled in dynamically inside main() instead of
+// at the top: that ordering holds whether tsx loads this as CJS or ESM.
+import { loadEnv } from './load-env';
 import { createClient } from '@supabase/supabase-js';
-import { runAllEvals } from '../src/lib/agent/evals/runner';
+
+loadEnv();
 
 async function main(): Promise<void> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -21,6 +27,7 @@ async function main(): Promise<void> {
     console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env.local');
     process.exit(1);
   }
+  const { runAllEvals } = await import('../src/lib/agent/evals/runner');
   const supabase = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
 
   const propertyId = process.env.STAXIS_EVAL_PROPERTY_ID;
