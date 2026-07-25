@@ -11,10 +11,14 @@
 //   2. role addendum        — role-specific behaviour.
 //   3. hotel snapshot block — appended at runtime by buildSystemPrompt().
 
+import { createHash } from 'node:crypto';
+
 import type { AppRole } from '@/lib/roles';
+import { captureException } from '@/lib/sentry';
 import type { HotelSnapshot } from './context';
 import { formatSnapshotForPrompt } from './context';
-import { resolvePrompts } from './prompts-store';
+import { familyContentIsSafe } from './prompt-tiers';
+import { resolvePrompts, type ResolvedFamilyPrompt } from './prompts-store';
 import type { VoiceMode } from './tools';
 
 // Bump on any non-trivial edit to the constants below. The actual
@@ -245,8 +249,156 @@ export interface SystemPromptBlocks {
   /** The effective version of the prompts used for this turn. Persisted
    *  to agent_messages.prompt_version so we can correlate behaviour
    *  to a specific prompt rev. May be a composite when base + role
-   *  versions differ (e.g. "base:v2+role:v3"). */
+   *  versions differ (e.g. "base:v2+role:v3").
+   *
+   *  INV-TIER-6: this is `stableStamp` PLUS the per-turn segments (which
+   *  family we looked for, what memory was injected). It is NEVER printed. */
   versionLabel: string;
+  /** The version stamp actually PRINTED into the stable block. Constant for
+   *  the life of a conversation — anything per-turn in here breaks Anthropic's
+   *  prompt cache on every single turn. */
+  stableStamp: string;
+}
+
+// ─── Tier placement, as a type ────────────────────────────────────────────
+// The dominant risk in this whole design is putting a stable tier into the
+// per-turn block (or vice versa): nothing visibly breaks, the copilot still
+// answers correctly, and the input-token bill silently multiplies because the
+// cached prefix changes every turn. Two disjoint unions mean a contributor who
+// moves 'pms_family' into the dynamic array gets a TypeScript error instead —
+// and `npx tsc --noEmit` is already in the gate.
+
+/** Segments of the CACHED block, in their fixed assembly order. */
+type StableTier =
+  | 'global_base'
+  | 'global_role'
+  | 'voice_approval'
+  | 'voice_mode'
+  | 'inventory_routing'
+  | 'data_freshness'
+  | 'pms_family'
+  | 'version_line';
+
+/** Segments of the UNCACHED per-turn block, in their fixed assembly order. */
+type DynamicTier = 'hotel_snapshot' | 'hotel_memory' | 'room_hint';
+
+/**
+ * FIXED ASSEMBLY ORDER. This IS the conflict rule for facts: later text wins,
+ * so the family addendum sits after the global prompts (family fact beats
+ * global fact), and hotel facts are not in the prompt at all — they arrive via
+ * search_knowledge and the <staxis-memory> block in the DYNAMIC half, which
+ * the model reads after the entire stable block (hotel fact beats family fact).
+ */
+const STABLE_TIER_ORDER: readonly StableTier[] = [
+  'global_base',
+  'global_role',
+  'voice_approval',
+  'voice_mode',
+  'inventory_routing',
+  'data_freshness',
+  'pms_family',
+  'version_line',
+];
+
+const DYNAMIC_TIER_ORDER: readonly DynamicTier[] = [
+  'hotel_snapshot',
+  'hotel_memory',
+  'room_hint',
+];
+
+interface Segment<T extends string> {
+  tier: T;
+  /** Lines contributed by this tier. A leading '' produces the blank line
+   *  that separates it from the previous tier. */
+  lines: string[];
+}
+
+function assembleBlock<T extends string>(
+  segments: Segment<T>[],
+  order: readonly T[],
+  blockName: string,
+): string {
+  let lastIndex = -1;
+  for (const seg of segments) {
+    const idx = order.indexOf(seg.tier);
+    if (idx <= lastIndex) {
+      // Duplicated or out-of-order tier. Order is load-bearing (it is the
+      // conflict rule), so this is a bug, not a style issue.
+      throw new Error(
+        `[prompts] ${blockName} block tier "${seg.tier}" is duplicated or out of order`,
+      );
+    }
+    lastIndex = idx;
+  }
+  return segments.flatMap(s => s.lines).join('\n');
+}
+
+// ─── Version stamp ────────────────────────────────────────────────────────
+
+/** Per-turn memory receipt: how many facts were injected and a digest of the
+ *  exact injected string. Lives in `versionLabel` only — printing it would put
+ *  a per-turn value in the cached block. */
+function memorySegment(memoryBlock: string | undefined): string {
+  if (!memoryBlock || memoryBlock.trim().length === 0) return 'mem:0';
+  const count = (memoryBlock.match(/<staxis-memory\s/g) ?? []).length;
+  const digest = createHash('sha256').update(memoryBlock).digest('hex').slice(0, 8);
+  return `mem:${count}/${digest}`;
+}
+
+export interface ParsedPromptStamp {
+  /** Base prompt version, or null when the stamp predates the split form. */
+  base: string | null;
+  /** Role prompt version. Equals `base` for the collapsed legacy form. */
+  role: string | null;
+  /** null = no family tier for this hotel. `version: null` = the hotel HAS a
+   *  family but no family row was active ("we looked and found nothing"). */
+  family: { pmsFamily: string; version: string | null } | null;
+  /** Code-owned rule versions folded into the stable block. */
+  codeRules: string[];
+  /** null on legacy stamps written before the memory receipt existed. */
+  memory: { count: number; digest: string | null } | null;
+}
+
+/**
+ * Read a stamp written by buildSystemPrompt. Tolerant by design: the 53
+ * agent_messages rows written before this format existed keep their old
+ * strings ('2026.06.03-v7', 'base:x+role:y+inventory-accounting-v1'), and a
+ * partial parse is far more useful than a throw when someone is asking "why
+ * did it say that" about an old turn.
+ */
+export function parsePromptStamp(stamp: string): ParsedPromptStamp {
+  const out: ParsedPromptStamp = {
+    base: null, role: null, family: null, codeRules: [], memory: null,
+  };
+  for (const raw of stamp.split('+')) {
+    const seg = raw.trim();
+    if (!seg) continue;
+    if (seg.startsWith('base:')) {
+      out.base = seg.slice('base:'.length);
+    } else if (seg.startsWith('role:')) {
+      out.role = seg.slice('role:'.length);
+    } else if (seg.startsWith('fam:')) {
+      const value = seg.slice('fam:'.length);
+      const dot = value.indexOf('.');
+      // Family keys never contain '.', versions always do — split on the first.
+      const pmsFamily = dot === -1 ? value : value.slice(0, dot);
+      const version = dot === -1 ? null : value.slice(dot + 1);
+      out.family = { pmsFamily, version: version === 'none' ? null : version };
+    } else if (seg.startsWith('mem:')) {
+      const value = seg.slice('mem:'.length);
+      const [countRaw, digest] = value.split('/');
+      const count = Number.parseInt(countRaw, 10);
+      out.memory = { count: Number.isFinite(count) ? count : 0, digest: digest ?? null };
+    } else if (out.base === null && out.role === null && out.codeRules.length === 0) {
+      // Legacy collapsed form: the leading bare segment is the version both
+      // base and role were on.
+      out.base = seg;
+      out.role = seg;
+    } else {
+      out.codeRules.push(seg);
+    }
+  }
+  return out;
 }
 
 export interface VoiceModeContext {
@@ -265,17 +417,52 @@ export async function buildSystemPrompt(
    *  Appended to the DYNAMIC block (never the cached stable block). '' = none. */
   memoryBlock?: string,
 ): Promise<SystemPromptBlocks> {
-  const { base, role: rolePrompt, versionLabel } = await resolvePrompts(role, conversationId);
+  // A3 tiers: the hotel's PMS family selects the shared family addendum. It
+  // rides in on the snapshot the caller already built — no extra query, no
+  // signature change at any of the three call sites.
+  const pmsFamily = snapshot.property.pmsFamily ?? null;
+  const { base, role: rolePrompt, family, versionLabel } =
+    await resolvePrompts(role, conversationId, pmsFamily);
   const hasInventoryAccountingAccess = role === 'admin'
     || role === 'owner'
     || role === 'general_manager';
+
+  // Drop family content that violates the cached-prompt invariants even if the
+  // DB handed it to us (INV-TIER-7 backstop). Sentry gets the row identity, not
+  // the content — the content is the untrusted part.
+  const familyToRender: ResolvedFamilyPrompt | null =
+    family && familyContentIsSafe(family.content) ? family : null;
+  if (family && !familyToRender) {
+    captureException(
+      new Error('[prompts] family prompt row rejected: forged marker or over length cap'),
+      { pmsFamily: family.pmsFamily, promptVersion: family.version, contentLength: family.content.length },
+    );
+  }
+
   // Every code-owned rule folded into the stable block also folds its version
-  // into the label persisted on agent_messages.prompt_version, so a behaviour
-  // change is auditable after the fact.
-  const versionParts = [versionLabel];
-  if (hasInventoryAccountingAccess) versionParts.push(INVENTORY_ACCOUNTING_ROUTING_VERSION);
-  versionParts.push(DATA_FRESHNESS_VERSION);
-  const effectiveVersionLabel = versionParts.join('+');
+  // into the stamp, so a behaviour change is auditable after the fact.
+  //
+  // INV-TIER-6 — TWO stamps, deliberately:
+  //   stableStamp  is PRINTED. It must be constant for the life of a
+  //                conversation; a per-turn segment in here re-writes the
+  //                cached prefix on every single turn and silently multiplies
+  //                the input-token bill.
+  //   versionLabel is PERSISTED to agent_messages.prompt_version and never
+  //                printed, so it can carry the per-turn receipt.
+  const stampParts = [versionLabel];
+  if (hasInventoryAccountingAccess) stampParts.push(INVENTORY_ACCOUNTING_ROUTING_VERSION);
+  stampParts.push(DATA_FRESHNESS_VERSION);
+  if (familyToRender) stampParts.push(`fam:${familyToRender.pmsFamily}.${familyToRender.version}`);
+  const stableStamp = stampParts.join('+');
+
+  const receiptParts = [stableStamp];
+  // "We looked for a family addendum and there wasn't one" — worth recording
+  // while the slot is empty, but it is NOT printed: adding it to the stable
+  // block would change the cached prefix for the live hotel today, for no
+  // benefit to the model.
+  if (!familyToRender && pmsFamily) receiptParts.push(`fam:${pmsFamily}.none`);
+  receiptParts.push(memorySegment(memoryBlock));
+  const persistedVersionLabel = receiptParts.join('+');
 
   // Feature #11: when a voice mode addendum exists, glue it onto the role
   // prompt. The addendum is part of the STABLE block — it doesn't change
@@ -285,29 +472,35 @@ export async function buildSystemPrompt(
   const modeAddendum = voiceCtx?.mode ? maybeVoiceModeAddendum(voiceCtx.mode) : null;
   const roomHint = voiceCtx?.currentRoomNumber?.trim() || null;
 
-  const stableParts = [
-    base.content,
-    '',
-    '─── Role context ───',
-    rolePrompt.content,
+  const stable: Segment<StableTier>[] = [
+    { tier: 'global_base', lines: [base.content] },
+    { tier: 'global_role', lines: ['', '─── Role context ───', rolePrompt.content] },
   ];
   // Voice surface: replace the chat "tap a card" approval framing with the
   // spoken-confirmation flow. Presence of voiceCtx is how we know this is a
   // voice turn (chat call sites pass voiceCtx = undefined). Part of the STABLE
   // block — it's identical across a voice session's turns, so it stays cached.
   if (voiceCtx) {
-    stableParts.push('', VOICE_APPROVAL_NOTE);
+    stable.push({ tier: 'voice_approval', lines: ['', VOICE_APPROVAL_NOTE] });
   }
   if (modeAddendum) {
-    stableParts.push('', modeAddendum);
+    stable.push({ tier: 'voice_mode', lines: ['', modeAddendum] });
   }
   if (hasInventoryAccountingAccess) {
-    stableParts.push('', INVENTORY_ACCOUNTING_ROUTING_PROMPT);
+    stable.push({ tier: 'inventory_routing', lines: ['', INVENTORY_ACCOUNTING_ROUTING_PROMPT] });
   }
   // Unconditional: every role can be handed a PMS-derived number, so every
   // role needs the data-age rule. Constant per deploy ⇒ safe in the cached block.
-  stableParts.push('', DATA_FRESHNESS_PROMPT);
-  stableParts.push('', `Prompt version: ${effectiveVersionLabel}`);
+  stable.push({ tier: 'data_freshness', lines: ['', DATA_FRESHNESS_PROMPT] });
+  if (familyToRender) {
+    // The header is supplied HERE, never by the row — which is what the
+    // '───' forgery CHECK in migration 0338 protects.
+    stable.push({
+      tier: 'pms_family',
+      lines: ['', `─── PMS context: ${familyToRender.pmsFamily} ───`, familyToRender.content],
+    });
+  }
+  stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });
 
   // The snapshot (including its "PMS data as of" line) is the only place a
   // per-turn VALUE may appear. Anything added here is re-sent uncached.
@@ -315,26 +508,29 @@ export async function buildSystemPrompt(
   // 2026-07-24: the old "suggest they refresh the page — it's rebuilt every
   // turn from live data" line was deleted. Both halves were false: the numbers
   // come from scheduled PMS reports, and refreshing fetches nothing new.
-  const dynamicParts = [
-    '─── Current hotel snapshot ───',
-    formatSnapshotForPrompt(snapshot),
+  const dynamic: Segment<DynamicTier>[] = [
+    { tier: 'hotel_snapshot', lines: ['─── Current hotel snapshot ───', formatSnapshotForPrompt(snapshot)] },
   ];
   // Long-term memory (migration 0256). DYNAMIC block only — it changes as the
   // hotel teaches the copilot, and must never poison the cached stable prefix.
   if (memoryBlock && memoryBlock.trim().length > 0) {
-    dynamicParts.push('', memoryBlock);
+    dynamic.push({ tier: 'hotel_memory', lines: ['', memoryBlock] });
   }
   if (roomHint) {
-    dynamicParts.push(
-      '',
-      `─── UI room hint ───`,
-      `The user opened this voice session from room ${roomHint}'s card. When they don't restate the room number, assume they mean ${roomHint}.`,
-    );
+    dynamic.push({
+      tier: 'room_hint',
+      lines: [
+        '',
+        `─── UI room hint ───`,
+        `The user opened this voice session from room ${roomHint}'s card. When they don't restate the room number, assume they mean ${roomHint}.`,
+      ],
+    });
   }
 
   return {
-    stable: stableParts.join('\n'),
-    dynamic: dynamicParts.join('\n'),
-    versionLabel: effectiveVersionLabel,
+    stable: assembleBlock(stable, STABLE_TIER_ORDER, 'stable'),
+    dynamic: assembleBlock(dynamic, DYNAMIC_TIER_ORDER, 'dynamic'),
+    versionLabel: persistedVersionLabel,
+    stableStamp,
   };
 }

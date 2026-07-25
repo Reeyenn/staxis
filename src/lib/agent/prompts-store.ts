@@ -31,21 +31,34 @@
 //     prompts.ts. Chat keeps working under a Supabase outage.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { env } from '@/lib/env';
 import type { AppRole } from '@/lib/roles';
 import { PROMPT_VERSION, FALLBACK_PROMPTS } from './prompts';
 
-export type PromptRole = 'base' | 'housekeeping' | 'general_manager' | 'owner' | 'admin' | 'summarizer';
+export type PromptRole =
+  | 'base'
+  | 'housekeeping'
+  | 'general_manager'
+  | 'owner'
+  | 'admin'
+  | 'summarizer'
+  | 'family';
 
 /** Chat-facing prompt roles. Excludes 'summarizer' because that one is
  *  consumed by the background summarizer cron, never composed with a
- *  base prompt for a user turn. resolvePrompts() — the user-facing
- *  composer — takes ChatPromptRole only. */
-type ChatPromptRole = Exclude<PromptRole, 'summarizer'>;
+ *  base prompt for a user turn, and 'family' because the PMS-family row is
+ *  an ADDENDUM keyed by pms_family — never a role a user can have.
+ *  resolvePrompts() — the user-facing composer — takes ChatPromptRole only. */
+type ChatPromptRole = Exclude<PromptRole, 'summarizer' | 'family'>;
 
 interface CachedPrompt {
   role: PromptRole;
   version: string;
   content: string;
+  /** A3 tiers: NULL for every global row; the PMS family key for role='family'
+   *  rows. DB CHECK agent_prompts_tier_coherence_ck (0338) guarantees the two
+   *  fields agree, so this is never half-specified. */
+  pmsFamily: string | null;
 }
 
 interface CacheEntry {
@@ -57,21 +70,38 @@ const CACHE_TTL_MS = 30_000;
 let cache: CacheEntry | null = null;
 
 async function loadFromDb(): Promise<CachedPrompt[]> {
-  const { data, error } = await supabaseAdmin
+  // A3: the active filter moved server-side. It used to pull the table's whole
+  // history and filter in JS — fine at 7 rows, but every prompt revision ever
+  // written grows that payload, and the family tier multiplies revisions by the
+  // number of PMS families. The partial unique index
+  // agent_prompts_active_per_role_family_uq (0338) makes this at most one row
+  // per (role, family).
+  const query = (columns: string) => supabaseAdmin
     .from('agent_prompts')
-    .select('role, version, content, is_active, created_at')
+    .select(columns)
+    .eq('is_active', true)
     .order('role')
     .order('created_at', { ascending: false });
+
+  let { data, error } = await query('role, version, content, pms_family');
+  if (error && /pms_family/.test(error.message)) {
+    // Deploy-order safety: if this code lands before migration 0338 is
+    // applied, the column does not exist and PostgREST 400s. Without this
+    // retry the whole chat would silently drop to the fail-soft CONSTANTS —
+    // i.e. quietly older instructions than the live DB rows — for the length
+    // of the window. Falling back to the two-tier read keeps behaviour exactly
+    // as it is today. Safe to delete once 0338 is applied everywhere.
+    ({ data, error } = await query('role, version, content'));
+  }
   if (error) {
     throw new Error(`prompts-store DB load failed: ${error.message}`);
   }
-  return (data ?? [])
-    .filter(r => r.is_active === true)
-    .map(r => ({
-      role: r.role as PromptRole,
-      version: r.version as string,
-      content: r.content as string,
-    }));
+  return ((data ?? []) as unknown as Array<Record<string, unknown>>).map(r => ({
+    role: r.role as PromptRole,
+    version: r.version as string,
+    content: r.content as string,
+    pmsFamily: (r.pms_family as string | null | undefined) ?? null,
+  }));
 }
 
 async function getCached(): Promise<CachedPrompt[]> {
@@ -103,11 +133,26 @@ function mapAppRoleToPromptRole(role: AppRole): ChatPromptRole {
   }
 }
 
+export interface ResolvedFamilyPrompt {
+  /** The PMS family this addendum belongs to (properties.pms_type). */
+  pmsFamily: string;
+  version: string;
+  content: string;
+}
+
 export interface ResolvedPrompts {
   base: { version: string; content: string };
   role: { version: string; content: string };
+  /** A3 tiers — the PMS-family addendum for this hotel, or null when the
+   *  hotel has no resolvable family OR no family row is active for it.
+   *
+   *  There is deliberately NO fallback constant for this tier: family content
+   *  only ever exists in the DB, so "DB down" and "no family row written yet"
+   *  collapse to the same, safe, additive-zero behaviour. */
+  family: ResolvedFamilyPrompt | null;
   /** Combined version stamp for telemetry: "<baseVer>+<roleVer>" or
-   *  just the matching version when both are identical. */
+   *  just the matching version when both are identical. The family segment is
+   *  added by the prompt assembler, not here — see prompts.ts. */
   versionLabel: string;
 }
 
@@ -123,12 +168,19 @@ export interface ResolvedPrompts {
 export async function resolvePrompts(
   appRole: AppRole,
   _conversationId: string,
+  /** A3 tiers — the hotel's PMS family (HotelSnapshot.property.pmsFamily).
+   *  null means "this hotel has no family tier"; the lookup is skipped
+   *  entirely rather than matching rows with a NULL key. */
+  pmsFamily: string | null = null,
 ): Promise<ResolvedPrompts> {
   const promptRole = mapAppRoleToPromptRole(appRole);
   const entries = await getCached();
 
   const baseFromDb = entries.find(e => e.role === 'base');
   const roleFromDb = entries.find(e => e.role === promptRole);
+  const familyFromDb = !familyAddendumOverride && pmsFamily
+    ? entries.find(e => e.role === 'family' && e.pmsFamily === pmsFamily)
+    : undefined;
 
   const base = baseFromDb
     ? { version: baseFromDb.version, content: baseFromDb.content }
@@ -137,11 +189,20 @@ export async function resolvePrompts(
     ? { version: roleFromDb.version, content: roleFromDb.content }
     : { version: PROMPT_VERSION, content: FALLBACK_PROMPTS[promptRole] };
 
+  const family: ResolvedFamilyPrompt | null = familyAddendumOverride
+    ?? (familyFromDb && familyFromDb.pmsFamily
+      ? {
+          pmsFamily: familyFromDb.pmsFamily,
+          version: familyFromDb.version,
+          content: familyFromDb.content,
+        }
+      : null);
+
   const versionLabel = base.version === role.version
     ? base.version
     : `base:${base.version}+role:${role.version}`;
 
-  return { base, role, versionLabel };
+  return { base, role, family, versionLabel };
 }
 
 /** Test-only: clear the in-memory cache. Useful after the admin route
@@ -149,6 +210,25 @@ export async function resolvePrompts(
  *  same function instance immediately, instead of waiting for TTL. */
 export function invalidatePromptsCache(): void {
   cache = null;
+}
+
+// ─── Eval seam (INV-TIER-8) ────────────────────────────────────────────────
+// "A family row may ADD or NARROW behaviour, never relax a global hard rule"
+// is a property of natural-language text — no CHECK constraint can guarantee
+// it. The only way to test it is to run the model with a deliberately hostile
+// family addendum active, which means arming one without writing a row into
+// the live table.
+//
+// This seam THROWS in production, so it can never become a live prompt-
+// injection channel: even a mistaken call from a request path fails loudly on
+// the deployed app instead of quietly rewriting every hotel's instructions.
+let familyAddendumOverride: ResolvedFamilyPrompt | null = null;
+
+export function setFamilyAddendumOverride(override: ResolvedFamilyPrompt | null): void {
+  if (env.NODE_ENV === 'production') {
+    throw new Error('[prompts-store] setFamilyAddendumOverride is an eval seam and is unavailable in production');
+  }
+  familyAddendumOverride = override;
 }
 
 export interface ActivePrompt {
@@ -167,7 +247,14 @@ export interface ActivePrompt {
  * because it has FALLBACK_PROMPTS — for the summarizer, the caller
  * holds its own constant.
  */
-export async function getActivePrompt(role: PromptRole): Promise<ActivePrompt | null> {
+export async function getActivePrompt(
+  /** INV-TIER-4, compile-time: 'family' is rejected here. A family row is an
+   *  addendum keyed by pms_family, not a standalone prompt — handing one to the
+   *  summarizer (this function's only caller) would give background
+   *  summarization PMS guidance it has no use for, and `find` would return an
+   *  arbitrary family's row. `npx tsc --noEmit` is in the gate. */
+  role: Exclude<PromptRole, 'family'>,
+): Promise<ActivePrompt | null> {
   const entries = await getCached();
   const row = entries.find(e => e.role === role);
   if (!row) return null;

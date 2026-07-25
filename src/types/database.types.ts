@@ -624,6 +624,7 @@ export type Database = {
           is_active: boolean
           notes: string | null
           parent_version: string | null
+          pms_family: string | null
           role: string
           version: string
         }
@@ -635,6 +636,7 @@ export type Database = {
           is_active?: boolean
           notes?: string | null
           parent_version?: string | null
+          pms_family?: string | null
           role: string
           version: string
         }
@@ -646,6 +648,7 @@ export type Database = {
           is_active?: boolean
           notes?: string | null
           parent_version?: string | null
+          pms_family?: string | null
           role?: string
           version?: string
         }
@@ -5467,7 +5470,7 @@ export type Database = {
         Returns: undefined
       }
       staxis_activate_prompt: {
-        Args: { p_id: string; p_role: string }
+        Args: { p_id: string; p_pms_family?: string; p_role: string }
         Returns: undefined
       }
       staxis_activate_ai_feature_config: {

@@ -28,7 +28,7 @@
  *
  * ─── What's checked ──────────────────────────────────────────────────────
  * Slimmed 2026-07-17 (owner's call) to three signals. The live registry is
- * the `checks` array below — THIS list must match it. The 6 checks that run:
+ * the `checks` array below — THIS list must match it. The 7 checks that run:
  *
  *   env_vars                    — every required env var is present + non-empty
  *   supabase_admin_auth         — preflight read using the service_role key
@@ -40,6 +40,9 @@
  *   cua_cost_cap_paused         — warns if a hotel's CUA is paused on the
  *                                 $5/day Claude cost cap
  *   cua_mfa_pending             — warns if a CUA session is stuck on PMS 2FA
+ *   agent_prompt_tiers          — each copilot instruction tier has exactly
+ *                                 one active row (catches the silent
+ *                                 "activation left the tier dark" state)
  *
  * NOT run here (enforced elsewhere): RLS-enabled / RLS-policy-coverage /
  * storage-bucket-RLS / PII-bucket-private invariants are checked at LINT time
@@ -63,6 +66,7 @@ import { readTwoFactorEnabledFresh } from '@/lib/two-factor';
 import { errToString } from '@/lib/utils';
 import { env } from '@/lib/env';
 import { SUPERSEDED_MIGRATIONS } from '@/lib/migration-policy';
+import { evaluatePromptTierHealth } from '@/lib/agent/prompt-tiers';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -142,6 +146,11 @@ const checks: Array<[string, CheckFn]> = [
   ['cua_sessions_alive',          checkCuaSessionsAlive],
   ['cua_cost_cap_paused',         checkCuaCostCapPaused],
   ['cua_mfa_pending',             checkCuaMfaPending],
+  // Earns its place (A3, 2026-07-24): a botched prompt activation leaves a
+  // tier with ZERO active rows. Nothing 500s, nothing looks wrong — the
+  // copilot just quietly loses that tier's instructions. Only a query can see
+  // it. Deliberately silent (ok, not warn) while the PMS-family slot is empty.
+  ['agent_prompt_tiers',          checkAgentPromptTiers],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1065,6 +1074,46 @@ async function checkCuaMfaPending(): Promise<Omit<Check, 'name' | 'durationMs'>>
   }
 }
 
+/**
+ * agent_prompt_tiers — the copilot's instruction tiers are each backed by
+ * exactly one active row.
+ *
+ * Two states this catches that nothing else can:
+ *   1. A tier with zero active rows. The reader fails soft (falls back to the
+ *      code constants for a global tier, to nothing for a family tier), so the
+ *      only symptom is "the copilot stopped following that guidance".
+ *   2. An active family row that outgrew the 4000-char cap — cached prompt
+ *      paid on every conversation of every hotel on that PMS.
+ *
+ * Zero family rows is OK, not warn: the slot is meant to stay empty until the
+ * first PMS report format is understood.
+ */
+async function checkAgentPromptTiers(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('agent_prompts')
+      .select('role, pms_family, is_active, content');
+    if (error) {
+      return { status: 'warn', detail: `agent_prompts read failed: ${errToString(error)}` };
+    }
+    type Row = { role: string; pms_family: string | null; is_active: boolean; content: string | null };
+    const rows = (data ?? []) as Row[];
+    const health = evaluatePromptTierHealth(rows.map((r) => ({
+      role: r.role,
+      pmsFamily: r.pms_family,
+      isActive: r.is_active === true,
+      contentLength: (r.content ?? '').length,
+    })));
+    if (health.status === 'ok') return { status: 'ok', detail: health.detail };
+    return {
+      status: health.status,
+      detail: health.detail,
+      fix: 'Activate the intended row with select public.staxis_activate_prompt(\'<id>\', \'<role>\', \'<pms_family or null>\'); it deactivates the others in the same tier atomically.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
 
 // ─── Handler ─────────────────────────────────────────────────────────────
 

@@ -335,3 +335,115 @@ Investigate; don't just heal and move on.
   `memory-redact.test.ts`. Code-level and imperfect by nature (regex) — one layer
   of several (also: management-gated hotel writes, guest-data-default-deny);
   documented gap, not a hard guarantee.
+
+## Prompt tiers: global → PMS family → hotel (migration 0338)
+
+The copilot's instructions have three tiers and exactly one home for each:
+
+| Tier | Where it lives | Kind of content |
+|---|---|---|
+| global | `agent_prompts` rows with `pms_family IS NULL` | behaviour + hard rules |
+| PMS family | `agent_prompts` rows with `role='family'`, keyed by `pms_family` | how that PMS's reports read |
+| hotel | `agent_memory`, `knowledge_*` — **DATA, never a prompt row** | this hotel's own facts |
+
+Two cells of the matrix are deliberately empty, so nobody has to re-derive it:
+- **Family-scope facts bigger than 4000 chars have no home, on purpose.** The
+  family tier holds the RULES for reading a PMS's reports, not the reports. Bulk
+  per-PMS reference material, if it ever exists, belongs behind
+  `search_knowledge` (retrieved on demand), not in the cached prompt every hotel
+  on that PMS pays for on every conversation. The cap is a forcing function.
+- **Global-scope facts are still smeared into the base prompt.** Deferred, not
+  solved. Splitting global rules from global facts is a separate change and
+  nothing depends on it yet.
+
+Conflict rules, stated as two because "more specific wins" is only half true:
+- **R1 facts** — more specific scope wins: hotel > family > global. Realized
+  structurally: family text sits after global text in the stable block (later
+  text wins), and hotel facts are not in the prompt at all — they arrive via
+  `search_knowledge` and the `<staxis-memory>` block in the DYNAMIC half, which
+  the model reads after the entire stable block.
+- **R2 behaviour** — global hard rules are non-overridable; a family row may
+  only ADD or NARROW, never relax. This is why hotel-tier prompt rows are
+  rejected outright: a hotel-authored behaviour row would be an unauditable
+  relaxation channel.
+
+- **INV-TIER-1 — one active row per tier.** The family tier lives on
+  `agent_prompts` keyed by `(role='family', pms_family)`; a row is either fully
+  global (`pms_family IS NULL`, role ≠ 'family') or fully family
+  (`pms_family NOT NULL`, role = 'family'). No third state is representable.
+  **Enforced by:** CHECK `agent_prompts_tier_coherence_ck` + partial unique
+  index `agent_prompts_active_per_role_family_uq` ON
+  `(role, coalesce(pms_family,''))` WHERE `is_active` (0338). **DB-ENFORCED.**
+  Backstop: `staxis_activate_prompt(uuid,text,text)` does deactivate-others +
+  activate-target in one transaction, now filtered on the family key — before
+  0338 it deactivated EVERY family's row. **Assumed by:**
+  `prompts-store.ts` `resolvePrompts` (single `find` per tier).
+  **History:** A3 tiers, 2026-07-24.
+- **INV-TIER-2 — no hotel ever gets its own prompt row.** **Enforced by:**
+  construction — `agent_prompts` has no `property_id` column and this work does
+  not add one; the tier-coherence CHECK allows exactly two shapes.
+  **DB-ENFORCED BY CONSTRUCTION.** **History:** A3 tiers, 2026-07-24.
+- **INV-TIER-3 — no global- or family-scope learned memory.** Learned patterns
+  exist only at hotel scope. **Enforced by:** construction —
+  `agent_memory.property_id` is NOT NULL with an FK to `properties(id)` and
+  `agent_memory_scope_check` restricts scope to ('property','user') (0256).
+  Promoting a hotel-learned fact to the family tier is a deliberate human act:
+  a new `agent_prompts` family version, which leaves an audit trail.
+  **DB-ENFORCED BY CONSTRUCTION.** **History:** A3 tiers, 2026-07-24.
+- **INV-TIER-4 — the summarizer never receives a family addendum.**
+  **Enforced by:** compile time —
+  `getActivePrompt(role: Exclude<PromptRole,'family'>)` in `prompts-store.ts`;
+  `npx tsc --noEmit` is in the gate. **NOT DB-enforceable** (a code-path fact,
+  not a data fact). **Assumed by:** `summarizer.ts:296`,
+  `evals/summarizer/runner.ts:86`. **History:** A3 tiers, 2026-07-24.
+- **INV-TIER-5 — stable/dynamic placement.** Global base + role, the family
+  addendum, the voice addenda, the inventory-routing block, the data-freshness
+  rule and the version line go in the STABLE (cached) block. The hotel
+  snapshot, the `<staxis-memory-block>` and the room hint go in the DYNAMIC
+  block. Nothing that varies within a conversation may appear in the stable
+  block. **Enforced by:** three layers, none of them DB (prompt assembly is
+  code, so no constraint can reach it): (1) compile time — disjoint
+  `StableTier`/`DynamicTier` unions in `prompts.ts`, so moving `'pms_family'`
+  into the dynamic array is a type error; (2) behaviour —
+  `agent-prompt-tiers.test.ts` + `agent-prompt-cache-purity.test.ts` build
+  twice with different snapshots and different memory and assert a
+  byte-identical stable block; (3) runtime —
+  `assertStableBlockIsCacheable()` in `llm.ts` throws outside production and
+  `captureException`s-and-serves in production, covering producers that bypass
+  `buildSystemPrompt` (`summarizer.ts:309`, `evals/runner.ts`).
+  **Why it matters:** a misplacement has NO visible symptom — the copilot keeps
+  answering correctly while every turn misses the Anthropic prompt cache.
+  **History:** A3 tiers, 2026-07-24.
+- **INV-TIER-6 — printed stamp ≠ persisted stamp.** `stableStamp` is printed
+  into the prompt and is constant for the life of a conversation;
+  `versionLabel` is persisted to `agent_messages.prompt_version`, is never
+  printed, and carries the per-turn segments (`fam:<family>.none` when we
+  looked and found nothing, `mem:<count>/<sha256-8>` of the exact injected
+  memory block). **Enforced by:** `agent-prompt-tiers.test.ts` (same
+  role+family, different memory ⇒ stable byte-identical AND versionLabel
+  differs). **NOT DB-enforceable.** `parsePromptStamp()` is the single reader
+  and tolerates pre-0338 stamps. **History:** A3 tiers, 2026-07-24.
+- **INV-TIER-7 — a family row cannot forge structure or blow the cost cap.**
+  Family content may not match `<\s*/?\s*(staxis-|tool-result)` or contain
+  `───`, and may not exceed 4000 chars (≈1000 tokens of cached prompt).
+  **Enforced by:** CHECKs `agent_prompts_family_no_markers_ck` and
+  `agent_prompts_family_len_ck` (0338) — **DB-ENFORCED** — plus
+  `familyContentIsSafe()` in `prompts.ts`, which drops the section and reports
+  to Sentry if a violating row ever reaches the assembler, and the doctor's
+  `agent_prompt_tiers` check, which re-verifies length on live active rows so
+  relaxing the CHECK later still trips an alarm. **History:** A3 tiers,
+  2026-07-24.
+- **INV-TIER-8 — family content may ADD or NARROW behaviour, never relax a
+  global hard rule** (approval gating, cross-property refusal,
+  knowledge-hub-first answering). **NOT ENFORCEABLE by any constraint** — it is
+  a semantic property of natural-language text. Backed by the adversarial
+  `family_tier` cases in `evals/test-bank.ts`, run through `evals/runner.ts`
+  with a hostile family addendum active. Those cost real Anthropic tokens and
+  run **on demand, not in CI**. Activating any new family row is gated on that
+  bank passing. **History:** A3 tiers, 2026-07-24.
+
+**Write-path warning for whoever adds a prompt-editing UI.** `agent_prompts` is
+service-role-only (RLS deny-all) and today has no admin write route — prompts
+are edited by psql. A family row is an org-wide prompt-injection surface across
+every hotel on that PMS, so any future write route must be admin-role-gated,
+and INV-TIER-8's eval bank must be a hard gate on activation, not advisory.

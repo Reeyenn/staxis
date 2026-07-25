@@ -29,6 +29,7 @@ import {
   PMS_STALE_MAX_MINUTES,
   type FreshnessSource,
 } from '@/lib/pms/feed-status';
+import { isPMSType, type PMSType } from '@/lib/pms/types';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface HotelSnapshot {
@@ -38,6 +39,19 @@ export interface HotelSnapshot {
     id: string;
     name: string | null;
     timezone: string | null;
+    /**
+     * A3 — which PMS family this hotel is on (`properties.pms_type`,
+     * normalized through `isPMSType`; junk or unset degrades to null).
+     *
+     * This is a key for the STABLE (cached) half of the system prompt: it
+     * selects the shared PMS-family prompt addendum. `formatSnapshotForPrompt`
+     * must NEVER render it — printing a tier key into the per-turn block costs
+     * tokens on every turn and buys nothing.
+     *
+     * Optional so existing snapshot literals (tests, fixtures) stay valid;
+     * absent and null both mean "no family tier for this hotel".
+     */
+    pmsFamily?: PMSType | null;
   };
   rooms: {
     total: number;
@@ -174,19 +188,29 @@ async function buildHotelSnapshotUncached(
   // agent reports the correct total even when the PMS feed is mid-bootstrap;
   // rooms the feed doesn't know about yet surface as vacant (the safe
   // default — absence of data means no guest).
+  //
+  // A3 (2026-07-24): pms_type rides along on this same query — it is the
+  // PMS-family key for the shared prompt tier, and adding it costs nothing
+  // here versus a second round trip at prompt-build time. `property_sessions
+  // .pms_family` is the CUA-era copy and is deliberately NOT read: it stopped
+  // being written when intake moved to scheduled report emails.
   let propertyName: string | null = null;
   let timezone: string | null = null;
+  let pmsFamily: PMSType | null = null;
   let configuredTotalRooms = 0;
   let inventoryLength = 0;
   try {
     const { data } = await supabaseAdmin
       .from('properties')
-      .select('name, timezone, total_rooms, room_inventory')
+      .select('name, timezone, total_rooms, room_inventory, pms_type')
       .eq('id', propertyId)
       .maybeSingle();
     if (data) {
       propertyName = (data.name as string) ?? null;
       timezone = (data.timezone as string) ?? null;
+      // Normalize through the guard so an unrecognized value degrades to
+      // "no family tier" instead of minting a cache key nothing resolves.
+      pmsFamily = isPMSType(data.pms_type) ? data.pms_type : null;
       configuredTotalRooms = Number(data.total_rooms ?? 0);
       const inv = data.room_inventory as string[] | null;
       inventoryLength = Array.isArray(inv) ? inv.length : 0;
@@ -352,7 +376,7 @@ async function buildHotelSnapshotUncached(
 
   const snapshot: HotelSnapshot = {
     today,
-    property: { id: propertyId, name: propertyName, timezone },
+    property: { id: propertyId, name: propertyName, timezone, pmsFamily },
     rooms,
     staff: { activeToday, assignedHousekeepers },
     ...(myRooms ? { myRooms } : {}),

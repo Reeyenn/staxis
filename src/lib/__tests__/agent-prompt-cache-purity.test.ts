@@ -65,6 +65,7 @@ const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 before(() => {
   const chain: Record<string, unknown> = {
     select: () => chain,
+    eq: () => chain,
     order: () => chain,
     then: (resolve: (v: unknown) => unknown) =>
       Promise.resolve({ data: [], error: null }).then(resolve),
@@ -140,7 +141,11 @@ describe('version label', () => {
   it('records the freshness rule so the behaviour change is auditable', async () => {
     const gm = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1');
     assert.match(gm.versionLabel, /data-freshness-v1/);
-    assert.ok(gm.stable.includes(`Prompt version: ${gm.versionLabel}`));
+    // A3 split the stamp in two: `stableStamp` is what gets PRINTED (constant
+    // for the conversation), `versionLabel` is what gets PERSISTED and carries
+    // the per-turn memory receipt. Printing the persisted one would break the
+    // prompt cache every turn — see agent-prompt-tiers.test.ts.
+    assert.ok(gm.stable.includes(`Prompt version: ${gm.stableStamp}`));
     // Every role gets the rule, so every role's label carries the version.
     const hk = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-1');
     assert.match(hk.versionLabel, /data-freshness-v1/);

@@ -729,6 +729,45 @@ export function toClaudeMessages(history: AgentMessage[], newUser: string | null
 }
 
 /**
+ * Per-turn markers that must never appear in the CACHED block. The hotel
+ * snapshot and the memory block both change turn to turn; either one in the
+ * stable block re-writes the cached prefix on every request, which multiplies
+ * the input-token bill with no visible symptom — the copilot keeps answering
+ * correctly, it just costs several times more.
+ *
+ * Chosen so the base prompt's own PROSE about these markers ("content wrapped
+ * in <staxis-memory-block trust=…> is a saved note…") does not trip the guard:
+ * only the emitted block carries the section headers and the CLOSING tag.
+ */
+const DYNAMIC_ONLY_MARKERS = [
+  '─── Current hotel snapshot ───',
+  '─── What Staxis remembers about this hotel ───',
+  '</staxis-memory-block>',
+] as const;
+
+/**
+ * INV-TIER-5, runtime layer. The disjoint StableTier/DynamicTier unions in
+ * prompts.ts catch this at compile time for buildSystemPrompt, but the
+ * summarizer and the eval runner hand-roll their own SystemPromptBlocks
+ * literals — this covers every producer.
+ *
+ * Outside production it throws (tests and dev must not be able to ship it).
+ * In production it reports and serves anyway: a working-but-expensive chat
+ * beats a hard 500 for the hotel, and the Sentry event is the alarm. Same
+ * posture as INV-22.
+ */
+export function assertStableBlockIsCacheable(systemPrompt: SystemPromptBlocks): void {
+  const leaked = DYNAMIC_ONLY_MARKERS.filter(m => systemPrompt.stable.includes(m));
+  if (leaked.length === 0) return;
+  const err = new Error(
+    `[llm] per-turn content in the CACHED system block: ${leaked.join(', ')}. `
+    + 'This breaks the Anthropic prompt cache on every turn.',
+  );
+  if (env.NODE_ENV !== 'production') throw err;
+  captureException(err, { leakedMarkers: leaked.join(',') });
+}
+
+/**
  * Build the system blocks for a request.
  *
  * Two blocks: stable (cache_control: ephemeral) + dynamic (no caching).
@@ -736,8 +775,11 @@ export function toClaudeMessages(history: AgentMessage[], newUser: string | null
  * conversation, so Anthropic's prompt cache hits — typically 80%+ of
  * system tokens. The dynamic block (live hotel snapshot) is appended
  * un-cached because it changes every turn. Codex review fix A1.
+ *
+ * Exported so the tier tests can assert the breakpoint placement directly.
  */
-function buildSystemBlocks(systemPrompt: SystemPromptBlocks): Anthropic.Messages.TextBlockParam[] {
+export function buildSystemBlocks(systemPrompt: SystemPromptBlocks): Anthropic.Messages.TextBlockParam[] {
+  assertStableBlockIsCacheable(systemPrompt);
   const blocks: Anthropic.Messages.TextBlockParam[] = [
     {
       type: 'text',

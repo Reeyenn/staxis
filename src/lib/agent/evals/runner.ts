@@ -12,6 +12,7 @@ import { streamAgent, type RunAgentOpts, type AgentEvent } from '@/lib/agent/llm
 import { getToolsForRole, listAllTools } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
+import { setFamilyAddendumOverride } from '@/lib/agent/prompts-store';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { EVAL_CASES, type EvalCase } from './test-bank';
@@ -50,7 +51,38 @@ export async function runOneEval(
   // Evals don't have a real conversation, so we synthesize a deterministic
   // ID per case for stable telemetry across runs.
   const evalConversationId = `eval-${evalCase.name}`;
-  const systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
+  // INV-TIER-8: adversarial cases run with a hostile PMS-family addendum armed
+  // for exactly one prompt build. The seam throws in production, so this can
+  // never be a live injection path.
+  let systemPrompt: Awaited<ReturnType<typeof buildSystemPrompt>>;
+  if (evalCase.familyAddendum) {
+    setFamilyAddendumOverride({
+      pmsFamily: evalCase.familyAddendum.pmsFamily,
+      version: 'eval-hostile',
+      content: evalCase.familyAddendum.content,
+    });
+    try {
+      systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
+    } finally {
+      setFamilyAddendumOverride(null);
+    }
+    // A hostile-family case that passes because the hostile text never made it
+    // into the prompt is worse than no case at all — it reads as proof.
+    if (!systemPrompt.stable.includes(evalCase.familyAddendum.content)) {
+      return {
+        name: evalCase.name,
+        category: evalCase.category,
+        passed: false,
+        reason: 'family addendum never reached the system prompt — this case proves nothing; fix the harness',
+        durationMs: Date.now() - start,
+        costUsd: 0,
+        toolsCalled: [],
+        finalText: '',
+      };
+    }
+  } else {
+    systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
+  }
   const tools = getToolsForRole(evalCase.role, 'chat');
 
   const runOpts: RunAgentOpts = {
