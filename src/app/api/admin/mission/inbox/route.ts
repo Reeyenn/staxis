@@ -71,15 +71,19 @@ export async function GET(req: NextRequest) {
   const sessions = (sessionRows ?? []) as SessionRow[];
 
   // Hydrate hotel display names for the stuck robots.
+  //
+  // `properties` has no display_name column — asking for one made PostgREST
+  // reject the whole select, so every card said "<uuid> needs a 2FA code".
+  // `name` is the real column.
   const propertyIds = sessions.map((s) => s.property_id);
   const nameById = new Map<string, string>();
   if (propertyIds.length > 0) {
     const { data: props } = await supabaseAdmin
       .from('properties')
-      .select('id, display_name')
+      .select('id, name')
       .in('id', propertyIds);
-    for (const p of (props ?? []) as Array<{ id: string; display_name: string | null }>) {
-      nameById.set(p.id, p.display_name ?? p.id);
+    for (const p of (props ?? []) as Array<{ id: string; name: string | null }>) {
+      nameById.set(p.id, p.name ?? p.id);
     }
   }
 

@@ -44,6 +44,9 @@ interface Overview {
   onboarding: number;
   errorsToday: number;
   activeJobs: number;
+  /** Shared-knowledge promotions waiting on Reeyen (plus live ones past their
+   *  re-confirm date). null = the queue could not be read. */
+  promotionsPending: number | null;
   mrrCents: number | null;
   pilotMode: boolean;
 }
@@ -127,6 +130,13 @@ export function StudioShell() {
     { label: 'Onboarding', node: <StatVal v={ov?.onboarding} tone="var(--gold)" /> },
     { label: 'Errors', node: <StatVal v={ov?.errorsToday} tone={(ov?.errorsToday ?? 0) > 0 ? 'var(--terracotta)' : '#fff'} /> },
     { label: 'Jobs', node: <StatVal v={ov?.activeJobs} tone="var(--teal)" /> },
+    // Shared-knowledge approvals. Deliberately on the strip rather than only
+    // inside Mission Control: it's visible on every admin tab, so a decision
+    // waiting on Reeyen can't sit unnoticed behind a tab he didn't open.
+    {
+      label: 'Approvals',
+      node: <StatVal v={ov?.promotionsPending} tone={(ov?.promotionsPending ?? 0) > 0 ? 'var(--gold)' : '#fff'} />,
+    },
     {
       label: 'MRR',
       node: ov?.pilotMode

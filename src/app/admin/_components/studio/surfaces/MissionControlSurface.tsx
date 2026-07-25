@@ -43,6 +43,7 @@ import {
 import {
   SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite,
 } from '../surface-kit';
+import { PromotionQueue } from './PromotionQueue';
 
 // $5/hotel/day Claude cost cap (cua-service operational guardrail).
 const ROBOT_CAP_USD = 5;
@@ -476,8 +477,13 @@ export function MissionControlSurface() {
         </RosterSection>
       </div>
 
-      {/* ── Block 3 — second three-column row (owner's layout): chores ·
-          needs-your-okay · errors. ─────────────────────────────────── */}
+      {/* ── Block 3 — second row (owner's layout): chores · needs-your-okay ·
+          shared-knowledge approvals · errors. The approvals column is the
+          Staxis-side promotion queue: the only place a fact learned at one
+          hotel becomes advice given to another. It sits here, next to the
+          other things that need a human, because Mission Control is where
+          Reeyen watches and decides — the AI Control Center is configuration.
+          ─────────────────────────────────────────────────────────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 20, alignItems: 'start' }}>
         {/* Scheduled chores */}
         <RosterSection
@@ -507,6 +513,9 @@ export function MissionControlSurface() {
             </div>
           )}
         </section>
+
+        {/* Shared-knowledge approvals — Reeyen only; hotels never see it */}
+        <PromotionQueue />
 
         {/* Recent errors · 72h */}
         <section style={{ minWidth: 0 }}>

@@ -39,7 +39,6 @@ interface PropertySessionRow {
 
 interface PropertyRow {
   id: string;
-  display_name: string | null;
   name: string | null;
 }
 
@@ -132,15 +131,19 @@ export async function GET(req: NextRequest) {
   const sessions = (sessionRows ?? []) as PropertySessionRow[];
 
   // Hydrate property display names.
+  //
+  // `properties` has no display_name column — asking for one made PostgREST
+  // reject the WHOLE select, so propsData came back null and every hotel on
+  // Mission Control rendered as a raw id. `name` is the real column.
   const propertyIds = sessions.map((s) => s.property_id);
   let displayNames = new Map<string, string>();
   if (propertyIds.length > 0) {
     const { data: propsData } = await supabaseAdmin
       .from('properties')
-      .select('id, display_name, name')
+      .select('id, name')
       .in('id', propertyIds);
     if (propsData) {
-      displayNames = new Map((propsData as PropertyRow[]).map((p) => [p.id, p.display_name ?? p.name ?? p.id]));
+      displayNames = new Map((propsData as PropertyRow[]).map((p) => [p.id, p.name ?? p.id]));
     }
   }
 

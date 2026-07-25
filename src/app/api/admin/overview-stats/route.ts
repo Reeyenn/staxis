@@ -12,6 +12,10 @@
  *   - Errors today (last 24h from error_logs)
  *   - Active jobs (queued/running mapper jobs in workflow_jobs — the v4
  *     truth; onboarding_jobs/pull_jobs are empty stubs post-v4)
+ *   - Approvals — the shared-knowledge promotion queue (0353). Counts items
+ *     waiting for a decision PLUS live ones whose 75 days ran out. It rides
+ *     this strip because the strip is on every admin tab: a queue you have to
+ *     remember to open is a queue nobody works.
  *   - MRR placeholder (pilot mode → null until billing flips on)
  *
  * Cheap counts only — no row data. Polled every ~15s by the header so
@@ -23,6 +27,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { countNeedingAttention, isMissingRelationError } from '@/lib/promotion-queue';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -44,6 +49,7 @@ export async function GET(req: NextRequest) {
     aliveSessionsRes,
     errorsRes,
     mapperJobsRes,
+    promotionsRes,
   ] = await Promise.all([
     supabaseAdmin
       .from('properties')
@@ -61,6 +67,13 @@ export async function GET(req: NextRequest) {
       .select('id', { count: 'exact', head: true })
       .like('kind', 'mapper.%')
       .in('status', ['queued', 'running']),
+    // Not in the fail-loud loop below: migration 0353 is applied by hand, so
+    // between deploy and apply this table legitimately does not exist. A
+    // missing promotion queue must not blank the whole admin header.
+    supabaseAdmin
+      .from('knowledge_promotions')
+      .select('status, expires_at')
+      .in('status', ['pending', 'approved']),
   ]);
 
   // None of these queries should fail in steady state, but if one does we
@@ -69,6 +82,18 @@ export async function GET(req: NextRequest) {
     if (r.error) {
       return err(`Stats query failed: ${r.error.message}`, { requestId, status: 500 });
     }
+  }
+
+  // null (not 0) when the queue can't be read, so the header shows "—" rather
+  // than claiming there is nothing waiting.
+  let promotionsPending: number | null = null;
+  if (!promotionsRes.error) {
+    promotionsPending = countNeedingAttention(
+      (promotionsRes.data ?? []) as Array<{ status: 'pending' | 'approved'; expires_at: string | null }>,
+      new Date(now),
+    );
+  } else if (!isMissingRelationError(promotionsRes.error)) {
+    return err(`Stats query failed: ${promotionsRes.error.message}`, { requestId, status: 500 });
   }
 
   const aliveIds = new Set(
@@ -82,6 +107,7 @@ export async function GET(req: NextRequest) {
     onboarding: props.length - liveHotels,
     errorsToday: errorsRes.count ?? 0,
     activeJobs: mapperJobsRes.count ?? 0,
+    promotionsPending,
     // Pilot mode: no billing yet. When billing flips on this becomes a $/mo
     // sum from active subscriptions in Stripe (or computed from properties).
     mrrCents: null,
