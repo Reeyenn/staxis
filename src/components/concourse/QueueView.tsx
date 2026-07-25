@@ -7,16 +7,28 @@
 // cards, no fabricated stats, and critically no "all clear" claim. A missing
 // queue connection cannot tell a manager whether decisions are pending.
 //
-// ONE real card lives here today: DripQuestionCard, the single question Staxis
-// occasionally asks about a pattern it noticed in the hotel's own records. It
-// renders nothing when there is nothing to ask, so the honest empty state below
-// is what a manager sees on any ordinary day — and it stays honest either way,
-// because a question is not an approval and answering one clears nothing.
+// TWO real things live here, and NEITHER of them is an approval:
+//
+//   DripQuestionCard — the single question Staxis occasionally asks about a
+//     pattern it noticed in the hotel's own records. Renders nothing when
+//     there is nothing to ask.
+//
+//   FindingCards — what Staxis currently believes is wrong at this hotel,
+//     biggest-dollars first, each card carrying the numbers behind it. A card
+//     is a FINDING, not a decision Staxis wants to make on the manager's
+//     behalf: it reports, the manager acts, and nothing is executed from here.
+//     Renders nothing when there is nothing to report AND nothing to say about
+//     when we last looked.
+//
+// So the honest empty state below is still what a manager sees on an ordinary
+// day, and it stays honest either way — a question is not an approval, a
+// finding is not an approval, and clearing either clears no approval queue.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
 import { DripQuestionCard } from './DripQuestionCard';
+import { FindingCards } from './FindingCards';
 
 export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   const es = lang === 'es';
@@ -30,6 +42,8 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           ? 'Las aprobaciones en vivo todavía no están conectadas para este piloto.'
           : 'Live approvals are not connected for this pilot yet.'}
       </div>
+
+      <FindingCards lang={lang} />
 
       <DripQuestionCard lang={lang} />
 

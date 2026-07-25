@@ -298,7 +298,17 @@ export type RateLimitEndpoint =
   // a stolen session rewriting the hotel's memory. NOT billing-impacting (no
   // model call anywhere in the path) → fails OPEN, so a Supabase blip never
   // eats a legitimate answer.
-  | 'knowledge-question-answer';
+  | 'knowledge-question-answer'
+  // ── Findings queue verdicts (migration 0360) ──────────────────────────────
+  // "Known problem" / "Mute" / "Fixed" on a findings card. Each one changes
+  // what Staxis will and will not tell this hotel from now on — muting is
+  // permanent — so a stolen session or a runaway loop must not be able to
+  // silence a whole ledger in one pass. Keyed on the RAW property id
+  // (api_limits.property_id FKs properties(id), so a hashToRateLimitKey
+  // composite would FK-violate → the RPC errors → this would fail for the
+  // wrong reason). NOT billing-impacting (no model call, no message send) →
+  // fails OPEN, so a Supabase blip never swallows a real decision.
+  | 'findings-verdict';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -524,6 +534,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // One question per manager per session; 30/hr/property is generous even for a
   // hotel with several managers all answering at once.
   'knowledge-question-answer':   30,
+  // Findings verdicts. The nightly runner is capped at a handful of new cards
+  // a night, so a manager clearing a backlog is realistically tens of taps;
+  // 200/hr per property is far above that and still bounds a scripted sweep
+  // that tries to mute everything.
+  'findings-verdict':           200,
 };
 
 /**

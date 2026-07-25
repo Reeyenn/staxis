@@ -198,6 +198,104 @@ export async function latestRun(propertyId: string): Promise<Record<string, unkn
   return rows[0] ?? null;
 }
 
+/** The slice of the last run the queue screen renders. */
+export interface LatestRunFacts {
+  runAt: string;
+  detectorsChecked: number;
+  detectorsSkipped: number;
+  detectorsFailed: number;
+}
+
+/**
+ * `latestRun` in the shape the screen needs, or null when this hotel has never
+ * been checked. Deliberately returns null rather than a zeroed object: "we ran
+ * and checked 0 things" and "we have never run here" are different claims, and
+ * the second one must not be renderable as the first.
+ */
+export async function latestRunFacts(propertyId: string): Promise<LatestRunFacts | null> {
+  const row = await latestRun(propertyId);
+  if (!row) return null;
+  const runAt = typeof row.run_at === 'string' ? row.run_at : null;
+  if (!runAt) return null;
+  return {
+    runAt,
+    detectorsChecked: num(row.detectors_checked as number | string | null) ?? 0,
+    detectorsSkipped: num(row.detectors_skipped as number | string | null) ?? 0,
+    detectorsFailed: num(row.detectors_failed as number | string | null) ?? 0,
+  };
+}
+
+// ─── The judge's phrasing, read forward-compatibly ───────────────────────────
+
+/**
+ * Column names the AI judge may write its wording into. A sibling workstream
+ * owns that migration; this file must work both before and after it lands.
+ *
+ * WHY A CANDIDATE LIST AND `select('*')` INSTEAD OF NAMING THE COLUMNS
+ * Asking PostgREST for a column that does not exist makes the whole query
+ * error. Every read path in this app that has done that turned into a silently
+ * dead feature — three times in six weeks, most recently `accounts.name`. So
+ * this read asks for everything the row has and picks whichever of these
+ * exists. Before the judge ships, none exist, `judgedPhrasing` returns an empty
+ * map, and every card falls back to the detector's own sentence — which is the
+ * behaviour the screen is designed around anyway.
+ */
+const JUDGED_EN_COLUMNS = ['judged_summary_en', 'phrased_en', 'judged_en', 'summary_en'] as const;
+const JUDGED_ES_COLUMNS = ['judged_summary_es', 'phrased_es', 'judged_es', 'summary_es'] as const;
+
+export interface JudgedPhrasing {
+  en: string | null;
+  es: string | null;
+}
+
+function firstString(row: Record<string, unknown>, candidates: readonly string[]): string | null {
+  for (const key of candidates) {
+    const value = row[key];
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+/**
+ * The judge's wording for these findings, keyed by finding id. Empty when the
+ * judge has not written any (or has not shipped). Never throws: a phrasing
+ * upgrade that fails must not take the cards down with it.
+ */
+export async function judgedPhrasing(
+  propertyId: string,
+  findingIds: readonly string[],
+): Promise<Map<string, JudgedPhrasing>> {
+  const out = new Map<string, JudgedPhrasing>();
+  if (findingIds.length === 0) return out;
+
+  try {
+    const { data, error } = await scopedDb(propertyId)
+      .from('findings')
+      .select('*')
+      .in('id', [...findingIds]);
+    if (error) {
+      log.warn('[findings] judged-phrasing read failed; falling back to detector wording', {
+        propertyId,
+        err: error.message,
+      });
+      return out;
+    }
+    for (const row of (data ?? []) as unknown as Array<Record<string, unknown>>) {
+      const id = typeof row.id === 'string' ? row.id : null;
+      if (!id) continue;
+      const en = firstString(row, JUDGED_EN_COLUMNS);
+      const es = firstString(row, JUDGED_ES_COLUMNS);
+      if (en || es) out.set(id, { en, es });
+    }
+  } catch (e) {
+    log.warn('[findings] judged-phrasing read threw; falling back to detector wording', {
+      propertyId,
+      err: e instanceof Error ? e.message : String(e),
+    });
+  }
+  return out;
+}
+
 // ─── Writes ──────────────────────────────────────────────────────────────────
 
 export interface PersistArgs {
