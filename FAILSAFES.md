@@ -156,6 +156,22 @@ These are guards added in the May 2026 multi-tenant scaling work. Don't weaken t
 
 **Tier 3 fleet ownership recheck (`scraper/scraper.js` tick prologue)** — every tick re-reads `scraper_credentials.scraper_instance` for the active property. If it no longer matches our `SCRAPER_INSTANCE_ID` env, the tick is skipped. Closes the 60-second reassignment overlap window from the properties-loader cache. Don't remove — without it, two Railway instances will briefly both write data for a reassigned hotel.
 
+**Migration 0348 drop preflight** — the DO block at the top of
+`supabase/migrations/0348_drop_confirmed_dead_tables.sql` re-asserts `count(*) = 0`
+for every table it is about to drop and RAISEs otherwise. The drop list was
+verified against production when the migration was written; the preflight is what
+makes it safe to apply later, after the world has moved on. It has NO per-table
+exemptions on purpose — that is why `agent_voice_sessions` (1 row) is excluded
+from the list rather than special-cased inside the check. Don't add an exemption:
+add or remove tables from the list instead.
+
+**`scripts/audit-index-justification.mjs`** — part of `npm run lint`, so CI-gated.
+Every `create index` in a migration numbered 0349+ must be preceded by a
+`-- @query:` comment naming the query it serves. The 734 pre-existing indexes are
+grandfathered; the point is to stop the pile growing without reasons, not to
+retro-justify it. Don't raise `FIRST_GATED_MIGRATION` — that silently un-gates
+work.
+
 ---
 
 ## How to verify all failsafes still work

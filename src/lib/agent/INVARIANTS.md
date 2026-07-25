@@ -256,3 +256,140 @@ Investigate; don't just heal and move on.
   `memory-redact.test.ts`. Code-level and imperfect by nature (regex) — one layer
   of several (also: management-gated hotel writes, guest-data-default-deny);
   documented gap, not a hard guarantee.
+
+---
+
+## Data-layer invariants (pms_*) — migrations 0345–0349
+
+Added by the schema-reshape workstream (D3-SHAPE). Same doctrine as the rest of
+this file: an invariant enforced only by code is labelled **NOT ENFORCED**, and
+the two honest gaps are listed at the bottom rather than papered over.
+
+Every constraint, trigger and function name below is real — `grep` it in
+`supabase/migrations/034*.sql`, and `src/lib/__tests__/pms-schema-reshape.integration.test.ts`
+applies those files to a real Postgres and tries to violate each one.
+
+### One reservation, one row (0345)
+
+- **INV-RES-1 — a reservation has exactly one row for its whole life.**
+  Cancellation and no-show are states of that row, not rows in other tables.
+  **Enforced by:** structural — `pms_future_bookings`, `pms_no_shows` and
+  `pms_cancellations` no longer exist. The pre-existing
+  `UNIQUE (property_id, pms_reservation_id)` is now the only place a
+  reservation can live.
+- **INV-RES-2 — `status='cancelled'` if and only if `cancelled_date` is set;
+  `status='no_show'` if and only if `no_show_date` is set; a cancellation fee
+  can only exist on a cancelled reservation.** **Enforced by:** CHECKs
+  `pms_res_cancel_coherent`, `pms_res_noshow_coherent`,
+  `pms_res_fee_requires_cancel` (0345). Each uses `is not distinct from`, not
+  `=`, because `NULL = 'cancelled'` is NULL and a CHECK treats NULL as
+  satisfied. `sanitizeReservationLifecycle` in
+  `cua-service/src/validators-phase2.ts` makes rows coherent BEFORE the write,
+  so the CHECK is a backstop that never fires — the writer sends one
+  `.upsert()` per batch, so one violating row would destroy the whole batch.
+- **INV-RES-3 — departure is never before arrival; a booking is never created
+  after the guest arrived.** **Enforced by:** CHECKs `pms_res_date_order`,
+  `pms_res_booked_before_arrival` (0345). Neither existed before: the table had
+  eight CHECKs and none of them ordered the dates.
+- **INV-RES-4 — a reservation never moves backwards out of a terminal state.**
+  cancelled / no_show / checked_out → booked / checked_in only when the incoming
+  row carries a strictly later `status_changed_at`. **Enforced by:** BEFORE
+  UPDATE trigger `staxis_pms_reservation_status_guard()` (0345). This is the
+  reconciliation the four-table design never needed and the consolidation
+  requires — three report feeds now upsert the same row. **Documented limit:**
+  only `status` is guarded; every other column stays last-write-wins, so a stale
+  cancellations report can still overwrite a fresher `guest_name`.
+- **INV-RES-5 — the PMS-reported `num_nights` is never treated as truth.**
+  **Enforced by:** GENERATED column `pms_reservations.nights_derived`
+  `(departure_date - arrival_date)` (0345). Deliberately NOT a CHECK against
+  `num_nights`: a PMS that counts day-use differently would fail whole batches.
+
+### The PMS mirror / Staxis state split (0346)
+
+- **INV-HK-1 — the PMS-report ingest cannot write Staxis-owned housekeeping
+  state** (checklist progress, pause accounting, rush flags, manager and
+  housekeeper notes, inspection marks, help-requested). **Enforced by:** two
+  independent mechanisms. (1) Structural: those columns no longer exist on
+  `pms_housekeeping_assignments`, the only table the ingest writes; they live on
+  `public.room_work`. (2) Privilege: INSERT/UPDATE/DELETE on the mirror is
+  REVOKEd from `service_role`, and the sole write path is SECURITY DEFINER
+  `staxis_apply_hk_mirror()`, which names the mirror columns and nothing else.
+  Both writers authenticate as `service_role`, so GRANTs alone could not
+  separate them. **Before 0346 this was enforced by nothing** — the ingest
+  descriptor merely happened to list five columns.
+- **INV-HK-2 — a row handed to the generic writer can never carry a column the
+  descriptor does not declare.** **Enforced by:** `validateRows()` in
+  `cua-service/src/persistence/generic-table-writer.ts` now DELETES
+  off-descriptor keys instead of only warning (its old comment claiming
+  "Supabase strips unknown columns" is false for columns that exist), backed by
+  tests in `blank-required-guard.test.ts`. This is a code-level chokepoint, so
+  it is a **BACKSTOP** — the primary enforcement is INV-HK-1.
+- **INV-HK-3 — every row of housekeeping work belongs to a room this property
+  has.** **Enforced by:** FK `room_work_room_fk (property_id, room_number) →
+  pms_rooms_inventory`, using the existing `pms_rooms_inventory_room_unique`.
+- **INV-HK-4 — an assigned housekeeper is a real staff member at this hotel,
+  identified by id.** **Enforced by:** FK `room_work_staff_fk
+  (assigned_staff_id, property_id) → staff (id, property_id)`, using the
+  existing `staff_id_property_id_key`. The composite form makes cross-property
+  assignment structurally impossible.
+- **INV-HK-5 — every assignment records how it was resolved, and provenance
+  cannot linger after an assignment is cleared.** **Enforced by:** CHECK
+  `room_work_assigned_source_chk` (0346).
+- **INV-HK-6 — merge precedence: the app's explicit value beats the report,
+  and an absent app value defers to the report.** `cleaning_type` and
+  `dnd_active` exist on both halves because both sides genuinely write them;
+  every reader takes `coalesce(room_work, mirror)`. **NOT ENFORCED** at the DB
+  level — SQL cannot express "readers must merge this way". Backed by
+  `mergeAssignment` / `assignmentBelongsToStaff` in `pms-rooms-server.ts` and
+  `mergeHkHalves` in `rules-engine/context.ts`, all three pinned by
+  `src/lib/__tests__/hk-mirror-state-split.test.ts`.
+
+### Identity instead of spelling (0347)
+
+- **INV-DIM-1 — one name string maps to at most one staff member per property,
+  and name normalization is defined exactly once.** **Enforced by:** UNIQUE
+  `(property_id, alias_norm)` on `staff_aliases`, where `alias_norm` is a
+  GENERATED STORED column. This replaces two divergent TypeScript
+  `normalizeName()` implementations (`pms-rooms-server.ts` keeps punctuation,
+  `inventory-match.ts` strips it) with one definition the database computes.
+- **INV-DIM-2 — one raw dimension string maps to at most one canonical code per
+  property, and an unmapped value degrades to itself rather than vanishing.**
+  **Enforced by:** UNIQUE `(property_id, dimension, value_norm)` + CHECK
+  `pms_dimension_values_dimension_chk` (0347). The degrade-to-raw half is
+  `coalesce(canonical_code, raw_value)` at every read — **NOT ENFORCED** by SQL,
+  because SQL cannot express "the reader must not drop unmapped rows".
+
+### Subtraction (0348–0349)
+
+- **INV-DROP-1 — no table is dropped while it holds data.** **Enforced by:** a
+  preflight DO block at the top of 0348 that re-asserts `count(*) = 0` for every
+  table in the drop list and RAISEs otherwise. Same spirit as the scraper
+  preflight in `FAILSAFES.md`. No per-table exemptions exist, which is why
+  `agent_voice_sessions` (1 row) is NOT in the drop list.
+- **INV-IDX-1 — no new index ships without a named query it serves.**
+  **Enforced by:** `scripts/audit-index-justification.mjs` in `npm run lint`
+  (CI-gated); requires a `-- @query:` comment above every `create index` in
+  migrations numbered 0349+. The existing 734 indexes are grandfathered.
+
+### Known gaps — real, and deliberately not closed here
+
+- **GAP-HK-A — nothing at the database level stops the Staxis app from writing
+  `room_work` columns that conceptually belong to a single actor** (e.g. a
+  manager route setting `inspected_by`). **NOT ENFORCED.** Both the app and the
+  ingest authenticate as `service_role`, and `room_work` is entirely app-owned,
+  so there is no second party to fence off. Mitigated by `writeWorkflowFields`
+  being the single funnel for the housekeeper endpoints and by INV-HK-5 for the
+  one field where provenance actually matters.
+- **GAP-HK-B — `today_room_work_v1` and `today_property_counts_v1` are SECURITY
+  DEFINER with EXECUTE granted to `anon`**, so anyone holding the public anon
+  key and a `property_id` can read per-room housekeeping data straight past the
+  `pms_*` deny-all policies. **NOT ENFORCED — pre-existing, from migration
+  0224, not introduced by this workstream.** 0346 repointed where
+  `today_room_work_v1` reads from without widening who may execute it. The cheap
+  fix is `REVOKE EXECUTE … FROM anon` plus routing its two callers through
+  `/api`; that is a security decision, not a schema one.
+- **GAP-HK-C — `room_work` is not in the `supabase_realtime` publication**, and
+  neither is any `pms_*` table. `src/lib/db/today-room-work.ts` subscribes to it
+  and the subscription is a silent no-op; the board is effectively polling.
+  0346 repointed the subscription so it names the table that actually changes —
+  it did NOT make live updates start working.

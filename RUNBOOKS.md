@@ -1942,6 +1942,73 @@ The first 7 days after enabling Sentry on the scraper and ml-service will surfac
 
 ---
 
+## Housekeeper page shows no rooms after the room_work split (migration 0346)
+
+**Symptom:** a housekeeper opens their phone link and sees "no work today",
+or the manager Rooms board renders every tile as unassigned/vacant, right
+after 0346 is applied.
+
+**Why it happens:** 0346 split `pms_housekeeping_assignments` into a read-only
+PMS mirror plus `public.room_work` (everything Staxis owns). Both pages now read
+BOTH halves and merge them. Any of three things breaks that:
+
+1. `room_work` was never backfilled (0346 applied partially, or the backfill's
+   row-count guard fired and aborted the transaction).
+2. The housekeeper's rooms exist but resolve to nobody — `assigned_staff_id` is
+   NULL *and* the mirror's `housekeeper_name` no longer matches a staff name.
+3. PostgREST has not reloaded its schema cache, so `room_work` reads 404 and the
+   merge degrades.
+
+**The exact check.** One query answers which of the three it is:
+
+```sql
+select
+  (select count(*) from public.pms_housekeeping_assignments
+    where property_id = :pid and date = current_date)         as mirror_rows,
+  (select count(*) from public.room_work
+    where property_id = :pid and date = current_date)         as work_rows,
+  (select count(*) from public.room_work
+    where property_id = :pid and date = current_date
+      and assigned_staff_id is not null)                      as assigned_by_id;
+```
+
+- `work_rows` is 0 but `mirror_rows` is not → the backfill did not run. Re-apply
+  0346 (it is idempotent: `create table if not exists` + `on conflict do
+  nothing` + `drop column if exists`).
+- `work_rows` is healthy but `assigned_by_id` is 0 → nothing has assigned by id
+  yet, which is FINE: the read path falls back to matching the mirror's
+  `housekeeper_name`. If the page is still empty, the name is not matching —
+  compare them:
+
+```sql
+select a.room_number, a.housekeeper_name, s.name as staff_name
+  from public.pms_housekeeping_assignments a
+  left join public.staff s
+    on s.property_id = a.property_id
+   and lower(btrim(s.name)) = lower(btrim(a.housekeeper_name))
+ where a.property_id = :pid and a.date = current_date;
+```
+
+  A NULL `staff_name` is the miss. Fix it by assigning the room in the app (which
+  writes `assigned_staff_id`, permanently immune to spelling) — not by editing
+  the mirror, which `service_role` can no longer write.
+
+- Both counts healthy and the page is still empty → schema cache. Run
+  `NOTIFY pgrst, 'reload schema';` or hit `/api/admin/doctor` with auth.
+
+**Do NOT "fix" this by writing the mirror.** `service_role` holds SELECT only on
+`pms_housekeeping_assignments`; writes go through
+`staxis_apply_hk_mirror(p_property_id, p_rows)`. A `permission denied for table
+pms_housekeeping_assignments` in the logs means some code path still tries to
+write it directly — that is the bug, not the grant.
+
+**Verify like a housekeeper, not like an owner.** Open the SMS link in a private
+window with no Staxis session. The RLS silent-empty-state bug class has bitten
+three times and every time the tests passed, because the owner testing it was
+signed in.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

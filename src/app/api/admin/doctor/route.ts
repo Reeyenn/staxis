@@ -40,6 +40,8 @@
  *   cua_cost_cap_paused         — warns if a hotel's CUA is paused on the
  *                                 $5/day Claude cost cap
  *   cua_mfa_pending             — warns if a CUA session is stuck on PMS 2FA
+ *   unused_index_watch          — warns (never fails) about never-scanned
+ *                                 non-unique indexes on large tables
  *
  * NOT run here (enforced elsewhere): RLS-enabled / RLS-policy-coverage /
  * storage-bucket-RLS / PII-bucket-private invariants are checked at LINT time
@@ -142,6 +144,7 @@ const checks: Array<[string, CheckFn]> = [
   ['cua_sessions_alive',          checkCuaSessionsAlive],
   ['cua_cost_cap_paused',         checkCuaCostCapPaused],
   ['cua_mfa_pending',             checkCuaMfaPending],
+  ['unused_index_watch',          checkUnusedIndexWatch],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1006,6 +1009,47 @@ async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs
     return {
       status: 'ok',
       detail: `all ${aliveRows.length} live CUA session(s) heartbeating within ${CUA_HEARTBEAT_STALE_MS / 60_000} min${note}`,
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Unused-index watch (migration 0349).
+ *
+ * The public schema holds 734 indexes, 276 never scanned since the stats
+ * reset — but only 98 are even droppable and they total 3.6 MB, and on a
+ * one-hotel database idx_scan=0 mostly means "nobody ran that query this
+ * quarter", not "this index is dead". So this check NEVER fails: it reports
+ * the handful of never-scanned non-unique indexes on tables big enough
+ * (>10k rows) for the reading to mean something, and leaves the judgement to
+ * a human. Primary and unique indexes are excluded by the view — those are
+ * constraints, not performance guesses.
+ */
+async function checkUnusedIndexWatch(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('staxis_unused_index_watch')
+      .select('table_name, index_name, index_size, approx_rows')
+      .order('index_name', { ascending: true })
+      .limit(25);
+    if (error) {
+      // The view arrives with 0349; before it is applied this is not a problem
+      // worth alerting on.
+      return { status: 'warn', detail: `staxis_unused_index_watch unavailable: ${errToString(error)}` };
+    }
+    const rows = (data ?? []) as Array<{
+      table_name: string; index_name: string; index_size: string; approx_rows: number;
+    }>;
+    if (rows.length === 0) {
+      return { status: 'ok', detail: 'no never-scanned indexes on tables over 10k rows' };
+    }
+    return {
+      status: 'warn',
+      detail: `${rows.length} never-scanned index(es) on large tables: ` +
+        rows.map((r) => `${r.index_name} on ${r.table_name} (${r.index_size}, ~${r.approx_rows} rows)`).join('; '),
+      fix: 'Review, do not sweep. Confirm no seasonal/rare query needs it, then drop in a migration. Counters reset on every stats reset.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };
