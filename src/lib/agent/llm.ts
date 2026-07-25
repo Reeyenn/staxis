@@ -20,6 +20,13 @@ import {
   type ToolDefinition,
 } from './tools';
 import { captureException } from '@/lib/sentry';
+import {
+  detectUnbackedCompletionClaim,
+  fakeSuccessCorrection,
+  type FakeSuccessLanguage,
+  type FakeSuccessRule,
+  type UnbackedClaim,
+} from '@/lib/agent/fake-success-guard';
 import { env } from '@/lib/env';
 import {
   ANTHROPIC_REQUEST_TIMEOUT_MS,
@@ -834,6 +841,8 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   let messages = toClaudeMessages(opts.history, opts.newUserMessage);
   const toolCallsExecuted: RunAgentResult['toolCallsExecuted'] = [];
   const assistantMessages: RunAgentResult['assistantMessages'] = [];
+  // Same evidence the streaming path collects — see detectFakeSuccess.
+  const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false };
 
   let totalInput = 0;
   let totalUncachedInput = 0;
@@ -939,9 +948,16 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       // Done — final answer. Sync variant has no UI to stream into, so
       // we return the truncation marker inlined; streamAgent below emits
       // a synthetic text_delta instead to keep persisted text clean.
-      const finalText = response.stop_reason === 'max_tokens'
+      let finalText = response.stop_reason === 'max_tokens'
         ? `${turnText}\n\n_(Response hit the output token limit. Ask a follow-up to continue.)_`
         : turnText;
+      // Fake-success guard — same rule as streamAgent. No stream to interleave
+      // with here, so the correction is simply appended to the returned text.
+      const claim = detectFakeSuccess(opts, finalText, toolTrace);
+      if (claim) {
+        reportFakeSuccess(claim, opts);
+        finalText = `${finalText}${fakeSuccessCorrection(claim.lang)}`;
+      }
       return {
         text: finalText,
         toolCallsExecuted,
@@ -997,6 +1013,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         dryRun: opts.dryRun,
       });
       const isError = !result.ok;
+      noteToolRan(toolTrace, call.name, result.ok);
       toolCallsExecuted.push({ call, result: result.data ?? result.error, isError });
       const rawContent = result.ok
         ? typeof result.data === 'string'
@@ -1099,6 +1116,92 @@ export function partitionGatedCalls(
   return { held, inline };
 }
 
+// ─── Fake-success guard ────────────────────────────────────────────────────
+
+/**
+ * Per-turn record of what actually executed, for the fake-success guard.
+ *
+ * Both flags count only tools that SUCCEEDED, which is the semantic each
+ * consumer actually wants:
+ *   • `mutatingToolRan` — a mutation that was refused by a gate or failed in
+ *     the handler changed nothing, so a "Done" on top of it is still a lie.
+ *   • `anyToolRan` — this exists to answer "could this sentence be quoting
+ *     data the model just read?". A read that errored handed the model no
+ *     data to quote, so it must not soften the guard.
+ */
+interface TurnToolTrace {
+  anyToolRan: boolean;
+  mutatingToolRan: boolean;
+}
+
+function noteToolRan(trace: TurnToolTrace, name: string, ok: boolean): void {
+  if (!ok) return;
+  trace.anyToolRan = true;
+  if (isMutationTool(name)) trace.mutatingToolRan = true;
+}
+
+/**
+ * Decide whether this turn's final text is an unbacked claim of completed work.
+ *
+ * Returns null (guard OFF) in three cases, each a deliberate precision choice:
+ *
+ *  1. **A mutating tool ran.** Something really happened; the claim is backed.
+ *
+ *  2. **No mutating tool was even OFFERED this turn.** Background callers (the
+ *     summarizer, JSON-shaped one-shots) get a read-only or empty catalog. The
+ *     model there has no user to mislead, and firing would only add noise.
+ *
+ *  3. **`newUserMessage` is null — a post-approval RESUME turn.** This is the
+ *     important one. When a user approves a card, `/api/agent/command/
+ *     resolve-action` executes the tool ITSELF and then calls streamAgent with
+ *     `newUserMessage: null` so the model can narrate the result. The mutation
+ *     genuinely happened, but it happened OUTSIDE this generator, so
+ *     `mutatingToolRan` is false and "Done — room 302 is marked clean" would be
+ *     flagged as a lie when it is the plain truth. Telling a user nothing
+ *     changed when it did is a worse failure than the one this guard exists to
+ *     fix, so resume turns are excluded outright.
+ *
+ * The cost is coverage: a claim made on a resume turn about a SECOND action
+ * that was never approved is not caught. That is the accepted trade — the
+ * approval card already shows the user exactly what they authorised.
+ */
+function detectFakeSuccess(
+  opts: RunAgentOpts,
+  finalText: string,
+  trace: TurnToolTrace,
+): UnbackedClaim | null {
+  if (trace.mutatingToolRan) return null;
+  if (opts.newUserMessage === null) return null;
+  if (!opts.tools.some(t => t.mutates === true)) return null;
+  return detectUnbackedCompletionClaim(finalText, { anyToolRan: trace.anyToolRan });
+}
+
+/**
+ * Make the incident countable. Sentry is the counter — same posture as INV-22
+ * and `assertStableBlockIsCacheable`: the agent layer has no synchronous DB
+ * handle here, and a guard whose firing leaves no trace is indistinguishable
+ * from a guard that never fires.
+ *
+ * The matched sentence is included because the recurring phrasings are what
+ * tell us whether the model is being talked out of the tool layer by a prompt
+ * injection or is simply hallucinating success.
+ */
+function reportFakeSuccess(claim: UnbackedClaim, opts: RunAgentOpts): void {
+  captureException(
+    new Error(
+      `[llm] assistant claimed a completed action with no mutating tool call (${claim.rule})`,
+    ),
+    {
+      subsystem: 'fake-success-guard',
+      rule: claim.rule,
+      lang: claim.lang,
+      surface: opts.toolContext.surface,
+      role: opts.toolContext.user.role,
+      matched: claim.matched.slice(0, 300),
+    },
+  );
+}
+
 // ─── Streaming agent loop ──────────────────────────────────────────────────
 
 export type AgentEvent =
@@ -1116,6 +1219,12 @@ export type AgentEvent =
   // all mutations of this assistant turn so resume waits for all to resolve.
   | { type: 'tool_call_pending_approval'; call: AgentToolCall; tier: 'quick' | 'card'; turnKey: string }
   | { type: 'done'; usage: UsageReport; finalText: string }
+  // The assistant claimed a completed action but no mutating tool ran this
+  // turn. The correction is ALSO appended to the streamed text and to
+  // `done.finalText`, so a consumer that ignores this event still shows the
+  // user the retraction; the event exists so the incident is countable.
+  // See src/lib/agent/fake-success-guard.ts.
+  | { type: 'fake_success_blocked'; rule: FakeSuccessRule; lang: FakeSuccessLanguage; matched: string }
   // Error events carry `usage` whenever the stream consumed any tokens
   // before the error fired (iteration-cap exit, mid-stream exception).
   // The route finalizes the cost reservation against this usage rather
@@ -1155,6 +1264,9 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   let totalCostUsd = 0;
   let finalText = '';
   let lastModelId: string | null = null;
+  // What actually executed this turn — the evidence the fake-success guard
+  // grades the final text against.
+  const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false };
 
   // Mid-iter spend accounting (Codex round-6 R5 + round-7 F3, 2026-05-13).
   // streamAgent only commits an iter's usage AFTER stream.finalMessage()
@@ -1353,10 +1465,35 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
             delta: '\n\n_(Response hit the output token limit — ask a follow-up to continue.)_',
           };
         }
+
+        // ── Fake-success guard ────────────────────────────────────────────
+        // The text has already streamed to the browser, so we cannot un-say
+        // it — and we should not want to. Append an explicit retraction as a
+        // real text_delta (the UI renders it live) and, UNLIKE the max_tokens
+        // marker above, bake it into `finalText` so it is PERSISTED. That is
+        // deliberate: the next turn replays this message to the model, and it
+        // must see that its claim was retracted rather than treat "Done" as
+        // established fact and build on it.
+        const claim = detectFakeSuccess(opts, finalText, toolTrace);
+        if (claim) {
+          reportFakeSuccess(claim, opts);
+          const correction = fakeSuccessCorrection(claim.lang);
+          yield { type: 'text_delta', delta: correction };
+          yield {
+            type: 'fake_success_blocked',
+            rule: claim.rule,
+            lang: claim.lang,
+            matched: claim.matched,
+          };
+          finalText = `${finalText}${correction}`;
+        }
+
         yield {
           type: 'done',
           usage: buildUsage(),
-          finalText, // clean — no truncation marker baked in
+          // No truncation marker baked in. The fake-success correction above
+          // IS baked in, deliberately — see that block.
+          finalText,
         };
         return;
       }
@@ -1457,6 +1594,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
               ...opts.toolContext,
               dryRun: opts.dryRun,
             });
+            noteToolRan(toolTrace, call.name, result.ok);
             yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError: !result.ok };
           }
 
@@ -1502,6 +1640,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           dryRun: opts.dryRun,
         });
         const isError = !result.ok;
+        noteToolRan(toolTrace, call.name, result.ok);
         yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError };
         const rawContent = result.ok
           ? typeof result.data === 'string'

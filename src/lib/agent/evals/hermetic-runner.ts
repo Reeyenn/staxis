@@ -31,6 +31,7 @@
 import {
   streamAgent,
   type AgentEvent,
+  type AgentMessage,
   type RunAgentOpts,
 } from '@/lib/agent/llm';
 import {
@@ -104,6 +105,21 @@ export interface HermeticCaseInput {
   /** Chat surface holds every mutation for approval — production default. */
   approvalMode?: boolean;
   surface?: AgentSurface;
+  /**
+   * Prior conversation replayed into the turn. Default `[]`.
+   *
+   * Needed to reproduce the POST-APPROVAL RESUME turn, where the mutation was
+   * already executed by `/api/agent/command/resolve-action` and the model is
+   * only narrating the result. That turn behaves differently from a fresh one
+   * and had no hermetic representation before the fake-success guard needed
+   * to prove it does not misfire there.
+   */
+  history?: AgentMessage[];
+  /**
+   * `null` reproduces a resume turn (`streamAgent({ newUserMessage: null })`).
+   * Defaults to `input`, i.e. a normal fresh user turn.
+   */
+  newUserMessage?: string | null;
 }
 
 export interface HermeticToolInvocation {
@@ -214,8 +230,8 @@ export async function runHermetic(input: HermeticCaseInput): Promise<HermeticRes
 
   const runOpts: RunAgentOpts = {
     systemPrompt,
-    history: [],
-    newUserMessage: input.input,
+    history: input.history ?? [],
+    newUserMessage: input.newUserMessage === undefined ? input.input : input.newUserMessage,
     tools: getToolsForRole(input.role, surface),
     approvalMode: input.approvalMode ?? false,
     modelClient: fake.client,

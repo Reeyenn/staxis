@@ -60,6 +60,8 @@ describe('agent eval bank — hermetic cases', () => {
         script: c.hermetic!.script,
         fixture: c.hermetic!.fixture,
         approvalMode: c.hermetic!.approvalMode,
+        history: c.hermetic!.history,
+        newUserMessage: c.hermetic!.newUserMessage,
       });
       assert.equal(
         result.errorMessage,

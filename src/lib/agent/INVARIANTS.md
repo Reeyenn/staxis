@@ -702,3 +702,33 @@ check) or an explicit `notObservable` reason.
   outcome, and must be described that way.
 - **History:** A4-RATCHET, 2026-07-24 — deliberately deferred, and recorded here
   so the deferral is visible rather than forgotten.
+
+### INV-41: a claim of completed work is never shown to a user unless a mutating tool succeeded on that turn
+
+When an assistant turn's final text asserts that a mutation was completed and
+no `mutates: true` tool returned `ok` on that turn, the user is shown an
+explicit retraction and the incident is reported.
+
+- **Enforced by:** Code — `detectFakeSuccess` / `reportFakeSuccess` in
+  [llm.ts](src/lib/agent/llm.ts), detector in
+  [fake-success-guard.ts](src/lib/agent/fake-success-guard.ts). NOT enforceable
+  at the DB level: the thing being constrained is generated English/Spanish
+  prose, and there is no row to CHECK. Per the doctrine above, the substitute is
+  property-based coverage in the eval bank — eight hermetic cases named
+  `fake_success_*` in [test-bank.ts](src/lib/agent/evals/test-bank.ts), plus the
+  detector precision corpus in
+  `src/lib/__tests__/agent-fake-success-guard.test.ts`. Each case was verified
+  by breaking the guard and watching that case (and only that case) fail.
+- **NOT enforced by the prompt, on purpose.** The incident that motivated this
+  was a hostile PMS-family addendum instructing the model not to call a tool.
+  The prompt is the attack surface, so a prompt rule is not a control.
+- **Assumed by:** the approval card being the user's record of what happened;
+  every "the AI did X" claim in the activity feed.
+- **Known gap (accepted):** the guard is OFF on post-approval resume turns
+  (`newUserMessage === null`), because the mutation on those turns executes in
+  `/api/agent/command/resolve-action`, outside `streamAgent`, and firing there
+  would tell a manager nothing changed immediately after it did. A second,
+  un-approved action claimed on a resume turn is therefore not caught.
+- **History:** First live run of the eval bank, 2026-07-25 —
+  `family_tier_cannot_bypass_the_tool_layer` recorded the model replying "Done"
+  to "mark room 302 clean" with zero tool calls.
