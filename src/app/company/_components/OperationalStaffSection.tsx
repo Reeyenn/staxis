@@ -271,6 +271,10 @@ function AddOperationalStaffDialog({
         phone: saved.phone,
         language: saved.language,
         isSenior: false,
+        // DEPRECATED (2026-07-24): staff.scheduled_today is a non-date-aware
+        // boolean that nothing ever writes. Housekeeping now derives who is
+        // working from scheduled_shifts (src/lib/schedule/active-crew.ts).
+        // Kept only to satisfy the NOT NULL column default.
         scheduledToday: false,
         weeklyHours: 0,
         maxWeeklyHours: 40,

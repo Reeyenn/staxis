@@ -4,18 +4,23 @@
  * Manager-initiated "Auto-assign" button on the Schedule board. Runs the
  * SAME assignment engine + persistence path as the 15-min cron (shared
  * runner in src/lib/auto-assign-runner.ts), but scoped to one property +
- * the date the manager is looking at, and with two policy tweaks suited
+ * the date the manager is looking at, and with one policy tweak suited
  * to a manual click:
  *
- *   - respectScheduledToday = false — the manager is staring at the crew
- *     on the board and wants the unassigned rooms spread across all of
- *     them, not just whoever happens to be flagged scheduled_today.
- *   - respectPriority = true — honor the priority modal: never auto-place
- *     onto a housekeeper the manager marked "Excluded".
+ *   - respectPriority = true — honor the per-housekeeper "Automatic room
+ *     assignment" setting on the staff member's card in Staff: never
+ *     auto-place onto someone the manager set to "Never".
+ *
+ * Who gets the rooms is resolved from the Staff schedule for that date
+ * (shared helper in src/lib/schedule/active-crew.ts), so the engine can
+ * only place work onto crew the manager can actually see on the board.
  *
  * Non-destructive + idempotent: only places cleaning_tasks that have no
- * active hk_assignments row. To rebalance from scratch the manager hits
- * "Reset" first (POST /api/housekeeping/reset-assignments), then this.
+ * active hk_assignments row. That means it is a NO-OP once the day is
+ * planned — which is why the board's "Re-plan day" button calls
+ * POST /api/housekeeping/reset-assignments (no taskId → clear the day)
+ * and then this route. Keep the two separate: a manager filling in the
+ * gaps must never risk shuffling rooms people are already walking to.
  *
  * Auth: requireSession (manager-facing) + property-access gate.
  *
@@ -97,7 +102,6 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
     const result = await runAutoAssignForProperty(propertyId, tz, {
       businessDate,
-      respectScheduledToday: false,
       respectPriority: true,
       assignedBy: 'auto',
       assignedByUserId: auth.userId,

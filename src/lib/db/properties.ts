@@ -4,7 +4,7 @@
 
 import type { Property } from '@/types';
 import { supabase, logErr, asRecordRows, asRecordRow } from './_common';
-import { toPropertyRow, fromPropertyRow } from '../db-mappers';
+import { fromPropertyRow } from '../db-mappers';
 
 // Explicit column list, in lock-step with fromPropertyRow() in db-mappers.ts.
 // Replaces `.select('*')` per cost-hotpaths audit recommendation #5/#13 —
@@ -33,7 +33,24 @@ export async function getProperty(_uid: string, pid: string): Promise<Property |
   return row ? fromPropertyRow(row) : null;
 }
 
-export async function updateProperty(_uid: string, pid: string, data: Partial<Property>): Promise<void> {
-  const { error } = await supabase.from('properties').update(toPropertyRow(data)).eq('id', pid);
-  if (error) { logErr('updateProperty', error); throw error; }
-}
+/**
+ * ⚠️ THERE IS DELIBERATELY NO `updateProperty` HERE. Don't add one back.
+ *
+ * A browser-side `updateProperty` existed until 2026-07-24 and SILENTLY SAVED
+ * NOTHING for anyone but an admin. It wrote `properties` through the ANON
+ * client, and UPDATE on `properties` is admin-only RLS (migration
+ * 0002_auth_bridge.sql, tightened by 0161). For a general manager the policy
+ * filtered the statement down to zero rows — and an UPDATE that matches zero
+ * rows is NOT a Postgres error. No thrown error, no `error` object, nothing to
+ * catch: the promise resolved, the success toast fired, the modal closed, and
+ * the hotel's data was unchanged. The user had no way to tell. That is exactly
+ * how the Housekeeping board's cleaning-time settings modal lied to managers
+ * for months (removed 2026-07-24, fields moved to /settings/clean-times).
+ *
+ * It was deleted rather than documented because a documented footgun is still
+ * a footgun. Writing a property setting? Add it to an `/api/...` route that
+ * uses `supabaseAdmin`, gate it on the right capability, and have the route
+ * `.select()` back the rows it touched so a zero-row write is a real failure.
+ * Working examples: PUT /api/settings/clean-times, POST
+ * /api/inventory/property-config.
+ */

@@ -85,6 +85,40 @@ export function isValidBaseMinutes(n: unknown): n is number {
   );
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Shift length (properties.shift_minutes)
+//
+// Not a clean time, but it lives here because it is edited on the same
+// Settings → Clean Times screen, saved by the same route, and gated by the
+// same `manage_clean_times` capability — one length, one place. It answers
+// "how much cleaning fits in one person's day", which is what turns a pile of
+// minutes into a crew size: the per-housekeeper capacity bars and Over-cap /
+// Near-full pills on the board, the "Recommended N HK" readout, the timeline's
+// shift window, and the forecast's headcount all divide by it.
+//
+// It used to be editable only from a gear icon on the Housekeeping board that
+// wrote `properties` through the browser client — an admin-only write, so for
+// a general manager it silently saved nothing (removed 2026-07-24).
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Allowed range for the per-housekeeper shift length, in minutes (1h–24h). */
+export const MIN_SHIFT_MINUTES = 60;
+export const MAX_SHIFT_MINUTES = 1440;
+
+/** Fallback when `properties.shift_minutes` is unset. Mirrors
+ *  DEFAULT_SHIFT_MINUTES in src/lib/forecast/index.ts — keep them equal. */
+export const DEFAULT_SHIFT_MINUTES = 420;
+
+/** True when `n` is a whole number of minutes inside the allowed shift range. */
+export function isValidShiftMinutes(n: unknown): n is number {
+  return (
+    typeof n === 'number' &&
+    Number.isInteger(n) &&
+    n >= MIN_SHIFT_MINUTES &&
+    n <= MAX_SHIFT_MINUTES
+  );
+}
+
 /** A single standard row, as read from `hk_clean_time_standards`. */
 export interface CleanTimeStandardRow {
   cleaning_type: string;

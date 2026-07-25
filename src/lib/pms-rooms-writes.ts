@@ -1,14 +1,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// pms-rooms-writes — server-only writes from manager actions on the
-// Rooms tab into the new pms_* schema.
+// pms-rooms-writes — server-only writes from housekeeper, agent and
+// inspection actions into the new pms_* schema.
 //
 // Why this exists:
-//   Plan v4 dropped the legacy `rooms` table; manager tile-cycling actions
-//   (Mark cleaning / Mark ready / Reset) used to update one row in `rooms`.
+//   Plan v4 dropped the legacy `rooms` table; room lifecycle actions
+//   (Start / Done / DND / issue note) used to update one row in `rooms`.
 //   They now land into TWO tables:
 //     - pms_housekeeping_assignments — the per-(date, room) HK plan row.
 //       Holds started_at / completed_at / status / dnd_active / cleaning_type
-//       / housekeeper_name. Read by the manager Rooms board.
+//       / housekeeper_name. Read by every board that renders today's plan.
 //     - pms_room_status_log — append-only event log of room status changes.
 //       Mirrors the manager-set status to a Staxis-owned event so audit /
 //       analytics / future CUA-conflict reconciliation can see what the
@@ -34,10 +34,11 @@
 //   (property_id, room_number) wins.
 //
 // Trust model:
-//   These helpers are server-only and trust their arguments. The API
-//   route (/api/housekeeping/room-action) MUST enforce:
-//     - requireSession (manager-facing UI)
-//     - userHasPropertyAccess (user owns the pid)
+//   These helpers are server-only and trust their arguments. Every caller
+//   (/api/housekeeper/room-action, the agent room tools, the inspection
+//   correction loop) MUST enforce its own auth before calling in:
+//     - an authenticated session or a validated public-link capability
+//     - property access (the caller owns the pid)
 //
 // What gets persisted (by field):
 //   status, startedAt, completedAt
@@ -70,7 +71,6 @@ import { todayStr } from './utils';
 import {
   reverseMapType,
   parseRoomId,
-  composeRoomId,
 } from './pms-rooms-server';
 
 // Truly legacy-unused Room fields with no pms_* home. The former workflow
@@ -102,9 +102,10 @@ const UNSUPPORTED_UPDATE_FIELDS = [
 // arrive at this server module as STRINGS, not Date objects — despite the
 // `as Date` casts at the call site. Calling .toISOString() directly on a
 // string throws "TypeError: ...toISOString is not a function", which 500'd
-// the whole save. That was the manager Rooms-tab "dirty rooms never go clean"
-// bug: the clean path sends completedAt and hit the throw; the dirty path
-// writes completed_at: null (no .toISOString() call) and worked. new Date()
+// the whole save. That was the (now-removed) manager Rooms tab's "dirty rooms
+// never go clean" bug: the clean path sends completedAt and hit the throw;
+// the dirty path writes completed_at: null (no .toISOString() call) and
+// worked. new Date()
 // accepts both a Date and an ISO string, so this normalizes defensively.
 function toIso(v: Date | string | null | undefined): string | null {
   if (v === null || v === undefined) return null;
@@ -460,8 +461,8 @@ export async function applyRoomUpdate(
     // the table's default status 'not_started' → the merge derives 'dirty'. For
     // assign_room that's the intended signal (assigning a room puts it on the
     // HK plan = needs cleaning); callers that must NOT create a tile (e.g.
-    // front-desk rush, manager room-notes) deliberately UPDATE-only at the
-    // route layer instead of calling applyRoomUpdate.
+    // front-desk rush) deliberately UPDATE-only at the route layer instead
+    // of calling applyRoomUpdate.
     const { error: assignErr } = await supabaseAdmin
       .from('pms_housekeeping_assignments')
       .upsert(
@@ -529,185 +530,4 @@ export async function applyRoomUpdate(
       });
     }
   }
-}
-
-/**
- * Materialize a phantom room — insert (or upsert) into pms_rooms_inventory
- * AND apply the initial assignment update. Returns the composite Room.id
- * (`${date}:${room_number}`) the client can use for subsequent updates.
- *
- * CUA clobber warning: pms_rooms_inventory is the schema-documented
- * CUA-owned table. As of 2026-05-25 CUA does upsert into it (via
- * recipe-adapter's getRoomLayout route). A manually-added room WILL be
- * preserved if its room_number matches a real PMS room (the upsert is
- * idempotent on (property_id, room_number)). A truly synthetic room
- * (not in the PMS) will persist as long as the upsert keys don't
- * collide, but the next sync's "rooms that disappeared from the PMS"
- * pass — if/when that lands — could clean it up.
- */
-export async function applyRoomAdd(
-  pid: string,
-  room: Omit<Room, 'id'>,
-): Promise<string> {
-  const roomNumber = room.number?.trim();
-  if (!roomNumber) {
-    throw new Error('applyRoomAdd: room.number is required');
-  }
-  const date = (room.date as string | undefined) || todayIsoDate();
-
-  // Codex Major #5: check whether the inventory row already exists BEFORE
-  // we upsert, so we know whether a follow-up failure leaves a phantom
-  // inventory row (which we then clean up). If the row already existed
-  // pre-call we don't touch it on failure — could be a PMS-extracted row.
-  const { data: existingInv } = await supabaseAdmin
-    .from('pms_rooms_inventory')
-    .select('id')
-    .eq('property_id', pid)
-    .eq('room_number', roomNumber)
-    .maybeSingle();
-  const wePreExisted = Boolean(existingInv);
-
-  const { error: invErr } = await supabaseAdmin
-    .from('pms_rooms_inventory')
-    .upsert(
-      { property_id: pid, room_number: roomNumber, room_type: null },
-      { onConflict: 'property_id,room_number' },
-    );
-  if (invErr) {
-    log.error('[pms-rooms-writes] applyRoomAdd inventory upsert failed', {
-      pid, roomNumber, msg: invErr.message,
-    });
-    throw invErr;
-  }
-  if (!wePreExisted) {
-    log.warn('[pms-rooms-writes] manual inventory insert — CUA upsert preserves on next sync if room_number matches PMS', {
-      pid, roomNumber,
-    });
-  }
-
-  const rid = composeRoomId(date, roomNumber);
-  try {
-    await applyRoomUpdate(pid, rid, { ...room });
-    return rid;
-  } catch (err) {
-    // Assignment write failed. If we just created the inventory row,
-    // clean it up so a failed add doesn't leave a phantom row that
-    // shows up on the manager board with no state. Pre-existing rows
-    // stay untouched (they may belong to CUA / a real PMS room).
-    if (!wePreExisted) {
-      const { error: cleanupErr } = await supabaseAdmin
-        .from('pms_rooms_inventory')
-        .delete()
-        .eq('property_id', pid)
-        .eq('room_number', roomNumber);
-      if (cleanupErr) {
-        log.error('[pms-rooms-writes] applyRoomAdd cleanup of phantom inventory row failed', {
-          pid, roomNumber, msg: cleanupErr.message,
-        });
-      }
-    }
-    throw err;
-  }
-}
-
-/**
- * Remove a room's assignment for a given date. Does NOT delete the
- * inventory row.
- *
- * Semantic note (Codex Major #9): pms_rooms_inventory is the canonical
- * "rooms this property has" list, owned by the CUA. Hard-deleting an
- * inventory row would just re-appear on the next CUA sync if the room
- * is still in the PMS, so a hard delete makes no sense for PMS rooms.
- * For manually-added rooms (no PMS counterpart) the inventory row will
- * persist after this call — the room reappears on mergePmsRoomsForDate
- * polls as an unassigned tile until the manager re-adds an assignment.
- *
- * In practice deleteRoom has NO callers in the current codebase (the
- * RoomsTab UI has no delete button). It exists for API completeness;
- * if a future UI surface needs hard-delete semantics, it should land
- * an inventory-aware variant.
- */
-export async function applyRoomDelete(pid: string, rid: string): Promise<void> {
-  const key = await resolveRoomKey(pid, rid, todayIsoDate());
-  if (!key) {
-    log.warn('[pms-rooms-writes] applyRoomDelete: unrecognized rid', { pid, rid });
-    return;
-  }
-  const { error } = await supabaseAdmin
-    .from('pms_housekeeping_assignments')
-    .delete()
-    .eq('property_id', pid)
-    .eq('date', key.date)
-    .eq('room_number', key.roomNumber);
-  if (error) {
-    log.error('[pms-rooms-writes] applyRoomDelete failed', {
-      pid, rid, msg: error.message,
-    });
-    throw error;
-  }
-}
-
-/**
- * Batched add — inventory upsert + per-row assignment writes.
- * Returns a result object so the API route can surface partial failure
- * instead of silently logging-and-success'ing.
- */
-export interface BulkRoomAddResult {
-  requested: number;
-  inventoryInserted: number;
-  assignmentsFailed: string[];
-}
-
-export async function applyBulkRoomAdd(
-  pid: string,
-  rooms: Omit<Room, 'id'>[],
-): Promise<BulkRoomAddResult> {
-  const result: BulkRoomAddResult = {
-    requested: rooms.length,
-    inventoryInserted: 0,
-    assignmentsFailed: [],
-  };
-  if (rooms.length === 0) return result;
-
-  const inventoryRows = rooms
-    .map(r => ({
-      property_id: pid,
-      room_number: r.number?.trim(),
-      room_type: null,
-    }))
-    .filter(r => r.room_number);
-
-  const { error: invErr } = await supabaseAdmin
-    .from('pms_rooms_inventory')
-    .upsert(inventoryRows, { onConflict: 'property_id,room_number' });
-  if (invErr) {
-    log.error('[pms-rooms-writes] applyBulkRoomAdd inventory upsert failed', {
-      pid, count: rooms.length, msg: invErr.message,
-    });
-    throw invErr;
-  }
-  result.inventoryInserted = inventoryRows.length;
-
-  log.warn('[pms-rooms-writes] manual bulk inventory insert', {
-    pid, count: rooms.length,
-  });
-
-  await Promise.all(
-    rooms.map(async r => {
-      const number = r.number?.trim();
-      if (!number) return;
-      const date = (r.date as string | undefined) || todayIsoDate();
-      const rid = composeRoomId(date, number);
-      try {
-        await applyRoomUpdate(pid, rid, { ...r });
-      } catch (err) {
-        log.error('[pms-rooms-writes] applyBulkRoomAdd row assignment failed', {
-          pid, rid, msg: (err as { message?: string }).message ?? String(err),
-        });
-        result.assignmentsFailed.push(number);
-      }
-    }),
-  );
-
-  return result;
 }

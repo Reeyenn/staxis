@@ -456,7 +456,7 @@ Or visually: Actions tab → left sidebar → each workflow should show recent r
 
 ## Railway env var drift
 
-**Symptom:** Vercel doctor is green but Railway scraper behavior is off. Examples: scraper heartbeat is fresh (so the process is alive), but dashboard numbers never update (scraper can't log into Choice Advantage because `CA_USERNAME` / `CA_PASSWORD` drifted); or app UI shows zero rooms on Schedule tab (`HOTELOPS_PROPERTY_ID` missing → scraper writes rows with null property_id).
+**Symptom:** Vercel doctor is green but Railway scraper behavior is off. Examples: scraper heartbeat is fresh (so the process is alive), but dashboard numbers never update (scraper can't log into Choice Advantage because `CA_USERNAME` / `CA_PASSWORD` drifted); or app UI shows zero rooms on the Dashboard and an empty Housekeeping Board tab (`HOTELOPS_PROPERTY_ID` missing → scraper writes rows with null property_id).
 
 **Diagnosis:**
 Compare env vars across platforms:
@@ -489,7 +489,7 @@ Check Railway logs for the preflight block the scraper prints at startup. If you
 ```bash
 curl -H "Authorization: Bearer $CRON_SECRET" https://hotelops-ai.vercel.app/api/admin/doctor | jq '.checks[] | select(.name=="supabase_heartbeat")'
 ```
-Heartbeat should be <10 min old. Then verify numbers are flowing: check the Schedule tab in the app.
+Heartbeat should be <10 min old. Then verify numbers are flowing: check the Dashboard room counts in the app (it reads `/api/housekeeping/rooms` every 6s).
 
 **Prevention:** The scraper now preflights `HOTELOPS_PROPERTY_ID`, `CA_USERNAME`, `CA_PASSWORD` at startup and `process.exit(1)` if any are missing or malformed — this turns silent writes-with-nulls into visible Railway crash-loops. Daily drift check catches the cross-platform Supabase key + CRON_SECRET class of drift.
 
@@ -497,7 +497,7 @@ Heartbeat should be <10 min old. Then verify numbers are flowing: check the Sche
 
 ## Supabase Realtime / platform outage
 
-**Symptom:** App loads but dashboard data never refreshes live — Maria has to F5 to see updates. Connecting the dots: the Schedule tab's auto-updating card counts stop changing even when a housekeeper marks a room. Browser DevTools Network tab shows failed WebSocket connections to `<project>.supabase.co/realtime/v1/websocket`.
+**Symptom:** App loads but dashboard data never refreshes live — Maria has to F5 to see updates. Connecting the dots: the Dashboard's auto-updating room counts and the Housekeeping Board tab's cards stop changing even when a housekeeper marks a room. Browser DevTools Network tab shows failed WebSocket connections to `<project>.supabase.co/realtime/v1/websocket`.
 
 **Diagnosis:**
 1. Check https://status.supabase.com/ — is Realtime listed as degraded?

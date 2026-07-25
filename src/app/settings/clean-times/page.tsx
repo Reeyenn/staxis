@@ -3,9 +3,23 @@
 
 export const dynamic = 'force-dynamic';
 // Settings → Clean Times. Manager edits the standard minutes for each
-// cleaning type. These drive the housekeeping workload estimates on the
-// Auto-Assign Board / Timeline (via the rules-engine base + the assignment
-// fallback). Backed by /api/settings/clean-times (GET/PUT, service-role).
+// cleaning type, plus how long one housekeeping shift is. These drive the
+// housekeeping workload estimates on the Auto-Assign Board / Timeline (via
+// the rules-engine base + the assignment fallback), and the shift length is
+// what turns a pile of minutes into a crew size (capacity bars, Over-cap /
+// Near-full pills, "Recommended N HK", the timeline window, the forecast).
+// Backed by /api/settings/clean-times (GET/PUT, service-role).
+//
+// The shift length landed here on 2026-07-24. Its previous and only editor
+// was a gear icon on the Housekeeping board that wrote `properties` from the
+// browser — an admin-only write, so a general manager saw "Settings saved"
+// and saved nothing. This page's PUT goes through the service role.
+//
+// Note the two different gates: the per-clean minutes follow the per-hotel
+// `manage_clean_times` capability (every role by default), while the shift
+// length is owner/GM-only — it was behind admin-only RLS before it moved
+// here, and it is the number every capacity bar and headcount recommendation
+// divides by. The API reports that as `canEditShift`.
 //
 // Bilingual via useLang() inline ternaries — matches the sibling settings
 // pages (e.g. settings/shifts) rather than the giant translations.ts map.
@@ -13,6 +27,7 @@ export const dynamic = 'force-dynamic';
 import React, { useEffect, useRef, useState } from 'react';
 import { useScope } from '@/lib/hooks/use-scope';
 import { useLang } from '@/contexts/LanguageContext';
+import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useCan } from '@/lib/capabilities/useCan';
 import { fetchWithAuth } from '@/lib/api-fetch';
@@ -21,6 +36,9 @@ import {
   CLEAN_TIME_DEFAULT_MINUTES,
   MIN_CLEAN_MINUTES,
   MAX_CLEAN_MINUTES,
+  MIN_SHIFT_MINUTES,
+  MAX_SHIFT_MINUTES,
+  DEFAULT_SHIFT_MINUTES,
   type EditableCleaningType,
 } from '@/lib/clean-time-standards';
 import { T, fonts, Btn, Caps } from '@/app/staff/_components/_tokens';
@@ -39,6 +57,13 @@ const TYPE_META: Record<EditableCleaningType, { en: string; es: string; enHint: 
   room_check:      { en: 'Room check',            es: 'Revisión de habitación',       enHint: 'Quick verify the room is ready',                         esHint: 'Verificación rápida de que la habitación está lista' },
   inspection_only: { en: 'Inspection only',       es: 'Solo inspección',              enHint: 'Senior inspection, no cleaning',                         esHint: 'Inspección por personal sénior, sin limpieza' },
 };
+
+// Shift length is stored in minutes but a manager thinks in hours, so the
+// field is hours. Quarter-hours round-trip exactly (0.25h = 15min).
+function minutesToHoursInput(mins: number): string {
+  const hours = mins / 60;
+  return Number.isInteger(hours) ? String(hours) : String(Number(hours.toFixed(2)));
+}
 
 export default function CleanTimesPage() {
   const { uid, pid } = useScope();
@@ -61,10 +86,24 @@ export default function CleanTimesPage() {
 }
 
 function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
+  // The Housekeeping board's capacity bars and "Recommended N HK" read the
+  // shift length out of PropertyContext, which is loaded once per session by a
+  // provider that sits above the router — so navigating back to the board
+  // would show the OLD number until a hard reload. Re-read the property after
+  // a save so the board is right the moment the manager walks over to it.
+  const { refreshProperty } = useProperty();
+
   // Per-type input values held as strings so the field can be edited freely;
   // parsed + validated on save.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [defaults, setDefaults] = useState<Record<string, number>>({ ...CLEAN_TIME_DEFAULT_MINUTES });
+  // Per-housekeeper shift length, held in HOURS as a string for the same
+  // free-editing reason as the minute fields above.
+  const [shiftHours, setShiftHours] = useState<string>(minutesToHoursInput(DEFAULT_SHIFT_MINUTES));
+  // The shift length is owner/GM-only (it sets the whole hotel's labor math —
+  // see the route header). Everyone else sees the number but can't change it,
+  // which is friendlier than letting them type and then 403ing the save.
+  const [canEditShift, setCanEditShift] = useState(false);
   const [loading, setLoading] = useState(true);
   // A failed load must NOT silently fill the form with industry defaults —
   // Save PUTs the full standards array, so saving from that state would
@@ -99,6 +138,8 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         data?: {
           standards?: Array<{ cleaningType: string; baseMinutes: number }>;
           defaults?: Record<string, number>;
+          shiftMinutes?: number;
+          canEditShift?: boolean;
         };
       } | null) => {
         if (!active) return;
@@ -112,6 +153,10 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
         }
         setDrafts(next);
         if (body?.data?.defaults) setDefaults(body.data.defaults);
+        if (typeof body?.data?.shiftMinutes === 'number') {
+          setShiftHours(minutesToHoursInput(body.data.shiftMinutes));
+        }
+        setCanEditShift(body?.data?.canEditShift === true);
         setLoading(false);
       })
       .catch(err => {
@@ -133,12 +178,23 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     setDrafts(prev => ({ ...prev, [type]: cleaned }));
   };
 
+  // Digits plus at most one decimal point — 7.5 hours has to be typeable.
+  const setShiftVal = (v: string) => {
+    const cleaned = v.replace(/[^0-9.]/g, '');
+    const [whole, ...rest] = cleaned.split('.');
+    const joined = rest.length > 0 ? `${whole}.${rest.join('')}` : whole;
+    setShiftHours(joined.slice(0, 5));
+  };
+
   const resetToDefaults = () => {
     const next: Record<string, string> = {};
     for (const t of EDITABLE_CLEANING_TYPES) {
       next[t] = String(defaults[t] ?? CLEAN_TIME_DEFAULT_MINUTES[t]);
     }
     setDrafts(next);
+    // Don't move a number this user can't save — it would show one shift
+    // length on screen and keep another in the database.
+    if (canEditShift) setShiftHours(minutesToHoursInput(DEFAULT_SHIFT_MINUTES));
     setSavedAt(null);
     setError(null);
   };
@@ -162,26 +218,59 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       }
       standards.push({ cleaningType: t, baseMinutes: n });
     }
+    // Shift length: typed in hours, sent in whole minutes. Omitted entirely
+    // for anyone who can't edit it — the route reads "no shiftMinutes" as
+    // "leave it alone", so their save still writes the cleaning times.
+    let shiftMinutes: number | undefined;
+    if (canEditShift) {
+      const hours = Number(shiftHours);
+      const mins = Math.round(hours * 60);
+      if (
+        shiftHours.trim() === '' || !Number.isFinite(hours) ||
+        mins < MIN_SHIFT_MINUTES || mins > MAX_SHIFT_MINUTES
+      ) {
+        setError(
+          lang === 'es'
+            ? `La duración del turno debe estar entre ${MIN_SHIFT_MINUTES / 60} y ${MAX_SHIFT_MINUTES / 60} horas.`
+            : `Shift length must be between ${MIN_SHIFT_MINUTES / 60} and ${MAX_SHIFT_MINUTES / 60} hours.`,
+        );
+        return;
+      }
+      shiftMinutes = mins;
+    }
     setSaving(true);
     setError(null);
     try {
       const res = await fetchWithAuth('/api/settings/clean-times', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, standards }),
+        body: JSON.stringify(
+          shiftMinutes === undefined
+            ? { propertyId: pid, standards }
+            : { propertyId: pid, standards, shiftMinutes },
+        ),
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body?.error || 'Save failed');
       }
       const body = await res.json().catch(() => null) as {
-        data?: { standards?: Array<{ cleaningType: string; baseMinutes: number }> };
+        data?: {
+          standards?: Array<{ cleaningType: string; baseMinutes: number }>;
+          shiftMinutes?: number;
+        };
       } | null;
       const list = body?.data?.standards ?? standards;
       const next: Record<string, string> = {};
       for (const s of list) next[s.cleaningType] = String(s.baseMinutes);
       setDrafts(next);
+      const echoedShift = body?.data?.shiftMinutes ?? shiftMinutes;
+      if (typeof echoedShift === 'number') setShiftHours(minutesToHoursInput(echoedShift));
       setSavedAt(Date.now());
+      // Best-effort: the save already succeeded, so a failed re-read must not
+      // turn a green "Saved" into a red error. Worst case the board shows the
+      // old shift length until the next reload.
+      try { await refreshProperty(); } catch { /* stale context, not a save failure */ }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -212,8 +301,8 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
           </h1>
           <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, marginTop: 6, maxWidth: 600, lineHeight: 1.5 }}>
             {lang === 'es'
-              ? 'Minutos estándar por tipo de limpieza. Estos tiempos impulsan el balanceo de carga en el Tablero de Asignación Automática.'
-              : 'Standard minutes per cleaning type. These times drive the workload balancing on the Auto-Assign Board.'}
+              ? 'Minutos estándar por tipo de limpieza, y cuánto dura un turno. Estos tiempos impulsan el balanceo de carga en el Tablero de Asignación Automática.'
+              : 'Standard minutes per cleaning type, and how long one shift is. These times drive the workload balancing on the Auto-Assign Board.'}
           </p>
         </div>
 
@@ -271,6 +360,59 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
               })}
             </section>
 
+            {/* Shift length — one field, its own card so it reads as a
+                different kind of number than the per-clean minutes above. */}
+            <section style={{
+              background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 16,
+              overflow: 'hidden', marginTop: 16,
+            }}>
+              <div style={{
+                display: 'grid', gridTemplateColumns: '1fr 132px',
+                gap: 12, alignItems: 'center', padding: '14px 18px',
+              }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 14.5, color: T.ink }}>
+                    {lang === 'es' ? '¿Cuánto dura un turno de limpieza?' : 'How long is a housekeeping shift?'}
+                  </div>
+                  <div style={{ fontSize: 12.5, color: T.ink3, marginTop: 2, lineHeight: 1.4 }}>
+                    {lang === 'es'
+                      ? 'Cuánta limpieza cabe en el día de una persona. Define las barras de carga del tablero y cuántas personas recomendamos.'
+                      : 'How much cleaning fits in one person’s day. Sets the workload bars on the board and how many housekeepers we recommend.'}
+                    {!canEditShift && (
+                      <>
+                        {' '}
+                        <span style={{ color: T.ink2 }}>
+                          {lang === 'es'
+                            ? 'Solo el propietario o el gerente general puede cambiarlo.'
+                            : 'Only the owner or general manager can change this.'}
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'flex-end' }}>
+                  <input
+                    inputMode="decimal"
+                    value={shiftHours}
+                    onChange={e => setShiftVal(e.target.value)}
+                    readOnly={!canEditShift}
+                    disabled={!canEditShift}
+                    aria-label={lang === 'es' ? 'Duración del turno — horas' : 'Shift length — hours'}
+                    style={{
+                      width: 72, boxSizing: 'border-box',
+                      padding: '8px 10px', borderRadius: 10, border: `1px solid ${T.rule}`,
+                      background: canEditShift ? T.paper : T.ruleSoft,
+                      fontFamily: fonts.mono, fontSize: 14,
+                      color: canEditShift ? T.ink : T.ink3,
+                      textAlign: 'center', outline: 'none',
+                    }}
+                  />
+                  {/* 'h' is the hour symbol in both EN and ES. */}
+                  <span style={{ fontSize: 12.5, color: T.ink3, width: 40 }}>h</span>
+                </div>
+              </div>
+            </section>
+
             {error && (
               <div role="alert" style={{
                 padding: '10px 14px', background: 'rgba(160,74,44,0.08)',
@@ -305,8 +447,8 @@ function CleanTimesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
 
             <p style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3, marginTop: 14, lineHeight: 1.5 }}>
               {lang === 'es'
-                ? 'Los cambios se aplican a las tareas de limpieza creadas después de guardar.'
-                : 'Changes apply to cleaning tasks created after you save.'}
+                ? 'Los tiempos de limpieza se aplican a las tareas creadas después de guardar. La duración del turno se aplica de inmediato.'
+                : 'Clean times apply to cleaning tasks created after you save. The shift length takes effect right away.'}
             </p>
           </>
         )}

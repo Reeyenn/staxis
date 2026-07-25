@@ -3,8 +3,7 @@
 
 export const dynamic = 'force-dynamic';
 // Split from 6094-line monolith on 2026-04-27. Each tab now lives in _components/:
-// - ScheduleTab.tsx: Schedule tab (assignment planning)
-// - RoomsTab.tsx: Rooms tab (live status board)
+// - ScheduleTab.tsx: the assignment board (who cleans what, in what order)
 // - DeepCleanTab.tsx: Deep clean tab (config + records)
 // - QualityTab.tsx: Quality & performance (merged Inspections + Performance,
 //   June 2026 — replaces the former two separate tabs)
@@ -20,7 +19,6 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ScheduleTab } from './_components/ScheduleTab';
-import { RoomsTab } from './_components/RoomsTab';
 import { DeepCleanTab } from './_components/DeepCleanTab';
 import { QualityTab } from './_components/QualityTab';
 import { HousekeepingSetup } from './_components/HousekeepingSetup';
@@ -31,11 +29,23 @@ import { isHousekeepingSetupComplete } from '@/lib/housekeeping/setup-gate';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
-type TabKey = 'rooms' | 'schedule' | 'quality' | 'deepclean';
+// The Rooms tab (a whole-hotel grid where a manager tapped a card to flip a
+// room clean/dirty) was removed 2026-07-24. The PMS owns room cleanliness and
+// Staxis only reads it, so that tap was discarded by the next report email
+// 30-60 minutes later. A control that silently throws away what the user typed
+// is worse than no control.
+//
+// The `schedule` key is a LABEL-ONLY misnomer, kept on purpose. The tab shows
+// today's room assignments — it never held shift scheduling (who works which
+// days, time off, open shifts, OT caps); that lives in Staff and stays there.
+// It was relabelled "Board" on 2026-07-24, but the key string is load-bearing:
+// `?tab=schedule` deep links, the saved `hk-tab` value in every existing
+// manager's browser, and src/lib/worklist/core.ts all point at it. Rename the
+// label freely; do not rename the key.
+type TabKey = 'schedule' | 'quality' | 'deepclean';
 
 const TABS: { key: TabKey; label: string; labelEs: string }[] = [
-  { key: 'rooms',     label: 'Rooms',      labelEs: 'Habitaciones'   },
-  { key: 'schedule',  label: 'Schedule',   labelEs: 'Horario'        },
+  { key: 'schedule',  label: 'Board',      labelEs: 'Tablero'        },
   { key: 'quality',   label: 'Quality',    labelEs: 'Calidad'        },
   { key: 'deepclean', label: 'Deep Clean', labelEs: 'Limpieza prof.' },
 ];
@@ -111,7 +121,7 @@ function SetupNoPermissionNotice({ lang }: { lang: 'en' | 'es' }) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 export default function HousekeepingPage() {
-  const [activeTab, setActiveTabState] = useState<TabKey>('rooms');
+  const [activeTab, setActiveTabState] = useState<TabKey>('schedule');
   const tabRefs = useRef<Partial<Record<TabKey, HTMLButtonElement | null>>>({});
   const { lang } = useLang();
   const { user, loading: authLoading } = useAuth();
@@ -128,7 +138,7 @@ export default function HousekeepingPage() {
   // Restore tab on mount. A `?tab=` deep-link (e.g. from the worklist) wins
   // over the saved choice; otherwise fall back to localStorage.
   useEffect(() => {
-    const valid: TabKey[] = ['rooms', 'schedule', 'quality', 'deepclean'];
+    const valid: TabKey[] = ['schedule', 'quality', 'deepclean'];
     const urlTab = new URLSearchParams(window.location.search).get('tab');
     if (urlTab && (valid as string[]).includes(urlTab)) {
       setActiveTabState(urlTab as TabKey);
@@ -139,6 +149,11 @@ export default function HousekeepingPage() {
     // Legacy keys: the former Inspections / Performance tabs are now merged
     // into Quality, so anyone whose last tab was one of those lands on Quality.
     if (saved === 'inspections' || saved === 'performance') { setActiveTabState('quality'); return; }
+    // The Rooms tab was removed 2026-07-24 (see the TabKey comment). Anyone
+    // whose last tab was Rooms lands on the assignment board — the closest
+    // surface, and the daily driver — rather than falling through to a
+    // default by accident.
+    if (saved === 'rooms') { setActiveTabState('schedule'); return; }
     if (saved && (valid as string[]).includes(saved)) setActiveTabState(saved as TabKey);
   }, []);
 
@@ -272,7 +287,6 @@ export default function HousekeepingPage() {
 
       {/* ── Tab content — keyed remount triggers the CSS .animate-in cascade ── */}
       <div key={activeTab} className="animate-in stagger-1">
-        {activeTab === 'rooms'     && <RoomsTab />}
         {activeTab === 'schedule'  && <ScheduleTab />}
         {activeTab === 'quality'   && <QualityTab />}
         {activeTab === 'deepclean' && <DeepCleanTab />}

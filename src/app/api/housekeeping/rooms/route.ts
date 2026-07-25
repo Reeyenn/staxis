@@ -27,8 +27,8 @@
  *         staff (best-effort name → id mapping)
  *     → returns standard {ok, requestId, data: Room[]} envelope
  *
- * Same shape rooms.ts used to emit via fromRoomRow() — RoomsTab.tsx and
- * every other consumer renders unchanged.
+ * Same shape rooms.ts used to emit via fromRoomRow(), so every consumer
+ * renders unchanged. Read-only: nothing writes room status back through here.
  */
 
 import { NextRequest } from 'next/server';
@@ -65,8 +65,8 @@ function isCalendarValid(date: string): boolean {
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
-  // Manager-facing UI (RoomsTab on /housekeeping). Bearer or cookie
-  // session — fetchWithAuth handles both.
+  // Manager-facing UI (the dashboard, via subscribeToRooms). Bearer or
+  // cookie session — fetchWithAuth handles both.
   const auth = await requireSession(req, { requestId });
   if (!auth.ok) return auth.response;
 
@@ -99,7 +99,7 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // M10 — rate-limit per (userId, propertyId). RoomsTab polls every 6s
+  // M10 — rate-limit per (userId, propertyId). The dashboard polls every 6s
   // foregrounded so a single tab is well within the 2400/hr cap. Multi-
   // tab managers + visibility-burst refetches still fit. A runaway
   // useEffect or compromised session is bounded.

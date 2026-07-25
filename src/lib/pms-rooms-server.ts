@@ -37,9 +37,9 @@
 //                     Rationale: today's HK assignment is the authoritative
 //                     "needs cleaning" signal. PMS status only matters when
 //                     no assignment exists (room not on today's HK plan).
-//                     Out-of-order rooms ride the work-order badge layer
-//                     in the UI, not a separate status — RoomsTab's openWoRooms
-//                     set picks them up via pms_work_orders_v2.
+//                     Out-of-order rooms are flagged via isOutOfService
+//                     (below) rather than getting their own status value —
+//                     see the OUT_OF_SERVICE_STATUSES note.
 //   assignedTo      ← lookup staff by NFC-normalized space-collapsed name
 //                     match (best-effort; M7 fix). Diacritic-safe.
 //   assignedName    ← pms_housekeeping_assignments.housekeeper_name (trimmed)
@@ -122,8 +122,8 @@ function deriveStatus(
   if (rawStatus === 'occupied') return 'clean';
   // Everything else (vacant_dirty, occupied_dirty, out_of_order,
   // out_of_inventory, unknown, null) defaults to 'dirty'. Out-of-order
-  // rooms get a separate visual treatment via pms_work_orders_v2 / the
-  // openWoRooms badge layer in RoomsTab.
+  // rooms are separated out below via isOutOfService, so they never reach
+  // a consumer as a plain 'dirty' room needing a turn.
   //
   // NOTE: deriveStatus stays purely status_log-based for back-compat with
   // its callers and tests. Out-of-service rooms are split out at the Room
@@ -152,11 +152,10 @@ function deriveStatusSource(
 // PMS status_log values that mean the room is blocked / out of service —
 // not a housekeeping turn. A guest can't be placed in it and HK won't
 // clean it, so it must NOT land in the 'dirty' ("needs turning") bucket
-// that the dashboard / laundry counts read. RoomsTab has a work-order
-// badge overlay that catches OOO rooms with an open WO, but the dashboard
-// and laundry have no such overlay — they read Room.status directly and
-// would otherwise count these as dirty. We tag them with isOutOfService so
-// those surfaces can bucket them separately. Mirrors BLOCKED_ROOM_STATUSES
+// that the dashboard / laundry counts read. Those surfaces read Room.status
+// directly and would otherwise count these as dirty, so we tag them with
+// isOutOfService and let each surface bucket them separately.
+// Mirrors BLOCKED_ROOM_STATUSES
 // in rules-engine/context.ts.
 const OUT_OF_SERVICE_STATUSES = new Set<string>([
   'out_of_order',

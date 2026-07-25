@@ -23,9 +23,9 @@
  *    flapping network must not toggle surfaces between honest-partial and
  *    fake-zero renderings at the refresh cadence.
  *
- * Rooms-driven surfaces (RoomsTab / front-desk / housekeeper mobile) do NOT
- * need this hook — their feed status rides the rooms responses themselves.
- * This is for surfaces on other data paths: dashboard tiles, ScheduleTab.
+ * Rooms-driven surfaces (front-desk / housekeeper mobile) do NOT need this
+ * hook — their feed status rides the rooms responses themselves. This is for
+ * surfaces on other data paths: dashboard tiles, ScheduleTab.
  */
 
 import { useEffect, useRef, useState } from 'react';

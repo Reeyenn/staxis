@@ -150,8 +150,6 @@ export type RateLimitEndpoint =
   | 'housekeeping-notices-post'      // manager posts to the notice board
   | 'housekeeping-notices-read'      // housekeeper page polls notices
   | 'housekeeping-notice-dismiss'    // per-user dismissal
-  | 'housekeeping-room-notes-post'   // manager adds a note from RoomsTab
-  | 'housekeeping-room-notes-read'   // housekeeper page reads manager notes
   // First-time Housekeeping setup — the optional "photograph your paper board"
   // screen. Uploads an image AND runs one Claude Vision read of it, so it costs
   // real money. Keyed on the RAW property id (api_limits.property_id FKs
@@ -165,14 +163,9 @@ export type RateLimitEndpoint =
   | 'housekeeper-mark-inspection'    // tap to flag ready for inspection
   // Cross-department activity log export (feature #18, 2026-05-25).
   | 'settings-activity-log-export'
-  // Post-merge sweep (Plan v4 cutover) — manager-facing Rooms board read
-  // endpoint. RoomsTab polls every 6s when foregrounded.
+  // Post-merge sweep (Plan v4 cutover) — today's room list, read-only.
+  // The dashboard polls it every 6s when foregrounded.
   | 'housekeeping-rooms'
-  // Plan v4 manager Rooms-tab writes (tile-cycling, add/delete). The
-  // browser DB layer (src/lib/db/rooms.ts) calls /api/housekeeping/
-  // room-action; keyed on (userId, propertyId). 600/hr is ~10 taps/min
-  // sustained — well above realistic manual tile cycling.
-  | 'housekeeping-room-action'
   // Schedule Forecast view — manager pulls multi-day demand/supply
   // predictions across today / 7-day / 14-day ranges. Each call fans
   // out to pms_reservations + demand_predictions + optimizer_results +
@@ -397,13 +390,11 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // 30/hr per IP — well above any single phone's realistic re-tap rate.
   'housekeeper-log-legacy-token': 30,
   // Sick-callout buckets — see RateLimitEndpoint union comment for rationale.
-  // Piece B/C caps. Manager posts (notices, room notes) are deliberate
+  // Piece B/C caps. Manager posts to the notice board are deliberate
   // actions — 60/hr is "manager spamming the notice board" headroom.
   'housekeeping-notices-post':     60,
   'housekeeping-notices-read':    600,
   'housekeeping-notice-dismiss':  100,
-  'housekeeping-room-notes-post':  60,
-  'housekeeping-room-notes-read': 600,
   // First-time setup board photo — one Claude Vision read per upload. A hotel
   // does this ONCE; 5/hr per property leaves room for a couple of retries on a
   // blurry first shot and nothing more.
@@ -414,11 +405,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeper-mark-inspection':  200,
   // Cross-department activity log export.
   'settings-activity-log-export':  30,
-  // Plan v4 manager Rooms board — 6s polling + visibility refetches.
+  // Plan v4 today's-rooms read — 6s dashboard polling + visibility refetches.
   'housekeeping-rooms':         2400,
-  // Plan v4 manager Rooms-tab writes (tile cycling). 600/hr per
-  // (user, property) — 10 taps/min sustained, well above real-world use.
-  'housekeeping-room-action':    600,
   // Schedule Forecast view — 60/hr per (user, property) covers a manager
   // opening the tab and switching ranges all day, with headroom for
   // realtime refetches and visibility-change refresh. Anything above
