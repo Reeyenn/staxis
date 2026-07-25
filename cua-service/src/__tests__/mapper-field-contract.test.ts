@@ -425,12 +425,11 @@ describe('value contract drift guard vs migration 0276', () => {
     return cols;
   };
 
+  // 0345 folded pms_future_bookings / pms_no_shows / pms_cancellations into
+  // pms_reservations, so only the two money feeds still own a 0276 table.
   const NEW_FEEDS: Array<[keyof Recipe['actions'], string]> = [
     ['getGuestBalances', 'pms_guest_balances'],
     ['getPaymentsDaily', 'pms_payments_daily'],
-    ['getFutureBookings', 'pms_future_bookings'],
-    ['getNoShows', 'pms_no_shows'],
-    ['getCancellations', 'pms_cancellations'],
   ];
 
   test('TARGET_VALUE_CONTRACTS == 0276 descriptor (name+type, minus writer-stamped captured_at)', () => {
@@ -446,6 +445,95 @@ describe('value contract drift guard vs migration 0276', () => {
         `${key} value contract drifted from 0276`,
       );
     }
+  });
+
+  // ── The folded lifecycle feeds (migration 0345) ────────────────────────────
+  // These three now upsert pms_reservations. The failure this guards against:
+  // a folded feed declares a column pms_reservations does not have, the writer
+  // sends it, the whole batch errors, and an empty feed looks exactly like a
+  // healthy quiet poll. Every column a folded feed contributes must therefore
+  // be either (a) a column the arrivals feed already writes to the same table,
+  // or (b) one of the five lifecycle columns 0345 added to the descriptor.
+  const LIFECYCLE_COLUMNS_0345 = new Set([
+    'booked_at', 'no_show_date', 'cancelled_date',
+    'cancellation_fee_cents', 'cancellation_reason',
+  ]);
+  const FOLDED_FEEDS: Array<keyof Recipe['actions']> = [
+    'getFutureBookings', 'getNoShows', 'getCancellations',
+  ];
+
+  test('folded lifecycle feeds all target pms_reservations (0345)', () => {
+    for (const key of FOLDED_FEEDS) {
+      const contract = TARGET_VALUE_CONTRACTS[key];
+      assert.ok(contract, `${key} missing from TARGET_VALUE_CONTRACTS`);
+      assert.equal(contract!.table, 'pms_reservations', `${key} must write the consolidated reservation row`);
+    }
+  });
+
+  // The columns pms_reservations physically has, read from the migration that
+  // creates it (0202) plus the ones 0345 adds. Parsed rather than hard-coded so
+  // this cannot pass by being edited in lockstep with a mistake.
+  const reservationColumnsFromMigrations = (): Set<string> => {
+    const MIG_REL_0202 = path.join('supabase', 'migrations', '0202_pms_data_schema.sql');
+    const P0202 = [
+      path.resolve(process.cwd(), '..', MIG_REL_0202),
+      path.resolve(process.cwd(), MIG_REL_0202),
+    ].find((p) => existsSync(p));
+    assert.ok(P0202, '0202 migration not found');
+    const sql = readFileSync(P0202!, 'utf8');
+    const start = sql.indexOf('create table if not exists public.pms_reservations (');
+    assert.ok(start >= 0, 'pms_reservations create-table not found in 0202');
+    const body = sql.slice(start + sql.slice(start).indexOf('(') + 1);
+    const end = body.indexOf('\n);');
+    assert.ok(end > 0, 'pms_reservations create-table body not terminated');
+    const names = new Set<string>();
+    for (const line of body.slice(0, end).split('\n')) {
+      const m = /^\s{2}([a-z_][a-z0-9_]*)\s+\S/.exec(line);
+      if (m && !['constraint', 'primary', 'unique', 'check', 'foreign'].includes(m[1]!)) {
+        names.add(m[1]!);
+      }
+    }
+    assert.ok(names.has('pms_reservation_id'), 'sanity: parsed the create-table body');
+    return names;
+  };
+
+  test('folded feeds only declare columns pms_reservations actually has', () => {
+    const existing = reservationColumnsFromMigrations();
+    for (const name of LIFECYCLE_COLUMNS_0345) existing.add(name);
+    for (const key of FOLDED_FEEDS) {
+      for (const col of TARGET_VALUE_CONTRACTS[key]!.columns) {
+        assert.ok(
+          existing.has(col.name),
+          `${key}.${col.name} is not a pms_reservations column — the write would error and the whole batch would be lost`,
+        );
+      }
+    }
+  });
+
+  test('columns shared with the arrivals feed agree on type', () => {
+    const arrivals = TARGET_VALUE_CONTRACTS.getArrivals;
+    assert.ok(arrivals, 'getArrivals missing from TARGET_VALUE_CONTRACTS');
+    assert.equal(arrivals!.table, 'pms_reservations');
+    const arrivalsByName = new Map(arrivals!.columns.map((c) => [c.name, c.type]));
+    let compared = 0;
+    for (const key of FOLDED_FEEDS) {
+      for (const col of TARGET_VALUE_CONTRACTS[key]!.columns) {
+        const arrivalsType = arrivalsByName.get(col.name);
+        if (arrivalsType === undefined) continue;
+        assert.equal(
+          col.type, arrivalsType,
+          `${key}.${col.name} is typed ${col.type} but arrivals writes the same column as ${arrivalsType}`,
+        );
+        compared++;
+      }
+    }
+    assert.ok(compared > 0, 'sanity: the folded feeds share columns with arrivals');
+  });
+
+  test('the cancellation reason lands as cancellation_reason, not 0276\'s bare `reason`', () => {
+    const names = TARGET_VALUE_CONTRACTS.getCancellations!.columns.map((c) => c.name);
+    assert.ok(names.includes('cancellation_reason'));
+    assert.ok(!names.includes('reason'), 'pms_reservations has no `reason` column — 0345 renamed it');
   });
 
   test('core enum canonical sets in TARGET_VALUE_CONTRACTS mirror the LIVE descriptor (post-0207 widening)', () => {

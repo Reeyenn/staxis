@@ -159,7 +159,7 @@ describe('saveGenericTable: empty batch is a healthy no-op (Codex P1)', () => {
   test('zero rows return ok:true with zero writes and never touch the DB', async () => {
     // Returns before the descriptor load — works offline against the
     // placeholder Supabase env, proving no network round-trip happens.
-    const result = await saveGenericTable(PID, 'pms_cancellations', []);
+    const result = await saveGenericTable(PID, 'pms_reservations', []);
     assert.equal(result.ok, true);
     assert.equal(result.inserted, 0);
     assert.equal(result.rejected, 0);

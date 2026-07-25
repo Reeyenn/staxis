@@ -239,26 +239,49 @@ async function computeNumbers(
 // recipe captured (✓) vs didn't (✗), and how many rows each holds live. Counts
 // are null until the map is promoted + the session polls (a park_draft writes
 // nothing yet) — captured-vs-missing is the immediately-useful signal.
-const FEED_CATALOG: { key: string; label: string; table: string }[] = [
+// `rowFilter` (migration 0345): pms_future_bookings / pms_no_shows /
+// pms_cancellations were folded into pms_reservations, so five feed keys now
+// share one table. Without a filter the badge would show the same total for
+// all five and hide the fact that, say, the cancellations report captured
+// nothing. See ACTION_FEED_CONTRACTS in src/lib/pms/recipe-coverage.ts, which
+// carries the same filters for the admin coverage view.
+const FEED_CATALOG: {
+  key: string;
+  label: string;
+  table: string;
+  rowFilter?: { column: string; op: 'notNull' | 'gteToday' };
+}[] = [
   { key: 'getRoomStatus',     label: 'Room status (clean/dirty/occupied)', table: 'pms_room_status_log' },
   { key: 'getArrivals',       label: "Today's arrivals",                   table: 'pms_reservations' },
   { key: 'getDepartures',     label: "Today's departures",                 table: 'pms_reservations' },
   { key: 'getWorkOrders',     label: 'Maintenance / work orders',          table: 'pms_work_orders_v2' },
-  { key: 'getFutureBookings', label: 'Future bookings',                    table: 'pms_future_bookings' },
+  { key: 'getFutureBookings', label: 'Future bookings',                    table: 'pms_reservations',
+    rowFilter: { column: 'arrival_date',   op: 'gteToday' } },
   { key: 'getGuestBalances',  label: 'Guest balances owed',                table: 'pms_guest_balances' },
   { key: 'getPaymentsDaily',  label: "Today's payments",                   table: 'pms_payments_daily' },
-  { key: 'getNoShows',        label: 'No-shows',                           table: 'pms_no_shows' },
-  { key: 'getCancellations',  label: 'Cancellations',                      table: 'pms_cancellations' },
+  { key: 'getNoShows',        label: 'No-shows',                           table: 'pms_reservations',
+    rowFilter: { column: 'no_show_date',   op: 'notNull' } },
+  { key: 'getCancellations',  label: 'Cancellations',                      table: 'pms_reservations',
+    rowFilter: { column: 'cancelled_date', op: 'notNull' } },
 ];
 
 interface FeedStatus { key: string; label: string; captured: boolean; count: number | null }
 
-async function countTableRows(table: string, propertyId: string): Promise<number | null> {
+async function countTableRows(
+  table: string,
+  propertyId: string,
+  rowFilter?: { column: string; op: 'notNull' | 'gteToday' },
+): Promise<number | null> {
   try {
-    const { count, error } = await supabaseAdmin
+    let q = supabaseAdmin
       .from(table)
       .select('id', { count: 'exact', head: true })
       .eq('property_id', propertyId);
+    if (rowFilter?.op === 'notNull') q = q.not(rowFilter.column, 'is', null);
+    else if (rowFilter?.op === 'gteToday') {
+      q = q.gte(rowFilter.column, new Date().toISOString().slice(0, 10));
+    }
+    const { count, error } = await q;
     return error ? null : (count ?? 0);
   } catch {
     return null;
@@ -288,7 +311,7 @@ async function buildFeedBreakdown(
     if (isCaptured) {
       if (f.key === 'getArrivals') count = numbers?.arrivalsToday.value ?? null;
       else if (f.key === 'getDepartures') count = numbers?.departuresToday.value ?? null;
-      else count = await countTableRows(f.table, propertyId);
+      else count = await countTableRows(f.table, propertyId, f.rowFilter);
     }
     return { key: f.key, label: f.label, captured: isCaptured, count };
   }));

@@ -52,8 +52,10 @@ const ROOM_STATUS_DESCRIPTOR: TableSchemaDescriptor = {
   ],
 };
 
+// 0345: the future-bookings feed writes pms_reservations (one row per
+// reservation for its whole life). Fixture renamed with it.
 const FUTURE_BOOKINGS_DESCRIPTOR: TableSchemaDescriptor = {
-  table_name: 'pms_future_bookings',
+  table_name: 'pms_reservations',
   write_strategy: 'upsert',
   snapshot_scope_default: 'delta',
   natural_key: ['property_id', 'pms_reservation_id'],
@@ -221,7 +223,7 @@ describe('PMS X — full pipeline: recipe → templates → parse → validateRo
       },
     };
     const { templates } = recipeToTableTemplates(recipe, learned);
-    const tmpl = templates.find((t) => t.tableName === 'pms_future_bookings')!;
+    const tmpl = templates.find((t) => t.tableName === 'pms_reservations')!;
     assert.ok(tmpl, 'future-bookings template built');
     assert.equal(tmpl.fields.arrival_date!.parser, 'generic_date');
     assert.equal(tmpl.fields.arrival_date!.parserConfig?.dateFormat?.order, 'DMY');

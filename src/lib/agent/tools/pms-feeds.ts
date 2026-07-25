@@ -2,9 +2,15 @@
 // Read-only access to the 4 new universal PMS feeds (migration 0276):
 //   • get_outstanding_balances → pms_guest_balances  ("who owes a balance?")
 //   • get_payments_summary     → pms_payments_daily   ("how much did we collect today?")
-//   • get_future_bookings      → pms_future_bookings  ("how booked are we next weekend?")
-//   • get_recent_no_shows      → pms_no_shows         ("any no-shows last night?")
-//   • get_recent_cancellations → pms_cancellations
+//   • get_future_bookings      → pms_reservations    ("how booked are we next weekend?")
+//   • get_recent_no_shows      → pms_reservations    ("any no-shows last night?")
+//   • get_recent_cancellations → pms_reservations
+//
+// Migration 0345 folded pms_future_bookings / pms_no_shows / pms_cancellations
+// into pms_reservations — they were three lifecycle STATES of one booking, all
+// keyed (property_id, pms_reservation_id), so the same reservation could exist
+// in two tables and disagree. These three tools now read one table and select
+// the state they care about.
 //
 // These pms_* tables are RLS deny-all-browser (migration 0276) — they MUST be
 // read with the service-role client and scoped by ctx.propertyId (tenant
@@ -161,11 +167,14 @@ registerTool<{ startDate?: string; endDate?: string }>({
     const start = typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate) ? startDate : today;
     const end = typeof endDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : addDays(start, 14);
     const { data, error } = await supabaseAdmin
-      .from('pms_future_bookings')
+      .from('pms_reservations')
       .select('pms_reservation_id, guest_name, room_number, room_type, arrival_date, departure_date, rate_per_night_cents, total_amount_cents, status, channel_name')
       .eq('property_id', ctx.propertyId)
       .gte('arrival_date', start)
       .lte('arrival_date', end)
+      // "On the books" = still live. A cancelled or no-show booking in this
+      // window is NOT future business and must not inflate the pace answer.
+      .in('status', ['booked', 'checked_in'])
       .order('arrival_date', { ascending: true })
       .limit(200);
     if (error) return { ok: false, error: 'Could not load future bookings.' };
@@ -218,11 +227,12 @@ registerTool<{ nights?: number }>({
     const back = Number.isFinite(nights) && (nights as number) > 0 ? Math.floor(nights as number) : 1;
     const cutoff = addDays(today, -back);
     const { data, error } = await supabaseAdmin
-      .from('pms_no_shows')
+      .from('pms_reservations')
       .select('pms_reservation_id, guest_name, room_number, arrival_date, rate_per_night_cents, total_amount_cents, channel_name, no_show_date')
       .eq('property_id', ctx.propertyId)
-      .gte('arrival_date', cutoff)
-      .order('arrival_date', { ascending: false })
+      .eq('status', 'no_show')
+      .gte('no_show_date', cutoff)
+      .order('no_show_date', { ascending: false })
       .limit(100);
     if (error) return { ok: false, error: 'Could not load no-shows.' };
     const rows = data ?? [];
@@ -262,9 +272,10 @@ registerTool<{ days?: number }>({
     const back = Number.isFinite(days) && (days as number) > 0 ? Math.floor(days as number) : 7;
     const cutoff = addDays(today, -back);
     const { data, error } = await supabaseAdmin
-      .from('pms_cancellations')
-      .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, reason')
+      .from('pms_reservations')
+      .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, cancellation_reason')
       .eq('property_id', ctx.propertyId)
+      .eq('status', 'cancelled')
       .gte('cancelled_date', cutoff)
       .order('cancelled_date', { ascending: false })
       .limit(100);
@@ -282,7 +293,7 @@ registerTool<{ days?: number }>({
           cancelledOn: r.cancelled_date ?? null,
           cancellationFee: usd(r.cancellation_fee_cents),
           value: usd(r.total_amount_cents),
-          reason: r.reason ?? null,
+          reason: r.cancellation_reason ?? null,
           channel: r.channel_name ?? null,
         })),
         note: rows.length === 0 ? 'No cancellations recorded in this window.' : undefined,

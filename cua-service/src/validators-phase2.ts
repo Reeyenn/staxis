@@ -223,6 +223,120 @@ export function validateRatesAndInventory(row: Record<string, unknown>): Validat
   return { ok: true };
 }
 
+// ─── pms_reservations lifecycle coherence (migration 0345) ───────────────
+//
+// 0345 folded pms_future_bookings / pms_no_shows / pms_cancellations into
+// pms_reservations and added CHECK constraints that make the lifecycle
+// self-consistent:
+//   pms_res_cancel_coherent       status='cancelled' ⇔ cancelled_date set
+//   pms_res_noshow_coherent       status='no_show'   ⇔ no_show_date set
+//   pms_res_fee_requires_cancel   a fee only on a cancelled reservation
+//   pms_res_booked_before_arrival booked_at <= arrival_date
+//
+// The writer sends ONE .upsert() per batch, so a single CHECK violation
+// destroys the whole batch — a cancellations report with 40 good rows and one
+// row missing its date would write nothing and look like a healthy empty poll.
+// This sanitizer runs first and makes the row coherent, so the CHECKs are a
+// backstop that never fires on real data rather than a batch-killer.
+//
+// Precedence, matching the 0345 backfill: an explicit cancellation outranks a
+// no-show (the guest told us; the clock only inferred).
+
+const RESERVATION_LIFECYCLE_FIELDS = [
+  'cancelled_date',
+  'no_show_date',
+  'cancellation_fee_cents',
+  'cancellation_reason',
+] as const;
+
+function asIsoDate(v: unknown): string | undefined {
+  return typeof v === 'string' && validISODate(v) ? v : undefined;
+}
+
+function todayIsoUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/**
+ * Make a reservation row satisfy the 0345 lifecycle CHECKs. Mutates a copy and
+ * returns it plus the warnings describing what it changed. Exported for direct
+ * unit testing — the behaviour under test is "no row this returns can violate
+ * a 0345 CHECK", which is exactly what keeps a batch alive.
+ */
+export function sanitizeReservationLifecycle(
+  row: Record<string, unknown>,
+): { clean: Record<string, unknown>; warnings: string[] } {
+  const clean: Record<string, unknown> = { ...row };
+  const warnings: string[] = [];
+
+  // nights_derived is GENERATED ALWAYS in Postgres — sending it at all is a
+  // hard insert error, not a value problem. Drop it unconditionally.
+  if ('nights_derived' in clean) {
+    delete clean.nights_derived;
+    warnings.push('nights_derived is a generated column — dropped');
+  }
+
+  const cancelledDate = asIsoDate(clean.cancelled_date);
+  const noShowDate = asIsoDate(clean.no_show_date);
+  const arrivalDate = asIsoDate(clean.arrival_date);
+  const rawStatus = typeof clean.status === 'string' ? clean.status : undefined;
+
+  // Resolve the terminal state from status AND dates together.
+  let status: string | undefined = rawStatus;
+  if (cancelledDate) status = 'cancelled';
+  else if (rawStatus !== 'cancelled' && noShowDate) status = 'no_show';
+
+  if (status === 'cancelled') {
+    clean.status = 'cancelled';
+    if (!cancelledDate) {
+      // Honest fallback: the day we learned of the cancellation. arrival_date
+      // would be a fabricated cancellation date.
+      clean.cancelled_date = todayIsoUtc();
+      warnings.push('status=cancelled with no cancelled_date — stamped today');
+    }
+    if (clean.no_show_date != null) {
+      clean.no_show_date = null;
+      warnings.push('cancelled reservation also carried no_show_date — cancellation wins');
+    }
+  } else if (status === 'no_show') {
+    clean.status = 'no_show';
+    if (!noShowDate) {
+      // A no-show is a no-show *for an arrival*, so arrival_date is the right
+      // date when the report omits one.
+      clean.no_show_date = arrivalDate ?? todayIsoUtc();
+      warnings.push('status=no_show with no no_show_date — used arrival_date');
+    }
+    for (const f of ['cancelled_date', 'cancellation_fee_cents', 'cancellation_reason'] as const) {
+      if (clean[f] != null) {
+        clean[f] = null;
+        warnings.push(`${f} set on a no_show reservation — cleared`);
+      }
+    }
+  } else {
+    // Not terminal: no lifecycle date or fee may survive, or the biconditional
+    // CHECKs reject the row.
+    for (const f of RESERVATION_LIFECYCLE_FIELDS) {
+      if (clean[f] != null) {
+        clean[f] = null;
+        warnings.push(`${f} set on a non-terminal reservation (status=${rawStatus ?? 'null'}) — cleared`);
+      }
+    }
+  }
+
+  // booked_at <= arrival_date. A booking created after the guest arrived is a
+  // parse error, not a fact.
+  const bookedAt = asIsoDate(clean.booked_at);
+  if (clean.booked_at != null && !bookedAt) {
+    clean.booked_at = null;
+    warnings.push('booked_at not ISO YYYY-MM-DD — dropped');
+  } else if (bookedAt && arrivalDate && bookedAt > arrivalDate) {
+    clean.booked_at = null;
+    warnings.push(`booked_at ${bookedAt} is after arrival_date ${arrivalDate} — dropped`);
+  }
+
+  return { clean, warnings };
+}
+
 // ─── Registry: tableName → validator ─────────────────────────────────────
 
 /**
@@ -251,9 +365,16 @@ export const VALIDATOR_REGISTRY: Record<string, Validator> = {
   // passed layer-1 type checks wrote to Postgres as-is.
   pms_reservations: (row: Record<string, unknown>) => {
     const r = validateReservation(row as ReservationRow);
-    return r.ok
-      ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }
-      : { ok: false as const, reason: r.errors.join('; ') };
+    if (!r.ok) return { ok: false as const, reason: r.errors.join('; ') };
+    // Layer 2b (migration 0345): make the folded lifecycle self-consistent so
+    // the coherence CHECKs never kill a batch. Runs on the already-sanitized
+    // row so it sees the dropped/normalized status and dates.
+    const lifecycle = sanitizeReservationLifecycle(r.clean as Record<string, unknown>);
+    return {
+      ok: true as const,
+      clean: lifecycle.clean,
+      warnings: [...r.warnings, ...lifecycle.warnings],
+    };
   },
   pms_room_status_log: (row: Record<string, unknown>) => {
     const r = validateRoomStatus(row as RoomStatusRow);

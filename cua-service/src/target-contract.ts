@@ -369,8 +369,15 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'total_collected_cents', type: 'bigint' },
     ],
   },
+  // Migration 0345 folded pms_future_bookings / pms_no_shows /
+  // pms_cancellations into pms_reservations: they were three states of one
+  // booking, keyed identically, so the same reservation could live in two
+  // tables and disagree. All three feeds now upsert the SAME row on
+  // (property_id, pms_reservation_id); each contributes the columns its own
+  // report prints. The terminal-state guard trigger added in 0345 stops a
+  // stale arrivals report from un-cancelling a cancellation.
   getFutureBookings: {
-    table: 'pms_future_bookings',
+    table: 'pms_reservations',
     columns: [
       { name: 'pms_reservation_id', type: 'text' },
       { name: 'guest_name', type: 'text' },
@@ -386,7 +393,7 @@ export const TARGET_VALUE_CONTRACTS: Partial<
     ],
   },
   getNoShows: {
-    table: 'pms_no_shows',
+    table: 'pms_reservations',
     columns: [
       { name: 'pms_reservation_id', type: 'text' },
       { name: 'guest_name', type: 'text' },
@@ -400,7 +407,7 @@ export const TARGET_VALUE_CONTRACTS: Partial<
     ],
   },
   getCancellations: {
-    table: 'pms_cancellations',
+    table: 'pms_reservations',
     columns: [
       { name: 'pms_reservation_id', type: 'text' },
       { name: 'guest_name', type: 'text' },
@@ -411,7 +418,9 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'cancellation_fee_cents', type: 'bigint' },
       { name: 'total_amount_cents', type: 'bigint' },
       { name: 'channel_name', type: 'text' },
-      { name: 'reason', type: 'text' },
+      // 0276 called this `reason`; on the merged reservation row the name has
+      // to say WHICH reason, so 0345 lands it as cancellation_reason.
+      { name: 'cancellation_reason', type: 'text' },
     ],
   },
 };

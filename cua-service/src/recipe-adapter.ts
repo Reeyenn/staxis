@@ -197,22 +197,28 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
+  // 0345: these three are lifecycle STATES of a reservation, not separate
+  // facts. They upsert the same pms_reservations row on the same natural key
+  // the arrivals feed uses. snapshotScope stays 'delta' — a cancellations
+  // report is a partial view of the reservation universe, and delta is what
+  // stops reconcile-style "everything absent is gone" logic from ever
+  // applying (these are upsert-strategy anyway).
   getFutureBookings: {
-    tableName: 'pms_future_bookings',
+    tableName: 'pms_reservations',
     keys: ['property_id', 'pms_reservation_id'],
     writeStrategy: 'upsert',
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
   getNoShows: {
-    tableName: 'pms_no_shows',
+    tableName: 'pms_reservations',
     keys: ['property_id', 'pms_reservation_id'],
     writeStrategy: 'upsert',
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
   getCancellations: {
-    tableName: 'pms_cancellations',
+    tableName: 'pms_reservations',
     keys: ['property_id', 'pms_reservation_id'],
     writeStrategy: 'upsert',
     snapshotScope: 'delta',

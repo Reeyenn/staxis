@@ -114,6 +114,19 @@ export interface ActionFeedContract {
   label: string;
   /** The pms_* table this feed writes to (for the live row-count badge). */
   table: string;
+  /**
+   * Narrows the live row-count badge when several feeds share one table.
+   *
+   * Migration 0345 folded pms_future_bookings / pms_no_shows /
+   * pms_cancellations into pms_reservations, so five feed keys now write the
+   * same table. Counting the table would report the same number for all five
+   * and tell an operator nothing about whether THIS feed produced rows.
+   * `rowFilter` restricts the count to rows only this feed can have written.
+   *
+   * `notNull` — the column must be set (a cancellation has cancelled_date).
+   * `gteToday` — the column is on/after today (a future booking arrives later).
+   */
+  rowFilter?: { column: string; op: 'notNull' | 'gteToday' };
 }
 
 /**
@@ -139,9 +152,15 @@ export const ACTION_FEED_CONTRACTS: Record<string, ActionFeedContract> = {
   getGuests:              { label: 'Guests',                table: 'pms_guests' },
   getGuestBalances:       { label: 'Guest balances',        table: 'pms_guest_balances' },
   getPaymentsDaily:       { label: 'Daily payments',        table: 'pms_payments_daily' },
-  getFutureBookings:      { label: 'Future bookings',       table: 'pms_future_bookings' },
-  getNoShows:             { label: 'No-shows',              table: 'pms_no_shows' },
-  getCancellations:       { label: 'Cancellations',         table: 'pms_cancellations' },
+  // 0345: folded into pms_reservations — one booking, one row, for its whole
+  // life. rowFilter keeps each feed's live row-count badge honest now that
+  // five feed keys share the table.
+  getFutureBookings:      { label: 'Future bookings',       table: 'pms_reservations',
+                            rowFilter: { column: 'arrival_date',   op: 'gteToday' } },
+  getNoShows:             { label: 'No-shows',              table: 'pms_reservations',
+                            rowFilter: { column: 'no_show_date',   op: 'notNull' } },
+  getCancellations:       { label: 'Cancellations',         table: 'pms_reservations',
+                            rowFilter: { column: 'cancelled_date', op: 'notNull' } },
 };
 
 /**
