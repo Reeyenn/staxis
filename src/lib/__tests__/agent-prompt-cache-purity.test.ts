@@ -31,9 +31,18 @@ import { buildSystemPrompt } from '@/lib/agent/prompts';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
-// Times chosen to share no digits with any literal inside the prompt
-// constants, so "is this clock string in the stable block?" is unambiguous.
-const NOW = new Date('2026-07-24T14:22:00.000Z'); // 9:22 AM America/Chicago
+// REAL now, on purpose. `buildSystemPrompt` renders the snapshot through
+// `formatSnapshotForPrompt`, which computes the age against the wall clock and
+// is not given an injectable one at that call site. So a capture time has to be
+// a real offset from the present: pinned to a calendar date, `agedBy(5)` stops
+// meaning "five minutes ago" the moment the date rolls over, the age renders in
+// days, and the assertion below stops matching. That is exactly what happened —
+// the date was pinned to 2026-07-24 and the test went red at midnight.
+//
+// Nothing about the assertions relies on a fixed date: they check that the
+// rendered clock and age appear in the DYNAMIC block and never in the stable
+// one, which is true at any hour.
+const NOW = new Date();
 
 // Every buildSystemPrompt call below passes NOW explicitly. Without that, the
 // fixture's capture time is pinned but its AGE is measured against the wall
@@ -48,7 +57,7 @@ function agedBy(minutes: number): string {
 
 function snapshot(capturedAt: string): HotelSnapshot {
   return {
-    today: '2026-07-24',
+    today: NOW.toISOString().slice(0, 10),
     property: {
       id: '00000000-0000-0000-0000-0000000000e1',
       name: 'Comfort Suites',

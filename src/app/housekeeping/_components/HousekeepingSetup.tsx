@@ -31,6 +31,16 @@
  * you pick it. `prefers-reduced-motion: reduce` drops every transform and leaves
  * a plain cross-fade.
  *
+ * NOTHING MOVES THE SCREEN EXCEPT THE PERSON USING IT
+ * Picking an answer selects it and stops there. An earlier build advanced to the
+ * next question a moment after a chip was tapped, and it was the founder's
+ * clearest complaint: an answer he had just chosen slid away before he was done
+ * looking at it, and there was no way to sit on a question and change his mind.
+ * Every move now comes from Continue, Back, the progress rail, or Enter — and
+ * because the flow no longer moves as confirmation, a picked chip carries a
+ * visible check and Continue lights up. Do not reintroduce a timed jump; a
+ * failed photo upload does not move the screen either (it says so instead).
+ *
  * NETWORK
  * Both calls go through `fetchWithAuth` (bearer token + 401 recovery). The board
  * photo is best-effort by design and NEVER shows an error — it is optional, and
@@ -48,13 +58,22 @@ import {
   DEFAULT_SHIFT_START,
   DEFAULT_STAYOVER_MINUTES,
   MAX_CLEAN_MINUTES,
+  MAX_CUSTOM_DUTIES,
+  MAX_CUSTOM_LABEL_LENGTH,
+  MAX_CUSTOM_ROOM_TYPES,
   MIN_CLEAN_MINUTES,
+  customEntryKey,
   isLevelOfferable,
+  isReservedDutyLabel,
+  isReservedRoomTypeLabel,
   isValidCleanMinutes,
+  isValidCustomLabel,
   isValidShiftStart,
   levelLockReason,
+  normalizeCustomLabel,
   recommendLevel,
   type BoardBuiltBy,
+  type CustomRoomType,
   type HkLevel,
   type HousekeepingSetup as HousekeepingSetupValue,
   type InspectionPolicy,
@@ -107,7 +126,11 @@ const SETUP_STYLE = `
   .hks-chip:active:not(:disabled){transform:scale(.995);}
   .hks-chip.is-picked{animation:hks-pop .3s cubic-bezier(.22,1,.36,1)}
   .hks-chip:focus-visible,.hks-dot:focus-visible,.hks-plain:focus-visible{outline:2px solid #5C7A60;outline-offset:3px;}
-  .hks-num:focus{border-color:#5C7A60;box-shadow:0 0 0 4px rgba(92,122,96,.16);background:#fff;}
+  .hks-num:focus,.hks-text:focus{border-color:#5C7A60;box-shadow:0 0 0 4px rgba(92,122,96,.16);background:#fff;}
+  /* The tick that says "this is the one you chose". It occupies its slot at all
+     times and only fades in, so picking an answer never reflows the label next
+     to it — a row that jumps on tap reads as a mis-tap. */
+  .hks-mark{transition:opacity .24s cubic-bezier(.22,1,.36,1)}
   .hks-spin{display:inline-block;animation:hks-spin 1.1s linear infinite}
   .hks-dot{transition:background .3s cubic-bezier(.22,1,.36,1),width .3s cubic-bezier(.22,1,.36,1)}
   @media (prefers-reduced-motion: reduce){
@@ -115,8 +138,21 @@ const SETUP_STYLE = `
     .hks-screen-fwd,.hks-screen-back{animation:hks-fade .2s linear both!important}
     .hks-chip.is-picked{animation:none!important}
     .hks-chip:active:not(:disabled){transform:none!important}
-    .hks-chip,.hks-dot{transition:none!important}
+    .hks-chip,.hks-dot,.hks-mark{transition:none!important}
     .hks-spin{animation-duration:2.4s}
+  }
+  /* Q7 option cards. The wrapper div carries the card visuals because the fold
+     toggle is a SIBLING of the radio button, not a child (nested buttons are
+     invalid HTML). The unfold animates only on the manager's tap. */
+  @keyframes hks-unfold{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
+  .hks-lvl{transition:background .28s cubic-bezier(.22,1,.36,1),border-color .28s cubic-bezier(.22,1,.36,1),box-shadow .28s cubic-bezier(.22,1,.36,1)}
+  .hks-lvl:hover:not(.is-locked){border-color:rgba(92,122,96,.45)}
+  .hks-detail-open{animation:hks-unfold .26s cubic-bezier(.22,1,.36,1) both}
+  .hks-more{transition:color .2s ease}
+  .hks-more:hover{color:#3E5C48}
+  @media (prefers-reduced-motion: reduce){
+    .hks-lvl,.hks-more{transition:none!important}
+    .hks-detail-open{animation:hks-fade .15s linear both!important}
   }
 `;
 
@@ -164,6 +200,36 @@ function ChipGroup({
   );
 }
 
+/**
+ * The tick on a chosen answer.
+ *
+ * Load-bearing, not decoration. While picking an answer also moved the flow to
+ * the next question, the movement itself was the confirmation. Now that nothing
+ * moves until Continue is pressed, colour and weight alone were carrying the
+ * whole "yes, that one is yours" — and on a sunlit phone at a front desk, a
+ * pale sage wash is not a signal. This is.
+ *
+ * It keeps its slot whether or not it is showing, so choosing an answer never
+ * reflows the words beside it.
+ */
+function PickMark({ shown }: { shown: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className="hks-mark"
+      style={{
+        width: 22, height: 22, borderRadius: '50%', flexShrink: 0,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        background: T.sageDeep, color: '#fff',
+        fontSize: 12.5, fontWeight: 700, lineHeight: 1,
+        opacity: shown ? 1 : 0,
+      }}
+    >
+      ✓
+    </span>
+  );
+}
+
 function Chip({
   label, hint, active, picked, onPick, multi,
 }: {
@@ -185,7 +251,7 @@ function Chip({
       aria-pressed={multi ? active : undefined}
       onClick={onPick}
       style={{
-        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3,
+        display: 'flex', alignItems: 'center', gap: 12,
         width: '100%', minHeight: 56, padding: '13px 18px',
         textAlign: 'left', cursor: 'pointer', borderRadius: 14,
         background: active ? 'rgba(92,122,96,0.12)' : 'rgba(255,255,255,0.72)',
@@ -194,10 +260,16 @@ function Chip({
         fontFamily: FONT_SANS,
       }}
     >
-      <span style={{ fontSize: 15.5, fontWeight: active ? 600 : 500, color: T.ink, lineHeight: 1.35 }}>
-        {label}
+      <span style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3,
+        flex: 1, minWidth: 0,
+      }}>
+        <span style={{ fontSize: 15.5, fontWeight: active ? 600 : 500, color: T.ink, lineHeight: 1.35 }}>
+          {label}
+        </span>
+        {hint && <span style={{ fontSize: 12.5, color: T.ink2, lineHeight: 1.35 }}>{hint}</span>}
       </span>
-      {hint && <span style={{ fontSize: 12.5, color: T.ink2, lineHeight: 1.35 }}>{hint}</span>}
+      <PickMark shown={active} />
     </button>
   );
 }
@@ -289,6 +361,90 @@ function extractSentence(x: BoardExtractView, S: HkSetupStrings): string {
   return `${S.q3ReadLead} ${parts.join(', ')} ${S.q3ReadTail}`;
 }
 
+/* ─────────────────── Q2's "+": custom room types, while typing ───────────────
+ *
+ * A row is held as raw text until it is submitted, and every rule it is checked
+ * against is imported from `@/lib/housekeeping/setup-gate` — the same functions
+ * the server runs a moment later. Nothing here re-implements a rule: if the two
+ * ever drifted, the screen would happily accept a room type the save then
+ * refused, and the manager would have no way to work out which word was wrong.
+ */
+
+interface CustomRoomDraft {
+  /** Stable across re-renders so React keeps the right input focused. */
+  id: string;
+  label: string;
+  /** Text, not a number: "" is a row that hasn't been filled in yet. */
+  minutes: string;
+}
+
+/**
+ * What (if anything) is wrong with one row.
+ *
+ *   incomplete — blank name and/or blank time. NOT an error: they just added
+ *                the row. It still blocks Continue, so it has to say so, but it
+ *                is shown in grey rather than as a fault.
+ *   tooLong / reserved / duplicate / minutes — real problems, shown as alerts.
+ *
+ * Checked in this order so the message always names the thing furthest from
+ * storable: a 60-character name with no time yet is a naming problem, and
+ * telling them to "add a time" would send them at the wrong half of the row.
+ */
+type RoomRowProblem = 'incomplete' | 'tooLong' | 'reserved' | 'duplicate' | 'minutes' | null;
+
+/** Digits only, 1–3 of them — the same gate the built-in minutes boxes use. */
+function parseMinutesText(text: string): number {
+  return /^\d{1,3}$/.test(text.trim()) ? Number(text.trim()) : NaN;
+}
+
+/**
+ * What a custom-label box will accept from a keystroke or a paste.
+ *
+ * Control characters are dropped on the way IN rather than reported on the way
+ * out. `isValidCustomLabel` rejects them (a NUL pasted from a spreadsheet makes
+ * Postgres refuse the whole save), but they are invisible — a message saying
+ * "that name isn't allowed" about a character nobody can see is unanswerable.
+ * Stripping them here leaves LENGTH as the only way a typed name can be
+ * invalid, which is a thing the manager can actually see and fix.
+ *
+ * The generous 120-character ceiling is not the real cap: it only stops a paste
+ * from putting a novel in React state. The real cap is
+ * MAX_CUSTOM_LABEL_LENGTH, and going past it shows a message rather than
+ * truncating, because silently eating the end of someone's typing is how they
+ * end up saving a name they never wrote.
+ */
+function acceptLabelInput(raw: string): string {
+  let out = '';
+  for (let i = 0; i < raw.length && out.length < 120; i += 1) {
+    const code = raw.charCodeAt(i);
+    out += code < 32 || code === 127 ? ' ' : raw[i];
+  }
+  return out;
+}
+
+/**
+ * Problems for every row, in row order. Duplicates are pinned on the LATER row:
+ * the first "Suite" is the one they meant to keep, and flagging both would make
+ * a two-row list look entirely broken.
+ */
+function findRoomRowProblems(rows: readonly CustomRoomDraft[]): RoomRowProblem[] {
+  const seen = new Set<string>();
+  return rows.map((row) => {
+    const label = normalizeCustomLabel(row.label);
+    const minutesText = row.minutes.trim();
+    if (label !== '') {
+      if (!isValidCustomLabel(label)) return 'tooLong';
+      if (isReservedRoomTypeLabel(label)) return 'reserved';
+      const key = customEntryKey(label);
+      if (seen.has(key)) return 'duplicate';
+      seen.add(key);
+    }
+    if (label === '' || minutesText === '') return 'incomplete';
+    if (!isValidCleanMinutes(parseMinutesText(minutesText))) return 'minutes';
+    return null;
+  });
+}
+
 /* ──────────────────────────────── Component ────────────────────────────── */
 
 export interface HousekeepingSetupProps {
@@ -314,7 +470,6 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
   // Which option was picked on the CURRENT screen — cleared on every move so a
   // chip never pops just because you navigated back to a screen you'd answered.
   const [pulse, setPulse] = useState<string | null>(null);
-  const advanceTimer = useRef<number | null>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   // ── Answers ───────────────────────────────────────────────────────────
@@ -326,6 +481,18 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
   const [boardBuiltBy, setBoardBuiltBy] = useState<BoardBuiltBy | null>(null);
   const [inspection, setInspection] = useState<InspectionPolicy | null>(null);
   const [sideDuties, setSideDuties] = useState<SideDuty[]>([]);
+  // Q2's "+" list, held as TEXT while it is being typed (same reason the two
+  // built-in minutes boxes are text: a half-typed "4" must not become a number
+  // that fails validation while their finger is still on the keyboard).
+  const [customRooms, setCustomRooms] = useState<CustomRoomDraft[]>([]);
+  const customRowSeq = useRef(0);
+  // Q6's "+" list. Committed entries only — a duty is validated at the moment
+  // it is added, so anything in here is already storable.
+  const [customDuties, setCustomDuties] = useState<string[]>([]);
+  const [dutyDraft, setDutyDraft] = useState('');
+  const [dutyDraftOpen, setDutyDraftOpen] = useState(false);
+  const [dutyDraftError, setDutyDraftError] = useState<string | null>(null);
+  const dutyInputRef = useRef<HTMLInputElement>(null);
   // "Just rooms" must not look pre-answered. It is the answer that decides
   // whether laundry and breakfast time gets counted as room time, and showing it
   // as already chosen before the manager touches anything means the screen
@@ -339,8 +506,9 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
   // ── Photo + save state ────────────────────────────────────────────────
   const [photoState, setPhotoState] = useState<'idle' | 'uploading' | 'done'>('idle');
   const [extract, setExtract] = useState<BoardExtractView | null>(null);
-  // The ONE photo failure worth a word: the file format itself can't be read
-  // (an iPhone HEIC picked from the library). Every other failure stays silent.
+  // Why a photo didn't land, in one grey line. Two wordings: the file format
+  // can't be read at all (an iPhone HEIC picked from the library), or anything
+  // else went wrong. Neither is styled as an error — the step is optional.
   const [photoNote, setPhotoNote] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [saving, setSaving] = useState(false);
@@ -353,6 +521,22 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
   const checkoutMinutes = /^\d{1,3}$/.test(checkoutText.trim()) ? Number(checkoutText.trim()) : NaN;
   const stayoverMinutes = /^\d{1,3}$/.test(stayoverText.trim()) ? Number(stayoverText.trim()) : NaN;
   const minutesValid = isValidCleanMinutes(checkoutMinutes) && isValidCleanMinutes(stayoverMinutes);
+
+  // Q2's "+" rows, re-checked on every keystroke against the shared rules. An
+  // unfinished or impossible row holds Continue on Q2 — the alternative is
+  // letting them walk away from a half-typed room type and lose it at the save,
+  // six screens later, with a message about a screen they can't see.
+  const roomProblems = useMemo(() => findRoomRowProblems(customRooms), [customRooms]);
+  const customRoomsValid = roomProblems.every((p) => p === null);
+  const customRoomTypes: CustomRoomType[] = useMemo(
+    () => (customRoomsValid
+      ? customRooms.map((r) => ({
+        label: normalizeCustomLabel(r.label),
+        minutes: parseMinutesText(r.minutes),
+      }))
+      : []),
+    [customRooms, customRoomsValid],
+  );
 
   // The level rules are read straight off the shared module — never re-derived.
   const recommended: HkLevel = recommendLevel({
@@ -367,16 +551,8 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
       ? levelChoice
       : recommended;
 
-  useEffect(() => () => {
-    if (advanceTimer.current !== null) window.clearTimeout(advanceTimer.current);
-  }, []);
-
   const goto = useCallback((next: number) => {
     if (next < 0 || next >= TOTAL_SCREENS) return;
-    if (advanceTimer.current !== null) {
-      window.clearTimeout(advanceTimer.current);
-      advanceTimer.current = null;
-    }
     setDir((d) => (next === screen ? d : next > screen ? 1 : -1));
     setHasMoved(true);
     setPulse(null);
@@ -391,26 +567,23 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
   // and `preventScroll` stops the browser jumping the page on first mount.
   useEffect(() => { headingRef.current?.focus({ preventScroll: true }); }, [screen]);
 
-  // Which screen we're on, readable from an async callback without making that
-  // callback depend on (and be rebuilt by) every navigation.
-  const screenRef = useRef(screen);
-  useEffect(() => { screenRef.current = screen; }, [screen]);
+  // Opening Q6's "add something else" box puts the caret in it, so the tap that
+  // asked for a text field is the same tap that lets you start typing. Done in
+  // an effect rather than in the click handler because the input does not exist
+  // until this update has been committed to the DOM. Keyed on the open flag
+  // alone, so navigating back to Q6 with the box already open leaves focus on
+  // the question heading where the screen-change effect above put it.
+  useEffect(() => { if (dutyDraftOpen) dutyInputRef.current?.focus(); }, [dutyDraftOpen]);
 
   /**
-   * Pick-then-advance for the single-answer screens: the pick lands, the chip
-   * pops, and the flow moves on by itself. The short delay is what lets you see
-   * what you chose — instant navigation reads as if the tap missed. The timer
-   * ref doubles as a re-entry guard so a double tap can't skip two screens.
+   * Pick an answer on a single-answer screen. It selects, it pops, and it stops
+   * there — the person moves the flow, never the flow itself. See NOTHING MOVES
+   * THE SCREEN in the header before adding anything to this function.
    */
-  const pickAndAdvance = useCallback((token: string, apply: () => void) => {
+  const pick = useCallback((token: string, apply: () => void) => {
     apply();
     setPulse(token);
-    if (advanceTimer.current !== null) return;
-    advanceTimer.current = window.setTimeout(() => {
-      advanceTimer.current = null;
-      goto(screen + 1);
-    }, 300);
-  }, [goto, screen]);
+  }, []);
 
   const toggleDuty = useCallback((duty: SideDuty) => {
     setPulse(duty);
@@ -418,20 +591,110 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
     setSideDuties((cur) => (cur.includes(duty) ? cur.filter((d) => d !== duty) : [...cur, duty]));
   }, []);
 
+  /* ── Q2's "+" — add / edit / remove a custom room type ────────────────── */
+
+  const addCustomRoom = useCallback(() => {
+    setCustomRooms((cur) => {
+      if (cur.length >= MAX_CUSTOM_ROOM_TYPES) return cur;
+      customRowSeq.current += 1;
+      // Deliberately EMPTY, not prefilled with 30. A prefilled time under a name
+      // the hotel typed themselves looks like their own answer, and would be
+      // saved as a standard they never chose.
+      return [...cur, { id: `room-${customRowSeq.current}`, label: '', minutes: '' }];
+    });
+  }, []);
+
+  const editCustomRoom = useCallback((id: string, patch: Partial<CustomRoomDraft>) => {
+    setCustomRooms((cur) => cur.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  }, []);
+
+  const removeCustomRoom = useCallback((id: string) => {
+    setCustomRooms((cur) => cur.filter((r) => r.id !== id));
+  }, []);
+
+  /* ── Q6's "+" — add / remove a custom duty ────────────────────────────── */
+
+  /**
+   * Commit whatever is in the little text box as a duty.
+   *
+   * Validated against the shared module the instant it is added, so everything
+   * in `customDuties` is already storable and the final save can never fail on
+   * one of these. A rejected entry stays in the box with the reason underneath —
+   * clearing it would throw away what they typed.
+   *
+   * Returns false only when there was something in the box that could not be
+   * accepted. That is what lets Continue flush a duty the manager typed but
+   * never pressed Add on (see `advance`) without ever swallowing a bad one.
+   */
+  const commitDuty = useCallback((): boolean => {
+    const label = normalizeCustomLabel(dutyDraft);
+    if (label === '') return true;
+    if (!isValidCustomLabel(label)) {
+      setDutyDraftError(`${S.customTooLongLead} ${MAX_CUSTOM_LABEL_LENGTH} ${S.customTooLongTail}`);
+      return false;
+    }
+    if (isReservedDutyLabel(label)) {
+      setDutyDraftError(`“${label}” ${S.q6DutyReserved}`);
+      return false;
+    }
+    const key = customEntryKey(label);
+    if (customDuties.some((d) => customEntryKey(d) === key)) {
+      setDutyDraftError(`“${label}” ${S.q6DutyDuplicate}`);
+      return false;
+    }
+    // Unreachable today — the box is replaced by the cap message before a ninth
+    // duty can be typed — but `advance` refuses to leave Q6 whenever this
+    // returns false, so a silent `return false` here would be a dead Continue
+    // button with nothing on screen explaining it. It says the cap out loud.
+    if (customDuties.length >= MAX_CUSTOM_DUTIES) {
+      setDutyDraftError(`${S.q6CapLead} ${MAX_CUSTOM_DUTIES} ${S.q6CapTail}`);
+      return false;
+    }
+
+    setCustomDuties((cur) => [...cur, label]);
+    // Adding an "other" duty answers the same question "Just rooms" answers, so
+    // it clears it — the screen must never claim both that they only do rooms
+    // and that they also do pool towels. (The "Just rooms" chip reads its
+    // selected state from BOTH lists being empty, so appending here is what
+    // deselects it.)
+    setDutiesTouched(true);
+    setDutyDraft('');
+    setDutyDraftError(null);
+    dutyInputRef.current?.focus();
+    return true;
+  }, [dutyDraft, customDuties, S]);
+
+  const removeCustomDuty = useCallback((label: string) => {
+    setCustomDuties((cur) => cur.filter((d) => d !== label));
+  }, []);
+
+  /** "Just rooms" is the answer that excludes every other answer, customs included. */
+  const pickJustRooms = useCallback(() => {
+    setSideDuties([]);
+    setCustomDuties([]);
+    setDutyDraft('');
+    setDutyDraftError(null);
+    setDutyDraftOpen(false);
+    setDutiesTouched(true);
+    setPulse('__none');
+  }, []);
+
   /* ── Board photo — best effort, never blocks, never errors ───────────── */
 
   /**
    * A photo that didn't work out is a NON-EVENT, not a failure: the whole screen
-   * is optional and skippable in one tap. So we never show a message — we just
-   * carry on to the next question, exactly as the Skip button would have. The
-   * alternative (silently returning to idle) makes their tap look like it missed,
-   * which is a worse lie than moving on. Guarded on the screen still being Q3 so
-   * a slow upload can't yank someone forward from a screen they navigated to.
+   * is optional and skippable in one tap.
+   *
+   * It used to move them on to the next question by itself, on the grounds that
+   * dropping back to idle makes their tap look like it missed. That was the same
+   * timed jump the header now forbids everywhere else, so it is gone: the screen
+   * stays put and says one calm grey line instead. Nothing here is an error — it
+   * is not red, it does not block Continue, and Skip is still one tap away.
    */
-  const photoFailedSilently = useCallback(() => {
+  const photoFailed = useCallback(() => {
     setPhotoState('idle');
-    if (screenRef.current === 2) goto(3);
-  }, [goto]);
+    setPhotoNote(S.q3ReadFailNote);
+  }, [S]);
 
   const handleFile = useCallback(async (file: File) => {
     setPhotoState('uploading');
@@ -452,17 +715,15 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
       const data = body?.data ?? {};
       const path = typeof data.path === 'string' && data.path.trim() !== '' ? data.path : null;
       // 415 = we can't read this kind of file at all (an iPhone HEIC out of the
-      // photo library is the realistic case). Advancing silently here would let
-      // someone believe their board went through when the format was the whole
-      // problem, so this one failure stays on the screen with a neutral line —
-      // Skip is still right there, and picking a JPEG now works.
+      // photo library is the realistic case). It gets its own wording because
+      // it is the one failure with an action attached: picking a JPEG works.
       if (res.status === 415) {
         setPhotoState('idle');
         setPhotoNote(S.q3FormatNote);
         return;
       }
       if (!res.ok || body?.ok !== true || !path) {
-        photoFailedSilently();
+        photoFailed();
         return;
       }
       // The photo is the point; `extracted` is a bonus the route returns as null
@@ -472,9 +733,9 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
       setPhotoState('done');
     } catch (e) {
       if (e instanceof SessionEndedError) return;   // page is navigating away
-      photoFailedSilently();
+      photoFailed();
     }
-  }, [propertyId, photoFailedSilently, S]);
+  }, [propertyId, photoFailed, S]);
 
   /* ── Final save ──────────────────────────────────────────────────────── */
   const submit = useCallback(async () => {
@@ -486,11 +747,19 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
     // showed the network message here, "Try again" would fail identically
     // forever with nothing on screen pointing at the real cause two questions
     // back. So: take them to the question that needs fixing, and say so.
+    //
+    // The last test is the backstop for Q6's little text box. Leaving Q6 always
+    // tries to fold a typed duty in (see `navigate`), so anything still sitting
+    // there is an entry that could NOT be accepted — and finishing on top of it
+    // would close the questionnaire forever on a word they typed and we threw
+    // away. Back to Q6, where the reason is already printed under the box.
     const badScreen =
       !statusEntry ? 0
       : !isValidCleanMinutes(checkoutMinutes) || !isValidCleanMinutes(stayoverMinutes) ? 1
+      : !customRoomsValid ? 1
       : !isValidShiftStart(shiftStartTime) || !boardBuiltBy ? 3
       : !inspection ? 4
+      : normalizeCustomLabel(dutyDraft) !== '' ? 5
       : null;
     // The three `!x` tests are redundant with `badScreen` above (each maps to a
     // screen index there) and are kept only so the compiler can narrow the three
@@ -513,6 +782,12 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
       boardBuiltBy,
       inspection,
       sideDuties,
+      // The two "+" lists. Both are already normalized and already checked
+      // against the same rules the server will apply (custom rooms on every
+      // keystroke, custom duties at the moment each one is added), so neither
+      // can be the reason this save fails.
+      customRoomTypes,
+      customDuties,
       boardPhotoPath,
     };
 
@@ -548,27 +823,59 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
     }
   }, [
     saving, statusEntry, boardBuiltBy, inspection, checkoutMinutes, stayoverMinutes,
-    shiftStartTime, sideDuties, boardPhotoPath, chosenLevel, recommended, propertyId,
-    onComplete, goto, S,
+    shiftStartTime, sideDuties, customRoomsValid, customRoomTypes, customDuties,
+    dutyDraft, boardPhotoPath, chosenLevel, recommended, propertyId, onComplete, goto, S,
   ]);
 
   /* ── Per-screen gating ───────────────────────────────────────────────── */
   const canAdvance = useMemo(() => {
     switch (screen) {
       case 0: return statusEntry !== null;
-      case 1: return minutesValid;
+      case 1: return minutesValid && customRoomsValid;
       case 2: return photoState !== 'uploading';
       case 3: return isValidShiftStart(shiftStartTime) && boardBuiltBy !== null;
       case 4: return inspection !== null;
+      // Q6 can't be wrong: no duties at all is a real answer, and a custom duty
+      // is validated before it ever becomes a chip.
       case 5: return true;
       default: return true;
     }
-  }, [screen, statusEntry, minutesValid, photoState, shiftStartTime, boardBuiltBy, inspection]);
+  }, [
+    screen, statusEntry, minutesValid, customRoomsValid, photoState,
+    shiftStartTime, boardBuiltBy, inspection,
+  ]);
 
   const advance = useCallback(() => {
+    // Leaving Q6 with words still sitting in the "add something else" box and
+    // Add never pressed: keep them. The only way text gets in there is that
+    // someone typed it in answer to the question, and dropping it on the floor
+    // is a silent loss they would never think to check for. If it can't be
+    // accepted, commitDuty says why and we stay on the question — the same deal
+    // Q2 gives a half-finished room type.
+    if (screen === 5 && !commitDuty()) return;
     if (screen === TOTAL_SCREENS - 1) { void submit(); return; }
     if (canAdvance) goto(screen + 1);
-  }, [screen, canAdvance, goto, submit]);
+  }, [screen, canAdvance, goto, submit, commitDuty]);
+
+  /**
+   * Leave the current screen by Back or by the progress rail.
+   *
+   * These are the two ways out that are NOT Continue, and until now they were
+   * the two that skipped Q6's flush: a duty typed into the "add something else"
+   * box and never Added stayed invisible in state, then vanished at the save
+   * with the questionnaire already closed behind it. Exactly the silent loss
+   * `advance` was written to prevent — the guard was just on one door of three.
+   *
+   * Unlike Continue this never REFUSES to move. Back and the rail are
+   * navigation, not submission, and a question that won't let you leave it is
+   * the one thing worse than the bug. So a good entry is folded in and a bad one
+   * keeps its place in the box with the reason under it, and `submit` declines
+   * to finish while anything is still sitting there.
+   */
+  const navigate = useCallback((next: number) => {
+    if (screen === 5 && next !== 5) commitDuty();
+    goto(next);
+  }, [screen, goto, commitDuty]);
 
   // Enter advances from anywhere on the card except a button (buttons handle
   // their own Enter natively — otherwise picking a chip would also skip ahead).
@@ -590,10 +897,10 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
     // Q1 — how a clean room is recorded today
     <Question key="q1" id={headingId} title={S.q1Title} sub={S.q1Sub} headingRef={headingRef}>
       <ChipGroup role="radiogroup" labelledBy={headingId}>
-        <Chip label={S.q1RadioLabel} hint={S.q1RadioHint} active={statusEntry === 'housekeeper_radio'} picked={pulse === 'housekeeper_radio'} onPick={() => pickAndAdvance('housekeeper_radio', () => setStatusEntry('housekeeper_radio'))} />
-        <Chip label={S.q1SupervisorLabel} hint={S.q1SupervisorHint} active={statusEntry === 'supervisor_keys'} picked={pulse === 'supervisor_keys'} onPick={() => pickAndAdvance('supervisor_keys', () => setStatusEntry('supervisor_keys'))} />
-        <Chip label={S.q1DirectLabel} hint={S.q1DirectHint} active={statusEntry === 'housekeeper_direct'} picked={pulse === 'housekeeper_direct'} onPick={() => pickAndAdvance('housekeeper_direct', () => setStatusEntry('housekeeper_direct'))} />
-        <Chip label={S.q1UnsureLabel} hint={S.q1UnsureHint} active={statusEntry === 'unsure'} picked={pulse === 'unsure'} onPick={() => pickAndAdvance('unsure', () => setStatusEntry('unsure'))} />
+        <Chip label={S.q1RadioLabel} hint={S.q1RadioHint} active={statusEntry === 'housekeeper_radio'} picked={pulse === 'housekeeper_radio'} onPick={() => pick('housekeeper_radio', () => setStatusEntry('housekeeper_radio'))} />
+        <Chip label={S.q1SupervisorLabel} hint={S.q1SupervisorHint} active={statusEntry === 'supervisor_keys'} picked={pulse === 'supervisor_keys'} onPick={() => pick('supervisor_keys', () => setStatusEntry('supervisor_keys'))} />
+        <Chip label={S.q1DirectLabel} hint={S.q1DirectHint} active={statusEntry === 'housekeeper_direct'} picked={pulse === 'housekeeper_direct'} onPick={() => pick('housekeeper_direct', () => setStatusEntry('housekeeper_direct'))} />
+        <Chip label={S.q1UnsureLabel} hint={S.q1UnsureHint} active={statusEntry === 'unsure'} picked={pulse === 'unsure'} onPick={() => pick('unsure', () => setStatusEntry('unsure'))} />
       </ChipGroup>
     </Question>,
 
@@ -618,6 +925,45 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
           {`${S.q2InvalidLead} ${MIN_CLEAN_MINUTES} ${S.q2InvalidJoin} ${MAX_CLEAN_MINUTES}.`}
         </p>
       )}
+
+      {/* The "+". Checkout and stayover above are untouched — this is only for
+          the rooms a hotel has that those two words don't describe. */}
+      <div style={{ marginTop: 26, paddingTop: 22, borderTop: `1px solid ${T.rule}` }}>
+        {customRooms.length > 0 && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 16 }}>
+            {customRooms.map((row, i) => (
+              <CustomRoomRow
+                key={row.id}
+                row={row}
+                index={i}
+                problem={roomProblems[i]}
+                S={S}
+                onLabel={(v) => editCustomRoom(row.id, { label: acceptLabelInput(v) })}
+                onMinutes={(v) => editCustomRoom(row.id, { minutes: v.replace(/[^\d]/g, '').slice(0, 3) })}
+                onRemove={() => removeCustomRoom(row.id)}
+              />
+            ))}
+          </div>
+        )}
+        {customRooms.length < MAX_CUSTOM_ROOM_TYPES ? (
+          <Btn variant="ghost" size="lg" onClick={addCustomRoom}>{S.q2AddRoom}</Btn>
+        ) : (
+          <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: 0 }}>
+            {`${S.q2CapLead} ${MAX_CUSTOM_ROOM_TYPES} ${S.q2CapTail}`}
+          </p>
+        )}
+        {/* Only once they've actually added one — the 90% of hotels who add
+            none should not have to read a caveat about a thing they skipped.
+            The screen has just promised that every hour and every dollar comes
+            from the two times above, and a room type typed underneath it looks
+            exactly like a third number that counts. It isn't one yet, and this
+            is the only place a manager will ever be told that. */}
+        {customRooms.length > 0 && (
+          <p style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink3, margin: '14px 0 0', lineHeight: 1.5 }}>
+            {S.q2CustomNote}
+          </p>
+        )}
+      </div>
     </Question>,
 
     // Q3 — photo of the paper board (optional, silent on failure)
@@ -705,9 +1051,9 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
     // Q5 — inspection policy
     <Question key="q5" id={headingId} title={S.q5Title} sub={S.q5Sub} headingRef={headingRef}>
       <ChipGroup role="radiogroup" labelledBy={headingId}>
-        <Chip label={S.q5NoneLabel} hint={S.q5NoneHint} active={inspection === 'none'} picked={pulse === 'none'} onPick={() => pickAndAdvance('none', () => setInspection('none'))} />
-        <Chip label={S.q5SpotLabel} hint={S.q5SpotHint} active={inspection === 'spot_check'} picked={pulse === 'spot_check'} onPick={() => pickAndAdvance('spot_check', () => setInspection('spot_check'))} />
-        <Chip label={S.q5EveryLabel} hint={S.q5EveryHint} active={inspection === 'every_room'} picked={pulse === 'every_room'} onPick={() => pickAndAdvance('every_room', () => setInspection('every_room'))} />
+        <Chip label={S.q5NoneLabel} hint={S.q5NoneHint} active={inspection === 'none'} picked={pulse === 'none'} onPick={() => pick('none', () => setInspection('none'))} />
+        <Chip label={S.q5SpotLabel} hint={S.q5SpotHint} active={inspection === 'spot_check'} picked={pulse === 'spot_check'} onPick={() => pick('spot_check', () => setInspection('spot_check'))} />
+        <Chip label={S.q5EveryLabel} hint={S.q5EveryHint} active={inspection === 'every_room'} picked={pulse === 'every_room'} onPick={() => pick('every_room', () => setInspection('every_room'))} />
       </ChipGroup>
     </Question>,
 
@@ -719,37 +1065,139 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
         <Chip multi label={S.q6Lobby} active={sideDuties.includes('lobby')} picked={pulse === 'lobby'} onPick={() => toggleDuty('lobby')} />
         <Chip multi label={S.q6PublicAreas} active={sideDuties.includes('public_areas')} picked={pulse === 'public_areas'} onPick={() => toggleDuty('public_areas')} />
         <Chip multi label={S.q6Shuttle} active={sideDuties.includes('shuttle')} picked={pulse === 'shuttle'} onPick={() => toggleDuty('shuttle')} />
-        <Chip multi label={S.q6None} active={dutiesTouched && sideDuties.length === 0} picked={pulse === '__none'} onPick={() => { setSideDuties([]); setDutiesTouched(true); setPulse('__none'); }} />
+
+        {/* The hotel's own duties, rendered as already-chosen rows: they only
+            exist because someone typed them, so there is no unselected state to
+            show. Removing the row IS the way to unpick one. It is a div, not a
+            Chip — a remove button inside a chip button would be a button inside
+            a button, which is invalid HTML and unreachable by keyboard. */}
+        {customDuties.map((duty) => (
+          <CustomDutyRow
+            key={customEntryKey(duty)}
+            label={duty}
+            removeLabel={S.q6RemoveDuty}
+            onRemove={() => removeCustomDuty(duty)}
+          />
+        ))}
+
+        {/* "Just rooms" sits last and clears everything above it, customs
+            included — it is the answer that contradicts every other answer. */}
+        <Chip
+          multi
+          label={S.q6None}
+          active={dutiesTouched && sideDuties.length === 0 && customDuties.length === 0}
+          picked={pulse === '__none'}
+          onPick={pickJustRooms}
+        />
       </ChipGroup>
+
+      <div style={{ marginTop: 14 }}>
+        {customDuties.length >= MAX_CUSTOM_DUTIES ? (
+          <p style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink2, margin: 0 }}>
+            {`${S.q6CapLead} ${MAX_CUSTOM_DUTIES} ${S.q6CapTail}`}
+          </p>
+        ) : !dutyDraftOpen ? (
+          <Btn variant="ghost" size="lg" onClick={() => setDutyDraftOpen(true)}>
+            {S.q6AddOther}
+          </Btn>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            <FieldLabel>{S.q6AddLabel}</FieldLabel>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                ref={dutyInputRef}
+                className="hks-text"
+                type="text"
+                autoComplete="off"
+                value={dutyDraft}
+                aria-label={S.q6AddLabel}
+                aria-invalid={dutyDraftError !== null || undefined}
+                placeholder={S.q6AddPlaceholder}
+                onChange={(e) => { setDutyDraft(acceptLabelInput(e.target.value)); setDutyDraftError(null); }}
+                // Enter adds the duty instead of jumping to the next question.
+                // stopPropagation is what keeps the card's Enter-to-continue
+                // handler off it — without that, typing "Pool towels" and
+                // pressing Enter would leave the screen and lose the entry.
+                onKeyDown={(e) => {
+                  if (e.key !== 'Enter') return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  commitDuty();
+                }}
+                style={{
+                  flex: '1 1 200px', minWidth: 0, height: 56, padding: '0 14px', borderRadius: 12,
+                  background: 'rgba(255,255,255,0.8)',
+                  border: `1px solid ${dutyDraftError ? 'rgba(184,92,61,0.6)' : 'rgba(31,35,28,0.14)'}`,
+                  fontFamily: FONT_SANS, fontSize: 16, color: T.ink,
+                  boxSizing: 'border-box', outline: 'none',
+                }}
+              />
+              <Btn
+                variant="primary"
+                size="lg"
+                disabled={normalizeCustomLabel(dutyDraft) === ''}
+                onClick={commitDuty}
+              >
+                {S.q6AddConfirm}
+              </Btn>
+              <Btn
+                variant="ghost"
+                size="lg"
+                onClick={() => { setDutyDraftOpen(false); setDutyDraft(''); setDutyDraftError(null); }}
+              >
+                {S.q6AddCancel}
+              </Btn>
+            </div>
+            {dutyDraftError && (
+              <p role="alert" style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.warm, margin: 0, lineHeight: 1.45 }}>
+                {dutyDraftError}
+              </p>
+            )}
+          </div>
+        )}
+      </div>
     </Question>,
 
-    // Q7 — the three levels
+    // Q7 — the three levels.
+    //
+    // Each card collapses to the four lines that actually decide this: name,
+    // who opens Staxis (the one axis the three differ on — the sub-heading says
+    // so and the dot row makes it visible), the single thing you get, and the
+    // single honest trade-off. Everything else sits behind "The full picture",
+    // one tap away — findable, never deleted.
+    //
+    // The visible trade line REUSES a key from the full list (l1Bad2 / l2Bad1 /
+    // l3Bad0), so the headline caveat and the detail list can never drift apart.
+    // l3Bad0 in particular must stay on the card face, never in the fold: the
+    // tap does not reach the hotel's own system, and a manager who learns that
+    // in week one instead of here feels lied to.
     <Question key="q7" id={headingId} title={S.q7Title} sub={S.q7Sub} headingRef={headingRef}>
       <ChipGroup role="radiogroup" labelledBy={headingId}>
         <LevelCard
-          level={1} name={S.l1Name} who={S.l1Who} whoLabel={S.whoLabel}
-          good={[S.l1Good1, S.l1Good2, S.l1Good3]} bad={[S.l1Bad1, S.l1Bad2]}
-          goodLabel={S.goodLabel} badLabel={S.badLabel}
+          level={1} name={S.l1Name} who={S.l1Who} whoCount={1}
+          get={S.l1Get} trade={S.l1Bad2}
+          detailGood={[S.l1Good1, S.l1Good2, S.l1Good3]} detailBad={[S.l1Bad1]}
+          goodLabel={S.goodLabel} badLabel={S.badLabel} detailsLabel={S.detailsLabel}
           selected={chosenLevel === 1} recommended={recommended === 1} recommendedLabel={S.recommended}
           reason={recommended === 1 ? recommendReason : null}
           lockedLabel={null} lockedBody={null}
           onPick={() => setLevelChoice(1)}
         />
         <LevelCard
-          level={2} name={S.l2Name} who={S.l2Who} whoLabel={S.whoLabel}
-          good={[S.l2Good1, S.l2Good2, S.l2Good3]} bad={[S.l2Bad1, S.l2Bad2]}
-          goodLabel={S.goodLabel} badLabel={S.badLabel}
+          level={2} name={S.l2Name} who={S.l2Who} whoCount={2}
+          get={S.l2Get} trade={S.l2Bad1}
+          detailGood={[S.l2Good1, S.l2Good2, S.l2Good3]} detailBad={[S.l2Bad2]}
+          goodLabel={S.goodLabel} badLabel={S.badLabel} detailsLabel={S.detailsLabel}
           selected={chosenLevel === 2} recommended={recommended === 2} recommendedLabel={S.recommended}
           reason={recommended === 2 ? recommendReason : null}
           lockedLabel={null} lockedBody={null}
           onPick={() => setLevelChoice(2)}
         />
         <LevelCard
-          level={3} name={S.l3Name} who={S.l3Who} whoLabel={S.whoLabel}
-          // l3Bad0 renders FIRST on purpose: it is the one thing a manager must
-          // not misread here — the tap does not reach their own system.
-          good={[S.l3Good1, S.l3Good2]} bad={[S.l3Bad0, S.l3Bad1, S.l3Bad2]}
-          goodLabel={S.goodLabel} badLabel={S.badLabel}
+          level={3} name={S.l3Name} who={S.l3Who} whoCount={6}
+          get={S.l3Get} trade={S.l3Bad0}
+          detailGood={[S.l3Good1, S.l3Good2]} detailBad={[S.l3Bad1, S.l3Bad2]}
+          goodLabel={S.goodLabel} badLabel={S.badLabel} detailsLabel={S.detailsLabel}
           selected={chosenLevel === 3} recommended={recommended === 3} recommendedLabel={S.recommended}
           reason={recommended === 3 ? recommendReason : null}
           lockedLabel={levelLockReason(3, statusEntry ?? 'unsure') === 'double_entry' ? S.lockedLabel : null}
@@ -822,7 +1270,7 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
                 type="button"
                 className="hks-dot-btn hks-plain"
                 aria-label={`${S.goToStep} ${i + 1}`}
-                onClick={() => goto(i)}
+                onClick={() => navigate(i)}
                 // Padding + matching negative margin: the hit area grows to
                 // 14×26 for a thumb while the box it occupies stays exactly the
                 // dot's own 10×6, so the rail doesn't move.
@@ -870,7 +1318,7 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
             marginTop: 28, paddingTop: 20, borderTop: `1px solid ${T.rule}`,
           }}>
             {screen > 0 && (
-              <Btn variant="ghost" size="lg" onClick={() => goto(screen - 1)}>← {S.back}</Btn>
+              <Btn variant="ghost" size="lg" onClick={() => navigate(screen - 1)}>← {S.back}</Btn>
             )}
             <div style={{ flex: 1 }} />
             {/* Skip stays available right through the upload, so a slow or
@@ -881,11 +1329,19 @@ export function HousekeepingSetup({ propertyId, lang, onComplete }: Housekeeping
             {screen === 2 && photoState !== 'done' && (
               <Btn variant="ghost" size="lg" onClick={() => goto(screen + 1)}>{S.skip}</Btn>
             )}
+            {/* The sage ring is the other half of "the screen no longer moves
+                by itself": with nothing advancing on its own, Continue has to
+                look like the next thing to do the moment an answer is in. It is
+                a static ring, not a pulse — the footer must not twitch every
+                time someone changes their mind about a chip. */}
             <Btn
               variant="primary"
               size="lg"
               disabled={(!canAdvance && !isLast) || saving}
               onClick={advance}
+              style={canAdvance && !saving
+                ? { boxShadow: '0 0 0 3px rgba(92,122,96,0.22)' }
+                : undefined}
             >
               {primaryLabel}{!isLast && ' →'}
             </Btn>
@@ -970,6 +1426,164 @@ function MinutesInput({
   );
 }
 
+/* ────────────────────── The two "+" rows (Q2 and Q6) ────────────────────── */
+
+/** A 44×44 hit target for removing a row — thumb-sized, keyboard-reachable. */
+function RemoveButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      className="hks-plain"
+      aria-label={label}
+      onClick={onClick}
+      style={{
+        width: 44, height: 44, flexShrink: 0, borderRadius: 12,
+        background: 'transparent', border: `1px solid ${T.rule}`,
+        color: T.ink2, cursor: 'pointer',
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        fontFamily: FONT_SANS, fontSize: 17, lineHeight: 1,
+      }}
+    >
+      <span aria-hidden>✕</span>
+    </button>
+  );
+}
+
+/**
+ * One custom room type: what the hotel calls it, and how long it takes.
+ *
+ * The message under the row is what stops a half-typed room type from being
+ * discovered at the save six screens later. It is grey while the row is merely
+ * unfinished and warm when something is actually wrong — an empty row someone
+ * added two seconds ago is not a mistake, and colouring it like one trains
+ * people to ignore the colour when it matters.
+ */
+function CustomRoomRow({
+  row, index, problem, S, onLabel, onMinutes, onRemove,
+}: {
+  row: CustomRoomDraft;
+  /** 0-based position, used only to keep the rows' spoken labels distinct. */
+  index: number;
+  problem: RoomRowProblem;
+  S: HkSetupStrings;
+  onLabel: (v: string) => void;
+  onMinutes: (v: string) => void;
+  onRemove: () => void;
+}) {
+  const label = normalizeCustomLabel(row.label);
+  const named = label !== '' ? `“${label}”` : '';
+  // Every row would otherwise announce the same two field names, so a screen
+  // reader user on their third room type hears "What you call it" three times
+  // with no way to tell which row they are in. Once a row has a name, the name
+  // itself is the best disambiguator; before that, its position is.
+  const rowTag = label !== '' ? label : String(index + 1);
+  const message =
+    problem === 'incomplete' ? S.q2RoomIncomplete
+    : problem === 'tooLong' ? `${S.customTooLongLead} ${MAX_CUSTOM_LABEL_LENGTH} ${S.customTooLongTail}`
+    : problem === 'reserved' ? S.q2RoomReserved
+    : problem === 'duplicate' ? `${named} ${S.q2RoomDuplicate}`
+    : problem === 'minutes' ? `${named} — ${S.q2InvalidLead} ${MIN_CLEAN_MINUTES} ${S.q2InvalidJoin} ${MAX_CLEAN_MINUTES}.`
+    : null;
+  const isFault = problem !== null && problem !== 'incomplete';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 190px', minWidth: 0 }}>
+          <FieldLabel>{S.q2CustomNameLabel}</FieldLabel>
+          <input
+            className="hks-text"
+            type="text"
+            autoComplete="off"
+            value={row.label}
+            aria-label={`${S.q2CustomNameLabel} — ${rowTag}`}
+            aria-invalid={(isFault && problem !== 'minutes') || undefined}
+            placeholder={S.q2CustomNamePlaceholder}
+            onChange={(e) => onLabel(e.target.value)}
+            style={{
+              width: '100%', height: 56, padding: '0 14px', borderRadius: 12,
+              background: 'rgba(255,255,255,0.8)',
+              border: `1px solid ${isFault && problem !== 'minutes' ? 'rgba(184,92,61,0.6)' : 'rgba(31,35,28,0.14)'}`,
+              fontFamily: FONT_SANS, fontSize: 16, color: T.ink,
+              boxSizing: 'border-box', outline: 'none',
+            }}
+          />
+        </div>
+        <div>
+          <FieldLabel>{S.q2CustomTimeLabel}</FieldLabel>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <input
+              className="hks-num"
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={row.minutes}
+              aria-label={`${S.q2CustomTimeLabel} ${S.q2Minutes} — ${rowTag}`}
+              aria-invalid={(problem === 'minutes') || undefined}
+              onChange={(e) => onMinutes(e.target.value)}
+              style={{
+                width: 84, height: 56, padding: '0 12px', borderRadius: 12,
+                background: 'rgba(255,255,255,0.8)',
+                border: `1px solid ${problem === 'minutes' ? 'rgba(184,92,61,0.6)' : 'rgba(31,35,28,0.14)'}`,
+                fontFamily: FONT_SANS, fontSize: 22, fontWeight: 600, color: T.ink,
+                textAlign: 'center', boxSizing: 'border-box', outline: 'none',
+              }}
+            />
+            <span style={{ fontFamily: FONT_SANS, fontSize: 13.5, color: T.ink2 }}>{S.q2Minutes}</span>
+          </div>
+        </div>
+        <RemoveButton label={`${S.q2RemoveRoom} — ${rowTag}`} onClick={onRemove} />
+      </div>
+      {message && (
+        <p
+          role={isFault ? 'alert' : undefined}
+          style={{
+            fontFamily: FONT_SANS, fontSize: 13, margin: 0, lineHeight: 1.45,
+            color: isFault ? T.warm : T.ink2,
+          }}
+        >
+          {message}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One duty the hotel typed in. Styled as a chosen chip because that is exactly
+ * what it is — it only exists because someone added it — but it is a plain div
+ * carrying its own remove button, since a button inside a button is invalid
+ * markup and leaves the remove control unreachable from a keyboard.
+ */
+function CustomDutyRow({
+  label, removeLabel, onRemove,
+}: {
+  label: string;
+  removeLabel: string;
+  onRemove: () => void;
+}) {
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 12,
+      width: '100%', minHeight: 56, padding: '7px 10px 7px 18px',
+      borderRadius: 14, boxSizing: 'border-box',
+      background: 'rgba(92,122,96,0.12)',
+      border: '1px solid rgba(92,122,96,0.55)',
+      boxShadow: '0 8px 20px -14px rgba(62,92,72,0.7)',
+      fontFamily: FONT_SANS,
+    }}>
+      <span style={{
+        flex: 1, minWidth: 0, fontSize: 15.5, fontWeight: 600, color: T.ink,
+        lineHeight: 1.35, overflowWrap: 'anywhere',
+      }}>
+        {label}
+      </span>
+      <PickMark shown />
+      <RemoveButton label={`${removeLabel} ${label}`} onClick={onRemove} />
+    </div>
+  );
+}
+
 /* ───────────────────────────── Level chooser ───────────────────────────── */
 
 function BulletBlock({
@@ -993,19 +1607,57 @@ function BulletBlock({
   );
 }
 
+/**
+ * The row of heads that makes "one more group of people" visible before a
+ * single word is read: 1 dot → 2 dots → the whole crew. The first dot is the
+ * manager (solid); everyone they'd be asking to join is lighter. Decorative —
+ * the `who` text next to it carries the meaning for a screen reader.
+ */
+function WhoDots({ count }: { count: number }) {
+  return (
+    <span aria-hidden style={{ display: 'inline-flex', alignItems: 'center', gap: 3, flexShrink: 0 }}>
+      {Array.from({ length: count }, (_, i) => (
+        <span
+          key={i}
+          style={{
+            width: 7, height: 7, borderRadius: 999,
+            background: i === 0 ? T.sageDeep : 'rgba(92,122,96,0.45)',
+          }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/**
+ * One adoption option. Collapsed, it is exactly the four lines a manager needs
+ * to compare: name · who opens Staxis · what you get · the honest trade-off.
+ * The rest of the old bullet wall lives behind a per-card "The full picture"
+ * toggle — a sibling of the radio button, never nested inside it (nested
+ * buttons are invalid HTML), inside a wrapper <div> that carries the card
+ * visuals for both.
+ *
+ * Locked cards say only two things — "you don't need this one" and why — and
+ * offer no detail fold: more prose on an option we're telling them to ignore
+ * would just re-open the question the lock already answered.
+ */
 function LevelCard({
-  level, name, who, whoLabel, good, bad, goodLabel, badLabel,
+  level, name, who, whoCount, get, trade, detailGood, detailBad,
+  goodLabel, badLabel, detailsLabel,
   selected, recommended, recommendedLabel, reason,
   lockedLabel, lockedBody, onPick,
 }: {
   level: HkLevel;
   name: string;
   who: string;
-  whoLabel: string;
-  good: string[];
-  bad: string[];
+  whoCount: number;
+  get: string;
+  trade: string;
+  detailGood: string[];
+  detailBad: string[];
   goodLabel: string;
   badLabel: string;
+  detailsLabel: string;
   selected: boolean;
   recommended: boolean;
   recommendedLabel: string;
@@ -1015,71 +1667,127 @@ function LevelCard({
   onPick: () => void;
 }) {
   const locked = lockedLabel !== null;
+  const [open, setOpen] = useState(false);
+  const detailId = useId();
   return (
-    <button
-      type="button"
-      data-chip
+    <div
+      className={`hks-lvl${locked ? ' is-locked' : ''}`}
       data-level={level}
-      className="hks-chip"
-      role="radio"
-      aria-checked={selected}
-      disabled={locked}
-      onClick={onPick}
       style={{
-        display: 'block', width: '100%', textAlign: 'left', padding: '18px 20px',
-        borderRadius: 16, cursor: locked ? 'not-allowed' : 'pointer',
+        borderRadius: 16,
         background: locked
           ? 'rgba(31,35,28,0.035)'
           : selected ? 'rgba(92,122,96,0.12)' : 'rgba(255,255,255,0.72)',
         border: `1px solid ${locked ? 'rgba(31,35,28,0.10)' : selected ? 'rgba(92,122,96,0.55)' : 'rgba(31,35,28,0.12)'}`,
         boxShadow: selected && !locked ? '0 10px 26px -18px rgba(62,92,72,0.8)' : 'none',
         opacity: locked ? 0.72 : 1,
-        fontFamily: FONT_SANS,
       }}
     >
-      <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 17, fontWeight: 600, color: T.ink, letterSpacing: '-0.01em' }}>{name}</span>
-        {recommended && !locked && (
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', height: 21, padding: '0 9px', borderRadius: 999,
-            background: 'rgba(92,122,96,0.16)', color: T.sageDeep,
-            fontFamily: FONT_MONO, fontSize: 9.5, fontWeight: 600,
-            letterSpacing: '0.1em', textTransform: 'uppercase',
-          }}>{recommendedLabel}</span>
-        )}
-        {locked && (
-          <span style={{
-            display: 'inline-flex', alignItems: 'center', gap: 5, height: 21, padding: '0 9px', borderRadius: 999,
-            background: 'rgba(31,35,28,0.07)', color: T.ink2,
-            fontFamily: FONT_MONO, fontSize: 9.5, fontWeight: 600,
-            letterSpacing: '0.1em', textTransform: 'uppercase',
-          }}>
-            <span aria-hidden>🔒</span>{lockedLabel}
-          </span>
-        )}
-      </span>
-
-      <span style={{ display: 'block', fontSize: 12.5, color: T.ink2, marginTop: 5 }}>
-        {whoLabel}: {who}
-      </span>
-
-      {reason && !locked && (
-        <span style={{ display: 'block', fontSize: 13, color: T.sageDeep, lineHeight: 1.45, marginTop: 9 }}>
-          {reason}
+      <button
+        type="button"
+        data-chip
+        className="hks-chip"
+        role="radio"
+        aria-checked={selected}
+        disabled={locked}
+        onClick={onPick}
+        style={{
+          display: 'block', width: '100%', textAlign: 'left',
+          padding: locked ? '16px 18px 18px' : '16px 18px 15px',
+          background: 'none', border: 0, borderRadius: 16,
+          cursor: locked ? 'not-allowed' : 'pointer',
+          fontFamily: FONT_SANS,
+        }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 16.5, fontWeight: 600, color: T.ink, letterSpacing: '-0.01em' }}>{name}</span>
+          {recommended && !locked && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', height: 21, padding: '0 9px', borderRadius: 999,
+              background: 'rgba(92,122,96,0.16)', color: T.sageDeep,
+              fontFamily: FONT_MONO, fontSize: 9.5, fontWeight: 600,
+              letterSpacing: '0.1em', textTransform: 'uppercase',
+            }}>{recommendedLabel}</span>
+          )}
+          {locked && (
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: 5, height: 21, padding: '0 9px', borderRadius: 999,
+              background: 'rgba(31,35,28,0.07)', color: T.ink2,
+              fontFamily: FONT_MONO, fontSize: 9.5, fontWeight: 600,
+              letterSpacing: '0.1em', textTransform: 'uppercase',
+            }}>
+              <span aria-hidden>🔒</span>{lockedLabel}
+            </span>
+          )}
         </span>
-      )}
 
-      {locked && lockedBody && (
-        <span style={{ display: 'block', fontSize: 13, color: T.ink2, lineHeight: 1.45, marginTop: 9 }}>
-          {lockedBody}
-        </span>
-      )}
+        {locked ? (
+          // The whole locked story in one breath: not needed, and why.
+          lockedBody && (
+            <span style={{ display: 'block', fontSize: 13, color: T.ink2, lineHeight: 1.5, marginTop: 9 }}>
+              {lockedBody}
+            </span>
+          )
+        ) : (
+          <>
+            {/* The axis the three options differ on, made visible. */}
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 7 }}>
+              <WhoDots count={whoCount} />
+              <span style={{ fontSize: 12.5, color: T.ink2 }}>{who}</span>
+            </span>
 
-      {/* Benefits and downsides are spans, not a <ul>: a <button> may only
-          contain phrasing content, and list markup inside one is invalid HTML
-          that React will complain about on hydration. */}
-      <BulletBlock label={goodLabel} items={good} mark="+" markColor={T.sageDeep} textColor={T.ink} marginTop={14} />
-      <BulletBlock label={badLabel} items={bad} mark="−" markColor={T.warm} textColor={T.ink2} marginTop={13} />
-    </button>
+            {reason && (
+              <span style={{ display: 'block', fontSize: 13, color: T.sageDeep, lineHeight: 1.45, marginTop: 9 }}>
+                {reason}
+              </span>
+            )}
+
+            <span style={{ display: 'block', fontSize: 13.5, color: T.ink, lineHeight: 1.5, marginTop: 10 }}>
+              {get}
+            </span>
+
+            <span style={{ display: 'flex', gap: 8, fontSize: 13, color: T.ink2, lineHeight: 1.5, marginTop: 7 }}>
+              <span aria-hidden style={{ color: T.warm, flexShrink: 0 }}>−</span>
+              <span>{trade}</span>
+            </span>
+          </>
+        )}
+      </button>
+
+      {!locked && (
+        <>
+          <button
+            type="button"
+            className="hks-more hks-plain"
+            aria-expanded={open}
+            aria-controls={detailId}
+            aria-label={`${detailsLabel} — ${name}`}
+            onClick={() => setOpen((o) => !o)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 7, width: '100%',
+              textAlign: 'left', padding: '11px 18px 13px',
+              background: 'none', border: 0, borderTop: `1px solid ${T.rule}`,
+              cursor: 'pointer',
+              fontFamily: FONT_MONO, fontSize: 9.5, fontWeight: 600,
+              letterSpacing: '0.12em', textTransform: 'uppercase', color: T.ink2,
+            }}
+          >
+            <span aria-hidden style={{ fontSize: 10, color: T.ink3, lineHeight: 1 }}>{open ? '▴' : '▾'}</span>
+            {detailsLabel}
+          </button>
+
+          {open && (
+            <div id={detailId} className="hks-detail-open" style={{ padding: '0 18px 16px' }}>
+              <BulletBlock label={goodLabel} items={detailGood} mark="+" markColor={T.sageDeep} textColor={T.ink} marginTop={4} />
+              {/* The trade line above is part of this list too — it stays on the
+                  card face so the fold repeats nothing and hides nothing. */}
+              {detailBad.length > 0 && (
+                <BulletBlock label={badLabel} items={detailBad} mark="−" markColor={T.warm} textColor={T.ink2} marginTop={12} />
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
   );
 }

@@ -42,6 +42,36 @@
  * stayover, room_type NULL = all rooms), which is what the board, the timeline
  * and the labor-cost math actually read. See the write-through block below for
  * why that step is deliberately non-fatal.
+ *
+ * CUSTOM ROOM TYPES ARE STORED BUT NOT WIRED UP — READ THIS BEFORE ASSUMING
+ * OTHERWISE
+ * ---------------------------------------------------------------------------
+ * Q2 lets a hotel add its own room types ("Suite", "Extended stay") with their
+ * own minutes. Those are persisted in the jsonb blob and NOTHING ELSE. They are
+ * NOT written to `hk_clean_time_standards`, which means they do not currently
+ * affect the board, the timeline, auto-assign, or any earned-hours number.
+ *
+ * Why not, concretely: `hk_clean_time_standards.cleaning_type` is a text column
+ * under a CHECK constraint listing exactly seven values (migration 0244), and
+ * `upsertCleanTimeStandards` re-checks the same seven before writing. A hotel's
+ * free-text label is not one of them and cannot become one without a migration
+ * plus a constraint change. The table's other dimension, `room_type`, is
+ * nullable free text and would physically accept "Suite" — but it means "this
+ * minute count applies when a room of THIS type gets THAT cleaning_type", so
+ * writing there would force us to guess which of the seven cleaning types the
+ * hotel meant. A label like "Deep clean" is a cleaning type; "Suite" is a room
+ * type; "Extended stay studio" could be either. Guessing wrong would silently
+ * shift a real property's workload math, which is exactly the class of quiet
+ * wrongness this feature is meant to avoid.
+ *
+ * So: stored honestly, used by nothing yet, and said out loud here rather than
+ * dropped in silence. Wiring them up is a separate piece of work that needs a
+ * migration and a decision about what a custom label actually means. Until then
+ * anything reading `setup.customRoomTypes` must treat it as the hotel's stated
+ * intent, not as live input to any calculation.
+ *
+ * `customDuties` is the same: a label with no minutes model behind it, stored
+ * so later screens know time goes there, wired to nothing.
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -312,6 +342,14 @@ export const PUT = defineRoute({
     // inert in a jsonb blob while the board, the timeline and the earned-hours
     // math kept using the old standards. departure = "checkout", stayover =
     // "stayover"; room_type NULL means "all rooms".
+    //
+    // ONLY these two. `setup.customRoomTypes` is deliberately NOT synced here —
+    // its labels are free text and this table's `cleaning_type` is a
+    // CHECK-constrained enum, so there is no correct row to write without a
+    // migration and a decision about what a custom label means. Full reasoning
+    // in the file header. Do not "fix" this by writing the label into
+    // `room_type`: that column pairs a room with one of the seven known
+    // cleaning types, so it would silently guess which type the hotel meant.
     //
     // DELIBERATELY NON-FATAL: the questionnaire completing is what unblocks the
     // whole Housekeeping section, and it is already committed above. Failing the
