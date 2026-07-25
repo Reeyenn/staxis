@@ -484,14 +484,14 @@ const RLS_REQUIRED_TABLES = [
   // High-sensitivity backend tables — service-role only.
   // RLS off here would be catastrophic (plain-text PMS passwords, phone
   // numbers, webhook dedupe, Stripe events).
+  // sms_jobs + processed_twilio_webhooks were dropped by migration 0352
+  // (all texting was removed from the product).
   'scraper_credentials',
-  'sms_jobs',
   'pull_jobs',
   'onboarding_jobs',
   'idempotency_log',
   'stripe_processed_events',
   'processed_sentry_webhooks',
-  'processed_twilio_webhooks',
 ];
 
 
@@ -530,7 +530,6 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   'agent_prompts',
   'agent_conversations_archived',
   'agent_messages_archived',
-  'agent_voice_sessions',
   'error_logs',
   'webhook_log',
   'api_limits',
@@ -543,11 +542,9 @@ const RLS_SERVICE_ROLE_ONLY_ALLOWLIST = new Set([
   'staff_magic_codes',
   'scraper_credentials',
   'idempotency_log',
-  'sms_jobs',
   'onboarding_jobs',
   'stripe_processed_events',
   'pull_jobs',
-  'processed_twilio_webhooks',
   'scraper_session',
   // 0295 — public staff-link tokens (server-minted, capability-checked in routes).
   'staff_link_tokens',

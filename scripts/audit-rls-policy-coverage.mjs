@@ -66,10 +66,9 @@ const TENANT_COLUMNS = new Set([
 //
 // Every entry was verified by reading the originating migration:
 //   - 0008 api_limits        — server rate limiter; also REVOKEs anon grants
-//   - 0011 (BLOCKED)         — pull_metrics, scraper_session: NO RLS YET; fixed in 0200
+//   - 0011 (BLOCKED)         — scraper_session: NO RLS YET; fixed in 0200
 //   - 0018 scraper_credentials — has explicit deny-browser policy
 //   - 0019 idempotency_log   — has explicit deny-browser policy
-//   - 0020 sms_jobs          — has explicit deny-browser policy
 //   - 0031 onboarding_jobs   — has explicit deny-browser policy
 //   - 0035 stripe_processed_events — has explicit deny-browser policy
 //   - 0042 pull_jobs         — has explicit deny-browser policy
@@ -79,8 +78,12 @@ const TENANT_COLUMNS = new Set([
 //   - 0056 claude_usage_log  — server telemetry only
 //   - 0063 trusted_devices   — "only service-role writes via API routes"
 //   - 0093 agent_cost_finalize_failures — "no end-user reads. Service role only"
-//   - 0139 processed_twilio_webhooks — has explicit deny-browser policy
 //   - 0155 staff_magic_codes — "default-deny" comment
+//
+// Migration 0352 dropped five entries that used to live in this list —
+// sms_jobs, processed_twilio_webhooks, pull_metrics, agent_voice_sessions and
+// the compliance tables. They are gone from the cumulative table map, so they
+// no longer need an allowlist entry.
 //
 // Plus the 7 tables migration 0200 codifies with explicit deny policies:
 const SERVICE_ROLE_ONLY = new Set([
@@ -95,7 +98,6 @@ const SERVICE_ROLE_ONLY = new Set([
   'agent_prompts',
   'agent_conversations_archived',
   'agent_messages_archived',
-  'agent_voice_sessions',
   'error_logs',
   'webhook_log',
   // RLS-on, no policies, intentional (long-standing operational tables).
@@ -132,14 +134,11 @@ const SERVICE_ROLE_ONLY = new Set([
   // DON'T appear in a deny policy. Allowlisting is the cleaner mechanism.
   'scraper_credentials',
   'idempotency_log',
-  'sms_jobs',
   'onboarding_jobs',
   'stripe_processed_events',
   'pull_jobs',
-  'processed_twilio_webhooks',
   // Closed by migration 0200 (this audit) — RLS enabled + REVOKE + deny
   // policy. Service-role-only.
-  'pull_metrics',
   'scraper_session',
   // Global, non-tenant operational tables (no tenant column anyway).
   'scraper_status',

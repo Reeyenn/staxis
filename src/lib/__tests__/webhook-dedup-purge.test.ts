@@ -3,12 +3,16 @@
  * (audit-02 D-01).
  *
  * Background: the original ship passed `.select('1')` — '1' isn't a
- * real column on any of the three target tables, so PostgREST returned
- * an error and the count metric was always -1 (logged as "delete
- * failed"). The fix uses each table's PK column:
- *   processed_twilio_webhooks → message_sid
+ * real column on either target table, so PostgREST returned an error
+ * and the count metric was always -1 (logged as "delete failed"). The
+ * fix uses each table's PK column:
  *   processed_sentry_webhooks → event_id
  *   stripe_processed_events   → event_id
+ *
+ * The third table, processed_twilio_webhooks, was dropped by migration
+ * 0352 (all texting was removed from the product, so nothing had written
+ * a dedup key in months). Re-adding a purge against it would make this
+ * daily cron return 500 forever, so that is pinned as a negative below.
  *
  * This test reads the route source and pins those column mappings so
  * future edits can't regress to the broken `.select('1')` shape.
@@ -43,11 +47,8 @@ describe('webhook-dedup-purge column mapping', () => {
     assert.doesNotMatch(ROUTE_CODE, /\.select\(\s*['"]1['"]\s*\)/);
   });
 
-  test('processed_twilio_webhooks → message_sid', () => {
-    assert.match(
-      ROUTE_SRC,
-      /purge\(\s*['"]processed_twilio_webhooks['"]\s*,\s*['"]message_sid['"]/,
-    );
+  test('does not purge processed_twilio_webhooks (dropped by migration 0352)', () => {
+    assert.doesNotMatch(ROUTE_CODE, /purge\(\s*['"]processed_twilio_webhooks['"]/);
   });
 
   test('processed_sentry_webhooks → event_id', () => {

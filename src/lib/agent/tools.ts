@@ -78,11 +78,13 @@ export interface ToolContext {
    *  default a room argument (e.g. createMaintenanceWorkOrder) consult this
    *  when the user doesn't restate the room. Voice-only. */
   currentRoomNumber?: string | null;
-  /** Voice-session id (agent_voice_sessions.id) — the canonical, server-
-   *  minted identifier for this voice session. Tools use it as a stable
-   *  idempotency key: createMaintenanceWorkOrder, for example, persists it
-   *  on the new row and a unique partial index refuses a duplicate insert
-   *  from a retried model call. Voice-only. Codex 2026-05-25 (MAJOR fix). */
+  /** Voice-session id — the server-minted identifier for a voice session,
+   *  used as a stable idempotency key so a retried model call can't file the
+   *  same ticket twice. Voice-only, and INERT: the voice surface was removed
+   *  (a500fa02), and migration 0352 dropped its backing table plus the
+   *  pms_work_orders_v2 columns that stored it. Nothing assigns or reads this
+   *  today; it is kept as the seam a future voice surface would plug into.
+   *  Codex 2026-05-25 (MAJOR fix). */
   voiceSessionId?: string;
   /** The active hotel's resolved section on/off map, loaded once at the route
    *  boundary (getEnabledSections(propertyId)). executeTool consults it to

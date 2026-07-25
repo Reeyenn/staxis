@@ -13,8 +13,10 @@
  *   - inventory     → getInventoryAccountingSummary + inventory (the accounting source)
  *   - occupancy     → daily_logs + dashboard_by_date (the dashboard source)
  *   - activity      → activity_log (the activity-log source)
- *   - compliance    → compliance_readings (0229, if present)
  *   - lost & found  → lost_and_found_items (0230, if present)
+ *
+ * (The compliance report was removed with the rest of the compliance
+ * section; its five tables were dropped by migration 0352.)
  *
  * Property scoping: EVERY query filters `.eq('property_id', ctx.propertyId)`.
  * The route layer additionally verifies the caller can access that property.
