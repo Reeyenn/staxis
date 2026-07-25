@@ -190,10 +190,15 @@ create table if not exists public.room_work (
   -- Every assignment records HOW it was resolved. Required whenever there is
   -- an assignment to explain; forbidden when there isn't, so the column can
   -- never carry a stale provenance for a cleared assignment.
+  -- `assigned_source is not null` is load-bearing, not redundant: without it
+  -- the second branch evaluates to NULL for a null source (NULL = ANY(...) is
+  -- NULL, not false), NULL is not false, and a CHECK treats NULL as satisfied —
+  -- so an assignment with no provenance would sail straight through.
   constraint room_work_assigned_source_chk
     check (
       (assigned_staff_id is null and assigned_source is null)
       or (assigned_staff_id is not null
+          and assigned_source is not null
           and assigned_source = any (array['manager', 'alias_exact', 'alias_first_name', 'pms_import']))
     )
 );

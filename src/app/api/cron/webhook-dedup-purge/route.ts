@@ -1,23 +1,24 @@
 /**
  * GET /api/cron/webhook-dedup-purge
  *
- * Runs daily. Purges old rows from the three webhook-dedup tables:
- *   - processed_twilio_webhooks
+ * Runs daily. Purges old rows from the webhook-dedup tables:
  *   - processed_sentry_webhooks
  *   - stripe_processed_events
  *
+ * (A third, processed_twilio_webhooks, was dropped in migration 0348 along
+ * with the rest of the removed texting feature.)
+ *
  * Each table exists to absorb duplicate webhook deliveries from the
- * upstream provider. Their dedup windows are SHORT — Twilio retries
- * for hours, Stripe for up to 3 days, Sentry for minutes. So a 30-day
- * retention is comfortably past any provider's retry window while
- * keeping the tables bounded.
+ * upstream provider. Their dedup windows are SHORT — Stripe retries for
+ * up to 3 days, Sentry for minutes. So a 30-day retention is comfortably
+ * past any provider's retry window while keeping the tables bounded.
  *
  * Audit Batch 2 (F-09). Each table has a `processed_at` index already
  * (per migrations 0035 and 0139), so the cutoff range scan is cheap.
  *
  * Auth: CRON_SECRET bearer.
  *
- * Returns: { twilio: n, sentry: n, stripe: n, cutoff: ISO }
+ * Returns: { sentry: n, stripe: n, cutoff: ISO }
  */
 
 import { NextRequest } from 'next/server';
@@ -46,9 +47,12 @@ export async function GET(req: NextRequest) {
   // The original (audit-02 ship) passed `.select('1')` — `'1'` isn't a real
   // column, so PostgREST returned an error and the count metric was always
   // `-1`. Per-table PK names live here:
-  //   processed_twilio_webhooks → message_sid (PK)
   //   processed_sentry_webhooks → event_id    (PK)
   //   stripe_processed_events   → event_id    (PK)
+  //
+  // processed_twilio_webhooks was dropped in migration 0348: all texting was
+  // removed from the product, nothing has written that table since, and this
+  // cron was purging an empty table nightly.
   async function purge(table: string, countColumn: string): Promise<number> {
     const { data, error } = await supabaseAdmin
       .from(table)
@@ -68,35 +72,33 @@ export async function GET(req: NextRequest) {
     return (data ?? []).length;
   }
 
-  const [twilio, sentry, stripe] = await Promise.all([
-    purge('processed_twilio_webhooks', 'message_sid'),
+  const [sentry, stripe] = await Promise.all([
     purge('processed_sentry_webhooks', 'event_id'),
     purge('stripe_processed_events',   'event_id'),
   ]);
 
-  const anyFailed = twilio < 0 || sentry < 0 || stripe < 0;
+  const anyFailed = sentry < 0 || stripe < 0;
   if (anyFailed) {
     // At least one table failed. Still write the heartbeat so monitoring
     // sees the run, but return a non-2xx so the workflow alerts.
     await writeCronHeartbeat('webhook-dedup-purge', {
       requestId,
-      notes: { twilio, sentry, stripe, partial: true },
+      notes: { sentry, stripe, partial: true },
     });
     return err('Partial purge failure — see server logs', {
       requestId,
       status: 500,
       code: ApiErrorCode.InternalError,
-      details: { twilio, sentry, stripe, cutoff },
+      details: { sentry, stripe, cutoff },
     });
   }
 
   await writeCronHeartbeat('webhook-dedup-purge', {
     requestId,
-    notes: { twilio, sentry, stripe },
+    notes: { sentry, stripe },
   });
 
   return ok({
-    twilio,
     sentry,
     stripe,
     cutoff,

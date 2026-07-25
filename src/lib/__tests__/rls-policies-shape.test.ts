@@ -151,10 +151,6 @@ describe('migration 0200 — tenant-isolation hardening (this audit)', () => {
     return;
   }
 
-  test('enables RLS on pull_metrics (closes 0011 gap)', () => {
-    assert.match(sql, /alter\s+table\s+public\.pull_metrics\s+enable\s+row\s+level\s+security/i);
-  });
-
   test('enables RLS on scraper_session (closes 0011 gap — PMS login cookies)', () => {
     assert.match(sql, /alter\s+table\s+public\.scraper_session\s+enable\s+row\s+level\s+security/i);
   });
@@ -171,7 +167,8 @@ describe('migration 0200 — tenant-isolation hardening (this audit)', () => {
     'agent_voice_sessions',
     'error_logs',
     'webhook_log',
-    'pull_metrics',
+    // pull_metrics was here until migration 0348 dropped it (0 rows, no live
+    // callers — the Railway scraper it fed is gone).
     'scraper_session',
   ]) {
     test(`adds deny-all-browser policy on ${t}`, () => {

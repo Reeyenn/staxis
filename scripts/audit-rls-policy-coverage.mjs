@@ -132,14 +132,13 @@ const SERVICE_ROLE_ONLY = new Set([
   // DON'T appear in a deny policy. Allowlisting is the cleaner mechanism.
   'scraper_credentials',
   'idempotency_log',
-  'sms_jobs',
   'onboarding_jobs',
   'stripe_processed_events',
   'pull_jobs',
-  'processed_twilio_webhooks',
+  // sms_jobs, processed_twilio_webhooks and pull_metrics were dropped in
+  // migration 0348 — verified 0 rows and no live callers.
   // Closed by migration 0200 (this audit) — RLS enabled + REVOKE + deny
   // policy. Service-role-only.
-  'pull_metrics',
   'scraper_session',
   // Global, non-tenant operational tables (no tenant column anyway).
   'scraper_status',
