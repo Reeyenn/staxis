@@ -29,6 +29,7 @@
 import { PGlite } from '@electric-sql/pglite';
 import { pgcrypto } from '@electric-sql/pglite/contrib/pgcrypto';
 import { pg_trgm } from '@electric-sql/pglite/contrib/pg_trgm';
+import { vector } from '@electric-sql/pglite/vector';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -54,16 +55,19 @@ export type PgliteMigratedFixture = {
 // `supabase_realtime` is NOT here — preprocess strips those lines while
 // keeping the rest of the migration (so a `create table` + realtime
 // publication line migration applies its DDL, just not the publication).
+//
+// `storage.objects` / `storage.buckets` / `storage.foldername` are NO LONGER
+// here: applyStubs() now creates them. Skipping them cost five migrations
+// (0212 inspections, 0230 lost_and_found_items, 0252 knowledge_hub, 0340
+// report intake) plus everything downstream — 0289, 0341, 0343, 0354 and 0355
+// all failed on tables those four never got to create. Whole feature areas
+// were therefore missing from any test that runs against this schema.
 const CLASS_C_PATTERNS: Array<{ rx: RegExp; reason: string }> = [
-  { rx: /\bstorage\.objects\b/i,          reason: 'storage.objects RLS' },
-  { rx: /\bstorage\.buckets\b/i,          reason: 'storage.buckets DDL' },
-  { rx: /\bstorage\.foldername\b/i,       reason: 'storage.foldername function' },
   { rx: /\brealtime\.\w+\b/i,             reason: 'realtime schema' },
   { rx: /\bvault\.\w+\b/i,                reason: 'vault schema' },
   { rx: /\bpg_net\b/i,                    reason: 'pg_net extension' },
-  { rx: /\bextensions\.\w+\b/i,           reason: 'extensions schema' },
   { rx: /\bpgp_sym_(?:encrypt|decrypt)\b/i, reason: 'pgcrypto sym encryption (vault-adjacent)' },
-  { rx: /\bcreate\s+extension[^;]*\b(pgvector|vector|pg_net)\b/i, reason: 'unsupported extension' },
+  { rx: /\bcreate\s+extension[^;]*\bpg_net\b/i, reason: 'unsupported extension' },
   // Trigger functions that manipulate auth.users — pglite has the stub
   // table but auth-specific triggers (signups, etc.) won't fire correctly.
   { rx: /\bcreate\s+trigger\b[^;]*\bauth\.users\b/i, reason: 'trigger on auth.users' },
@@ -93,7 +97,7 @@ function preprocess(sql: string): string {
     /create\s+extension\s+(?:if\s+not\s+exists\s+)?(?:"([^"]+)"|([a-zA-Z_][\w]*))[^;]*;/gi,
     (match, quoted, unquoted) => {
       const name = (quoted || unquoted || '').toLowerCase();
-      if (name === 'pgcrypto' || name === 'pg_trgm') return match;
+      if (name === 'pgcrypto' || name === 'pg_trgm' || name === 'vector') return match;
       return `-- [pglite-migrate] skipped extension: ${match.trim()}`;
     },
   );
@@ -102,6 +106,15 @@ function preprocess(sql: string): string {
   // but that broke when the statement was inside an EXECUTE string literal.
   // Better fix: stub the publication itself in applyStubs() so both direct
   // ALTERs and dynamic EXECUTE forms succeed without error.)
+
+  // 2b. Supabase installs extensions into the `extensions` schema; pglite
+  // installs them into `public`. Rewriting the qualifier lets the real
+  // migration text apply unchanged in every other respect — previously the
+  // whole file was skipped, which cost knowledge_chunks (0266), folder
+  // access (0282) and the append-dedup unique indexes (0342) that 0343,
+  // 0354 and 0355 all depend on.
+  out = out.replace(/\bextensions\./gi, 'public.');
+  out = out.replace(/\bwith\s+schema\s+extensions\b/gi, 'with schema public');
 
   // 3. CREATE INDEX CONCURRENTLY → CREATE INDEX (no transaction conflict).
   out = out.replace(
@@ -135,6 +148,7 @@ async function applyStubs(pg: PGlite): Promise<void> {
 
     create schema if not exists auth;
     create schema if not exists storage;
+    create schema if not exists extensions;
 
     create or replace function auth.uid() returns uuid
       language sql stable as $$
@@ -171,6 +185,53 @@ async function applyStubs(pg: PGlite): Promise<void> {
     grant execute on function auth.uid(), auth.jwt(), auth.role() to anon, authenticated;
   `);
 
+  // Supabase Storage. Only the shape the migrations touch: buckets + objects
+  // + foldername(), with RLS on so bucket policies apply cleanly. Without
+  // these, every migration that creates a bucket was skipped whole — taking
+  // inspections, lost-and-found, the knowledge hub and the report raw zone
+  // with it.
+  await pg.exec(`
+    create table if not exists storage.buckets (
+      id text primary key,
+      name text not null,
+      owner uuid,
+      public boolean default false,
+      avif_autodetection boolean default false,
+      file_size_limit bigint,
+      allowed_mime_types text[],
+      created_at timestamptz default now(),
+      updated_at timestamptz default now()
+    );
+    create table if not exists storage.objects (
+      id uuid primary key default gen_random_uuid(),
+      bucket_id text references storage.buckets(id),
+      name text,
+      owner uuid,
+      owner_id text,
+      version text,
+      path_tokens text[],
+      metadata jsonb,
+      created_at timestamptz default now(),
+      updated_at timestamptz default now(),
+      last_accessed_at timestamptz default now()
+    );
+    alter table storage.objects enable row level security;
+
+    -- Real signature: everything before the last '/' segment.
+    create or replace function storage.foldername(name text) returns text[]
+      language plpgsql immutable as $fn$
+      declare parts text[];
+      begin
+        parts := string_to_array(name, '/');
+        return parts[1 : array_length(parts, 1) - 1];
+      end;
+      $fn$;
+
+    grant usage on schema storage to anon, authenticated, service_role;
+    grant all on storage.buckets, storage.objects to anon, authenticated, service_role;
+    grant execute on function storage.foldername(text) to anon, authenticated, service_role;
+  `);
+
   // Stub the supabase_realtime publication so migrations that ALTER it
   // (directly or via EXECUTE) don't error. pglite has no realtime broker,
   // but the publication just becomes a no-op metadata object.
@@ -191,7 +252,7 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
     // Register pglite contrib extensions used by migrations:
     //   - pgcrypto: gen_random_uuid() etc. (0001 + downstream)
     //   - pg_trgm: trigram indexes (used by a few search-related migrations)
-    const pg = new PGlite({ extensions: { pgcrypto, pg_trgm } });
+    const pg = new PGlite({ extensions: { pgcrypto, pg_trgm, vector } });
     await applyStubs(pg);
 
     const files = readdirSync(MIGRATIONS)
@@ -258,7 +319,7 @@ export async function applyMigrationsToPgliteWithHook(
     report: MigrationReport;
   }) => Promise<void>,
 ): Promise<PgliteMigratedFixture> {
-  const pg = new PGlite({ extensions: { pgcrypto, pg_trgm } });
+  const pg = new PGlite({ extensions: { pgcrypto, pg_trgm, vector } });
   await applyStubs(pg);
   const files = readdirSync(MIGRATIONS)
     .filter((file) => file.endsWith('.sql'))

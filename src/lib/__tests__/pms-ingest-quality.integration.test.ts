@@ -53,6 +53,26 @@ describe('migration 0339 — ingest quality foundation', () => {
     return rows.find((r) => r.feed_key === feedKey)?.state as string | undefined;
   };
 
+  /** property id → the ingest run its seeded feed rows are attributed to. */
+  const runIds: Record<string, string> = {};
+
+  /**
+   * Re-stamp how fresh the room-status feed looks. 0343 made the observation
+   * tables append-only — an UPDATE is refused by trigger — so this uses the
+   * sanctioned purge flag and writes a new observation, which is what a real
+   * re-delivery does anyway.
+   */
+  const restampRoomStatus = async (pid: string, ago: string): Promise<void> => {
+    await fx.pg.exec(`set staxis.allow_observation_purge = 'on'`);
+    await fx.pg.query(`delete from public.pms_room_status_log where property_id = $1`, [pid]);
+    await fx.pg.exec(`set staxis.allow_observation_purge = 'off'`);
+    await fx.pg.query(
+      `insert into public.pms_room_status_log (property_id, ingest_run_id, room_number, status, last_synced_at)
+       values ($1, $2, '204', 'vacant_clean', now() - $3::interval)`,
+      [pid, runIds[pid], ago],
+    );
+  };
+
   before(async () => {
     fx = await setupRlsFixture();
     await fx.pg.query(`insert into auth.users (id, email) values ($1, 'd4@test') on conflict do nothing`, [UID]);
@@ -61,6 +81,19 @@ describe('migration 0339 — ingest quality foundation', () => {
       ('${PID_DAILY}',    'Nightly Hotel',  '${UID}', 60, 'America/New_York'),
       ('${PID_MANUAL}',   'Manual Hotel',   '${UID}', 40, 'America/Chicago')
       on conflict do nothing;`);
+    // 0341 made pms_* fact rows name the ingest run that produced them, so the
+    // feed rows seeded below need a real run to point at. (Before the pglite
+    // runner learned to stub `storage`, 0340/0341 never applied here and the
+    // column did not exist.)
+    for (const [pid, key] of [[PID_INTERVAL, 'interval'], [PID_DAILY, 'daily'], [PID_MANUAL, 'manual']] as Array<[string, string]>) {
+      const r = await fx.pg.query<{ id: string }>(
+        `insert into public.pms_ingest_runs
+           (property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+         values ($1, 'cua', 'live', $2, '1', now(), now()) returning id`,
+        [pid, `fixture-${key}`],
+      );
+      runIds[pid] = r.rows[0]!.id;
+    }
   });
 
   after(async () => {
@@ -167,18 +200,16 @@ describe('migration 0339 — ingest quality foundation', () => {
 
   test('a report inside its window reads live', async () => {
     await fx.pg.query(
-      `insert into public.pms_room_status_log (property_id, room_number, status, last_synced_at)
-       values ($1, '204', 'vacant_clean', now() - interval '10 minutes')`,
-      [PID_INTERVAL],
+      `insert into public.pms_room_status_log (property_id, ingest_run_id, room_number, status, last_synced_at)
+       values ($1, $2, '204', 'vacant_clean', now() - interval '10 minutes')`,
+      [PID_INTERVAL, runIds[PID_INTERVAL]],
     );
     assert.equal(await stateOf(PID_INTERVAL, 'roomStatus'), 'live');
   });
 
   test('a report 5 minutes past its grace reads STALE — and the number is still there', async () => {
     // 30-minute cadence + 20-minute grace = 50 minutes of headroom.
-    await fx.pg.exec(`update public.pms_room_status_log
-                         set last_synced_at = now() - interval '55 minutes'
-                       where property_id = '${PID_INTERVAL}'`);
+    await restampRoomStatus(PID_INTERVAL, '55 minutes');
     const rows = await health(PID_INTERVAL);
     assert.equal(rows[0]!.state, 'stale');
     assert.ok(Number(rows[0]!.minutes_late) > 20, 'should be past grace');
@@ -219,9 +250,7 @@ describe('migration 0339 — ingest quality foundation', () => {
       [PID_INTERVAL],
     );
     assert.equal(await stateOf(PID_INTERVAL, 'roomStatus'), 'stale');
-    await fx.pg.exec(`update public.pms_room_status_log
-                         set last_synced_at = now() - interval '5 minutes'
-                       where property_id = '${PID_INTERVAL}'`);
+    await restampRoomStatus(PID_INTERVAL, '5 minutes');
     assert.equal(await stateOf(PID_INTERVAL, 'roomStatus'), 'live');
   });
 
@@ -254,9 +283,9 @@ describe('migration 0339 — ingest quality foundation', () => {
     );
     await fx.pg.query(
       `insert into public.pms_work_orders_v2
-         (property_id, pms_work_order_id, description, status, last_synced_at)
-       values ($1, 'wo-1', 'leaky tap', 'open', now() - interval '26 hours')`,
-      [PID_DAILY],
+         (property_id, ingest_run_id, pms_work_order_id, description, status, last_synced_at)
+       values ($1, $2, 'wo-1', 'leaky tap', 'open', now() - interval '26 hours')`,
+      [PID_DAILY, runIds[PID_DAILY]],
     );
     const rows = await health(PID_DAILY);
     assert.equal(rows.length, 1);

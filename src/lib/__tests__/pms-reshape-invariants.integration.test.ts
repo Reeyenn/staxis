@@ -172,13 +172,13 @@ describe('pms reshape — migrations 0354 / 0355 / 0356', () => {
       [MARIA, OTHER_HOTEL_STAFF, PROP, PROP_B],
     );
     runId = await scalar<string>(
-      `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-       values ($1, 'report_email', 'live', now() - interval '2 hours', now()) returning id`,
+      `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+       values ($1, 'cua', 'live', 'fixture', '1', now() - interval '2 hours', now()) returning id`,
       [PROP],
     );
     laterRunId = await scalar<string>(
-      `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-       values ($1, 'report_email', 'live', now(), now()) returning id`,
+      `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+       values ($1, 'cua', 'live', 'fixture', '1', now(), now()) returning id`,
       [PROP],
     );
   });

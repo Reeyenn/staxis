@@ -306,13 +306,19 @@ async function buildHotelSnapshotUncached(
   try {
     const { data } = await supabaseAdmin
       .from('staff')
-      .select('id, role, is_active')
+      // `department`, NOT `role`: the staff table has never had a `role`
+      // column (roles live on `accounts`). PostgREST answered this select with
+      // "column staff.role does not exist", the catch below swallowed it, and
+      // every snapshot silently reported 0 active staff and 0 housekeepers.
+      // Found 2026-07-25 by the pglite tenant-isolation harness, which runs
+      // these queries against the real migrated schema.
+      .select('id, department, is_active')
       .eq('property_id', propertyId)
       .eq('is_active', true);
     if (data) {
       activeToday = data.length;
       assignedHousekeepers = data.filter(
-        s => (s.role as string)?.toLowerCase().includes('housekeep'),
+        s => (s.department as string)?.toLowerCase().includes('housekeep'),
       ).length;
     }
   } catch {

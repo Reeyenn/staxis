@@ -7,12 +7,14 @@
  * So this file applies production migrations and then tries to do each
  * forbidden thing.
  *
- * PGLITE PREREQUISITES. The runner skips 0340 (needs storage.buckets) and 0342
- * (needs the extensions schema), so two of their artefacts are supplied here
- * before the migrations that depend on them: pms_ingest_runs/pms_report_files
- * (0340) and the append-table unique indexes (0342). Everything under test is
- * still the real 0343/0344 SQL. If the stub ever drifts from the real thing,
- * 0343 fails to apply and the `before` hook below says so loudly.
+ * PGLITE PREREQUISITES. The runner used to skip 0340 (storage.buckets) and
+ * 0342 (extensions schema), so this file supplied their artefacts by hand.
+ * Both migrations apply for real now — the runner stubs storage and rewrites
+ * the `extensions` schema qualifier — so the CREATE-IF-NOT-EXISTS stubs below
+ * are inert no-ops kept only as a safety net if that ever regresses. The
+ * ingest runs seeded here therefore satisfy the REAL 0340 constraints
+ * (parser_name/parser_version NOT NULL; a 'report_email' run must name a
+ * file, so these use 'cua').
  */
 
 import assert from 'node:assert/strict';
@@ -103,8 +105,8 @@ describe('pms time model — migrations 0343 / 0344', () => {
       [PROP, PROP_CUTOFF, PROP_DOOMED, OWNER],
     );
     runId = await scalar<string>(
-      `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-       values ($1, 'report_email', 'live', now(), now()) returning id`,
+      `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+       values ($1, 'cua', 'live', 'fixture', '1', now(), now()) returning id`,
       [PROP],
     );
   });
@@ -220,12 +222,12 @@ describe('pms time model — migrations 0343 / 0344', () => {
       // 02:15 America/Chicago on 2026-06-10 is 07:15Z. The cutoff-0 hotel calls
       // that the 10th; the 3am-night-audit hotel is still working on the 9th.
       const midnightRun = await scalar<string>(
-        `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-         values ($1, 'report_email', 'live', now(), now()) returning id`, [PROP],
+        `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+         values ($1, 'cua', 'live', 'fixture', '1', now(), now()) returning id`, [PROP],
       );
       const cutoffRun = await scalar<string>(
-        `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-         values ($1, 'report_email', 'live', now(), now()) returning id`, [PROP_CUTOFF],
+        `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+         values ($1, 'cua', 'live', 'fixture', '1', now(), now()) returning id`, [PROP_CUTOFF],
       );
       for (const [pid, rid] of [[PROP, midnightRun], [PROP_CUTOFF, cutoffRun]] as Array<[string, string]>) {
         await pg.query(
@@ -250,8 +252,8 @@ describe('pms time model — migrations 0343 / 0344', () => {
     test('observed_at is stamped from the ingest run, so it cannot disagree with the receipt', async () => {
       const capturedAt = '2026-06-11T15:45:00Z';
       const stampedRun = await scalar<string>(
-        `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-         values ($1, 'report_email', 'live', $2::timestamptz, now()) returning id`,
+        `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+         values ($1, 'cua', 'live', 'fixture', '1', $2::timestamptz, now()) returning id`,
         [PROP, capturedAt],
       );
       await pg.query(
@@ -394,8 +396,8 @@ describe('pms time model — migrations 0343 / 0344', () => {
     test('as_of is stamped from the ingest run when the writer omits it', async () => {
       const capturedAt = '2026-06-13T09:30:00Z';
       const lateRun = await scalar<string>(
-        `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-         values ($1, 'report_email', 'live', $2::timestamptz, now()) returning id`, [PROP, capturedAt],
+        `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+         values ($1, 'cua', 'live', 'fixture', '1', $2::timestamptz, now()) returning id`, [PROP, capturedAt],
       );
       await pg.query(
         `insert into public.pms_revenue_daily
@@ -539,8 +541,8 @@ describe('pms time model — migrations 0343 / 0344', () => {
 
     test('deleting a hotel still cascades — append-only must not brick delete-hotel', async () => {
       const doomedRun = await scalar<string>(
-        `insert into public.pms_ingest_runs(property_id, source_kind, mode, source_captured_at, finished_at)
-         values ($1, 'report_email', 'live', now(), now()) returning id`, [PROP_DOOMED],
+        `insert into public.pms_ingest_runs(property_id, source_kind, mode, parser_name, parser_version, source_captured_at, finished_at)
+         values ($1, 'cua', 'live', 'fixture', '1', now(), now()) returning id`, [PROP_DOOMED],
       );
       await pg.query(
         `insert into public.pms_occupancy_observation

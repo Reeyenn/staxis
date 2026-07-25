@@ -72,12 +72,50 @@ per-hotel half of that (do we expect this feed, how often, is it late) is
     handler is handed the SERVER-side property even when the model names another
     hotel in its arguments, and a registry-derived test fails if any tool's
     input schema ever accepts a property argument at all.
-- **KNOWN GAP — the per-handler `.eq('property_id', …)` filter is NOT covered by
-  the hermetic bank.** Hermetic evals stub the tool handler, so a handler that
-  dropped its property filter would still pass. That check needs a database
-  (pglite or a live RLS test) and is the highest-value follow-up to this doc.
-  Stating the gap is the point: a green hermetic suite must not be read as "no
-  hotel can see another hotel's rows".
+  - TEST (the per-handler filter, against a real database):
+    `src/lib/__tests__/agent-tool-tenant-isolation.integration.test.ts` applies
+    the production migrations to PGlite, seeds TWO hotels from the resulting
+    catalog, installs a PostgREST-shaped client that compiles the query builder
+    to real SQL (`tests/fixtures/postgrest-pglite.ts`), and runs every tool in
+    `listAllTools()` as a user scoped to hotel A. Hotel B's rows are reachable
+    on purpose — lookup columns (`room_number`, `name`, `username`) hold the
+    same value on both sides, so a handler that filters on one of them and
+    forgets the hotel filter MATCHES hotel B. Every hotel-B uuid starts
+    `bbbbbbbb-` and every hotel-B free-text column carries `ZZLEAKB`.
+
+    **What it proves.** Over the current catalog the walk executes ~230
+    statements across ~50 tables (200 selects, 11 inserts, 8 updates, 4
+    upserts, 1 delete, 8 RPCs) and asserts: no tool RESULT carries a hotel-B
+    value; no STATEMENT returned a hotel-B row (caught at the database even
+    when the handler discards it); no hotel-B row was CHANGED by the walk
+    (fingerprint before/after — the unfiltered-UPDATE case); and every
+    statement on a hotel-scoped table carried the hotel filter. Verified by
+    mutation: deleting the `.eq()` in `scopedDb.select` turns 4 assertions red
+    with named leaks, and deleting the `.eq('property_id', …)` from
+    `fetchRegister` in `src/lib/lost-and-found/store.ts` is reported as
+    `search_lost_found → select lost_and_found_items read bbbbbbbb-`.
+- **WHAT THAT TEST STILL DOES NOT PROVE — read before quoting it.**
+  - **Nothing about RLS.** PGlite runs as the table owner, so policies are
+    bypassed exactly the way the production service-role key bypasses them.
+    The boundary under test is app code (`scopedDb` + each handler), not the
+    database's own row-level enforcement. INV-31 is still open.
+  - **Only the paths the fixture reaches.** Arguments are synthesized from each
+    tool's own input schema. A handler that refuses the synthesized arguments
+    before it queries proves nothing — the suite fails on that rather than
+    counting it as covered, but "covered" still means "one representative call
+    per tool", not every branch.
+  - **Only tables the seeder can fill.** Six hotel tables have constraint
+    shapes no generated row satisfies (`UNSEEDABLE_TABLES` in the test) and so
+    hold no hotel-B row; a dropped filter on one of those is caught by the
+    filter-shape assertion but not by a real leaked row. The list is pinned —
+    the suite fails if it grows or goes stale.
+  - **A leak that surfaces only text is invisible to the value scan.** Lookup
+    columns are identical on both sides by design, so a query projecting only
+    those columns leaks nothing distinguishable. That case is covered by the
+    filter-shape assertion instead.
+  - **The 12 migrations PGlite cannot apply** are all auth-infrastructure
+    (`supabase_auth_admin`, `auth.sessions`, `app_settings`); no tenant table
+    depends on them.
 - **Assumed by:** every `src/lib/agent/tools/*` handler, `src/lib/db/*`
 - **History:** the recurring RLS silent-empty-state bug class (three incidents
   in eight days, `RUNBOOKS.md`) is the same root cause seen from the other side —
