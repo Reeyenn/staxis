@@ -278,7 +278,16 @@ export type RateLimitEndpoint =
   // burst of catch-up sends while bounding a flood at a known-good address.
   // NOT billing-impacting (a DB write + a signed-URL mint) → fails OPEN, so a
   // Supabase blip never silently drops a real report.
-  | 'pms-report-inbound';
+  | 'pms-report-inbound'
+  // ── Drip questions (migration 0359) ───────────────────────────────────────
+  // The manager's one tap on the Staxis screen's question card. A "yes" writes
+  // a human-authored agent_memory fact, so this is a real knowledge-mutating
+  // surface even though it is one button. By design a manager answers at most
+  // ONE per session, so any volume above a handful an hour is a replay loop or
+  // a stolen session rewriting the hotel's memory. NOT billing-impacting (no
+  // model call anywhere in the path) → fails OPEN, so a Supabase blip never
+  // eats a legitimate answer.
+  | 'knowledge-question-answer';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -493,6 +502,9 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'pms-inbox-inbound':           60,
   // Report deliveries — see the union comment above. 48/day expected.
   'pms-report-inbound':          20,
+  // One question per manager per session; 30/hr/property is generous even for a
+  // hotel with several managers all answering at once.
+  'knowledge-question-answer':   30,
 };
 
 /**

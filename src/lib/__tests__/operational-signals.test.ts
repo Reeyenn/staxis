@@ -190,6 +190,9 @@ describe('templateContent + rankAndCapSignals', () => {
     metric: '4 hvac work orders in 30 days',
     count: 4,
     windowDays: 30,
+    targetKind: 'room',
+    targetValue: '305',
+    detail: 'hvac',
     ...over,
   });
 

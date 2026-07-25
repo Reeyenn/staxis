@@ -254,3 +254,65 @@ export async function accountCapabilityDecisionForProperty(
     ? 'allowed'
     : 'denied';
 }
+
+// ─── Manager identity for a resolved session ─────────────────────────────────
+
+/**
+ * A manager, already identified. Same shape three "what does Staxis know about
+ * this hotel" routes were each hand-rolling; keeping it here means one place
+ * has to be right about the `accounts` columns.
+ */
+export interface ManagerCaller {
+  accountId: string;
+  role: AppRole;
+  /** For attributing an authored fact to a person. Cosmetic — never a gate. */
+  displayName: string | null;
+  propertyAccess: string[];
+}
+
+/**
+ * Load the manager behind an already-validated session (requireSession first).
+ *
+ * Returns null when there is no account row, the account is deactivated, or the
+ * role cannot manage a team. Deliberately NOT a session check — the caller owns
+ * that, so this stays usable from routes that need their own 401 semantics.
+ *
+ * NOTE for future editors: the display name column is `display_name`. There is
+ * no `accounts.name`, and naming a column that does not exist makes PostgREST
+ * error, which reads at the call site as "no such account" and silently turns
+ * the whole feature off for every user. That exact bug shipped once and is
+ * pinned by a test against the real schema.
+ */
+export async function loadManagerCaller(authUserId: string): Promise<ManagerCaller | null> {
+  const { data, error } = await supabaseAdmin
+    .from('accounts')
+    .select('id, role, display_name, property_access, active')
+    .eq('data_user_id', authUserId)
+    .maybeSingle();
+  if (error || !data) return null;
+
+  const row = data as {
+    id: string;
+    role: string | null;
+    display_name: string | null;
+    property_access: unknown;
+    active: boolean | null;
+  };
+  if (row.active === false) return null;
+
+  const role = (row.role as AppRole | null) ?? null;
+  if (!role || !canManageTeam(role)) return null;
+
+  return {
+    accountId: row.id,
+    role,
+    displayName: row.display_name ?? null,
+    propertyAccess: Array.isArray(row.property_access) ? (row.property_access as string[]) : [],
+  };
+}
+
+/** Does this manager manage that hotel? Admins and wildcard access manage all. */
+export function managerManagesHotel(caller: ManagerCaller, propertyId: string): boolean {
+  if (caller.role === 'admin') return true;
+  return caller.propertyAccess.includes(propertyId) || caller.propertyAccess.includes('*');
+}

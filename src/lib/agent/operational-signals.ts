@@ -52,6 +52,16 @@ export interface OperationalSignal {
   metric: string; // human evidence: '4 hvac work orders in 30 days'
   count: number;
   windowDays: number;
+  /** WHAT the pattern is about, structured. `targetLabel` above is English
+   *  prose ("Room 305"); a non-English surface must never have to parse it back
+   *  apart to say "la habitación 305". These two carry the same information
+   *  without a language baked in. */
+  targetKind: 'room' | 'floor' | null;
+  targetValue: string | null; // '305', '4'
+  /** The DATA's own sub-category for the pattern ('hvac', 'noise', …), when it
+   *  has one. Free text out of the hotel's records — never a UI string, and
+   *  never assume it is translatable or even a word. */
+  detail: string | null;
 }
 
 // ─── helpers (pure) ──────────────────────────────────────────────────────────
@@ -159,6 +169,9 @@ export function signalsFromWorkOrders(rows: WorkOrderRow[]): OperationalSignal[]
       metric: `${n} ${category} work orders in ${SIGNAL_WINDOW_DAYS} days`,
       count: n,
       windowDays: SIGNAL_WINDOW_DAYS,
+      targetKind: 'room',
+      targetValue: room,
+      detail: category,
     });
   }
   return out;
@@ -198,6 +211,9 @@ export function signalsFromComplaints(rows: ComplaintRow[]): OperationalSignal[]
           : `${n} ${category} complaints in ${SIGNAL_WINDOW_DAYS} days`,
       count: n,
       windowDays: SIGNAL_WINDOW_DAYS,
+      targetKind: 'room',
+      targetValue: room,
+      detail: category,
     });
   }
 
@@ -225,6 +241,9 @@ export function signalsFromComplaints(rows: ComplaintRow[]): OperationalSignal[]
       metric: `${n} weekend noise complaints on floor ${floor} in ${SIGNAL_WINDOW_DAYS} days`,
       count: n,
       windowDays: SIGNAL_WINDOW_DAYS,
+      targetKind: 'floor',
+      targetValue: floor,
+      detail: 'noise',
     });
   }
   return out;
@@ -250,6 +269,9 @@ export function signalsFromInspections(rows: InspectionRow[]): OperationalSignal
       metric: `failed inspection ${n} times in ${SIGNAL_WINDOW_DAYS} days`,
       count: n,
       windowDays: SIGNAL_WINDOW_DAYS,
+      targetKind: 'room',
+      targetValue: room,
+      detail: null,
     });
   }
   return out;
@@ -288,6 +310,9 @@ export function signalsFromCleaning(rows: CleaningRow[]): OperationalSignal[] {
       metric: `~${Math.round(roomMedian)} min to clean vs ~${Math.round(propMedian)} min typical`,
       count: durs.length,
       windowDays: SIGNAL_WINDOW_DAYS,
+      targetKind: 'room',
+      targetValue: room,
+      detail: null,
     });
   }
   return out;

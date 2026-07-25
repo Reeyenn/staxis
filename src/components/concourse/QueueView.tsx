@@ -6,10 +6,17 @@
 // Honest pilot state until the live agent_nudges wiring lands: no sample
 // cards, no fabricated stats, and critically no "all clear" claim. A missing
 // queue connection cannot tell a manager whether decisions are pending.
+//
+// ONE real card lives here today: DripQuestionCard, the single question Staxis
+// occasionally asks about a pattern it noticed in the hotel's own records. It
+// renders nothing when there is nothing to ask, so the honest empty state below
+// is what a manager sees on any ordinary day — and it stays honest either way,
+// because a question is not an approval and answering one clears nothing.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
+import { DripQuestionCard } from './DripQuestionCard';
 
 export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   const es = lang === 'es';
@@ -23,6 +30,8 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           ? 'Las aprobaciones en vivo todavía no están conectadas para este piloto.'
           : 'Live approvals are not connected for this pilot yet.'}
       </div>
+
+      <DripQuestionCard lang={lang} />
 
       <div className="cx-dec" style={{ justifyContent: 'center', textAlign: 'center' }}>
         <div style={{ padding: '18px 8px' }}>
