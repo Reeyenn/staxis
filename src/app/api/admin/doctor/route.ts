@@ -61,6 +61,10 @@ import { requireAdminOrCron } from '@/lib/admin-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { readTwoFactorEnabledFresh } from '@/lib/two-factor';
 import { errToString } from '@/lib/utils';
+import {
+  evalBankFreshnessVerdict,
+  evalBankIncidentVerdict,
+} from '@/lib/agent/eval-bank-health';
 import { env } from '@/lib/env';
 import { SUPERSEDED_MIGRATIONS } from '@/lib/migration-policy';
 
@@ -142,6 +146,12 @@ const checks: Array<[string, CheckFn]> = [
   ['cua_sessions_alive',          checkCuaSessionsAlive],
   ['cua_cost_cap_paused',         checkCuaCostCapPaused],
   ['cua_mfa_pending',             checkCuaMfaPending],
+  // A4-RATCHET (2026-07-24): the two signals that tell you the quality
+  // ratchet is actually turning. Both were invisible before — the live eval
+  // bank could go a year without running and nothing said so, and an
+  // "the AI got this wrong" report could be closed with nothing learned.
+  ['eval_bank_freshness',         checkEvalBankFreshness],
+  ['eval_bank_incident_coverage', checkEvalBankIncidentCoverage],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -932,6 +942,52 @@ const CUA_STARTING_STUCK_MS = 15 * 60_000;
 // doctor → the deploy smoke gate 503'd and paged the founder every time a
 // hotel was paused for MFA/cost or mid-onboarding (a stale heartbeat is
 // EXPECTED for a paused, non-running driver).
+/**
+ * Two ratchet signals. The judgement lives in
+ * src/lib/agent/eval-bank-health.ts so it is directly testable; this route owns
+ * only the queries.
+ */
+async function checkEvalBankFreshness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('agent_eval_baselines')
+      .select('created_at')
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (error) {
+      return { status: 'warn', detail: `agent_eval_baselines read failed: ${errToString(error)}` };
+    }
+    const newest = (data ?? [])[0] as { created_at?: string } | undefined;
+    return evalBankFreshnessVerdict(newest?.created_at ?? null);
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+async function checkEvalBankIncidentCoverage(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('user_feedback')
+      .select('id')
+      .eq('category', 'ai_wrong')
+      .eq('status', 'resolved')
+      .is('eval_case_name', null)
+      .limit(20);
+    if (error) {
+      // A database without migration 0350 has neither the column nor the
+      // category. Say so plainly instead of reporting a false failure.
+      return {
+        status: 'warn',
+        detail: `user_feedback read failed (is migration 0350 applied?): ${errToString(error)}`,
+      };
+    }
+    const rows = (data ?? []) as Array<{ id: string }>;
+    return evalBankIncidentVerdict(rows.map(r => r.id));
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
 async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
   try {
     const { data, error } = await supabaseAdmin
