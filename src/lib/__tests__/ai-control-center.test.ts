@@ -28,8 +28,11 @@ describe('AI Control Center feature registry', () => {
   // display-only 8→7, 33→28 keys).
   // 2026-07-24: the Housekeeping setup questionnaire added
   // housekeeping.board_photo_read (21→22 controllable, 28→29 keys).
-  test('covers 22 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 30);
+  // 2026-07-26: the findings layer's nightly judge added findings.judge
+  // (22→23 controllable, 30→31 keys). It defaults to Haiku on purpose — it
+  // sorts and phrases, it never authors a number.
+  test('covers 23 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 31);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

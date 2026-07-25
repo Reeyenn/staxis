@@ -330,6 +330,52 @@ export interface Finding {
   shownCount: number;
   actedCount: number;
   ignoredCount: number;
+
+  // ── the judge's half (migration 0361) ──
+  // Written ALONGSIDE the fields above, never over them. All null until the
+  // nightly judge has seen this row; all still null if the model was
+  // unavailable and nothing was persisted. `summary` and `disposition` above
+  // remain what the detector decided, forever.
+  /** The judge's verdict. Falls back to `disposition` when absent. */
+  judgedDisposition: FindingDisposition | null;
+  /** Guard-checked phrasing. Both languages or neither — the schema refuses
+   *  half-translated phrasing, so a Spanish speaker never sees English
+   *  silently standing in for Spanish. */
+  judgedSummaryEn: string | null;
+  judgedSummaryEs: string | null;
+  judgedRationale: string | null;
+  /** The judge's reading order within its run. Advisory. */
+  judgedRank: number | null;
+  /** 'model' when the generated text passed the prose guard, 'template' when
+   *  code wrote it instead. */
+  judgedSource: 'model' | 'template' | null;
+  judgedAt: string | null;
+  judgedModel: string | null;
+  /** True when the prose guard threw model phrasing away for this row. */
+  judgedGuardRejected: boolean;
+}
+
+/** What the judge did to one hotel on one night. Mirrors finding_runs (0361). */
+export interface FindingJudgeSummary {
+  /**
+   * 'no_findings'        nothing new or changed — zero model calls, by design
+   * 'model'              a call was made and its output was used
+   * 'fallback_cap'       the hotel's daily findings-AI budget was exhausted
+   * 'fallback_error'     the provider failed, timed out, or was unreachable
+   * 'fallback_malformed' the reply broke the output contract and was refused
+   * 'skipped'            the judge was switched off for this run
+   */
+  mode:
+    | 'no_findings'
+    | 'model'
+    | 'fallback_cap'
+    | 'fallback_error'
+    | 'fallback_malformed'
+    | 'skipped';
+  findings: number;
+  costUsd: number;
+  /** How many findings had model phrasing discarded by the prose guard. */
+  guardRejections: number;
 }
 
 /** What one runner execution did to one hotel. Mirrors finding_runs. */
@@ -349,4 +395,11 @@ export interface FindingRunSummary {
   errors: Array<{ detectorId: string; error: string }>;
   /** Per-detector detail. Not persisted — returned for the cron response. */
   skipped: Array<{ detectorId: string; because: string }>;
+  /**
+   * What the judge did. Part of the null result for the same reason the
+   * detector counts are: a night with nothing new to judge and a night where
+   * the budget ran out both leave the findings table looking untouched, and
+   * only one of those is fine.
+   */
+  judge: FindingJudgeSummary;
 }
