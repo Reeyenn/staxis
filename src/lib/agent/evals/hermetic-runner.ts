@@ -301,6 +301,9 @@ export function hermeticMemoryRow(patch: Partial<MemoryRow> & { content: string 
     createdByName: 'Fixture Manager',
     subjectAccountId: null,
     updatedAt: '2026-07-24T12:00:00.000Z',
+    category: 'rhythm',
+    reviewState: 'confirmed',
+    expiresAt: null,
     ...patch,
   };
 }

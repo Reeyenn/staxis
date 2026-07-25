@@ -131,7 +131,7 @@ describe('deriveCurrentStep — sequential progress', () => {
     assert.equal(deriveCurrentStep(s), 7);
   });
 
-  test('after team added → step 8 (all set)', () => {
+  test('after team added → step 8 (tell us about your hotel)', () => {
     const s: OnboardingState = {
       step: 1,
       accountCreatedAt: '2026-05-14T00:00:00Z',
@@ -143,6 +143,37 @@ describe('deriveCurrentStep — sequential progress', () => {
       staffAt: '2026-05-14T00:09:00Z',
     };
     assert.equal(deriveCurrentStep(s), 8);
+  });
+
+  test('after the optional hotel-context step → step 9 (all set)', () => {
+    const s: OnboardingState = {
+      step: 1,
+      accountCreatedAt: '2026-05-14T00:00:00Z',
+      emailVerifiedAt: '2026-05-14T00:01:00Z',
+      hotelDetailsAt: '2026-05-14T00:02:00Z',
+      pmsCredentialsAt: '2026-05-14T00:04:00Z',
+      pmsJobId: 'job-uuid',
+      mappingCompletedAt: '2026-05-14T00:08:00Z',
+      staffAt: '2026-05-14T00:09:00Z',
+      hotelContextAt: '2026-05-14T00:10:00Z',
+    };
+    assert.equal(deriveCurrentStep(s), 9);
+  });
+
+  test('the hotel-context step is a real gate — skipping it stamps the same marker', () => {
+    // Skip and "Add this" both write hotelContextAt, so an owner who skips is
+    // NOT parked forever on step 8. Without the marker they stay on 8; with it
+    // (however it got there) they reach Done.
+    const base: OnboardingState = {
+      step: 1,
+      accountCreatedAt: '2026-05-14T00:00:00Z',
+      emailVerifiedAt: '2026-05-14T00:01:00Z',
+      hotelDetailsAt: '2026-05-14T00:02:00Z',
+      pmsSkippedAt: '2026-05-14T00:03:00Z',
+      staffAt: '2026-05-14T00:09:00Z',
+    };
+    assert.equal(deriveCurrentStep(base), 8);
+    assert.equal(deriveCurrentStep({ ...base, hotelContextAt: '2026-05-14T00:10:00Z' }), 9);
   });
 
   test('a legacy servicesAt timestamp is ignored (no longer a gate)', () => {
@@ -182,7 +213,7 @@ describe('deriveCurrentStep — Skip PMS (inventory-only hotel)', () => {
     assert.equal(deriveCurrentStep(s), 4);
   });
 
-  test('skipped PMS + team added → step 8 (all set), no mapping ever required', () => {
+  test('skipped PMS + team added → step 8 (tell us), no mapping ever required', () => {
     const s: OnboardingState = {
       step: 1,
       accountCreatedAt: '2026-05-14T00:00:00Z',
@@ -221,12 +252,16 @@ describe('isValidPartialState', () => {
 
   test('accepts partial with valid step', () => {
     assert.equal(isValidPartialState({ step: 5 }), true);
+    assert.equal(isValidPartialState({ step: 9 }), true); // the wizard's last step
+  });
+
+  test('accepts hotelContextAt (in the allowlist)', () => {
+    assert.equal(isValidPartialState({ hotelContextAt: '2026-05-14T00:10:00Z' }), true);
   });
 
   test('rejects step out of range', () => {
     assert.equal(isValidPartialState({ step: 0 }), false);
-    assert.equal(isValidPartialState({ step: 9 }), false); // wizard is now 8 steps
-    assert.equal(isValidPartialState({ step: 10 }), false);
+    assert.equal(isValidPartialState({ step: 10 }), false); // wizard is 9 steps
     assert.equal(isValidPartialState({ step: -1 }), false);
   });
 
