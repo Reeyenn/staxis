@@ -35,6 +35,13 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 // constants, so "is this clock string in the stable block?" is unambiguous.
 const NOW = new Date('2026-07-24T14:22:00.000Z'); // 9:22 AM America/Chicago
 
+// Every buildSystemPrompt call below passes NOW explicitly. Without that, the
+// fixture's capture time is pinned but its AGE is measured against the wall
+// clock, so the rendered wording drifts as real time passes and the assertions
+// slowly come to mean something else. This suite passed all day on 2026-07-24
+// and went red overnight on unchanged code, once agedBy(5) aged past a day and
+// started rendering as days rather than "5 min ago".
+
 function agedBy(minutes: number): string {
   return new Date(NOW.getTime() - minutes * 60_000).toISOString();
 }
@@ -79,8 +86,8 @@ after(() => {
 
 describe('prompt cache purity', () => {
   it('two snapshots 40 minutes apart produce byte-identical stable blocks', async () => {
-    const a = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1');
-    const b = await buildSystemPrompt('general_manager', snapshot(agedBy(45)), 'conv-1');
+    const a = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
+    const b = await buildSystemPrompt('general_manager', snapshot(agedBy(45)), 'conv-1', undefined, undefined, NOW);
     assert.equal(a.stable, b.stable);
     // …and the dynamic blocks genuinely differ, or the assertion above would
     // be vacuously true for a build that dropped the as-of line entirely.
@@ -92,6 +99,9 @@ describe('prompt cache purity', () => {
       'general_manager',
       snapshot(agedBy(5)),
       'conv-1',
+      undefined,
+      undefined,
+      NOW,
     );
     assert.match(stable, /How old the numbers are/);
     assert.match(stable, /snapshot is NOT live/);
@@ -109,8 +119,8 @@ describe('prompt cache purity', () => {
   });
 
   it('applies to every role, including one without the inventory addendum', async () => {
-    const a = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-2');
-    const b = await buildSystemPrompt('housekeeping', snapshot(agedBy(45)), 'conv-2');
+    const a = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-2', undefined, undefined, NOW);
+    const b = await buildSystemPrompt('housekeeping', snapshot(agedBy(45)), 'conv-2', undefined, undefined, NOW);
     assert.equal(a.stable, b.stable);
     assert.match(a.stable, /How old the numbers are/);
   });
@@ -122,6 +132,9 @@ describe('the refresh-the-page lie is gone', () => {
       'general_manager',
       snapshot(agedBy(5)),
       'conv-1',
+      undefined,
+      undefined,
+      NOW,
     );
     // The deleted sentence, both halves of it.
     assert.equal(/suggest they refresh the page/i.test(stable + dynamic), false);
@@ -132,14 +145,14 @@ describe('the refresh-the-page lie is gone', () => {
   });
 
   it('the stable rule explicitly forbids it instead', async () => {
-    const { stable } = await buildSystemPrompt('owner', snapshot(agedBy(5)), 'conv-1');
+    const { stable } = await buildSystemPrompt('owner', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
     assert.match(stable, /NEVER tell the user to refresh/i);
   });
 });
 
 describe('version label', () => {
   it('records the freshness rule so the behaviour change is auditable', async () => {
-    const gm = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1');
+    const gm = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
     assert.match(gm.versionLabel, /data-freshness-v1/);
     // A3 split the stamp in two: `stableStamp` is what gets PRINTED (constant
     // for the conversation), `versionLabel` is what gets PERSISTED and carries
@@ -147,7 +160,7 @@ describe('version label', () => {
     // prompt cache every turn — see agent-prompt-tiers.test.ts.
     assert.ok(gm.stable.includes(`Prompt version: ${gm.stableStamp}`));
     // Every role gets the rule, so every role's label carries the version.
-    const hk = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-1');
+    const hk = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
     assert.match(hk.versionLabel, /data-freshness-v1/);
     // The pre-existing inventory routing version is not displaced by it.
     assert.match(gm.versionLabel, /inventory-accounting-v1/);

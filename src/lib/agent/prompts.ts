@@ -416,6 +416,18 @@ export async function buildSystemPrompt(
   /** Pre-formatted, escaped <staxis-memory> block from retrieveMemoryForTurn().
    *  Appended to the DYNAMIC block (never the cached stable block). '' = none. */
   memoryBlock?: string,
+  /** The clock the snapshot's "as of … , N min ago" line is rendered against.
+   *  Defaults to real now, which is what every production caller wants.
+   *
+   *  It is injectable because a test that pins a capture time but measures its
+   *  age against the WALL CLOCK does not test anything stable — it slowly
+   *  drifts into a different assertion and then fails on its own. That is not
+   *  hypothetical: agent-prompt-cache-purity pinned a fixture at 2026-07-24 and
+   *  matched only "min ago"/"hr ago", so it passed all day and went red
+   *  overnight, on unchanged code, once the fixture aged past a day. A red main
+   *  that means nothing is worse than no test, because it trains everyone to
+   *  ignore the light. */
+  now: Date = new Date(),
 ): Promise<SystemPromptBlocks> {
   // A3 tiers: the hotel's PMS family selects the shared family addendum. It
   // rides in on the snapshot the caller already built — no extra query, no
@@ -509,7 +521,7 @@ export async function buildSystemPrompt(
   // turn from live data" line was deleted. Both halves were false: the numbers
   // come from scheduled PMS reports, and refreshing fetches nothing new.
   const dynamic: Segment<DynamicTier>[] = [
-    { tier: 'hotel_snapshot', lines: ['─── Current hotel snapshot ───', formatSnapshotForPrompt(snapshot)] },
+    { tier: 'hotel_snapshot', lines: ['─── Current hotel snapshot ───', formatSnapshotForPrompt(snapshot, now)] },
   ];
   // Long-term memory (migration 0256). DYNAMIC block only — it changes as the
   // hotel teaches the copilot, and must never poison the cached stable prefix.
