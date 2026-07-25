@@ -151,6 +151,26 @@ export function invalidatePromptsCache(): void {
   cache = null;
 }
 
+/**
+ * Eval/test seam: seed the in-process cache with FIXTURE prompt rows.
+ *
+ * The hermetic eval harness needs prompt assembly to be deterministic and
+ * offline. Without this it would silently exercise the fail-soft constants in
+ * prompts.ts (placeholder Supabase env ⇒ DB load fails ⇒ empty list ⇒
+ * fallbacks), and every prompt-content assertion would be green-lighting text
+ * that production may not serve, since prod resolves the admin-editable
+ * `agent_prompts` rows. Seeding makes the prompt source EXPLICIT: the harness
+ * asserts the resulting versionLabel is its own fixture version, so a case can
+ * never accidentally assert against the fallback constants or a real DB row.
+ *
+ * Not exported through any route — callers are tests + evals only.
+ */
+export function seedPromptsCache(
+  entries: Array<{ role: PromptRole; version: string; content: string }>,
+): void {
+  cache = { entries: entries.map(e => ({ ...e })), loadedAt: Date.now() };
+}
+
 export interface ActivePrompt {
   version: string;
   content: string;
