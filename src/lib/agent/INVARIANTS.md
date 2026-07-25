@@ -802,3 +802,91 @@ so a deactivated row is always a deliberate human deletion, never decay.
 - **History:** Memory-permanence review, 2026-07-25. The deletion promise held
   for 30 days and only as a prompt hint; on day 31 the nightly consolidator
   could re-insert the deleted topic and it silently came back.
+
+
+## The findings ledger (migration 0360)
+
+The layer that turns "Staxis noticed something" into a durable object. Three
+detection systems existed before it — the cleaning rules engine, the nudge
+checks, the operational-signal aggregators — each with its own private notion of
+"have I already said this?", and none able to answer "what is currently wrong at
+this hotel?". These four invariants are what the unified ledger promises.
+
+- **INV-FIND-1 — one problem is one row.** For a given hotel there is at most
+  ONE finding per `dedupe_key` in an ACTIVE state (`open`, `updated`,
+  `known_problem`, `muted`). A detector that finds tonight the same problem it
+  found last night UPDATES that row; it never inserts a second. `resolved` and
+  `expired` sit outside the guarantee on purpose, so a problem that returns
+  after a fix opens a genuinely new row with its own `first_seen_at`.
+- **Enforced by:** partial unique index `findings_one_active_per_problem_uq`
+  (migration 0360). NOT by the runner looking first: two runners racing on one
+  hotel would both look, both see nothing, and both insert. The loser now gets a
+  unique violation and converts its insert into the update it should have been
+  ([store.ts openFinding](src/lib/findings/store.ts)).
+- **Assumed by:** [runner.ts](src/lib/findings/runner.ts) reconciliation; every
+  later phase that renders a findings queue.
+- **Tested by:** `findings-ledger.integration.test.ts` (real Postgres via
+  pglite) — "a second open row for the same problem is refused", "two runs of
+  the same problem leave one row with two sightings", "a concurrent run cannot
+  produce two cards", "a RESOLVED problem may recur as a genuinely new row".
+  Verified by narrowing the index predicate to open/updated only and watching
+  the silenced-state cases go red.
+- **History:** Findings-engine Phase 1, 2026-07-26.
+
+- **INV-FIND-2 — a silence holds, except when the problem outgrows it.**
+  `muted` suppresses unconditionally, forever. `known_problem` suppresses too,
+  EXCEPT when the magnitude both reaches `silenced_at_magnitude × factor` AND
+  has grown by at least `minDelta` — the detector's declared escalation policy.
+  Four known work orders is consent to four, not to nine.
+- **Enforced by:** the silenced states occupy the active slot of the partial
+  unique index `findings_one_active_per_problem_uq` (0360), so a silence cannot
+  be defeated by inserting a fresh row tomorrow. The transition table itself is
+  [silencer.ts decideAction](src/lib/findings/silencer.ts) — a pure function
+  with no clock and no database, which is what makes it exhaustively testable.
+- **NOT ENFORCED at the DB level:** `findings.silenced_at_magnitude` is written
+  by [store.ts setFindingStatus](src/lib/findings/store.ts) on every transition
+  to `known_problem`; a CHECK cannot see the previous row's magnitude. The pure
+  function therefore fails CLOSED — a silence with no recorded consent point
+  never escalates, because guessing it would mean re-nagging a manager who
+  explicitly asked for quiet.
+- **Assumed by:** the "known problem" tap in every later phase's card UI.
+- **Tested by:** `findings-detectors.test.ts` (the whole escalation table: 4→5
+  quiet, 4→7 quiet, 4→8 loud, 4→9 loud, 1→2 quiet, null consent quiet) and
+  `findings-ledger.integration.test.ts` — "a known problem that barely grew
+  stays quiet", "four known work orders does not silence nine", "mute means
+  gone, at any size", "a silenced card is never expired out from under the
+  manager".
+- **History:** Findings-engine Phase 1, 2026-07-26.
+
+- **INV-FIND-3 — a proactive finding never lives in `agent_pending_actions`.**
+  That table is the copilot's frozen-args proposal queue: `conversation_id` and
+  `account_id` are NOT NULL with ON DELETE CASCADE, and its rows carry a
+  ~10-minute TTL. A finding has no conversation and no author, must outlive both
+  the chat and the manager's account, and must persist for weeks. Storing one
+  there would mean every finding died the moment a conversation was archived.
+- **Enforced by:** structure — the `findings` table (0360) carries
+  `property_id` as its only tenancy column and has no `conversation_id` at all,
+  so a finding is incapable of being conversation-scoped.
+- **Assumed by:** [store.ts](src/lib/findings/store.ts); the product promise
+  that a card nobody acted on is still there tomorrow.
+- **History:** Findings-engine Phase 1, 2026-07-26. Same lesson as INV-25, which
+  records why the copilot's own proposals needed their own lifecycle.
+
+- **INV-FIND-4 — a price on a finding is a RANGE or it is absent.**
+  "$200–400", never "$340" (founder call, 2026-07-26: a point estimate is a lie
+  told confidently, and a manager who catches one stops believing the other
+  numbers). Both bounds are NULL together, or both are set with
+  `price_high_cents` STRICTLY greater than `price_low_cents` — a zero-width
+  range is a point estimate in disguise. No basis in the hotel's own numbers ⇒
+  say nothing about money.
+- **Enforced by:** CHECK constraint `findings_price_is_a_range` (migration
+  0360).
+- **Assumed by:** [types.ts isUsablePriceRange](src/lib/findings/types.ts),
+  which drops an unusable range before the write rather than letting the
+  database reject the whole finding.
+- **Tested by:** `findings-ledger.integration.test.ts` "the schema refuses a
+  price that is not a range" (accepts 20000–40000 and NULL/NULL; refuses
+  34000/34000, 40000/20000 and half a range), plus the pure mirror in
+  `findings-detectors.test.ts`. Verified by relaxing the CHECK to `>=` and
+  watching the point-estimate case go green.
+- **History:** Findings-engine Phase 1, 2026-07-26.
