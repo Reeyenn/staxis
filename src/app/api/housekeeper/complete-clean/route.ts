@@ -177,8 +177,9 @@ export async function POST(req: NextRequest): Promise<Response> {
           )
         : [];
       if (children.length > 0 && room.date) {
+        // 0346: lifecycle state lives on room_work, not the PMS mirror.
         const { error: fanoutWriteErr } = await supabaseAdmin
-          .from('pms_housekeeping_assignments')
+          .from('room_work')
           .update({
             status: 'completed',
             started_at: startedAt,

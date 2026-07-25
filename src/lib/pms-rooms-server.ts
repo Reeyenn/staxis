@@ -304,9 +304,146 @@ interface StatusLogRow {
   changed_at: string;
 }
 
+// ── The 0346 mirror / state split ──────────────────────────────────────────
+// pms_housekeeping_assignments is now a READ-ONLY MIRROR of what the PMS
+// housekeeping report printed. Everything Staxis knows about a room's day —
+// lifecycle, pause accounting, checklist, exceptions, notes, rush, inspection —
+// lives in public.room_work, which the ingest physically cannot write.
+//
+// Nothing downstream of this file changed: both halves are merged back into the
+// same `AssignmentRow` shape deriveStatus/mapType/workflowStateFields already
+// consume. The merge rule is:
+//
+//   • app-owned columns          → room_work only (they are not on the mirror)
+//   • cleaning_type, dnd_active  → coalesce(room_work, mirror)
+//        The manager's explicit action beats the report; absent an action, the
+//        report stands. NULL in room_work means "Staxis has no opinion", which
+//        is why the write path stores false — not NULL — for "explicitly off".
+//   • the housekeeper            → room_work.assigned_staff_id (identity),
+//        falling back to name-matching the mirror's housekeeper_name. The
+//        fallback is what keeps the PUBLIC housekeeper SMS link working before
+//        any room_work assignment exists.
+
+/** The PMS-reported half — pms_housekeeping_assignments after 0346. */
+interface MirrorRow {
+  room_number: string;
+  housekeeper_name: string | null;
+  cleaning_type: string | null;
+  dnd_active: boolean | null;
+}
+
+/** The Staxis-owned half — public.room_work. */
+interface RoomWorkRow {
+  room_number: string;
+  status: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  cleaning_type: string | null;
+  dnd_active: boolean | null;
+  assigned_staff_id: string | null;
+  is_paused: boolean | null;
+  paused_at: string | null;
+  total_paused_seconds: number | null;
+  exception_type: string | null;
+  exception_note: string | null;
+  exception_at: string | null;
+  checklist_template_id: string | null;
+  checklist_progress: string[] | null;
+  manager_notes: string | null;
+  housekeeper_note: string | null;
+  is_rush: boolean | null;
+  rush_due_by: string | null;
+  marked_for_inspection_at: string | null;
+  inspected_by: string | null;
+  inspected_at: string | null;
+  issue_note: string | null;
+  help_requested: boolean | null;
+  dnd_note: string | null;
+}
+
+/** Columns the merge needs from each half. Kept next to the row types so a
+ *  column added to one and forgotten in the other is one diff, not two. */
+export const MIRROR_SELECT = 'room_number, housekeeper_name, cleaning_type, dnd_active';
+// Single string literal, NOT a concatenation: supabase-js infers the row type
+// from the literal type of the select string, and `a + b` widens it to `string`
+// which silently degrades every result to GenericStringError.
+export const ROOM_WORK_SELECT = 'room_number, status, started_at, completed_at, cleaning_type, dnd_active, assigned_staff_id, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note';
+
+/**
+ * Fold one room's PMS mirror row and Staxis work row into the single shape the
+ * rest of this file consumes. Returns undefined only when neither half exists.
+ *
+ * `staffNameById` resolves an assigned_staff_id back to a display name so the
+ * `housekeeper_name` field of the merged row stays the caller-visible string it
+ * has always been.
+ */
+export function mergeAssignment(
+  mirror: MirrorRow | undefined,
+  work: RoomWorkRow | undefined,
+  staffNameById: Map<string, string>,
+): AssignmentRow | undefined {
+  if (!mirror && !work) return undefined;
+  const roomNumber = String(work?.room_number ?? mirror?.room_number ?? '');
+  const assignedName =
+    (work?.assigned_staff_id ? staffNameById.get(work.assigned_staff_id) : undefined)
+    ?? mirror?.housekeeper_name
+    ?? null;
+  return {
+    room_number: roomNumber,
+    housekeeper_name: assignedName,
+    assigned_staff_id: work?.assigned_staff_id ?? null,
+    cleaning_type: work?.cleaning_type ?? mirror?.cleaning_type ?? null,
+    dnd_active: work?.dnd_active ?? mirror?.dnd_active ?? null,
+    status: work?.status ?? null,
+    started_at: work?.started_at ?? null,
+    completed_at: work?.completed_at ?? null,
+    is_paused: work?.is_paused ?? null,
+    paused_at: work?.paused_at ?? null,
+    total_paused_seconds: work?.total_paused_seconds ?? null,
+    exception_type: work?.exception_type ?? null,
+    exception_note: work?.exception_note ?? null,
+    exception_at: work?.exception_at ?? null,
+    checklist_template_id: work?.checklist_template_id ?? null,
+    checklist_progress: work?.checklist_progress ?? null,
+    manager_notes: work?.manager_notes ?? null,
+    housekeeper_note: work?.housekeeper_note ?? null,
+    is_rush: work?.is_rush ?? null,
+    rush_due_by: work?.rush_due_by ?? null,
+    marked_for_inspection_at: work?.marked_for_inspection_at ?? null,
+    inspected_by: work?.inspected_by ?? null,
+    inspected_at: work?.inspected_at ?? null,
+    issue_note: work?.issue_note ?? null,
+    help_requested: work?.help_requested ?? null,
+    dnd_note: work?.dnd_note ?? null,
+  };
+}
+
+/**
+ * Does this merged row belong to `staffId`?
+ *
+ * Precedence: an explicit room_work assignment (by id) is authoritative. Only
+ * when there is none do we fall back to matching the PMS-printed name through
+ * the collision-aware StaffLookup — today's rule, kept so the public
+ * housekeeper page behaves identically before any id-based assignment exists.
+ *
+ * LOAD-BEARING for the public SMS-link page: getting this wrong renders a
+ * housekeeper's shift as "no work", which is indistinguishable from a genuine
+ * empty day.
+ */
+export function assignmentBelongsToStaff(
+  assignment: Pick<AssignmentRow, 'assigned_staff_id' | 'housekeeper_name'>,
+  staffId: string,
+  staffLookup: StaffLookup,
+): boolean {
+  if (assignment.assigned_staff_id) return assignment.assigned_staff_id === staffId;
+  return staffLookup.resolve(assignment.housekeeper_name) === staffId;
+}
+
 interface AssignmentRow {
   room_number: string;
   housekeeper_name: string | null;
+  /** 0346: the identity-based assignment, when one exists. */
+  assigned_staff_id?: string | null;
   cleaning_type: string | null;
   status: string | null;
   started_at: string | null;
@@ -414,16 +551,23 @@ export async function mergePmsRoomsForDate(
   // changed_at desc) handles it. M2 + M3 fix replaces the original
   // 30-day-window + 10k-cap which could silently miss rooms.
   const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString();
-  const [statusRes, assignRes, resRes, staffRes] = await Promise.allSettled([
+  const [statusRes, mirrorRes, workRes, resRes, staffRes] = await Promise.allSettled([
     supabaseAdmin
       .from('pms_room_status_log')
       .select('room_number, status, changed_at')
       .eq('property_id', pid)
       .gte('changed_at', ninetyDaysAgo)
       .order('changed_at', { ascending: false }),
+    // 0346: two halves, merged below. The mirror is what the PMS reported;
+    // room_work is what Staxis knows.
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note')
+      .select(MIRROR_SELECT)
+      .eq('property_id', pid)
+      .eq('date', date),
+    supabaseAdmin
+      .from('room_work')
+      .select(ROOM_WORK_SELECT)
       .eq('property_id', pid)
       .eq('date', date),
     // M4 fix — deterministic order so double-bookings produce the
@@ -446,7 +590,8 @@ export async function mergePmsRoomsForDate(
   ]);
 
   const statusRows = fulfilledData<StatusLogRow>(statusRes, 'status_log', pid, date);
-  const assignmentRows = fulfilledData<AssignmentRow>(assignRes, 'assignments', pid, date);
+  const mirrorRows = fulfilledData<MirrorRow>(mirrorRes, 'hk_mirror', pid, date);
+  const workRows = fulfilledData<RoomWorkRow>(workRes, 'room_work', pid, date);
   const reservationRows = fulfilledData<ReservationRow>(resRes, 'reservations', pid, date);
   const staffRows = fulfilledData<StaffNameRow>(staffRes, 'staff', pid, date);
 
@@ -458,11 +603,22 @@ export async function mergePmsRoomsForDate(
     latestStatusByRoom.set(num, String(row.status ?? 'unknown'));
   }
 
-  // One assignment per (date, room). The unique constraint in the schema
-  // makes this 1:1, but we still take the last write in case of dedupe edge.
+  // One row per (date, room) in each half; both are keyed the same way, so the
+  // merged map is 1:1. A room can legitimately appear in only one half — a
+  // manager-created work row before the PMS has reported it, or a reported
+  // room nobody has touched yet.
+  const staffNameById = new Map<string, string>(
+    staffRows.filter(s => s.name).map(s => [s.id, String(s.name)]),
+  );
+  const mirrorByRoom = new Map<string, MirrorRow>();
+  for (const row of mirrorRows) mirrorByRoom.set(String(row.room_number ?? ''), row);
+  const workByRoom = new Map<string, RoomWorkRow>();
+  for (const row of workRows) workByRoom.set(String(row.room_number ?? ''), row);
+
   const assignmentByRoom = new Map<string, AssignmentRow>();
-  for (const row of assignmentRows) {
-    assignmentByRoom.set(String(row.room_number ?? ''), row);
+  for (const num of new Set([...mirrorByRoom.keys(), ...workByRoom.keys()])) {
+    const merged = mergeAssignment(mirrorByRoom.get(num), workByRoom.get(num), staffNameById);
+    if (merged) assignmentByRoom.set(num, merged);
   }
 
   // Reservation per room — deterministic first-match-wins via the
@@ -523,7 +679,9 @@ export async function mergePmsRoomsForDate(
       : (reservationDerivedType ?? 'vacant');
 
     const assignedNameRaw = assignment?.housekeeper_name?.trim() || undefined;
-    const assignedTo = staffLookup.resolve(assignedNameRaw);
+    // 0346: an id-based assignment is authoritative; the name match is the
+    // fallback for rooms the PMS named but nobody has assigned in Staxis.
+    const assignedTo = assignment?.assigned_staff_id ?? staffLookup.resolve(assignedNameRaw);
 
     let arrival: string | undefined;
     let stayoverDay: number | undefined;
@@ -670,10 +828,16 @@ export async function mergePmsRoomsForStaff(
   const windowAhead = new Date(Date.now() + 14 * 86_400_000)
     .toISOString().slice(0, 10);
 
-  const [assignRes, staffListRes] = await Promise.allSettled([
+  const [mirrorRes, workRes, staffListRes] = await Promise.allSettled([
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('date, room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note')
+      .select(`date, ${MIRROR_SELECT}`)
+      .eq('property_id', pid)
+      .gte('date', windowBack)
+      .lte('date', windowAhead),
+    supabaseAdmin
+      .from('room_work')
+      .select(`date, ${ROOM_WORK_SELECT}`)
       .eq('property_id', pid)
       .gte('date', windowBack)
       .lte('date', windowAhead),
@@ -683,30 +847,53 @@ export async function mergePmsRoomsForStaff(
       .eq('property_id', pid),
   ]);
 
-  // Assignments — hard requirement. Fail closed; silent empty would render
-  // every HK shift as "no work."
-  if (assignRes.status === 'rejected') {
-    log.error('[pms-rooms-server] assignments-for-staff query rejected', {
-      pid, staffId, msg: String(assignRes.reason),
-    });
-    throw new Error('assignments query failed');
-  }
-  if (assignRes.value.error) {
-    log.error('[pms-rooms-server] assignments-for-staff query failed', {
-      pid, staffId, msg: assignRes.value.error.message,
-    });
-    throw assignRes.value.error;
-  }
-  const allAssignments = (assignRes.value.data ?? []) as (AssignmentRow & { date: string })[];
+  // BOTH halves are a hard requirement (Codex Major #13, extended for 0346).
+  // This is the PUBLIC, unauthenticated housekeeper SMS-link path: a failed
+  // query that degrades to an empty array renders every shift as "no work",
+  // which is indistinguishable from a genuine day off. Fail loudly instead —
+  // the route turns a throw into a 500 the housekeeper can report, not a
+  // convincing lie.
+  const requireHalf = <T,>(
+    res: PromiseSettledResult<{ data: T[] | null; error: { message: string } | null }>,
+    tag: string,
+  ): T[] => {
+    if (res.status === 'rejected') {
+      log.error(`[pms-rooms-server] ${tag}-for-staff query rejected`, {
+        pid, staffId, msg: String(res.reason),
+      });
+      throw new Error(`${tag} query failed`);
+    }
+    if (res.value.error) {
+      log.error(`[pms-rooms-server] ${tag}-for-staff query failed`, {
+        pid, staffId, msg: res.value.error.message,
+      });
+      throw res.value.error;
+    }
+    return res.value.data ?? [];
+  };
+
+  const mirrorRows = requireHalf<MirrorRow & { date: string }>(mirrorRes, 'hk_mirror');
+  const workRows = requireHalf<RoomWorkRow & { date: string }>(workRes, 'room_work');
   const staffListRows = fulfilledData<StaffNameRow>(staffListRes, 'staff', pid, today);
 
-  // 3. Filter assignments to THIS staff member via the StaffLookup
-  //    (collision-aware first-name fallback).
+  // 3. Merge the two halves per (date, room), then filter to THIS staff member.
+  const staffNameById = new Map<string, string>(
+    staffListRows.filter(s => s.name).map(s => [s.id, String(s.name)]),
+  );
+  const keyOf = (date: string, room: string) => `${date} ${room}`;
+  const mirrorByKey = new Map<string, MirrorRow>();
+  for (const r of mirrorRows) mirrorByKey.set(keyOf(r.date, String(r.room_number ?? '')), r);
+  const workByKey = new Map<string, RoomWorkRow>();
+  for (const r of workRows) workByKey.set(keyOf(r.date, String(r.room_number ?? '')), r);
+
   const staffLookup = buildStaffLookup(staffListRows);
-  const matching = allAssignments.filter(a => {
-    const resolved = staffLookup.resolve(a.housekeeper_name);
-    return resolved === staffId;
-  });
+  const matching: (AssignmentRow & { date: string })[] = [];
+  for (const key of new Set([...mirrorByKey.keys(), ...workByKey.keys()])) {
+    const merged = mergeAssignment(mirrorByKey.get(key), workByKey.get(key), staffNameById);
+    if (!merged) continue;
+    if (!assignmentBelongsToStaff(merged, staffId, staffLookup)) continue;
+    matching.push({ ...merged, date: key.slice(0, key.indexOf(' ')) });
+  }
   if (matching.length === 0) return [];
 
   // 4. Supporting feeds for the matching room-numbers / date-window.
@@ -773,7 +960,7 @@ export async function mergePmsRoomsForStaff(
     const type = mapType(assignment.cleaning_type);
 
     const assignedNameRaw = assignment.housekeeper_name?.trim() || undefined;
-    const assignedTo = staffLookup.resolve(assignedNameRaw);
+    const assignedTo = assignment.assigned_staff_id ?? staffLookup.resolve(assignedNameRaw);
 
     let arrival: string | undefined;
     let stayoverDay: number | undefined;

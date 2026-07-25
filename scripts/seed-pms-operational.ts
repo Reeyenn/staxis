@@ -62,7 +62,9 @@ function assert(cond: unknown, label: string, detail?: unknown) { cond ? ok(labe
 
 async function reset() {
   // Delete only the scratch rows. cleaning_events are keyed by room_number too.
-  for (const t of ['pms_housekeeping_assignments', 'pms_room_status_log', 'pms_rooms_inventory', 'pms_reservations', 'cleaning_events'] as const) {
+  // 0346: room_work must be deleted BEFORE pms_rooms_inventory (its FK
+  // parent) or the inventory delete is blocked.
+  for (const t of ['room_work', 'pms_room_status_log', 'pms_rooms_inventory', 'pms_reservations', 'cleaning_events'] as const) {
     await supabaseAdmin.from(t).delete().eq('property_id', PROPERTY_ID).in('room_number', [R_CHECKOUT, R_STAYOVER, R_VACANT]);
   }
   await supabaseAdmin.from('staff').delete().eq('id', STAFF_ID);
@@ -91,11 +93,14 @@ async function seed() {
     { property_id: PROPERTY_ID, room_number: R_STAYOVER, status: 'occupied_dirty', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt },
     { property_id: PROPERTY_ID, room_number: R_VACANT, status: 'vacant_clean', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt },
   ]);
-  // Assignments (checkout + stayover assigned to the scratch HK today; vacant unassigned).
-  await supabaseAdmin.from('pms_housekeeping_assignments').upsert(
+  // Work rows (checkout + stayover assigned to the scratch HK today; vacant
+  // unassigned). 0346: this is Staxis-owned state, so it seeds room_work — the
+  // PMS mirror is no longer writable by service_role and seeding it would need
+  // staxis_apply_hk_mirror(). The assignment is by staff id, not name.
+  await supabaseAdmin.from('room_work').upsert(
     [
-      { property_id: PROPERTY_ID, date: DATE, room_number: R_CHECKOUT, housekeeper_name: STAFF_NAME, cleaning_type: 'departure', status: 'not_started', last_synced_at: syncedAt },
-      { property_id: PROPERTY_ID, date: DATE, room_number: R_STAYOVER, housekeeper_name: STAFF_NAME, cleaning_type: 'stayover', status: 'not_started', last_synced_at: syncedAt },
+      { property_id: PROPERTY_ID, date: DATE, room_number: R_CHECKOUT, assigned_staff_id: STAFF_ID, assigned_source: 'manager', cleaning_type: 'departure', status: 'not_started' },
+      { property_id: PROPERTY_ID, date: DATE, room_number: R_STAYOVER, assigned_staff_id: STAFF_ID, assigned_source: 'manager', cleaning_type: 'stayover', status: 'not_started' },
     ],
     { onConflict: 'property_id,date,room_number' },
   );

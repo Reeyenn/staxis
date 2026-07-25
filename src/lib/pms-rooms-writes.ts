@@ -71,6 +71,8 @@ import {
   reverseMapType,
   parseRoomId,
   composeRoomId,
+  buildStaffLookup,
+  normalizeName,
 } from './pms-rooms-server';
 
 // Truly legacy-unused Room fields with no pms_* home. The former workflow
@@ -259,9 +261,11 @@ export async function applyRoomUpdate(
   //   - skip no-op writes entirely (Codex Major #1 — narrows the race
   //     window for "two tabs both call mark-cleaning at once")
   const [existingAssignRes, latestStatusRes] = await Promise.allSettled([
+    // 0346: every field this function writes is app state and lives on
+    // room_work. The mirror is read-only to us now.
     supabaseAdmin
-      .from('pms_housekeeping_assignments')
-      .select('started_at, completed_at, status, cleaning_type, housekeeper_name, dnd_active')
+      .from('room_work')
+      .select('started_at, completed_at, status, cleaning_type, assigned_staff_id, dnd_active')
       .eq('property_id', pid)
       .eq('date', date)
       .eq('room_number', roomNumber)
@@ -284,7 +288,7 @@ export async function applyRoomUpdate(
               completed_at: string | null;
               status: string | null;
               cleaning_type: string | null;
-              housekeeper_name: string | null;
+              assigned_staff_id: string | null;
               dnd_active: boolean | null;
             }
           | null)
@@ -320,19 +324,27 @@ export async function applyRoomUpdate(
     statusPatch.completed_at = existing.completed_at;
   }
 
-  // Resolve assignedTo → housekeeper_name. Fail closed if the staff is
-  // not on this property — silently clearing the name would lose the
-  // intended assignment.
-  let housekeeperName: string | undefined;
-  if (partial.assignedName !== undefined) {
-    housekeeperName = partial.assignedName ?? undefined;
-  } else if (partial.assignedTo !== undefined) {
+  // ── Resolve the housekeeper to an IDENTITY, not a name string ────────────
+  // 0346: the assignment is stored as room_work.assigned_staff_id (a real FK
+  // to staff, composite on property so a cross-hotel assignment cannot be
+  // stored) plus assigned_source recording which rule produced it.
+  //
+  // Precedence FLIP vs. the pre-0346 behaviour: a staff id now beats a name
+  // string. Before, `assignedName` won and was written verbatim, so a typo'd
+  // name silently produced an assignment that matched nobody. An id is
+  // unambiguous; the name is only consulted when no id was given.
+  //
+  // Fails closed when the id is not on this property — silently clearing would
+  // lose the intended assignment.
+  let assignedStaffId: string | null | undefined;
+  let assignedSource: 'manager' | 'alias_exact' | 'alias_first_name' | undefined;
+  if (partial.assignedTo !== undefined) {
     if (partial.assignedTo === null || partial.assignedTo === '') {
-      housekeeperName = '';
+      assignedStaffId = null;
     } else {
       const { data: staffRow, error: staffErr } = await supabaseAdmin
         .from('staff')
-        .select('name')
+        .select('id')
         .eq('id', partial.assignedTo)
         .eq('property_id', pid)
         .maybeSingle();
@@ -347,7 +359,42 @@ export async function applyRoomUpdate(
           `applyRoomUpdate: staffId ${partial.assignedTo} does not belong to property ${pid}`,
         );
       }
-      housekeeperName = String(staffRow.name);
+      assignedStaffId = String(staffRow.id);
+      assignedSource = 'manager';
+    }
+  } else if (partial.assignedName !== undefined) {
+    if (!partial.assignedName) {
+      assignedStaffId = null;
+    } else {
+      const { data: roster, error: rosterErr } = await supabaseAdmin
+        .from('staff')
+        .select('id, name')
+        .eq('property_id', pid);
+      if (rosterErr) {
+        log.error('[pms-rooms-writes] staff roster lookup failed during update', {
+          pid, rid, msg: rosterErr.message,
+        });
+        throw rosterErr;
+      }
+      const lookup = buildStaffLookup((roster ?? []) as Array<{ id: string; name: string | null }>);
+      const resolved = lookup.resolve(partial.assignedName);
+      if (resolved) {
+        assignedStaffId = resolved;
+        assignedSource =
+          normalizeName(
+            ((roster ?? []) as Array<{ id: string; name: string | null }>)
+              .find(s => s.id === resolved)?.name,
+          ) === normalizeName(partial.assignedName)
+            ? 'alias_exact'
+            : 'alias_first_name';
+      } else {
+        // An unresolvable name can no longer be stored — the whole point of
+        // the split is that an assignment names a person, not a spelling.
+        // Surfaced (log.error routes to Sentry) rather than silently dropped.
+        log.error('[pms-rooms-writes] assignedName matches no staff at this property — assignment not changed', {
+          pid, rid, date, roomNumber,
+        });
+      }
     }
   }
 
@@ -409,7 +456,7 @@ export async function applyRoomUpdate(
     if (statusPatch.started_at !== undefined && statusPatch.started_at !== existing.started_at) return false;
     if (statusPatch.completed_at !== undefined && statusPatch.completed_at !== existing.completed_at) return false;
     if (cleaningType !== undefined && cleaningType !== existing.cleaning_type) return false;
-    if (housekeeperName !== undefined && (housekeeperName || null) !== existing.housekeeper_name) return false;
+    if (assignedStaffId !== undefined && assignedStaffId !== existing.assigned_staff_id) return false;
     if (partial.isDnd !== undefined && Boolean(partial.isDnd) !== Boolean(existing.dnd_active)) return false;
     return true;
   })();
@@ -420,7 +467,14 @@ export async function applyRoomUpdate(
     return;
   }
 
-  // ── Write 1: persist to pms_housekeeping_assignments ──────────────────
+  // ── Write 1: persist to room_work ─────────────────────────────────────
+  // 0346: every field below is Staxis-owned state. cleaning_type and
+  // dnd_active are the APP's opinion — readers take
+  // coalesce(room_work, mirror), so writing them here overrides what the PMS
+  // report said without touching (or needing permission on) the mirror.
+  // dnd_active is written as an explicit boolean, never null, so "the manager
+  // turned DND off" beats a stale report that still says it is on.
+  //
   // Atomic conditional-update guard (replaces the read-then-upsert TOCTOU
   // race). When the row already exists AND this is a status transition,
   // UPDATE only if the status is still what we read (optimistic
@@ -431,7 +485,9 @@ export async function applyRoomUpdate(
   const assignmentPatch: Record<string, unknown> = {
     ...statusPatch,
     ...(cleaningType !== undefined ? { cleaning_type: cleaningType } : {}),
-    ...(housekeeperName !== undefined ? { housekeeper_name: housekeeperName || null } : {}),
+    ...(assignedStaffId !== undefined
+      ? { assigned_staff_id: assignedStaffId, assigned_source: assignedStaffId ? assignedSource : null }
+      : {}),
     ...(partial.isDnd !== undefined ? { dnd_active: Boolean(partial.isDnd) } : {}),
     ...workflowPatch,
   };
@@ -439,7 +495,7 @@ export async function applyRoomUpdate(
   let statusRaceLost = false;
   if (existing && statusPatch.status !== undefined) {
     let q = supabaseAdmin
-      .from('pms_housekeeping_assignments')
+      .from('room_work')
       .update(assignmentPatch)
       .eq('property_id', pid)
       .eq('date', date)
@@ -472,13 +528,17 @@ export async function applyRoomUpdate(
     // front-desk rush, manager room-notes) deliberately UPDATE-only at the
     // route layer instead of calling applyRoomUpdate.
     const { error: assignErr } = await supabaseAdmin
-      .from('pms_housekeeping_assignments')
+      .from('room_work')
       .upsert(
         { property_id: pid, date, room_number: roomNumber, ...assignmentPatch },
         { onConflict: 'property_id,date,room_number' },
       );
     if (assignErr) {
-      log.error('[pms-rooms-writes] applyRoomUpdate assignments upsert failed', {
+      // 0346 added a foreign key to pms_rooms_inventory, so a write for a room
+      // this property does not have now fails loudly instead of materializing a
+      // ghost tile. applyRoomAdd upserts inventory first for exactly this
+      // reason; a failure here means the caller skipped that.
+      log.error('[pms-rooms-writes] applyRoomUpdate room_work upsert failed', {
         pid, rid, date, roomNumber, msg: assignErr.message,
       });
       throw assignErr;
@@ -642,8 +702,11 @@ export async function applyRoomDelete(pid: string, rid: string): Promise<void> {
     log.warn('[pms-rooms-writes] applyRoomDelete: unrecognized rid', { pid, rid });
     return;
   }
+  // 0346: removing an assignment removes Staxis's work row for that day. The
+  // PMS mirror is not ours to delete (and service_role no longer may) — if the
+  // report still lists the room it will keep saying so, which is correct.
   const { error } = await supabaseAdmin
-    .from('pms_housekeeping_assignments')
+    .from('room_work')
     .delete()
     .eq('property_id', pid)
     .eq('date', key.date)

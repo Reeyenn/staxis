@@ -166,3 +166,68 @@ describe('saveGenericTable: empty batch is a healthy no-op (Codex P1)', () => {
     assert.deepEqual(result.errors, []);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Off-descriptor keys are DROPPED, not merely warned about (migration 0346)
+// ═══════════════════════════════════════════════════════════════════════════
+// This branch used to log a warning and let the key through, on the belief
+// that "Supabase strips unknown columns". That is true for a column the table
+// does NOT have, and false — dangerously — for one it does. A knowledge file
+// that learns a PMS column happening to be named `status` or `notes` would
+// write straight over Staxis-owned state on the same row.
+//
+// 0346 removed the target columns from pms_housekeeping_assignments outright,
+// which is the primary fix. This is the backstop for every OTHER table, where
+// a learned column colliding with a real one is still a live clobber path.
+
+describe('validateRows drops keys the descriptor does not declare', () => {
+  const DESCRIPTOR: TableSchemaDescriptor = {
+    table_name: 'pms_housekeeping_assignments',
+    write_strategy: 'upsert',
+    snapshot_scope_default: 'full',
+    natural_key: ['property_id', 'date', 'room_number'],
+    reconcile_key_field: null,
+    columns: [
+      { name: 'date', type: 'date', required: true, nullable: false },
+      { name: 'room_number', type: 'text', required: true, nullable: false },
+      { name: 'housekeeper_name', type: 'text', required: false, nullable: true },
+    ],
+  };
+
+  test('a learned column that collides with app state never reaches the write payload', () => {
+    const { valid, rejected } = validateRows(
+      [{
+        property_id: PID,
+        date: '2026-07-24',
+        room_number: '214',
+        housekeeper_name: 'Maria Garcia',
+        // What a knowledge file might learn from a PMS page. Before 0346 these
+        // wrote through onto real columns and destroyed an in-progress clean.
+        status: 'Dirty',
+        notes: 'from the PMS report',
+        checklist_progress: [],
+      }],
+      DESCRIPTOR,
+    );
+    assert.equal(rejected.length, 0, 'an extra column is not a reason to lose the row');
+    assert.equal(valid.length, 1);
+    const row = valid[0]!;
+    assert.ok(!('status' in row), 'status must not reach the write payload');
+    assert.ok(!('notes' in row), 'notes must not reach the write payload');
+    assert.ok(!('checklist_progress' in row), 'checklist_progress must not reach the write payload');
+    // The declared columns still write.
+    assert.equal(row.room_number, '214');
+    assert.equal(row.housekeeper_name, 'Maria Garcia');
+    assert.equal(row.property_id, PID);
+  });
+
+  test('property_id and raw are still allowed through', () => {
+    const { valid } = validateRows(
+      [{ property_id: PID, date: '2026-07-24', room_number: '215', raw: { anything: 1 } }],
+      DESCRIPTOR,
+    );
+    assert.equal(valid.length, 1);
+    assert.equal(valid[0]!.property_id, PID);
+    assert.deepEqual(valid[0]!.raw, { anything: 1 });
+  });
+});

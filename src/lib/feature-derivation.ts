@@ -119,43 +119,56 @@ export async function deriveCleaningEventFeatures(args: DeriveArgs): Promise<Cle
     });
   }
 
-  // 5. totalRoomsAssignedToHk + routePosition + wasDndDuringClean —
-  //    from pms_housekeeping_assignments. Join by housekeeper_name
-  //    (looked up from staff table).
+  // 5. totalRoomsAssignedToHk + routePosition + wasDndDuringClean.
+  //    0346: the assignment is an identity (room_work.assigned_staff_id), not a
+  //    name string. The old `housekeeper_name === myName` filter was an EXACT
+  //    string compare — "Maria  Garcia" from the PMS never matched "Maria
+  //    Garcia" in staff, so these three features silently came back empty for
+  //    any name that was spelled even slightly differently. Matching on the id
+  //    removes that whole class of miss. scheduled_time still comes from the
+  //    PMS mirror (it is what the report printed).
   try {
-    const { data: staffRow } = await supabaseAdmin
-      .from('staff')
-      .select('name')
-      .eq('id', args.staffId)
-      .maybeSingle();
-    const myName = (staffRow?.name as string | undefined) ?? null;
-    if (myName) {
-      const { data } = await supabaseAdmin
-        .from('pms_housekeeping_assignments')
-        .select('room_number, scheduled_time, housekeeper_name, dnd_active')
+    const [workRes, mirrorRes] = await Promise.all([
+      supabaseAdmin
+        .from('room_work')
+        .select('room_number, dnd_active, assigned_staff_id')
         .eq('property_id', args.propertyId)
-        .eq('date', args.date);
-      if (Array.isArray(data) && data.length > 0) {
-        const mine = (data as Array<{
-          room_number: string; scheduled_time: string | null;
-          housekeeper_name: string | null; dnd_active: boolean | null;
-        }>)
-          .filter(r => r.housekeeper_name === myName)
-          .sort((a, b) => {
-            const ta = a.scheduled_time ? Date.parse(a.scheduled_time) : 0;
-            const tb = b.scheduled_time ? Date.parse(b.scheduled_time) : 0;
-            if (ta !== tb) return ta - tb;
-            return a.room_number.localeCompare(b.room_number);
-          });
-        out.totalRoomsAssignedToHk = mine.length;
-        const idx = mine.findIndex(r => r.room_number === args.roomNumber);
-        out.routePosition = idx >= 0 ? idx + 1 : null;
-        const myRow = mine.find(r => r.room_number === args.roomNumber);
-        out.wasDndDuringClean = myRow?.dnd_active ?? null;
-      }
+        .eq('date', args.date)
+        .eq('assigned_staff_id', args.staffId),
+      supabaseAdmin
+        .from('pms_housekeeping_assignments')
+        .select('room_number, scheduled_time, dnd_active')
+        .eq('property_id', args.propertyId)
+        .eq('date', args.date),
+    ]);
+    const workRows = (workRes.data ?? []) as Array<{
+      room_number: string; dnd_active: boolean | null; assigned_staff_id: string | null;
+    }>;
+    if (workRows.length > 0) {
+      const mirrorByRoom = new Map(
+        ((mirrorRes.data ?? []) as Array<{
+          room_number: string; scheduled_time: string | null; dnd_active: boolean | null;
+        }>).map(r => [String(r.room_number), r]),
+      );
+      const mine = workRows
+        .map(r => ({
+          room_number: String(r.room_number),
+          scheduled_time: mirrorByRoom.get(String(r.room_number))?.scheduled_time ?? null,
+          dnd_active: r.dnd_active ?? mirrorByRoom.get(String(r.room_number))?.dnd_active ?? null,
+        }))
+        .sort((a, b) => {
+          const ta = a.scheduled_time ? Date.parse(a.scheduled_time) : 0;
+          const tb = b.scheduled_time ? Date.parse(b.scheduled_time) : 0;
+          if (ta !== tb) return ta - tb;
+          return a.room_number.localeCompare(b.room_number);
+        });
+      out.totalRoomsAssignedToHk = mine.length;
+      const idx = mine.findIndex(r => r.room_number === args.roomNumber);
+      out.routePosition = idx >= 0 ? idx + 1 : null;
+      out.wasDndDuringClean = mine.find(r => r.room_number === args.roomNumber)?.dnd_active ?? null;
     }
   } catch (err) {
-    log.warn('feature-derivation: pms_housekeeping_assignments failed', {
+    log.warn('feature-derivation: room_work / hk mirror failed', {
       err: (err as Error).message, propertyId: args.propertyId, date: args.date,
     });
   }

@@ -96,17 +96,33 @@ type RpcFn = typeof supabaseAdmin.rpc;
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
 const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
-// Build the pms_housekeeping_assignments row mergePmsRoomsForDate maps back to
-// the room's assigned housekeeper (resolved via the staff name lookup).
-function assignmentRow(r: RoomFixture): Record<string, unknown> {
-  const staff = r.assigned_to ? STAFF_BY_ID[r.assigned_to] : null;
+// Migration 0346 split the old 49-column assignment row in two. The mock has to
+// split with it, or the app-state half of every fixture silently reads back as
+// null and this file stops testing what it claims to.
+//
+//   pms_housekeeping_assignments — what the PMS report printed
+//   room_work                    — what Staxis knows (lifecycle + assignment)
+
+/** The PMS-reported half. Deliberately carries NO housekeeper_name for rooms
+ *  whose assignment lives on room_work, so these fixtures exercise the
+ *  identity path rather than the legacy name-match fallback. */
+function mirrorRow(r: RoomFixture): Record<string, unknown> {
   return {
     room_number: r.number,
-    housekeeper_name: staff ? staff.name : null,
+    housekeeper_name: null,
     cleaning_type: r.type === 'stayover' ? 'stayover' : r.type === 'checkout' ? 'departure' : null,
+    dnd_active: false,
+  };
+}
+
+/** The Staxis-owned half. */
+function roomWorkRow(r: RoomFixture): Record<string, unknown> {
+  return {
+    room_number: r.number,
+    assigned_staff_id: r.assigned_to,
     status: r.completed_at ? 'completed' : 'not_started',
     started_at: r.started_at, completed_at: r.completed_at,
-    dnd_active: false,
+    cleaning_type: null, dnd_active: null,
     is_paused: false, paused_at: null, total_paused_seconds: 0,
     exception_type: null, exception_note: null, exception_at: null,
     checklist_template_id: null, checklist_progress: [],
@@ -145,17 +161,23 @@ beforeEach(() => {
           .filter((r) => r.property_id === pid)
           .map((r) => ({ id: r.id, room_number: r.number, room_type: r.type }));
       }
-      if (table === 'pms_housekeeping_assignments') {
+      if (table === 'pms_housekeeping_assignments' || table === 'room_work') {
         const forPid = Object.values(ROOM_BY_ID).filter((r) => r.property_id === pid);
+        // getCurrentRoomsDate reads room_work for the latest operational date.
         if (selectCols.trim() === 'date') {
           const dates = [...new Set(forPid.map((r) => r.date))].sort().reverse();
           return dates.length ? [{ date: dates[0] }] : [];
         }
         const d = filter.date as string | undefined;
         const num = filter.room_number as string | undefined;
-        return forPid
-          .filter((r) => (!d || r.date === d) && (!num || r.number === num))
-          .map((r) => assignmentRow(r));
+        const staffFilter = filter.assigned_staff_id as string | undefined;
+        const matching = forPid.filter((r) =>
+          (!d || r.date === d)
+          && (!num || r.number === num)
+          && (staffFilter === undefined || r.assigned_to === staffFilter));
+        return table === 'room_work'
+          ? matching.map((r) => ({ date: r.date, ...roomWorkRow(r) }))
+          : matching.map((r) => ({ date: r.date, ...mirrorRow(r) }));
       }
       if (table === 'properties') return [{ pms_writeback_enabled: false }];
       // Security audit 2026-06-26 #1: the route now verifies a per-staff link

@@ -68,6 +68,10 @@ export interface TableSchemaDescriptor {
   reconcile_key_field: string | null;
   columns: ColumnDescriptor[];
   notes?: string;
+  /** 0346: when set, the writer calls this SECURITY DEFINER function instead of
+   *  upserting directly — for tables whose direct writes are revoked from
+   *  service_role. */
+  write_via_rpc?: string | null;
 }
 
 const SCHEMA_CACHE = new Map<string, TableSchemaDescriptor>();
@@ -76,7 +80,7 @@ async function loadDescriptor(tableName: string): Promise<TableSchemaDescriptor 
   if (SCHEMA_CACHE.has(tableName)) return SCHEMA_CACHE.get(tableName)!;
   const { data, error } = await supabase
     .from('pms_table_schemas')
-    .select('table_name, write_strategy, snapshot_scope_default, natural_key, reconcile_key_field, columns, notes')
+    .select('table_name, write_strategy, snapshot_scope_default, natural_key, reconcile_key_field, columns, notes, write_via_rpc')
     .eq('table_name', tableName)
     .maybeSingle();
   if (error || !data) {
@@ -215,9 +219,17 @@ export function validateRows(
       }
     }
 
-    // Reject any extra fields not in the descriptor — they'd be dropped by
-    // Postgres anyway (Supabase strips unknown columns) but flagging here
-    // surfaces schema drift.
+    // DELETE any extra field not in the descriptor, and warn.
+    //
+    // This used to only warn, on the stated belief that "Supabase strips
+    // unknown columns". That is true for a column the table does not have —
+    // and false, dangerously, for one it does. Before migration 0346, the only
+    // thing stopping a learned PMS column named `status` or `notes` from
+    // overwriting a housekeeper's in-progress clean was that the descriptor
+    // happened to list five columns and this branch happened to be reached.
+    // 0346 removed the target columns from the table outright; this is the
+    // BACKSTOP for every other table, where a learned column that collides
+    // with a real one is still a live clobber path.
     for (const k of Object.keys(row)) {
       if (k === 'property_id') continue;  // always allowed
       // feature/cua-column-editor — `raw` is a real jsonb column on every pms_*
@@ -227,11 +239,12 @@ export function validateRows(
       // it writes through to Postgres as-is.
       if (k === 'raw') continue;
       if (!columnsByName.has(k)) {
-        log.warn('generic-table-writer: row has field not in descriptor', {
+        log.warn('generic-table-writer: row has field not in descriptor — dropped', {
           tableName: descriptor.table_name,
           rowIndex,
           extraField: k,
         });
+        delete row[k];
       }
     }
 
@@ -499,7 +512,7 @@ export async function saveGenericTable(
         result = await writeAppend(targetTable, validation.valid, validation.rejected.length);
         break;
       case 'upsert':
-        result = await writeUpsert(targetTable, validation.valid, descriptor, validation.rejected.length);
+        result = await writeUpsert(targetTable, validation.valid, descriptor, propertyId, validation.rejected.length);
         break;
       case 'reconcile':
         result = await writeReconcile(
@@ -687,6 +700,7 @@ async function writeUpsert(
   tableName: string,
   rows: Array<Record<string, unknown>>,
   descriptor: TableSchemaDescriptor,
+  propertyId: string,
   rejected: number,
 ): Promise<SaveGenericTableResult> {
   // ON CONFLICT target = the natural_key columns. Supabase JS client's
@@ -697,6 +711,34 @@ async function writeUpsert(
   const payload = LAST_GOOD_UPSERT_TABLES.has(descriptor.table_name)
     ? dropAllNullOptionalColumns(rows, descriptor)
     : rows;
+
+  // Migration 0346: some tables cannot be written directly any more.
+  // pms_housekeeping_assignments had INSERT/UPDATE/DELETE revoked from
+  // service_role so the ingest and the Staxis app — which authenticate as the
+  // SAME Postgres role, and so cannot be told apart by GRANTs — stop being able
+  // to overwrite each other. The descriptor names the SECURITY DEFINER function
+  // that owns the write, and it lists the permitted columns itself, so an extra
+  // key in the payload has nowhere to land.
+  if (descriptor.write_via_rpc) {
+    const { data, error } = await supabase.rpc(descriptor.write_via_rpc, {
+      p_property_id: propertyId,
+      p_rows: payload,
+    });
+    // Rethrow as an Error: PostgrestError is a plain object, and the catch in
+    // saveGenericTable stringifies non-Errors to "[object Object]" — which is
+    // exactly the log line you do NOT want when a feed has silently stopped
+    // writing.
+    if (error) throw new Error(`${descriptor.write_via_rpc}: ${error.message}`);
+    // The RPC returns how many rows it actually wrote. Trust it over
+    // payload.length: a row the function declined (no date, no room number)
+    // must not be reported as written, or a half-failing feed looks healthy.
+    const written = typeof data === 'number' ? data : rows.length;
+    return {
+      ok: true, tableName, inserted: written, updated: 0, autoResolved: 0,
+      rejected, errors: [],
+    };
+  }
+
   const { error } = await supabase.from(tableName).upsert(payload, { onConflict });
   if (error) throw error;
   // upsert() doesn't distinguish inserts from updates in the response.

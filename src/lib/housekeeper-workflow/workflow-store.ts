@@ -1,24 +1,30 @@
 /**
  * Workflow write helper — persists housekeeper start/pause/resume/complete/
- * reset/exception + checklist state to the pms_* schema.
+ * reset/exception + checklist state.
  *
- * Plan-v4 moved rooms out of the legacy `rooms` table (stubbed empty by
- * 0204/0205) into pms_housekeeping_assignments. The workflow endpoints used
- * to write `rooms` directly; they now go through here so writes land on the
- * same row the page reads. Workflow-state columns added in migration 0269.
+ * Migration 0346 moved every column this file writes out of
+ * pms_housekeeping_assignments (now a read-only mirror of the PMS report) into
+ * public.room_work, which the PMS ingest physically cannot write. That is the
+ * whole point of the split: a report arriving mid-clean can no longer wipe out
+ * a housekeeper's progress, because the columns are not on the table it writes.
+ *
+ * This is the SINGLE funnel for /api/housekeeper/{start-clean, pause-clean,
+ * resume-clean, complete-clean, reset-clean, exception, checklist/toggle,
+ * add-note, mark-for-inspection}. Every key it can emit is declared on
+ * WorkflowPatch below — that union IS the write surface, and nothing outside it
+ * reaches the database from this path.
  *
  * The room is keyed by the synthetic composite id "${date}:${roomNumber}"
- * (parseRoomId). The matching assignment row always exists when this is
- * called — the endpoints first resolve the room via loadRoomForStaff, which
- * only returns rooms that have an assignment for this staff.
+ * (parseRoomId). The endpoints resolve the room via loadRoomForStaff first, so
+ * the room number is always one this property has — which is what lets
+ * room_work carry a foreign key to pms_rooms_inventory.
  *
- * Write-back budget (intentional): this helper upserts pms_housekeeping_assignments
- * ONLY. Unlike applyRoomUpdate it deliberately does NOT append a
- * pms_room_status_log row or enqueue a staxis_enqueue_pms_write job on a
- * status flip. That is by design — the migration brief called out that routing
- * every housekeeper tap through the write-back enqueue would burn the
- * `pms-writeback-enqueue` limiter; the assignment row is the authoritative
- * source the board/AI/dashboard read, and PMS push-back (gated on
+ * Write-back budget (intentional): this helper upserts room_work ONLY. Unlike
+ * applyRoomUpdate it deliberately does NOT append a pms_room_status_log row or
+ * enqueue a staxis_enqueue_pms_write job on a status flip. Routing every
+ * housekeeper tap through the write-back enqueue would burn the
+ * `pms-writeback-enqueue` limiter; the work row is the authoritative source the
+ * board/AI/dashboard read, and PMS push-back (gated on
  * properties.pms_writeback_enabled, OFF by default) is driven by the
  * manager/AI applyRoomUpdate path + CUA reconciliation, not per-tap.
  */
@@ -26,7 +32,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { parseRoomId } from '@/lib/pms-rooms-server';
 
-/** Workflow status (page/state-machine) → pms_housekeeping_assignments.status. */
+/** Workflow status (page/state-machine) → room_work.status. */
 const STATUS_MAP: Record<string, string> = {
   dirty: 'not_started',
   in_progress: 'in_progress',
@@ -46,7 +52,11 @@ export interface WorkflowPatch {
   exception_type?: string | null;
   exception_note?: string | null;
   exception_at?: string | null;
-  is_dnd?: boolean; // mirrors exception_type==='dnd' for legacy dnd_active readers
+  // Mirrors exception_type==='dnd' for dnd_active readers. 0346: this writes
+  // room_work.dnd_active — the APP's opinion, which takes precedence over the
+  // PMS-reported dnd_active on the mirror. Written as an explicit boolean
+  // (never null) so "the housekeeper cleared DND" beats a stale report.
+  is_dnd?: boolean;
   // Workflow-state remainder (migration 0270). Snake-case so routes with
   // metadata the Room type doesn't carry (manager_notes_by_account_id,
   // rush_set_by, *_at) can set them exactly.
@@ -119,7 +129,7 @@ export async function writeWorkflowFields(
   if (patch.dnd_note !== undefined) row.dnd_note = patch.dnd_note;
 
   const { error } = await supabaseAdmin
-    .from('pms_housekeeping_assignments')
+    .from('room_work')
     .upsert(row, { onConflict: 'property_id,date,room_number' });
 
   if (error) return { ok: false, error: error.message };

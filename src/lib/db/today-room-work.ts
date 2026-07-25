@@ -127,10 +127,17 @@ export function subscribeTodayRoomWork(
 ): () => void {
   const channels: RealtimeChannel[] = [];
 
+  // KNOWN LIMITATION (verified, pre-existing): no pms_* table is in the
+  // supabase_realtime publication, and neither is room_work, so these
+  // subscriptions are silent no-ops today and the board is effectively
+  // polling. 0346 repointed the assignment entry to room_work so the list
+  // names the table that actually changes; it does NOT make live updates
+  // start working. Adding these tables to the publication is a separate,
+  // deliberate decision.
   const tables = [
-    'pms_room_status_log',           // CUA writes a row per room every poll
-    'pms_housekeeping_assignments',  // manager / CUA assignment swaps
-    'pms_reservations',              // same-day check-in flips stay_type
+    'pms_room_status_log',  // CUA writes a row per room every poll
+    'room_work',            // manager / housekeeper assignment + lifecycle changes
+    'pms_reservations',     // same-day check-in flips stay_type
   ] as const;
 
   // Per-subscriber channel suffix. Supabase Realtime dedupes channels

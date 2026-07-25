@@ -95,12 +95,12 @@ export function computeOccupancySummary(
 /**
  * Pick the property's "current" operational date in the pms_* schema.
  *
- * pms_housekeeping_assignments is composite-keyed on (property_id, date,
- * room_number) — one row per room per day. Any agent-facing query that wants
- * "today's room state" MUST filter by a single date or it would sum every
- * historical day together.
+ * room_work is composite-keyed on (property_id, date, room_number) — one row
+ * per room per day (0346; it was pms_housekeeping_assignments before the
+ * mirror/state split). Any agent-facing query that wants "today's room state"
+ * MUST filter by a single date or it would sum every historical day together.
  *
- * We use "most recent date that has an assignment row" rather than UTC today
+ * We use "most recent date that has a work row" rather than UTC today
  * because (a) the CUA may not have written today's plan yet, and (b) UTC
  * today disagrees with the property's local date for ~5 hours every evening
  * in CST/CDT. Falls back to the property-local today (`todayStr`) so room
@@ -113,8 +113,11 @@ export async function getCurrentRoomsDate(propertyId: string): Promise<string> {
   // plan) must never become the default mutation date, or agent/voice commands
   // (mark clean, reset, DND, flag, assign) would silently write tomorrow's row.
   const today = todayStr();
+  // 0346: "the day Staxis last had work on the board" is app state, so this
+  // reads room_work. A day the PMS reported but nobody ever touched is not a
+  // day agent mutations should default onto.
   const { data } = await supabaseAdmin
-    .from('pms_housekeeping_assignments')
+    .from('room_work')
     .select('date')
     .eq('property_id', propertyId)
     .lte('date', today)

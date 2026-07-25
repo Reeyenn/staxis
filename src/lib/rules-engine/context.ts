@@ -98,6 +98,25 @@ interface RawHkAssignment {
   early_checkin_from: string | null;
 }
 
+/** The PMS-reported half after the 0346 split. */
+export interface RawHkMirror {
+  room_number: string;
+  cleaning_type: string | null;
+  dnd_active: boolean | null;
+  late_checkout_approved: boolean | null;
+  late_checkout_until: string | null;
+  early_checkin_approved: boolean | null;
+  early_checkin_from: string | null;
+}
+
+/** The Staxis-owned half after the 0346 split. */
+export interface RawRoomWork {
+  room_number: string;
+  cleaning_type: string | null;
+  status: string | null;
+  dnd_active: boolean | null;
+}
+
 // ─── Public API ────────────────────────────────────────────────────────────
 
 export async function buildPropertyContext(
@@ -131,7 +150,7 @@ export async function buildRoomContexts(
 ): Promise<RoomContext[]> {
   const propertyId = prop.property_id;
 
-  const [roomsRes, reservationsRes, statusLogRes, hkRes] = await Promise.all([
+  const [roomsRes, reservationsRes, statusLogRes, hkRes, workRes] = await Promise.all([
     supabaseAdmin
       .from('pms_rooms_inventory')
       .select('room_number, room_type, is_suite, pet_friendly')
@@ -153,11 +172,20 @@ export async function buildRoomContexts(
         new Date(prop.now_utc.getTime() - 14 * 24 * 60 * 60_000).toISOString(),
       )
       .order('changed_at', { ascending: false }),
+    // 0346: the PMS mirror keeps the report's cleaning_type / DND / approval
+    // fields; the lifecycle status and the app's own cleaning_type / DND
+    // overrides live on room_work. Both halves are read and merged below with
+    // the same coalesce(app, mirror) precedence the room board uses.
     supabaseAdmin
       .from('pms_housekeeping_assignments')
       .select(
-        'room_number, cleaning_type, status, dnd_active, late_checkout_approved, late_checkout_until, early_checkin_approved, early_checkin_from',
+        'room_number, cleaning_type, dnd_active, late_checkout_approved, late_checkout_until, early_checkin_approved, early_checkin_from',
       )
+      .eq('property_id', propertyId)
+      .eq('date', prop.business_date),
+    supabaseAdmin
+      .from('room_work')
+      .select('room_number, cleaning_type, status, dnd_active')
       .eq('property_id', propertyId)
       .eq('date', prop.business_date),
   ]);
@@ -166,14 +194,48 @@ export async function buildRoomContexts(
   if (reservationsRes.error) throw reservationsRes.error;
   if (statusLogRes.error) throw statusLogRes.error;
   if (hkRes.error) throw hkRes.error;
+  if (workRes.error) throw workRes.error;
 
   return assembleRoomContexts(
     prop,
     (roomsRes.data ?? []) as RawRoom[],
     (reservationsRes.data ?? []) as RawReservation[],
     (statusLogRes.data ?? []) as RawStatusLog[],
-    (hkRes.data ?? []) as RawHkAssignment[],
+    mergeHkHalves(
+      (hkRes.data ?? []) as RawHkMirror[],
+      (workRes.data ?? []) as RawRoomWork[],
+    ),
   );
+}
+
+/**
+ * Fold the PMS mirror and Staxis work rows into the single assignment shape the
+ * rules engine has always consumed (0346). Precedence matches
+ * src/lib/pms-rooms-server.ts: the app's explicit value wins, the report is the
+ * fallback, and the lifecycle status only ever comes from room_work.
+ */
+export function mergeHkHalves(
+  mirror: RawHkMirror[],
+  work: RawRoomWork[],
+): RawHkAssignment[] {
+  const mirrorByRoom = new Map(mirror.map(m => [String(m.room_number), m]));
+  const workByRoom = new Map(work.map(w => [String(w.room_number), w]));
+  const out: RawHkAssignment[] = [];
+  for (const room of new Set([...mirrorByRoom.keys(), ...workByRoom.keys()])) {
+    const m = mirrorByRoom.get(room);
+    const w = workByRoom.get(room);
+    out.push({
+      room_number: room,
+      cleaning_type: w?.cleaning_type ?? m?.cleaning_type ?? null,
+      status: w?.status ?? 'not_started',
+      dnd_active: w?.dnd_active ?? m?.dnd_active ?? null,
+      late_checkout_approved: m?.late_checkout_approved ?? null,
+      late_checkout_until: m?.late_checkout_until ?? null,
+      early_checkin_approved: m?.early_checkin_approved ?? null,
+      early_checkin_from: m?.early_checkin_from ?? null,
+    });
+  }
+  return out;
 }
 
 /**
