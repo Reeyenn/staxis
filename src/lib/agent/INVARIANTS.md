@@ -732,3 +732,53 @@ explicit retraction and the incident is reported.
 - **History:** First live run of the eval bank, 2026-07-25 —
   `family_tier_cannot_bypass_the_tool_layer` recorded the model replying "Done"
   to "mark room 302 clean" with zero tool calls.
+
+### INV-42: a memory topic a human deleted is never re-learned by an automatic writer
+
+Once any row exists for a `(property_id, scope, subject, topic)` with
+`is_active = false`, no automatic writer — `source` in
+(`consolidation`, `operational`) — may create or revive that topic. Permanently:
+there is no time window, and the age of the deletion is never consulted. A HUMAN
+write (`explicit_user` / `correction` / `inferred`) is never refused, so a
+manager can always deliberately put back something they removed; once they do,
+the topic is an active human fact and later automatic writes fall under the
+0260/0261 guard (`skipped`) instead.
+
+`is_active = false` is a sound proxy for "a human deleted this" because only two
+paths ever set it, and both are human-initiated: the `staxis_forget_memory` RPC
+(the manager tells the copilot to forget a topic) and `deactivateMemoryById`
+(the dashboard Remove button). Expiry does NOT deactivate — `expires_at` is
+applied as a read-time filter in [agent-memory.ts](src/lib/db/agent-memory.ts) —
+so a deactivated row is always a deliberate human deletion, never decay.
+
+- **Enforced by:** the RPC `staxis_store_memory` (migration
+  `0357_memory_forget_is_permanent.sql`), inside the same per-property advisory
+  lock as the dedup/cap logic, returning a new action code `refused_forgotten`
+  with the tombstone's id. The refusal is evaluated BEFORE the cap check, so a
+  forgotten topic never consumes cap budget nor gets mislabelled `property_full`.
+- **Proven by:** `src/lib/__tests__/agent-memory.integration.test.ts` (real
+  Postgres via pglite) — "an auto-learned write can never re-learn a topic a
+  human deleted — no time window" (includes a tombstone backdated 400 days),
+  "a human can deliberately re-add a topic they deleted; auto writes then defer
+  to it", "an 'inferred' write is not refused for a forgotten topic", "a
+  forgotten topic does not bleed across properties or across user accounts",
+  and "a forgotten topic is refused for being forgotten, never mislabelled as a
+  full memory". Each was verified by mutating the migration (reinstating a
+  30-day bound, moving the refusal after the cap check, swapping it ahead of the
+  human-fact guard, dropping the subject predicate) and watching exactly the
+  matching test go red.
+- **Assumed by:** the product promise that removing a note on the dashboard, or
+  telling the copilot to forget something, is permanent; the "What Staxis
+  learned / noticed" cards, whose Remove button is the manager's only control
+  over auto-learned memory.
+- **NOT enforced by the prompt, on purpose.** The previous mechanism was exactly
+  that — a "do NOT re-learn" list in the consolidation prompt, populated from
+  deletions in the last 30 days
+  ([memory-consolidate.ts](src/lib/agent/memory-consolidate.ts)). Per the
+  doctrine above, asking the model nicely counts as NOT ENFORCED, and the
+  30-day bound meant that even the request expired. The list is still passed —
+  now unbounded in time — but purely to avoid paying Claude to phrase a fact the
+  database will refuse.
+- **History:** Memory-permanence review, 2026-07-25. The deletion promise held
+  for 30 days and only as a prompt hint; on day 31 the nightly consolidator
+  could re-insert the deleted topic and it silently came back.

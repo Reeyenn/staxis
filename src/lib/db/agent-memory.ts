@@ -14,7 +14,16 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 export type MemoryScope = 'property' | 'user';
 export type MemorySource = 'explicit_user' | 'inferred' | 'correction' | 'consolidation' | 'operational';
 export type MemoryConfidence = 'low' | 'normal' | 'high';
-export type StoreMemoryAction = 'inserted' | 'updated' | 'skipped' | 'property_full' | 'user_full';
+// 'skipped'           — an auto-learned write deferred to an active human fact (0260/0261).
+// 'refused_forgotten' — an auto-learned write for a topic a human DELETED; refused
+//                       permanently, no time window (0357). Human writes are never refused.
+export type StoreMemoryAction =
+  | 'inserted'
+  | 'updated'
+  | 'skipped'
+  | 'refused_forgotten'
+  | 'property_full'
+  | 'user_full';
 
 export interface MemoryRow {
   id: string;
