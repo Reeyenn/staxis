@@ -21,6 +21,12 @@
 import type { OperationalSignal } from '@/lib/agent/operational-signals';
 import type { checkOperationalAlerts } from '@/lib/agent/nudges';
 import type { PropertyRunResult } from '@/lib/rules-engine';
+import type {
+  InventoryUsageHistory,
+  OperatingRhythmHistory,
+  SupplySpendHistory,
+  WorkOrderHistory,
+} from './history';
 
 // ─── Scalars ─────────────────────────────────────────────────────────────────
 
@@ -118,7 +124,16 @@ export interface FindingEvidence {
  * reads; the runner loads the union once per hotel and hands the same context
  * to every detector, so twelve detectors reading room status cost one read.
  */
-export type FeedId = 'operational_signals' | 'nudge_drafts' | 'cleaning_plan';
+export type FeedId =
+  | 'operational_signals'
+  | 'nudge_drafts'
+  | 'cleaning_plan'
+  // Phase 2A: the hotel's own trailing record, the raw material for the
+  // "unusual for THIS hotel" and "this stopped" detectors. Shapes in history.ts.
+  | 'supply_spend_history'
+  | 'work_order_history'
+  | 'inventory_usage_history'
+  | 'operating_rhythm';
 
 /** Nudge drafts, taken from the live return type so nudges.ts stays untouched. */
 export type NudgeDraftFeed = Awaited<ReturnType<typeof checkOperationalAlerts>>;
@@ -129,6 +144,10 @@ export interface FeedShapes {
   nudge_drafts: NudgeDraftFeed;
   /** The cleaning rules engine's DRY-RUN result. Evaluates, never writes. */
   cleaning_plan: PropertyRunResult;
+  supply_spend_history: SupplySpendHistory;
+  work_order_history: WorkOrderHistory;
+  inventory_usage_history: InventoryUsageHistory;
+  operating_rhythm: OperatingRhythmHistory;
 }
 
 /** A loaded feed plus the honesty metadata every claim on it inherits. */

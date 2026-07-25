@@ -387,12 +387,22 @@ describe('a detector can only see what it declared', () => {
 // ─── the shipped detectors ──────────────────────────────────────────────────
 
 describe('every shipped detector does what it says it does', () => {
-  test('all three ported systems are registered', () => {
+  test('every shipped detector is registered — the ports and the pattern-finders', () => {
     const ids = allDetectors().map((d) => d.declaration.id);
     assert.deepEqual(
       ids,
-      ['cleaning_plan_health', 'operational_pattern', 'room_needs_attention'],
-      'the three detection systems that existed before this layer all run under the one runner now',
+      [
+        // Phase 1: the three detection systems that existed before this layer.
+        'cleaning_plan_health',
+        'operational_pattern',
+        'room_needs_attention',
+        // Phase 2A: the four that need nobody to have predicted the problem.
+        'expected_activity_stopped',
+        'inventory_usage_baseline',
+        'supply_spend_baseline',
+        'work_order_rate_baseline',
+      ].sort(),
+      'every detection system in the app runs under the one runner',
     );
   });
 
