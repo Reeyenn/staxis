@@ -3970,6 +3970,7 @@ export type Database = {
           dashboard_stale_minutes: number
           evening_forecast_time: string | null
           hourly_wage: number
+          housekeeping_setup: Json | null
           id: string
           inventory_ai_mode: string
           inventory_budget_mode: string
@@ -4018,6 +4019,7 @@ export type Database = {
           dashboard_stale_minutes?: number
           evening_forecast_time?: string | null
           hourly_wage?: number
+          housekeeping_setup?: Json | null
           id?: string
           inventory_ai_mode?: string
           inventory_budget_mode?: string
@@ -4066,6 +4068,7 @@ export type Database = {
           dashboard_stale_minutes?: number
           evening_forecast_time?: string | null
           hourly_wage?: number
+          housekeeping_setup?: Json | null
           id?: string
           inventory_ai_mode?: string
           inventory_budget_mode?: string

@@ -26,8 +26,10 @@ describe('AI Control Center feature registry', () => {
   // took compliance.photo_reading/text_reading_parse/setup_parse/
   // anomaly_phrasing + speech.engineer_dictation (25→21 controllable,
   // display-only 8→7, 33→28 keys).
-  test('covers 21 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 28);
+  // 2026-07-24: the Housekeeping setup questionnaire added
+  // housekeeping.board_photo_read (21→22 controllable, 28→29 keys).
+  test('covers 22 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 29);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
