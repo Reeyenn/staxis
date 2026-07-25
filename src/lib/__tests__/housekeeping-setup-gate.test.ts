@@ -46,6 +46,17 @@ import {
   DEFAULT_CHECKOUT_MINUTES,
   DEFAULT_STAYOVER_MINUTES,
   DEFAULT_SHIFT_START,
+  MAX_CUSTOM_LABEL_LENGTH,
+  MAX_CUSTOM_ROOM_TYPES,
+  MAX_CUSTOM_DUTIES,
+  RESERVED_ROOM_TYPE_KEYS,
+  RESERVED_DUTY_KEYS,
+  normalizeCustomLabel,
+  customEntryKey,
+  isValidCustomLabel,
+  isReservedRoomTypeLabel,
+  isReservedDutyLabel,
+  type CustomRoomType,
   type HousekeepingSetup,
   type StatusEntryMethod,
   type BoardBuiltBy,
@@ -278,6 +289,8 @@ describe('parseHousekeepingSetup — must be TOTAL (a corrupt row must not white
       boardBuiltBy: 'unsure',
       inspection: 'none',
       sideDuties: [],
+      customRoomTypes: [],
+      customDuties: [],
       boardPhotoPath: null,
     });
   });
@@ -294,6 +307,8 @@ describe('parseHousekeepingSetup — must be TOTAL (a corrupt row must not white
       boardBuiltBy: false,
       inspection: null,
       sideDuties: 'laundry',
+      customRoomTypes: 'Suite',
+      customDuties: { laundry: true },
       boardPhotoPath: { path: 'x' },
     });
     assert.deepEqual(parsed, {
@@ -308,6 +323,8 @@ describe('parseHousekeepingSetup — must be TOTAL (a corrupt row must not white
       boardBuiltBy: 'unsure',
       inspection: 'none',
       sideDuties: [],
+      customRoomTypes: [],
+      customDuties: [],
       boardPhotoPath: null,
     });
   });
@@ -360,6 +377,8 @@ describe('parseHousekeepingSetup — must be TOTAL (a corrupt row must not white
       boardBuiltBy: 'head_housekeeper',
       inspection: 'every_room',
       sideDuties: ['breakfast', 'laundry'],
+      customRoomTypes: [{ label: 'Suite', minutes: 45 }],
+      customDuties: ['Van runs'],
       boardPhotoPath: 'boards/prop-1/2026-07-24.jpg',
     });
     assert.deepEqual(parsed, {
@@ -374,6 +393,8 @@ describe('parseHousekeepingSetup — must be TOTAL (a corrupt row must not white
       boardBuiltBy: 'head_housekeeper',
       inspection: 'every_room',
       sideDuties: ['laundry', 'breakfast'], // canonical order, not input order
+      customRoomTypes: [{ label: 'Suite', minutes: 45 }],
+      customDuties: ['Van runs'],
       boardPhotoPath: 'boards/prop-1/2026-07-24.jpg',
     });
   });
@@ -570,6 +591,8 @@ describe('validateSetupSubmission — strict on the way into the database', () =
       boardBuiltBy: 'gm',
       inspection: 'spot_check',
       sideDuties: ['laundry', 'shuttle'],
+      customRoomTypes: [],
+      customDuties: [],
       boardPhotoPath: 'boards/a.jpg',
     });
   });
@@ -741,6 +764,623 @@ describe('validateSetupSubmission — strict on the way into the database', () =
         );
       }
     }
+  });
+});
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * The two "+" lists: custom room types (Q2) and custom duties (Q6).
+ *
+ * These were added to schema version 1 AFTER hotels had already completed the
+ * questionnaire. The first describe block below is the one that matters most in
+ * this whole file: if absent fields stop parsing as "complete", every hotel
+ * that already finished setup gets thrown back into the seven screens.
+ * ══════════════════════════════════════════════════════════════════════════ */
+
+describe('BACKWARD COMPATIBILITY — records saved before the "+" fields existed', () => {
+  /** A blob exactly as it was written the day before customRoomTypes/customDuties
+   *  existed: no such keys at all. */
+  function yesterdaysRecord(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      version: 1,
+      completedAt: '2026-07-24T15:00:00.000Z',
+      level: 2,
+      recommendedLevel: 2,
+      statusEntry: 'supervisor_keys',
+      checkoutMinutes: 30,
+      stayoverMinutes: 20,
+      shiftStartTime: '08:00',
+      boardBuiltBy: 'head_housekeeper',
+      inspection: 'spot_check',
+      sideDuties: ['laundry'],
+      boardPhotoPath: null,
+      ...over,
+    };
+  }
+
+  test('a record with NEITHER new field still reads as a finished questionnaire', () => {
+    // THE regression that would hurt every existing customer at once: a hotel
+    // that answered all seven screens yesterday opens Housekeeping today and is
+    // asked to answer them again. Recoverable only by re-doing the work, and
+    // they would (rightly) conclude the product forgot them.
+    const stored = yesterdaysRecord();
+    assert.equal(isHousekeepingSetupComplete(stored), true);
+    assert.notEqual(parseHousekeepingSetup(stored), null);
+  });
+
+  test('the schema version did NOT move — a version bump is what would re-ask them', () => {
+    // parseHousekeepingSetup returns null for any unrecognised version, and null
+    // means "not done". Shipping these fields as version 2 would therefore have
+    // silently reset every hotel. Pinning it so nobody bumps it casually later.
+    const parsed = parseHousekeepingSetup(yesterdaysRecord());
+    assert.equal(parsed?.version, 1);
+    assert.equal(parseHousekeepingSetup(yesterdaysRecord({ version: 2 })), null);
+  });
+
+  test('the missing fields come back as empty lists, not undefined or null', () => {
+    // Downstream screens map over these. A hole would be a crash waiting for the
+    // first hotel that never touched the "+".
+    const parsed = parseHousekeepingSetup(yesterdaysRecord());
+    assert.ok(parsed);
+    assert.deepEqual(parsed.customRoomTypes, []);
+    assert.deepEqual(parsed.customDuties, []);
+    assert.ok(Array.isArray(parsed.customRoomTypes));
+    assert.ok(Array.isArray(parsed.customDuties));
+  });
+
+  test('every other answer in an old record survives untouched', () => {
+    // The new fields must be additive. If adding them shifted any existing
+    // answer, a hotel would find its room times or its level quietly changed.
+    const parsed = parseHousekeepingSetup(yesterdaysRecord());
+    assert.deepEqual(parsed, {
+      version: 1,
+      completedAt: '2026-07-24T15:00:00.000Z',
+      level: 2,
+      recommendedLevel: 2,
+      statusEntry: 'supervisor_keys',
+      checkoutMinutes: 30,
+      stayoverMinutes: 20,
+      shiftStartTime: '08:00',
+      boardBuiltBy: 'head_housekeeper',
+      inspection: 'spot_check',
+      sideDuties: ['laundry'],
+      customRoomTypes: [],
+      customDuties: [],
+      boardPhotoPath: null,
+    });
+  });
+
+  test('an old record re-submitted without the new fields is still accepted', () => {
+    // The realistic path when a manager edits one answer from a screen built
+    // before the "+" shipped: the payload simply has no such keys.
+    const value = expectValue(goodSubmission({ customRoomTypes: undefined, customDuties: undefined }));
+    assert.deepEqual(value.customRoomTypes, []);
+    assert.deepEqual(value.customDuties, []);
+    assert.equal(isHousekeepingSetupComplete(value), true);
+  });
+
+  test('null is accepted for both lists too (an over-eager client)', () => {
+    const value = expectValue(goodSubmission({ customRoomTypes: null, customDuties: null }));
+    assert.deepEqual(value.customRoomTypes, []);
+    assert.deepEqual(value.customDuties, []);
+  });
+});
+
+describe('custom room types + duties — round trip through validate then parse', () => {
+  test('what a hotel enters is what comes back out', () => {
+    // Write-then-read is what production actually does. If these two disagree,
+    // a manager saves "Suite 45" and the next page load shows him something else.
+    const value = expectValue(
+      goodSubmission({
+        customRoomTypes: [
+          { label: 'Suite', minutes: 45 },
+          { label: 'Extended stay', minutes: 60 },
+        ],
+        customDuties: ['Van runs', 'Pool towels'],
+      }),
+    );
+    assert.deepEqual(value.customRoomTypes, [
+      { label: 'Extended stay', minutes: 60 },
+      { label: 'Suite', minutes: 45 },
+    ]);
+    assert.deepEqual(value.customDuties, ['Pool towels', 'Van runs']);
+
+    // Through JSON, exactly as jsonb storage would.
+    const readBack = parseHousekeepingSetup(JSON.parse(JSON.stringify(value)));
+    assert.deepEqual(readBack, value);
+  });
+
+  test('a hotel with custom entries still passes the completeness gate', () => {
+    const value = expectValue(
+      goodSubmission({ customRoomTypes: [{ label: 'Suite', minutes: 45 }], customDuties: ['Van runs'] }),
+    );
+    assert.equal(isHousekeepingSetupComplete(value), true);
+  });
+
+  test('the hotel’s own capitalisation is preserved', () => {
+    // "King Suite" is how they write it and how it must read back to them.
+    const value = expectValue(goodSubmission({ customRoomTypes: [{ label: 'King Suite', minutes: 50 }] }));
+    assert.equal(value.customRoomTypes[0].label, 'King Suite');
+  });
+
+  test('surrounding and doubled-up whitespace is tidied, not rejected', () => {
+    // Pasted from a spreadsheet with a trailing newline is a normal way for this
+    // to arrive; refusing it would strand a manager on the screen.
+    const value = expectValue(
+      goodSubmission({
+        customRoomTypes: [{ label: '  Extended   stay  ', minutes: 60 }],
+        customDuties: ['  Van   runs '],
+      }),
+    );
+    assert.equal(value.customRoomTypes[0].label, 'Extended stay');
+    assert.deepEqual(value.customDuties, ['Van runs']);
+  });
+
+  test('ordering is deterministic — two equivalent setups serialize identically', () => {
+    // Later screens compare saved setups; unstable order would show a phantom
+    // "changed" on every read.
+    const a = expectValue(
+      goodSubmission({
+        customRoomTypes: [
+          { label: 'Suite', minutes: 45 },
+          { label: 'Cabana', minutes: 35 },
+        ],
+        customDuties: ['Van runs', 'Grill'],
+      }),
+    );
+    const b = expectValue(
+      goodSubmission({
+        customRoomTypes: [
+          { label: 'Cabana', minutes: 35 },
+          { label: 'Suite', minutes: 45 },
+        ],
+        customDuties: ['Grill', 'Van runs'],
+      }),
+    );
+    assert.deepEqual(a.customRoomTypes, b.customRoomTypes);
+    assert.deepEqual(a.customDuties, b.customDuties);
+    assert.equal(JSON.stringify(a), JSON.stringify(b));
+
+    // And the reader agrees with the writer about that order.
+    assert.equal(
+      JSON.stringify(parseHousekeepingSetup(JSON.parse(JSON.stringify(b)))),
+      JSON.stringify(a),
+    );
+  });
+});
+
+describe('custom entries — case-insensitive duplicates', () => {
+  test('WRITE refuses a repeated room type instead of picking one silently', () => {
+    // "Suite 45" and "suite 60" are two different numbers under one name. Folding
+    // would hand the hotel a room time nobody chose; the message names the label
+    // so the manager can fix it in one tap.
+    const err = expectError(
+      goodSubmission({
+        customRoomTypes: [
+          { label: 'Suite', minutes: 45 },
+          { label: 'suite', minutes: 60 },
+        ],
+      }),
+    );
+    assert.match(err, /customRoomTypes/);
+    // The message quotes the DUPLICATE entry exactly as the manager typed it
+    // ("suite", not the first "Suite") — that is the row he has to remove.
+    assert.match(err, /"suite"/);
+  });
+
+  test('WRITE catches duplicates that differ only by case or spacing', () => {
+    assert.match(
+      expectError(goodSubmission({ customRoomTypes: [{ label: 'SUITE', minutes: 45 }, { label: 'Suite', minutes: 45 }] })),
+      /customRoomTypes/,
+    );
+    assert.match(
+      expectError(goodSubmission({ customRoomTypes: [{ label: 'King  Suite', minutes: 45 }, { label: 'king suite', minutes: 45 }] })),
+      /customRoomTypes/,
+    );
+    assert.match(expectError(goodSubmission({ customDuties: ['Van runs', 'VAN RUNS'] })), /customDuties/);
+    assert.match(expectError(goodSubmission({ customDuties: ['Grill', ' grill '] })), /customDuties/);
+  });
+
+  test('READ folds the same duplicates instead of failing', () => {
+    // A stored row can only look like this after a hand-edit, and the page must
+    // still render. Keep the first, drop the rest — never throw, never null.
+    const parsed = parseHousekeepingSetup({
+      customRoomTypes: [
+        { label: 'Suite', minutes: 45 },
+        { label: 'suite', minutes: 60 },
+        { label: 'SUITE', minutes: 90 },
+      ],
+      customDuties: ['Van runs', 'VAN RUNS', 'van  runs'],
+    });
+    assert.ok(parsed);
+    assert.deepEqual(parsed.customRoomTypes, [{ label: 'Suite', minutes: 45 }]);
+    assert.deepEqual(parsed.customDuties, ['Van runs']);
+  });
+
+  test('genuinely different labels are NOT treated as duplicates', () => {
+    // The dedup must not be over-eager — a hotel with real suites AND real
+    // extended-stay units has to be able to say so.
+    const value = expectValue(
+      goodSubmission({
+        customRoomTypes: [
+          { label: 'Suite', minutes: 45 },
+          { label: 'Suites', minutes: 50 },
+          { label: 'Junior suite', minutes: 40 },
+        ],
+        customDuties: ['Van runs', 'Van wash'],
+      }),
+    );
+    assert.equal(value.customRoomTypes.length, 3);
+    assert.equal(value.customDuties.length, 2);
+  });
+});
+
+describe('custom entries — collision with something the questionnaire already asks', () => {
+  test('WRITE refuses a room type named after the two standard times', () => {
+    // A custom "Checkout" would sit beside checkoutMinutes holding a different
+    // number, and no later screen could say which one the hotel meant.
+    for (const label of ['Checkout', 'check out', 'CHECK-OUT', 'Stayover', 'stay over', 'Departure']) {
+      const err = expectError(goodSubmission({ customRoomTypes: [{ label, minutes: 45 }] }));
+      assert.match(err, /customRoomTypes/, `no rejection for ${label}`);
+    }
+  });
+
+  test('WRITE refuses a duty named after one of the five built-in duties', () => {
+    // Folding it into the built-in would be Staxis ticking a box the manager did
+    // not tick; dropping it would lose a duty the hotel really does. Neither is
+    // ours to decide — so we say which word is the problem and let him choose.
+    for (const label of ['Laundry', 'laundry', 'BREAKFAST', 'Lobby', 'Public areas', 'public_areas', 'Shuttle']) {
+      const err = expectError(goodSubmission({ customDuties: [label] }));
+      assert.match(err, /customDuties/, `no rejection for ${label}`);
+    }
+  });
+
+  test('the rejection message names the offending word so it is actionable', () => {
+    assert.match(expectError(goodSubmission({ customDuties: ['Laundry'] })), /Laundry/);
+    assert.match(expectError(goodSubmission({ customRoomTypes: [{ label: 'Checkout', minutes: 30 }] })), /Checkout/);
+  });
+
+  test('READ drops a colliding entry rather than storing a second copy', () => {
+    const parsed = parseHousekeepingSetup({
+      customRoomTypes: [
+        { label: 'Checkout', minutes: 99 },
+        { label: 'Suite', minutes: 45 },
+      ],
+      customDuties: ['Laundry', 'Van runs'],
+    });
+    assert.ok(parsed);
+    assert.deepEqual(parsed.customRoomTypes, [{ label: 'Suite', minutes: 45 }]);
+    assert.deepEqual(parsed.customDuties, ['Van runs']);
+  });
+
+  test('a reserved word merely CONTAINED in a longer label is fine', () => {
+    // "Laundry room deep clean" is a real, distinct duty. The collision rule
+    // matches whole labels only — an over-broad match would refuse honest answers.
+    const value = expectValue(
+      goodSubmission({
+        customDuties: ['Laundry room deep clean', 'Shuttle to airport'],
+        customRoomTypes: [{ label: 'Checkout deep clean', minutes: 60 }],
+      }),
+    );
+    assert.equal(value.customDuties.length, 2);
+    assert.equal(value.customRoomTypes.length, 1);
+  });
+
+  test('a room type named in SPANISH collides with the built-in times too', () => {
+    // The questionnaire is bilingual, so a Spanish-speaking manager types
+    // "Salida", not "Checkout". If that sailed through, "Salida — 40 min" would
+    // sit beside checkoutMinutes: 30 with nothing able to say which number the
+    // hotel meant — the exact harm the reserved list exists to prevent, and one
+    // every ES user would hit. Accented and unaccented spellings both count.
+    for (const label of [
+      'Salida', 'salidas', 'Habitación de salida', 'habitacion de salida',
+      'Ocupada', 'ocupadas', 'Habitación ocupada', 'habitacion ocupada',
+    ]) {
+      assert.equal(isReservedRoomTypeLabel(label), true, `not reserved: ${label}`);
+      const err = expectError(goodSubmission({ customRoomTypes: [{ label, minutes: 45 }] }));
+      assert.match(err, /customRoomTypes/, `no rejection for ${label}`);
+    }
+  });
+
+  test('"estancia larga" is still a legal room type in Spanish', () => {
+    // The Spanish Q2 placeholder offers it as an EXAMPLE of a good custom room
+    // type. Reserving anything built on "estancia" would refuse the very answer
+    // the screen suggests one line above the box.
+    assert.equal(isReservedRoomTypeLabel('Estancia larga'), false);
+    const value = expectValue(
+      goodSubmission({ customRoomTypes: [{ label: 'Estancia larga', minutes: 60 }] }),
+    );
+    assert.deepEqual(value.customRoomTypes, [{ label: 'Estancia larga', minutes: 60 }]);
+  });
+
+  test('a Spanish duty name is NOT reserved, and that is deliberate', () => {
+    // The asymmetry is the point: a custom duty carries no minutes, so a second
+    // copy of "laundry" cannot make any number wrong. A custom ROOM TYPE carries
+    // the minute count the labor math rests on, which is why the list above does
+    // cover both languages. Pinned so the difference is a decision, not a drift.
+    assert.equal(isReservedDutyLabel('Lavandería'), false);
+    const value = expectValue(goodSubmission({ customDuties: ['Lavandería'] }));
+    assert.deepEqual(value.customDuties, ['Lavandería']);
+  });
+
+  test('the exported reserved lists agree with the exported predicates', () => {
+    // The questionnaire uses these to warn while the manager types. If they ever
+    // disagreed with the validator, the screen would accept an entry the save
+    // then refused, with nothing on screen explaining why.
+    for (const key of RESERVED_ROOM_TYPE_KEYS) {
+      assert.equal(isReservedRoomTypeLabel(key), true, `room type key ${key}`);
+      assert.equal(isReservedRoomTypeLabel(key.toUpperCase()), true, `room type key ${key} upper`);
+    }
+    for (const key of RESERVED_DUTY_KEYS) {
+      assert.equal(isReservedDutyLabel(key), true, `duty key ${key}`);
+      assert.equal(isReservedDutyLabel(` ${key.toUpperCase()} `), true, `duty key ${key} padded`);
+    }
+    assert.equal(isReservedRoomTypeLabel('Suite'), false);
+    assert.equal(isReservedDutyLabel('Van runs'), false);
+  });
+});
+
+describe('custom room type minutes — the same rule as the built-in times', () => {
+  test('WRITE rejects bad minutes and names the room type', () => {
+    // A custom room must never be validated more loosely than "checkout" was
+    // three fields earlier — it feeds the same kind of number.
+    for (const bad of [0, 4, 241, 30.5, NaN, Infinity, -30, '45', null, undefined]) {
+      const err = expectError(goodSubmission({ customRoomTypes: [{ label: 'Suite', minutes: bad }] }));
+      assert.match(err, /customRoomTypes/, `no rejection for ${String(bad)}`);
+    }
+    assert.match(
+      expectError(goodSubmission({ customRoomTypes: [{ label: 'Suite', minutes: 500 }] })),
+      /Suite/,
+    );
+  });
+
+  test('WRITE accepts the exact 5 and 240 boundaries, same as the built-ins', () => {
+    const value = expectValue(
+      goodSubmission({
+        customRoomTypes: [
+          { label: 'Quick touch-up', minutes: 5 },
+          { label: 'Full deep clean', minutes: 240 },
+        ],
+      }),
+    );
+    assert.deepEqual(
+      value.customRoomTypes.map((r: CustomRoomType) => r.minutes).sort((a: number, b: number) => a - b),
+      [5, 240],
+    );
+  });
+
+  test('READ drops an entry with impossible minutes rather than inventing a number', () => {
+    // The built-in times can fall back to a prefilled default because the
+    // questionnaire always collects them. A custom room type cannot: a made-up
+    // minute count under a name the hotel DID choose would look authoritative
+    // and be fiction. Losing the row is the honest degradation.
+    const parsed = parseHousekeepingSetup({
+      customRoomTypes: [
+        { label: 'Suite', minutes: NaN },
+        { label: 'Cabana', minutes: 0 },
+        { label: 'Villa', minutes: 5000 },
+        { label: 'Studio', minutes: '45' },
+        { label: 'Loft', minutes: 45 },
+      ],
+    });
+    assert.ok(parsed);
+    assert.deepEqual(parsed.customRoomTypes, [{ label: 'Loft', minutes: 45 }]);
+  });
+
+  test('READ drops entries that are not objects at all', () => {
+    const parsed = parseHousekeepingSetup({
+      customRoomTypes: [null, 42, 'Suite', [], ['Suite', 45], { minutes: 45 }, { label: 'Loft', minutes: 45 }],
+    });
+    assert.ok(parsed);
+    assert.deepEqual(parsed.customRoomTypes, [{ label: 'Loft', minutes: 45 }]);
+  });
+
+  test('WRITE rejects a room type entry that is not an object', () => {
+    for (const bad of [null, 42, 'Suite', ['Suite', 45]]) {
+      assert.match(expectError(goodSubmission({ customRoomTypes: [bad] })), /customRoomTypes/, `for ${String(bad)}`);
+    }
+  });
+});
+
+describe('custom labels — length, emptiness and junk', () => {
+  test('the label cap is enforced on write, at the exact boundary', () => {
+    const atCap = 'x'.repeat(MAX_CUSTOM_LABEL_LENGTH);
+    const overCap = 'x'.repeat(MAX_CUSTOM_LABEL_LENGTH + 1);
+    assert.equal(expectValue(goodSubmission({ customDuties: [atCap] })).customDuties[0], atCap);
+    assert.match(expectError(goodSubmission({ customDuties: [overCap] })), /customDuties/);
+    assert.equal(
+      expectValue(goodSubmission({ customRoomTypes: [{ label: atCap, minutes: 45 }] })).customRoomTypes[0].label,
+      atCap,
+    );
+    assert.match(
+      expectError(goodSubmission({ customRoomTypes: [{ label: overCap, minutes: 45 }] })),
+      /customRoomTypes/,
+    );
+  });
+
+  test('an over-long stored label is dropped on read, never truncated', () => {
+    // Truncating would leave a half-word the hotel never wrote, presented as if
+    // they had. Dropping is the only honest option for a row that can only exist
+    // via corruption or a hand-edit.
+    const parsed = parseHousekeepingSetup({
+      customDuties: ['x'.repeat(500), 'Van runs'],
+      customRoomTypes: [
+        { label: 'y'.repeat(500), minutes: 45 },
+        { label: 'Loft', minutes: 45 },
+      ],
+    });
+    assert.ok(parsed);
+    assert.deepEqual(parsed.customDuties, ['Van runs']);
+    assert.deepEqual(parsed.customRoomTypes, [{ label: 'Loft', minutes: 45 }]);
+  });
+
+  test('an empty or whitespace-only label is refused on write and dropped on read', () => {
+    for (const blank of ['', '   ', '\t\n']) {
+      assert.match(expectError(goodSubmission({ customDuties: [blank] })), /customDuties/, `for ${JSON.stringify(blank)}`);
+      assert.match(
+        expectError(goodSubmission({ customRoomTypes: [{ label: blank, minutes: 45 }] })),
+        /customRoomTypes/,
+        `for ${JSON.stringify(blank)}`,
+      );
+    }
+    assert.deepEqual(parseHousekeepingSetup({ customDuties: ['', '  ', 'Van runs'] })?.customDuties, ['Van runs']);
+  });
+
+  test('a non-string duty is refused on write and dropped on read', () => {
+    assert.match(expectError(goodSubmission({ customDuties: [42] })), /customDuties/);
+    assert.match(expectError(goodSubmission({ customDuties: [null] })), /customDuties/);
+    assert.match(expectError(goodSubmission({ customDuties: [{ label: 'Van runs' }] })), /customDuties/);
+    assert.deepEqual(parseHousekeepingSetup({ customDuties: [42, null, {}, 'Van runs'] })?.customDuties, ['Van runs']);
+  });
+
+  test('a control character in a label is refused — Postgres would reject the whole save', () => {
+    // A NUL inside a JSON string makes Postgres refuse the statement outright,
+    // so one invisible pasted byte would fail the save with an error no manager
+    // could act on. Caught here, where we can name the field.
+    const withNul = 'Van' + String.fromCharCode(0) + ' runs';
+    const withBell = 'Van' + String.fromCharCode(7) + ' runs';
+    assert.match(expectError(goodSubmission({ customDuties: [withNul] })), /customDuties/);
+    assert.match(expectError(goodSubmission({ customDuties: [withBell] })), /customDuties/);
+    assert.match(
+      expectError(goodSubmission({ customRoomTypes: [{ label: withNul, minutes: 45 }] })),
+      /customRoomTypes/,
+    );
+    assert.deepEqual(parseHousekeepingSetup({ customDuties: [withNul, 'Van runs'] })?.customDuties, ['Van runs']);
+  });
+
+  test('accented and non-Latin labels are perfectly fine', () => {
+    // Half this product’s users work in Spanish. Refusing "Lavandería profunda"
+    // would be a bug, not a safety feature.
+    const value = expectValue(
+      goodSubmission({ customDuties: ['Limpieza de piscina', 'Café de la mañana'] }),
+    );
+    assert.equal(value.customDuties.length, 2);
+  });
+});
+
+describe('custom entries — the count caps keep the row and the screen bounded', () => {
+  test('WRITE accepts exactly the cap and refuses one more', () => {
+    const roomsAtCap = Array.from({ length: MAX_CUSTOM_ROOM_TYPES }, (_, i) => ({
+      label: `Room type ${i}`,
+      minutes: 30,
+    }));
+    assert.equal(
+      expectValue(goodSubmission({ customRoomTypes: roomsAtCap })).customRoomTypes.length,
+      MAX_CUSTOM_ROOM_TYPES,
+    );
+    assert.match(
+      expectError(goodSubmission({ customRoomTypes: [...roomsAtCap, { label: 'One too many', minutes: 30 }] })),
+      /customRoomTypes/,
+    );
+
+    const dutiesAtCap = Array.from({ length: MAX_CUSTOM_DUTIES }, (_, i) => `Duty ${i}`);
+    assert.equal(expectValue(goodSubmission({ customDuties: dutiesAtCap })).customDuties.length, MAX_CUSTOM_DUTIES);
+    assert.match(expectError(goodSubmission({ customDuties: [...dutiesAtCap, 'One too many'] })), /customDuties/);
+  });
+
+  test('READ caps a corrupt row instead of loading ten thousand entries', () => {
+    // The defence against a scripted client or a bad migration bloating one
+    // property row and then rendering it all onto a manager’s phone.
+    const parsed = parseHousekeepingSetup({
+      customRoomTypes: Array.from({ length: 10_000 }, (_, i) => ({ label: `Type ${i}`, minutes: 30 })),
+      customDuties: Array.from({ length: 10_000 }, (_, i) => `Duty ${i}`),
+    });
+    assert.ok(parsed);
+    assert.equal(parsed.customRoomTypes.length, MAX_CUSTOM_ROOM_TYPES);
+    assert.equal(parsed.customDuties.length, MAX_CUSTOM_DUTIES);
+  });
+});
+
+describe('custom label helpers — the questionnaire and the server share these', () => {
+  test('normalizeCustomLabel trims and collapses inner whitespace only', () => {
+    assert.equal(normalizeCustomLabel('  King   Suite  '), 'King Suite');
+    assert.equal(normalizeCustomLabel('Van\n\truns'), 'Van runs');
+    assert.equal(normalizeCustomLabel('Suite'), 'Suite');
+    assert.equal(normalizeCustomLabel('   '), '');
+  });
+
+  test('customEntryKey is the case-insensitive comparison the dedup uses', () => {
+    assert.equal(customEntryKey('  King   SUITE '), customEntryKey('king suite'));
+    assert.notEqual(customEntryKey('Suite'), customEntryKey('Suites'));
+  });
+
+  test('isValidCustomLabel agrees with what the validator will accept', () => {
+    // The client checks with this while the manager types; if it drifted from
+    // the server, the screen would accept an entry the save then refused.
+    assert.equal(isValidCustomLabel('Suite'), true);
+    assert.equal(isValidCustomLabel('  Suite  '), true);
+    assert.equal(isValidCustomLabel(''), false);
+    assert.equal(isValidCustomLabel('   '), false);
+    assert.equal(isValidCustomLabel('x'.repeat(MAX_CUSTOM_LABEL_LENGTH)), true);
+    assert.equal(isValidCustomLabel('x'.repeat(MAX_CUSTOM_LABEL_LENGTH + 1)), false);
+    assert.equal(isValidCustomLabel(42), false);
+    assert.equal(isValidCustomLabel(null), false);
+    assert.equal(isValidCustomLabel(undefined), false);
+    assert.equal(isValidCustomLabel('Van' + String.fromCharCode(0)), false);
+  });
+});
+
+describe('parse must stay TOTAL with the new lists in play', () => {
+  test('a wall of hostile custom-list inputs — none of them throws', () => {
+    // Same contract as the original hostile wall: a corrupt row must never
+    // white-screen Housekeeping for a hotel whose crew is waiting for a board.
+    const hostile: unknown[] = [
+      { customRoomTypes: 'Suite', customDuties: 42 },
+      { customRoomTypes: null, customDuties: null },
+      { customRoomTypes: {}, customDuties: {} },
+      { customRoomTypes: [undefined, null, NaN], customDuties: [undefined, null, NaN] },
+      { customRoomTypes: [Symbol('s')], customDuties: [Symbol('d')] },
+      { customRoomTypes: [{ label: 'x'.repeat(10_000), minutes: Infinity }] },
+      { customRoomTypes: [{ label: {}, minutes: {} }] },
+      { customRoomTypes: [{ label: 'Suite' }], customDuties: [['nested']] },
+      { customRoomTypes: [Object.create(null)], customDuties: [Object.create(null)] },
+      { customDuties: Array.from({ length: 10_000 }, () => 'Duty') },
+      { customRoomTypes: Array.from({ length: 10_000 }, () => null) },
+      { customRoomTypes: [{ label: 'Suite', minutes: 45, extra: 'ignored' }] },
+      JSON.parse('{"customRoomTypes":[{"label":"Suite","minutes":45}],"customDuties":["Van runs"]}'),
+    ];
+    hostile.forEach((input, i) => {
+      assert.doesNotThrow(() => parseHousekeepingSetup(input), `parse threw on customHostile[${i}]`);
+      assert.doesNotThrow(() => isHousekeepingSetupComplete(input), `complete threw on customHostile[${i}]`);
+      const parsed = parseHousekeepingSetup(input);
+      assert.ok(parsed, `returned null for customHostile[${i}]`);
+      assert.ok(Array.isArray(parsed.customRoomTypes), `customRoomTypes not an array for [${i}]`);
+      assert.ok(Array.isArray(parsed.customDuties), `customDuties not an array for [${i}]`);
+      assert.ok(parsed.customRoomTypes.length <= MAX_CUSTOM_ROOM_TYPES, `room types over cap for [${i}]`);
+      assert.ok(parsed.customDuties.length <= MAX_CUSTOM_DUTIES, `duties over cap for [${i}]`);
+    });
+  });
+
+  test('a validated value survives a full write/read round trip for every answer', () => {
+    // Widened version of the existing round-trip test, now carrying custom
+    // entries through every status-entry / board-builder combination.
+    for (const statusEntry of STATUS_ENTRY_METHODS) {
+      for (const boardBuiltBy of BOARD_BUILT_BY_OPTIONS) {
+        const value = expectValue(
+          goodSubmission({
+            statusEntry,
+            boardBuiltBy,
+            level: 2,
+            customRoomTypes: [
+              { label: 'Suite', minutes: 45 },
+              { label: 'Cabana', minutes: 35 },
+            ],
+            customDuties: ['Van runs', 'Grill'],
+          }),
+        );
+        assert.deepEqual(
+          parseHousekeepingSetup(JSON.parse(JSON.stringify(value))),
+          value,
+          `round trip failed for ${statusEntry}/${boardBuiltBy}`,
+        );
+      }
+    }
+  });
+
+  test('the strict validator refuses a non-array for either list', () => {
+    assert.match(expectError(goodSubmission({ customRoomTypes: 'Suite' })), /customRoomTypes/);
+    assert.match(expectError(goodSubmission({ customRoomTypes: { label: 'Suite' } })), /customRoomTypes/);
+    assert.match(expectError(goodSubmission({ customDuties: 'Van runs' })), /customDuties/);
+    assert.match(expectError(goodSubmission({ customDuties: { a: 1 } })), /customDuties/);
   });
 });
 

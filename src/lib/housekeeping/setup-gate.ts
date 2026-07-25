@@ -57,6 +57,23 @@
  *   - `validateSetupSubmission` REJECTS such a submission on write.
  * The write-side rejection is the real boundary; the other two are so a corrupt
  * or hand-edited row can never quietly put a hotel into double entry.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE TWO FREE-TEXT LISTS (added 2026-07-25)
+ *
+ * Two screens let a hotel add its own answers: Q2 can hold room types beyond
+ * checkout and stayover (a suite, an extended-stay unit, a scheduled deep
+ * clean), and Q6 can hold duties beyond the five we list. Hotels genuinely
+ * differ here, and a hotel that cannot describe its own rooms cannot describe
+ * its own workload.
+ *
+ * They were added to schema version 1 rather than a version 2 — the reason is
+ * on `HousekeepingSetup.version` and it matters: bumping would have re-asked
+ * the whole questionnaire to every hotel that had already finished it.
+ *
+ * Neither list is written to `hk_clean_time_standards`, so a custom room type
+ * does NOT drive the board's minutes today. Reasoning in the header of
+ * src/app/api/housekeeping/setup/route.ts.
  */
 
 /* ───────────────────────────── Types ───────────────────────────── */
@@ -112,13 +129,49 @@ export type InspectionPolicy = 'none' | 'spot_check' | 'every_room';
 export type SideDuty = 'laundry' | 'breakfast' | 'lobby' | 'public_areas' | 'shuttle';
 
 /**
+ * Q2 (the "+") — one room type this hotel invented, with its own standard time.
+ *
+ * Hotels do not agree on what rooms they have. "Checkout" and "stayover" cover
+ * every hotel; suites, extended-stay units and scheduled deep cleans do not fit
+ * either box, and a hotel that has them cannot describe its real workload with
+ * two numbers. So the questionnaire lets them name their own.
+ *
+ * `label` is whatever the hotel calls it, in their words. `minutes` obeys
+ * EXACTLY the same rule as the two built-in times (`isValidCleanMinutes`) —
+ * there is deliberately only one definition of "a believable room time" in this
+ * file, because two would eventually disagree.
+ *
+ * NOT written to `hk_clean_time_standards` — see the note on `customRoomTypes`
+ * below, and the header of src/app/api/housekeeping/setup/route.ts.
+ */
+export interface CustomRoomType {
+  /** The hotel's own name for it. Trimmed, whitespace-collapsed, 1..40 chars. */
+  label: string;
+  /** Standard minutes for this room type. Whole number, 5..240. */
+  minutes: number;
+}
+
+/**
  * The persisted shape of `properties.housekeeping_setup` (migration 0337).
  *
  * NULL column, or `completedAt === null`, both mean "questionnaire not finished"
  * — see `isHousekeepingSetupComplete`.
  */
 export interface HousekeepingSetup {
-  /** Schema version of this blob. Only 1 exists today. */
+  /**
+   * Schema version of this blob. Only 1 exists today.
+   *
+   * `customRoomTypes` and `customDuties` were ADDED to version 1 rather than
+   * shipped as version 2, on purpose. `parseHousekeepingSetup` returns null for
+   * any version it does not recognise, and null reads as "questionnaire not
+   * finished" — so bumping the version would have thrown every hotel that
+   * already answered the seven questions straight back into the questionnaire,
+   * for a change that adds nothing they have to answer. Both new fields default
+   * to `[]` when absent instead, which makes yesterday's stored records parse as
+   * complete and unchanged. The rule for any future field is the same: if it can
+   * default safely, add it to version 1; only bump when an existing field's
+   * MEANING changes, and then write a converter.
+   */
   version: 1;
   /** ISO timestamp the questionnaire was finished. null => not finished. */
   completedAt: string | null;
@@ -144,6 +197,34 @@ export interface HousekeepingSetup {
   inspection: InspectionPolicy;
   /** Q6 — side duties. May be empty (= rooms only). Deduped and sorted. */
   sideDuties: SideDuty[];
+  /**
+   * Q2 (the "+") — room types this hotel added itself, beyond checkout and
+   * stayover. `[]` when they added none, which is the case for most hotels and
+   * for every record written before this field existed.
+   *
+   * Deduped case-insensitively and sorted by label, so two hotels that entered
+   * the same room types in a different order serialize identically.
+   *
+   * IMPORTANT: these live in this jsonb blob ONLY. They are NOT written to
+   * `hk_clean_time_standards`, so they do NOT drive the board, the timeline or
+   * the earned-hours math today — that table is keyed by a CHECK-constrained
+   * `cleaning_type` enum, and a free-text label cannot become a member of it
+   * without a migration. Anything reading these must treat them as the hotel's
+   * stated intent, not as live workload input. Full reasoning in the header of
+   * src/app/api/housekeeping/setup/route.ts.
+   */
+  customRoomTypes: CustomRoomType[];
+  /**
+   * Q6 (the "+") — duties this hotel added itself, beyond the five built-ins.
+   * `[]` when they added none, and for every record written before this field
+   * existed.
+   *
+   * Free text, in the hotel's own words ("van runs", "pool towels"). Deduped
+   * case-insensitively and sorted, same as `customRoomTypes`. Like
+   * `sideDuties`, these exist so time spent off-rooms is not silently counted
+   * as room time — but they carry no minutes model, so they are a label only.
+   */
+  customDuties: string[];
   /**
    * Q3 — storage PATH of the photo of their paper board, NOT a URL. Signed URLs
    * expire; a stored URL would rot. null when they skipped the photo (which is
@@ -215,6 +296,124 @@ export const SIDE_DUTIES: readonly SideDuty[] = [
  */
 const MAX_BOARD_PHOTO_PATH = 500;
 
+/* ─────────────────── Custom room types and custom duties ────────────────────
+ *
+ * Both "+" fields are free text, which means they are the only place in this
+ * questionnaire where a hotel can type something we have never seen. Three
+ * bounds keep that from becoming a problem, and all three are exported so the
+ * questionnaire enforces exactly what the server enforces:
+ *
+ *   • a LENGTH cap, so one entry can't be a paragraph,
+ *   • a COUNT cap, so the jsonb row (and the screen) stay bounded,
+ *   • a RESERVED list, so a hotel can't create a second, competing copy of
+ *     something the questionnaire already asks about.
+ */
+
+/**
+ * Longest custom label we store. 40 characters holds every real answer a hotel
+ * gives ("Extended stay studio", "Deep clean — quarterly") and fits on one line
+ * on a phone, which is where the founder reviews this.
+ */
+export const MAX_CUSTOM_LABEL_LENGTH = 40;
+
+/**
+ * How many custom entries each list may hold.
+ *
+ * Eight is well past what any limited-service hotel actually has (most have
+ * none) and is low enough that the jsonb row stays small and the screen stays
+ * readable. The cap exists mostly so a bug or a scripted client can't grow one
+ * property row without limit.
+ */
+export const MAX_CUSTOM_ROOM_TYPES = 8;
+export const MAX_CUSTOM_DUTIES = 8;
+
+/**
+ * Labels a hotel may NOT reuse for a custom room type: the two standard times
+ * the questionnaire already collects, under the names anyone would type for
+ * them. A custom "Checkout" would sit next to `checkoutMinutes` holding a
+ * different number, and no later screen could say which one the hotel meant.
+ *
+ * BOTH LANGUAGES, deliberately — unlike `RESERVED_DUTY_KEYS` below. The
+ * questionnaire is bilingual, and a Spanish-speaking manager types "Salida",
+ * not "Checkout". Left English-only, "Salida — 40 min" would sit beside
+ * `checkoutMinutes: 30` with nothing able to say which number the hotel meant:
+ * exactly the harm this list exists to prevent, reachable by every ES user.
+ * The duty list can live with the same gap because custom duties carry no
+ * minutes; a room type carries the number the labor-cost math rests on.
+ *
+ * These are literal spellings, not a translation-table import — this module
+ * stays pure, with no UI dependency. Accented and unaccented forms are both
+ * listed because `customEntryKey` lower-cases but does not fold accents, and a
+ * phone keyboard produces either.
+ *
+ * NOT reserved on purpose: anything built on "estancia". The Spanish Q2
+ * placeholder offers "estancia larga" (extended stay) as an EXAMPLE of a good
+ * custom room type, so reserving it would refuse the answer we just suggested.
+ */
+export const RESERVED_ROOM_TYPE_KEYS: readonly string[] = [
+  // English — the stored words, the hyphenations, and the on-screen labels.
+  'checkout',
+  'check out',
+  'check-out',
+  'checkout room',
+  'departure',
+  'departure room',
+  'stayover',
+  'stay over',
+  'stay-over',
+  'stayover room',
+  // Spanish — "Habitación de salida" / "Habitación ocupada" on screen, and the
+  // one-word forms a manager actually types.
+  'salida',
+  'salidas',
+  'habitacion de salida',
+  'habitación de salida',
+  'ocupada',
+  'ocupadas',
+  'habitacion ocupada',
+  'habitación ocupada',
+] as const;
+
+/**
+ * Labels a hotel may NOT reuse for a custom duty: the five built-in duties,
+ * both as the stored token and as the words the questionnaire shows for them.
+ *
+ * Known limit, stated rather than hidden: the comparison is against the ENGLISH
+ * words only. A Spanish-speaking manager typing "Lavandería" gets a custom duty
+ * that means the same thing as `laundry`. That is a cosmetic duplicate — a
+ * custom duty is a label with no minutes behind it, so a second copy of
+ * "laundry" cannot make any number wrong; the worst case is one redundant row
+ * on a screen. `RESERVED_ROOM_TYPE_KEYS` above deliberately does NOT accept the
+ * same gap, because a custom room type carries a minute count that competes
+ * with `checkoutMinutes`. Revisit this list only if custom duties ever gain a
+ * minutes model — at that point the harm becomes the same and so must the fix.
+ */
+export const RESERVED_DUTY_KEYS: readonly string[] = SIDE_DUTIES.flatMap((d) => [
+  d,
+  d.replace(/_/g, ' '),
+]);
+
+/**
+ * Does this label contain a control character?
+ *
+ * Not paranoia: a NUL byte inside a JSON string is rejected outright by
+ * Postgres ("unsupported Unicode escape sequence"), so one stray invisible
+ * byte pasted in from a spreadsheet would fail the entire save with an error
+ * no manager could act on. Tab / newline / return are already collapsed into
+ * spaces by `normalizeCustomLabel` before this runs, so anything still caught
+ * here is genuinely junk.
+ *
+ * Written as a code-point scan rather than a regex literal so the source file
+ * itself never has to contain a control character.
+ */
+function hasControlChars(s: string): boolean {
+  for (let i = 0; i < s.length; i += 1) {
+    const c = s.charCodeAt(i);
+    if (c < 32 || c === 127) return true;
+  }
+  return false;
+}
+
 /** 'HH:MM' on a 24-hour clock. Strict two-digit hour: '8:00' is rejected. */
 const SHIFT_START_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
 
@@ -250,6 +449,125 @@ function normalizeSideDuties(list: readonly unknown[]): SideDuty[] {
   const seen = new Set<SideDuty>();
   for (const v of list) if (isSideDuty(v)) seen.add(v);
   return SIDE_DUTIES.filter((d) => seen.has(d));
+}
+
+/* ──────────────── Custom label helpers (shared with the UI) ─────────────────
+ *
+ * Exported so the questionnaire can tell a manager "you already have that one"
+ * WHILE HE IS TYPING, using the exact comparison the server will use a moment
+ * later. If the two ever drifted, the screen would accept an entry the save
+ * then refused, with no way for him to work out why.
+ */
+
+/**
+ * The label as we store it: outer whitespace trimmed, and any run of inner
+ * whitespace (including newlines pasted in from a spreadsheet) collapsed to a
+ * single space. Nothing else is touched — "King Suite" keeps its capitals,
+ * because that is how the hotel writes it and how it will read back to them.
+ */
+export function normalizeCustomLabel(label: string): string {
+  return label.trim().replace(/\s+/g, ' ');
+}
+
+/**
+ * The comparison key for one custom label: the stored form, lower-cased.
+ *
+ * This is what makes de-duplication case-insensitive. "Suite", "suite" and
+ * "SUITE" are one room type to a hotel, and storing all three would show the
+ * manager three rows he thinks he entered once.
+ */
+export function customEntryKey(label: string): string {
+  return normalizeCustomLabel(label).toLowerCase();
+}
+
+/**
+ * Is this a storable custom label? Non-empty after normalizing, within the
+ * length cap, and free of control characters (see `hasControlChars`).
+ */
+export function isValidCustomLabel(v: unknown): boolean {
+  if (typeof v !== 'string') return false;
+  const normalized = normalizeCustomLabel(v);
+  if (normalized === '' || normalized.length > MAX_CUSTOM_LABEL_LENGTH) return false;
+  return !hasControlChars(normalized);
+}
+
+/** Does this label collide with one of the two built-in room times? */
+export function isReservedRoomTypeLabel(label: string): boolean {
+  return RESERVED_ROOM_TYPE_KEYS.includes(customEntryKey(label));
+}
+
+/** Does this label collide with one of the five built-in side duties? */
+export function isReservedDutyLabel(label: string): boolean {
+  return RESERVED_DUTY_KEYS.includes(customEntryKey(label));
+}
+
+/**
+ * Is this a well-formed custom room type entry? Shape + label + minutes.
+ * Minutes reuse `isValidCleanMinutes` deliberately — there is exactly ONE
+ * definition of a believable room time in this file, and a custom room type is
+ * not a different kind of room.
+ */
+function isValidCustomRoomTypeShape(v: unknown): v is { label: string; minutes: number } {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const o = v as Record<string, unknown>;
+  return isValidCustomLabel(o.label) && isValidCleanMinutes(o.minutes);
+}
+
+/**
+ * READ-side normalizer for custom room types. Forgiving by contract: anything
+ * malformed is DROPPED, never repaired, and this never throws.
+ *
+ * Why dropped rather than defaulted: the built-in times can fall back to a
+ * prefilled default because the questionnaire always collects them, but a
+ * custom room type with a made-up minute count would be a number no one at the
+ * hotel ever chose, sitting under a name they did choose. Silently inventing
+ * that is worse than losing the row — and the row can only be malformed if it
+ * was hand-edited or corrupted, since the write path rejects all of this.
+ *
+ * Also drops entries that collide with a built-in, keeps the FIRST of any
+ * case-insensitive duplicate, stops at MAX_CUSTOM_ROOM_TYPES, and sorts by
+ * comparison key so two equivalent setups serialize identically (the same
+ * guarantee `sideDuties` gets from its canonical order).
+ */
+function normalizeCustomRoomTypes(list: readonly unknown[]): CustomRoomType[] {
+  const out: Array<{ key: string; value: CustomRoomType }> = [];
+  const seen = new Set<string>();
+  for (const v of list) {
+    if (out.length >= MAX_CUSTOM_ROOM_TYPES) break;
+    if (!isValidCustomRoomTypeShape(v)) continue;
+    const label = normalizeCustomLabel(v.label);
+    const key = customEntryKey(label);
+    if (seen.has(key) || RESERVED_ROOM_TYPE_KEYS.includes(key)) continue;
+    seen.add(key);
+    out.push({ key, value: { label, minutes: v.minutes } });
+  }
+  out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return out.map((e) => e.value);
+}
+
+/**
+ * READ-side normalizer for custom duties. Same contract as
+ * `normalizeCustomRoomTypes`: drop anything malformed or colliding, keep the
+ * first of a case-insensitive duplicate, cap the count, sort for determinism,
+ * never throw.
+ */
+function normalizeCustomDuties(list: readonly unknown[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const v of list) {
+    if (out.length >= MAX_CUSTOM_DUTIES) break;
+    if (!isValidCustomLabel(v)) continue;
+    const label = normalizeCustomLabel(v as string);
+    const key = customEntryKey(label);
+    if (seen.has(key) || RESERVED_DUTY_KEYS.includes(key)) continue;
+    seen.add(key);
+    out.push(label);
+  }
+  return out.sort((a, b) => {
+    const ka = customEntryKey(a);
+    const kb = customEntryKey(b);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
 }
 
 /* ─────────────────────── Shared field validators ─────────────────
@@ -367,7 +685,19 @@ export function recommendLevel(input: RecommendLevelInput): HkLevel {
  *   inspection        unknown -> 'none'
  *   sideDuties        non-array / unknown members -> dropped; result deduped
  *                     and sorted into canonical order
+ *   customRoomTypes   absent -> [] (see below); non-array -> []; malformed,
+ *                     over-long, reserved or duplicate entries -> dropped;
+ *                     result capped, deduped case-insensitively and sorted
+ *   customDuties      same treatment as customRoomTypes
  *   boardPhotoPath    anything not a non-empty string -> null
+ *
+ * THE MOST IMPORTANT DEFAULT IN THIS FUNCTION is `customRoomTypes` /
+ * `customDuties` falling back to `[]` when the key is absent. Every hotel that
+ * finished the questionnaire before those fields existed has a stored blob
+ * without them. If their absence produced anything other than a complete,
+ * empty list — a null, or a null return — those hotels would be handed back
+ * into the seven-screen questionnaire they already answered. That is also why
+ * `version` stayed at 1; see the comment on `HousekeepingSetup.version`.
  */
 export function parseHousekeepingSetup(raw: unknown): HousekeepingSetup | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
@@ -420,6 +750,13 @@ export function parseHousekeepingSetup(raw: unknown): HousekeepingSetup | null {
     boardBuiltBy,
     inspection: isInspectionPolicy(obj.inspection) ? obj.inspection : 'none',
     sideDuties: Array.isArray(obj.sideDuties) ? normalizeSideDuties(obj.sideDuties) : [],
+    // Absent (every record written before these fields existed) and non-array
+    // (corrupt) both land on the same empty list — a complete answer meaning
+    // "they added none", never a hole a later screen has to null-check.
+    customRoomTypes: Array.isArray(obj.customRoomTypes)
+      ? normalizeCustomRoomTypes(obj.customRoomTypes)
+      : [],
+    customDuties: Array.isArray(obj.customDuties) ? normalizeCustomDuties(obj.customDuties) : [],
     boardPhotoPath,
   };
 }
@@ -457,7 +794,8 @@ export type SetupSubmissionResult = { value: HousekeepingSetup } | { error: stri
  * stayoverMinutes, shiftStartTime, boardBuiltBy, inspection, level.
  * Filled in when omitted (but rejected if present and wrong): version,
  * recommendedLevel (recomputed), sideDuties (empty = rooms only),
- * boardPhotoPath (null = photo skipped), completedAt (stamped now).
+ * customRoomTypes / customDuties (empty = they added none), boardPhotoPath
+ * (null = photo skipped), completedAt (stamped now).
  *
  * The load-bearing check is the last one: a submission choosing a level that
  * `isLevelOfferable` says is locked is REJECTED. That is a real consistency
@@ -525,6 +863,30 @@ export function validateSetupSubmission(raw: unknown): SetupSubmissionResult {
     sideDuties = normalizeSideDuties(obj.sideDuties);
   }
 
+  // ── The two "+" lists ────────────────────────────────────────────────────
+  // Absent/null means "they added none", which is the normal case and the case
+  // for every submission written before these fields existed.
+  //
+  // WRITE-SIDE RULE, and why it differs from `sideDuties` above: a repeated
+  // side duty is lossless (the second 'laundry' says nothing the first didn't),
+  // so folding it is safe. A repeated CUSTOM entry is not — "Suite 45" and
+  // "suite 60" are two different numbers under one name, and quietly keeping
+  // one of them would hand the hotel a room time nobody chose. So duplicates
+  // are REFUSED here, with the offending label in the message. Same for a label
+  // that collides with something the questionnaire already asks about: folding
+  // it into the built-in would be Staxis ticking a box the manager didn't tick,
+  // and dropping it would lose a duty the hotel really does. Both are one tap
+  // for him to fix once we say which word is the problem; neither is something
+  // we should decide on his behalf.
+  //
+  // `parseHousekeepingSetup` resolves every one of these conditions silently
+  // instead, because reading must never fail. Strict in, forgiving out.
+  const customRoomTypes = validateCustomRoomTypes(obj.customRoomTypes);
+  if ('error' in customRoomTypes) return { error: customRoomTypes.error };
+
+  const customDuties = validateCustomDuties(obj.customDuties);
+  if ('error' in customDuties) return { error: customDuties.error };
+
   // Board photo: skipping is always allowed, so null/absent/'' all mean "no
   // photo". A non-string is a real client bug and is rejected.
   let boardPhotoPath: string | null = null;
@@ -589,7 +951,113 @@ export function validateSetupSubmission(raw: unknown): SetupSubmissionResult {
       boardBuiltBy,
       inspection,
       sideDuties,
+      customRoomTypes: customRoomTypes.value,
+      customDuties: customDuties.value,
       boardPhotoPath,
     },
+  };
+}
+
+/* ──────────── Strict validators for the two "+" lists ────────────
+ * Split out only because inlining two ~35-line blocks would have buried the
+ * level check that `validateSetupSubmission` exists to perform. Same contract
+ * as the rest of that function: a message naming the field, never a coercion.
+ */
+
+type CustomListResult<T> = { value: T[] } | { error: string };
+
+function validateCustomRoomTypes(raw: unknown): CustomListResult<CustomRoomType> {
+  if (raw === undefined || raw === null) return { value: [] };
+  if (!Array.isArray(raw)) return { error: 'customRoomTypes must be an array' };
+  if (raw.length > MAX_CUSTOM_ROOM_TYPES) {
+    return { error: `customRoomTypes can hold at most ${MAX_CUSTOM_ROOM_TYPES} room types` };
+  }
+
+  const out: Array<{ key: string; value: CustomRoomType }> = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+      return { error: `customRoomTypes[${i}] must be an object with a label and minutes` };
+    }
+    const o = entry as Record<string, unknown>;
+
+    if (typeof o.label !== 'string') {
+      return { error: `customRoomTypes[${i}].label must be text` };
+    }
+    if (!isValidCustomLabel(o.label)) {
+      return {
+        error: `customRoomTypes[${i}].label must be 1 to ${MAX_CUSTOM_LABEL_LENGTH} characters of plain text`,
+      };
+    }
+    const label = normalizeCustomLabel(o.label);
+
+    // Reuses the built-ins' rule on purpose — one definition of a believable
+    // room time, so a custom room can never be validated more loosely than
+    // "checkout" was three fields ago.
+    if (!isValidCleanMinutes(o.minutes)) {
+      return {
+        error: `customRoomTypes[${i}].minutes ("${label}") must be a whole number between ${MIN_CLEAN_MINUTES} and ${MAX_CLEAN_MINUTES}`,
+      };
+    }
+
+    const key = customEntryKey(label);
+    if (RESERVED_ROOM_TYPE_KEYS.includes(key)) {
+      return {
+        error: `customRoomTypes cannot use "${label}" — checkout and stayover rooms already have their own times above`,
+      };
+    }
+    if (seen.has(key)) {
+      return { error: `customRoomTypes lists "${label}" twice — each room type needs its own name` };
+    }
+    seen.add(key);
+    out.push({ key, value: { label, minutes: o.minutes as number } });
+  }
+
+  // Same deterministic order the reader produces, so a value returned from here
+  // round-trips through `parseHousekeepingSetup` unchanged.
+  out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return { value: out.map((e) => e.value) };
+}
+
+function validateCustomDuties(raw: unknown): CustomListResult<string> {
+  if (raw === undefined || raw === null) return { value: [] };
+  if (!Array.isArray(raw)) return { error: 'customDuties must be an array' };
+  if (raw.length > MAX_CUSTOM_DUTIES) {
+    return { error: `customDuties can hold at most ${MAX_CUSTOM_DUTIES} extra duties` };
+  }
+
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const entry = raw[i];
+    if (typeof entry !== 'string') {
+      return { error: `customDuties[${i}] must be text` };
+    }
+    if (!isValidCustomLabel(entry)) {
+      return {
+        error: `customDuties[${i}] must be 1 to ${MAX_CUSTOM_LABEL_LENGTH} characters of plain text`,
+      };
+    }
+    const label = normalizeCustomLabel(entry);
+    const key = customEntryKey(label);
+    if (RESERVED_DUTY_KEYS.includes(key)) {
+      return { error: `customDuties cannot use "${label}" — it is already one of the choices above` };
+    }
+    if (seen.has(key)) {
+      return { error: `customDuties lists "${label}" twice` };
+    }
+    seen.add(key);
+    out.push(label);
+  }
+
+  return {
+    value: out.sort((a, b) => {
+      const ka = customEntryKey(a);
+      const kb = customEntryKey(b);
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    }),
   };
 }
