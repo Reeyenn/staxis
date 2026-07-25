@@ -445,7 +445,7 @@ The copilot's instructions have three tiers and exactly one home for each:
 |---|---|---|
 | global | `agent_prompts` rows with `pms_family IS NULL` | behaviour + hard rules |
 | PMS family | `agent_prompts` rows with `role='family'`, keyed by `pms_family` | how that PMS's reports read |
-| hotel | `agent_memory`, `knowledge_*` — **DATA, never a prompt row** | this hotel's own facts |
+| hotel | `agent_memory`, `knowledge_*`, and the DERIVED identity block — **DATA, never a prompt row** | this hotel's own facts |
 
 Two cells of the matrix are deliberately empty, so nobody has to re-derive it:
 - **Family-scope facts bigger than 4000 chars have no home, on purpose.** The
@@ -460,9 +460,11 @@ Two cells of the matrix are deliberately empty, so nobody has to re-derive it:
 Conflict rules, stated as two because "more specific wins" is only half true:
 - **R1 facts** — more specific scope wins: hotel > family > global. Realized
   structurally: family text sits after global text in the stable block (later
-  text wins), and hotel facts are not in the prompt at all — they arrive via
-  `search_knowledge` and the `<staxis-memory>` block in the DYNAMIC half, which
-  the model reads after the entire stable block.
+  text wins), the hotel's DERIVED identity block sits after the family addendum
+  (2026-07-25, INV-TIER-9), and the hotel's LEARNED and RETRIEVED facts arrive
+  via `search_knowledge` and the `<staxis-memory>` block in the DYNAMIC half,
+  which the model reads after the entire stable block. No hotel-authored
+  *prompt row* exists at any point — see INV-TIER-2.
 - **R2 behaviour** — global hard rules are non-overridable; a family row may
   only ADD or NARROW, never relax. This is why hotel-tier prompt rows are
   rejected outright: a hotel-authored behaviour row would be an unauditable
@@ -499,7 +501,8 @@ Conflict rules, stated as two because "more specific wins" is only half true:
   `evals/summarizer/runner.ts:86`. **History:** A3 tiers, 2026-07-24.
 - **INV-TIER-5 — stable/dynamic placement.** Global base + role, the family
   addendum, the voice addenda, the inventory-routing block, the data-freshness
-  rule and the version line go in the STABLE (cached) block. The hotel
+  rule, the derived hotel-identity block and the version line go in the STABLE
+  (cached) block. The hotel
   snapshot, the `<staxis-memory-block>` and the room hint go in the DYNAMIC
   block. Nothing that varies within a conversation may appear in the stable
   block. **Enforced by:** three layers, none of them DB (prompt assembly is
@@ -542,6 +545,23 @@ Conflict rules, stated as two because "more specific wins" is only half true:
   with a hostile family addendum active. Those cost real Anthropic tokens and
   run **on demand, not in CI**. Activating any new family row is gated on that
   bank passing. **History:** A3 tiers, 2026-07-24.
+- **INV-TIER-9 — the derived hotel-identity block is STRUCTURAL and
+  DAY-ZERO-SILENT.** `src/lib/agent/hotel-identity.ts` assembles what the hotel
+  already told us at signup and setup (room mix, housekeeping configuration,
+  checklists, shift pattern, roster shape) into the stable block. Two rules:
+  (a) it may contain nothing that varies with the clock — no live counts, no
+  as-of stamps, no "today"; and (b) a section with no content is OMITTED, never
+  rendered as `0` or `unknown`, because the model repeats a rendered zero to a
+  manager as a finding about their hotel. It is also the FIRST hotel-supplied
+  text to reach the cached block, so every interpolated value is sanitized
+  against the same forgery vocabulary as INV-TIER-7 (`<`/`>`/`───`) and capped
+  in length. **Enforced by:** behaviour —
+  `agent-hotel-identity.test.ts` (day-zero silence, byte-identical rendering at
+  two wall-clock times and across row orderings, forgery neutralisation) and
+  `agent-hotel-identity-tenant.integration.test.ts` (the real query planner,
+  two seeded hotels, `scopedDb` filters proven at the database).
+  **NOT DB-enforceable.** **Assumed by:** `prompts.ts` `buildSystemPrompt`,
+  tier `'hotel_identity'`. **History:** day-zero derivation, 2026-07-25.
 
 **Write-path warning for whoever adds a prompt-editing UI.** `agent_prompts` is
 service-role-only (RLS deny-all) and today has no admin write route — prompts

@@ -15,6 +15,13 @@
  *
  * Also pinned: the deleted "refresh the page" lie must not come back in
  * either block, and the version label must record which freshness rule ran.
+ *
+ * 2026-07-25: the stable block gained a DERIVED section — the hotel-identity
+ * briefing, assembled from the hotel's own setup rows. Derived content is a
+ * fresh way to reintroduce exactly the bug above (a room count that moves, a
+ * "last updated" stamp), so the stub below now serves real property rows and
+ * every assertion here runs WITH the section present. Asserting on a prompt
+ * whose derived section silently failed to render would prove nothing.
  */
 
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://placeholder.supabase.co';
@@ -29,7 +36,10 @@ import assert from 'node:assert/strict';
 
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import type { HotelSnapshot } from '@/lib/agent/context';
+import { clearHotelIdentityCache } from '@/lib/agent/hotel-identity';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+
+const PROPERTY_ID = '00000000-0000-0000-0000-0000000000e1';
 
 // REAL now, on purpose. `buildSystemPrompt` renders the snapshot through
 // `formatSnapshotForPrompt`, which computes the age against the wall clock and
@@ -59,7 +69,7 @@ function snapshot(capturedAt: string): HotelSnapshot {
   return {
     today: NOW.toISOString().slice(0, 10),
     property: {
-      id: '00000000-0000-0000-0000-0000000000e1',
+      id: PROPERTY_ID,
       name: 'Comfort Suites',
       timezone: 'America/Chicago',
     },
@@ -75,25 +85,77 @@ function snapshot(capturedAt: string): HotelSnapshot {
 }
 
 // buildSystemPrompt resolves prompts from the DB with a fail-soft fallback to
-// the constants. Stub the read so the test never depends on the network.
+// the constants, and derives the hotel-identity section from the hotel's own
+// setup rows. Stub both reads so the test never depends on the network.
+//
+// `properties` and `staff` return real rows on purpose: with empty tables the
+// identity section renders NOTHING (that is its day-zero contract), and every
+// assertion below would then be checking a prompt that no longer contains the
+// derived content it exists to police.
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 
+const FIXTURE_ROWS: Record<string, Array<Record<string, unknown>>> = {
+  properties: [{
+    id: PROPERTY_ID,
+    name: 'Comfort Suites',
+    timezone: 'America/Chicago',
+    total_rooms: 88,
+    property_kind: 'limited_service',
+    brand: 'Choice',
+    business_date_cutoff_hour: 0,
+    housekeeping_setup: {
+      version: 1,
+      completedAt: '2026-07-01T00:00:00.000Z',
+      level: 1,
+      recommendedLevel: 1,
+      statusEntry: 'housekeeper_radio',
+      checkoutMinutes: 30,
+      stayoverMinutes: 20,
+      shiftStartTime: '08:00',
+      boardBuiltBy: 'gm',
+      inspection: 'every_room',
+      sideDuties: ['laundry'],
+      boardPhotoPath: null,
+    },
+  }],
+  staff: [
+    { property_id: PROPERTY_ID, department: 'housekeeping', language: 'es', can_inspect: false, is_active: true },
+    { property_id: PROPERTY_ID, department: 'front_desk', language: 'en', can_inspect: false, is_active: true },
+  ],
+};
+
 before(() => {
-  const chain: Record<string, unknown> = {
-    select: () => chain,
-    eq: () => chain,
-    order: () => chain,
-    then: (resolve: (v: unknown) => unknown) =>
-      Promise.resolve({ data: [], error: null }).then(resolve),
-  };
   // @ts-expect-error monkey-patch the singleton for the test
-  supabaseAdmin.from = () => chain;
+  supabaseAdmin.from = (table: string) => {
+    const chain: Record<string, unknown> = {
+      select: () => chain,
+      eq: () => chain,
+      order: () => chain,
+      then: (resolve: (v: unknown) => unknown) =>
+        Promise.resolve({ data: FIXTURE_ROWS[table] ?? [], error: null }).then(resolve),
+    };
+    return chain;
+  };
+  clearHotelIdentityCache();
 });
 after(() => {
   supabaseAdmin.from = originalFrom;
+  clearHotelIdentityCache();
 });
 
 describe('prompt cache purity', () => {
+  it('the derived hotel-identity section really is in the block being policed', async () => {
+    // Guards every other assertion in this file: if the derivation silently
+    // stopped rendering, "the stable block carries no clock" would become true
+    // for the boring reason that it carries almost nothing.
+    const { stable } = await buildSystemPrompt(
+      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
+    );
+    assert.match(stable, /About this hotel/);
+    assert.match(stable, /Housekeeping runs at Level 1/);
+    assert.match(stable, /Roster: 2 active staff members/);
+  });
+
   it('two snapshots 40 minutes apart produce byte-identical stable blocks', async () => {
     const a = await buildSystemPrompt('general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
     const b = await buildSystemPrompt('general_manager', snapshot(agedBy(45)), 'conv-1', undefined, undefined, NOW);
