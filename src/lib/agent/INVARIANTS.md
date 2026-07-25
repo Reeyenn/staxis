@@ -200,20 +200,28 @@ Each invariant has:
 - **Assumed by:** Every AI surface that reports "X total rooms" — the agent reads the max signal, so under-reporting is impossible even mid-drift. Also the ML stack which reads `total_rooms` for property sizing.
 - **History:** Codex round-2 adversarial review of Round 14 (2026-05-14). Round 14 chose `room_inventory` as the single source for the agent layer and added a doctor check that ONLY read inventory — so a stale or empty inventory (with `total_rooms` still 74) silently passed status=ok while the AI under-reported.
 
-### INV-32: The six PMS feed tables the model reads directly never record a capture time in the future
+### INV-32: The PMS feed tables the model reads directly never record a capture time in the future
 
-- **Enforced by:** `captured_at timestamptz NOT NULL DEFAULT now()` (already live on
-  `pms_in_house_snapshot`, `pms_guest_balances`, `pms_payments_daily`,
-  `pms_future_bookings`, `pms_no_shows`, `pms_cancellations` — verified in prod
-  2026-07-24) **plus** six CHECK constraints `<table>_captured_at_not_future`
-  in migration `0351_pms_capture_time_sanity.sql`. Code backstop:
+- **Enforced by:** `captured_at timestamptz NOT NULL DEFAULT now()` (live on
+  `pms_in_house_snapshot`, `pms_guest_balances`, `pms_payments_daily` — verified
+  in prod 2026-07-24) **plus** the `<table>_captured_at_not_future` CHECK
+  constraints in migration `0351_pms_capture_time_sanity.sql`. Code backstop:
   `freshnessAgeMinutes` ([feed-status.ts](src/lib/pms/feed-status.ts)) clamps a
   negative age to 0 and `console.warn`s.
-- **Scope — read this before quoting it.** This covers the six feed tables and
+- **Coverage SHRANK, deliberately.** 0351 pinned six tables. Three of those are
+  gone: `pms_future_bookings` (0343, replaced by `pms_booking_pace`) and
+  `pms_no_shows` + `pms_cancellations` (0354, folded onto `pms_reservations`).
+  Their CHECK constraints went with them, and the no-show and cancellation
+  readers now borrow `pms_reservations.last_synced_at`, which carries NO
+  not-future constraint. That is a real narrowing of this invariant, recorded
+  here rather than left for someone to discover from a negative age.
+  **Trigger condition: when the report-intake workstream settles the as-of
+  model on `pms_reservations`, pin it there too.**
+- **Scope — read this before quoting it.** This covers those feed tables and
   nothing else. It is explicitly **NOT** "every PMS row the model can see":
   the snapshot's room numbers flow from `pms_room_status_log`,
-  `pms_housekeeping_assignments` and `pms_reservations`, **none of which have a
-  `captured_at` column at all**. Adding one is an ingestion-schema decision
+  `pms_housekeeping_assignments`, `room_work` and `pms_reservations`, **none of
+  which have a `captured_at` column at all**. Adding one is an ingestion-schema decision
   owned by the intake layer, not the AI layer; until then those numbers borrow
   the property-level signal from `fetchFreshness`
   ([pms-feed-status-server.ts](src/lib/pms-feed-status-server.ts)), which is an
