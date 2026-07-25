@@ -212,7 +212,7 @@ export const NO_FRESHNESS: FeedFreshness = Object.freeze({
  * Whole minutes between `capturedAt` and `now`, or null when there is no
  * usable timestamp. A capture time in the FUTURE would make every age negative
  * and every tier read 'fresh' — the exact failure the honesty layer exists to
- * prevent — so it clamps to 0 and warns loudly. (Migration 0337 forbids it at
+ * prevent — so it clamps to 0 and warns loudly. (Migration 0351 forbids it at
  * the DB level for the six feed tables; this is the belt.)
  */
 export function freshnessAgeMinutes(

@@ -1,4 +1,4 @@
--- 0337: a PMS row can never claim it was captured in the future.
+-- 0351: a PMS row can never claim it was captured in the future.
 --
 -- WHY
 -- The copilot now states HOW OLD the hotel's numbers are ("as of 2:40 PM,
@@ -81,7 +81,7 @@ alter table public.pms_no_shows          validate constraint pms_no_shows_captur
 alter table public.pms_cancellations     validate constraint pms_cancellations_captured_at_not_future;
 
 insert into public.applied_migrations (version, description) values (
-  '0337',
+  '0351',
   'CHECK constraints on the six PMS feed tables so captured_at can never be in the future — a negative data age would make every staleness tier read fresh (INV-32)'
 )
 on conflict (version) do nothing;

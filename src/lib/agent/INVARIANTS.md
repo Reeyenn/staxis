@@ -206,7 +206,7 @@ Each invariant has:
   `pms_in_house_snapshot`, `pms_guest_balances`, `pms_payments_daily`,
   `pms_future_bookings`, `pms_no_shows`, `pms_cancellations` — verified in prod
   2026-07-24) **plus** six CHECK constraints `<table>_captured_at_not_future`
-  in migration `0337_pms_capture_time_sanity.sql`. Code backstop:
+  in migration `0351_pms_capture_time_sanity.sql`. Code backstop:
   `freshnessAgeMinutes` ([feed-status.ts](src/lib/pms/feed-status.ts)) clamps a
   negative age to 0 and `console.warn`s.
 - **Scope — read this before quoting it.** This covers the six feed tables and

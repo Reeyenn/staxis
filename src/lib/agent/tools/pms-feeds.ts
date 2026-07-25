@@ -36,7 +36,7 @@ function addDays(iso: string, delta: number): string {
  * A2 — the newest `captured_at` across the rows this tool just read, or null.
  *
  * Every one of these five tables stamps `captured_at NOT NULL DEFAULT now()`
- * on every row (migration 0276; a future-dated value is refused by 0337), so
+ * on every row (migration 0276; a future-dated value is refused by 0351), so
  * this is a TRUER data age than the property-level signal. executeTool honors
  * an `asOf` the handler already set and computes the age/tier from it.
  */
