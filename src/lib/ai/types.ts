@@ -34,6 +34,7 @@ export const AI_FEATURE_KEYS = [
   'communications.ui_translation',
   'communications.message_translation',
   'housekeeping.notice_translation',
+  'housekeeping.board_photo_read',
   'communications.announcement_translation',
   'complaints.classification',
   'complaints.recovery_draft',

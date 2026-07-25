@@ -288,6 +288,11 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Translates manager notice-board posts into Spanish for housekeepers.',
     ['text'], HAIKU,
   ),
+  'housekeeping.board_photo_read': defineFeature(
+    'housekeeping.board_photo_read', 'Housekeeping', 'Housekeeping board photo reading',
+    'Reads a photo of the paper housekeeping board during first-time setup and pulls out the sections, floors and names it can see. Runs at most once per hotel, and setup finishes fine if it cannot read the photo.',
+    ['text', 'image_input'], SONNET,
+  ),
   'communications.announcement_translation': defineFeature(
     'communications.announcement_translation', 'Communications', 'Announcement translation',
     'Translates announcements so every staff member reads them in their language.',

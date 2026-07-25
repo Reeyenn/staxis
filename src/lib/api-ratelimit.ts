@@ -150,6 +150,13 @@ export type RateLimitEndpoint =
   | 'housekeeping-notices-post'      // manager posts to the notice board
   | 'housekeeping-notices-read'      // housekeeper page polls notices
   | 'housekeeping-notice-dismiss'    // per-user dismissal
+  // First-time Housekeeping setup — the optional "photograph your paper board"
+  // screen. Uploads an image AND runs one Claude Vision read of it, so it costs
+  // real money. Keyed on the RAW property id (api_limits.property_id FKs
+  // properties(id), so a hashed composite would FK-violate → the RPC errors →
+  // this billing endpoint would fail closed for the wrong reason). The cap is
+  // deliberately tiny: this fires once per hotel, ever.
+  | 'housekeeping-setup-board-photo'
   | 'housekeeper-structured-issue'   // structured issue → work order
   | 'housekeeper-photo-presign'      // request signed-upload URL
   | 'housekeeper-add-note'           // quick note from housekeeper page
@@ -402,6 +409,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'housekeeping-notices-post':     60,
   'housekeeping-notices-read':    600,
   'housekeeping-notice-dismiss':  100,
+  // First-time setup board photo — one Claude Vision read per upload. A hotel
+  // does this ONCE; 5/hr per property leaves room for a couple of retries on a
+  // blurry first shot and nothing more.
+  'housekeeping-setup-board-photo':  5,
   'housekeeper-structured-issue': 200,
   'housekeeper-photo-presign':    200,
   'housekeeper-add-note':         200,
@@ -604,6 +615,10 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Claude Vision calls.
   'scan-invoice',
   'photo-count',
+  // First-time Housekeeping setup board photo — Claude Vision. Fail CLOSED so a
+  // Supabase blip can't uncap Anthropic spend. The route treats a denied read as
+  // "we couldn't read the photo", which is already a supported outcome there.
+  'housekeeping-setup-board-photo',
   // Twilio SMS fan-out (per-recipient charge).
   // Resend transactional email (per-recipient charge).
   'email-transactional',
