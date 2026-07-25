@@ -2,33 +2,43 @@
 // webhook (Bearer PMS_INBOX_WEBHOOK_SECRET, constant-time). Not a user/session
 // route; it resolves the property itself from the verified recipient address.
 /**
- * POST /api/pms-inbox/inbound — PMS Okta inbox reader (migrations 0274 + 0275).
+ * POST /api/pms-inbox/inbound — the single inbound-mail boundary.
  *
- * Cloudflare Email Routing (catch-all on the getstaxis.com apex) hands each
- * inbound message to an Email Worker, which parses it and POSTs the relevant
- * fields here with `Authorization: Bearer <PMS_INBOX_WEBHOOK_SECRET>`. We:
- *   - store the FULL message (subject/from/body/links) in pms_inbox_messages so
- *     an admin can click the Okta account-setup link in /admin/pms-inbox, and
- *   - extract any 6-digit code into pms_auth_codes for the CUA robot's login.
+ * Cloudflare Email Routing hands each inbound message to an Email Worker,
+ * which parses it and POSTs the relevant fields here with
+ * `Authorization: Bearer <PMS_INBOX_WEBHOOK_SECRET>`. Two message CLASSES now
+ * arrive on this one route, and which one a message is depends ONLY on the
+ * recipient address — never on its content:
  *
- * Security (this is the boundary of record — the Worker is just a courier):
- *   1. Constant-time shared-secret check; fail-closed (503) if unset.
- *   2. Timestamp tolerance — drop stale forwards (replay defense-in-depth).
- *   3. Sender authenticity — DMARC/DKIM aligned to an allowlisted domain
- *      (okta.com), from Cloudflare's verified verdict. Never the spoofable
- *      From string, never a bare "dkim=pass" substring.
- *   4. Resolve the recipient → property via scraper_credentials.pms_login_email.
- *   5. Per-property rate-limit on the RAW property id.
- *   6. Store the full message (NON-FATAL — a hiccup here never blocks the code).
- *   7. Extract the code (anchored, ambiguity-refusing) and store it. A UNIQUE
- *      message-id dedups replayed/duplicate deliveries on both tables.
+ *   kind='auth_code' (migrations 0274 + 0275) — Okta 2FA mail for the robot's
+ *     PMS login. Unchanged: okta.com sender allowlist, recipient resolved via
+ *     scraper_credentials.pms_login_email, code extracted into pms_auth_codes.
  *
- * NOTHING is stored until steps 1–4 pass (authenticated sender + known
- * recipient), so junk/forged mail to the apex catch-all is dropped, never
- * persisted. Every accepted-but-dropped path returns a uniform 2xx (no
- * enumeration / no SMTP backscatter). 401 is reserved for a bad secret, 5xx for
- * genuine server errors (which legitimately invite a Worker retry). Codes and
- * message bodies are never logged.
+ *   kind='report' (migrations 0340-0342) — scheduled PMS report emails, the
+ *     new data intake path. Resolved by sha256 of an unguessable capability
+ *     token in the local part; sender pinned trust-on-first-use to a VERIFIED
+ *     DKIM domain; attachments accepted via a hash-first handshake so the
+ *     bytes go Worker → Supabase Storage directly and never touch Vercel.
+ *
+ * WHY EXTEND THIS ROUTE INSTEAD OF ADDING A PARALLEL ONE
+ *   This file is already the security boundary of record — constant-time
+ *   bearer, trusted-verdict DMARC/DKIM, timestamp tolerance, recipient →
+ *   property resolution, per-property rate limit. A second inbound route would
+ *   be a second boundary to keep in sync, and the first one to drift.
+ *
+ * WHY THE HASH-FIRST HANDSHAKE INSTEAD OF BASE64-THROUGH-WEBHOOK
+ *   Vercel serverless request bodies cap around 4.5 MB and base64 inflates
+ *   33%, so an inlined attachment tops out near 3.3 MB — a night-audit PDF
+ *   pack blows through that and the failure is a 413 the hotel never sees.
+ *   Sending only {filename, mimeType, size, sha256} keeps this request ~2 KB
+ *   regardless of attachment size, keeps report bytes (guest names, possible
+ *   card fragments) out of Vercel function memory and request logs entirely,
+ *   and means a duplicate file's bytes are never transferred at all.
+ *
+ * Every accepted-but-dropped path returns a uniform 2xx (no enumeration, no
+ * SMTP backscatter). 401 is reserved for a bad secret, 5xx for genuine server
+ * errors (which legitimately invite a Worker retry). Codes, message bodies and
+ * inbox tokens are never logged.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -40,28 +50,46 @@ import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratel
 import {
   constantTimeBearerMatch,
   verifyInboundAuthenticity,
-  normalizeRecipient,
+  classifyRecipient,
+  domainAllowed,
+  reportInboxHash,
   extractOtpCode,
 } from '@/lib/pms-inbox/parse';
+import {
+  PMS_RAW_BUCKET,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  buildRawObjectPath,
+  validateAttachmentClaim,
+  type AttachmentDecision,
+} from '@/lib/pms-inbox/report-files';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 10;
+export const maxDuration = 15;
 
-// The single domain we receive PMS Okta mail on (apex). Recipients on any other
-// domain are rejected. Defaults to getstaxis.com; override only via env for tests.
+// The domain the Okta 2FA inbox receives on (apex). Defaults to getstaxis.com;
+// override only via env for tests.
 const DEFAULT_INBOX_DOMAIN = 'getstaxis.com';
-// Production sender allowlist. Okta sends the OTP / setup mail from okta.com / the
-// tenant subdomain (e.g. choicehotels.okta.com — matched by the subdomain rule),
-// which publishes DMARC p=reject. We deliberately do NOT include choicehotels.com
-// (the corporate domain): it isn't the sender and its DMARC is p=none, so
-// Cloudflare would deliver spoofed mail From: it — an injection vector. Override
-// via env only to add a *verified* Okta sub-processor domain, or a controlled
-// test sender during verification.
+// The domain scheduled report mail receives on. If Cloudflare Email Routing
+// can't be bound to a subdomain on this zone, set PMS_REPORT_INBOX_DOMAIN to
+// the apex — the local-part prefix below keeps the two classes disjoint either
+// way, and neither shape is baked into a DB constraint.
+const DEFAULT_REPORT_INBOX_DOMAIN = 'in.getstaxis.com';
+const DEFAULT_REPORT_LOCAL_PREFIX = 'r-';
+// Production sender allowlist for AUTH-CODE mail only. Okta sends the OTP /
+// setup mail from okta.com / the tenant subdomain (e.g. choicehotels.okta.com —
+// matched by the subdomain rule), which publishes DMARC p=reject. We
+// deliberately do NOT include choicehotels.com (the corporate domain): it isn't
+// the sender and its DMARC is p=none, so Cloudflare would deliver spoofed mail
+// From: it — an injection vector. Override via env only to add a *verified*
+// Okta sub-processor domain, or a controlled test sender during verification.
+// Report mail does NOT use this list: no static allowlist can cover an unknown
+// PMS's mailer, so reports are pinned per-hotel trust-on-first-use instead.
 const DEFAULT_ALLOWED_SENDERS = ['okta.com'];
 // Drop forwards whose Worker timestamp is more than this far from now.
 const TIMESTAMP_TOLERANCE_MS = 10 * 60 * 1000;
-// Secondary guard; the Worker is the primary size gate.
+// Secondary guard; the Worker is the primary size gate. Attachment BYTES never
+// come through here (only their hashes), so this stays small on purpose.
 const MAX_BODY_BYTES = 512 * 1024;
 // Per-column caps for the stored full message (defense-in-depth; the Worker
 // already caps html ~20 KB and the body is bounded at MAX_BODY_BYTES above).
@@ -78,9 +106,15 @@ function allowedSenderDomains(): string[] {
   return list.length ? list : DEFAULT_ALLOWED_SENDERS;
 }
 
-/** The apex domain we accept inbox mail on (env override for tests; defaults apex). */
+/** The apex domain we accept 2FA inbox mail on (env override for tests). */
 function inboxDomain(): string {
   return (env.PMS_INBOX_DOMAIN ?? '').trim().toLowerCase() || DEFAULT_INBOX_DOMAIN;
+}
+function reportInboxDomain(): string {
+  return (env.PMS_REPORT_INBOX_DOMAIN ?? '').trim().toLowerCase() || DEFAULT_REPORT_INBOX_DOMAIN;
+}
+function reportLocalPrefix(): string {
+  return (env.PMS_REPORT_LOCAL_PREFIX ?? '').trim().toLowerCase() || DEFAULT_REPORT_LOCAL_PREFIX;
 }
 
 interface InboundBody {
@@ -95,6 +129,8 @@ interface InboundBody {
   spf?: unknown;
   dmarc?: unknown;
   dkimDomain?: unknown;
+  /** Report path only: metadata for each attachment. Never the bytes. */
+  attachments?: unknown;
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -138,7 +174,32 @@ export async function POST(req: NextRequest): Promise<Response> {
     return ok({ stored: false, reason: 'stale' }, { requestId });
   }
 
-  // ── 4. Sender authenticity (DMARC/DKIM aligned to an allowlisted domain) ──
+  // ── 4. Classify by RECIPIENT ONLY (never by content) ──────────────────────
+  const recipient = classifyRecipient(str(body.to), {
+    authDomain: inboxDomain(),
+    reportDomain: reportInboxDomain(),
+    reportLocalPrefix: reportLocalPrefix(),
+  });
+  if (!recipient) {
+    log.warn('[pms-inbox] unresolvable recipient', { requestId });
+    return ok({ stored: false, reason: 'bad_recipient' }, { requestId });
+  }
+
+  return recipient.kind === 'report'
+    ? handleReport(body, recipient.local, recipient.domain, requestId)
+    : handleAuthCode(body, recipient.normalized, requestId);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Okta 2FA path — behavior unchanged from 0274/0275.
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function handleAuthCode(
+  body: InboundBody,
+  recipient: string,
+  requestId: string,
+): Promise<Response> {
+  // ── Sender authenticity (DMARC/DKIM aligned to an allowlisted domain) ────
   const fromRaw = str(body.from);
   const auth = verifyInboundAuthenticity(
     {
@@ -159,15 +220,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     return ok({ stored: false, reason: auth.reason }, { requestId }); // uniform 2xx
   }
 
-  // ── 5. Resolve recipient → property ───────────────────────────────────────
-  const recipient = normalizeRecipient(str(body.to), inboxDomain());
-  if (!recipient) {
-    log.warn('[pms-inbox] unresolvable recipient', { requestId });
-    return ok({ stored: false, reason: 'bad_recipient' }, { requestId });
-  }
-  // `recipient` is normalized lowercase by normalizeRecipient; pms_login_email is
-  // stored lowercase (migration 0275) and indexed (scraper_credentials_pms_login_email_idx),
-  // so this raw equality both matches case-insensitively-in-practice and is index-backed.
+  // ── Resolve recipient → property ─────────────────────────────────────────
+  // `recipient` is normalized lowercase; pms_login_email is stored lowercase
+  // (migration 0275) and indexed, so this raw equality is index-backed.
   const { data: cred, error: credErr } = await supabaseAdmin
     .from('scraper_credentials')
     .select('property_id')
@@ -183,31 +238,23 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   const propertyId = cred.property_id as string;
 
-  // ── 6. Per-property rate-limit (raw property id) ──────────────────────────
+  // ── Per-property rate-limit (raw property id) ────────────────────────────
   const rl = await checkAndIncrementRateLimit('pms-inbox-inbound', propertyId);
   if (!rl.allowed) {
-    log.warn('[pms-inbox] rate limited', {
-      requestId,
-      propertyId,
-      current: rl.current,
-      cap: rl.cap,
-    });
+    log.warn('[pms-inbox] rate limited', { requestId, propertyId, current: rl.current, cap: rl.cap });
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
   // The provider Message-Id dedups replayed/duplicate deliveries on BOTH tables.
   const messageId = str(body.messageId) || null;
 
-  // ── 6.5 Store the FULL message (NON-FATAL: never block the 2FA code path) ──
-  // Captures setup-LINK mail (which carries no code) so an admin can click the
-  // Okta "set password" / MFA-enroll link in /admin/pms-inbox. Runs only after
-  // the sender is authenticated (step 4) and the property resolved (step 5), so
-  // nothing unauthenticated is ever persisted. A messages-table error is logged
-  // and swallowed — the operationally-critical code path (steps 7–8) still runs.
+  // ── Store the FULL message (NON-FATAL: never block the 2FA code path) ────
   try {
     const { error: msgErr } = await supabaseAdmin.from('pms_inbox_messages').insert({
       property_id: propertyId,
       email_to: recipient,
+      kind: 'auth_code',
+      inbox_domain: recipient.split('@').pop() ?? null,
       from_addr: fromRaw.slice(0, 320) || null,
       subject: str(body.subject).slice(0, 500) || null,
       body_text: str(body.text).slice(0, MAX_STORED_TEXT) || null,
@@ -243,7 +290,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     });
   }
 
-  // ── 7. Extract the code (authenticated content only) ──────────────────────
+  // ── Extract the code (authenticated content only) ────────────────────────
   const code = extractOtpCode({
     subject: str(body.subject),
     text: str(body.text),
@@ -254,7 +301,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return ok({ stored: false, reason: 'no_code' }, { requestId });
   }
 
-  // ── 8. Store the code (UNIQUE raw_ref dedups a replayed/duplicate delivery) ─
+  // ── Store the code (UNIQUE raw_ref dedups a replayed delivery) ───────────
   const { error: insErr } = await supabaseAdmin.from('pms_auth_codes').insert({
     property_id: propertyId,
     email_to: recipient,
@@ -282,4 +329,225 @@ export async function POST(req: NextRequest): Promise<Response> {
     messageId: messageId ? messageId.slice(0, 80) : null,
   });
   return ok({ stored: true }, { requestId });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Report path (migrations 0340-0342).
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface ReportCredential {
+  property_id: string;
+  report_sender_domains: string[] | null;
+}
+
+async function handleReport(
+  body: InboundBody,
+  local: string,
+  domain: string,
+  requestId: string,
+): Promise<Response> {
+  // ── Authenticity. No static allowlist can cover an unknown PMS's mailer, so
+  // the bar here is "the verified receiver verdict says this mail is genuinely
+  // from the domain it claims" — DKIM pass AND DMARC pass, from the trusted
+  // Authentication-Results header the Worker selected. WHICH domain is allowed
+  // is a per-hotel decision, made below.
+  const dkim = str(body.dkim).toLowerCase().trim();
+  const dmarc = str(body.dmarc).toLowerCase().trim();
+  const dkimDomain = str(body.dkimDomain).toLowerCase().trim();
+  if (dkim !== 'pass' || dmarc !== 'pass' || !dkimDomain) {
+    log.warn('[pms-inbox] report sender unauthenticated', { requestId, dkim, dmarc });
+    return ok({ stored: false, reason: 'unauthenticated' }, { requestId });
+  }
+
+  // ── A report with no Message-Id cannot be deduped, so it is refused BEFORE
+  // anything is written or any upload URL is minted.
+  const messageId = str(body.messageId).trim();
+  if (!messageId) {
+    log.warn('[pms-inbox] report without message-id dropped', { requestId });
+    return ok({ stored: false, reason: 'no_message_id' }, { requestId });
+  }
+
+  // ── Resolve the capability token → property. The token is the ENTIRE local
+  // part (plus-addressing is NOT stripped — see parse.ts); we only ever hold
+  // its sha256, so a DB read never hands over a working address.
+  const hash = reportInboxHash(local);
+  const { data: credRow, error: credErr } = await supabaseAdmin
+    .from('scraper_credentials')
+    .select('property_id, report_sender_domains')
+    .eq('report_inbox_hash', hash)
+    .maybeSingle();
+  if (credErr) {
+    log.error('[pms-inbox] report recipient lookup failed', { requestId, err: credErr.message });
+    return new NextResponse('server_error', { status: 500 });
+  }
+  if (!credRow) {
+    log.warn('[pms-inbox] unknown report recipient', { requestId });
+    return ok({ stored: false, reason: 'unknown_recipient' }, { requestId });
+  }
+  const cred = credRow as ReportCredential;
+  const propertyId = cred.property_id;
+
+  // ── Per-property rate-limit ──────────────────────────────────────────────
+  const rl = await checkAndIncrementRateLimit('pms-report-inbound', propertyId);
+  if (!rl.allowed) {
+    log.warn('[pms-inbox] report rate limited', {
+      requestId, propertyId, current: rl.current, cap: rl.cap,
+    });
+    return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+  }
+
+  // ── Trust-on-first-use sender pinning. An unseen signing domain does NOT
+  // reject the mail: the file is still stored (an operator needs to see it to
+  // approve it), but sender_approved stays false and the DB CHECK
+  // `status <> 'parsed' or sender_approved` makes parsing impossible.
+  const approvedDomains = (cred.report_sender_domains ?? []).filter(Boolean);
+  const senderApproved = approvedDomains.length > 0 && domainAllowed(dkimDomain, approvedDomains);
+
+  const receivedAt = new Date();
+  const fromRaw = str(body.from);
+
+  // ── Store the message row (kind='report'). The email_to column deliberately
+  // does NOT hold the capability token: writing it here in the clear would
+  // undo the whole point of storing only a hash. property_id + inbox_domain
+  // identify the delivery just as well.
+  const { data: msgRow, error: msgErr } = await supabaseAdmin
+    .from('pms_inbox_messages')
+    .insert({
+      property_id: propertyId,
+      email_to: `report-inbox@${domain}`,
+      kind: 'report',
+      inbox_domain: domain,
+      from_addr: fromRaw.slice(0, 320) || null,
+      subject: str(body.subject).slice(0, 500) || null,
+      body_text: str(body.text).slice(0, MAX_STORED_TEXT) || null,
+      body_html: str(body.html).slice(0, MAX_STORED_HTML) || null,
+      message_id: messageId,
+    })
+    .select('id')
+    .maybeSingle();
+  const duplicateMessage = (msgErr as { code?: string } | null)?.code === '23505';
+  if (msgErr && !duplicateMessage) {
+    log.error('[pms-inbox] report message store failed', {
+      requestId, propertyId, err: msgErr.message,
+    });
+    return new NextResponse('server_error', { status: 500 });
+  }
+  // A duplicate Message-Id is NOT a reason to stop: the first delivery may have
+  // died mid-upload, and the attachment handling below is content-addressed and
+  // idempotent. Re-running it is how an interrupted delivery completes.
+
+  // ── Attachments: hash-first handshake ────────────────────────────────────
+  const claims = Array.isArray(body.attachments) ? body.attachments : [];
+  const decisions: AttachmentDecision[] = [];
+  let accepted = 0;
+
+  for (const rawClaim of claims.slice(0, MAX_ATTACHMENTS_PER_MESSAGE)) {
+    const validated = validateAttachmentClaim(rawClaim);
+    if (!validated.ok) {
+      if (validated.sha256) decisions.push({ sha256: validated.sha256, action: 'skip', reason: validated.reason });
+      log.warn('[pms-inbox] attachment claim rejected', { requestId, propertyId, reason: validated.reason });
+      continue;
+    }
+    const { claim } = validated;
+
+    const path = buildRawObjectPath({
+      propertyId,
+      sha256: claim.sha256,
+      mime: claim.mimeType,
+      receivedAt,
+    });
+    if (!path) {
+      decisions.push({ sha256: claim.sha256, action: 'skip', reason: 'unsupported_type' });
+      continue;
+    }
+
+    // Already have a receipt for these exact bytes at this hotel?
+    const { data: existing, error: existingErr } = await supabaseAdmin
+      .from('pms_report_files')
+      .select('id, status, storage_path')
+      .eq('property_id', propertyId)
+      .eq('content_sha256', claim.sha256)
+      .maybeSingle();
+    if (existingErr) {
+      log.error('[pms-inbox] report file lookup failed', { requestId, propertyId, err: existingErr.message });
+      decisions.push({ sha256: claim.sha256, action: 'skip', reason: 'lookup_failed' });
+      continue;
+    }
+
+    if (existing && existing.status !== 'pending_upload') {
+      // Bytes already landed (or were quarantined/purged). Nothing to transfer
+      // — this is the whole point of the hash-first exchange.
+      decisions.push({ sha256: claim.sha256, action: 'skip', reason: 'duplicate' });
+      continue;
+    }
+
+    if (!existing) {
+      const { error: insErr } = await supabaseAdmin.from('pms_report_files').insert({
+        property_id: propertyId,
+        content_sha256: claim.sha256,
+        byte_size: claim.size,
+        mime_type: claim.mimeType,
+        original_filename: claim.filename,
+        storage_path: path,
+        message_id: messageId,
+        from_addr: fromRaw.slice(0, 320) || null,
+        subject: str(body.subject).slice(0, 500) || null,
+        sender_domain: dkimDomain,
+        sender_approved: senderApproved,
+        // Until a real report format is in hand, the mail Date header (the
+        // Worker's ts) is the only as-of time available. The sender is already
+        // DKIM-pinned, so a forged Date is not a new attack surface.
+        source_captured_at: receivedAt.toISOString(),
+        status: 'pending_upload',
+      });
+      if (insErr) {
+        // 23505 here means a concurrent delivery of the same bytes won the
+        // race — treat it exactly like a duplicate.
+        if ((insErr as { code?: string }).code === '23505') {
+          decisions.push({ sha256: claim.sha256, action: 'skip', reason: 'duplicate' });
+          continue;
+        }
+        log.error('[pms-inbox] report file insert failed', {
+          requestId, propertyId, err: insErr.message,
+        });
+        decisions.push({ sha256: claim.sha256, action: 'skip', reason: 'ledger_insert_failed' });
+        continue;
+      }
+    }
+
+    // A ledger row in 'pending_upload' means the bytes never landed — re-issue
+    // the URL rather than skipping, or a re-forwarded copy of an interrupted
+    // delivery would be silently dropped and swept to 'failed' an hour later.
+    const objectPath = (existing?.storage_path as string | null) ?? path;
+    const { data: signed, error: signErr } = await supabaseAdmin.storage
+      .from(PMS_RAW_BUCKET)
+      .createSignedUploadUrl(objectPath, { upsert: false });
+    if (signErr || !signed?.signedUrl) {
+      log.error('[pms-inbox] signed upload url mint failed', {
+        requestId, propertyId, err: signErr?.message ?? 'no url',
+      });
+      decisions.push({ sha256: claim.sha256, action: 'skip', reason: 'presign_failed' });
+      continue;
+    }
+
+    accepted++;
+    decisions.push({ sha256: claim.sha256, action: 'upload', uploadUrl: signed.signedUrl });
+  }
+
+  // Counts and hashes only — NEVER the token, the subject, or a filename.
+  log.info('[pms-inbox] report accepted', {
+    requestId,
+    propertyId,
+    senderDomain: dkimDomain,
+    senderApproved,
+    duplicateMessage,
+    attachmentsClaimed: claims.length,
+    attachmentsAccepted: accepted,
+    messageRowId: (msgRow as { id?: string } | null)?.id ?? null,
+  });
+
+  return ok(
+    { stored: true, kind: 'report', senderApproved, attachments: decisions },
+    { requestId },
+  );
 }

@@ -322,6 +322,31 @@ export interface SaveGenericTableOptions {
   /** Override descriptor's snapshot_scope_default. Required when caller
    *  knows the extractor produced a partial view (e.g. filtered to today). */
   snapshotScope?: SnapshotScope;
+  /**
+   * REQUIRED — the pms_ingest_runs row this batch belongs to (migrations
+   * 0340/0341). Stamped onto every written row as ingest_run_id, which is
+   * NOT NULL in the database: there is no number in the system without a
+   * receipt. Typed as required so every call site is a compile error until it
+   * supplies one; the DB constraint is the real enforcement, this is the fast
+   * feedback loop.
+   */
+  ingestRunId: string;
+  /**
+   * REQUIRED — the run's source_captured_at as an ISO-8601 string: the
+   * "as-of" time of the data being written (the report's own timestamp, or
+   * the moment a poll started).
+   *
+   * THIS IS LOAD-BEARING FOR DEDUP, not decoration. The append tables'
+   * natural keys are (property_id, room_number, changed_at) and
+   * (property_id, captured_at, pms_user, action). The extractor usually
+   * can't produce those timestamps, so the writer fills them — and if it
+   * filled them with now(), re-parsing the SAME file at a different wall
+   * clock would produce DIFFERENT keys, the unique indexes from 0342 would
+   * never collide, and a replay would silently DOUBLE the event log. Filling
+   * from source_captured_at makes the key deterministic per source, which is
+   * what makes replay a genuine no-op.
+   */
+  sourceCapturedAt: string;
 }
 
 export interface SaveGenericTableResult {
@@ -340,7 +365,7 @@ export async function saveGenericTable(
   propertyId: string,
   tableName: string,
   rows: Array<Record<string, unknown>>,
-  options: SaveGenericTableOptions = {},
+  options: SaveGenericTableOptions,
 ): Promise<SaveGenericTableResult> {
   // A zero-row batch is a HEALTHY no-op (no cancellations today, empty
   // lost-and-found…), not a write failure. Returning ok:false here made
@@ -350,6 +375,19 @@ export async function saveGenericTable(
   if (rows.length === 0) {
     return { ok: true, tableName, inserted: 0, updated: 0, autoResolved: 0, rejected: 0, errors: [] };
   }
+
+  // Fail LOUDLY rather than falling back to now(). A silent fallback is
+  // exactly the bug this parameter exists to prevent (see the option's doc):
+  // it would restore non-deterministic natural keys and re-open replay
+  // duplication on the append tables.
+  const capturedAtMs = Date.parse(options.sourceCapturedAt ?? '');
+  if (!options.ingestRunId || !Number.isFinite(capturedAtMs)) {
+    return {
+      ok: false, tableName, inserted: 0, updated: 0, autoResolved: 0, rejected: rows.length,
+      errors: ['saveGenericTable requires a valid ingestRunId and ISO-8601 sourceCapturedAt'],
+    };
+  }
+  const sourceCapturedIso = new Date(capturedAtMs).toISOString();
 
   const descriptor = await loadDescriptor(tableName);
   if (!descriptor) {

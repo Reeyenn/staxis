@@ -19,7 +19,13 @@ workers_dev = false
 # set it with `wrangler secret put`, never here.
 [vars]
 WEBHOOK_URL = "https://getstaxis.com/api/pms-inbox/inbound"
-MAX_BYTES = "262144"
+# Phase two of the attachment handshake. Defaults to WEBHOOK_URL with
+# /inbound swapped for /attachment-commit; set explicitly only if they diverge.
+COMMIT_URL = "https://getstaxis.com/api/pms-inbox/attachment-commit"
+# 25 MiB — Cloudflare Email Routing's own message ceiling. Raised from 256 KiB
+# so scheduled PMS report emails (CSV/PDF/XLSX attachments) survive the hop.
+# Must stay <= the pms-raw bucket's file_size_limit (migration 0340).
+MAX_BYTES = "26214400"
 # Trusted receiver authserv-id(s). Only the Authentication-Results header added
 # by a matching receiver is believed. Confirm Cloudflare's actual authserv-id
 # with `wrangler tail` on a real inbound message and set it exactly if it isn't
