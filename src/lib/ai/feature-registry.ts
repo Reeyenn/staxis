@@ -19,6 +19,31 @@ export interface AiModelOverlay {
   pricing: AiModelPricing | null;
 }
 
+// ─── THE price table ───────────────────────────────────────────────────────
+//
+// This block is the ONLY place in the codebase where a model price is written
+// down. Everything else — the agent cost estimator, the cost-cap reservation
+// sizing, the admin spend screens — derives from here.
+//
+// It is written down once on purpose. Until 2026-07-25 `src/lib/agent/llm.ts`
+// carried a second, hand-maintained table that had silently drifted: it priced
+// Opus at $15/$75 per million tokens (the retired Opus 3 rate) against the
+// correct $5/$25 below. Nothing was visibly broken only because the one
+// price-sensitive consumer — the cost-cap reservation — happens to read the
+// Sonnet row, which the two tables agreed on. That was luck, not design.
+// `ai-model-pricing-single-source.test.ts` is the guard that keeps it single.
+//
+// Cache rates are Anthropic's published multiples of the input rate:
+// read = 0.1x, 5-minute write = 1.25x, 1-hour write = 2x. Verified against the
+// Anthropic list prices on the asOf date below.
+
+/** The three Anthropic tiers the legacy agent routing path selects between. */
+export type AnthropicPricingTier = 'haiku' | 'sonnet' | 'opus';
+
+/** Date the rates below were last checked against Anthropic's published list
+ * prices. Bump it (and the rates) together — a stale date is the signal. */
+const ANTHROPIC_LIST_PRICE_AS_OF = '2026-07-25';
+
 const HAIKU_PRICING: AiModelPricing = {
   inputUsdPerMillionTokens: 1,
   outputUsdPerMillionTokens: 5,
@@ -26,7 +51,7 @@ const HAIKU_PRICING: AiModelPricing = {
   cacheCreation5mInputUsdPerMillionTokens: 1.25,
   cacheCreation1hInputUsdPerMillionTokens: 2,
   source: 'official-list-price',
-  asOf: '2026-07-15',
+  asOf: ANTHROPIC_LIST_PRICE_AS_OF,
 };
 const SONNET_PRICING: AiModelPricing = {
   inputUsdPerMillionTokens: 3,
@@ -35,7 +60,7 @@ const SONNET_PRICING: AiModelPricing = {
   cacheCreation5mInputUsdPerMillionTokens: 3.75,
   cacheCreation1hInputUsdPerMillionTokens: 6,
   source: 'official-list-price',
-  asOf: '2026-07-15',
+  asOf: ANTHROPIC_LIST_PRICE_AS_OF,
 };
 const OPUS_PRICING: AiModelPricing = {
   inputUsdPerMillionTokens: 5,
@@ -44,21 +69,74 @@ const OPUS_PRICING: AiModelPricing = {
   cacheCreation5mInputUsdPerMillionTokens: 6.25,
   cacheCreation1hInputUsdPerMillionTokens: 10,
   source: 'official-list-price',
-  asOf: '2026-07-15',
+  asOf: ANTHROPIC_LIST_PRICE_AS_OF,
 };
+
+/** Verified Anthropic list price per tier. The single source of truth. */
+export const ANTHROPIC_TIER_PRICING: Readonly<
+  Record<AnthropicPricingTier, AiModelPricing>
+> = {
+  haiku: HAIKU_PRICING,
+  sonnet: SONNET_PRICING,
+  opus: OPUS_PRICING,
+};
+
+/**
+ * The verified input/output token rates for a tier, as plain numbers.
+ *
+ * Every field on `AiModelPricing` is optional (an audio model has no token
+ * rates at all), so callers that need the numbers — reservation sizing, the
+ * scale-the-hold helpers — would otherwise each hand-roll an `?? 0` and
+ * silently price a mispopulated row at zero. Throwing here means a tier
+ * without a verified rate fails loudly at the call site instead.
+ */
+export function anthropicTierTokenRates(tier: AnthropicPricingTier): {
+  inputUsdPerMillionTokens: number;
+  outputUsdPerMillionTokens: number;
+} {
+  const { inputUsdPerMillionTokens, outputUsdPerMillionTokens } = ANTHROPIC_TIER_PRICING[tier];
+  if (
+    typeof inputUsdPerMillionTokens !== 'number'
+    || typeof outputUsdPerMillionTokens !== 'number'
+  ) {
+    throw new Error(`ANTHROPIC_TIER_PRICING.${tier} is missing verified token rates`);
+  }
+  return { inputUsdPerMillionTokens, outputUsdPerMillionTokens };
+}
+
+/** Multiply every token rate on a verified price by `multiple`, relabelling
+ * the result. Rounded to 4dp so a rate like 4.10 can't scale into
+ * 12.299999999999999 and surface as a nonsense price on the admin screen. */
+function scaleTokenPricing(
+  base: AiModelPricing,
+  multiple: number,
+  label: Pick<AiModelPricing, 'source' | 'asOf'>,
+): AiModelPricing {
+  const scale = (rate: number | undefined): number | undefined =>
+    typeof rate === 'number' ? Math.round(rate * multiple * 10_000) / 10_000 : undefined;
+  return {
+    inputUsdPerMillionTokens: scale(base.inputUsdPerMillionTokens),
+    outputUsdPerMillionTokens: scale(base.outputUsdPerMillionTokens),
+    cachedInputUsdPerMillionTokens: scale(base.cachedInputUsdPerMillionTokens),
+    cacheCreation5mInputUsdPerMillionTokens: scale(base.cacheCreation5mInputUsdPerMillionTokens),
+    cacheCreation1hInputUsdPerMillionTokens: scale(base.cacheCreation1hInputUsdPerMillionTokens),
+    ...label,
+  };
+}
+
+/** Safety factor applied to the top verified tier for unpriced models. */
+const CONSERVATIVE_PRICING_MULTIPLE = 3;
 
 // Provider model-list APIs do not publish prices. Unknown Anthropic models use
 // a clearly labelled safety estimate at three times the current top verified
 // Opus list price. It remains selectable, but is never represented as verified.
-export const CONSERVATIVE_ANTHROPIC_PRICING: AiModelPricing = {
-  inputUsdPerMillionTokens: 15,
-  outputUsdPerMillionTokens: 75,
-  cachedInputUsdPerMillionTokens: 1.5,
-  cacheCreation5mInputUsdPerMillionTokens: 18.75,
-  cacheCreation1hInputUsdPerMillionTokens: 30,
-  source: 'conservative-unverified',
-  asOf: '2026-07-15',
-};
+// DERIVED, not typed out: when Opus's list price moves, the safety estimate
+// must move with it or it quietly stops being 3x anything.
+export const CONSERVATIVE_ANTHROPIC_PRICING: AiModelPricing = scaleTokenPricing(
+  OPUS_PRICING,
+  CONSERVATIVE_PRICING_MULTIPLE,
+  { source: 'conservative-unverified', asOf: ANTHROPIC_LIST_PRICE_AS_OF },
+);
 
 const CLAUDE_CAPABILITIES: AiCapability[] = [
   'text',

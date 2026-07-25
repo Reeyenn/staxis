@@ -24,7 +24,8 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
-import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS, PRICING } from './llm';
+import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
+import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS } from './llm';
 
 /**
  * Canonical name of the FK constraint that protects agent_costs.
@@ -76,11 +77,38 @@ export function isConversationFkViolation(
 // We pick $1.00 headroom for a comfortable buffer above that ceiling.
 // If MAX_TOOL_RESULT_CHARS or MAX_TOOL_ITERATIONS bump materially,
 // re-derive the bound here.
-const WORST_CASE_OUTPUT_USD =
-  (MAX_OUTPUT_TOKENS / 1_000_000) * PRICING.sonnet.output * MAX_TOOL_ITERATIONS;
-const INPUT_HEADROOM_USD = 1.00;
-const ESTIMATED_REQUEST_USD =
-  Math.ceil((WORST_CASE_OUTPUT_USD + INPUT_HEADROOM_USD) * 100) / 100;
+
+/** Input-side buffer on top of the worst-case output bound. */
+export const RESERVATION_INPUT_HEADROOM_USD = 1.00;
+
+/**
+ * Worst-case per-request hold, in dollars.
+ *
+ * Pure and exported ON PURPOSE (Codex review fix H1). The hold must stay tied
+ * to the output cap, the iteration limit, and the Sonnet output price so that
+ * raising any of them automatically raises the hold — a hard-coded number here
+ * is a silent cap bypass. Keeping the arithmetic in a function means that
+ * coupling is directly testable rather than asserted in a comment.
+ */
+export function deriveReservationUsd(opts: {
+  outputUsdPerMillionTokens: number;
+  maxOutputTokens: number;
+  maxToolIterations: number;
+  inputHeadroomUsd: number;
+}): number {
+  const worstCaseOutputUsd =
+    (opts.maxOutputTokens / 1_000_000)
+    * opts.outputUsdPerMillionTokens
+    * opts.maxToolIterations;
+  return Math.ceil((worstCaseOutputUsd + opts.inputHeadroomUsd) * 100) / 100;
+}
+
+const ESTIMATED_REQUEST_USD = deriveReservationUsd({
+  outputUsdPerMillionTokens: anthropicTierTokenRates('sonnet').outputUsdPerMillionTokens,
+  maxOutputTokens: MAX_OUTPUT_TOKENS,
+  maxToolIterations: MAX_TOOL_ITERATIONS,
+  inputHeadroomUsd: RESERVATION_INPUT_HEADROOM_USD,
+});
 
 // ─── Configurable limits ──────────────────────────────────────────────────
 

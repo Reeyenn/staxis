@@ -26,6 +26,7 @@ import {
   ANTHROPIC_MAX_RETRIES,
 } from '@/lib/external-service-config';
 import type { AiFeatureKey, AiModelRef } from '@/lib/ai/types';
+import { ANTHROPIC_TIER_PRICING } from '@/lib/ai/feature-registry';
 import {
   AiExecutionDeadlineError,
   createAiAttemptContext,
@@ -79,26 +80,18 @@ export function modelTierForModelId(
 
 export const MODELS: Record<ModelTier, string> = { ...EFFECTIVE_LEGACY_MODELS };
 
-// Pricing in USD per million tokens (input | output). Cached input is 10×
-// cheaper. Numbers are approximate per the cost-estimation rule — real
-// spend should be read off console.anthropic.com/cost after we ship.
+// NO PRICE TABLE LIVES HERE. Model prices are written down in exactly one
+// place — ANTHROPIC_TIER_PRICING in src/lib/ai/feature-registry.ts — and this
+// module reads them from there.
 //
-// Exported because cost-controls.ts derives the cost-cap reservation
-// amount from this table (worst-case per request = output × MAX_OUTPUT_TOKENS
-// × MAX_TOOL_ITERATIONS). Keeping the reservation tied to these constants
-// means raising the output cap or iteration limit automatically raises
-// the reservation — no silent cap bypass. Codex review fix H1.
-export const PRICING: Record<ModelTier, {
-  input: number;
-  output: number;
-  cachedInput: number;
-  cacheCreation5mInput: number;
-  cacheCreation1hInput: number;
-}> = {
-  haiku:  { input: 1.00,  output: 5.00,  cachedInput: 0.10, cacheCreation5mInput: 1.25, cacheCreation1hInput: 2.00 },
-  sonnet: { input: 3.00,  output: 15.00, cachedInput: 0.30, cacheCreation5mInput: 3.75, cacheCreation1hInput: 6.00 },
-  opus:   { input: 15.00, output: 75.00, cachedInput: 1.50, cacheCreation5mInput: 18.75, cacheCreation1hInput: 30.00 },
-};
+// Until 2026-07-25 this file carried a second, hand-maintained table that had
+// drifted: it priced Opus at $15/$75 per million tokens (the retired Opus 3
+// rate) against the registry's correct $5/$25. Nothing was visibly broken only
+// because the one price-sensitive consumer — the cost-cap reservation in
+// cost-controls.ts — happens to read the Sonnet row, where the two tables
+// agreed. If you are about to add `const PRICING = {...}` back to this file:
+// don't. Add or correct the rate in feature-registry.ts instead.
+// Guard: src/lib/__tests__/ai-model-pricing-single-source.test.ts.
 
 // Per-request timeout. Tool loops can fan out — if Claude calls 5 tools
 // each with their own DB round-trips, total wall time matters. Set to 50s
@@ -359,6 +352,7 @@ export interface UsageReport {
   costUsd: number;
 }
 
+/** Cost of one tier-default call at the registry's verified list price. */
 export function estimateCost(
   model: ModelTier,
   uncachedInputTokens: number,
@@ -368,16 +362,7 @@ export function estimateCost(
   cacheCreation5mInputTokens = 0,
   cacheCreation1hInputTokens = 0,
 ): number {
-  const p = PRICING[model];
-  return estimateAiCostUsd({
-    inputUsdPerMillionTokens: p.input,
-    outputUsdPerMillionTokens: p.output,
-    cachedInputUsdPerMillionTokens: p.cachedInput,
-    cacheCreation5mInputUsdPerMillionTokens: p.cacheCreation5mInput,
-    cacheCreation1hInputUsdPerMillionTokens: p.cacheCreation1hInput,
-    source: 'agent-tier-default',
-    asOf: '2026-07',
-  }, {
+  return estimateAiCostUsd(ANTHROPIC_TIER_PRICING[model], {
     uncachedInputTokens,
     outputTokens,
     cacheReadInputTokens: cachedInputTokens,
@@ -387,20 +372,14 @@ export function estimateCost(
   });
 }
 
-function defaultModelRef(tier: ModelTier): AiModelRef {
-  const p = PRICING[tier];
+/** The model + price the agent bills against when no admin-configured feature
+ * plan applies. Exported so the pricing single-source guard can assert the
+ * live default path really carries the registry's price, not a local copy. */
+export function defaultModelRef(tier: ModelTier): AiModelRef {
   return {
     provider: 'anthropic',
     modelId: MODELS[tier],
-    pricing: {
-      inputUsdPerMillionTokens: p.input,
-      outputUsdPerMillionTokens: p.output,
-      cachedInputUsdPerMillionTokens: p.cachedInput,
-      cacheCreation5mInputUsdPerMillionTokens: p.cacheCreation5mInput,
-      cacheCreation1hInputUsdPerMillionTokens: p.cacheCreation1hInput,
-      source: 'agent-tier-default',
-      asOf: '2026-05',
-    },
+    pricing: { ...ANTHROPIC_TIER_PRICING[tier] },
   };
 }
 

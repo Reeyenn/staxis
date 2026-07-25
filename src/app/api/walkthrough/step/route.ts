@@ -23,7 +23,8 @@ import Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { escapeTrustMarkerContent, modelTierForModelId, PRICING, type ModelTier } from '@/lib/agent/llm';
+import { escapeTrustMarkerContent, modelTierForModelId, type ModelTier } from '@/lib/agent/llm';
+import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import {
   AiFeatureDisabledError,
   executeAiPlan,
@@ -329,8 +330,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       ),
       {
         usd: PER_STEP_ESTIMATE_USD,
-        inputUsdPerMillionTokens: PRICING.sonnet.input,
-        outputUsdPerMillionTokens: PRICING.sonnet.output,
+        ...anthropicTierTokenRates('sonnet'),
       },
     );
   } catch (error) {

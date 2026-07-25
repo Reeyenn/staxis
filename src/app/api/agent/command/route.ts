@@ -42,12 +42,12 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import {
   ASK_STAXIS_EXECUTION_BUDGET_MS,
   ASK_STAXIS_FALLBACK_RESERVE_MS,
-  PRICING,
   resolveAskStaxisExecutionPlan,
   streamAgent,
   type AgentMessage,
 } from '@/lib/agent/llm';
 import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
+import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import { getToolsForRole } from '@/lib/agent/tools';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
@@ -151,8 +151,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       ),
       {
         usd: COST_LIMITS.estimatedRequestUsd,
-        inputUsdPerMillionTokens: PRICING.sonnet.input,
-        outputUsdPerMillionTokens: PRICING.sonnet.output,
+        ...anthropicTierTokenRates('sonnet'),
       },
     );
   } catch (error) {
