@@ -17,6 +17,11 @@ import type { AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
 import type { HotelSnapshot } from './context';
 import { formatSnapshotForPrompt } from './context';
+import {
+  deriveHotelIdentity,
+  formatHotelIdentityForPrompt,
+  HOTEL_IDENTITY_VERSION,
+} from './hotel-identity';
 import { familyContentIsSafe } from './prompt-tiers';
 import { resolvePrompts, type ResolvedFamilyPrompt } from './prompts-store';
 import type { VoiceMode } from './tools';
@@ -277,6 +282,7 @@ type StableTier =
   | 'inventory_routing'
   | 'data_freshness'
   | 'pms_family'
+  | 'hotel_identity'
   | 'version_line';
 
 /** Segments of the UNCACHED per-turn block, in their fixed assembly order. */
@@ -285,9 +291,11 @@ type DynamicTier = 'hotel_snapshot' | 'hotel_memory' | 'room_hint';
 /**
  * FIXED ASSEMBLY ORDER. This IS the conflict rule for facts: later text wins,
  * so the family addendum sits after the global prompts (family fact beats
- * global fact), and hotel facts are not in the prompt at all — they arrive via
- * search_knowledge and the <staxis-memory> block in the DYNAMIC half, which
- * the model reads after the entire stable block (hotel fact beats family fact).
+ * global fact), and the hotel's own durable identity sits after the family
+ * addendum (hotel fact beats family fact). Live hotel STATE is still not in the
+ * stable block at all — it arrives via search_knowledge and the
+ * <staxis-memory> / snapshot blocks in the DYNAMIC half, which the model reads
+ * after the entire stable block.
  */
 const STABLE_TIER_ORDER: readonly StableTier[] = [
   'global_base',
@@ -297,6 +305,7 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'inventory_routing',
   'data_freshness',
   'pms_family',
+  'hotel_identity',
   'version_line',
 ];
 
@@ -444,6 +453,20 @@ export async function buildSystemPrompt(
   // the content — the content is the untrusted part.
   const familyToRender: ResolvedFamilyPrompt | null =
     family && familyContentIsSafe(family.content) ? family : null;
+
+  // Day-zero identity: what this hotel IS, assembled from what it already told
+  // us at signup and setup. STABLE tier on purpose — every value in it is
+  // structural (room mix, housekeeping configuration, roster shape), so it is
+  // byte-identical turn to turn and the cached prefix survives. Anything that
+  // varies with the clock belongs in the snapshot, not here.
+  //
+  // `deriveHotelIdentity` is memoized per hotel and never throws; null means
+  // "nothing durable to say", which renders no section at all rather than a
+  // section full of zeros.
+  const identityBlock = formatHotelIdentityForPrompt(
+    await deriveHotelIdentity(snapshot.property.id),
+  );
+
   if (family && !familyToRender) {
     captureException(
       new Error('[prompts] family prompt row rejected: forged marker or over length cap'),
@@ -465,6 +488,9 @@ export async function buildSystemPrompt(
   if (hasInventoryAccountingAccess) stampParts.push(INVENTORY_ACCOUNTING_ROUTING_VERSION);
   stampParts.push(DATA_FRESHNESS_VERSION);
   if (familyToRender) stampParts.push(`fam:${familyToRender.pmsFamily}.${familyToRender.version}`);
+  // Only when a block was actually rendered: a day-zero hotel gets no section,
+  // and stamping one would claim the model saw something it didn't.
+  if (identityBlock) stampParts.push(HOTEL_IDENTITY_VERSION);
   const stableStamp = stampParts.join('+');
 
   const receiptParts = [stableStamp];
@@ -511,6 +537,9 @@ export async function buildSystemPrompt(
       tier: 'pms_family',
       lines: ['', `─── PMS context: ${familyToRender.pmsFamily} ───`, familyToRender.content],
     });
+  }
+  if (identityBlock) {
+    stable.push({ tier: 'hotel_identity', lines: ['', identityBlock] });
   }
   stable.push({ tier: 'version_line', lines: ['', `Prompt version: ${stableStamp}`] });
 

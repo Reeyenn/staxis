@@ -45,6 +45,7 @@ import {
 } from '@/lib/agent/tools';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { seedPromptsCache } from '@/lib/agent/prompts-store';
+import { seedHotelIdentityCache } from '@/lib/agent/hotel-identity';
 import { formatMemoryForPrompt } from '@/lib/agent/memory-context';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import type { MemoryRow } from '@/lib/db/agent-memory';
@@ -204,6 +205,11 @@ export async function runHermetic(input: HermeticCaseInput): Promise<HermeticRes
     { role: 'owner', version: HERMETIC_PROMPT_VERSION, content: HERMETIC_ROLE_PROMPT },
     { role: 'admin', version: HERMETIC_PROMPT_VERSION, content: HERMETIC_ROLE_PROMPT },
   ]);
+  // The stable block now carries a derived hotel-identity section. Seeding it
+  // empty keeps this harness's "no network, no DB" promise literal — otherwise
+  // every prompt build would fire a real request at the placeholder Supabase
+  // URL and fail softly, which is offline by accident rather than by design.
+  seedHotelIdentityCache(HERMETIC_PROPERTY_ID, null);
 
   const snapshot = hermeticSnapshot(input.fixture?.snapshot ?? {});
   const memoryBlock = input.fixture?.memory?.length
