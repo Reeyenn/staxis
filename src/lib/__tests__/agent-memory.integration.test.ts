@@ -8,6 +8,8 @@
  *   • cross-property isolation (property A's memory never appears for B);
  *   • per-user isolation of user-scope memory;
  *   • atomic upsert-by-topic (dedup) + forget soft-delete;
+ *   • "delete means gone" — an auto-learned writer can never re-learn a topic a
+ *     human deleted, permanently and with no time window (0357);
  *   • the row-cap + scope/subject + length DB invariants;
  *   • deny-all to the anon browser role.
  */
@@ -166,6 +168,145 @@ describe('agent_memory — RPCs + tenant isolation (pglite)', () => {
       const total = await fx.pg.query(`select count(*)::int n from agent_memory where property_id=$1 and topic='forget_me'`, [PID_A]);
       assert.equal((active.rows[0] as { n: number }).n, 0);
       assert.equal((total.rows[0] as { n: number }).n, 1, 'row retained for audit');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  // ── "delete means gone" — permanent forget (0357) ─────────────────────────
+  // Only two paths ever set is_active=false and both are human-initiated
+  // (staxis_forget_memory + the dashboard Remove button); expiry is a read-time
+  // filter and never deactivates. So a deactivated row means "a human deleted
+  // this topic", and no automatic writer may bring it back — ever.
+
+  const AUTO = ", p_source:='consolidation', p_confidence:='low'";
+  const OPERATIONAL = ", p_source:='operational', p_confidence:='low'";
+
+  /** Backdate a tombstone's updated_at, bypassing the updated_at trigger, to
+   *  simulate a deletion that happened long ago. */
+  const ageTombstone = async (pid: string, topic: string, days: number) => {
+    await fx.pg.exec('alter table agent_memory disable trigger set_updated_at');
+    await fx.pg.query(
+      `update agent_memory set updated_at = now() - ($3 || ' days')::interval
+         where property_id=$1 and topic=$2 and not is_active`,
+      [pid, topic, String(days)],
+    );
+    await fx.pg.exec('alter table agent_memory enable trigger set_updated_at');
+  };
+
+  test('an auto-learned write can never re-learn a topic a human deleted — no time window', async () => {
+    await fx.pg.exec('begin');
+    try {
+      await fx.pg.query(STORE(), [PID_A, 'property', null, 'gone_t', 'the bistro opens at 6']);
+      const f = await fx.pg.query(`select staxis_forget_memory($1,'property',null,'gone_t') as d`, [PID_A]);
+      assert.equal((f.rows[0] as { d: number }).d, 1);
+
+      // Tonight's consolidator re-proposes it.
+      const now = await fx.pg.query(STORE(AUTO), [PID_A, 'property', null, 'gone_t', 'the bistro opens at 6']);
+      assert.equal((now.rows[0] as { action: string }).action, 'refused_forgotten');
+      const tomb = await fx.pg.query(`select id from agent_memory where property_id=$1 and topic='gone_t'`, [PID_A]);
+      assert.equal(
+        (now.rows[0] as { memory_id: string }).memory_id,
+        (tomb.rows[0] as { id: string }).id,
+        'the refusal reports the tombstone row it matched',
+      );
+
+      // …and still refuses it 400 days later. (This is the regression: the old
+      // 30-day prompt hint would have let it back in on day 31.)
+      await ageTombstone(PID_A, 'gone_t', 400);
+      const later = await fx.pg.query(STORE(AUTO), [PID_A, 'property', null, 'gone_t', 'the bistro opens at 6']);
+      assert.equal((later.rows[0] as { action: string }).action, 'refused_forgotten', 'forget does not expire');
+
+      // The operational learner is refused on the same terms.
+      const op = await fx.pg.query(STORE(OPERATIONAL), [PID_A, 'property', null, 'gone_t', 'observed pattern']);
+      assert.equal((op.rows[0] as { action: string }).action, 'refused_forgotten');
+
+      const active = await fx.pg.query(
+        `select count(*)::int n from agent_memory where property_id=$1 and topic='gone_t' and is_active`,
+        [PID_A],
+      );
+      assert.equal((active.rows[0] as { n: number }).n, 0, 'the deleted fact never came back');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  test('a human can deliberately re-add a topic they deleted; auto writes then defer to it', async () => {
+    await fx.pg.exec('begin');
+    try {
+      await fx.pg.query(STORE(), [PID_A, 'property', null, 'readd_t', 'v1']);
+      await fx.pg.query(`select staxis_forget_memory($1,'property',null,'readd_t') as d`, [PID_A]);
+      await ageTombstone(PID_A, 'readd_t', 400);
+
+      const back = await fx.pg.query(STORE(), [PID_A, 'property', null, 'readd_t', 'v2 — manager put it back']);
+      assert.equal((back.rows[0] as { action: string }).action, 'inserted', 'a human write is never refused');
+
+      // Now it is an active human fact, so an auto write hits the 0260/0261
+      // guard — 'skipped', not 'refused_forgotten'.
+      const auto = await fx.pg.query(STORE(AUTO), [PID_A, 'property', null, 'readd_t', 'auto guess']);
+      assert.equal((auto.rows[0] as { action: string }).action, 'skipped');
+      const r = await fx.pg.query(
+        `select content from agent_memory where property_id=$1 and topic='readd_t' and is_active`,
+        [PID_A],
+      );
+      assert.equal((r.rows[0] as { content: string }).content, 'v2 — manager put it back');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  test("an 'inferred' write is not refused for a forgotten topic", async () => {
+    await fx.pg.exec('begin');
+    try {
+      await fx.pg.query(STORE(), [PID_A, 'property', null, 'inf_t', 'v1']);
+      await fx.pg.query(`select staxis_forget_memory($1,'property',null,'inf_t') as d`, [PID_A]);
+      const r = await fx.pg.query(STORE(", p_source:='inferred'"), [PID_A, 'property', null, 'inf_t', 'v2']);
+      assert.equal((r.rows[0] as { action: string }).action, 'inserted', 'only auto-learned sources are refused');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  test('a forgotten topic does not bleed across properties or across user accounts', async () => {
+    await fx.pg.exec('begin');
+    try {
+      // Property A deleted it; property B never did.
+      await fx.pg.query(STORE(), [PID_A, 'property', null, 'shared_t', 'x']);
+      await fx.pg.query(`select staxis_forget_memory($1,'property',null,'shared_t') as d`, [PID_A]);
+      const a = await fx.pg.query(STORE(AUTO), [PID_A, 'property', null, 'shared_t', 'auto']);
+      const b = await fx.pg.query(STORE(AUTO), [PID_B, 'property', null, 'shared_t', 'auto']);
+      assert.equal((a.rows[0] as { action: string }).action, 'refused_forgotten');
+      assert.equal((b.rows[0] as { action: string }).action, 'inserted', 'another hotel is unaffected');
+
+      // User scope: ACC_A deleted their personal note; ACC_B never did.
+      await fx.pg.query(STORE(), [PID_A, 'user', ACC_A, 'pref_t', 'prefers Spanish']);
+      const uf = await fx.pg.query(`select staxis_forget_memory($1,'user',$2,'pref_t') as d`, [PID_A, ACC_A]);
+      assert.equal((uf.rows[0] as { d: number }).d, 1);
+      const ua = await fx.pg.query(STORE(AUTO), [PID_A, 'user', ACC_A, 'pref_t', 'auto']);
+      const ub = await fx.pg.query(STORE(AUTO), [PID_A, 'user', ACC_B, 'pref_t', 'auto']);
+      assert.equal((ua.rows[0] as { action: string }).action, 'refused_forgotten', 'user scope is covered too');
+      assert.equal((ub.rows[0] as { action: string }).action, 'inserted', 'another account is unaffected');
+    } finally {
+      await fx.pg.exec('rollback');
+    }
+  });
+
+  test('a forgotten topic is refused for being forgotten, never mislabelled as a full memory', async () => {
+    await fx.pg.exec('begin');
+    try {
+      await fx.pg.query(STORE(), [PID_A, 'property', null, 'capgone_t', 'x']);
+      await fx.pg.query(`select staxis_forget_memory($1,'property',null,'capgone_t') as d`, [PID_A]);
+      // Fill the hotel's memory to its cap with live facts.
+      for (const t of ['capfill_a', 'capfill_b']) {
+        const r = await fx.pg.query(STORE(', p_property_cap:=2'), [PID_A, 'property', null, t, 'c']);
+        assert.equal((r.rows[0] as { action: string }).action, 'inserted');
+      }
+      // The forgotten topic is refused BEFORE the cap is consulted…
+      const gone = await fx.pg.query(STORE(`${AUTO}, p_property_cap:=2`), [PID_A, 'property', null, 'capgone_t', 'auto']);
+      assert.equal((gone.rows[0] as { action: string }).action, 'refused_forgotten');
+      // …while a genuinely new topic does hit the cap, proving it was armed.
+      const fresh = await fx.pg.query(STORE(`${AUTO}, p_property_cap:=2`), [PID_A, 'property', null, 'capnew_t', 'auto']);
+      assert.equal((fresh.rows[0] as { action: string }).action, 'property_full');
     } finally {
       await fx.pg.exec('rollback');
     }
