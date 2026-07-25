@@ -1,37 +1,26 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // pms-rooms-writes — server-only writes from housekeeper, agent and
-// inspection actions into the new pms_* schema.
+// inspection actions.
 //
-// Why this exists:
-//   Plan v4 dropped the legacy `rooms` table; room lifecycle actions
-//   (Start / Done / DND / issue note) used to update one row in `rooms`.
-//   They now land into TWO tables:
-//     - pms_housekeeping_assignments — the per-(date, room) HK plan row.
-//       Holds started_at / completed_at / status / dnd_active / cleaning_type
-//       / housekeeper_name. Read by every board that renders today's plan.
-//     - pms_room_status_log — append-only event log of room status changes.
-//       Mirrors the manager-set status to a Staxis-owned event so audit /
-//       analytics / future CUA-conflict reconciliation can see what the
-//       manager did, with source='manual'.
+// Where the writes go, and why (migration 0355):
+//   Room work state used to be written onto pms_housekeeping_assignments,
+//   next to the PMS housekeeping report. That mixed two owners on one row:
+//   the report said who was scheduled and what kind of clean it was; Staxis
+//   said whether it had been started, paused, noted or inspected. Whoever
+//   wrote last won.
 //
-//   Two-table writes keep BOTH consumers honest: the assignments row is the
-//   canonical "needs cleaning today" signal the merge layer reads first,
-//   and the status_log row is the auditable change event the rest of the
-//   pipeline (Performance tab, ML, etc.) can consume by-source.
+//   The two are now separate tables and this file writes only the Staxis one:
+//     - room_work — the per-(date, room) record of what OUR people did.
+//       Status, timestamps, notes, DND-as-observed, and the assigned staff
+//       member by id. No report can touch it; those columns are not on the
+//       table reports write.
+//     - pms_room_status_log — append-only event log of room status changes,
+//       so audit / analytics / reconciliation can see what a human did, with
+//       source='manual'.
 //
-// CUA clobber risk:
-//   pms_housekeeping_assignments is the schema-documented "active feed"
-//   for HK plan extraction by CUA. As of 2026-05-25 cua-service has no
-//   route writing to it — verified in cua-service/src/recipe-adapter.ts —
-//   so manager writes are safe. When CUA wiring lands, we'll need either
-//   (a) a Staxis-side overlay table that merge prefers over CUA, or
-//   (b) a CUA upsert that COALESCEs manager-set fields. Issue tracked
-//   in the file header so it's visible at that point.
-//
-//   pms_room_status_log is explicitly multi-source (source check constraint:
-//   'cua' | 'manual' | 'scheduled' | 'workflow'), so manual writes don't
-//   conflict with CUA writes — both append, the latest row per
-//   (property_id, room_number) wins.
+//   pms_housekeeping_assignments is now READ-ONLY from the app. It carries a
+//   NOT NULL ingest_run_id (migration 0341): every row has to name the report
+//   that produced it, and a housekeeper's tap has no report to name.
 //
 // Trust model:
 //   These helpers are server-only and trust their arguments. Every caller
@@ -42,23 +31,27 @@
 //
 // What gets persisted (by field):
 //   status, startedAt, completedAt
-//     → pms_housekeeping_assignments lifecycle (status / started_at /
-//       completed_at, with idempotent timestamp preservation on retries)
+//     → room_work lifecycle (status / started_at / completed_at, with
+//       idempotent timestamp preservation on retries)
 //     → pms_room_status_log append (status mapped to PMS enum; source='manual')
-//   type (RoomType: checkout/stayover/vacant)
-//     → pms_housekeeping_assignments.cleaning_type
-//   assignedTo (staff UUID) / assignedName
-//     → pms_housekeeping_assignments.housekeeper_name (resolved to staff
-//       name when assignedTo is provided; fails closed if not on property)
+//   assignedTo (staff UUID)
+//     → room_work.assigned_staff_id + assigned_source='manager'. Fails closed
+//       if the staff member is not on this property.
 //   isDnd
-//     → pms_housekeeping_assignments.dnd_active
+//     → room_work.dnd_active (Staxis's own observation; the merge layer
+//       prefers it over the PMS-reported value)
 //   issueNote, dndNote, helpRequested, inspectedBy, inspectedAt,
 //   managerNotes, housekeeperNote, isRush, rushDueBy, markedForInspectionAt
-//     → pms_housekeeping_assignments workflow columns (migrations 0269 +
-//       0270). Note/rush *_at metadata the Room type doesn't carry is
-//       auto-stamped here; callers needing exact metadata
+//     → room_work columns. Note/rush *_at metadata the Room type doesn't
+//       carry is auto-stamped here; callers needing exact metadata
 //       (manager_notes_by_account_id, rush_set_by) write via
 //       writeWorkflowFields (housekeeper-workflow/workflow-store).
+//   type (RoomType), assignedName
+//     → NOT PERSISTED. Both are PMS-reported facts that live on the mirror
+//       (cleaning_type, housekeeper_name) and the app does not write the
+//       mirror. `type` had no caller left after the manager Rooms tab was
+//       deleted; assignedName is superseded by assignedTo, which links a real
+//       person instead of hoping two systems spell them the same way.
 //   checklist, photoUrl
 //     → NOT PERSISTED (legacy unused; logged + skipped)
 // ═══════════════════════════════════════════════════════════════════════════
@@ -68,18 +61,17 @@ import { checkAndIncrementRateLimit } from './api-ratelimit';
 import type { Room, RoomStatus } from '@/types';
 import { log } from './log';
 import { todayStr } from './utils';
-import {
-  reverseMapType,
-  parseRoomId,
-} from './pms-rooms-server';
+import { parseRoomId } from './pms-rooms-server';
+import { recordStaffAlias } from './pms/dimension-values';
 
-// Truly legacy-unused Room fields with no pms_* home. The former workflow
-// fields (issueNote / dndNote / helpRequested / inspectedBy / inspectedAt +
-// manager/housekeeper notes + rush + marked_for_inspection) now persist on
-// the assignment row (migrations 0269 + 0270) and are handled below.
+// Room fields with no destination on the Staxis side of the split.
+// `type` and `assignedName` are PMS-reported and live on the mirror, which the
+// app no longer writes (0355). checklist / photoUrl are legacy-unused.
 const UNSUPPORTED_UPDATE_FIELDS = [
   'checklist',
   'photoUrl',
+  'type',
+  'assignedName',
 ] as const;
 
 // ── Status mapping for writes ──────────────────────────────────────────────
@@ -261,8 +253,8 @@ export async function applyRoomUpdate(
   //     window for "two tabs both call mark-cleaning at once")
   const [existingAssignRes, latestStatusRes] = await Promise.allSettled([
     supabaseAdmin
-      .from('pms_housekeeping_assignments')
-      .select('started_at, completed_at, status, cleaning_type, housekeeper_name, dnd_active')
+      .from('room_work')
+      .select('started_at, completed_at, status, assigned_staff_id, dnd_active')
       .eq('property_id', pid)
       .eq('date', date)
       .eq('room_number', roomNumber)
@@ -284,8 +276,7 @@ export async function applyRoomUpdate(
               started_at: string | null;
               completed_at: string | null;
               status: string | null;
-              cleaning_type: string | null;
-              housekeeper_name: string | null;
+              assigned_staff_id: string | null;
               dnd_active: boolean | null;
             }
           | null)
@@ -321,19 +312,17 @@ export async function applyRoomUpdate(
     statusPatch.completed_at = existing.completed_at;
   }
 
-  // Resolve assignedTo → housekeeper_name. Fail closed if the staff is
-  // not on this property — silently clearing the name would lose the
-  // intended assignment.
-  let housekeeperName: string | undefined;
-  if (partial.assignedName !== undefined) {
-    housekeeperName = partial.assignedName ?? undefined;
-  } else if (partial.assignedTo !== undefined) {
+  // Resolve assignedTo → room_work.assigned_staff_id. The database enforces
+  // that the id belongs to this property (composite FK to staff), but we check
+  // here too so the caller gets a clear error instead of a constraint message.
+  let assignedStaffId: string | null | undefined;
+  if (partial.assignedTo !== undefined) {
     if (partial.assignedTo === null || partial.assignedTo === '') {
-      housekeeperName = '';
+      assignedStaffId = null;
     } else {
       const { data: staffRow, error: staffErr } = await supabaseAdmin
         .from('staff')
-        .select('name')
+        .select('id, name')
         .eq('id', partial.assignedTo)
         .eq('property_id', pid)
         .maybeSingle();
@@ -348,11 +337,15 @@ export async function applyRoomUpdate(
           `applyRoomUpdate: staffId ${partial.assignedTo} does not belong to property ${pid}`,
         );
       }
-      housekeeperName = String(staffRow.name);
+      assignedStaffId = String(staffRow.id);
+      // A human just said this name means this person. Record it, so the next
+      // report that prints the same name resolves without guessing. Only
+      // human decisions land in staff_aliases — never an inferred match.
+      if (staffRow.name) {
+        await recordStaffAlias(pid, String(staffRow.name), assignedStaffId, 'manager');
+      }
     }
   }
-
-  const cleaningType = partial.type !== undefined ? reverseMapType(partial.type) : undefined;
 
   // Workflow-state fields (migrations 0269 + 0270) that previously had no
   // pms_* home and were logged-and-skipped. Map the Room-shaped fields onto
@@ -409,8 +402,7 @@ export async function applyRoomUpdate(
     if (statusPatch.status !== undefined && statusPatch.status !== existing.status) return false;
     if (statusPatch.started_at !== undefined && statusPatch.started_at !== existing.started_at) return false;
     if (statusPatch.completed_at !== undefined && statusPatch.completed_at !== existing.completed_at) return false;
-    if (cleaningType !== undefined && cleaningType !== existing.cleaning_type) return false;
-    if (housekeeperName !== undefined && (housekeeperName || null) !== existing.housekeeper_name) return false;
+    if (assignedStaffId !== undefined && assignedStaffId !== existing.assigned_staff_id) return false;
     if (partial.isDnd !== undefined && Boolean(partial.isDnd) !== Boolean(existing.dnd_active)) return false;
     return true;
   })();
@@ -421,7 +413,7 @@ export async function applyRoomUpdate(
     return;
   }
 
-  // ── Write 1: persist to pms_housekeeping_assignments ──────────────────
+  // ── Write 1: persist to room_work ─────────────────────────────────────
   // Atomic conditional-update guard (replaces the read-then-upsert TOCTOU
   // race). When the row already exists AND this is a status transition,
   // UPDATE only if the status is still what we read (optimistic
@@ -431,8 +423,12 @@ export async function applyRoomUpdate(
   // path stay last-writer-wins on the (property_id, date, room_number) key.
   const assignmentPatch: Record<string, unknown> = {
     ...statusPatch,
-    ...(cleaningType !== undefined ? { cleaning_type: cleaningType } : {}),
-    ...(housekeeperName !== undefined ? { housekeeper_name: housekeeperName || null } : {}),
+    // assigned_source is set alongside the id (and cleared with it) because
+    // room_work_assigned_source_chk requires an assignment to say how it was
+    // decided. This path is always a human or the agent acting for one.
+    ...(assignedStaffId !== undefined
+      ? { assigned_staff_id: assignedStaffId, assigned_source: assignedStaffId ? 'manager' : null }
+      : {}),
     ...(partial.isDnd !== undefined ? { dnd_active: Boolean(partial.isDnd) } : {}),
     ...workflowPatch,
   };
@@ -440,7 +436,7 @@ export async function applyRoomUpdate(
   let statusRaceLost = false;
   if (existing && statusPatch.status !== undefined) {
     let q = supabaseAdmin
-      .from('pms_housekeeping_assignments')
+      .from('room_work')
       .update(assignmentPatch)
       .eq('property_id', pid)
       .eq('date', date)
@@ -466,20 +462,20 @@ export async function applyRoomUpdate(
   } else {
     // Insert-if-absent (or pure-field update on an existing row). Note: a
     // pure-field write (assignedTo / notes / rush) on a room that has an
-    // inventory row but NO assignment row for `date` MATERIALIZES the row with
+    // inventory row but NO work row for `date` MATERIALIZES the row with
     // the table's default status 'not_started' → the merge derives 'dirty'. For
     // assign_room that's the intended signal (assigning a room puts it on the
     // HK plan = needs cleaning); callers that must NOT create a tile (e.g.
     // front-desk rush) deliberately UPDATE-only at the route layer instead
     // of calling applyRoomUpdate.
     const { error: assignErr } = await supabaseAdmin
-      .from('pms_housekeeping_assignments')
+      .from('room_work')
       .upsert(
         { property_id: pid, date, room_number: roomNumber, ...assignmentPatch },
         { onConflict: 'property_id,date,room_number' },
       );
     if (assignErr) {
-      log.error('[pms-rooms-writes] applyRoomUpdate assignments upsert failed', {
+      log.error('[pms-rooms-writes] applyRoomUpdate room_work upsert failed', {
         pid, rid, date, roomNumber, msg: assignErr.message,
       });
       throw assignErr;

@@ -1,32 +1,35 @@
 /**
  * Workflow write helper — persists housekeeper start/pause/resume/complete/
- * reset/exception + checklist state to the pms_* schema.
+ * reset/exception + checklist state.
  *
- * Plan-v4 moved rooms out of the legacy `rooms` table (stubbed empty by
- * 0204/0205) into pms_housekeeping_assignments. The workflow endpoints used
- * to write `rooms` directly; they now go through here so writes land on the
- * same row the page reads. Workflow-state columns added in migration 0269.
+ * WHERE IT WRITES, AND WHY IT MOVED (migration 0355):
+ *   These columns used to live on pms_housekeeping_assignments alongside the
+ *   PMS housekeeping report. That table now carries a NOT NULL ingest_run_id
+ *   — a receipt naming the report that produced the row — because report data
+ *   without a traceable source is worthless. A housekeeper tapping Start has
+ *   no report to cite, so the app could not satisfy it. The columns moved to
+ *   public.room_work, which is Staxis-owned and needs no receipt.
+ *
+ *   The consequence that matters: a housekeeping report arriving mid-clean can
+ *   no longer overwrite a started clean, a ticked checklist or a note. Not
+ *   because the writer is careful — because the columns are not on the table
+ *   the report writes.
  *
  * The room is keyed by the synthetic composite id "${date}:${roomNumber}"
- * (parseRoomId). The matching assignment row always exists when this is
- * called — the endpoints first resolve the room via loadRoomForStaff, which
- * only returns rooms that have an assignment for this staff.
+ * (parseRoomId). The row is upserted rather than updated: a housekeeper can
+ * legitimately start a room the report has not mentioned yet.
  *
- * Write-back budget (intentional): this helper upserts pms_housekeeping_assignments
- * ONLY. Unlike applyRoomUpdate it deliberately does NOT append a
- * pms_room_status_log row or enqueue a staxis_enqueue_pms_write job on a
- * status flip. That is by design — the migration brief called out that routing
- * every housekeeper tap through the write-back enqueue would burn the
- * `pms-writeback-enqueue` limiter; the assignment row is the authoritative
- * source the board/AI/dashboard read, and PMS push-back (gated on
- * properties.pms_writeback_enabled, OFF by default) is driven by the
- * manager/AI applyRoomUpdate path + CUA reconciliation, not per-tap.
+ * Write-back budget (intentional): this helper upserts room_work ONLY. Unlike
+ * applyRoomUpdate it deliberately does NOT append a pms_room_status_log row on
+ * a status flip — routing every housekeeper tap through that path would burn
+ * the rate limiter, and room_work is the authoritative source the board, the
+ * AI and the dashboard read.
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { parseRoomId } from '@/lib/pms-rooms-server';
 
-/** Workflow status (page/state-machine) → pms_housekeeping_assignments.status. */
+/** Workflow status (page/state-machine) → room_work.status. */
 const STATUS_MAP: Record<string, string> = {
   dirty: 'not_started',
   in_progress: 'in_progress',
@@ -119,7 +122,7 @@ export async function writeWorkflowFields(
   if (patch.dnd_note !== undefined) row.dnd_note = patch.dnd_note;
 
   const { error } = await supabaseAdmin
-    .from('pms_housekeeping_assignments')
+    .from('room_work')
     .upsert(row, { onConflict: 'property_id,date,room_number' });
 
   if (error) return { ok: false, error: error.message };

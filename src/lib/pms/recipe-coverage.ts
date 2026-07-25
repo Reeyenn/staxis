@@ -114,6 +114,13 @@ export interface ActionFeedContract {
   label: string;
   /** The pms_* table this feed writes to (for the live row-count badge). */
   table: string;
+  /**
+   * Extra column=value filter for the row-count badge, when several feeds
+   * share one table. Arrivals, departures, no-shows and cancellations all
+   * write pms_reservations since 0354; without this, every one of them would
+   * report the same total and none of them would be true.
+   */
+  rowFilter?: { column: string; value: string };
 }
 
 /**
@@ -143,8 +150,10 @@ export const ACTION_FEED_CONTRACTS: Record<string, ActionFeedContract> = {
   getGuestBalances:       { label: 'Guest balances',        table: 'pms_guest_balances' },
   getPaymentsDaily:       { label: 'Daily payments',        table: 'pms_payments_daily' },
   getFutureBookings:      { label: 'Booking pace',          table: 'pms_booking_pace' },
-  getNoShows:             { label: 'No-shows',              table: 'pms_no_shows' },
-  getCancellations:       { label: 'Cancellations',         table: 'pms_cancellations' },
+  // A no-show and a cancellation are states of a reservation, not separate
+  // objects (0354). Same table as arrivals/departures, filtered by state.
+  getNoShows:             { label: 'No-shows',              table: 'pms_reservations', rowFilter: { column: 'status', value: 'no_show' } },
+  getCancellations:       { label: 'Cancellations',         table: 'pms_reservations', rowFilter: { column: 'status', value: 'cancelled' } },
 };
 
 /**

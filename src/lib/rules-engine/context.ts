@@ -131,7 +131,7 @@ export async function buildRoomContexts(
 ): Promise<RoomContext[]> {
   const propertyId = prop.property_id;
 
-  const [roomsRes, reservationsRes, statusLogRes, hkRes] = await Promise.all([
+  const [roomsRes, reservationsRes, statusLogRes, hkRes, workRes] = await Promise.all([
     supabaseAdmin
       .from('pms_rooms_inventory')
       .select('room_number, room_type, is_suite, pet_friendly')
@@ -153,11 +153,18 @@ export async function buildRoomContexts(
         new Date(prop.now_utc.getTime() - 14 * 24 * 60 * 60_000).toISOString(),
       )
       .order('changed_at', { ascending: false }),
+    // The PMS side of housekeeping (migration 0355): what the report said.
     supabaseAdmin
       .from('pms_housekeeping_assignments')
       .select(
-        'room_number, cleaning_type, status, dnd_active, late_checkout_approved, late_checkout_until, early_checkin_approved, early_checkin_from',
+        'room_number, cleaning_type, dnd_active, late_checkout_approved, late_checkout_until, early_checkin_approved, early_checkin_from',
       )
+      .eq('property_id', propertyId)
+      .eq('date', prop.business_date),
+    // The Staxis side: what our people actually did.
+    supabaseAdmin
+      .from('room_work')
+      .select('room_number, status, dnd_active')
       .eq('property_id', propertyId)
       .eq('date', prop.business_date),
   ]);
@@ -166,13 +173,44 @@ export async function buildRoomContexts(
   if (reservationsRes.error) throw reservationsRes.error;
   if (statusLogRes.error) throw statusLogRes.error;
   if (hkRes.error) throw hkRes.error;
+  if (workRes.error) throw workRes.error;
+
+  // Stitch the two halves back into the one shape the rules speak. The work
+  // row wins on status (it is the only side that has one) and on DND when it
+  // has an opinion — a housekeeper at the door beats a 30-minute-old report.
+  const workByRoom = new Map(
+    ((workRes.data ?? []) as Array<{ room_number: string; status: string | null; dnd_active: boolean | null }>)
+      .map((w) => [String(w.room_number), w]),
+  );
+  const hkRows = ((hkRes.data ?? []) as Array<Omit<RawHkAssignment, 'status'>>).map((h) => {
+    const w = workByRoom.get(String(h.room_number));
+    workByRoom.delete(String(h.room_number));
+    return {
+      ...h,
+      status: w?.status ?? 'not_started',
+      dnd_active: w?.dnd_active ?? h.dnd_active,
+    } as RawHkAssignment;
+  });
+  // Rooms someone started working on that the report never mentioned.
+  for (const w of workByRoom.values()) {
+    hkRows.push({
+      room_number: String(w.room_number),
+      cleaning_type: null,
+      status: w.status ?? 'not_started',
+      dnd_active: w.dnd_active,
+      late_checkout_approved: null,
+      late_checkout_until: null,
+      early_checkin_approved: null,
+      early_checkin_from: null,
+    });
+  }
 
   return assembleRoomContexts(
     prop,
     (roomsRes.data ?? []) as RawRoom[],
     (reservationsRes.data ?? []) as RawReservation[],
     (statusLogRes.data ?? []) as RawStatusLog[],
-    (hkRes.data ?? []) as RawHkAssignment[],
+    hkRows,
   );
 }
 

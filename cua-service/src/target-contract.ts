@@ -389,8 +389,15 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'rooms_available', type: 'integer' },
     ],
   },
+  // No-shows and cancellations are STATES of a reservation, not separate
+  // objects. pms_no_shows and pms_cancellations were dropped in 0354: all
+  // three tables were keyed on (property_id, pms_reservation_id) with nothing
+  // reconciling them, so one booking could exist three times saying three
+  // different things. Both feeds now upsert the reservation's own row, each
+  // contributing its own columns, and a terminal-state trigger stops a stale
+  // arrivals report un-cancelling a booking.
   getNoShows: {
-    table: 'pms_no_shows',
+    table: 'pms_reservations',
     columns: [
       { name: 'pms_reservation_id', type: 'text' },
       { name: 'guest_name', type: 'text' },
@@ -401,10 +408,11 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'total_amount_cents', type: 'bigint' },
       { name: 'channel_name', type: 'text' },
       { name: 'no_show_date', type: 'date' },
+      { name: 'status', type: 'text' },
     ],
   },
   getCancellations: {
-    table: 'pms_cancellations',
+    table: 'pms_reservations',
     columns: [
       { name: 'pms_reservation_id', type: 'text' },
       { name: 'guest_name', type: 'text' },
@@ -415,7 +423,8 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'cancellation_fee_cents', type: 'bigint' },
       { name: 'total_amount_cents', type: 'bigint' },
       { name: 'channel_name', type: 'text' },
-      { name: 'reason', type: 'text' },
+      { name: 'cancellation_reason', type: 'text' },
+      { name: 'status', type: 'text' },
     ],
   },
 };

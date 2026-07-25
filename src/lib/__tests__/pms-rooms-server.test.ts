@@ -30,6 +30,7 @@ import {
   composeRoomId,
   parseRoomId,
   buildStaffLookup,
+  mergeMirrorAndWork,
 } from '@/lib/pms-rooms-server';
 
 // Minimal AssignmentRow shape — mirrors the interface inside
@@ -297,5 +298,163 @@ describe('buildStaffLookup — collision-aware first-name fallback', () => {
     assert.equal(lookup.resolve(null), undefined);
     assert.equal(lookup.resolve(undefined), undefined);
     assert.equal(lookup.resolve('NoSuchPerson'), undefined);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Migration 0355 split housekeeping into two tables: what the PMS report said
+// (pms_housekeeping_assignments) and what our own people did (room_work).
+// mergeMirrorAndWork is the ONE place that decides who wins where both have an
+// opinion, so the rules it encodes are worth pinning here rather than
+// rediscovering them from a housekeeper's rooms disappearing.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('mergeMirrorAndWork — who wins when the report and our staff disagree', () => {
+  const MARIA = 'staff-maria';
+  const staffNames = new Map([[MARIA, 'Maria Garcia']]);
+  const key = '|204';
+
+  it('a room only the report knows about still appears, with no work state', () => {
+    const merged = mergeMirrorAndWork(
+      [{ room_number: '204', housekeeper_name: 'Maria Garcia', cleaning_type: 'departure', dnd_active: false }],
+      [],
+      staffNames,
+    );
+    const row = merged.get(key)!;
+    assert.equal(row.cleaning_type, 'departure');
+    assert.equal(row.status, null);
+    assert.equal(row.assigned_staff_id, null);
+  });
+
+  it('a room only WE know about still appears — a housekeeper can start a room no report named', () => {
+    const merged = mergeMirrorAndWork(
+      [],
+      [{ room_number: '204', assigned_staff_id: null, status: 'in_progress', started_at: 'T1', completed_at: null, dnd_active: null }],
+      staffNames,
+    );
+    const row = merged.get(key)!;
+    assert.equal(row.status, 'in_progress');
+    assert.equal(row.cleaning_type, null);
+  });
+
+  it('an explicit assignment beats the name the PMS printed', () => {
+    const merged = mergeMirrorAndWork(
+      [{ room_number: '204', housekeeper_name: 'Someone Else', cleaning_type: 'departure', dnd_active: false }],
+      [{ room_number: '204', assigned_staff_id: MARIA, status: 'not_started', started_at: null, completed_at: null, dnd_active: null }],
+      staffNames,
+    );
+    const row = merged.get(key)!;
+    assert.equal(row.assigned_staff_id, MARIA);
+    assert.equal(row.housekeeper_name, 'Maria Garcia', 'the resolved person, not the printed string');
+  });
+
+  it('the PMS name survives when nobody has assigned the room', () => {
+    const merged = mergeMirrorAndWork(
+      [{ room_number: '204', housekeeper_name: 'Maria Garcia', cleaning_type: 'departure', dnd_active: false }],
+      [{ room_number: '204', assigned_staff_id: null, status: 'not_started', started_at: null, completed_at: null, dnd_active: null }],
+      staffNames,
+    );
+    assert.equal(merged.get(key)!.housekeeper_name, 'Maria Garcia');
+  });
+
+  it('a housekeeper marking do-not-disturb overrides a report that says otherwise', () => {
+    const merged = mergeMirrorAndWork(
+      [{ room_number: '204', housekeeper_name: null, cleaning_type: null, dnd_active: false }],
+      [{ room_number: '204', assigned_staff_id: null, status: 'not_started', started_at: null, completed_at: null, dnd_active: true }],
+      staffNames,
+    );
+    assert.equal(merged.get(key)!.dnd_active, true);
+  });
+
+  it('a housekeeper CLEARING do-not-disturb also overrides a stale report', () => {
+    const merged = mergeMirrorAndWork(
+      [{ room_number: '204', housekeeper_name: null, cleaning_type: null, dnd_active: true }],
+      [{ room_number: '204', assigned_staff_id: null, status: 'not_started', started_at: null, completed_at: null, dnd_active: false }],
+      staffNames,
+    );
+    assert.equal(
+      merged.get(key)!.dnd_active,
+      false,
+      'false is an opinion; only null means we have none. An OR here would trap the room on DND forever.',
+    );
+  });
+
+  it('with no Staxis opinion, the report decides do-not-disturb', () => {
+    const merged = mergeMirrorAndWork(
+      [{ room_number: '204', housekeeper_name: null, cleaning_type: null, dnd_active: true }],
+      [{ room_number: '204', assigned_staff_id: null, status: 'not_started', started_at: null, completed_at: null, dnd_active: null }],
+      staffNames,
+    );
+    assert.equal(merged.get(key)!.dnd_active, true);
+  });
+
+  it('rows are keyed by date as well as room, so yesterday does not overwrite today', () => {
+    const merged = mergeMirrorAndWork(
+      [],
+      [
+        { date: '2026-08-01', room_number: '204', assigned_staff_id: null, status: 'completed', started_at: null, completed_at: 'T1', dnd_active: null },
+        { date: '2026-08-02', room_number: '204', assigned_staff_id: null, status: 'in_progress', started_at: 'T2', completed_at: null, dnd_active: null },
+      ],
+      staffNames,
+    );
+    assert.equal(merged.size, 2);
+    assert.equal(merged.get('2026-08-01|204')!.status, 'completed');
+    assert.equal(merged.get('2026-08-02|204')!.status, 'in_progress');
+  });
+
+  it('carries the work state deriveStatus and the housekeeper page read from the old single table', () => {
+    const merged = mergeMirrorAndWork(
+      [{ room_number: '204', housekeeper_name: null, cleaning_type: 'departure', dnd_active: null }],
+      [{
+        room_number: '204', assigned_staff_id: null, status: 'in_progress',
+        started_at: 'T1', completed_at: null, dnd_active: null,
+        is_paused: true, paused_at: 'T2', total_paused_seconds: 90,
+        checklist_progress: ['bed', 'bath'], exception_type: 'dnd',
+        manager_notes: 'VIP', is_rush: true, help_requested: true, issue_note: 'lamp broken',
+      }],
+      staffNames,
+    );
+    const row = merged.get(key)!;
+    assert.equal(row.is_paused, true);
+    assert.equal(row.total_paused_seconds, 90);
+    assert.deepEqual(row.checklist_progress, ['bed', 'bath']);
+    assert.equal(row.exception_type, 'dnd');
+    assert.equal(row.manager_notes, 'VIP');
+    assert.equal(row.is_rush, true);
+    assert.equal(row.help_requested, true);
+    assert.equal(row.issue_note, 'lamp broken');
+  });
+});
+
+describe('buildStaffLookup with recorded aliases (0356)', () => {
+  const staff = [
+    { id: 's1', name: 'Maria Garcia' },
+    { id: 's2', name: 'Maria Lopez' },
+  ];
+
+  it('a recorded alias resolves a name no amount of string matching would', () => {
+    const aliases = new Map([['m. garza', 's1']]);
+    assert.equal(buildStaffLookup(staff, aliases).resolve('M. GARZA'), 's1');
+  });
+
+  it('a recorded alias wins over the first-name collision rule', () => {
+    // Two Marias normally disable the first-name fallback for both, so neither
+    // gets the other's rooms. A human saying "this Maria" lifts that.
+    assert.equal(buildStaffLookup(staff).resolve('Maria'), undefined);
+    assert.equal(buildStaffLookup(staff, new Map([['maria', 's2']])).resolve('Maria'), 's2');
+  });
+
+  it('no aliases at all behaves exactly as it did before the table existed', () => {
+    const withNone = buildStaffLookup(staff, new Map());
+    const without = buildStaffLookup(staff);
+    assert.equal(withNone.resolve('Maria Garcia'), without.resolve('Maria Garcia'));
+    assert.equal(withNone.resolve('Maria'), without.resolve('Maria'));
+    assert.equal(withNone.resolve('Nobody'), without.resolve('Nobody'));
+  });
+
+  it('an alias for a name nobody has seen leaves the existing rules alone', () => {
+    const lookup = buildStaffLookup(staff, new Map([['unrelated person', 's1']]));
+    assert.equal(lookup.resolve('Maria Garcia'), 's1');
+    assert.equal(lookup.resolve('Maria'), undefined);
   });
 });

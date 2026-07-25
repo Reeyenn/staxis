@@ -429,11 +429,13 @@ describe('value contract drift guard vs migration 0276', () => {
   // pms_future_bookings (it duplicated pms_reservations and its key made a
   // pickup curve unqueryable) and repointed the feed at pms_booking_pace,
   // whose descriptor is defined in 0343, not 0276. It gets its own guard below.
+  // getNoShows / getCancellations are deliberately absent too: migration 0354
+  // folded pms_no_shows and pms_cancellations onto pms_reservations, so their
+  // contracts no longer mirror a 0276 descriptor. They get their own guard
+  // below.
   const NEW_FEEDS: Array<[keyof Recipe['actions'], string]> = [
     ['getGuestBalances', 'pms_guest_balances'],
     ['getPaymentsDaily', 'pms_payments_daily'],
-    ['getNoShows', 'pms_no_shows'],
-    ['getCancellations', 'pms_cancellations'],
   ];
 
   test('TARGET_VALUE_CONTRACTS == 0276 descriptor (name+type, minus writer-stamped captured_at)', () => {
@@ -449,6 +451,57 @@ describe('value contract drift guard vs migration 0276', () => {
         `${key} value contract drifted from 0276`,
       );
     }
+  });
+
+  // One booking, one row. 0354 folded pms_no_shows and pms_cancellations into
+  // pms_reservations, so these two feeds now upsert the SAME natural key as
+  // getArrivals / getDepartures. The failure this guards against is subtle: a
+  // feed that still names a dropped table looks healthy (it writes zero rows
+  // and reports a clean poll) while the cancellation never reaches the app.
+  test('no-shows and cancellations write the reservation itself (0354)', () => {
+    const MIGRATION_REL_0354 = path.join('supabase', 'migrations', '0354_reservation_lifecycle_consolidation.sql');
+    const PATH_0354 = [
+      path.resolve(process.cwd(), '..', MIGRATION_REL_0354),
+      path.resolve(process.cwd(), MIGRATION_REL_0354),
+    ].find((p) => existsSync(p));
+    assert.ok(PATH_0354, `0354 migration not found relative to ${process.cwd()}`);
+    const mig = readFileSync(PATH_0354, 'utf8');
+
+    // Columns 0354 physically adds to pms_reservations.
+    const addedRe = /add column if not exists\s+([a-z_]+)/gi;
+    const added = new Set<string>();
+    let m: RegExpExecArray | null;
+    while ((m = addedRe.exec(mig)) !== null) added.add(m[1]!.toLowerCase());
+    assert.ok(added.has('cancelled_date'), 'failed to parse the 0354 column additions');
+
+    // Columns pms_reservations already had, taken from the sibling feeds that
+    // write the same table — so this cannot pass by both sides drifting.
+    const preExisting = new Set(
+      TARGET_VALUE_CONTRACTS.getArrivals!.columns.map((c) => c.name),
+    );
+
+    for (const key of ['getNoShows', 'getCancellations'] as const) {
+      const contract = TARGET_VALUE_CONTRACTS[key];
+      assert.ok(contract, `${key} missing from TARGET_VALUE_CONTRACTS`);
+      assert.equal(
+        contract!.table,
+        'pms_reservations',
+        `${key} must write the reservation itself — pms_no_shows / pms_cancellations no longer exist`,
+      );
+      for (const col of contract!.columns) {
+        assert.ok(
+          preExisting.has(col.name) || added.has(col.name) || col.name === 'total_amount_cents',
+          `${key} declares ${col.name}, which pms_reservations does not have`,
+        );
+      }
+    }
+
+    // The lifecycle evidence has to be carried, or the CHECK constraints in
+    // 0354 reject the whole batch: status='cancelled' requires cancelled_date.
+    const noShowCols = new Set(TARGET_VALUE_CONTRACTS.getNoShows!.columns.map((c) => c.name));
+    assert.ok(noShowCols.has('no_show_date') && noShowCols.has('status'));
+    const cancelCols = new Set(TARGET_VALUE_CONTRACTS.getCancellations!.columns.map((c) => c.name));
+    assert.ok(cancelCols.has('cancelled_date') && cancelCols.has('status'));
   });
 
   test('getFutureBookings tracks the pms_booking_pace descriptor from 0343', () => {

@@ -177,15 +177,32 @@ export async function POST(req: NextRequest): Promise<Response> {
           )
         : [];
       if (children.length > 0 && room.date) {
+        const done = {
+          status: 'completed',
+          started_at: startedAt,
+          completed_at: completedAt,
+          is_paused: false,
+          paused_at: null,
+        };
+
+        // Sub-rooms nobody has touched have no room_work row at all (migration
+        // 0355 — the PMS report writes the plan, we write the work). An UPDATE
+        // alone would match nothing and the suite's other rooms would stay
+        // dirty, so the untouched ones are inserted rather than skipped.
+        const { data: existingChildren, error: childReadErr } = await supabaseAdmin
+          .from('room_work')
+          .select('room_number')
+          .eq('property_id', gate.pid)
+          .eq('date', room.date)
+          .in('room_number', children);
+        if (childReadErr) throw childReadErr;
+        const haveRows = new Set(
+          ((existingChildren ?? []) as Array<{ room_number: string }>).map((r) => String(r.room_number)),
+        );
+
         const { error: fanoutWriteErr } = await supabaseAdmin
-          .from('pms_housekeeping_assignments')
-          .update({
-            status: 'completed',
-            started_at: startedAt,
-            completed_at: completedAt,
-            is_paused: false,
-            paused_at: null,
-          })
+          .from('room_work')
+          .update(done)
           .eq('property_id', gate.pid)
           .eq('date', room.date)
           .in('room_number', children)
@@ -199,6 +216,29 @@ export async function POST(req: NextRequest): Promise<Response> {
             parentRoom: room.number,
             err: errToString(fanoutWriteErr),
           });
+        }
+
+        const missing = children.filter((c) => !haveRows.has(c));
+        if (missing.length > 0) {
+          const { error: fanoutInsertErr } = await supabaseAdmin
+            .from('room_work')
+            .upsert(
+              missing.map((c) => ({
+                property_id: gate.pid,
+                date: room.date as string,
+                room_number: c,
+                ...done,
+              })),
+              { onConflict: 'property_id,date,room_number' },
+            );
+          if (fanoutInsertErr) {
+            log.warn('complete-clean: component-room fanout insert failed (non-fatal)', {
+              requestId: gate.requestId,
+              pid: gate.pid,
+              parentRoom: room.number,
+              err: errToString(fanoutInsertErr),
+            });
+          }
         }
       }
     } catch (fanoutErr) {

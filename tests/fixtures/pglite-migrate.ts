@@ -211,6 +211,15 @@ export function applyMigrationsToPglite(): Promise<PgliteMigratedFixture> {
         report.skippedClassC.push(`${f} (${reason})`);
         continue;
       }
+      // A migration wrapped in an explicit `begin; … commit;` that fails
+      // partway leaves the session in an aborted transaction, and Postgres
+      // then refuses EVERY subsequent statement with "current transaction is
+      // aborted". One migration this runner cannot apply (a missing storage
+      // stub, say) would silently take out every migration after it and every
+      // test that depends on them. Clearing the slate first keeps a runtime
+      // failure local to the migration that caused it. Harmless no-op when no
+      // transaction is open.
+      await pg.exec('rollback;').catch(() => undefined);
       try {
         await pg.exec(preprocess(sql));
         report.applied.push(f);
@@ -267,6 +276,8 @@ export async function applyMigrationsToPgliteWithHook(
       report.skippedClassC.push(`${file} (${reason})`);
       continue;
     }
+    // Same aborted-transaction guard as applyMigrationsToPglite above.
+    await pg.exec('rollback;').catch(() => undefined);
     try {
       await beforeMigration({ pg, file, report });
       await pg.exec(preprocess(sql));

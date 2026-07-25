@@ -211,15 +211,17 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
+  // Both fold onto the reservation they describe (0354). Same natural key as
+  // getArrivals / getDepartures — that is the point: one booking, one row.
   getNoShows: {
-    tableName: 'pms_no_shows',
+    tableName: 'pms_reservations',
     keys: ['property_id', 'pms_reservation_id'],
     writeStrategy: 'upsert',
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
   getCancellations: {
-    tableName: 'pms_cancellations',
+    tableName: 'pms_reservations',
     keys: ['property_id', 'pms_reservation_id'],
     writeStrategy: 'upsert',
     snapshotScope: 'delta',

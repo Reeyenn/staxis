@@ -122,6 +122,15 @@ parser version, and parse run behind it is one join away.
   answer honestly.
 - **History:** written before the ingestion pipeline so lineage is a
   precondition of the first parser, not a retrofit after the first wrong number.
+- **Carve-out — dictionaries are not facts.** `pms_dimension_values` (0356) is
+  on `NON_FACT_PMS_TABLES`. It holds one row per distinct raw channel / room
+  class / rate plan string a property has *ever* printed, accumulated across
+  every report that mentioned it. No single ingestion event produced that row,
+  so a lineage stamp would have to name one report arbitrarily — a receipt that
+  points at the wrong thing is worse than an honest absence. `first_seen_at`,
+  `last_seen_at` and `seen_count` carry what is actually knowable. The same
+  reasoning covers `staff_aliases` (0356), which is not a `pms_*` table and so
+  is out of the lint's scope anyway.
 
 ### DINV-4: a parsed report writes every row it parsed, or fails loudly
 
@@ -203,6 +212,119 @@ fewer than 5 properties contribute to it. Below the threshold the answer is
   with a 2-property cohort and must answer with the honesty phrasing.
 - **History:** written down rather than remembered — the failure mode is
   discovering it the week hotel #2 signs.
+
+### DINV-8: a booking is one row for its whole life, and it never comes back from the dead
+
+A reservation, its cancellation and its no-show are the same object in three
+states, not three objects. Nothing can put the system in a position where the
+arrivals list and the cancellation list disagree about the same guest.
+
+- **Enforced by:**
+  - DB (structural): `pms_no_shows` and `pms_cancellations` no longer exist —
+    migration `0354_reservation_lifecycle_consolidation.sql` folded them onto
+    `pms_reservations`. The pre-existing `UNIQUE (property_id,
+    pms_reservation_id)` is now the only place a booking can live.
+  - DB (coherence): CHECK constraints `pms_res_cancel_coherent`,
+    `pms_res_noshow_coherent`, `pms_res_fee_requires_cancel`,
+    `pms_res_date_order`, `pms_res_booked_before_arrival` (0354). A NULL status
+    stays storable on purpose — "the PMS did not print one" is a real state; what
+    is forbidden is the contradiction.
+  - DB (reconciliation): BEFORE UPDATE trigger
+    `staxis_pms_reservation_status_guard()` (0354). A reservation never moves
+    from `cancelled` / `no_show` / `checked_out` back to `booked` / `checked_in`
+    unless the incoming row carries a strictly later `status_changed_at`. Every
+    other column still updates, so a newer report can still correct a guest name.
+  - TEST: `src/lib/__tests__/pms-reshape-invariants.integration.test.ts` applies
+    the real migrations to PGlite and tries each forbidden write.
+- **Why the trigger is the load-bearing part.** Consolidation created a risk the
+  three-table shape did not have: three report feeds now upsert the SAME row.
+  0341's `pms_reject_stale_ingest` only compares runs of the same `report_kind`,
+  so it cannot stop a late arrivals report from un-cancelling a booking a
+  cancellations report already closed. Without this trigger the hotel prepares a
+  room for someone who is not coming.
+- **Related, not covered:** `nights_derived` is a GENERATED column
+  (`departure_date - arrival_date`) deliberately NOT constrained to agree with
+  the PMS-reported `num_nights`. A PMS that counts day-use stays differently
+  would fail an entire upsert batch, and the writer sends one batch per report.
+  Disagreement is a reporting signal, not a reason to reject the night's data.
+- **History:** D3-SHAPE, re-derived 2026-07-25 against the post-housekeeping-
+  rewrite codebase.
+
+### DINV-9: a report can never overwrite what a member of staff did
+
+What the PMS told us and what Staxis knows are two tables. Neither writer can
+reach the other's columns.
+
+- **Enforced by:**
+  - DB (structural, report → app): the 29 Staxis-owned workflow columns are no
+    longer on `pms_housekeeping_assignments`. Migration
+    `0355_housekeeping_mirror_state_split.sql` moved them to `public.room_work`.
+    A housekeeping report physically cannot address a column that is not on the
+    table it writes.
+  - DB (structural, app → report): `pms_housekeeping_assignments.ingest_run_id`
+    is NOT NULL with no default (0341). Every row must name the report that
+    produced it, and an app write has no report to name — so the app cannot
+    write the mirror even by accident. This replaces the REVOKE + SECURITY
+    DEFINER write-gate the original design proposed: same wall, already built,
+    nothing extra to remember to route through.
+  - TEST: `pms-reshape-invariants.integration.test.ts` starts a clean, lands a
+    report over it, and asserts the ticked checklist survives.
+- **Where both sides have an opinion, and who wins.** Exactly two columns, both
+  decided in `mergeMirrorAndWork` (`src/lib/pms-rooms-server.ts`) and unit-tested
+  in `src/lib/__tests__/pms-rooms-server.test.ts`:
+  - *Assignment* — `room_work.assigned_staff_id` (a real person a human picked)
+    beats `pms_housekeeping_assignments.housekeeper_name` (a string another
+    system printed). Falls back to name matching when nobody has assigned it.
+  - *Do-not-disturb* — `room_work.dnd_active` is NULLABLE. NULL means Staxis has
+    no opinion and the report decides; `true`/`false` both mean a person told us,
+    and a person beats a 30-minute-old file. An `OR` here would trap a room on
+    DND forever after one stale report.
+- **KNOWN GAP — `room_work` has no foreign key to `pms_rooms_inventory`.** "Every
+  row of work belongs to a room this hotel has" is a true invariant the database
+  could enforce, and deliberately does not. Inventory is written by the report
+  ingest; `room_work` is written by a housekeeper standing in a doorway. A late,
+  partial or differently-spelled report would turn a Start tap into a 500 mid
+  shift. Production already carries one such orphan. A dangling row is a
+  reporting nuisance; a broken button is someone's job. **Trigger condition:**
+  revisit if orphans ever exceed a handful, and fix it by reconciling inventory,
+  not by breaking the tap.
+- **History:** D3-SHAPE, 2026-07-25. The premise was verified fresh rather than
+  inherited: the app's own writes to `pms_housekeeping_assignments` were ALREADY
+  failing the 0341 NOT NULL, which is the two-owners problem announcing itself.
+
+### DINV-10: one name means one person, and the definition of "same name" lives in the database
+
+- **Enforced by:**
+  - DB: `UNIQUE (property_id, alias_norm)` on `staff_aliases`, where `alias_norm`
+    is a GENERATED ALWAYS ... STORED column (migration
+    `0356_canonical_dimensions.sql`). Two divergent TypeScript `normalizeName()`
+    implementations already exist in this repo — `src/lib/pms-rooms-server.ts`
+    strips diacritics, `src/lib/inventory-match.ts` strips punctuation — and they
+    disagree. The database computing it once is the fix.
+  - DB: composite FK `(staff_id, property_id) REFERENCES staff (id, property_id)`
+    on `staff_aliases`, and `(assigned_staff_id, property_id)` on `room_work`.
+    An alias or an assignment pointing at another hotel's staff member is not
+    representable. `ON DELETE SET NULL` is column-scoped so removing a
+    housekeeper unassigns her rooms without deleting the record that the work
+    happened.
+  - DB: `room_work_assigned_source_chk` — an assignment always says how it was
+    decided (`manager` / `alias_exact` / `alias_first_name` / `pms_import`).
+    Written as two AND-ed clauses, not the obvious OR of two branches: in the OR
+    form the second branch evaluates to NULL when `assigned_source` is NULL, and
+    a CHECK accepts NULL — the constraint would allow the exact row it exists to
+    forbid.
+- **Fills from real events only.** `staff_aliases` is written when a human links
+  a name to a person (`recordStaffAlias`, source `manager`). Inferred matches are
+  deliberately NOT recorded: a guess is not a receipt, and writing one launders
+  it into a fact. An empty table behaves exactly like the code did before it
+  existed, which is what makes it safe to ship ahead of the data.
+- **Same shape for categories:** `pms_dimension_values` holds one row per
+  distinct raw channel / room-class / rate-plan string, with `canonical_code`
+  NULL until somebody says what it means. Readers use
+  `coalesce(canonical_code, raw_value)`, so an unmapped value degrades to itself
+  rather than vanishing from a report. See the DINV-3 carve-out for why it
+  carries no lineage stamp.
+- **History:** D3-SHAPE, 2026-07-25.
 
 ## Related
 

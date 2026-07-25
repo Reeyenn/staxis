@@ -131,7 +131,7 @@ let rpcCalls: RpcCall[] = [];
  *  shows up as a named failure instead of a silently-passing test. */
 let unevaluatedOps: string[] = [];
 
-const EVALUATED_OPS = new Set(['eq', 'neq', 'in', 'is', 'gt', 'gte', 'lt', 'lte', 'ilike', 'like']);
+const EVALUATED_OPS = new Set(['eq', 'neq', 'in', 'is', 'gt', 'gte', 'lt', 'lte', 'ilike', 'like', 'not']);
 
 type Row = Record<string, unknown>;
 
@@ -264,6 +264,14 @@ function matches(row: Row, f: Filter): boolean {
       const needle = String(f.value).replace(/%/g, '').toLowerCase();
       return String(actual ?? '').toLowerCase().includes(needle);
     }
+    // .not(column, op, value) negates an inner operator, so it carries a
+    // nested filter rather than a bare value. Evaluated (not just recorded)
+    // because a `.not` the fake ignored would leave a tool's rows unnarrowed
+    // and this suite would pass on a leak it never actually tested.
+    case 'not': {
+      const inner = f.value as { op: string; value: unknown };
+      return !matches(row, { op: inner.op, column: f.column, value: inner.value });
+    }
     default:
       return true; // recorded in unevaluatedOps
   }
@@ -299,12 +307,19 @@ function builder(call: DbCall): Record<string, unknown> {
     csv: async () => ({ data: '', error: null }),
   };
   for (const op of ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'is', 'like', 'ilike',
-    'contains', 'containedBy', 'overlaps', 'not', 'filter', 'match', 'or', 'textSearch']) {
+    'contains', 'containedBy', 'overlaps', 'filter', 'match', 'or', 'textSearch']) {
     api[op] = (column: unknown, value: unknown) => {
       call.filters.push({ op, column: String(column), value });
       return api;
     };
   }
+  // .not takes THREE arguments — .not('staff_id', 'is', null) — so it cannot
+  // share the two-argument shape above; the operator would land in `value` and
+  // the real value would be dropped on the floor.
+  api.not = (column: unknown, op: unknown, value: unknown) => {
+    call.filters.push({ op: 'not', column: String(column), value: { op: String(op), value } });
+    return api;
+  };
   api.select = () => api;
   api.order = () => api;
   api.range = () => api;

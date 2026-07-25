@@ -113,14 +113,28 @@ export async function getCurrentRoomsDate(db: ScopedDb): Promise<string> {
   // plan) must never become the default mutation date, or agent/voice commands
   // (mark clean, reset, DND, flag, assign) would silently write tomorrow's row.
   const today = todayStr();
-  const { data } = await db
-    .from('pms_housekeeping_assignments')
-    .select('date')
-    .lte('date', today)
-    .order('date', { ascending: false })
-    .limit(1);
-  const d = data?.[0]?.date;
-  return typeof d === 'string' ? d : today;
+  // Two sources since migration 0355: the PMS plan (pms_housekeeping_assignments)
+  // and our own work record (room_work). A room someone started working on
+  // without a report naming it is just as real a "current date" signal, so take
+  // the later of the two.
+  const [planRes, workRes] = await Promise.all([
+    db
+      .from('pms_housekeeping_assignments')
+      .select('date')
+      .lte('date', today)
+      .order('date', { ascending: false })
+      .limit(1),
+    db
+      .from('room_work')
+      .select('date')
+      .lte('date', today)
+      .order('date', { ascending: false })
+      .limit(1),
+  ]);
+  const candidates = [planRes.data?.[0]?.date, workRes.data?.[0]?.date]
+    .filter((d): d is string => typeof d === 'string');
+  if (candidates.length === 0) return today;
+  return candidates.reduce((a, b) => (a > b ? a : b));
 }
 
 /**

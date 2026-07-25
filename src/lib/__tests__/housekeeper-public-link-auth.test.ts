@@ -96,17 +96,34 @@ type RpcFn = typeof supabaseAdmin.rpc;
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
 const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
-// Build the pms_housekeeping_assignments row mergePmsRoomsForDate maps back to
-// the room's assigned housekeeper (resolved via the staff name lookup).
+// Migration 0355 split housekeeping in two, so the mock does too. Keeping the
+// old single-table shape here would let this suite pass against code that only
+// reads half the split — and this is the public housekeeper link, the surface
+// where a silently-empty page has bitten three times.
+
+/** What the PMS housekeeping report leaves on the mirror. */
 function assignmentRow(r: RoomFixture): Record<string, unknown> {
   const staff = r.assigned_to ? STAFF_BY_ID[r.assigned_to] : null;
   return {
     room_number: r.number,
     housekeeper_name: staff ? staff.name : null,
     cleaning_type: r.type === 'stayover' ? 'stayover' : r.type === 'checkout' ? 'departure' : null,
+    dnd_active: false,
+  };
+}
+
+/** What Staxis owns: the work itself, on public.room_work. */
+function roomWorkRow(r: RoomFixture): Record<string, unknown> {
+  return {
+    room_number: r.number,
+    // Deliberately NULL: these fixtures describe rooms the PMS report named,
+    // which nobody has explicitly assigned. That forces the read path through
+    // the housekeeper_name fallback — the branch that decides whether a
+    // housekeeper sees her rooms at all.
+    assigned_staff_id: null,
     status: r.completed_at ? 'completed' : 'not_started',
     started_at: r.started_at, completed_at: r.completed_at,
-    dnd_active: false,
+    dnd_active: null,
     is_paused: false, paused_at: null, total_paused_seconds: 0,
     exception_type: null, exception_note: null, exception_at: null,
     checklist_template_id: null, checklist_progress: [],
@@ -145,7 +162,7 @@ beforeEach(() => {
           .filter((r) => r.property_id === pid)
           .map((r) => ({ id: r.id, room_number: r.number, room_type: r.type }));
       }
-      if (table === 'pms_housekeeping_assignments') {
+      if (table === 'pms_housekeeping_assignments' || table === 'room_work') {
         const forPid = Object.values(ROOM_BY_ID).filter((r) => r.property_id === pid);
         if (selectCols.trim() === 'date') {
           const dates = [...new Set(forPid.map((r) => r.date))].sort().reverse();
@@ -153,9 +170,15 @@ beforeEach(() => {
         }
         const d = filter.date as string | undefined;
         const num = filter.room_number as string | undefined;
-        return forPid
-          .filter((r) => (!d || r.date === d) && (!num || r.number === num))
-          .map((r) => assignmentRow(r));
+        const rows = forPid.filter((r) => (!d || r.date === d) && (!num || r.number === num));
+        // Both halves are keyed the same way and the merge re-joins them on
+        // (date, room_number), so the date has to ride along when the caller
+        // asked for it — mergePmsRoomsForStaff queries a 29-day window.
+        const withDate = (base: Record<string, unknown>, r: RoomFixture) =>
+          selectCols.includes('date') ? { date: r.date, ...base } : base;
+        return table === 'room_work'
+          ? rows.map((r) => withDate(roomWorkRow(r), r))
+          : rows.map((r) => withDate(assignmentRow(r), r));
       }
       if (table === 'properties') return [{ pms_writeback_enabled: false }];
       // Security audit 2026-06-26 #1: the route now verifies a per-staff link

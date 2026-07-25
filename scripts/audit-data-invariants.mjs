@@ -71,6 +71,13 @@ const NON_FACT_PMS_TABLES = new Set([
   'pms_feed_values',
   'pms_recipes',
   'pms_field_mappings',
+  // 0356 — a dictionary, not a fact. One row per distinct raw channel /
+  // room class / rate plan value a property has EVER printed, accumulated
+  // across every report. There is no single ingestion event that produced it,
+  // so a lineage stamp would name one report arbitrarily and be a false
+  // receipt — worse than the honest absence. Documented under DINV-3 in
+  // src/lib/pms/INVARIANTS.md.
+  'pms_dimension_values',
 ]);
 
 /** Migrations from this number onward are held to DINV-3. Everything before

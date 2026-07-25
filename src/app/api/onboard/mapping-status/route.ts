@@ -239,7 +239,12 @@ async function computeNumbers(
 // recipe captured (✓) vs didn't (✗), and how many rows each holds live. Counts
 // are null until the map is promoted + the session polls (a park_draft writes
 // nothing yet) — captured-vs-missing is the immediately-useful signal.
-const FEED_CATALOG: { key: string; label: string; table: string }[] = [
+//
+// `rowFilter` exists because several feeds now share pms_reservations: 0354
+// folded no-shows and cancellations onto the booking they describe. Counting
+// the whole table for each of them would report the same number three times
+// and mean nothing.
+const FEED_CATALOG: { key: string; label: string; table: string; rowFilter?: { column: string; value: string } }[] = [
   { key: 'getRoomStatus',     label: 'Room status (clean/dirty/occupied)', table: 'pms_room_status_log' },
   { key: 'getArrivals',       label: "Today's arrivals",                   table: 'pms_reservations' },
   { key: 'getDepartures',     label: "Today's departures",                 table: 'pms_reservations' },
@@ -247,18 +252,24 @@ const FEED_CATALOG: { key: string; label: string; table: string }[] = [
   { key: 'getFutureBookings', label: 'Booking pace (how next week is filling)', table: 'pms_booking_pace' },
   { key: 'getGuestBalances',  label: 'Guest balances owed',                table: 'pms_guest_balances' },
   { key: 'getPaymentsDaily',  label: "Today's payments",                   table: 'pms_payments_daily' },
-  { key: 'getNoShows',        label: 'No-shows',                           table: 'pms_no_shows' },
-  { key: 'getCancellations',  label: 'Cancellations',                      table: 'pms_cancellations' },
+  { key: 'getNoShows',        label: 'No-shows',                           table: 'pms_reservations', rowFilter: { column: 'status', value: 'no_show' } },
+  { key: 'getCancellations',  label: 'Cancellations',                      table: 'pms_reservations', rowFilter: { column: 'status', value: 'cancelled' } },
 ];
 
 interface FeedStatus { key: string; label: string; captured: boolean; count: number | null }
 
-async function countTableRows(table: string, propertyId: string): Promise<number | null> {
+async function countTableRows(
+  table: string,
+  propertyId: string,
+  rowFilter?: { column: string; value: string },
+): Promise<number | null> {
   try {
-    const { count, error } = await supabaseAdmin
+    let q = supabaseAdmin
       .from(table)
       .select('id', { count: 'exact', head: true })
       .eq('property_id', propertyId);
+    if (rowFilter) q = q.eq(rowFilter.column, rowFilter.value);
+    const { count, error } = await q;
     return error ? null : (count ?? 0);
   } catch {
     return null;
@@ -288,7 +299,7 @@ async function buildFeedBreakdown(
     if (isCaptured) {
       if (f.key === 'getArrivals') count = numbers?.arrivalsToday.value ?? null;
       else if (f.key === 'getDepartures') count = numbers?.departuresToday.value ?? null;
-      else count = await countTableRows(f.table, propertyId);
+      else count = await countTableRows(f.table, propertyId, f.rowFilter);
     }
     return { key: f.key, label: f.label, captured: isCaptured, count };
   }));

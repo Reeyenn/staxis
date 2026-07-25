@@ -23,6 +23,7 @@
 // Mapping notes (legacy Room field ← new pms_* source):
 //   number          ← pms_rooms_inventory.room_number
 //   type            ← derived from pms_housekeeping_assignments.cleaning_type
+//                     (the PMS mirror — migration 0355)
 //                     ('departure'→'checkout', 'stayover'→'stayover',
 //                     else 'vacant')
 //   priority        ← always 'standard' (no clean source in new schema)
@@ -42,10 +43,15 @@
 //                     see the OUT_OF_SERVICE_STATUSES note.
 //   assignedTo      ← lookup staff by NFC-normalized space-collapsed name
 //                     match (best-effort; M7 fix). Diacritic-safe.
-//   assignedName    ← pms_housekeeping_assignments.housekeeper_name (trimmed)
-//   startedAt       ← pms_housekeeping_assignments.started_at
-//   completedAt     ← pms_housekeeping_assignments.completed_at
-//   isDnd           ← pms_housekeeping_assignments.dnd_active
+//   assignedTo      ← room_work.assigned_staff_id when a human assigned the
+//                     room; otherwise the name match above. See
+//                     mergeMirrorAndWork for the precedence rule.
+//   assignedName    ← the assigned person's name, else the PMS-printed
+//                     housekeeper_name (trimmed)
+//   startedAt       ← room_work.started_at
+//   completedAt     ← room_work.completed_at
+//   isDnd           ← room_work.dnd_active when set (a person told us),
+//                     else pms_housekeeping_assignments.dnd_active
 //   arrival         ← if pms_reservations.arrival_date == date AND
 //                     status IN ('booked','checked_in'): formatted M/D/YY
 //   stayoverDay     ← if reservation overlaps date (arrival < date <
@@ -54,10 +60,10 @@
 //                     the new schema)
 //   issueNote, dndNote, helpRequested, managerNotes, housekeeperNote,
 //   isRush, rushDueBy, markedForInspectionAt, inspectedBy, inspectedAt
-//                   ← pms_housekeeping_assignments workflow columns
-//                     (migrations 0269 + 0270). These were Maria-set
-//                     fields on the legacy `rooms` table; they now have a
-//                     pms_* home and round-trip through workflowStateFields().
+//                   ← room_work (migration 0355). Staxis-owned workflow
+//                     state, on its own table so an arriving PMS report
+//                     cannot overwrite it. Round-trips through
+//                     workflowStateFields().
 //   checklist, photoUrl
 //                   ← undefined (legacy unused; no source in new schema)
 //
@@ -83,6 +89,7 @@
 import { supabaseAdmin } from './supabase-admin';
 import type { Room, RoomStatus, RoomType } from '@/types';
 import { log } from './log';
+import { loadStaffAliasMap } from './pms/dimension-values';
 
 // ── Status mapping ─────────────────────────────────────────────────────────
 // Assignment-first derivation. Today's HK assignment row is the canonical
@@ -262,6 +269,14 @@ export interface StaffLookup {
 
 export function buildStaffLookup(
   rows: Array<{ id: string; name: string | null }>,
+  /**
+   * Recorded name→person links from staff_aliases (0356), keyed by the
+   * DATABASE's normalization. Optional: when absent, or empty, resolution
+   * behaves exactly as it did before the table existed. This table only ever
+   * holds links a human made, so it is consulted FIRST — a recorded decision
+   * beats a string comparison.
+   */
+  aliasByNorm?: Map<string, string>,
 ): StaffLookup {
   const byFullName = new Map<string, string>();
   const firstNameCounts = new Map<string, number>();
@@ -278,6 +293,14 @@ export function buildStaffLookup(
   }
   return {
     resolve(rawName) {
+      if (aliasByNorm && aliasByNorm.size > 0 && typeof rawName === 'string') {
+        // The DB's alias_norm is lower + trim + collapse whitespace. It does
+        // NOT strip diacritics, unlike normalizeName below, so match on the
+        // database's own definition rather than a lookalike.
+        const dbNorm = rawName.replace(/\s+/g, ' ').trim().toLowerCase();
+        const recorded = aliasByNorm.get(dbNorm);
+        if (recorded) return recorded;
+      }
       const full = normalizeName(rawName);
       if (!full) return undefined;
       const exact = byFullName.get(full);
@@ -303,8 +326,60 @@ interface StatusLogRow {
   changed_at: string;
 }
 
+/**
+ * The PMS side: one row per (date, room) of what the housekeeping report said.
+ * Migration 0355 left only these columns on pms_housekeeping_assignments.
+ */
+interface MirrorRow {
+  date?: string;
+  room_number: string;
+  housekeeper_name: string | null;
+  cleaning_type: string | null;
+  dnd_active: boolean | null;
+}
+
+/**
+ * The Staxis side: one row per (date, room) of what our own staff did.
+ * Migration 0355 moved every one of these off the mirror onto room_work, so a
+ * report arriving mid-clean physically cannot touch them.
+ */
+interface WorkRow {
+  date?: string;
+  room_number: string;
+  assigned_staff_id: string | null;
+  status: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  dnd_active: boolean | null;
+  is_paused?: boolean | null;
+  paused_at?: string | null;
+  total_paused_seconds?: number | null;
+  exception_type?: string | null;
+  exception_note?: string | null;
+  exception_at?: string | null;
+  checklist_template_id?: string | null;
+  checklist_progress?: string[] | null;
+  manager_notes?: string | null;
+  housekeeper_note?: string | null;
+  is_rush?: boolean | null;
+  rush_due_by?: string | null;
+  marked_for_inspection_at?: string | null;
+  inspected_by?: string | null;
+  inspected_at?: string | null;
+  issue_note?: string | null;
+  help_requested?: boolean | null;
+  dnd_note?: string | null;
+}
+
+/**
+ * The two sides merged back into the single shape the rest of this file (and
+ * its callers, and deriveStatus, and workflowStateFields) already speaks.
+ * The split is a fact about the database, not about every consumer.
+ */
 interface AssignmentRow {
   room_number: string;
+  /** Set when a human assigned this room. Beats housekeeper_name. */
+  assigned_staff_id?: string | null;
   housekeeper_name: string | null;
   cleaning_type: string | null;
   status: string | null;
@@ -348,6 +423,114 @@ interface StaffNameRow {
   id: string;
   name: string;
 }
+
+/**
+ * Separator for the (date, room_number) merge key. A room number is free text
+ * straight from the PMS, so the separator has to be something a room number
+ * cannot contain; '|' is not a character any hotel numbers a room with.
+ */
+const KEY_SEP = '|';
+
+/** An assignment plus the date it belongs to. */
+export type MergedAssignment = AssignmentRow & { date: string };
+
+/**
+ * Put the PMS mirror and Staxis's own work state back together.
+ *
+ * Migration 0355 split them so a report can never overwrite a housekeeper.
+ * Two columns exist on both sides, and this is the ONE place that decides who
+ * wins:
+ *
+ *   • Who is assigned. room_work.assigned_staff_id is a real person a human
+ *     picked. pms_housekeeping_assignments.housekeeper_name is a string
+ *     another system printed. The person wins.
+ *   • Do-not-disturb. room_work.dnd_active is NULL until a Staxis user says
+ *     something; once they have, they win over the report. The housekeeper
+ *     standing at the door knows better than a 30-minute-old file.
+ *
+ * Everything else comes from exactly one side, so there is nothing to decide.
+ * Rooms present on only one side still appear — a housekeeper can start a room
+ * the report has not mentioned, and the report can list a room nobody has
+ * touched.
+ */
+export function mergeMirrorAndWork(
+  mirrorRows: MirrorRow[],
+  workRows: WorkRow[],
+  staffNameById: Map<string, string>,
+): Map<string, MergedAssignment> {
+  const dateOf = (r: { date?: string }) => r.date ?? '';
+  const key = (r: { date?: string; room_number: string }) =>
+    dateOf(r) + KEY_SEP + String(r.room_number ?? '');
+
+  const out = new Map<string, MergedAssignment>();
+
+  for (const m of mirrorRows) {
+    out.set(key(m), {
+      date: dateOf(m),
+      room_number: String(m.room_number ?? ''),
+      assigned_staff_id: null,
+      housekeeper_name: m.housekeeper_name ?? null,
+      cleaning_type: m.cleaning_type ?? null,
+      status: null,
+      started_at: null,
+      completed_at: null,
+      dnd_active: m.dnd_active ?? null,
+    });
+  }
+
+  for (const w of workRows) {
+    const k = key(w);
+    const base = out.get(k);
+    const assignedName = w.assigned_staff_id
+      ? (staffNameById.get(w.assigned_staff_id) ?? base?.housekeeper_name ?? null)
+      : (base?.housekeeper_name ?? null);
+
+    out.set(k, {
+      date: dateOf(w),
+      room_number: String(w.room_number ?? ''),
+      assigned_staff_id: w.assigned_staff_id ?? null,
+      housekeeper_name: assignedName,
+      cleaning_type: base?.cleaning_type ?? null,
+      status: w.status ?? null,
+      started_at: w.started_at ?? null,
+      completed_at: w.completed_at ?? null,
+      // NULL on the work row means "Staxis has no opinion" — defer to the PMS.
+      dnd_active: w.dnd_active ?? base?.dnd_active ?? null,
+      is_paused: w.is_paused,
+      paused_at: w.paused_at,
+      total_paused_seconds: w.total_paused_seconds,
+      exception_type: w.exception_type,
+      exception_note: w.exception_note,
+      exception_at: w.exception_at,
+      checklist_template_id: w.checklist_template_id,
+      checklist_progress: w.checklist_progress,
+      manager_notes: w.manager_notes,
+      housekeeper_note: w.housekeeper_note,
+      is_rush: w.is_rush,
+      rush_due_by: w.rush_due_by,
+      marked_for_inspection_at: w.marked_for_inspection_at,
+      inspected_by: w.inspected_by,
+      inspected_at: w.inspected_at,
+      issue_note: w.issue_note,
+      help_requested: w.help_requested,
+      dnd_note: w.dnd_note,
+    });
+  }
+
+  return out;
+}
+
+/**
+ * Every column room_work carries into the merged assignment shape. Kept as one
+ * string so the two read paths cannot drift apart.
+ */
+// Written as one literal, not a concatenation: supabase-js infers the row type
+// from the select string at the type level, and `'a' + 'b'` widens to `string`,
+// which silently degrades the result type to GenericStringError.
+const ROOM_WORK_COLUMNS = 'room_number, assigned_staff_id, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note';
+
+/** What the PMS housekeeping report leaves on the mirror after 0355. */
+const MIRROR_COLUMNS = 'room_number, housekeeper_name, cleaning_type, dnd_active';
 
 // Type-narrowing helpers — Promise.allSettled doesn't preserve our row
 // types in TypeScript without a guard. Supabase queries without
@@ -412,8 +595,13 @@ export async function mergePmsRoomsForDate(
   // No row-cap on this query — the index (property_id, room_number,
   // changed_at desc) handles it. M2 + M3 fix replaces the original
   // 30-day-window + 10k-cap which could silently miss rooms.
+  // Kicked off here rather than awaited at the point of use, so the alias read
+  // rides along with the other feeds instead of adding a round-trip to a page
+  // a housekeeper is waiting on.
+  const aliasesPromise = loadStaffAliasMap(pid);
+
   const ninetyDaysAgo = new Date(Date.now() - 90 * 86_400_000).toISOString();
-  const [statusRes, assignRes, resRes, staffRes] = await Promise.allSettled([
+  const [statusRes, assignRes, workRes, resRes, staffRes] = await Promise.allSettled([
     supabaseAdmin
       .from('pms_room_status_log')
       .select('room_number, status, changed_at')
@@ -422,7 +610,12 @@ export async function mergePmsRoomsForDate(
       .order('changed_at', { ascending: false }),
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note')
+      .select(MIRROR_COLUMNS)
+      .eq('property_id', pid)
+      .eq('date', date),
+    supabaseAdmin
+      .from('room_work')
+      .select(ROOM_WORK_COLUMNS)
       .eq('property_id', pid)
       .eq('date', date),
     // M4 fix — deterministic order so double-bookings produce the
@@ -445,9 +638,11 @@ export async function mergePmsRoomsForDate(
   ]);
 
   const statusRows = fulfilledData<StatusLogRow>(statusRes, 'status_log', pid, date);
-  const assignmentRows = fulfilledData<AssignmentRow>(assignRes, 'assignments', pid, date);
+  const mirrorRows = fulfilledData<MirrorRow>(assignRes, 'assignments', pid, date);
+  const workRows = fulfilledData<WorkRow>(workRes, 'room_work', pid, date);
   const reservationRows = fulfilledData<ReservationRow>(resRes, 'reservations', pid, date);
   const staffRows = fulfilledData<StaffNameRow>(staffRes, 'staff', pid, date);
+  const staffNameById = new Map(staffRows.map((s) => [s.id, s.name]));
 
   // Dedupe status_log → latest per room_number.
   const latestStatusByRoom = new Map<string, string>();
@@ -457,11 +652,13 @@ export async function mergePmsRoomsForDate(
     latestStatusByRoom.set(num, String(row.status ?? 'unknown'));
   }
 
-  // One assignment per (date, room). The unique constraint in the schema
-  // makes this 1:1, but we still take the last write in case of dedupe edge.
+  // One assignment per (date, room), rebuilt from the mirror plus our own
+  // work state. Both sides are keyed (property_id, date, room_number), and
+  // this query pins a single date, so the merge key collapses to room_number.
+  const merged = mergeMirrorAndWork(mirrorRows, workRows, staffNameById);
   const assignmentByRoom = new Map<string, AssignmentRow>();
-  for (const row of assignmentRows) {
-    assignmentByRoom.set(String(row.room_number ?? ''), row);
+  for (const row of merged.values()) {
+    assignmentByRoom.set(row.room_number, row);
   }
 
   // Reservation per room — deterministic first-match-wins via the
@@ -484,10 +681,11 @@ export async function mergePmsRoomsForDate(
     });
   }
 
-  // Staff name → id lookup with collision-aware fuzzy match. Two staff
-  // sharing a first name disable the first-name fallback for both, so
-  // a bare "Maria" assignment doesn't get routed to the wrong Maria.
-  const staffLookup = buildStaffLookup(staffRows);
+  // Staff name → id lookup. Recorded aliases first (a link a human made),
+  // then collision-aware fuzzy match: two staff sharing a first name disable
+  // the first-name fallback for both, so a bare "Maria" assignment doesn't get
+  // routed to the wrong Maria.
+  const staffLookup = buildStaffLookup(staffRows, await aliasesPromise);
 
   // 6. Compose Room[] — one per inventory row.
   const rooms: Room[] = [];
@@ -522,7 +720,9 @@ export async function mergePmsRoomsForDate(
       : (reservationDerivedType ?? 'vacant');
 
     const assignedNameRaw = assignment?.housekeeper_name?.trim() || undefined;
-    const assignedTo = staffLookup.resolve(assignedNameRaw);
+    // An id a human chose beats a name string another system printed. Falls
+    // back to name matching for rooms the PMS assigned and nobody has touched.
+    const assignedTo = assignment?.assigned_staff_id ?? staffLookup.resolve(assignedNameRaw);
 
     let arrival: string | undefined;
     let stayoverDay: number | undefined;
@@ -669,10 +869,18 @@ export async function mergePmsRoomsForStaff(
   const windowAhead = new Date(Date.now() + 14 * 86_400_000)
     .toISOString().slice(0, 10);
 
-  const [assignRes, staffListRes] = await Promise.allSettled([
+  const staffAliasesPromise = loadStaffAliasMap(pid);
+
+  const [assignRes, workRes, staffListRes] = await Promise.allSettled([
     supabaseAdmin
       .from('pms_housekeeping_assignments')
-      .select('date, room_number, housekeeper_name, cleaning_type, status, started_at, completed_at, dnd_active, is_paused, paused_at, total_paused_seconds, exception_type, exception_note, exception_at, checklist_template_id, checklist_progress, manager_notes, housekeeper_note, is_rush, rush_due_by, marked_for_inspection_at, inspected_by, inspected_at, issue_note, help_requested, dnd_note')
+      .select(`date, ${MIRROR_COLUMNS}`)
+      .eq('property_id', pid)
+      .gte('date', windowBack)
+      .lte('date', windowAhead),
+    supabaseAdmin
+      .from('room_work')
+      .select(`date, ${ROOM_WORK_COLUMNS}`)
       .eq('property_id', pid)
       .gte('date', windowBack)
       .lte('date', windowAhead),
@@ -682,8 +890,11 @@ export async function mergePmsRoomsForStaff(
       .eq('property_id', pid),
   ]);
 
-  // Assignments — hard requirement. Fail closed; silent empty would render
-  // every HK shift as "no work."
+  // Both sides are hard requirements. Fail closed — a silent empty here
+  // renders every HK shift as "no work", which is the exact failure mode the
+  // housekeeper page has hit three times (see the RLS note in CLAUDE.md).
+  // room_work is where a started clean lives; losing it would show a
+  // half-finished shift as untouched.
   if (assignRes.status === 'rejected') {
     log.error('[pms-rooms-server] assignments-for-staff query rejected', {
       pid, staffId, msg: String(assignRes.reason),
@@ -696,16 +907,36 @@ export async function mergePmsRoomsForStaff(
     });
     throw assignRes.value.error;
   }
-  const allAssignments = (assignRes.value.data ?? []) as (AssignmentRow & { date: string })[];
+  if (workRes.status === 'rejected') {
+    log.error('[pms-rooms-server] room_work-for-staff query rejected', {
+      pid, staffId, msg: String(workRes.reason),
+    });
+    throw new Error('room_work query failed');
+  }
+  if (workRes.value.error) {
+    log.error('[pms-rooms-server] room_work-for-staff query failed', {
+      pid, staffId, msg: workRes.value.error.message,
+    });
+    throw workRes.value.error;
+  }
+  const mirrorRows = (assignRes.value.data ?? []) as (MirrorRow & { date: string })[];
+  const workRows = (workRes.value.data ?? []) as (WorkRow & { date: string })[];
   const staffListRows = fulfilledData<StaffNameRow>(staffListRes, 'staff', pid, today);
+  const staffNameById = new Map(staffListRows.map((s) => [s.id, s.name]));
 
-  // 3. Filter assignments to THIS staff member via the StaffLookup
-  //    (collision-aware first-name fallback).
-  const staffLookup = buildStaffLookup(staffListRows);
-  const matching = allAssignments.filter(a => {
-    const resolved = staffLookup.resolve(a.housekeeper_name);
-    return resolved === staffId;
-  });
+  // 3. Filter to THIS staff member. An explicit assignment (a real staff id a
+  //    human picked) is authoritative. Only when nobody has assigned the room
+  //    do we fall back to matching the PMS-printed name via the StaffLookup,
+  //    with its collision-aware first-name rule.
+  const staffLookup = buildStaffLookup(staffListRows, await staffAliasesPromise);
+  const mergedByKey = mergeMirrorAndWork(mirrorRows, workRows, staffNameById);
+  const matching: MergedAssignment[] = [];
+  for (const row of mergedByKey.values()) {
+    const mine = row.assigned_staff_id
+      ? row.assigned_staff_id === staffId
+      : staffLookup.resolve(row.housekeeper_name) === staffId;
+    if (mine) matching.push(row);
+  }
   if (matching.length === 0) return [];
 
   // 4. Supporting feeds for the matching room-numbers / date-window.
@@ -772,7 +1003,7 @@ export async function mergePmsRoomsForStaff(
     const type = mapType(assignment.cleaning_type);
 
     const assignedNameRaw = assignment.housekeeper_name?.trim() || undefined;
-    const assignedTo = staffLookup.resolve(assignedNameRaw);
+    const assignedTo = assignment.assigned_staff_id ?? staffLookup.resolve(assignedNameRaw);
 
     let arrival: string | undefined;
     let stayoverDay: number | undefined;

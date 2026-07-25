@@ -62,7 +62,7 @@ function assert(cond: unknown, label: string, detail?: unknown) { cond ? ok(labe
 
 async function reset() {
   // Delete only the scratch rows. cleaning_events are keyed by room_number too.
-  for (const t of ['pms_housekeeping_assignments', 'pms_room_status_log', 'pms_rooms_inventory', 'pms_reservations', 'cleaning_events'] as const) {
+  for (const t of ['room_work', 'pms_housekeeping_assignments', 'pms_room_status_log', 'pms_rooms_inventory', 'pms_reservations', 'cleaning_events'] as const) {
     await supabaseAdmin.from(t).delete().eq('property_id', PROPERTY_ID).in('room_number', [R_CHECKOUT, R_STAYOVER, R_VACANT]);
   }
   await supabaseAdmin.from('staff').delete().eq('id', STAFF_ID);
@@ -71,6 +71,25 @@ async function reset() {
 
 async function seed() {
   const syncedAt = NOW();
+  // Every pms_* row needs a receipt naming the report that produced it
+  // (migration 0341). This scratch slice is not a real report, so it gets its
+  // own honestly-labelled run rather than borrowing a real one.
+  const { data: runRow, error: runErr } = await supabaseAdmin
+    .from('pms_ingest_runs')
+    .insert({
+      property_id: PROPERTY_ID,
+      source_kind: 'legacy',
+      mode: 'live',
+      parser_name: 'seed-pms-operational',
+      parser_version: 'scratch',
+      source_captured_at: syncedAt,
+      finished_at: syncedAt,
+      status: 'succeeded',
+    })
+    .select('id')
+    .single();
+  if (runErr || !runRow) fail('could not create the scratch ingest run', runErr);
+  const ingestRunId = (runRow as { id: string }).id;
   // Scratch housekeeper.
   await supabaseAdmin.from('staff').upsert(
     { id: STAFF_ID, property_id: PROPERTY_ID, name: STAFF_NAME, is_active: true },
@@ -79,23 +98,34 @@ async function seed() {
   // Inventory.
   await supabaseAdmin.from('pms_rooms_inventory').upsert(
     [
-      { property_id: PROPERTY_ID, room_number: R_CHECKOUT, room_type: 'King', last_synced_at: syncedAt },
-      { property_id: PROPERTY_ID, room_number: R_STAYOVER, room_type: 'Queen', last_synced_at: syncedAt },
-      { property_id: PROPERTY_ID, room_number: R_VACANT, room_type: 'King', last_synced_at: syncedAt },
+      { property_id: PROPERTY_ID, room_number: R_CHECKOUT, room_type: 'King', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
+      { property_id: PROPERTY_ID, room_number: R_STAYOVER, room_type: 'Queen', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
+      { property_id: PROPERTY_ID, room_number: R_VACANT, room_type: 'King', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
     ],
     { onConflict: 'property_id,room_number' },
   );
   // Status log (latest-per-room).
   await supabaseAdmin.from('pms_room_status_log').insert([
-    { property_id: PROPERTY_ID, room_number: R_CHECKOUT, status: 'vacant_dirty', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt },
-    { property_id: PROPERTY_ID, room_number: R_STAYOVER, status: 'occupied_dirty', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt },
-    { property_id: PROPERTY_ID, room_number: R_VACANT, status: 'vacant_clean', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt },
+    { property_id: PROPERTY_ID, room_number: R_CHECKOUT, status: 'vacant_dirty', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
+    { property_id: PROPERTY_ID, room_number: R_STAYOVER, status: 'occupied_dirty', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
+    { property_id: PROPERTY_ID, room_number: R_VACANT, status: 'vacant_clean', changed_at: syncedAt, source: 'cua', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
   ]);
-  // Assignments (checkout + stayover assigned to the scratch HK today; vacant unassigned).
+  // The PMS side of the plan (checkout + stayover named to the scratch HK
+  // today; vacant unassigned). Migration 0355 split the report's view of
+  // housekeeping from ours, so this writes only what a report would carry.
   await supabaseAdmin.from('pms_housekeeping_assignments').upsert(
     [
-      { property_id: PROPERTY_ID, date: DATE, room_number: R_CHECKOUT, housekeeper_name: STAFF_NAME, cleaning_type: 'departure', status: 'not_started', last_synced_at: syncedAt },
-      { property_id: PROPERTY_ID, date: DATE, room_number: R_STAYOVER, housekeeper_name: STAFF_NAME, cleaning_type: 'stayover', status: 'not_started', last_synced_at: syncedAt },
+      { property_id: PROPERTY_ID, date: DATE, room_number: R_CHECKOUT, housekeeper_name: STAFF_NAME, cleaning_type: 'departure', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
+      { property_id: PROPERTY_ID, date: DATE, room_number: R_STAYOVER, housekeeper_name: STAFF_NAME, cleaning_type: 'stayover', last_synced_at: syncedAt, ingest_run_id: ingestRunId },
+    ],
+    { onConflict: 'property_id,date,room_number' },
+  );
+  // Our side: the work itself, linked to the housekeeper by id rather than by
+  // her name being spelled the same way in two systems.
+  await supabaseAdmin.from('room_work').upsert(
+    [
+      { property_id: PROPERTY_ID, date: DATE, room_number: R_CHECKOUT, assigned_staff_id: STAFF_ID, assigned_source: 'manager', status: 'not_started' },
+      { property_id: PROPERTY_ID, date: DATE, room_number: R_STAYOVER, assigned_staff_id: STAFF_ID, assigned_source: 'manager', status: 'not_started' },
     ],
     { onConflict: 'property_id,date,room_number' },
   );
@@ -104,8 +134,8 @@ async function seed() {
   const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
   await supabaseAdmin.from('pms_reservations').upsert(
     [
-      { property_id: PROPERTY_ID, pms_reservation_id: 'SEED-RES-1', room_number: R_CHECKOUT, guest_name: 'Departing Guest', arrival_date: yesterday, departure_date: DATE, status: 'checked_in' },
-      { property_id: PROPERTY_ID, pms_reservation_id: 'SEED-RES-2', room_number: R_STAYOVER, guest_name: 'Staying Guest', arrival_date: yesterday, departure_date: tomorrow, status: 'checked_in' },
+      { property_id: PROPERTY_ID, pms_reservation_id: 'SEED-RES-1', room_number: R_CHECKOUT, guest_name: 'Departing Guest', arrival_date: yesterday, departure_date: DATE, status: 'checked_in', ingest_run_id: ingestRunId },
+      { property_id: PROPERTY_ID, pms_reservation_id: 'SEED-RES-2', room_number: R_STAYOVER, guest_name: 'Staying Guest', arrival_date: yesterday, departure_date: tomorrow, status: 'checked_in', ingest_run_id: ingestRunId },
     ],
     { onConflict: 'property_id,pms_reservation_id' },
   );

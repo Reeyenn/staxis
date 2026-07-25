@@ -163,7 +163,7 @@ describe('saveGenericTable: empty batch is a healthy no-op (Codex P1)', () => {
     // ahead of the ingestRunId guard, so this also pins that ordering. If a
     // future edit moved the lineage guard first, an empty feed would start
     // reporting ok:false and every legitimately-empty poll would look broken.
-    const result = await saveGenericTable(PID, 'pms_cancellations', [], {
+    const result = await saveGenericTable(PID, 'pms_reservations', [], {
       ingestRunId: '',
       sourceCapturedAt: '',
     });

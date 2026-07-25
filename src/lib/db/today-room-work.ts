@@ -128,8 +128,9 @@ export function subscribeTodayRoomWork(
   const channels: RealtimeChannel[] = [];
 
   const tables = [
-    'pms_room_status_log',           // CUA writes a row per room every poll
-    'pms_housekeeping_assignments',  // manager / CUA assignment swaps
+    'pms_room_status_log',           // a row per room on every report
+    'pms_housekeeping_assignments',  // the PMS-reported plan
+    'room_work',                     // our own assignment + lifecycle (0355)
     'pms_reservations',              // same-day check-in flips stay_type
   ] as const;
 

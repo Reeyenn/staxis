@@ -4,8 +4,9 @@
 //   • get_payments_summary     → pms_payments_daily_current  ("how much did we collect today?")
 //   • get_future_bookings      → pms_reservations + pms_booking_pace
 //                                                            ("how booked are we next weekend?")
-//   • get_recent_no_shows      → pms_no_shows                ("any no-shows last night?")
-//   • get_recent_cancellations → pms_cancellations
+//   • get_recent_no_shows      → pms_reservations (status='no_show')
+//                                                            ("any no-shows last night?")
+//   • get_recent_cancellations → pms_reservations (status='cancelled')
 //
 // These pms_* tables are RLS deny-all-browser (migration 0276) — they MUST be
 // read with the service-role client and scoped to one hotel. That scoping is
@@ -26,6 +27,12 @@
 //      different days collapsed into one row — a booking pace curve that could
 //      never be drawn. Individual future stays now come from pms_reservations;
 //      the aggregate on-the-books curve comes from pms_booking_pace.
+//   3. pms_no_shows and pms_cancellations are GONE too (migration 0354). They
+//      were keyed on the same (property_id, pms_reservation_id) as
+//      pms_reservations with nothing reconciling them, so one booking could
+//      exist in three tables saying three different things. A cancellation is
+//      now a state of the reservation — status plus cancelled_date — and a
+//      terminal-state trigger stops a stale report un-cancelling it.
 
 import { registerTool, type ToolResult } from '../tools';
 import { getPropertyToday } from './queries';
@@ -47,18 +54,23 @@ function addDays(iso: string, delta: number): string {
 }
 
 /**
- * A2 — the newest `captured_at` across the rows this tool just read, or null.
+ * A2 — the newest arrival stamp across the rows this tool just read, or null.
  *
- * Every one of these five tables stamps `captured_at NOT NULL DEFAULT now()`
- * on every row (migration 0276; a future-dated value is refused by 0351), so
- * this is a TRUER data age than the property-level signal. executeTool honors
- * an `asOf` the handler already set and computes the age/tier from it.
+ * These tables stamp `captured_at NOT NULL DEFAULT now()` on every row
+ * (migration 0276; a future-dated value is refused by 0351), so this is a
+ * TRUER data age than the property-level signal. executeTool honors an `asOf`
+ * the handler already set and computes the age/tier from it.
+ *
+ * pms_reservations uses `last_synced_at` for the same purpose — it predates
+ * the captured_at convention and now serves the no-show and cancellation
+ * readers too (migration 0354 folded those tables into it), so both names are
+ * accepted rather than silently reporting "age unknown".
  */
 function latestCapturedAt(rows: Array<Record<string, unknown>>): string | null {
   let newest: string | null = null;
   let newestMs = -Infinity;
   for (const r of rows) {
-    const c = r.captured_at;
+    const c = r.captured_at ?? r.last_synced_at;
     if (typeof c !== 'string') continue;
     // Parse rather than compare strings: two rows can legitimately carry
     // different UTC-offset renderings of the same instant.
@@ -317,9 +329,13 @@ registerTool<{ nights?: number }>({
     const today = await getPropertyToday(ctx.db);
     const back = Number.isFinite(nights) && (nights as number) > 0 ? Math.floor(nights as number) : 1;
     const cutoff = addDays(today, -back);
+    // A no-show is a state of the booking, not a separate object (0354 folded
+    // pms_no_shows into pms_reservations), so this reads the reservation's own
+    // row and the two can no longer disagree about the same guest.
     const { data, error } = await ctx.db
-      .from('pms_no_shows')
-      .select('pms_reservation_id, guest_name, room_number, arrival_date, rate_per_night_cents, total_amount_cents, channel_name, no_show_date, captured_at')
+      .from('pms_reservations')
+      .select('pms_reservation_id, guest_name, room_number, arrival_date, rate_per_night_cents, total_amount_cents, channel_name, no_show_date, last_synced_at')
+      .eq('status', 'no_show')
       .gte('arrival_date', cutoff)
       .order('arrival_date', { ascending: false })
       .limit(100);
@@ -362,9 +378,12 @@ registerTool<{ days?: number }>({
     const today = await getPropertyToday(ctx.db);
     const back = Number.isFinite(days) && (days as number) > 0 ? Math.floor(days as number) : 7;
     const cutoff = addDays(today, -back);
+    // Same fold as no-shows: cancelling a booking is something that happened to
+    // that booking, so it lives on its row (0354).
     const { data, error } = await ctx.db
-      .from('pms_cancellations')
-      .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, reason, captured_at')
+      .from('pms_reservations')
+      .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, cancellation_reason, last_synced_at')
+      .eq('status', 'cancelled')
       .gte('cancelled_date', cutoff)
       .order('cancelled_date', { ascending: false })
       .limit(100);
@@ -383,7 +402,7 @@ registerTool<{ days?: number }>({
           cancelledOn: r.cancelled_date ?? null,
           cancellationFee: usd(r.cancellation_fee_cents),
           value: usd(r.total_amount_cents),
-          reason: r.reason ?? null,
+          reason: r.cancellation_reason ?? null,
           channel: r.channel_name ?? null,
         })),
         note: rows.length === 0 ? 'No cancellations recorded in this window.' : undefined,

@@ -2084,6 +2084,71 @@ Keep `postgrestVersion` matching the `__InternalSupabase.PostgrestVersion` alrea
 
 ---
 
+## The housekeeper's phone shows no rooms (or a started clean looks untouched)
+
+**Symptom.** A housekeeper opens her SMS link and sees an empty list, or she
+sees her rooms but a clean she started this morning reads as not started. The
+manager's board may look fine, which makes it feel like a phone problem.
+
+**Cause, most likely first.**
+
+1. **Migration 0355 has not been applied.** The app reads and writes
+   `public.room_work`; if that table does not exist yet, every housekeeper read
+   fails. Check: `select to_regclass('public.room_work');` — a NULL means apply
+   `supabase/migrations/0355_housekeeping_mirror_state_split.sql` (and 0354
+   before it).
+2. **The two halves are not joining.** Since 0355 a room's plan lives on
+   `pms_housekeeping_assignments` and its work lives on `room_work`, joined on
+   `(property_id, date, room_number)`. A room number that differs by a space or
+   a leading zero between the two produces exactly this symptom. Check both
+   sides for one room:
+
+   ```sql
+   select 'plan' as side, date, room_number, housekeeper_name from public.pms_housekeeping_assignments
+    where property_id = '<pid>' and date = current_date
+   union all
+   select 'work', date, room_number, assigned_staff_id::text from public.room_work
+    where property_id = '<pid>' and date = current_date
+   order by room_number, side;
+   ```
+
+3. **Nobody is assigned and the name does not match.** A housekeeper sees a room
+   when `room_work.assigned_staff_id` is her id, OR when nothing is assigned and
+   the PMS-printed `housekeeper_name` resolves to her. Check what the report
+   actually printed, then either fix the staff record's name or record the link:
+   insert a `staff_aliases` row for `(property_id, alias_raw, staff_id,
+   source='manager')`. That is the permanent fix — it survives the next report.
+4. **The usual suspect.** The page is public and unauthenticated. If it renders
+   empty with a 200 and no error, confirm the read went through `/api/housekeeper/*`
+   with the service-role client and not the browser client. See the RLS section
+   in `CLAUDE.md`; this class of bug has bitten three times.
+
+**Do not "fix" it by writing housekeeping state back onto
+`pms_housekeeping_assignments`.** Those columns no longer exist there, and the
+NOT NULL `ingest_run_id` will reject the write. That is the design working: a
+report cannot overwrite a housekeeper, and the app cannot forge a report.
+
+## Applying the reshape migrations 0354-0356
+
+All three abort rather than proceed when reality does not match what they were
+written against, so a failed apply is information, not damage. Apply in order.
+
+- **0354 refuses to run** with `pms_no_shows holds N row(s)` — the fold assumed
+  both satellite tables were empty. Decide the conflict policy by hand (which
+  row wins when the reservation and the cancellation disagree), fold those rows
+  manually, then re-run.
+- **0355 refuses to run** with `expected all 29 app-owned columns, found N` —
+  someone changed `pms_housekeeping_assignments` since the migration was
+  written. Re-derive the column list against the live table before running it;
+  do not delete the check.
+- **0355 raises a NOTICE** about assignment rows whose room is not in
+  `pms_rooms_inventory`. That is expected (production has one). They are carried
+  across as-is, deliberately — see DINV-9 in `src/lib/pms/INVARIANTS.md`.
+- **After applying all three**, regenerate the types — `npm run db:types` — and
+  hit `/api/admin/doctor`. `src/types/database.types.ts` currently carries three
+  hand-written table blocks (marked as such) because the tables do not exist in
+  production yet; the regeneration replaces them.
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

@@ -119,43 +119,74 @@ export async function deriveCleaningEventFeatures(args: DeriveArgs): Promise<Cle
     });
   }
 
-  // 5. totalRoomsAssignedToHk + routePosition + wasDndDuringClean —
-  //    from pms_housekeeping_assignments. Join by housekeeper_name
-  //    (looked up from staff table).
+  // 5. totalRoomsAssignedToHk + routePosition + wasDndDuringClean.
+  //    Migration 0355 split housekeeping in two: the assignment a human made is
+  //    a real staff id on room_work, while scheduled_time and the PMS-printed
+  //    housekeeper name stay on the mirror. A room counts as hers if either
+  //    side says so — the explicit assignment first, then the report's name.
+  //    Dropping the name fallback would zero this feature for every hotel that
+  //    lets the PMS do the assigning, which is most of them.
   try {
-    const { data: staffRow } = await supabaseAdmin
-      .from('staff')
-      .select('name')
-      .eq('id', args.staffId)
-      .maybeSingle();
-    const myName = (staffRow?.name as string | undefined) ?? null;
-    if (myName) {
-      const { data } = await supabaseAdmin
+    const [workRes, planRes, staffRes] = await Promise.all([
+      supabaseAdmin
+        .from('room_work')
+        .select('room_number, assigned_staff_id, dnd_active')
+        .eq('property_id', args.propertyId)
+        .eq('date', args.date),
+      supabaseAdmin
         .from('pms_housekeeping_assignments')
         .select('room_number, scheduled_time, housekeeper_name, dnd_active')
         .eq('property_id', args.propertyId)
-        .eq('date', args.date);
-      if (Array.isArray(data) && data.length > 0) {
-        const mine = (data as Array<{
-          room_number: string; scheduled_time: string | null;
-          housekeeper_name: string | null; dnd_active: boolean | null;
-        }>)
-          .filter(r => r.housekeeper_name === myName)
-          .sort((a, b) => {
-            const ta = a.scheduled_time ? Date.parse(a.scheduled_time) : 0;
-            const tb = b.scheduled_time ? Date.parse(b.scheduled_time) : 0;
-            if (ta !== tb) return ta - tb;
-            return a.room_number.localeCompare(b.room_number);
-          });
-        out.totalRoomsAssignedToHk = mine.length;
-        const idx = mine.findIndex(r => r.room_number === args.roomNumber);
-        out.routePosition = idx >= 0 ? idx + 1 : null;
-        const myRow = mine.find(r => r.room_number === args.roomNumber);
-        out.wasDndDuringClean = myRow?.dnd_active ?? null;
-      }
+        .eq('date', args.date),
+      supabaseAdmin
+        .from('staff')
+        .select('name')
+        .eq('id', args.staffId)
+        .maybeSingle(),
+    ]);
+
+    const myName = ((staffRes.data as { name?: string } | null)?.name ?? null);
+    const workByRoom = new Map(
+      ((workRes.data ?? []) as Array<{
+        room_number: string; assigned_staff_id: string | null; dnd_active: boolean | null;
+      }>).map((w) => [String(w.room_number), w]),
+    );
+    const planRows = (planRes.data ?? []) as Array<{
+      room_number: string; scheduled_time: string | null;
+      housekeeper_name: string | null; dnd_active: boolean | null;
+    }>;
+
+    const rooms = new Set([...workByRoom.keys(), ...planRows.map((p) => String(p.room_number))]);
+    const planByRoom = new Map(planRows.map((p) => [String(p.room_number), p]));
+
+    const mine = [...rooms]
+      .filter((num) => {
+        const assigned = workByRoom.get(num)?.assigned_staff_id ?? null;
+        if (assigned) return assigned === args.staffId;
+        return myName !== null && planByRoom.get(num)?.housekeeper_name === myName;
+      })
+      .map((num) => ({
+        room_number: num,
+        scheduled_time: planByRoom.get(num)?.scheduled_time ?? null,
+        // Our own observation wins; fall back to what the report said.
+        dnd_active: workByRoom.get(num)?.dnd_active ?? planByRoom.get(num)?.dnd_active ?? null,
+      }))
+      .sort((a, b) => {
+        const ta = a.scheduled_time ? Date.parse(a.scheduled_time) : 0;
+        const tb = b.scheduled_time ? Date.parse(b.scheduled_time) : 0;
+        if (ta !== tb) return ta - tb;
+        return a.room_number.localeCompare(b.room_number);
+      });
+
+    if (mine.length > 0) {
+      out.totalRoomsAssignedToHk = mine.length;
+      const idx = mine.findIndex(r => r.room_number === args.roomNumber);
+      out.routePosition = idx >= 0 ? idx + 1 : null;
+      const myRow = mine.find(r => r.room_number === args.roomNumber);
+      out.wasDndDuringClean = myRow?.dnd_active ?? null;
     }
   } catch (err) {
-    log.warn('feature-derivation: pms_housekeeping_assignments failed', {
+    log.warn('feature-derivation: room assignment lookup failed', {
       err: (err as Error).message, propertyId: args.propertyId, date: args.date,
     });
   }

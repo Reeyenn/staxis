@@ -13347,6 +13347,248 @@ export type Database = {
           },
         ]
       }
+      // ── HAND-ADDED, PENDING MIGRATION APPLY ────────────────────────────
+      // room_work (0355), staff_aliases and pms_dimension_values (0356) do
+      // not exist in production yet, so `npm run db:types` cannot generate
+      // them. These three blocks were written by hand from the migration DDL
+      // so the code that reads and writes them type-checks. Re-run
+      // `npm run db:types` immediately after applying 0354-0356 — that
+      // regenerates the whole file from the live schema and replaces these.
+      room_work: {
+        Row: {
+          assigned_source: string | null
+          assigned_staff_id: string | null
+          checklist_progress: string[]
+          checklist_template_id: string | null
+          completed_at: string | null
+          created_at: string
+          date: string
+          dnd_active: boolean | null
+          dnd_note: string | null
+          exception_at: string | null
+          exception_note: string | null
+          exception_type: string | null
+          help_requested: boolean
+          housekeeper_note: string | null
+          housekeeper_note_at: string | null
+          inspected_at: string | null
+          inspected_by: string | null
+          is_paused: boolean
+          is_rush: boolean
+          issue_note: string | null
+          manager_notes: string | null
+          manager_notes_at: string | null
+          manager_notes_by_account_id: string | null
+          marked_for_inspection_at: string | null
+          paused_at: string | null
+          property_id: string
+          room_number: string
+          rush_due_by: string | null
+          rush_duration_label: string | null
+          rush_requested_by_account_id: string | null
+          rush_set_at: string | null
+          rush_set_by: string | null
+          started_at: string | null
+          status: string | null
+          time_spent_minutes: number | null
+          total_paused_seconds: number
+          updated_at: string
+        }
+        Insert: {
+          assigned_source?: string | null
+          assigned_staff_id?: string | null
+          checklist_progress?: string[]
+          checklist_template_id?: string | null
+          completed_at?: string | null
+          created_at?: string
+          date: string
+          dnd_active?: boolean | null
+          dnd_note?: string | null
+          exception_at?: string | null
+          exception_note?: string | null
+          exception_type?: string | null
+          help_requested?: boolean
+          housekeeper_note?: string | null
+          housekeeper_note_at?: string | null
+          inspected_at?: string | null
+          inspected_by?: string | null
+          is_paused?: boolean
+          is_rush?: boolean
+          issue_note?: string | null
+          manager_notes?: string | null
+          manager_notes_at?: string | null
+          manager_notes_by_account_id?: string | null
+          marked_for_inspection_at?: string | null
+          paused_at?: string | null
+          property_id: string
+          room_number: string
+          rush_due_by?: string | null
+          rush_duration_label?: string | null
+          rush_requested_by_account_id?: string | null
+          rush_set_at?: string | null
+          rush_set_by?: string | null
+          started_at?: string | null
+          status?: string | null
+          time_spent_minutes?: number | null
+          total_paused_seconds?: number
+          updated_at?: string
+        }
+        Update: {
+          assigned_source?: string | null
+          assigned_staff_id?: string | null
+          checklist_progress?: string[]
+          checklist_template_id?: string | null
+          completed_at?: string | null
+          created_at?: string
+          date?: string
+          dnd_active?: boolean | null
+          dnd_note?: string | null
+          exception_at?: string | null
+          exception_note?: string | null
+          exception_type?: string | null
+          help_requested?: boolean
+          housekeeper_note?: string | null
+          housekeeper_note_at?: string | null
+          inspected_at?: string | null
+          inspected_by?: string | null
+          is_paused?: boolean
+          is_rush?: boolean
+          issue_note?: string | null
+          manager_notes?: string | null
+          manager_notes_at?: string | null
+          manager_notes_by_account_id?: string | null
+          marked_for_inspection_at?: string | null
+          paused_at?: string | null
+          property_id?: string
+          room_number?: string
+          rush_due_by?: string | null
+          rush_duration_label?: string | null
+          rush_requested_by_account_id?: string | null
+          rush_set_at?: string | null
+          rush_set_by?: string | null
+          started_at?: string | null
+          status?: string | null
+          time_spent_minutes?: number | null
+          total_paused_seconds?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "room_work_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "room_work_staff_fk"
+            columns: ["assigned_staff_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id", "property_id"]
+          },
+        ]
+      }
+      staff_aliases: {
+        Row: {
+          alias_norm: string
+          alias_raw: string
+          first_seen_at: string
+          id: string
+          last_seen_at: string
+          property_id: string
+          seen_count: number
+          source: string
+          staff_id: string | null
+        }
+        Insert: {
+          alias_raw: string
+          first_seen_at?: string
+          id?: string
+          last_seen_at?: string
+          property_id: string
+          seen_count?: number
+          source: string
+          staff_id?: string | null
+        }
+        Update: {
+          alias_raw?: string
+          first_seen_at?: string
+          id?: string
+          last_seen_at?: string
+          property_id?: string
+          seen_count?: number
+          source?: string
+          staff_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "staff_aliases_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "staff_aliases_staff_fk"
+            columns: ["staff_id", "property_id"]
+            isOneToOne: false
+            referencedRelation: "staff"
+            referencedColumns: ["id", "property_id"]
+          },
+        ]
+      }
+      pms_dimension_values: {
+        Row: {
+          canonical_code: string | null
+          dimension: string
+          first_seen_at: string
+          id: string
+          last_seen_at: string
+          pms_family: string | null
+          property_id: string
+          raw_value: string
+          resolved_at: string | null
+          resolved_by: string | null
+          seen_count: number
+          value_norm: string
+        }
+        Insert: {
+          canonical_code?: string | null
+          dimension: string
+          first_seen_at?: string
+          id?: string
+          last_seen_at?: string
+          pms_family?: string | null
+          property_id: string
+          raw_value: string
+          resolved_at?: string | null
+          resolved_by?: string | null
+          seen_count?: number
+        }
+        Update: {
+          canonical_code?: string | null
+          dimension?: string
+          first_seen_at?: string
+          id?: string
+          last_seen_at?: string
+          pms_family?: string | null
+          property_id?: string
+          raw_value?: string
+          resolved_at?: string | null
+          resolved_by?: string | null
+          seen_count?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pms_dimension_values_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       scraper_credentials: {
         Row: {
           ca_login_url: string
