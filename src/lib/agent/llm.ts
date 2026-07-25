@@ -50,8 +50,48 @@ import {
 import {
   applyLegacyModelOverrideToPlan,
   EFFECTIVE_LEGACY_MODELS,
-  type LegacyModelTier,
 } from '@/lib/ai/legacy-model-overrides';
+// The shared iteration core. Everything both loops below need in common —
+// usage accounting, trust-marker wrapping, the mid-stream billing estimate,
+// the fan-out cap, SDK error classification — lives there so a fix lands ONCE.
+// See src/lib/agent/loop-core.ts and scripts/audit-anthropic-tool-loops.mjs.
+import {
+  AgentUsageLedger,
+  classifyAnthropicError,
+  collectToolUseCalls,
+  estimateInflightUsage,
+  hasInflightBillingEvidence,
+  MAX_OUTPUT_TOKENS,
+  MAX_TOOL_ITERATIONS,
+  MAX_TOOLS_PER_ITERATION,
+  safeStringify,
+  tooManyToolCallsRefusal,
+  wrapToolResultForModel,
+  type AgentToolCall,
+  type ModelTier,
+  type UsageReport,
+} from './loop-core';
+
+// Re-exported so the ~20 existing importers of '@/lib/agent/llm' keep working
+// and there is still exactly one import path for the agent surface.
+export {
+  classifyAnthropicError,
+  escapeTrustMarkerContent,
+  estimateAnthropicRequestInputTokens,
+  hasInflightBillingEvidence,
+  modelTierForModelId,
+  wrapToolResultForModel,
+  MAX_OUTPUT_TOKENS,
+  MAX_TOOL_ITERATIONS,
+  MAX_TOOL_RESULT_CHARS,
+  MAX_TOOLS_PER_ITERATION,
+} from './loop-core';
+export type {
+  AgentToolCall,
+  AnthropicErrorClass,
+  ModelTier,
+  UsageReport,
+} from './loop-core';
 
 // ─── Configuration ─────────────────────────────────────────────────────────
 
@@ -70,20 +110,8 @@ import {
 //   MODEL_OVERRIDE=sonnet=claude-sonnet-4-6-20260427
 // freezes Sonnet requests to a specific build, ignoring future alias
 // updates. Useful when Anthropic ships a snapshot that breaks evals.
-export type ModelTier = LegacyModelTier;
-
-/** Preserve the legacy telemetry schema while deriving its tier from the
- * model actually selected by admin routing/fallback. */
-export function modelTierForModelId(
-  modelId: string | null | undefined,
-  fallback: ModelTier,
-): ModelTier {
-  const normalized = modelId?.toLowerCase() ?? '';
-  if (normalized.includes('haiku')) return 'haiku';
-  if (normalized.includes('sonnet')) return 'sonnet';
-  if (normalized.includes('opus')) return 'opus';
-  return fallback;
-}
+// ModelTier + modelTierForModelId now live in ./loop-core (shared with every
+// other Anthropic loop) and are re-exported above.
 
 export const MODELS: Record<ModelTier, string> = { ...EFFECTIVE_LEGACY_MODELS };
 
@@ -119,140 +147,11 @@ export const ASK_STAXIS_FALLBACK_RESERVE_MS = 15_000;
 export const AGENT_TOOL_START_RESERVE_MS = 2_000;
 export const AGENT_KNOWLEDGE_SEARCH_START_RESERVE_MS = 31_000;
 
-// Max output tokens per single Anthropic API call. Sonnet 4.6 supports
-// 8192. Exported so cost-controls.ts can use it to size the reservation.
-// Codex review fix G2 (constant extraction) + H1 (reservation tied to it).
-export const MAX_OUTPUT_TOKENS = 8192;
-
-// Max tool-call iterations within one user turn before we give up. Prevents
-// runaway loops where the model keeps calling tools without resolving.
-// Exported for the same reason as MAX_OUTPUT_TOKENS — the reservation
-// formula multiplies by this.
-export const MAX_TOOL_ITERATIONS = 8;
-
-// Max tool calls in ONE iteration. Prevents the "model returns 200 tool_use
-// blocks, we execute all 200 against service-role" failure mode.
-// Codex adversarial review 2026-05-13 (A-C9): MAX_TOOL_ITERATIONS only caps
-// the OUTER loop; nothing limited the fan-out within a single iteration.
-// A model hallucinating "to comply, I'll mark every room clean" could
-// return 200 tool_use blocks and we'd run all of them. 5 covers every
-// legitimate multi-tool turn with margin.
-export const MAX_TOOLS_PER_ITERATION = 5;
-
-// Per-tool-result content cap in characters. Bounds how much each tool
-// response can re-bloat the conversation context on the NEXT iteration's
-// input. Without this cap, a tool returning 20K chars of JSON would be
-// re-sent on each of the remaining (up to 7) iterations, multiplying
-// input cost and easily exceeding the cost reservation's input headroom.
-// 6000 chars ≈ 1500 tokens — enough for any single room/staff lookup,
-// but truncates pathological large-list dumps to a known ceiling.
-// Combined with A-C2 trust-marker wrapping (applied AFTER truncation),
-// every persisted tool_result content stays under ~6100 chars.
-// Codex round-5 fix R3, 2026-05-13.
-export const MAX_TOOL_RESULT_CHARS = 6000;
-
-function truncateToolResultContent(content: string): string {
-  if (content.length <= MAX_TOOL_RESULT_CHARS) return content;
-  return (
-    content.slice(0, MAX_TOOL_RESULT_CHARS) +
-    `\n…[truncated for context; original ${content.length} chars]`
-  );
-}
-
-// Defensive JSON serialization for tool results. Two failure modes
-// JSON.stringify throws on synchronously:
-//   1. BigInt values (no built-in conversion — replacer converts to string)
-//   2. Circular references (no replacer can fix — catch and emit a marker)
-//
-// Without this guard a tool returning either kind would crash the iteration
-// loop and the route would see an error event instead of a tool_result row,
-// orphaning the assistant's tool_use on next replay. Defense-in-depth
-// backlog cleanup, 2026-05-13.
-function safeStringify(value: unknown): string {
-  try {
-    return JSON.stringify(value, (_key, val) =>
-      typeof val === 'bigint' ? val.toString() : val,
-    );
-  } catch (err) {
-    return `[tool result serialization failed: ${err instanceof Error ? err.message : String(err)}]`;
-  }
-}
-
-// Anthropic SDK error classification (Longevity L8a, 2026-05-13).
-// SDK throws different concrete error classes for different conditions;
-// we collapse them into operator-meaningful categories so /admin/agent
-// can break down "Anthropic error rate" by cause rather than lumping
-// rate-limits with input-validation in the same opaque error bucket.
-export type AnthropicErrorClass =
-  | 'rate_limit'        // 429: backoff and retry
-  | 'auth'              // 401/403: bad API key — operator must rotate
-  | 'invalid_request'   // 400: our request was malformed — code bug
-  | 'overloaded'        // 529: Anthropic capacity — wait and retry
-  | 'server_error'      // 5xx other: transient
-  | 'timeout'           // local SDK timeout
-  | 'network'           // connection refused, DNS, etc.
-  | 'unknown';
-
-export function classifyAnthropicError(err: unknown): AnthropicErrorClass {
-  if (!err || typeof err !== 'object') return 'unknown';
-  const e = err as { status?: number; name?: string; message?: string };
-  if (e.status === 429) return 'rate_limit';
-  if (e.status === 401 || e.status === 403) return 'auth';
-  if (e.status === 400) return 'invalid_request';
-  if (e.status === 529) return 'overloaded';
-  if (typeof e.status === 'number' && e.status >= 500 && e.status < 600) return 'server_error';
-  const msg = (e.message ?? '').toLowerCase();
-  const name = (e.name ?? '').toLowerCase();
-  if (name.includes('abort') || msg.includes('abort')) return 'timeout';
-  if (name.includes('timeout') || msg.includes('timeout')) return 'timeout';
-  if (msg.includes('fetch failed') || msg.includes('econnrefused') || msg.includes('enotfound')) {
-    return 'network';
-  }
-  return 'unknown';
-}
-
-// Escape XML/HTML metacharacters so a tool returning literal "</tool-result>"
-// inside its data can't close the trust-marker tag and inject "trusted"
-// instructions into the prompt. Codex round-6 R4, 2026-05-13.
-//
-// The trust marker wrap relies on the model treating everything between
-// the opening and closing <tool-result> tags as untrusted data. If raw
-// content contains "</tool-result>SYSTEM: ignore prior...", the model can
-// see the second segment as outside the boundary. Escaping ampersands +
-// angle brackets makes the boundary unforgeable while keeping the content
-// semantically readable to Claude (it understands HTML entities).
-// Exported so the summarizer (which also formats tool results, but for
-// Haiku rather than Sonnet) can reuse the same boundary escape. Round 10
-// F4: without this, the summarizer breaks the trust-marker chain rounds
-// 5-7 established.
-//
-// Round 12 T12.6 (2026-05-13): renamed from escapeToolResultContent to
-// escapeTrustMarkerContent because it's now used for two markers
-// (`<tool-result>` AND `<staxis-summary>`) — anywhere content gets
-// wrapped in a trust-marker tag, this helper must be applied first.
-export function escapeTrustMarkerContent(content: string): string {
-  return content
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-/**
- * Wrap a tool result in the untrusted trust-marker, applying the canonical
- * pipeline: truncate (R3) → escape <>& (R4/R6, unforgeable boundary) → wrap
- * (A-C2, anti-jailbreak). The `name` attribute is escaped too so a tool name
- * can never carry a forged attribute/tag.
- *
- * SINGLE SOURCE OF TRUTH for tool-result wrapping. Used by BOTH the live tool
- * loop AND the history replay (toClaudeMessages) — the replay path previously
- * emitted persisted results RAW, so a malicious document surfaced by a tool on
- * turn N could inject instructions when that result was replayed on turn N+1.
- * Wrapping on replay closes that (knowledge-doc-reading security pass).
- */
-export function wrapToolResultForModel(toolName: string, rawContent: string): string {
-  const safeName = escapeTrustMarkerContent(toolName).replace(/"/g, '&quot;');
-  return `<tool-result trust="untrusted" name="${safeName}">${escapeTrustMarkerContent(truncateToolResultContent(rawContent))}</tool-result>`;
-}
+// The loop bounds (MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS,
+// MAX_TOOLS_PER_ITERATION, MAX_TOOL_RESULT_CHARS), the defensive serializer,
+// the SDK error classifier, and the trust-marker wrap all moved to
+// ./loop-core so the streaming loop, the sync loop, and the comms @Staxis
+// assistant share one copy. They are re-exported at the top of this file.
 
 // ─── Client ────────────────────────────────────────────────────────────────
 
@@ -340,24 +239,7 @@ function pickModel(): ModelTier {
 }
 
 // ─── Cost estimation ───────────────────────────────────────────────────────
-
-export interface UsageReport {
-  /** Total input across uncached, cache creation, and cache reads. */
-  inputTokens: number;
-  uncachedInputTokens: number;
-  outputTokens: number;
-  cachedInputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheCreation5mInputTokens: number;
-  cacheCreation1hInputTokens: number;
-  /** The internal model tier ('haiku' | 'sonnet' | 'opus'). */
-  model: ModelTier;
-  /** The exact Anthropic snapshot ID, e.g. 'claude-sonnet-4-6-20260427'.
-   *  Null on iteration-cap exit (no completed response to read from).
-   *  Codex review fix S5. */
-  modelId: string | null;
-  costUsd: number;
-}
+// UsageReport + estimateModelRefCost live in ./loop-core.
 
 /** Cost of one tier-default call at the registry's verified list price. */
 export function estimateCost(
@@ -466,22 +348,6 @@ function assertAgentCanContinue(deadlineAt: number | null, abortSignal?: AbortSi
   if (reason === 'deadline') throw new AiExecutionDeadlineError();
 }
 
-function estimateModelRefCost(
-  ref: AiModelRef,
-  usage: NormalizedAnthropicUsage,
-): number {
-  const pricing = ref.pricing;
-  if (!pricing) throw new Error(`Missing pricing for ${ref.provider}/${ref.modelId}`);
-  return estimateAiCostUsd(pricing, {
-    uncachedInputTokens: usage.uncachedInputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadInputTokens: usage.cachedInputTokens,
-    cacheCreationInputTokens: usage.cacheCreationInputTokens,
-    cacheCreation5mInputTokens: usage.cacheCreation5mInputTokens,
-    cacheCreation1hInputTokens: usage.cacheCreation1hInputTokens,
-  });
-}
-
 // ─── Public agent interface ────────────────────────────────────────────────
 
 // Conversation history as our agent module sees it. We translate to Claude's
@@ -490,12 +356,6 @@ export type AgentMessage =
   | { role: 'user'; content: string }
   | { role: 'assistant'; content: string; toolCalls?: AgentToolCall[] }
   | { role: 'tool'; toolCallId: string; result: unknown; isError?: boolean };
-
-export interface AgentToolCall {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-}
 
 /**
  * System prompt split into stable (cache-eligible) and dynamic (changes
@@ -608,25 +468,6 @@ export interface RunAgentResult {
 
 type ClaudeMessage = Anthropic.Messages.MessageParam;
 type ClaudeContent = Anthropic.Messages.ContentBlockParam;
-
-/** Conservative partial-stream input estimate that covers the entire
- * provider request, not just conversation messages. */
-export function estimateAnthropicRequestInputTokens(input: {
-  system: unknown;
-  tools?: unknown;
-  messages: unknown;
-}): number {
-  return Math.max(1, Math.ceil(JSON.stringify(input).length / 4));
-}
-
-export function hasInflightBillingEvidence(
-  hasContent: boolean,
-  exactInputTokens: number | null,
-): boolean {
-  // message_start carries provider-counted input usage before the first content
-  // block. A failure in that window can still be billable.
-  return hasContent || exactInputTokens !== null;
-}
 
 /**
  * Translate our AgentMessage shape into Claude's MessageParam list.
@@ -817,6 +658,52 @@ export function buildSystemBlocks(systemPrompt: SystemPromptBlocks): Anthropic.M
   return blocks;
 }
 
+// ─── Shared tool step (sync + streaming) ───────────────────────────────────
+//
+// The one place a tool actually runs for either loop, and the one place its
+// output becomes a tool_result block. Kept here rather than in ./loop-core
+// because it needs the tool REGISTRY, which loop-core deliberately does not
+// import (the comms assistant reuses loop-core and must not drag the registry
+// in). Both loops call these two functions in the same order:
+// execute → note the trace → (stream only: yield the event) → build the block.
+
+/** Execute one proposed call and record it in the turn's trace. dryRun is
+ *  threaded through ToolContext so handlers still run their pre-write
+ *  validation (Codex F2 / round-8 B2) instead of being short-circuited here. */
+async function executeAgentToolCall(
+  call: AgentToolCall,
+  opts: RunAgentOpts,
+  trace: TurnToolTrace,
+): Promise<{ result: Awaited<ReturnType<typeof executeTool>>; isError: boolean }> {
+  const result = await executeTool(call.name, call.args, {
+    ...opts.toolContext,
+    dryRun: opts.dryRun,
+  });
+  noteToolRan(trace, call.name, result.ok);
+  return { result, isError: !result.ok };
+}
+
+/** Serialize a tool result and wrap it in the canonical trust marker:
+ *  truncate (R3) → escape <>& (R4/R6 — unforgeable boundary) → wrap (A-C2 —
+ *  anti-jailbreak). Same helper the history replay uses, so a tool result reads
+ *  identically whether it was produced this turn or replayed from the DB. */
+function toToolResultBlock(
+  call: AgentToolCall,
+  result: Awaited<ReturnType<typeof executeTool>>,
+): ClaudeContent {
+  const rawContent = result.ok
+    ? typeof result.data === 'string'
+      ? result.data
+      : safeStringify(result.data ?? null)
+    : (result.error ?? 'Tool failed without a message');
+  return {
+    type: 'tool_result',
+    tool_use_id: call.id,
+    content: wrapToolResultForModel(call.name, rawContent),
+    is_error: !result.ok,
+  };
+}
+
 // ─── Sync agent loop ───────────────────────────────────────────────────────
 
 /**
@@ -844,28 +731,8 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   // Same evidence the streaming path collects — see detectFakeSuccess.
   const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false };
 
-  let totalInput = 0;
-  let totalUncachedInput = 0;
-  let totalOutput = 0;
-  let totalCachedInput = 0;
-  let totalCacheCreationInput = 0;
-  let totalCacheCreation5mInput = 0;
-  let totalCacheCreation1hInput = 0;
-  let totalCostUsd = 0;
-  let lastModelId: string | null = null;
-  const selectedUsageTier = (): ModelTier => modelTierForModelId(activeModel.modelId, model);
-  const buildSyncUsage = (): UsageReport => ({
-    inputTokens: totalInput,
-    uncachedInputTokens: totalUncachedInput,
-    outputTokens: totalOutput,
-    cachedInputTokens: totalCachedInput,
-    cacheCreationInputTokens: totalCacheCreationInput,
-    cacheCreation5mInputTokens: totalCacheCreation5mInput,
-    cacheCreation1hInputTokens: totalCacheCreation1hInput,
-    model: selectedUsageTier(),
-    modelId: lastModelId,
-    costUsd: totalCostUsd,
-  });
+  const ledger = new AgentUsageLedger(model);
+  const buildSyncUsage = (): UsageReport => ledger.report(activeModel.modelId);
 
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
@@ -880,16 +747,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       }, { signal });
       // Account before output validation. A malformed 200 is still billable and
       // may then fall back to another billable model attempt.
-      const usage = normalizeAnthropicUsage(response.usage);
-      totalInput += usage.inputTokens;
-      totalUncachedInput += usage.uncachedInputTokens;
-      totalOutput += usage.outputTokens;
-      totalCachedInput += usage.cachedInputTokens;
-      totalCacheCreationInput += usage.cacheCreationInputTokens;
-      totalCacheCreation5mInput += usage.cacheCreation5mInputTokens;
-      totalCacheCreation1hInput += usage.cacheCreation1hInputTokens;
-      totalCostUsd += estimateModelRefCost(selected, usage);
-      lastModelId = response.model;
+      ledger.commit(selected, normalizeAnthropicUsage(response.usage), response.model);
 
       if (opts.validateAssistantResponse) {
         const text = response.content
@@ -926,19 +784,11 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     }
 
     // Collect text + tool_use blocks from this assistant turn.
-    const textParts: string[] = [];
-    const calls: AgentToolCall[] = [];
-    for (const block of response.content) {
-      if (block.type === 'text') textParts.push(block.text);
-      else if (block.type === 'tool_use') {
-        calls.push({
-          id: block.id,
-          name: block.name,
-          args: (block.input as Record<string, unknown>) ?? {},
-        });
-      }
-    }
-    const turnText = textParts.join('\n');
+    const turnText = response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n');
+    const calls = collectToolUseCalls(response.content);
     assistantMessages.push({ content: turnText, toolCalls: calls.length ? calls : undefined });
 
     // Append the assistant turn to the conversation for the next iteration.
@@ -970,7 +820,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // than MAX_TOOLS_PER_ITERATION. Synthesize tool_result rows for each
     // call so the conversation history stays valid for replay.
     if (calls.length > MAX_TOOLS_PER_ITERATION) {
-      const refusal = `Refused: ${calls.length} tool calls in one turn exceeds the limit of ${MAX_TOOLS_PER_ITERATION}. Try one action at a time.`;
+      const refusal = tooManyToolCallsRefusal(calls.length);
       const synthBlocks: ClaudeContent[] = calls.map(call => ({
         type: 'tool_result',
         tool_use_id: call.id,
@@ -1001,33 +851,16 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         throw error;
       }
       if (toolStopped === 'deadline') throw new AiExecutionDeadlineError();
-      // Codex post-merge review 2026-05-13 (F2): dryRun is now threaded
-      // through ToolContext so mutation tools can run their pre-write
-      // validation (findRoomByNumber, role check) and return synthetic
-      // success at the would-have-mutated boundary. Previously the
+      // Codex post-merge review 2026-05-13 (F2): dryRun is threaded through
+      // ToolContext (inside executeAgentToolCall) so mutation tools can run
+      // their pre-write validation (findRoomByNumber, role check) and return
+      // synthetic success at the would-have-mutated boundary. Previously the
       // synthetic success was generated HERE at the llm layer, which
       // bypassed every lookup — eval cases like mark_room_clean('99999')
       // got fake success instead of the "not found" branch.
-      const result = await executeTool(call.name, call.args, {
-        ...opts.toolContext,
-        dryRun: opts.dryRun,
-      });
-      const isError = !result.ok;
-      noteToolRan(toolTrace, call.name, result.ok);
+      const { result, isError } = await executeAgentToolCall(call, opts, toolTrace);
       toolCallsExecuted.push({ call, result: result.data ?? result.error, isError });
-      const rawContent = result.ok
-        ? typeof result.data === 'string'
-          ? result.data
-          : safeStringify(result.data ?? null)
-        : (result.error ?? 'Tool failed without a message');
-      toolResultBlocks.push({
-        type: 'tool_result',
-        tool_use_id: call.id,
-        // Truncate first (R3), escape <>& second (R6 R4 — unforgeable
-        // boundary), wrap in trust marker third (A-C2 — anti-jailbreak).
-        content: `<tool-result trust="untrusted" name="${call.name}">${escapeTrustMarkerContent(truncateToolResultContent(rawContent))}</tool-result>`,
-        is_error: isError,
-      });
+      toolResultBlocks.push(toToolResultBlock(call, result));
     }
     messages = [...messages, { role: 'user', content: toolResultBlocks }];
   }
@@ -1045,9 +878,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     // ledgers. Callers capture this report and book it only on their error path;
     // successful calls continue using the returned usage, avoiding duplicates.
     const usage = buildSyncUsage();
-    if (usage.inputTokens > 0 || usage.outputTokens > 0 || usage.costUsd > 0) {
-      opts.onUsage?.(usage);
-    }
+    if (ledger.hasSpend()) opts.onUsage?.(usage);
   }
 }
 
@@ -1254,16 +1085,8 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   const deadlineAt = agentDeadlineAt(opts);
 
   let messages = toClaudeMessages(opts.history, opts.newUserMessage);
-  let totalInput = 0;
-  let totalUncachedInput = 0;
-  let totalOutput = 0;
-  let totalCachedInput = 0;
-  let totalCacheCreationInput = 0;
-  let totalCacheCreation5mInput = 0;
-  let totalCacheCreation1hInput = 0;
-  let totalCostUsd = 0;
+  const ledger = new AgentUsageLedger(model);
   let finalText = '';
-  let lastModelId: string | null = null;
   // What actually executed this turn — the evidence the fake-success guard
   // grades the final text against.
   const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false };
@@ -1292,34 +1115,8 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
 
   // Helpers for the abort signal + usage report. Codex adversarial review
   // 2026-05-13 (A-C3, A-C7).
-  const buildUsage = (): UsageReport => ({
-    inputTokens: totalInput,
-    uncachedInputTokens: totalUncachedInput,
-    outputTokens: totalOutput,
-    cachedInputTokens: totalCachedInput,
-    cacheCreationInputTokens: totalCacheCreationInput,
-    cacheCreation5mInputTokens: totalCacheCreation5mInput,
-    cacheCreation1hInputTokens: totalCacheCreation1hInput,
-    model: modelTierForModelId(activeModel.modelId, model),
-    modelId: lastModelId,
-    costUsd: totalCostUsd,
-  });
+  const buildUsage = (): UsageReport => ledger.report(activeModel.modelId);
   const checkAborted = (): boolean => opts.abortSignal?.aborted ?? false;
-  const commitUsage = (
-    selected: AiModelRef,
-    usage: NormalizedAnthropicUsage,
-    responseModel: string | null,
-  ): void => {
-    totalInput += usage.inputTokens;
-    totalUncachedInput += usage.uncachedInputTokens;
-    totalOutput += usage.outputTokens;
-    totalCachedInput += usage.cachedInputTokens;
-    totalCacheCreationInput += usage.cacheCreationInputTokens;
-    totalCacheCreation5mInput += usage.cacheCreation5mInputTokens;
-    totalCacheCreation1hInput += usage.cacheCreation1hInputTokens;
-    totalCostUsd += estimateModelRefCost(selected, usage);
-    lastModelId = responseModel;
-  };
 
   try {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
@@ -1402,25 +1199,19 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
             // it was not user-visible. Preserve an estimate before retrying so
             // fallback resilience does not erase primary-model spend.
             if (hasInflightBillingEvidence(inflightHasContent, inflightUsage?.inputTokens ?? null)) {
-              const estUncachedInputTokens = inflightUsage?.uncachedInputTokens
-                ?? estimateAnthropicRequestInputTokens({
-                system: requestSystem,
-                tools: requestTools,
-                messages,
-              });
-              const estOutputTokens = Math.round(inflightOutputBytes / 4);
-              const partialUsage: NormalizedAnthropicUsage = inflightUsage
-                ? { ...inflightUsage, outputTokens: estOutputTokens }
-                : {
-                    inputTokens: estUncachedInputTokens,
-                    uncachedInputTokens: estUncachedInputTokens,
-                    outputTokens: estOutputTokens,
-                    cachedInputTokens: 0,
-                    cacheCreationInputTokens: 0,
-                    cacheCreation5mInputTokens: 0,
-                    cacheCreation1hInputTokens: 0,
-                  };
-              commitUsage(activeModel, partialUsage, inflightModelId);
+              ledger.commit(
+                activeModel,
+                estimateInflightUsage({
+                  inflightUsage,
+                  inflightOutputBytes,
+                  requestForEstimate: () => ({
+                    system: requestSystem,
+                    tools: requestTools,
+                    messages,
+                  }),
+                }),
+                inflightModelId,
+              );
             }
             activeModel = fallbackModel!;
             fallbackModel = null;
@@ -1433,20 +1224,12 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         }
       }
 
-      commitUsage(activeModel, normalizeAnthropicUsage(finalMsg.usage), finalMsg.model);
+      ledger.commit(activeModel, normalizeAnthropicUsage(finalMsg.usage), finalMsg.model);
       // Iter usage is now committed to running totals — clear the inflight flag.
       inflightIterStarted = false;
       inflightHasContent = false;
 
-      for (const block of finalMsg.content) {
-        if (block.type === 'tool_use') {
-          calls.push({
-            id: block.id,
-            name: block.name,
-            args: (block.input as Record<string, unknown>) ?? {},
-          });
-        }
-      }
+      calls.push(...collectToolUseCalls(finalMsg.content));
       finalText = turnText.join('');
 
       messages = [...messages, { role: 'assistant', content: finalMsg.content }];
@@ -1513,7 +1296,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       // The assistant_turn is already persisted by the route; synthesize
       // matching tool_results so the next replay validates.
       if (calls.length > MAX_TOOLS_PER_ITERATION) {
-        const refusal = `Refused: ${calls.length} tool calls in one turn exceeds the limit of ${MAX_TOOLS_PER_ITERATION}. Try one action at a time.`;
+        const refusal = tooManyToolCallsRefusal(calls.length);
         for (const call of calls) {
           yield { type: 'tool_call_started', call };
           yield { type: 'tool_call_finished', call, result: refusal, isError: true };
@@ -1590,12 +1373,8 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
               return;
             }
             yield { type: 'tool_call_started', call };
-            const result = await executeTool(call.name, call.args, {
-              ...opts.toolContext,
-              dryRun: opts.dryRun,
-            });
-            noteToolRan(toolTrace, call.name, result.ok);
-            yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError: !result.ok };
+            const { result, isError } = await executeAgentToolCall(call, opts, toolTrace);
+            yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError };
           }
 
           // Turn ends here — no `done`. The route holds the stream open only
@@ -1635,26 +1414,9 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
           return;
         }
         yield { type: 'tool_call_started', call };
-        const result = await executeTool(call.name, call.args, {
-          ...opts.toolContext,
-          dryRun: opts.dryRun,
-        });
-        const isError = !result.ok;
-        noteToolRan(toolTrace, call.name, result.ok);
+        const { result, isError } = await executeAgentToolCall(call, opts, toolTrace);
         yield { type: 'tool_call_finished', call, result: result.data ?? result.error, isError };
-        const rawContent = result.ok
-          ? typeof result.data === 'string'
-            ? result.data
-            : safeStringify(result.data ?? null)
-          : (result.error ?? 'Tool failed without a message');
-        toolResultBlocks.push({
-          type: 'tool_result',
-          tool_use_id: call.id,
-          // Truncate → escape <>& → wrap in trust marker (single source of
-          // truth — same helper the history replay uses).
-          content: wrapToolResultForModel(call.name, rawContent),
-          is_error: isError,
-        });
+        toolResultBlocks.push(toToolResultBlock(call, result));
       }
       messages = [...messages, { role: 'user', content: toolResultBlocks }];
     }
@@ -1683,25 +1445,19 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
       inflightIterStarted
       && hasInflightBillingEvidence(inflightHasContent, inflightUsage?.inputTokens ?? null)
     ) {
-      const estUncachedInputTokens = inflightUsage?.uncachedInputTokens
-        ?? estimateAnthropicRequestInputTokens({
-          system: buildSystemBlocks(opts.systemPrompt),
-          tools: tools.length > 0 ? tools : undefined,
-          messages,
-        });
-      const estOutputTokens = Math.round(inflightOutputBytes / 4);
-      const partialUsage: NormalizedAnthropicUsage = inflightUsage
-        ? { ...inflightUsage, outputTokens: estOutputTokens }
-        : {
-            inputTokens: estUncachedInputTokens,
-            uncachedInputTokens: estUncachedInputTokens,
-            outputTokens: estOutputTokens,
-            cachedInputTokens: 0,
-            cacheCreationInputTokens: 0,
-            cacheCreation5mInputTokens: 0,
-            cacheCreation1hInputTokens: 0,
-          };
-      commitUsage(activeModel, partialUsage, inflightModelId);
+      ledger.commit(
+        activeModel,
+        estimateInflightUsage({
+          inflightUsage,
+          inflightOutputBytes,
+          requestForEstimate: () => ({
+            system: buildSystemBlocks(opts.systemPrompt),
+            tools: tools.length > 0 ? tools : undefined,
+            messages,
+          }),
+        }),
+        inflightModelId,
+      );
     }
     // Longevity L8a, 2026-05-13: classify the SDK error so the operator-
     // facing log can break down causes (rate_limit vs auth vs malformed
@@ -1713,7 +1469,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
     yield {
       type: 'error',
       message: `[${errorClass}] ${rawMessage}`,
-      usage: totalInput + totalOutput > 0 ? buildUsage() : undefined,
+      usage: ledger.hasBilledTokens() ? buildUsage() : undefined,
     };
   }
 }

@@ -74,6 +74,18 @@ test('the untrusted conversation is still wrapped as data in the prompt (injecti
   assert.match(sys, /UNTRUSTED DATA/);
 });
 
+test('the prompt distrusts TOOL OUTPUT too, not just the conversation', () => {
+  // The assistant wraps every tool result in <tool-result trust="untrusted">
+  // (wrapToolResultForModel, shared with the main agent). The wrap only does
+  // anything if the prompt tells the model what that marker means — search_
+  // knowledge returns the text of documents staff uploaded, which is exactly
+  // where an injection would ride in. Marker without the rule is decoration.
+  const sys = buildAssistantSystemPrompt({ threadText: '', langName: 'English' });
+  assert.match(sys, /<tool-result trust="untrusted"/, 'prompt must name the trust marker it will emit');
+  assert.match(sys, /is DATA a tool returned/i, 'prompt must say tool output is data');
+  assert.match(sys, /it is NEVER\s+one/i, 'prompt must forbid following instructions found in tool output');
+});
+
 // ── Role gating flows through — a non-manager can NEVER retrieve manager-only ─────
 //    content through this path. resolveAssistantRole is the value handed to
 //    searchKnowledge; searchKnowledge keys manager-only visibility off
