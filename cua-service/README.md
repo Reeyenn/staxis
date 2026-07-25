@@ -1,5 +1,45 @@
 # Staxis CUA Service
 
+> ## ⛔ DECOMMISSIONED — 2026-07-25
+>
+> **The robot is switched off and is meant to stay off. Nothing below runs today.**
+>
+> It had already been dark since ~2026-07-06, and the product changed underneath
+> it: PMS data now arrives as **scheduled report emails** that get parsed on the
+> Vercel side, not as a 24/7 browser reading PMS screens. This is a *disable*,
+> not a delete — every file in this directory is kept on purpose, and no table
+> was dropped.
+>
+> ### What was actually disabled
+>
+> | # | Where | What it does now |
+> |---|---|---|
+> | 1 | `fly.toml` `[env] CUA_DECOMMISSIONED = "true"` + the same default in `src/env.ts` | The flag. Defaults to ON in code too, so deleting the fly.toml line does **not** re-arm it. |
+> | 2 | `src/index.ts` `main()` | Parks immediately: no Supabase preflight, no supervisor, no runtime, no Playwright, no Claude call. It stays alive and idle rather than exiting, because `fly.toml` sets `[[restart]] policy = "always"` and exiting would boot-loop. |
+> | 3 | `src/session-supervisor.ts` `start()` | Refuses to start — so no `SessionDriver`, no PMS login, from *any* caller. |
+> | 4 | `src/workflow-runtime.ts` `start()` | Refuses to start — this is the queue poller that dispatches `mapper.learn_pms_family` / `doc_ocr`, i.e. the Claude-spend path. |
+> | 5 | `../.github/workflows/pull-jobs-cron.yml` | Still has no `schedule:` block, so nothing fires on a timer. |
+> | 6 | `../src/app/api/cron/enqueue-property-pulls/route.ts` | Self-refuses while decommissioned, so a manual `workflow_dispatch` or a stray curl enqueues nothing. Returns `ok:true, decommissioned:true`. |
+> | 7 | `../src/app/api/admin/doctor/route.ts` | `cua_sessions_alive` / `cua_cost_cap_paused` / `cua_mfa_pending` return a plain "decommissioned — not monitored" **ok** instead of failing the deploy gate or pretending to watch a live robot. |
+>
+> Nothing was deleted: no code, no `pms_*` tables, no Fly app, no secrets.
+>
+> ### To bring it back — all four, in this order
+>
+> 1. `src/lib/pms/decommission.ts` (web app) → `export const CUA_DECOMMISSIONED = false;`
+>    — re-arms the enqueue route and the three doctor checks.
+> 2. `cua-service/fly.toml` → `CUA_DECOMMISSIONED = "false"`, then `fly deploy`
+>    from this directory — re-arms the worker, supervisor and runtime.
+> 3. `.github/workflows/pull-jobs-cron.yml` → add back a `schedule:` block on a
+>    15-minute cron (`workflow_dispatch` alone will not produce pulls).
+> 4. Confirm the Fly app is actually running (`flyctl status -a staxis-cua`) and
+>    that its secrets are still valid — `ANTHROPIC_API_KEY` especially, since a
+>    live robot resumes spending against the $5/hotel/day cap immediately.
+>
+> Steps 1 and 2 are independent brakes. Flipping only one leaves the system
+> half-off (worker awake with nothing to do, or work queued with nobody to run
+> it) — which is safe, but not what you wanted.
+
 Computer Use Agent worker that maps and extracts data from any PMS.
 Runs on Fly.io. Polls Supabase `onboarding_jobs` for queued jobs and
 processes them end-to-end.

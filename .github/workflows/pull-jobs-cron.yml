@@ -1,5 +1,20 @@
 # Pull Jobs Enqueuer — GitHub Actions cron
 #
+# ┌───────────────────────────────────────────────────────────────────────┐
+# │ DECOMMISSIONED 2026-07-25 — the CUA robot is off and staying off.     │
+# │                                                                       │
+# │ This workflow already had no `schedule:` block (see below), so it was │
+# │ never firing on a timer. It DOES still accept a manual                │
+# │ workflow_dispatch, so the route it calls now refuses to enqueue on    │
+# │ its own: src/app/api/cron/enqueue-property-pulls/route.ts returns     │
+# │ ok:true + decommissioned:true while CUA_DECOMMISSIONED is true in     │
+# │ src/lib/pms/decommission.ts. Dispatching this by hand is a no-op.     │
+# │                                                                       │
+# │ To bring pulls back you must do BOTH: flip CUA_DECOMMISSIONED to      │
+# │ false, and add the schedule: block back below.                        │
+# │ Full checklist: cua-service/README.md.                                │
+# └───────────────────────────────────────────────────────────────────────┘
+#
 # Hits /api/cron/enqueue-property-pulls every 15 minutes. The route walks
 # every connected property and idempotently enqueues a pull_job per one.
 # Fly.io CUA workers then claim those jobs (via staxis_claim_next_pull_job,

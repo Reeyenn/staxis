@@ -1,6 +1,21 @@
 /**
  * CUA Service entry point — session supervisor + workflow runtime.
  *
+ * ┌──────────────────────────────────────────────────────────────────────┐
+ * │ DECOMMISSIONED 2026-07-25 — disabled, NOT deleted.                   │
+ * │                                                                      │
+ * │ env.CUA_DECOMMISSIONED defaults to 'true'. main() parks immediately  │
+ * │ when it is set: it never touches Supabase, never constructs a        │
+ * │ SessionSupervisor or WorkflowRuntime, never opens a browser, never   │
+ * │ calls Claude. Everything below that guard is intact and unchanged.   │
+ * │                                                                      │
+ * │ Bring it back with:                                                  │
+ * │   CUA_DECOMMISSIONED = "false" in cua-service/fly.toml [env]         │
+ * │   fly deploy            (from cua-service/)                          │
+ * │ …and flip CUA_DECOMMISSIONED in the web app's                        │
+ * │ src/lib/pms/decommission.ts. See cua-service/README.md.              │
+ * └──────────────────────────────────────────────────────────────────────┘
+ *
  * Plan v4 architecture: this entry replaces the old poll-for-jobs model
  * (claim onboarding_job → run → claim pull_job → run) with a persistent
  * session supervisor (one BrowserContext per hotel, 24/7) plus a generic
@@ -82,6 +97,24 @@ function setupSignalHandlers(): void {
 async function main(): Promise<void> {
   setupSignalHandlers();
   log.info('cua-service starting', { sentryReady, workerId: WORKER_ID });
+
+  // ─── Decommission gate (2026-07-25) ────────────────────────────────────
+  // The FIRST thing after signal handlers, deliberately: it runs before the
+  // Supabase preflight, so a parked worker doesn't even hold a DB connection.
+  // Park (stay alive, do nothing) rather than exit — fly.toml's restart
+  // policy is "always", so exiting would boot-loop forever.
+  if (env.CUA_DECOMMISSIONED === 'true') {
+    log.warn('cua-service DECOMMISSIONED — parking idle, no sessions, no spend', {
+      workerId: WORKER_ID,
+      flyMachineId: env.FLY_MACHINE_ID,
+      revive: 'set CUA_DECOMMISSIONED=false in cua-service/fly.toml, then fly deploy',
+    });
+    // Signal handlers still work: SIGTERM resolves nothing here, but the
+    // handler calls process.exit itself, so `fly deploy` / `fly machine stop`
+    // still shut the process down cleanly.
+    await new Promise<void>(() => {});
+    return;
+  }
 
   log.info('cua_posture', {
     signingMode: env.RECIPE_SIGNING_ENFORCE,

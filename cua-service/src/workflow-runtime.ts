@@ -155,6 +155,16 @@ export class WorkflowRuntime {
   /** Start polling the queue. */
   start(): void {
     if (this.running) return;
+    // Third brake on the 2026-07-25 decommission. This is the queue poller
+    // that dispatches mapper.learn_pms_family / doc_ocr — i.e. the path that
+    // actually spends Claude money. index.ts parks before reaching it; this
+    // guard covers any other caller.
+    if (env.CUA_DECOMMISSIONED === 'true') {
+      log.warn('workflow-runtime: refusing to start — CUA_DECOMMISSIONED', {
+        revive: 'set CUA_DECOMMISSIONED=false in cua-service/fly.toml, then fly deploy',
+      });
+      return;
+    }
     this.running = true;
     log.info('workflow-runtime: starting', {
       pollIntervalMs: POLL_INTERVAL_MS,

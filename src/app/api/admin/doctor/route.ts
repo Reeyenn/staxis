@@ -35,11 +35,13 @@
  *                                 (catches stale/revoked keys)
  *   supabase_migrations_applied — every migration file is registered as applied
  *                                 in prod (catches schema drift)
- *   cua_sessions_alive          — each enabled hotel's 24/7 CUA session is
- *                                 heartbeating (deploy-gate FAIL if not)
- *   cua_cost_cap_paused         — warns if a hotel's CUA is paused on the
- *                                 $5/day Claude cost cap
- *   cua_mfa_pending             — warns if a CUA session is stuck on PMS 2FA
+ *   cua_sessions_alive          — DECOMMISSIONED (2026-07-25). Was: each
+ *                                 enabled hotel's 24/7 CUA session is
+ *                                 heartbeating (deploy-gate FAIL if not).
+ *   cua_cost_cap_paused         — DECOMMISSIONED. Was: warns if a hotel's CUA
+ *                                 is paused on the $5/day Claude cost cap.
+ *   cua_mfa_pending             — DECOMMISSIONED. Was: warns if a CUA session
+ *                                 is stuck on PMS 2FA.
  *   agent_prompt_tiers          — each copilot instruction tier has exactly
  *                                 one active row (catches the silent
  *                                 "activation left the tier dark" state)
@@ -77,6 +79,7 @@ import {
   evaluateUnmappedColumns,
   parseFeedHealthRows,
 } from '@/lib/pms/feed-health';
+import { CUA_DECOMMISSIONED, decommissionedCheck } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -167,13 +170,11 @@ const checks: Array<[string, CheckFn]> = [
   // whose PMS stops emailing reports produces a fail here within about 15
   // minutes, and the watchdog escalates it to Sentry + business-hours SMS.
   //
-  // The three cua_* checks above are deliberately LEFT IN PLACE for now.
-  // cua_sessions_alive is the only fail-CAPABLE check of the three (any
-  // fail-severity check 503s the deploy gate; cost-cap and MFA are warn-only
-  // by design). Deleting it before pms_report_freshness has been seen to fire
-  // on a real breach would leave a window with NO hard health gate. Their
-  // removal belongs to the robot-decommission workstream, after this one has
-  // proven itself on real deliveries.
+  // 2026-07-25 — robot decommission landed. The three cua_* checks above are
+  // still REGISTERED (so the check list doesn't silently shrink and so
+  // re-arming is a one-line flip) but each now short-circuits to a plain
+  // "decommissioned, not monitored" ok via CUA_DECOMMISSIONED. They query
+  // nothing. The report-freshness trio below is the live health gate now.
   ['pms_report_freshness',        checkPmsReportFreshness],
   ['pms_quarantine_backlog',      checkPmsQuarantineBacklog],
   ['pms_unmapped_columns_open',   checkPmsUnmappedColumns],
@@ -1035,6 +1036,11 @@ async function checkEvalBankIncidentCoverage(): Promise<Omit<Check, 'name' | 'du
 }
 
 async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Robot decommissioned (2026-07-25). Reporting a fail here would 503 the
+  // deploy gate forever over a worker we deliberately parked, and reporting
+  // an unqualified "all sessions heartbeating" would be a lie about a
+  // process that isn't running. Say what's true: nobody is watching, on purpose.
+  if (CUA_DECOMMISSIONED) return decommissionedCheck('24/7 PMS session heartbeats');
   try {
     const { data, error } = await supabaseAdmin
       .from('property_sessions')
@@ -1118,6 +1124,9 @@ async function checkCuaSessionsAlive(): Promise<Omit<Check, 'name' | 'durationMs
 }
 
 async function checkCuaCostCapPaused(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Robot decommissioned — a parked worker spends nothing, so "no hotels
+  // paused for cost" would be technically true and completely uninformative.
+  if (CUA_DECOMMISSIONED) return decommissionedCheck('the $5/hotel/day Claude cost cap');
   try {
     const { data, error } = await supabaseAdmin
       .from('property_sessions')
@@ -1144,6 +1153,9 @@ async function checkCuaCostCapPaused(): Promise<Omit<Check, 'name' | 'durationMs
 }
 
 async function checkCuaMfaPending(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // Robot decommissioned — nothing is logging into a PMS, so nothing can be
+  // stuck at a 2FA prompt waiting for a human.
+  if (CUA_DECOMMISSIONED) return decommissionedCheck('PMS 2FA re-login prompts');
   try {
     const { data, error } = await supabaseAdmin
       .from('property_sessions')

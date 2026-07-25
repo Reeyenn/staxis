@@ -32,7 +32,7 @@ These routes also live under `/api/cron/*` (or `/api/agent/*`) and accept `CRON_
 
 | Path | Trigger | Cadence | Purpose |
 |---|---|---|---|
-| `/api/cron/enqueue-property-pulls` | GitHub Actions workflow `.github/workflows/*` | Every 15 min | Enqueue a PMS pull per connected property — work happens in the scraper service, not Vercel. |
+| `/api/cron/enqueue-property-pulls` | **DORMANT** — `.github/workflows/pull-jobs-cron.yml` has no `schedule:` block | Never | Was: enqueue a PMS pull per connected property for the CUA robot. Robot decommissioned 2026-07-25 — the route also self-refuses while `CUA_DECOMMISSIONED` is true in `src/lib/pms/decommission.ts`. Route code kept dormant; see `cua-service/README.md` to re-enable. |
 | `/api/cron/ml-aggregate-priors` | GitHub Actions | Daily, post-training | Aggregate Bayesian priors after the training run. |
 | `/api/cron/ml-predict-inventory` | GitHub Actions | Multiple times/day | Run inventory rate predictions across all properties. |
 | `/api/cron/ml-retention-purge` | GitHub Actions | Weekly | Apply retention policies to ML feature tables. |

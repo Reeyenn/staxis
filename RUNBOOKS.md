@@ -2031,6 +2031,59 @@ The first 7 days after enabling Sentry on the scraper and ml-service will surfac
 
 ---
 
+## Regenerating `src/types/database.types.ts`
+
+**Symptom.** `tsc` accepts a query against a table that no longer exists, or rejects a `pms_*` column that does exist. The generated types are a snapshot; they go stale the moment a migration lands and nothing regenerates them.
+
+**Diagnosis.** Compare the table list in the file against the live schema:
+
+```bash
+source ~/.config/staxis/tokens.env
+PGPASSWORD="$SUPABASE_DB_PASSWORD" /opt/homebrew/opt/libpq/bin/psql \
+  "postgresql://postgres.$SUPABASE_PROJECT_REF@$SUPABASE_DB_HOST:5432/postgres" \
+  -tAc "select count(*) from information_schema.tables where table_schema='public';"
+```
+
+**Fix.** `npm run db:types` is the intended path, but it needs credentials/tooling we do not always have:
+
+- its `--project-id` form needs a `SUPABASE_ACCESS_TOKEN` (a Supabase *management* token — **not** in `~/.config/staxis/tokens.env`; create one at supabase.com/dashboard/account/tokens);
+- the CLI's `--db-url` form shells out to a `postgres-meta` container and needs **Docker or podman** running locally.
+
+If you have neither, generate from the read-only prod connection with the same library the CLI runs inside that container — the output is formatted identically:
+
+```bash
+mkdir -p /tmp/typegen && cd /tmp/typegen && npm init -y
+npm i @supabase/postgres-meta@0.96.6
+# gen.mjs: import PostgresMeta from '@supabase/postgres-meta/dist/lib/PostgresMeta.js',
+#          getGeneratorMetadata from '.../dist/lib/generators.js',
+#          apply from '.../dist/server/templates/typescript.js';
+#          new PostgresMeta({ connectionString, max: 1, ssl: { rejectUnauthorized: false } })
+#          → getGeneratorMetadata(pgMeta, { includedSchemas: ['public'] })
+#          → apply({ ...meta, detectOneToOneRelationships: true, postgrestVersion: '14.5' })
+```
+
+Keep `postgrestVersion` matching the `__InternalSupabase.PostgrestVersion` already in the file, or every regeneration produces a spurious one-line diff.
+
+**Verify.** `npx tsc --noEmit` from the repo root, then `npm run lint`.
+
+**Prevention.** Regenerate whenever a migration adds or drops a table. Nothing enforces this automatically — the file drifting silently for two months (2026-05 → 2026-07, 236 tables missing including every `pms_*` one) is what motivated this section.
+
+---
+
+## PMS robot (CUA) is decommissioned — how to tell, how to revive
+
+**Symptom.** Someone asks why `/admin/property-sessions` is empty, why the doctor's `cua_sessions_alive` says "not monitored", or why a manual run of the **Pull Jobs Enqueuer** workflow enqueues nothing.
+
+**Diagnosis.** Working as intended since 2026-07-25. The robot is disabled in six places at once; none of them is a bug. `src/lib/pms/decommission.ts` is the web-app switch, `cua-service/fly.toml` + `cua-service/src/env.ts` is the worker switch.
+
+**Fix / revive.** Full checklist lives at the top of `cua-service/README.md`. Short version: flip `CUA_DECOMMISSIONED` in **both** `src/lib/pms/decommission.ts` and `cua-service/fly.toml` (then `fly deploy`), and restore the `schedule:` block in `.github/workflows/pull-jobs-cron.yml`.
+
+**Verify.** `curl -H "Authorization: Bearer $CRON_SECRET" https://getstaxis.com/api/admin/doctor | jq '.checks[] | select(.name|startswith("cua_"))'` — the three checks go back to reporting real session state.
+
+**Prevention.** `src/lib/__tests__/cua-decommission.test.ts` fails the moment the flag flips, so re-arming cannot happen by accident or as a drive-by edit.
+
+---
+
 ## Meta: how to add a new failure mode to this doc
 
 Every time something breaks and takes more than 30 min to fix, come back and add a section here with Symptom / Diagnosis / Fix / Verify / Prevention. This file only pays for itself if we update it.

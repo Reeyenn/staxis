@@ -23,6 +23,24 @@
  *
  * Note: this route only ENQUEUES. Actual pulls run on the Fly.io CUA worker
  * fleet via staxis_claim_next_pull_job() — see cua-service/src/index.ts.
+ *
+ * ─── DORMANT since 2026-07-25 (robot decommission) ───────────────────────
+ * The CUA robot is decommissioned; PMS data arrives by scheduled report
+ * email now. This route still exists and still authenticates, but it
+ * refuses to enqueue while CUA_DECOMMISSIONED is true — a queued pull_job
+ * with no worker to claim it is just a row that rots, and if a worker were
+ * ever started by accident it would find a backlog waiting for it.
+ *
+ * Two independent brakes, on purpose:
+ *   1. `.github/workflows/pull-jobs-cron.yml` has no `schedule:` block, so
+ *      nothing calls this on a timer (same treatment as the 2026-07-19
+ *      chore trim). It DOES still have `workflow_dispatch`, so a human can
+ *      hit it by hand — which is exactly why brake 2 exists.
+ *   2. The CUA_DECOMMISSIONED guard below, which a manual dispatch, a stray
+ *      curl, or a re-added schedule all still hit.
+ *
+ * To re-enable: flip CUA_DECOMMISSIONED in src/lib/pms/decommission.ts AND
+ * restore the schedule: block in the workflow. See cua-service/README.md.
  */
 
 import { NextRequest } from 'next/server';
@@ -30,6 +48,7 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { CUA_DECOMMISSIONED, CUA_DECOMMISSION_REASON } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,6 +65,22 @@ export async function GET(req: NextRequest) {
 
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
+
+  // Decommissioned: enqueue nothing. Returns ok:true so a manual
+  // workflow_dispatch (which greps for "ok":true) reports "did nothing"
+  // rather than a red run somebody has to investigate.
+  if (CUA_DECOMMISSIONED) {
+    log.info('[cron/enqueue-property-pulls] skipped — robot decommissioned', { requestId });
+    return ok({
+      decommissioned: true,
+      reason: CUA_DECOMMISSION_REASON,
+      totalProperties: 0,
+      enqueued: 0,
+      skipped: 0,
+      errors: [],
+      durationMs: Date.now() - startedAt,
+    }, { requestId });
+  }
 
   try {
     // 1. Find every connected property. Service-role bypasses RLS.

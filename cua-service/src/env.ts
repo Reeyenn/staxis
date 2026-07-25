@@ -8,6 +8,25 @@
 import { z } from 'zod';
 
 const Schema = z.object({
+  // ── DECOMMISSION SWITCH (default ON) ──────────────────
+  //
+  // 2026-07-25: the robot is decommissioned. It has been off since ~2026-07-06
+  // and the product now ingests PMS data from scheduled report emails instead
+  // of a 24/7 browser. All the code stays — this flag is the gate.
+  //
+  // 'true' (THE DEFAULT — note that this defaults ON, unlike every other
+  // switch in this file) makes index.ts park at boot: no Supabase preflight,
+  // no SessionSupervisor, no SessionDriver, no Playwright, no Claude call, no
+  // workflow_jobs polling. The process stays alive and idle rather than
+  // exiting, because fly.toml sets `[[restart]] policy = "always"` — exiting
+  // would produce a boot/crash loop and Sentry noise instead of silence.
+  //
+  // To bring the robot back:
+  //   set CUA_DECOMMISSIONED=false in cua-service/fly.toml, then fly deploy
+  // and flip CUA_DECOMMISSIONED in the web app's
+  // src/lib/pms/decommission.ts. Full checklist: cua-service/README.md.
+  CUA_DECOMMISSIONED: z.enum(['true', 'false']).default('true'),
+
   // ── Supabase (required) ───────────────────────────────
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(20),

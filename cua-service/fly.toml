@@ -33,6 +33,16 @@ kill_timeout = "300s"
   dockerfile = "Dockerfile"
 
 [env]
+  # ── DECOMMISSION SWITCH (2026-07-25) ──────────────────────────────────
+  # "true" makes src/index.ts park at boot: no Supabase preflight, no
+  # SessionSupervisor, no SessionDriver, no Playwright, no Claude call, no
+  # workflow_jobs polling. The code default in src/env.ts is ALSO "true", so
+  # deleting this line does not accidentally re-arm the robot.
+  #
+  # To bring the robot back: set this to "false", `fly deploy` from
+  # cua-service/, and flip CUA_DECOMMISSIONED in the web app's
+  # src/lib/pms/decommission.ts. Full checklist: README.md.
+  CUA_DECOMMISSIONED = "true"
   NODE_ENV = "production"
   POLL_INTERVAL_MS = "5000"
   WORKER_ID_PREFIX = "fly-cua"
