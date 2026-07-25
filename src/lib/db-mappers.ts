@@ -263,6 +263,13 @@ export function fromPropertyRow(r: Record<string, unknown>): Property {
     // JSON-string) into {order,hidden} string arrays. NULL / missing / bad
     // shape ⇒ null ⇒ the default layout (nothing hidden, default order).
     inventoryTabLayout: normalizeTabLayout(r.inventory_tab_layout),
+    // Housekeeping adoption questionnaire (properties.housekeeping_setup, 0337).
+    // Deliberately passed through RAW (typed `unknown`) — the only thing allowed
+    // to interpret it is parseHousekeepingSetup() in @/lib/housekeeping/setup-gate,
+    // which is total and defensive. Half-parsing here would let an unknown stored
+    // enum value reach the UI as a "valid" answer. NULL / missing (every hotel
+    // before the questionnaire is filled in) ⇒ null ⇒ the gate re-asks.
+    housekeepingSetup: r.housekeeping_setup ?? null,
     createdAt: toDate(r.created_at) ?? new Date(),
   };
 }

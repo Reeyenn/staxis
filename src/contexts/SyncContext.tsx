@@ -1,63 +1,46 @@
 'use client';
 
+// SyncContext — "is this browser online?", nothing more.
+//
+// This used to also count writes made while offline (`pendingCount`) and show
+// a "Syncing changes…" banner for ~2.5s after reconnecting (`isSyncing`).
+// The only surface that ever produced those events was the manager Rooms
+// board, which was removed on 2026-07-24 when the PMS became the sole source
+// of truth for room cleanliness. With no producer left, the counter would
+// have read 0 forever and the syncing banner could never appear — a status
+// indicator that is structurally incapable of reporting anything is worse
+// than none, so both were removed rather than left dormant.
+//
+// The housekeeper phone view queues and replays its own offline actions; it
+// has never used this context and is unaffected.
+//
+// If a manager-side offline write ever comes back, re-add the counter TOGETHER
+// with its producer — not ahead of it.
+
 import React, {
   createContext,
   useContext,
   useEffect,
-  useRef,
   useState,
 } from 'react';
 
 interface SyncContextValue {
   /** Whether the browser has network access. */
   isOnline: boolean;
-  /** Number of room-status changes written while offline and not yet confirmed. */
-  pendingCount: number;
-  /** True for ~2.5 s after reconnecting with pending writes (Firestore is syncing). */
-  isSyncing: boolean;
-  /** Call this every time a Firestore write is made while offline. */
-  recordOfflineAction: () => void;
 }
 
 const SyncContext = createContext<SyncContextValue>({
   isOnline: true,
-  pendingCount: 0,
-  isSyncing: false,
-  recordOfflineAction: () => {},
 });
 
 export function SyncProvider({ children }: { children: React.ReactNode }) {
   const [isOnline, setIsOnline] = useState(true);
-  const [pendingCount, setPendingCount] = useState(0);
-  const [isSyncing, setIsSyncing] = useState(false);
-
-  // Keep a ref so the online handler can read the latest count synchronously
-  // without stale-closure issues.
-  const pendingRef = useRef(0);
-  const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  const setPending = (n: number) => {
-    pendingRef.current = n;
-    setPendingCount(n);
-  };
 
   useEffect(() => {
     // Hydrate with the real browser value (avoids SSR mismatch).
     setIsOnline(navigator.onLine);
 
-    const handleOnline = () => {
-      setIsOnline(true);
-      if (pendingRef.current > 0) {
-        // Show a brief "syncing" banner while Firestore flushes queued writes.
-        setIsSyncing(true);
-        if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-        syncTimerRef.current = setTimeout(() => {
-          setIsSyncing(false);
-          setPending(0);
-        }, 2500);
-      }
-    };
-
+    const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
 
     window.addEventListener('online', handleOnline);
@@ -65,20 +48,11 @@ export function SyncProvider({ children }: { children: React.ReactNode }) {
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
-      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     };
   }, []);
 
-  const recordOfflineAction = () => {
-    if (!navigator.onLine) {
-      setPending(pendingRef.current + 1);
-    }
-  };
-
   return (
-    <SyncContext.Provider
-      value={{ isOnline, pendingCount, isSyncing, recordOfflineAction }}
-    >
+    <SyncContext.Provider value={{ isOnline }}>
       {children}
     </SyncContext.Provider>
   );

@@ -1,9 +1,9 @@
 'use client';
 
-// Schedule tab — redesigned June 2026 (the "wearebrand" handoff). The
-// manager plans the day's cleaning here: pull occupancy, then assign every
-// serviceable room to a housekeeper and balance everyone's workload. Two
-// alternate representations of the SAME assignment, toggled by one control:
+// The Board (tab key still `schedule` — see the note in ../page.tsx). Shows
+// today's cleaning plan: who is cleaning which rooms, in what order, and
+// whether anyone is carrying more than a shift's worth of work. Two alternate
+// representations of the SAME assignment, toggled by one control:
 //
 //   • Board    — one compact row per housekeeper (avatar, workload bar,
 //                "rooms · time · status", and their room chips). Drag chips
@@ -11,18 +11,41 @@
 //   • Timeline — the same assignment as a Gantt strip across the shift,
 //                one lane per housekeeper. (ScheduleTimeline.tsx)
 //
+// ── This screen is on its way to being VIEW-ONLY ──────────────────────────
+// It is meant to become a pure view once the AI-built board with approve /
+// deny lands: Staxis proposes the day's plan, the manager approves or denies
+// it, and nothing is edited chip-by-chip here. On 2026-07-24 everything that
+// made this an editing and configuration surface was stripped out —
+//
+//   • cleaning-time settings modal (gear icon on the PMS pull strip) — it
+//     wrote `properties` from the browser, which is admin-only RLS, so for a
+//     general manager it flashed "Settings saved" and saved NOTHING. The
+//     clean times were duplicates of /settings/clean-times (the board reads
+//     the cleaning_time_standards table, never those columns); the shift
+//     length was real and moved to /settings/clean-times, which saves through
+//     the service role.
+//   • ★ Staff priority modal — per-housekeeper auto-assign eligibility is
+//     staffing configuration, not a view of today, so it MOVED rather than
+//     disappearing: it is now the "Automatic room assignment" picker on the
+//     staff member's own card in Staff, still writing through
+//     POST /api/housekeeping/staff-priority. Removing the editor while
+//     leaving this board printing an "EXCLUDED" badge would have been a dead
+//     end — the manager could see the state and never change it.
+//
+// Reassign (drag a room to another housekeeper), Auto-assign and Re-plan day
+// are KEPT DELIBERATELY, as the stated exception. Until the approve/deny
+// board exists there is no other way anywhere in the app to create or correct
+// a room assignment, and removing them would be a regression with no
+// replacement. When that board ships, these go with it.
+//
 // Data backbone = the cleaning_tasks + hk_assignments system (the modern,
 // persistent assignment engine), surfaced via:
 //   GET  /api/housekeeping/board            (rooms + crew + current assignment)
 //   POST /api/housekeeping/reassign         (move one room to a housekeeper)
-//   POST /api/housekeeping/reset-assignments(clear all, or one — drag-to-unassigned)
+//   POST /api/housekeeping/reset-assignments(one room — drag-to-unassigned;
+//                                            no taskId — clear the day for
+//                                            "Re-plan day")
 //   POST /api/housekeeping/auto-assign      (balance unassigned rooms across crew)
-//   POST /api/housekeeping/staff-priority   (★ Priority modal)
-//
-// Kept from the prior tab: the live date stepper, the PMS pull strip (with
-// its cleaning-time settings modal), and the sick-callout banner. Dropped
-// per the new design: the Forecast sub-view, the notice board, and the
-// tomorrow's-confidence tile.
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
@@ -35,7 +58,6 @@ import { FeedLearningBanner } from '@/components/FeedLearningBanner';
 import {
   subscribeToPlanSnapshot,
   subscribeToDashboardByDate,
-  updateProperty,
 } from '@/lib/db';
 import type { PlanSnapshot, DashboardNumbers } from '@/lib/db';
 import {
@@ -45,7 +67,7 @@ import {
   T, FONT_SANS, FONT_MONO, Caps, Btn, HousekeeperDot,
 } from './_snow';
 import {
-  ScheduleBoard, type BoardTask, type BoardHk,
+  ScheduleBoard, type BoardTask, type BoardHk, type CrewSource,
   chipKind, fmtMinutes,
 } from './ScheduleBoard';
 import { ScheduleTimeline } from './ScheduleTimeline';
@@ -57,13 +79,21 @@ interface BoardData {
   tasks: BoardTask[];
   housekeepers: BoardHk[];
   unassigned: number;
+  // 'unscheduled_fallback' = nobody is on the Staff schedule for this
+  // date, so the board is showing the whole crew and says so.
+  crew_source?: CrewSource;
+  // The hotel's shift length, straight off `properties` on the server.
+  // Preferred over PropertyContext so the totals here can't drift from
+  // the numbers the server used; the context value is the fallback for
+  // the moment before the first fetch lands.
+  shift_minutes?: number;
 }
 
 const PRIORITY_RANK: Record<string, number> = { priority: 0, normal: 1, excluded: 2 };
 
 export function ScheduleTab() {
   const { user } = useAuth();
-  const { activeProperty, activePropertyId, refreshProperty } = useProperty();
+  const { activeProperty, activePropertyId } = useProperty();
   const { lang } = useLang();
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
@@ -92,21 +122,9 @@ export function ScheduleTab() {
   const [boardData, setBoardData] = useState<BoardData | null>(null);
   const [boardLoaded, setBoardLoaded] = useState(false);
   const [boardErr, setBoardErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState<null | 'auto' | 'reset' | 'send'>(null);
+  const [busy, setBusy] = useState<null | 'auto' | 'replan'>(null);
 
-  // Settings (cleaning-time) modal.
-  const [showSettings, setShowSettings] = useState(false);
-  const [settingsSaving, setSettingsSaving] = useState(false);
-  const [settingsForm, setSettingsForm] = useState({
-    checkoutMinutes: 30,
-    stayoverDay1Minutes: 15,
-    stayoverDay2Minutes: 20,
-    prepMinutesPerActivity: 5,
-    shiftMinutes: 420,
-  });
-
-  // Priority modal + detail drawer.
-  const [showPriority, setShowPriority] = useState(false);
+  // Room detail drawer.
   const [openTask, setOpenTask] = useState<BoardTask | null>(null);
 
   const uid = user?.uid ?? '';
@@ -178,7 +196,10 @@ export function ScheduleTab() {
   }, [refreshBoard]);
 
   // ── Derived ────────────────────────────────────────────────────────────
-  const SHIFT_MINS = Math.max(60, activeProperty?.shiftMinutes ?? 420);
+  const SHIFT_MINS = Math.max(
+    60,
+    boardData?.shift_minutes ?? activeProperty?.shiftMinutes ?? 420,
+  );
 
   const tasks = useMemo(() => boardData?.tasks ?? [], [boardData]);
   const crew = useMemo(() => {
@@ -276,53 +297,65 @@ export function ScheduleTab() {
     }
   }, [pid, shiftDate, busy, refreshBoard, flashToast, lang]);
 
-  const onReset = useCallback(async () => {
+  // Re-plan the whole day: clear every assignment that can still be moved,
+  // then let the engine spread the rooms across today's crew again.
+  //
+  // This is NOT a duplicate of Auto-assign. Auto-assign is deliberately
+  // non-destructive — it only places rooms that have NO assignment — so the
+  // moment the day is planned it becomes a no-op. When two housekeepers call
+  // out at 9am, "Auto-assign" does nothing and the manager's only other
+  // option is dragging twenty rooms to Unassigned one at a time. That is the
+  // gap this fills, and it is the same clear-all shape the server route has
+  // always supported.
+  //
+  // Rooms already in progress / finished keep their housekeeper — the server
+  // only resets scheduled / ready_now / deferred (see reset-assignments).
+  const onReplan = useCallback(async () => {
     if (!pid || busy) return;
-    const assignedCount = tasks.filter(t => t.assignee_id).length;
-    if (assignedCount === 0) {
-      flashToast(lang === 'es' ? 'Nada que reiniciar' : 'Nothing to reset');
-      return;
-    }
-    if (typeof window !== 'undefined' && !window.confirm(
+    const proceed = window.confirm(
       lang === 'es'
-        ? `¿Quitar las asignaciones de ${assignedCount} cuartos?`
-        : `Clear assignments for ${assignedCount} rooms?`,
-    )) return;
-    setBusy('reset');
+        ? 'Volver a repartir los cuartos de este día entre el personal de hoy. Los cuartos que ya se están limpiando o que ya terminaron no se tocan. ¿Continuar?'
+        : "Spread this day's rooms across today's crew again. Rooms already being cleaned or already finished are left alone. Continue?",
+    );
+    if (!proceed) return;
+    setBusy('replan');
     try {
-      const res = await fetchWithAuth('/api/housekeeping/reset-assignments', {
+      const resetRes = await fetchWithAuth('/api/housekeeping/reset-assignments', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ propertyId: pid, date: shiftDate }),
       });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      const resetBody = await resetRes.json().catch(() => ({}));
+      if (!resetRes.ok || !resetBody.ok) throw new Error(resetBody?.error ?? `HTTP ${resetRes.status}`);
+
+      const assignRes = await fetchWithAuth('/api/housekeeping/auto-assign', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
+      });
+      const assignBody = await assignRes.json().catch(() => ({}));
+      if (!assignRes.ok || !assignBody.ok) throw new Error(assignBody?.error ?? `HTTP ${assignRes.status}`);
+
+      const n = assignBody.data?.assigned ?? 0;
       await refreshBoard();
-      flashToast(lang === 'es' ? 'Asignaciones reiniciadas' : 'Assignments reset');
+      flashToast(
+        lang === 'es' ? `Plan rehecho · ${n} cuartos repartidos` : `Day re-planned · ${n} rooms spread`,
+      );
     } catch (e) {
-      flashToast((lang === 'es' ? 'Error al reiniciar: ' : 'Reset failed: ') + (e instanceof Error ? e.message : String(e)));
+      // Whatever failed, show the board's real state — the clear may have
+      // landed even if the re-assign didn't, and the manager needs to see
+      // that rather than a stale screen.
+      await refreshBoard();
+      flashToast(
+        (lang === 'es' ? 'No se pudo rehacer el plan: ' : "Couldn't re-plan the day: ")
+        + (e instanceof Error ? e.message : String(e)),
+      );
     } finally {
       setBusy(null);
     }
-  }, [pid, shiftDate, busy, tasks, refreshBoard, flashToast, lang]);
+  }, [pid, shiftDate, busy, refreshBoard, flashToast, lang]);
 
-  const onSavePriority = useCallback(async (staffId: string, priority: 'priority' | 'normal' | 'excluded') => {
-    // Optimistic.
-    setBoardData(d => {
-      if (!d) return d;
-      return { ...d, housekeepers: d.housekeepers.map(h => h.id === staffId ? { ...h, schedule_priority: priority } : h) };
-    });
-    try {
-      const res = await fetchWithAuth('/api/housekeeping/staff-priority', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, staffId, priority }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-    } catch {
-      flashToast(lang === 'es' ? 'Error al guardar prioridad' : 'Priority save failed');
-      await refreshBoard();
-    }
-  }, [pid, refreshBoard, flashToast, lang]);
+  // Removed 2026-07-24: the ★ Staff priority modal. Auto-assign eligibility
+  // ("never auto-assign this person") is staffing configuration, so it now
+  // lives on the staff member's own card in Staff — see ManagerDirectory.
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -373,10 +406,10 @@ export function ScheduleTab() {
       }}>
         <div>
           <Caps>{(() => {
-            if (isToday)     return lang === 'es' ? 'Horario · hoy'    : 'Schedule · today';
-            if (isYesterday) return lang === 'es' ? 'Horario · ayer'   : 'Schedule · yesterday';
-            if (isTomorrow)  return lang === 'es' ? 'Horario · mañana' : 'Schedule · tomorrow';
-            return lang === 'es' ? 'Horario' : 'Schedule';
+            if (isToday)     return lang === 'es' ? 'Tablero · hoy'    : 'Board · today';
+            if (isYesterday) return lang === 'es' ? 'Tablero · ayer'   : 'Board · yesterday';
+            if (isTomorrow)  return lang === 'es' ? 'Tablero · mañana' : 'Board · tomorrow';
+            return lang === 'es' ? 'Tablero' : 'Board';
           })()}</Caps>
           <h1 style={{
             fontFamily: FONT_SANS, fontSize: 26, color: T.ink, margin: '4px 0 0',
@@ -400,32 +433,11 @@ export function ScheduleTab() {
         display: 'flex', alignItems: 'center', gap: 26, flexWrap: 'wrap',
       }}>
         <div style={{ display: 'flex', flexDirection: 'column', minWidth: 140 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
-            <button
-              onClick={() => {
-                setSettingsForm({
-                  checkoutMinutes:        activeProperty?.checkoutMinutes        ?? 30,
-                  stayoverDay1Minutes:    activeProperty?.stayoverDay1Minutes    ?? 15,
-                  stayoverDay2Minutes:    activeProperty?.stayoverDay2Minutes    ?? 20,
-                  prepMinutesPerActivity: activeProperty?.prepMinutesPerActivity ?? 5,
-                  shiftMinutes:           activeProperty?.shiftMinutes           ?? 420,
-                });
-                setShowSettings(true);
-              }}
-              title={lang === 'es' ? 'Ajustes de tiempos de limpieza' : 'Cleaning-time settings'}
-              aria-label={lang === 'es' ? 'Ajustes' : 'Settings'}
-              style={{
-                background: 'transparent', border: 'none', cursor: 'pointer', padding: 2,
-                borderRadius: 4, color: T.ink3, display: 'inline-flex', alignItems: 'center',
-              }}
-            >
-              <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <circle cx="12" cy="12" r="3" />
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
-              </svg>
-            </button>
-          </div>
+          {/* The gear icon that used to sit beside this label opened a
+              cleaning-time settings modal. It saved nothing for anyone but an
+              admin (see the file header); its fields now live on
+              /settings/clean-times, which saves for real. */}
+          <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 600, marginTop: 3 }}>
             {planLoaded ? pulledAtLabel : (lang === 'es' ? 'Cargando…' : 'Loading…')}
           </span>
@@ -487,10 +499,14 @@ export function ScheduleTab() {
             ))}
           </div>
 
-          {/* Actions */}
+          {/* The two planning actions left on this board — see the file
+              header. Auto-assign FILLS the gaps; Re-plan STARTS OVER. */}
           <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-            <Btn variant="ghost" size="sm" onClick={() => setShowPriority(true)}>★ {lang === 'es' ? 'Prioridad' : 'Priority'}</Btn>
-            <Btn variant="ghost" size="sm" onClick={onReset} disabled={busy != null}>{lang === 'es' ? 'Reiniciar' : 'Reset'}</Btn>
+            <Btn variant="ghost" size="sm" onClick={onReplan} disabled={busy != null}>
+              {busy === 'replan'
+                ? (lang === 'es' ? 'Rehaciendo…' : 'Re-planning…')
+                : `⟲ ${lang === 'es' ? 'Rehacer el día' : 'Re-plan day'}`}
+            </Btn>
             <Btn variant="primary" size="sm" onClick={onAutoAssign} disabled={busy != null}>
               {busy === 'auto' ? (lang === 'es' ? 'Asignando…' : 'Assigning…') : `↻ ${lang === 'es' ? 'Auto-asignar' : 'Auto-assign'}`}
             </Btn>
@@ -501,7 +517,7 @@ export function ScheduleTab() {
       {/* VIEW */}
       {!pid && (
         <div style={{ padding: '40px 0', textAlign: 'center', color: T.ink2, fontFamily: FONT_SANS, fontSize: 14 }}>
-          {lang === 'es' ? 'Selecciona una propiedad.' : 'Select a property to plan the schedule.'}
+          {lang === 'es' ? 'Selecciona una propiedad.' : 'Select a property to see today’s board.'}
         </div>
       )}
       {pid && !boardLoaded && (
@@ -550,6 +566,7 @@ export function ScheduleTab() {
               crew={crew}
               tasks={tasks}
               shiftMinutes={SHIFT_MINS}
+              crewSource={boardData?.crew_source ?? 'scheduled'}
               lang={lang}
               onReassign={onReassign}
               onUnassign={onUnassign}
@@ -593,102 +610,6 @@ export function ScheduleTab() {
         document.body,
       )}
 
-      {/* PRIORITY MODAL */}
-      {showPriority && typeof document !== 'undefined' && createPortal(
-        <PriorityModal
-          crew={boardData?.housekeepers ?? []}
-          lang={lang}
-          onSave={onSavePriority}
-          onClose={() => setShowPriority(false)}
-        />,
-        document.body,
-      )}
-
-      {/* SETTINGS MODAL */}
-      {showSettings && typeof document !== 'undefined' && createPortal(
-        <div
-          onClick={() => { if (!settingsSaving) setShowSettings(false); }}
-          style={{
-            position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.4)', zIndex: 9998,
-            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-          }}
-        >
-          <div onClick={(e) => e.stopPropagation()} style={{
-            background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18,
-            padding: '20px 24px', maxWidth: 480, width: '100%', maxHeight: '85vh', overflow: 'auto',
-            boxShadow: '0 20px 60px rgba(31,42,32,0.20)',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-              <h2 style={{ fontFamily: FONT_SANS, fontSize: 18, margin: 0, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>
-                <span>{lang === 'es' ? 'Tiempos de limpieza' : 'Cleaning-time settings'}</span>
-              </h2>
-              <button onClick={() => setShowSettings(false)} disabled={settingsSaving} aria-label="Close" style={{
-                background: 'transparent', border: 'none', cursor: settingsSaving ? 'default' : 'pointer',
-                fontSize: 20, color: T.ink3, padding: '0 6px',
-              }}>×</button>
-            </div>
-            <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 14px' }}>
-              {lang === 'es'
-                ? 'Cuánto tarda cada limpieza. Auto-asignar y las barras de capacidad usan estos valores.'
-                : 'How long each clean takes, by type. Auto-assign and the per-housekeeper capacity bars read these.'}
-            </p>
-            {([
-              { key: 'checkoutMinutes',        label: lang === 'es' ? 'Salida (limpieza completa)' : 'Checkout (full clean)',     unit: 'min', step: 1,    min: 1, max: 240 },
-              { key: 'stayoverDay1Minutes',    label: lang === 'es' ? 'Estadía día 1 (ligera)'     : 'Stayover Day 1 (light)',     unit: 'min', step: 1,    min: 1, max: 240 },
-              { key: 'stayoverDay2Minutes',    label: lang === 'es' ? 'Estadía día 2+ (completa)'  : 'Stayover Day 2+ (full)',     unit: 'min', step: 1,    min: 1, max: 240 },
-              { key: 'prepMinutesPerActivity', label: lang === 'es' ? 'Preparación entre cuartos'  : 'Prep between rooms',         unit: 'min', step: 1,    min: 0, max: 60 },
-              { key: 'shiftMinutes',           label: lang === 'es' ? 'Turno máximo por persona'   : 'Max shift hours per person', unit: 'h',   step: 0.25, min: 1, max: 24, asHours: true },
-            ] as Array<{ key: keyof typeof settingsForm; label: string; unit: string; step: number; min: number; max: number; asHours?: boolean }>).map(f => {
-              const raw = settingsForm[f.key];
-              const display = f.asHours ? raw / 60 : raw;
-              return (
-                <div key={f.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 0', borderTop: `1px solid ${T.rule}`, gap: 12 }}>
-                  <label htmlFor={`pred-${f.key}`} style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, flex: 1 }}>{f.label}</label>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <input id={`pred-${f.key}`} type="number" step={f.step} min={f.min} max={f.max} value={display}
-                      onChange={(e) => {
-                        const num = Number(e.target.value);
-                        if (Number.isNaN(num)) return;
-                        setSettingsForm(prev => ({ ...prev, [f.key]: f.asHours ? Math.round(num * 60) : Math.round(num) }));
-                      }}
-                      style={{ width: 70, padding: '6px 8px', borderRadius: 8, border: `1px solid ${T.rule}`, background: T.bg, fontFamily: FONT_MONO, fontSize: 13, color: T.ink, textAlign: 'right' }}
-                    />
-                    <span style={{ fontFamily: FONT_MONO, fontSize: 11, color: T.ink2, minWidth: 24 }}>{f.unit}</span>
-                  </div>
-                </div>
-              );
-            })}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 18 }}>
-              <Btn variant="ghost" size="sm" onClick={() => setShowSettings(false)} disabled={settingsSaving}>{lang === 'es' ? 'Cancelar' : 'Cancel'}</Btn>
-              <Btn variant="primary" size="sm" disabled={settingsSaving || !uid || !pid} onClick={async () => {
-                if (!uid || !pid) return;
-                setSettingsSaving(true);
-                try {
-                  await updateProperty(uid, pid, {
-                    checkoutMinutes:        settingsForm.checkoutMinutes,
-                    stayoverDay1Minutes:    settingsForm.stayoverDay1Minutes,
-                    stayoverDay2Minutes:    settingsForm.stayoverDay2Minutes,
-                    stayoverMinutes:        settingsForm.stayoverDay2Minutes,
-                    prepMinutesPerActivity: settingsForm.prepMinutesPerActivity,
-                    shiftMinutes:           settingsForm.shiftMinutes,
-                  });
-                  await refreshProperty();
-                  flashToast(lang === 'es' ? 'Ajustes guardados' : 'Settings saved');
-                  setShowSettings(false);
-                } catch (err) {
-                  console.error('[Schedule] settings save failed:', err);
-                  flashToast(lang === 'es' ? 'Error al guardar' : 'Save failed');
-                } finally {
-                  setSettingsSaving(false);
-                }
-              }}>
-                {settingsSaving ? (lang === 'es' ? 'Guardando…' : 'Saving…') : (lang === 'es' ? 'Guardar' : 'Save')}
-              </Btn>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      )}
     </div>
   );
 }
@@ -781,87 +702,6 @@ function DRow({ label, value, mono }: { label: string; value: React.ReactNode; m
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', borderTop: `1px solid ${T.rule}`, gap: 12 }}>
       <Caps>{label}</Caps>
       <span style={{ fontFamily: mono ? FONT_MONO : FONT_SANS, fontSize: 13, color: T.ink }}>{value}</span>
-    </div>
-  );
-}
-
-// ───────────────────────────────────────────────────────────────────────
-// Priority modal — per-staff Priority / Normal / Excluded.
-// ───────────────────────────────────────────────────────────────────────
-
-function PriorityModal({
-  crew, lang, onSave, onClose,
-}: {
-  crew: BoardHk[];
-  lang: 'en' | 'es';
-  onSave: (staffId: string, priority: 'priority' | 'normal' | 'excluded') => void;
-  onClose: () => void;
-}) {
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') closeRef.current(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-  const levels: Array<['priority' | 'normal' | 'excluded', string]> = [
-    ['priority', lang === 'es' ? 'Prioridad' : 'Priority'],
-    ['normal', lang === 'es' ? 'Normal' : 'Normal'],
-    ['excluded', lang === 'es' ? 'Excluido' : 'Excluded'],
-  ];
-  const ordered = [...crew.filter(c => c.is_active)].sort((a, b) =>
-    (PRIORITY_RANK[a.schedule_priority] ?? 1) - (PRIORITY_RANK[b.schedule_priority] ?? 1) || a.name.localeCompare(b.name),
-  );
-  return (
-    <div onClick={onClose} role="dialog" aria-modal="true" style={{
-      position: 'fixed', inset: 0, background: 'rgba(31,35,28,0.4)', zIndex: 9998,
-      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
-    }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        background: T.paper, border: `1px solid ${T.rule}`, borderRadius: 18, padding: '20px 24px',
-        maxWidth: 480, width: '100%', maxHeight: '86vh', overflow: 'auto', boxShadow: '0 20px 60px rgba(31,42,32,0.2)',
-      }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-          <h2 style={{ fontFamily: FONT_SANS, fontSize: 18, margin: 0, color: T.ink, fontWeight: 600, letterSpacing: '-0.02em' }}>
-            <span>{lang === 'es' ? 'Prioridad del personal' : 'Staff priority'}</span>
-          </h2>
-          <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 20, color: T.ink3, padding: '0 6px' }}>×</button>
-        </div>
-        <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink2, margin: '0 0 10px' }}>
-          {lang === 'es'
-            ? 'Prioridad = se asigna primero. Excluido = nunca se asigna automáticamente.'
-            : 'Priority = assigned first. Excluded = never auto-assigned.'}
-        </p>
-        {ordered.length === 0 && (
-          <div style={{ padding: '16px 0', color: T.ink2, fontFamily: FONT_SANS, fontSize: 13 }}>
-            {lang === 'es' ? 'No hay personal de limpieza.' : 'No housekeeping staff.'}
-          </div>
-        )}
-        {ordered.map(s => (
-          <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '11px 0', borderTop: `1px solid ${T.rule}`, gap: 12 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 }}>
-              <HousekeeperDot staff={{ id: s.id, name: s.name }} size={28} />
-              <span style={{ fontWeight: 600, fontSize: 13, color: T.ink, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{s.name}</span>
-            </div>
-            <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
-              {levels.map(([val, label]) => {
-                const on = s.schedule_priority === val;
-                return (
-                  <button key={val} onClick={() => onSave(s.id, val)} style={{
-                    fontFamily: FONT_SANS, fontSize: 11, borderRadius: 999, padding: '5px 11px', cursor: 'pointer',
-                    border: `1px solid ${on ? T.sageDeep : T.rule}`,
-                    background: on ? T.sageDeep : 'transparent',
-                    color: on ? '#fff' : T.ink2,
-                  }}>{label}</button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
-          <Btn variant="primary" size="sm" onClick={onClose}>{lang === 'es' ? 'Listo' : 'Done'}</Btn>
-        </div>
-      </div>
     </div>
   );
 }

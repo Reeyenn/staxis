@@ -438,7 +438,7 @@ Staxis has built a **strong foundation** for the Phase 1 MVP housekeeping schedu
 **Immediate (Week 1):**
 - [ ] Build room assignment UI on manager housekeeping view (drag/drop or form-based)
 - [ ] Add "help request" button to housekeeper room view
-- [ ] Implement overnight shift notes input form in housekeeping/schedule tab
+- [x] ~~Implement overnight shift notes input form in housekeeping/schedule tab~~ — closed 2026-07-24. Housekeeping is no longer where scheduling lives, and an overnight-notes form would be a new step added to the night auditor's job rather than a replacement for one. If shift notes come back, they belong in Staff alongside the schedule, not in Housekeeping.
 
 **Short-term (Week 2):**
 - [ ] Wire real-time room change notifications (occupancy, extensions, early checkouts)

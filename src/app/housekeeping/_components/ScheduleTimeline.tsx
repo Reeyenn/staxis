@@ -12,6 +12,13 @@
  * tap a block → onOpenTask. Layout is percentage-based off the shift
  * window, so it's responsive with no measurement pass.
  *
+ * A dashed "Unassigned" lane at the bottom holds every room that has no
+ * lane of its own (never assigned, or assigned to someone no longer on
+ * the displayed crew). It mirrors the Board's unassigned row: no view may
+ * silently drop a room. Its blocks clip at the right edge rather than
+ * stretching the shared time scale — the lane header carries the real
+ * count and total minutes.
+ *
  * Design system: Snow tokens via _snow.tsx.
  */
 
@@ -52,8 +59,15 @@ export function ScheduleTimeline({
 
   const crewIds = new Set(crew.map(c => c.id));
   const tasksByHk = new Map<string, BoardTask[]>();
+  // Rooms with nobody to draw them under. Two cases, and BOTH have to be
+  // visible: genuinely unassigned rooms, and rooms still carrying the name
+  // of someone who is no longer on the displayed crew (deactivated
+  // mid-day). This lane exists because dropping them silently — which is
+  // what this view used to do — hides real work from the manager and
+  // quietly shrinks the over-cap math below.
+  const orphaned: BoardTask[] = [];
   for (const t of tasks) {
-    if (!t.assignee_id || !crewIds.has(t.assignee_id)) continue;
+    if (!t.assignee_id || !crewIds.has(t.assignee_id)) { orphaned.push(t); continue; }
     const arr = tasksByHk.get(t.assignee_id) ?? [];
     arr.push(t);
     tasksByHk.set(t.assignee_id, arr);
@@ -61,9 +75,14 @@ export function ScheduleTimeline({
   for (const arr of tasksByHk.values()) {
     arr.sort((a, b) => (a.queue_order - b.queue_order) || a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
   }
+  orphaned.sort((a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }));
 
   // Window = whichever is larger: the shift cap or the busiest crew's load,
   // so over-cap lanes still fit (blocks never clip off the right edge).
+  // Deliberately NOT widened by the unassigned pile: before the manager hits
+  // Auto-assign every room is unassigned, and letting that set the scale
+  // would squash the real lanes down to slivers. The unassigned lane clips
+  // instead, and its header carries the honest count + total.
   const maxLoad = Math.max(
     shiftMinutes,
     ...crew.map(c => (tasksByHk.get(c.id) ?? []).reduce((s, t) => s + t.estimated_minutes_resolved, 0)),
@@ -91,13 +110,13 @@ export function ScheduleTimeline({
       border: `1px solid ${T.rule}`, borderRadius: 14, padding: '14px 16px',
       background: T.paper,
     }}>
-      {crew.length === 0 && (
+      {crew.length === 0 && orphaned.length === 0 && (
         <div style={{ padding: '28px 8px', textAlign: 'center', color: T.ink2, fontFamily: FONT_SANS, fontSize: 14 }}>
           {lang === 'es' ? 'No hay personal para mostrar.' : 'No crew to show.'}
         </div>
       )}
 
-      {crew.length > 0 && (
+      {(crew.length > 0 || orphaned.length > 0) && (
         <>
           {/* Axis row */}
           <div style={{
@@ -214,6 +233,92 @@ export function ScheduleTimeline({
               </div>
             );
           })}
+
+          {/* Unassigned lane — only rendered when it holds something. Drag a
+              block out of here onto a crew lane to assign it. */}
+          {orphaned.length > 0 && (() => {
+            let cursor = 0;
+            const load = orphaned.reduce((s, t) => s + t.estimated_minutes_resolved, 0);
+            return (
+              <div style={{
+                display: 'grid', gridTemplateColumns: '150px 1fr', alignItems: 'center',
+                borderTop: `1px dashed ${T.rule}`, minHeight: 50,
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 9, paddingRight: 10, minWidth: 0 }}>
+                  <span style={{
+                    width: 24, height: 24, borderRadius: '50%', background: T.ink3, color: '#fff',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    fontFamily: FONT_SANS, fontWeight: 700, fontSize: 11, flexShrink: 0,
+                  }}>?</span>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{
+                      fontFamily: FONT_SANS, fontSize: 12.5, fontWeight: 600, color: T.ink,
+                      whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                    }}>{lang === 'es' ? 'Sin asignar' : 'Unassigned'}</div>
+                    <div style={{ fontFamily: FONT_MONO, fontSize: 10, color: T.ink3, whiteSpace: 'nowrap' }}>
+                      {orphaned.length} {lang === 'es' ? 'cu' : 'rms'} · {fmtMinutes(load)}
+                    </div>
+                  </div>
+                </div>
+                {/* overflow:hidden — the pile can be far longer than one
+                    shift; the row header states how many and how long. */}
+                <div style={{ position: 'relative', height: 50, overflow: 'hidden' }}>
+                  {hours.map(h => {
+                    const pct = ((h - START_HOUR) * 60 / windowMinutes) * 100;
+                    if (pct > 100.01) return null;
+                    return (
+                      <span key={h} style={{
+                        position: 'absolute', top: 0, bottom: 0, left: `${pct}%`,
+                        width: 1, background: T.ruleSoft,
+                      }} />
+                    );
+                  })}
+                  {orphaned.map(t => {
+                    const kind = chipKind(t.cleaning_type);
+                    const color = CHIP_COLOR[kind];
+                    const leftPct = (cursor / windowMinutes) * 100;
+                    const widthPct = (t.estimated_minutes_resolved / windowMinutes) * 100;
+                    cursor += t.estimated_minutes_resolved;
+                    const isLocked = t.status === 'in_progress' || t.status === 'completed'
+                      || t.status === 'cancelled' || t.status === 'inspection_pending';
+                    return (
+                      <button
+                        key={t.id}
+                        type="button"
+                        draggable={!isLocked}
+                        onDragStart={(e) => {
+                          if (isLocked) { e.preventDefault(); return; }
+                          try { e.dataTransfer.setData('text/plain', t.id); } catch { /* Safari */ }
+                          e.dataTransfer.effectAllowed = 'move';
+                          setDragTaskId(t.id);
+                        }}
+                        onDragEnd={() => { setDragTaskId(null); setHoverHk(null); }}
+                        onClick={() => onOpenTask(t)}
+                        title={`${t.room_number} · ${t.cleaning_type.replace(/_/g, ' ')} · ${fmtMinutes(t.estimated_minutes_resolved)}`}
+                        aria-label={`Room ${t.room_number} ${t.cleaning_type}`}
+                        style={{
+                          position: 'absolute', top: 8, bottom: 8,
+                          left: `${leftPct}%`, width: `${widthPct}%`, minWidth: 18,
+                          border: `1px dashed ${color}`, borderLeft: `3px solid ${color}`,
+                          borderRadius: 7,
+                          background: `color-mix(in srgb, ${color} 8%, #fff)`,
+                          padding: '2px 5px', overflow: 'hidden',
+                          cursor: isLocked ? 'default' : 'grab', opacity: isLocked ? 0.6 : 1,
+                          display: 'flex', flexDirection: 'column', justifyContent: 'center',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <span style={{
+                          fontFamily: FONT_MONO, fontWeight: 600, fontSize: 11.5, color,
+                          lineHeight: 1, whiteSpace: 'nowrap',
+                        }}>{t.room_number}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
 
           {/* NOW line — spans the lane area (offset by the 150px gutter). */}
           {nowVisible && (

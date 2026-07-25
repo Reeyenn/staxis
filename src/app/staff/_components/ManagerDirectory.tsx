@@ -21,7 +21,7 @@ import { canManageTeam } from '@/lib/roles';
 import { DraftNumberInput } from '@/components/DraftNumberInput';
 import { InviteStaffPanel } from '@/components/team/InviteStaffPanel';
 import invitePanelStyles from '@/components/team/InviteStaffPanel.module.css';
-import type { StaffMember, StaffDepartment } from '@/types';
+import type { StaffMember, StaffDepartment, SchedulePriority } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Caps, Btn, type DeptKey } from './_tokens';
 import { StaffAvatar, SeniorTag, HoursBar } from './_people';
 import { useStaffDialog } from './useStaffDialog';
@@ -60,12 +60,21 @@ interface StaffFormData {
   maxDaysPerWeek: number;
   vacationDates: string;
   isActive: boolean;
+  // Auto-assign eligibility. Read by the housekeeping auto-assign engine
+  // (src/lib/auto-assign-runner.ts, src/lib/calculations.ts) and shown as an
+  // "EXCLUDED" badge on the housekeeping board. This card is its ONLY editor
+  // — the board's old ★ Priority modal was removed on 2026-07-24 and, until
+  // this field landed, an excluded housekeeper could never be brought back:
+  // the board showed the badge and nothing anywhere could clear it.
+  // Persisted via POST /api/housekeeping/staff-priority, not the anon staff
+  // write (see performSave).
+  schedulePriority: SchedulePriority;
 }
 
 const EMPTY_FORM: StaffFormData = {
   name: '', language: 'es', department: 'housekeeping',
   isSenior: false, maxWeeklyHours: 40, maxDaysPerWeek: 5,
-  vacationDates: '', isActive: true,
+  vacationDates: '', isActive: true, schedulePriority: 'normal',
 };
 
 // Team-member shape returned by GET /api/auth/team (with our new staffId field).
@@ -335,6 +344,7 @@ export function ManagerDirectory() {
       maxDaysPerWeek: member.maxDaysPerWeek ?? 5,
       vacationDates: (member.vacationDates ?? []).join('\n'),
       isActive: member.isActive ?? true,
+      schedulePriority: member.schedulePriority ?? 'normal',
     });
     setWageTouched(false);
     setPhoneTouched(false);
@@ -378,6 +388,11 @@ export function ManagerDirectory() {
         maxDaysPerWeek: form.maxDaysPerWeek,
         vacationDates,
         isActive: form.isActive,
+        // schedulePriority is deliberately NOT written here — see the
+        // auto-assign block after the save. Same reasoning as hourlyWage:
+        // this write goes through the anon client, where a policy that
+        // filters the UPDATE to zero rows is not an error and the save would
+        // silently do nothing.
       };
 
       // Hard 15s timeout on the staff write — see notes in the legacy
@@ -386,6 +401,10 @@ export function ManagerDirectory() {
       let savedStaffId: string | null = existingId;
       const writePromise: Promise<unknown> = existingId
         ? updateStaffMember(uid, pid, existingId, data)
+        // scheduledToday is DEPRECATED (2026-07-24): a non-date-aware boolean
+        // that nothing ever writes. Housekeeping derives who is working from
+        // scheduled_shifts (src/lib/schedule/active-crew.ts). Kept only to
+        // satisfy the NOT NULL column default.
         : addStaffMember(uid, pid, { ...data, scheduledToday: false, weeklyHours: 0 })
             .then((newId: string | void) => {
               if (typeof newId === 'string') { savedStaffId = newId; createdIdRef.current = newId; }
@@ -492,6 +511,33 @@ export function ManagerDirectory() {
         }
         const sid = savedStaffId;
         setWages(w => ({ ...w, [sid]: desiredWage }));
+      }
+
+      // ── Auto-assign eligibility (managers only, service-role) ────────────
+      // `schedule_priority` decides whether the housekeeping board's
+      // Auto-assign will ever hand this person a room, and the board prints
+      // an "EXCLUDED" badge when it is set to 'excluded'. It goes through the
+      // service-role route for the same reason the wage does — and because
+      // this card is now the ONLY place in the app that can change it, a save
+      // that silently did nothing would strand a housekeeper as permanently
+      // un-assignable. Only fires for housekeeping, and only when it changed.
+      if (isManager && savedStaffId && form.department === 'housekeeping') {
+        const desiredPriority = form.schedulePriority;
+        // A brand-new row starts at the column default ('normal'), so a new
+        // hire only needs the call when the manager picked something else.
+        const previousPriority = editMember?.schedulePriority ?? 'normal';
+        if (desiredPriority !== previousPriority) {
+          const prioRes = await fetchWithAuth('/api/housekeeping/staff-priority', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ propertyId: pid, staffId: savedStaffId, priority: desiredPriority }),
+          });
+          if (!prioRes.ok) {
+            throw new Error(lang === 'es'
+              ? 'Detalles guardados, pero no se pudo cambiar el reparto automático de cuartos. Inténtalo de nuevo.'
+              : "Details saved, but the automatic room assignment setting couldn't be changed. Try again.");
+          }
+        }
       }
 
       try { await refreshStaff(); } catch (err) { console.warn('[ManagerDirectory] refresh failed', err); }
@@ -755,6 +801,7 @@ export function ManagerDirectory() {
           linkedAccountId={linkedAccountId}
           setLinkedAccountId={setLinkedAccountId}
           showWage={isManager}
+          isManager={isManager}
           markPhoneTouched={() => setPhoneTouched(true)}
           markWageTouched={() => setWageTouched(true)}
           lang={lang}
@@ -828,7 +875,7 @@ function formatPhone(p: string): string {
 // ── Modal ────────────────────────────────────────────────────────────────
 function StaffEditModal({
   editMember, form, setForm, saving, saveError, onClose, onSave, onDelete,
-  linkableAccounts, linkedAccountId, setLinkedAccountId, showWage,
+  linkableAccounts, linkedAccountId, setLinkedAccountId, showWage, isManager,
   markPhoneTouched, markWageTouched, lang,
 }: {
   editMember: StaffMember | null;
@@ -843,6 +890,10 @@ function StaffEditModal({
   linkedAccountId: string | null;
   setLinkedAccountId: (id: string | null) => void;
   showWage: boolean;
+  /** Roster WRITES are manager-only in RLS (migration 0330). Fields that
+   *  configure how the hotel runs are hidden for anyone else, so nobody edits
+   *  a control whose save would be filtered to zero rows without an error. */
+  isManager: boolean;
   markPhoneTouched: () => void;
   markWageTouched: () => void;
   lang: 'en' | 'es';
@@ -857,6 +908,8 @@ function StaffEditModal({
   const wageId = `${idPrefix}-wage`;
   const maxHoursId = `${idPrefix}-max-hours`;
   const maxDaysId = `${idPrefix}-max-days`;
+  const priorityId = `${idPrefix}-priority`;
+  const priorityHintId = `${idPrefix}-priority-hint`;
   const loginId = `${idPrefix}-login`;
   const loginHintId = `${idPrefix}-login-hint`;
   const vacationId = `${idPrefix}-vacation`;
@@ -1024,6 +1077,38 @@ function StaffEditModal({
               />
             </Field>
           </div>
+
+          {/* Auto-assign eligibility — housekeeping only, because nothing
+              auto-assigns the other departments. This is the only editor for
+              the value the housekeeping board shows as an "EXCLUDED" badge. */}
+          {form.department === 'housekeeping' && isManager && (
+            <Field
+              controlId={priorityId}
+              label={lang === 'es' ? 'Reparto automático de cuartos' : 'Automatic room assignment'}
+              hintId={priorityHintId}
+              hint={lang === 'es'
+                ? 'Qué tan pronto le toca cuando el tablero reparte los cuartos del día.'
+                : 'How soon they get rooms when the board hands out the day’s work.'}
+            >
+              <select
+                id={priorityId}
+                aria-describedby={priorityHintId}
+                value={form.schedulePriority}
+                onChange={e => setForm(f => ({ ...f, schedulePriority: e.target.value as SchedulePriority }))}
+                style={{
+                  ...inputStyle,
+                  appearance: 'none', backgroundImage:
+                    "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath fill='%235C625C' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E\")",
+                  backgroundRepeat: 'no-repeat',
+                  backgroundPosition: 'right 14px center', paddingRight: 36,
+                }}
+              >
+                <option value="priority">{lang === 'es' ? 'Primero — dale cuartos antes que a los demás' : 'First — give them rooms before the others'}</option>
+                <option value="normal">{lang === 'es' ? 'Normal — reparto parejo' : 'Normal — share the work evenly'}</option>
+                <option value="excluded">{lang === 'es' ? 'Nunca — no le repartas cuartos automáticamente' : 'Never — don’t hand them rooms automatically'}</option>
+              </select>
+            </Field>
+          )}
 
           {/* Toggles */}
           {[

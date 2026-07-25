@@ -97,6 +97,16 @@ export interface Property {
    * layout (All, General, Breakfast, then customs) with nothing hidden.
    */
   inventoryTabLayout?: InventoryTabLayout | null;
+  /**
+   * Housekeeping adoption questionnaire answers (properties.housekeeping_setup,
+   * migration 0337). Intentionally `unknown` — this is raw stored JSON that a
+   * hotel could have written under an older shape, so nothing may read a field
+   * off it directly. Run it through `parseHousekeepingSetup()` /
+   * `isHousekeepingSetupComplete()` in `@/lib/housekeeping/setup-gate`, which
+   * are total and never throw. Undefined / null = the questionnaire has not
+   * been completed, and the Housekeeping section gates on it.
+   */
+  housekeepingSetup?: unknown;
   createdAt: Date;
 }
 

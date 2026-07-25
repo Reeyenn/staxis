@@ -8,7 +8,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useAuth } from '@/contexts/AuthContext';
 import { t } from '@/lib/translations';
-import { ChevronRight, UserCog, ScrollText, BarChart3 } from 'lucide-react';
+import { ChevronRight, UserCog, ScrollText, BarChart3, Timer } from 'lucide-react';
 import { useCan } from '@/lib/capabilities/useCan';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
 import { T, fonts } from '@/app/staff/_components/_tokens';
@@ -26,6 +26,12 @@ export default function SettingsPage() {
     { href:'/settings/reports', icon:BarChart3, label: lang === 'es' ? 'Reportes' : 'Reports', desc: lang === 'es' ? 'Genera y exporta reportes, y define cuándo se envía el reporte diario y semanal' : 'Run and export reports, and set when the daily & weekly report is sent', capsAny:['run_reports','manage_notifications'] },
     { href:'/settings/users', icon:UserCog, label: lang === 'es' ? 'Usuarios y roles' : 'Users & Roles', desc: lang === 'es' ? 'Cambia roles, desactiva cuentas, transfiere propietario' : 'Change roles, deactivate accounts, transfer ownership', cap:'manage_users' },
     { href:'/settings/activity-log', icon:ScrollText, label: lang === 'es' ? 'Registro de actividad' : 'Activity Log', desc: lang === 'es' ? 'Cada limpieza, inspección, ausencia y cambio en una sola lista buscable y exportable.' : 'Every cleaning, inspection, callout, and change in one searchable, exportable timeline.', cap:'view_activity_log' },
+    // Added 2026-07-24. The page already existed but nothing linked to it, so
+    // it was reachable only by typing the URL. That became a real problem when
+    // the shift length moved here from the Housekeeping board — it is now the
+    // only editor for how long one housekeeper's day is, and an editor no one
+    // can navigate to is the same as no editor at all.
+    { href:'/settings/clean-times', icon:Timer, label: lang === 'es' ? 'Tiempos de limpieza' : 'Clean Times', desc: lang === 'es' ? 'Cuántos minutos toma cada tipo de limpieza y cuánto dura un turno' : 'How many minutes each type of clean takes, and how long a shift is', cap:'manage_clean_times' },
   ];
   const sections = allSections.filter((s) => {
     if (!user) return !s.cap && !s.capsAny;

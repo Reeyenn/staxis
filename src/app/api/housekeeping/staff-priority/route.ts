@@ -1,15 +1,26 @@
 /**
  * POST /api/housekeeping/staff-priority
  *
- * Persists a housekeeper's auto-assign priority from the Schedule board's
- * "★ Priority" modal. Writes staff.schedule_priority:
+ * Persists a housekeeper's auto-assign eligibility. Writes
+ * staff.schedule_priority:
  *   - 'priority'  → eligible, weighted first by the engine
  *   - 'normal'    → eligible (default)
  *   - 'excluded'  → never auto-placed (POST /auto-assign skips them)
  *
- * One staff per call (the modal saves each segmented-control tap as it
- * happens). Scoped to housekeeping staff of a property the caller can
- * access, via the service-role client.
+ * Caller: the "Automatic room assignment" picker on the staff member's card
+ * in Staff (src/app/staff/_components/ManagerDirectory.tsx). It used to be
+ * the Schedule board's "★ Priority" modal, which was removed on 2026-07-24
+ * when that board became a view of today rather than a config surface.
+ *
+ * This route — not the browser's staff write — is deliberately the write
+ * path, for the same reason as PUT /api/staff/wages: the anon client's
+ * UPDATE can be filtered to zero rows by RLS without raising an error, and
+ * a silent no-op here would leave a housekeeper permanently un-assignable
+ * with an "EXCLUDED" badge nobody could clear. The update below `.select()`s
+ * and 404s when it touched nothing.
+ *
+ * One staff per call. Scoped to housekeeping staff of a property the caller
+ * can access, via the service-role client.
  *
  * Auth: requireSession (manager-facing) + property-access gate.
  *

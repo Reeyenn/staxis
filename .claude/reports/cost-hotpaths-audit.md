@@ -243,7 +243,6 @@ No `fs.readFileSync` in hot request paths. No `bcrypt`/expensive crypto on hot p
 |---|---|---|---|
 | [src/lib/db/housekeeper-helpers.ts:78-84](src/lib/db/housekeeper-helpers.ts:78) | **4s** | Public housekeeper SMS link — rooms refetch | `document.visibilityState` guard. Most aggressive in the app. |
 | [src/app/onboard/page.tsx:699](src/app/onboard/page.tsx:699) | 3s | Onboarding status | Only during 5–30 min onboarding flow. |
-| [src/app/housekeeping/_components/RoomsTab.tsx:85](src/app/housekeeping/_components/RoomsTab.tsx:85) | 15s | `setNowMs(Date.now())` for relative timestamps | Just a re-render trigger, not a fetch. |
 | [src/app/housekeeping/_components/DeepCleanTab.tsx:169](src/app/housekeeping/_components/DeepCleanTab.tsx:169) | (visibility-change driven) | Today's rooms |  |
 | [src/app/housekeeping/_components/PerformanceTab.tsx:113](src/app/housekeeping/_components/PerformanceTab.tsx:113) | 30s | `getFlaggedCleaningEvents()` | No pagination on fetch. |
 | [src/app/laundry/[id]/page.tsx:126](src/app/laundry/[id]/page.tsx:126) | 30s | `loadBootstrap` | Calls `/api/laundry/bootstrap` (wide-column query). |
