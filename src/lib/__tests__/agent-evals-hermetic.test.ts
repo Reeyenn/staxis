@@ -16,7 +16,7 @@
  * is added rather than when somebody remembers to write a case for it.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { EVAL_CASES } from '@/lib/agent/evals/test-bank';
@@ -32,6 +32,21 @@ const HERMETIC = EVAL_CASES.filter(c => c.mode === 'hermetic');
 const LIVE = EVAL_CASES.filter(c => c.mode === 'live');
 
 describe('agent eval bank — hermetic cases', () => {
+  // "Hermetic" has to be enforced, not asserted in a comment. Any outbound
+  // fetch during a case — an Anthropic call the fake failed to intercept, a
+  // Supabase read from an unstubbed handler — throws and fails that case.
+  // Without this, the bank could quietly start costing money and needing a
+  // database, which is exactly how a CI gate becomes a CI liability.
+  const realFetch = globalThis.fetch;
+  before(() => {
+    globalThis.fetch = (async (input: unknown) => {
+      throw new Error(`hermetic eval attempted network I/O: ${String(input)}`);
+    }) as typeof globalThis.fetch;
+  });
+  after(() => {
+    globalThis.fetch = realFetch;
+  });
+
   test('the bank actually contains hermetic cases', () => {
     assert.ok(HERMETIC.length >= 10, `expected ≥10 hermetic cases, found ${HERMETIC.length}`);
   });

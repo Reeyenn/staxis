@@ -10,6 +10,30 @@
 #   CRON_SECRET — same value as in Vercel env. Bearer auth.
 #
 # Phase 3.6 (2026-05-13).
+#
+# -- RETENTION (A4-RATCHET, 2026-07-24) --------------------------------------
+# BEFORE RE-ENABLING THE SCHEDULE BELOW, READ THIS.
+#
+# The schedule has been commented out since 2026-05-30, so nothing is being
+# deleted today. That is the whole risk: the danger is not the slow drip, it is
+# the RE-ENABLE moment. The first run after report ingestion restores data flow
+# deletes everything past the window in ONE shot, with no warning.
+#
+# Re-enable checklist:
+#   1. `npm test src/lib/__tests__/retention-purge-exemptions.test.ts` is green.
+#      It proves the handler never deletes from EXEMPT_FROM_PURGE — which now
+#      includes the agent decision corpus (agent_decisions), the dataset that
+#      cannot be rebuilt after the fact.
+#   2. Confirm the RETENTION windows in
+#      src/app/api/cron/ml-retention-purge/route.ts still match what the product
+#      needs; they were set when the ML service had live data.
+#   3. Run once via workflow_dispatch and check the row counts it reports
+#      BEFORE putting it back on a schedule.
+#
+# Known, not yet fixed: 72% of app_events rows are a single noise event
+# (orphan_auth_user_skipped_too_old, one row per skipped user per run). The
+# right fix is the WRITER — one summary row per run — not a wider window or a
+# cold-storage tier. See the A4-RATCHET summary.
 
 name: ML retention purge
 
