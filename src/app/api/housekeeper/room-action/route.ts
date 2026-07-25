@@ -42,7 +42,8 @@ import { verifyStaffLinkToken } from '@/lib/staff-link-auth';
 // Plan v4 bridge: deriveCleaningEventFeatures reads from the
 // today_room_work_v1 + today_property_counts_v1 RPCs (derived live from
 // pms_room_status_log + pms_reservations + pms_in_house_snapshot +
-// pms_housekeeping_assignments, written by the vision CUA). Any feature
+// pms_housekeeping_assignments, the PMS mirror; Staxis state is room_work
+// since 0346). Any feature
 // that can't be derived returns null; cleaning_events insert proceeds.
 import { deriveCleaningEventFeatures } from '@/lib/feature-derivation';
 import { deriveStartedAtPure } from '@/lib/cleaning-event-derivation';
@@ -361,7 +362,8 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     // staff member.
     //
     // Capability note (rooms→pms_*): `assigned_to` is now derived by the merge
-    // resolving pms_housekeeping_assignments.housekeeper_name back to a staff
+    // resolving the assignment (room_work.assigned_staff_id, else the
+    // mirror's housekeeper_name) back to a staff
     // UUID (collision-aware name match), not a hard FK. If a PMS-written name
     // fails to resolve, assigned_to is undefined → the room reads as
     // unassigned (fail-open, any active property staff may act on it).

@@ -269,7 +269,7 @@ async function buildHotelSnapshotUncached(
   // "what's next" without an extra tool call. Plan v4: pull the live merged
   // Room[] for today from the pms_* feeds and filter to this housekeeper.
   // mergePmsRoomsForDate resolves assignedTo by collision-aware name match
-  // (pms_housekeeping_assignments.housekeeper_name → staff.id), so filtering
+  // (room_work.assigned_staff_id, else the mirror's housekeeper_name → staff.id), so filtering
   // on assignedTo === staffId gives exactly this person's rooms for today.
   let myRooms: HotelSnapshot['myRooms'] | undefined;
   if (role === 'housekeeping' && staffId) {

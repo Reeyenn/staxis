@@ -29,7 +29,8 @@ import { errToString } from '@/lib/utils';
 // Plan v4 bridge: deriveCleaningEventFeatures now reads from the
 // today_room_work_v1 + today_property_counts_v1 RPCs (which derive live
 // from pms_room_status_log + pms_reservations + pms_in_house_snapshot +
-// pms_housekeeping_assignments — all written by the vision CUA). Any
+// pms_housekeeping_assignments — the PMS-reported mirror; Staxis state lives
+// in room_work since 0346). Any
 // feature that can't be derived (CUA hasn't reached the hotel yet,
 // schema drift, RPC error) returns null — cleaning_events insert still
 // proceeds.

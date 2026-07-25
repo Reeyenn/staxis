@@ -485,8 +485,15 @@ export async function applyRoomUpdate(
   const assignmentPatch: Record<string, unknown> = {
     ...statusPatch,
     ...(cleaningType !== undefined ? { cleaning_type: cleaningType } : {}),
+    // assigned_source is NOT NULL whenever assigned_staff_id is set (CHECK
+    // room_work_assigned_source_chk). Never emit `undefined` here — supabase-js
+    // JSON-serializes the patch, undefined keys vanish, and an insert would
+    // land an assignment with no provenance and fail the CHECK.
     ...(assignedStaffId !== undefined
-      ? { assigned_staff_id: assignedStaffId, assigned_source: assignedStaffId ? assignedSource : null }
+      ? {
+          assigned_staff_id: assignedStaffId,
+          assigned_source: assignedStaffId ? (assignedSource ?? 'manager') : null,
+        }
       : {}),
     ...(partial.isDnd !== undefined ? { dnd_active: Boolean(partial.isDnd) } : {}),
     ...workflowPatch,

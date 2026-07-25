@@ -22,7 +22,8 @@
  *     → mergePmsRoomsForDate() composes Room[] from:
  *         pms_rooms_inventory (canonical room list)
  *         pms_room_status_log (latest status per room, last 90d)
- *         pms_housekeeping_assignments (today's HK plan + dnd_active)
+ *         pms_housekeeping_assignments (the PMS report) merged with
+ *         room_work (Staxis-owned state) — 0346
  *         pms_reservations (arrival flags + stayover-day derivation)
  *         staff (best-effort name → id mapping)
  *     → returns standard {ok, requestId, data: Room[]} envelope

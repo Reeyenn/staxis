@@ -6,7 +6,7 @@
  *   tile-cycling writes used to update the legacy rooms table directly
  *   from the browser. RLS deny-all on pms_* blocks that, so writes now go
  *   through this server route, which uses supabaseAdmin to write to
- *   pms_housekeeping_assignments (canonical state) + pms_room_status_log
+ *   room_work (Staxis-owned state, 0346) + pms_room_status_log
  *   (auditable change event with source='manual').
  *
  * Endpoint:

@@ -19,7 +19,7 @@
  * Source of truth, in order:
  *   pms_room_status_log       — latest event per room (set by CUA every 30s)
  *   pms_reservations          — today's arrivals + stayovers + departures
- *   pms_housekeeping_assignments — today's per-room assignment
+ *   room_work — today's per-room Staxis-owned assignment + lifecycle (0346)
  *   pms_in_house_snapshot     — point-in-time property aggregates
  *   pms_rooms_inventory       — total room inventory (denominator)
  *

@@ -22,11 +22,12 @@
 //
 // Mapping notes (legacy Room field ← new pms_* source):
 //   number          ← pms_rooms_inventory.room_number
-//   type            ← derived from pms_housekeeping_assignments.cleaning_type
+//   type            ← derived from cleaning_type, merged as
+//                     coalesce(room_work, pms_housekeeping_assignments) — 0346
 //                     ('departure'→'checkout', 'stayover'→'stayover',
 //                     else 'vacant')
 //   priority        ← always 'standard' (no clean source in new schema)
-//   status          ← assignment-first derivation:
+//   status          ← room_work-first derivation (the mirror has no status):
 //                       assignment.completed_at set                → 'clean'
 //                       assignment.started_at + !completed_at      → 'in_progress'
 //                       assignment present + not started           → 'dirty'
@@ -40,12 +41,14 @@
 //                     Out-of-order rooms ride the work-order badge layer
 //                     in the UI, not a separate status — RoomsTab's openWoRooms
 //                     set picks them up via pms_work_orders_v2.
-//   assignedTo      ← lookup staff by NFC-normalized space-collapsed name
-//                     match (best-effort; M7 fix). Diacritic-safe.
-//   assignedName    ← pms_housekeeping_assignments.housekeeper_name (trimmed)
-//   startedAt       ← pms_housekeeping_assignments.started_at
-//   completedAt     ← pms_housekeeping_assignments.completed_at
-//   isDnd           ← pms_housekeeping_assignments.dnd_active
+//   assignedTo      ← room_work.assigned_staff_id (an identity), falling back
+//                     to an NFC-normalized space-collapsed name match against
+//                     the mirror's housekeeper_name. Diacritic-safe. — 0346
+//   assignedName    ← staff.name of assigned_staff_id, else the mirror's
+//                     housekeeper_name (trimmed)
+//   startedAt       ← room_work.started_at
+//   completedAt     ← room_work.completed_at
+//   isDnd           ← coalesce(room_work.dnd_active, mirror.dnd_active)
 //   arrival         ← if pms_reservations.arrival_date == date AND
 //                     status IN ('booked','checked_in'): formatted M/D/YY
 //   stayoverDay     ← if reservation overlaps date (arrival < date <
@@ -54,10 +57,12 @@
 //                     the new schema)
 //   issueNote, dndNote, helpRequested, managerNotes, housekeeperNote,
 //   isRush, rushDueBy, markedForInspectionAt, inspectedBy, inspectedAt
-//                   ← pms_housekeeping_assignments workflow columns
-//                     (migrations 0269 + 0270). These were Maria-set
-//                     fields on the legacy `rooms` table; they now have a
-//                     pms_* home and round-trip through workflowStateFields().
+//                   ← room_work (0346; formerly the workflow columns added to
+//                     pms_housekeeping_assignments by 0269 + 0270). These were
+//                     Maria-set fields on the legacy `rooms` table; they now
+//                     live on the Staxis-owned half of the split, where the PMS
+//                     ingest physically cannot reach them, and round-trip
+//                     through workflowStateFields().
 //   checklist, photoUrl
 //                   ← undefined (legacy unused; no source in new schema)
 //

@@ -273,6 +273,68 @@ describe('0346 — the ingest cannot reach Staxis room state', () => {
   });
 });
 
+describe('0346 — staxis_seed_shift_assignments writes the Staxis half', () => {
+  // A live path (send-shift-confirmations) whose body 0346 rewrote from
+  // name-strings-on-the-mirror to ids-on-room_work. plpgsql only syntax-checks
+  // at CREATE time, so the body has to actually be RUN to be verified.
+  const PLAN_DATE = '2026-08-15';
+
+  test('seeds work rows with the assignment stored as an identity', async () => {
+    const { rows } = await pg.query(
+      `select public.staxis_seed_shift_assignments($1, $2::date, $3::jsonb, $4::jsonb) as r`,
+      [
+        PROPERTY, PLAN_DATE,
+        JSON.stringify([{ number: '101', stay_type: 'Stay' }, { number: '102', stay_type: 'C/O' }]),
+        JSON.stringify([{ staff_id: MARIA, staff_name: 'Maria Garcia', rooms: ['101', '102'] }]),
+      ],
+    ) as { rows: Array<{ r: { created_count: number } }> };
+    assert.equal(rows[0]!.r.created_count, 2);
+
+    const { rows: work } = await pg.query(
+      `select room_number, assigned_staff_id, assigned_source, cleaning_type
+         from public.room_work where property_id=$1 and date=$2 order by room_number`,
+      [PROPERTY, PLAN_DATE],
+    ) as { rows: Array<{ room_number: string; assigned_staff_id: string; assigned_source: string; cleaning_type: string }> };
+    assert.deepEqual(work.map(w => w.room_number), ['101', '102']);
+    assert.equal(work[0]!.assigned_staff_id, MARIA, 'stored by id, not by spelling');
+    assert.equal(work[0]!.assigned_source, 'manager', 'a human built this shift plan');
+    assert.equal(work[0]!.cleaning_type, 'stayover', 'the plan said Stay');
+    assert.equal(work[1]!.cleaning_type, 'departure');
+  });
+
+  test('a room dropped from the plan has its housekeeper cleared, with provenance', async () => {
+    await pg.query(
+      `select public.staxis_seed_shift_assignments($1, $2::date, $3::jsonb, $4::jsonb)`,
+      [
+        PROPERTY, PLAN_DATE,
+        JSON.stringify([{ number: '101', stay_type: 'Stay' }]),
+        JSON.stringify([{ staff_id: MARIA, staff_name: 'Maria Garcia', rooms: ['101'] }]),
+      ],
+    );
+    const { rows } = await pg.query(
+      `select room_number, assigned_staff_id, assigned_source
+         from public.room_work where property_id=$1 and date=$2 order by room_number`,
+      [PROPERTY, PLAN_DATE],
+    ) as { rows: Array<{ room_number: string; assigned_staff_id: string | null; assigned_source: string | null }> };
+    const dropped = rows.find(r => r.room_number === '102')!;
+    assert.equal(dropped.assigned_staff_id, null);
+    assert.equal(dropped.assigned_source, null, 'provenance must not outlive the assignment');
+    assert.equal(rows.find(r => r.room_number === '101')!.assigned_staff_id, MARIA);
+  });
+
+  test('a plan naming a room this property does not have does not lose the whole shift', async () => {
+    const { rows } = await pg.query(
+      `select public.staxis_seed_shift_assignments($1, '2026-08-16'::date, $2::jsonb, $3::jsonb) as r`,
+      [
+        PROPERTY,
+        JSON.stringify([{ number: '101', stay_type: 'Stay' }]),
+        JSON.stringify([{ staff_id: MARIA, staff_name: 'Maria Garcia', rooms: ['101', '404-does-not-exist'] }]),
+      ],
+    ) as { rows: Array<{ r: { created_count: number } }> };
+    assert.equal(rows[0]!.r.created_count, 1, 'the known room is still seeded');
+  });
+});
+
 describe('0347 — identity instead of spelling', () => {
   test('two spellings of the same name collide on one alias', async () => {
     await pg.query(
