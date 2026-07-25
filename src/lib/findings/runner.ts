@@ -28,6 +28,9 @@ import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { runWithConcurrency } from '@/lib/parallel';
+import type { MessagesClient } from '@/lib/agent/llm';
+
+import { judgeFindingsForProperty } from './judge';
 
 import { allDetectors, requiredFeeds } from './registry';
 import { loadFeeds, resolveLoadEnv } from './feeds';
@@ -68,6 +71,15 @@ export interface FindingsRunOptions {
   detectorIds?: readonly string[];
   /** Evaluate and reconcile in memory, write nothing. */
   dryRun?: boolean;
+  /**
+   * Skip the judge pass. Detector-focused tests and operator re-runs use it so
+   * exercising the ledger costs nothing at the provider. Recorded on the run
+   * row as judge_mode='skipped' rather than left blank — a run that chose not
+   * to judge and a run whose judge died must not look the same.
+   */
+  skipJudge?: boolean;
+  /** Scripted model for the judge. Production never passes it. */
+  judgeModelClient?: MessagesClient;
 }
 
 /** Why a detector said nothing. Skipped ≠ found nothing. */
@@ -124,6 +136,7 @@ export async function runFindingsForProperty(
     durationMs: 0,
     errors: [],
     skipped: [],
+    judge: { mode: 'skipped', findings: 0, costUsd: 0, guardRejections: 0 },
   };
 
   const env = await resolveLoadEnv(propertyId, now);
@@ -258,6 +271,27 @@ export async function runFindingsForProperty(
   }
 
   summary.skipped = skips;
+
+  // ── THE JUDGE ───────────────────────────────────────────────────────────
+  // After the ledger is settled, never before. The judge phrases and sorts what
+  // the detectors found; letting it run mid-reconcile would mean judging a
+  // half-written picture of the hotel.
+  //
+  // Deliberately NOT inside the detector loop and not per detector: one batched
+  // call for the whole hotel is what makes the cost of a night a constant
+  // instead of a function of how many detectors are registered.
+  //
+  // It never throws — a phrasing layer must not be able to fail a run whose
+  // findings are already correct without it. Every failure comes back as a mode
+  // on the run row instead.
+  if (!dryRun && !opts.skipJudge) {
+    summary.judge = await judgeFindingsForProperty({
+      propertyId,
+      now,
+      modelClient: opts.judgeModelClient,
+    });
+  }
+
   summary.durationMs = Date.now() - startedAt;
 
   if (!dryRun) {
@@ -351,6 +385,7 @@ export async function runFindingsForAllProperties(
             },
           ],
           skipped: [],
+          judge: { mode: 'skipped', findings: 0, costUsd: 0, guardRejections: 0 },
         } satisfies FindingRunSummary),
   );
 

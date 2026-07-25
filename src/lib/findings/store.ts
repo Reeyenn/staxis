@@ -67,6 +67,15 @@ interface FindingRow {
   shown_count: number;
   acted_count: number;
   ignored_count: number;
+  judged_disposition: string | null;
+  judged_summary_en: string | null;
+  judged_summary_es: string | null;
+  judged_rationale: string | null;
+  judged_rank: number | null;
+  judged_source: string | null;
+  judged_at: string | null;
+  judged_model: string | null;
+  judged_guard_rejected: boolean | null;
 }
 
 const SELECT_COLUMNS =
@@ -74,7 +83,12 @@ const SELECT_COLUMNS =
   'receipt_query_id, evidence, as_of, weakest_input_age_days, magnitude, ' +
   'price_low_cents, price_high_cents, price_currency, price_basis, ' +
   'first_seen_at, last_seen_at, occurrence_count, status_changed_at, resolved_at, ' +
-  'silenced_at_magnitude, escalated_at, shown_count, acted_count, ignored_count';
+  'silenced_at_magnitude, escalated_at, shown_count, acted_count, ignored_count, ' +
+  // The judge's half (0361). Read alongside the detector's, never instead of
+  // it — a queue view can prefer judged phrasing and still fall back to the
+  // deterministic `summary` when the judge has not run or was refused.
+  'judged_disposition, judged_summary_en, judged_summary_es, judged_rationale, ' +
+  'judged_rank, judged_source, judged_at, judged_model, judged_guard_rejected';
 
 function num(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
@@ -113,6 +127,15 @@ export function rowToFinding(row: FindingRow): Finding {
     shownCount: row.shown_count,
     actedCount: row.acted_count,
     ignoredCount: row.ignored_count,
+    judgedDisposition: (row.judged_disposition as FindingDisposition | null) ?? null,
+    judgedSummaryEn: row.judged_summary_en ?? null,
+    judgedSummaryEs: row.judged_summary_es ?? null,
+    judgedRationale: row.judged_rationale ?? null,
+    judgedRank: num(row.judged_rank),
+    judgedSource: (row.judged_source as 'model' | 'template' | null) ?? null,
+    judgedAt: row.judged_at ?? null,
+    judgedModel: row.judged_model ?? null,
+    judgedGuardRejected: row.judged_guard_rejected === true,
   };
 }
 
@@ -533,6 +556,15 @@ export async function recordRun(summary: FindingRunSummary, now: Date): Promise<
     findings_expired: summary.findingsExpired,
     duration_ms: summary.durationMs,
     errors: summary.errors as unknown as JsonValue,
+    // The judge's outcome belongs on the SAME row as the detector counts. Two
+    // rows, or a judge row written separately, would let one land without the
+    // other — and then "we checked and judged nothing" is indistinguishable
+    // from "we judged and the write failed", which is the exact ambiguity
+    // finding_runs exists to remove.
+    judge_mode: summary.judge.mode,
+    judge_findings: summary.judge.findings,
+    judge_cost_usd: summary.judge.costUsd,
+    judge_guard_rejections: summary.judge.guardRejections,
   });
   if (error) throw new Error(`finding_runs insert failed: ${error.message}`);
 }

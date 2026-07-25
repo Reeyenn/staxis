@@ -22,6 +22,7 @@ export const AI_FEATURE_KEYS = [
   'agent.ask_staxis',
   'agent.conversation_summary',
   'agent.memory_consolidation',
+  'findings.judge',
   'walkthrough.step_generation',
   'inventory.photo_count',
   'inventory.invoice_scan',

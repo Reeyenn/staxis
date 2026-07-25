@@ -31,6 +31,7 @@
 export type {
   AnyDetector,
   DataRequirement,
+  FindingJudgeSummary,
   Detector,
   DetectorContext,
   DetectorDeclaration,
@@ -93,3 +94,48 @@ export {
 } from './runner';
 
 export { runAllDetectorEvalCases, runDetectorEvalCases, type EvalCaseResult } from './evals';
+
+/**
+ * The judge — the ONLY place a model touches a finding. It may sort, rank,
+ * phrase and explain. It may not add a finding, change a number, change a price
+ * range, or bring back something the silencer killed; each of those is refused
+ * structurally rather than asked for politely (see judge.ts and prose-guard.ts).
+ */
+export {
+  JUDGE_RESERVATION_USD,
+  JUDGE_SYSTEM_PROMPT,
+  JudgeContractError,
+  MAX_JUDGED_FINDINGS,
+  buildJudgeUserMessage,
+  judgeFindingsForProperty,
+  judgeInputHash,
+  loadJudgeCandidates,
+  loadJudgeKnowledge,
+  needsJudging,
+  orderCandidates,
+  parseJudgeReplyStrict,
+  persistJudgments,
+  templateJudgment,
+  type JudgeCandidate,
+  type JudgeItem,
+  type JudgeMode,
+  type JudgeRunResult,
+  type Judgment,
+} from './judge';
+
+/** "No number without a receipt", enforced rather than requested. */
+export {
+  buildProseReceipt,
+  checkBilingualProse,
+  checkProse,
+  foldForProseMatch,
+  type ProseGuardResult,
+  type ProseReceipt,
+  type ProseViolation,
+} from './prose-guard';
+
+export {
+  FINDINGS_BACKGROUND_SHARE,
+  deriveJudgeReservationUsd,
+  findingsPropertyDailyCapUsd,
+} from './judge-budget';

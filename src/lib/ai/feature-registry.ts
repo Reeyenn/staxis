@@ -306,6 +306,15 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Learns lasting facts about your hotel from conversations so the AI gets smarter over time.',
     ['text'], SONNET,
   ),
+  // Sorting and phrasing, not reasoning — so it defaults to the cheapest tier.
+  // The numbers it phrases are produced by code and re-checked mechanically
+  // afterwards, which is what makes a small model safe here: a smarter one
+  // would not be allowed to author anything this one cannot.
+  'findings.judge': defineFeature(
+    'findings.judge', 'Agent', 'Nightly findings sorter',
+    'Puts the problems Staxis noticed overnight in the order a manager should read them and writes each one in plain English and Spanish. It never decides what is wrong — only how to say it and what to show first.',
+    ['text'], HAIKU,
+  ),
   'walkthrough.step_generation': defineFeature(
     'walkthrough.step_generation', 'Guidance', 'Guided walkthroughs',
     'Powers the step-by-step guided tours that walk someone through using the app.',
