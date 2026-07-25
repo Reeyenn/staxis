@@ -141,7 +141,7 @@ For future reference / code review:
 - `src/lib/db/attendance.ts` (markAttendance + getAttendanceForDate)
 - `src/lib/feature-derivation.ts` (10-feature snapshot builder)
 - `src/lib/ml-schedule-helpers.ts` (Schedule tab fetchers)
-- `src/app/housekeeping/_components/{RecommendedHeadcountPill,OverrideHeadcountModal,AttendanceMarker,MLSupplyBadge}.tsx`
+- ~~`src/app/housekeeping/_components/{RecommendedHeadcountPill,OverrideHeadcountModal,AttendanceMarker,MLSupplyBadge}.tsx`~~ — **gone.** These four standalone components no longer exist; the headcount recommendation, override and attendance UI were folded into `ScheduleTab.tsx` during the Schedule redesign. Verified 2026-07-24.
 - `.github/workflows/ml-cron.yml`
 
 Plus modifications to:

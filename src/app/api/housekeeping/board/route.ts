@@ -17,13 +17,23 @@
  *   - Computes per-HK workload totals using each task's
  *     estimated_minutes (falling back to the engine's base map).
  *
+ * Who is on the crew (2026-07-24): resolved from the REAL staff schedule
+ * (`scheduled_shifts`) for the selected date via
+ * resolveHousekeepingCrewForDate, NOT from the dead `staff.scheduled_today`
+ * boolean this route used to pass through unfiltered. When the hotel has
+ * no shifts on file for that date we return the whole active roster and
+ * say so via `crew_source: 'unscheduled_fallback'` — an unexplained empty
+ * board is the worst possible first impression.
+ *
  * Response shape:
  *   {
  *     tasks: [{ id, room_number, cleaning_type, priority, due_by,
  *               estimated_minutes_resolved, status, assignee_id,
  *               queue_order, requires_inspection, extras }],
  *     housekeepers: [{ id, name, language, is_senior, is_active,
- *                      scheduled_today, workload_minutes }],
+ *                      is_scheduled, scheduled_minutes, workload_minutes }],
+ *     crew_source: 'scheduled' | 'unscheduled_fallback',
+ *     shift_minutes: number,
  *     unassigned: number,
  *   }
  */
@@ -43,6 +53,10 @@ import {
   computeWorkloadByHk,
 } from '@/lib/assignment-engine';
 import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
+import {
+  resolveHousekeepingCrewForDate,
+  DEFAULT_CREW_SHIFT_MINUTES,
+} from '@/lib/schedule/active-crew';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -74,7 +88,6 @@ interface StaffRow {
   language: string | null;
   is_senior: boolean | null;
   is_active: boolean | null;
-  scheduled_today: boolean | null;
   schedule_priority: string | null;
   phone: string | null;
   department: string | null;
@@ -136,7 +149,16 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       log.warn('board: cleaning_tasks load failed; returning empty board', {
         requestId, msg: taskErr.message,
       });
-      return ok({ tasks: [], housekeepers: [], unassigned: 0 }, { requestId });
+      return ok(
+        {
+          tasks: [],
+          housekeepers: [],
+          unassigned: 0,
+          crew_source: 'unscheduled_fallback' as const,
+          shift_minutes: DEFAULT_CREW_SHIFT_MINUTES,
+        },
+        { requestId },
+      );
     }
     const tasks = (taskRows ?? []) as CleaningTaskRow[];
 
@@ -166,17 +188,54 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     const assignmentByTask = new Map<string, AssignmentRow>();
     for (const a of assignments) assignmentByTask.set(a.cleaning_task_id, a);
 
-    // 3. Housekeeping staff.
-    const { data: staffRows, error: staffErr } = await supabaseAdmin
-      .from('staff')
-      .select('id, name, language, is_senior, is_active, scheduled_today, schedule_priority, phone, department')
-      .eq('property_id', propertyId)
-      .eq('department', 'housekeeping');
-    if (staffErr) {
-      log.error('board: load staff failed', { requestId, msg: staffErr.message });
+    // 3. Housekeeping staff + the property's default shift length (used
+    //    as each crew member's capacity when no shift times are on file).
+    const [staffRes, propRes] = await Promise.all([
+      supabaseAdmin
+        .from('staff')
+        .select('id, name, language, is_senior, is_active, schedule_priority, phone, department')
+        .eq('property_id', propertyId)
+        .eq('department', 'housekeeping'),
+      supabaseAdmin
+        .from('properties')
+        .select('shift_minutes')
+        .eq('id', propertyId)
+        .maybeSingle(),
+    ]);
+    if (staffRes.error) {
+      log.error('board: load staff failed', { requestId, msg: staffRes.error.message });
       return err('load staff failed', { requestId, status: 500, code: 'upstream_failure' });
     }
-    const staff = (staffRows ?? []) as StaffRow[];
+    // A failed property read must NOT quietly fall through to the 7h
+    // default: every capacity bar, Over-cap pill and "Recommended N HK" on
+    // this board is computed against this number, so a hotel on 9h shifts
+    // would silently read as over-committed. Fail loudly (the tab shows its
+    // retry state) rather than showing confident wrong numbers — same
+    // posture as fetchShiftMinutes in /api/settings/clean-times.
+    if (propRes.error) {
+      log.error('board: load property failed', { requestId, msg: propRes.error.message });
+      return err('load property failed', { requestId, status: 500, code: 'upstream_failure' });
+    }
+    const staff = (staffRes.data ?? []) as StaffRow[];
+    const defaultShiftMinutes =
+      (propRes.data?.shift_minutes as number | null | undefined) ?? DEFAULT_CREW_SHIFT_MINUTES;
+
+    // 3b. Who is actually working this date, per the Staff schedule.
+    //     Anyone who already holds an active assignment is force-included
+    //     even if unscheduled ("called in") — otherwise their rooms would
+    //     drop into the Unassigned lane and read as unplanned work.
+    const crew = await resolveHousekeepingCrewForDate({
+      propertyId,
+      date: businessDate,
+      roster: staff.map(s => ({ id: s.id, isActive: s.is_active })),
+      defaultShiftMinutes,
+      alwaysIncludeStaffIds: new Set(assignments.map(a => a.housekeeper_id)),
+    });
+    if (crew.degraded) {
+      log.warn('board: schedule read failed; showing full roster', {
+        requestId, propertyId, date: businessDate,
+      });
+    }
 
     // 4. Compute resolved minutes per task + per-HK workload totals.
     //    A "shadow" AssignmentTask wrapper lets us reuse the engine's
@@ -219,14 +278,21 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     //    bar chart).
     const workloadByHk = computeWorkloadByHk(tasksOut);
 
-    const housekeepersOut = staff.map(s => ({
+    const isScheduledById = new Map(crew.members.map(m => [m.staffId, m.isScheduled]));
+    const housekeepersOut = staff.filter(s => crew.memberIds.has(s.id)).map(s => ({
       id: s.id,
       name: s.name,
       language: s.language === 'es' ? 'es' : 'en',
       is_senior: s.is_senior === true,
       is_active: s.is_active !== false,
-      scheduled_today: s.scheduled_today !== false,
-      // Surfaced for the board's Priority modal (current chip state) and
+      // True only when this person has a real shift on the Staff schedule
+      // for this date. False = on the board because nobody is scheduled
+      // (fallback) or because they already hold rooms today.
+      is_scheduled: isScheduledById.get(s.id) === true,
+      // Real shift length for this person on this date — the capacity bar
+      // must size against this, not a uniform per-property shift.
+      scheduled_minutes: crew.minutesByStaffId.get(s.id) ?? defaultShiftMinutes,
+      // Surfaced so the board can badge an EXCLUDED housekeeper, and for
       // Send-links eligibility. The board only needs presence/absence; the
       // raw contact stays behind the manage_team-gated contacts API.
       schedule_priority: (['priority', 'normal', 'excluded'].includes(s.schedule_priority ?? '')
@@ -238,7 +304,19 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     const unassigned = tasksOut.filter(t => !t.assignee_id).length;
 
-    return ok({ tasks: tasksOut, housekeepers: housekeepersOut, unassigned }, { requestId });
+    return ok(
+      {
+        tasks: tasksOut,
+        housekeepers: housekeepersOut,
+        unassigned,
+        // 'scheduled'             → the list is the people on the Staff schedule.
+        // 'unscheduled_fallback'  → nobody is scheduled for this date, so the
+        //                           board shows everyone and the UI says why.
+        crew_source: crew.source,
+        shift_minutes: defaultShiftMinutes,
+      },
+      { requestId },
+    );
   } catch (e) {
     log.error('board: unexpected error', { requestId, msg: errToString(e) });
     return err('board failed', { requestId, status: 500, code: 'internal_error' });

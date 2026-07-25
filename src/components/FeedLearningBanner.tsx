@@ -11,7 +11,7 @@
  * only owns the look.
  *
  * Variants:
- *  - 'strip' — board-level banner (RoomsTab, Schedule, front-desk)
+ *  - 'strip' — board-level banner (Schedule, front-desk)
  *  - 'pill'  — compact inline label (dashboard tiles, mobile pages)
  *
  * Tone rules (load-bearing — see plan): calm caramel "learning", never red,

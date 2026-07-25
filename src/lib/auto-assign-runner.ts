@@ -8,16 +8,27 @@
  * owns fan-out across properties + the heartbeat; this module owns the
  * single-property work.
  *
- * Defaults preserve the cron's historical behaviour 1:1:
- *   - businessDate          = today in the property's timezone
- *   - respectScheduledToday = true  (only crew marked working today)
- *   - respectPriority       = false (cron ignores schedule_priority)
- *   - assignedBy            = 'auto'
+ * Defaults:
+ *   - businessDate    = today in the property's timezone
+ *   - respectPriority = false (cron ignores schedule_priority)
+ *   - assignedBy      = 'auto'
  *
- * The manager button calls with respectScheduledToday=false (the manager
- * is looking at the crew on the board and wants the rooms spread across
- * all of them) and respectPriority=true (skip housekeepers the manager
- * marked "Excluded" in the priority modal).
+ * The manager button calls with respectPriority=true (skip housekeepers
+ * the manager set to "Never" on their staff card in Staff).
+ *
+ * WHO IS WORKING (2026-07-24): resolved from the REAL staff schedule
+ * (`scheduled_shifts`) via resolveHousekeepingCrewForDate — the same
+ * shared helper the board + timeline routes use, so the rooms the engine
+ * places always land on someone the manager can see on the board.
+ *
+ * This replaced the old `respectScheduledToday` option, which gated on
+ * `staff.scheduled_today` — a boolean that is `not null default false`
+ * and that nothing ever writes. The cron passed `true`, so the filter
+ * excluded EVERY housekeeper and the nightly run placed nothing; the
+ * manager button passed `false` and assigned across the whole roster
+ * including people who were off. Both now agree with the schedule, and
+ * both fall back to the full roster when the hotel has no shifts on file
+ * for that date (never silently assign nothing).
  *
  * Idempotent: only assigns cleaning_tasks WITHOUT an active
  * hk_assignments row, so manual reassignments + prior runs stick.
@@ -34,6 +45,7 @@ import {
 } from '@/lib/assignment-engine';
 import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
 import { computeWeeklyLoadByStaff } from '@/lib/schedule/weekly-load';
+import { resolveHousekeepingCrewForDate } from '@/lib/schedule/active-crew';
 
 // ───────────────────────────────────────────────────────────────────────
 // Status windows
@@ -63,7 +75,6 @@ type StaffRow = {
   language: string | null;
   is_senior: boolean | null;
   is_active: boolean | null;
-  scheduled_today: boolean | null;
   schedule_priority: string | null;
   department: string | null;
   weekly_hours: number | null;
@@ -155,11 +166,9 @@ export interface AutoAssignRunOptions {
   /** Override the business date (YYYY-MM-DD). Defaults to today in `tz`.
    *  The manager board passes the date it's currently showing. */
   businessDate?: string;
-  /** Only assign to crew with scheduled_today !== false. Cron: true.
-   *  Manager button: false (assign across everyone on the board). */
-  respectScheduledToday?: boolean;
   /** Skip crew with schedule_priority === 'excluded'. Cron: false.
-   *  Manager button: true (honor the priority modal's Excluded chips). */
+   *  Manager button: true (honor the "Never auto-assign" setting on the
+   *  staff member's card in Staff). */
   respectPriority?: boolean;
   /** Stored on hk_assignments.assigned_by. Defaults to 'auto'. */
   assignedBy?: 'auto' | 'manual';
@@ -172,7 +181,6 @@ export async function runAutoAssignForProperty(
   tz: string | null,
   opts: AutoAssignRunOptions = {},
 ): Promise<PropertyRunResult> {
-  const respectScheduledToday = opts.respectScheduledToday ?? true;
   const respectPriority = opts.respectPriority ?? false;
   const assignedBy = opts.assignedBy ?? 'auto';
   const assignedByUserId = opts.assignedByUserId ?? null;
@@ -240,24 +248,33 @@ export async function runAutoAssignForProperty(
     };
   }
 
-  // 3. Load housekeeping roster, then narrow to the working set per the
-  //    caller's policy. Vacation is ALWAYS respected; scheduled_today and
-  //    schedule_priority are gated by the options so the cron and the
-  //    manual manager action can diverge without two code paths.
+  // 3. Load housekeeping roster, then narrow to the working set.
+  //    Vacation + (optionally) schedule_priority are applied first, then
+  //    the shared schedule resolver decides who is actually on shift for
+  //    this date. Applying the roster filters BEFORE the resolver means
+  //    the no-shifts-on-file fallback falls back to "everyone who could
+  //    work", not "everyone on payroll".
   const { data: staffRows, error: staffErr } = await supabaseAdmin
     .from('staff')
-    .select('id, name, language, is_senior, is_active, scheduled_today, schedule_priority, department, weekly_hours, max_weekly_hours, vacation_dates')
+    .select('id, name, language, is_senior, is_active, schedule_priority, department, weekly_hours, max_weekly_hours, vacation_dates')
     .eq('property_id', propertyId)
     .eq('department', 'housekeeping');
   if (staffErr) throw new Error(`load staff: ${staffErr.message}`);
   const allStaff = (staffRows ?? []) as StaffRow[];
-  const working = allStaff.filter(s => {
+  const available = allStaff.filter(s => {
     if (s.is_active === false) return false;
     if ((s.vacation_dates ?? []).includes(todayDate)) return false;
-    if (respectScheduledToday && s.scheduled_today === false) return false;
     if (respectPriority && s.schedule_priority === 'excluded') return false;
     return true;
   });
+
+  const crew = await resolveHousekeepingCrewForDate({
+    propertyId,
+    date: todayDate,
+    roster: available.map(s => ({ id: s.id, isActive: s.is_active })),
+  });
+  const working = available.filter(s => crew.memberIds.has(s.id));
+
   // Committed weekly hours per housekeeper (from scheduled_shifts) so the
   // engine's overtime penalty reflects reality instead of a constant 0.
   const weeklyLoad = await computeWeeklyLoadByStaff(propertyId, todayDate);

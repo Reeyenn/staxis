@@ -17,7 +17,6 @@ import {
   listInventoryCustomCategories,
   upsertInventoryCustomCategory,
   deleteInventoryCustomCategory,
-  updateProperty,
   sectionBudgetKey,
   saveInventoryCountAtomic,
 } from '@/lib/db';
@@ -360,7 +359,9 @@ export function InventoryShell() {
     if (storedMode) setBudgetMode(storedMode);
   }, [storedMode]);
   // Per-hotel inventory tab layout (0308): tab order + removed built-ins.
-  // Seeded from the property record; persisted via updateProperty (like mode).
+  // Seeded from the property record; persisted through
+  // POST /api/inventory/property-config (service role — a browser write to
+  // `properties` is admin-only RLS and would silently save nothing).
   const [tabLayout, setTabLayout] = useState<InventoryTabLayout>(
     activeProperty?.inventoryTabLayout ?? { order: [], hidden: [] },
   );

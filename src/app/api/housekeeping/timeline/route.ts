@@ -30,9 +30,10 @@
  *       assignee_id, queue_order, started_at, completed_at,
  *     }],
  *     housekeepers: [{
- *       id, name, language, is_senior, is_active, scheduled_today,
- *       workload_minutes,
+ *       id, name, language, is_senior, is_active, is_scheduled,
+ *       scheduled_minutes, workload_minutes,
  *     }],
+ *     crew_source: 'scheduled' | 'unscheduled_fallback',
  *     shift: {
  *       date,                       // echoed business_date
  *       timezone,                   // IANA, e.g. "America/Chicago"
@@ -63,6 +64,7 @@ import {
 } from '@/lib/assignment-engine';
 import { fetchCleanTimeBaseDurations } from '@/lib/clean-time-standards-server';
 import { localDateTimeToUtcIso } from '@/lib/timeline-layout';
+import { resolveHousekeepingCrewForDate } from '@/lib/schedule/active-crew';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -100,7 +102,6 @@ interface StaffRow {
   language: string | null;
   is_senior: boolean | null;
   is_active: boolean | null;
-  scheduled_today: boolean | null;
   department: string | null;
 }
 
@@ -197,6 +198,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
           tasks: [],
           housekeepers: [],
           unassigned: 0,
+          crew_source: 'unscheduled_fallback' as const,
           shift: { date: businessDate, timezone, start_iso: startIso, end_iso: endIso, shift_minutes: shiftMinutes },
         },
         { requestId },
@@ -234,7 +236,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // 4. Housekeeping staff for this property.
     const { data: staffRows, error: staffErr } = await supabaseAdmin
       .from('staff')
-      .select('id, name, language, is_senior, is_active, scheduled_today, department')
+      .select('id, name, language, is_senior, is_active, department')
       .eq('property_id', propertyId)
       .eq('department', 'housekeeping');
     if (staffErr) {
@@ -242,6 +244,24 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return err('load staff failed', { requestId, status: 500, code: 'upstream_failure' });
     }
     const staff = (staffRows ?? []) as StaffRow[];
+
+    // 4b. Who is actually working this date, per the Staff schedule
+    //     (scheduled_shifts) — the same shared resolver the board route
+    //     and the auto-assign runner use, so all three agree. Anyone
+    //     already holding an assignment is force-included so their strip
+    //     never disappears mid-shift.
+    const crew = await resolveHousekeepingCrewForDate({
+      propertyId,
+      date: businessDate,
+      roster: staff.map(s => ({ id: s.id, isActive: s.is_active })),
+      defaultShiftMinutes: shiftMinutes,
+      alwaysIncludeStaffIds: new Set(assignments.map(a => a.housekeeper_id)),
+    });
+    if (crew.degraded) {
+      log.warn('timeline: schedule read failed; showing full roster', {
+        requestId, propertyId, date: businessDate,
+      });
+    }
 
     // 5. Resolve per-task minutes — reuse the engine's duration resolver
     //    so the timeline card widths match the assignment-board minutes.
@@ -277,13 +297,17 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     //    cancelled tasks don't add to "still on plate" minutes.
     const workloadByHk = computeWorkloadByHk(tasksOut);
 
-    const housekeepersOut = staff.map(s => ({
+    const isScheduledById = new Map(crew.members.map(m => [m.staffId, m.isScheduled]));
+    const housekeepersOut = staff.filter(s => crew.memberIds.has(s.id)).map(s => ({
       id: s.id,
       name: s.name,
       language: s.language === 'es' ? 'es' : 'en',
       is_senior: s.is_senior === true,
       is_active: s.is_active !== false,
-      scheduled_today: s.scheduled_today !== false,
+      // True only with a real shift on the Staff schedule for this date.
+      is_scheduled: isScheduledById.get(s.id) === true,
+      // Real shift length for this person on this date.
+      scheduled_minutes: crew.minutesByStaffId.get(s.id) ?? shiftMinutes,
       workload_minutes: workloadByHk.get(s.id) ?? 0,
     }));
 
@@ -294,6 +318,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         tasks: tasksOut,
         housekeepers: housekeepersOut,
         unassigned,
+        crew_source: crew.source,
         shift: { date: businessDate, timezone, start_iso: startIso, end_iso: endIso, shift_minutes: shiftMinutes },
       },
       { requestId },

@@ -3,18 +3,40 @@
  *   Returns the property's standard cleaning times — one entry per editable
  *   cleaning_type, falling back to the industry defaults for any type without
  *   a row yet (so the page works on day one / before the migration is applied
- *   to this environment). Also returns `canEdit` (management roles only).
+ *   to this environment). Also returns the per-housekeeper shift length and
+ *   `canEdit` (management roles only).
  *
  * PUT  /api/settings/clean-times
- *   Body: { propertyId, standards: [{ cleaningType, baseMinutes }] }
+ *   Body: { propertyId, standards: [{ cleaningType, baseMinutes }], shiftMinutes? }
  *   Upserts the all-rooms (room_type NULL) standard for each provided type.
  *   These times drive the housekeeping workload estimates on the Auto-Assign
  *   Board / Timeline for newly-created tasks.
  *
- * Auth: requireSession. Reads require property access; WRITES additionally
- * require a management role (admin / owner / general_manager) — matches the
- * gate in /api/settings/users. supabaseAdmin throughout: this table is
- * service-role only (migration 0244), so the browser never reads it directly.
+ *   `shiftMinutes` (optional) writes properties.shift_minutes — how much
+ *   cleaning fits in one housekeeper's day. This is the ONLY editor for that
+ *   value in the app. It moved here on 2026-07-24 from a gear icon on the
+ *   Housekeeping board, which wrote `properties` through the anon browser
+ *   client: UPDATE on properties is admin-only RLS, and an UPDATE filtered to
+ *   zero rows is not a Postgres error, so a general manager got a green
+ *   "Settings saved" toast and no saved setting. The write below goes through
+ *   supabaseAdmin and reports the rows it actually touched.
+ *
+ * Auth: requireSession + property access on every call.
+ *
+ *   - The cleaning-time STANDARDS are gated on the per-hotel
+ *     `manage_clean_times` capability, which defaults to every role (an admin
+ *     can switch a role off from the Access tab).
+ *   - `shiftMinutes` additionally requires a MANAGEMENT role (admin / owner /
+ *     general_manager). It has to: before it moved here it lived behind
+ *     admin-only RLS on `properties`, so nobody below an admin could change
+ *     it at all. Landing it on an everyone-by-default capability would have
+ *     quietly handed a housekeeper the number that drives every capacity bar,
+ *     Over-cap pill, "Recommended N HK" and forecast headcount in the app.
+ *     GET reports this as `canEditShift` so the page can hide the field
+ *     instead of failing the save.
+ *
+ * supabaseAdmin throughout: this table is service-role only (migration 0244),
+ * so the browser never reads it directly.
  */
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -30,8 +52,12 @@ import {
   CLEAN_TIME_DEFAULT_MINUTES,
   MIN_CLEAN_MINUTES,
   MAX_CLEAN_MINUTES,
+  MIN_SHIFT_MINUTES,
+  MAX_SHIFT_MINUTES,
+  DEFAULT_SHIFT_MINUTES,
   isEditableCleaningType,
   isValidBaseMinutes,
+  isValidShiftMinutes,
   type CleanTimeStandardRow,
 } from '@/lib/clean-time-standards';
 import {
@@ -60,6 +86,17 @@ async function resolveCallerAccount(authUserId: string): Promise<CallerAccount |
     property_access: Array.isArray(data.property_access) ? data.property_access : [],
     role: (isValidRole(data.role) ? data.role : 'staff') as AppRole,
   };
+}
+
+/**
+ * Who may change the hotel's shift length. Deliberately a ROLE check and not
+ * a capability: `manage_clean_times` is granted to every role by default, and
+ * this one number sets the whole hotel's labor math. See the header.
+ */
+function canEditShiftLength(account: CallerAccount): boolean {
+  return account.role === 'admin'
+    || account.role === 'owner'
+    || account.role === 'general_manager';
 }
 
 function callerHasPropertyAccess(account: CallerAccount, propertyId: string): boolean {
@@ -91,6 +128,28 @@ function shapeStandards(rows: CleanTimeStandardRow[]) {
   });
 }
 
+/**
+ * Current per-housekeeper shift length for a property.
+ *
+ * THROWS if the row can't be read, on purpose. Returning the default on a read
+ * failure would be the same bug in a new costume: the page would render 7h,
+ * the manager would hit Save without touching the field, and a hotel running
+ * 9-hour shifts would be quietly reset to 7. A thrown error 500s the GET, the
+ * page shows its load-failed state, and Save stays blocked. The default is
+ * only for a genuinely unset (NULL) or out-of-range stored value.
+ */
+async function fetchShiftMinutes(propertyId: string): Promise<number> {
+  const { data, error } = await supabaseAdmin
+    .from('properties')
+    .select('shift_minutes')
+    .eq('id', propertyId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) throw new Error(`property ${propertyId} not found`);
+  const raw = (data as { shift_minutes: number | null }).shift_minutes;
+  return isValidShiftMinutes(raw) ? raw : DEFAULT_SHIFT_MINUTES;
+}
+
 export const GET = defineRoute({
   resolve: (req) => sessionGate(req),
   handler: async (ctx) => {
@@ -106,6 +165,7 @@ export const GET = defineRoute({
 
     const rows = await fetchCleanTimeStandards(pidV.value!);
     const standards = shapeStandards(rows);
+    const shiftMinutes = await fetchShiftMinutes(pidV.value!);
     const capabilityDecision = await capabilityDecisionForProperty(
       { role: account.role },
       'manage_clean_times',
@@ -119,8 +179,13 @@ export const GET = defineRoute({
       standards,
       defaults: CLEAN_TIME_DEFAULT_MINUTES,
       canEdit: capabilityDecision === 'allowed',
+      // Separate from canEdit on purpose — see the header. The page shows the
+      // shift length to everyone who can see the times, but only a manager
+      // gets an editable field.
+      canEditShift: capabilityDecision === 'allowed' && canEditShiftLength(account),
       min: MIN_CLEAN_MINUTES,
       max: MAX_CLEAN_MINUTES,
+      shiftMinutes,
     });
   },
 });
@@ -131,6 +196,7 @@ export const PUT = defineRoute({
     const body = (await ctx.req.json().catch(() => null)) as {
       propertyId?: unknown;
       standards?: unknown;
+      shiftMinutes?: unknown;
     } | null;
     if (!body) return ctx.err('Invalid JSON body', { status: 400, code: ApiErrorCode.ValidationFailed });
 
@@ -162,6 +228,23 @@ export const PUT = defineRoute({
       return ctx.err('standards must be a non-empty array', { status: 400, code: ApiErrorCode.ValidationFailed });
     }
 
+    // Optional — omitted means "leave the shift length alone".
+    let nextShiftMinutes: number | null = null;
+    if (body.shiftMinutes !== undefined) {
+      if (!canEditShiftLength(account)) {
+        return ctx.err('Only an owner or general manager can change the shift length', {
+          status: 403, code: ApiErrorCode.Forbidden,
+        });
+      }
+      if (!isValidShiftMinutes(body.shiftMinutes)) {
+        return ctx.err(
+          `shiftMinutes must be a whole number ${MIN_SHIFT_MINUTES}–${MAX_SHIFT_MINUTES}`,
+          { status: 400, code: ApiErrorCode.ValidationFailed },
+        );
+      }
+      nextShiftMinutes = body.shiftMinutes;
+    }
+
     const updates: Array<{ cleaning_type: string; base_minutes: number }> = [];
     const seen = new Set<string>();
     for (const raw of body.standards) {
@@ -190,9 +273,30 @@ export const PUT = defineRoute({
       return ctx.err('Failed to save cleaning times', { status: 500, code: ApiErrorCode.InternalError });
     }
 
+    if (nextShiftMinutes !== null) {
+      // `.select('id')` is load-bearing, not decoration: it makes the write
+      // report the rows it touched. That is exactly what the old browser-side
+      // save could not do — see the header note.
+      const { data: touched, error: shiftErr } = await supabaseAdmin
+        .from('properties')
+        .update({ shift_minutes: nextShiftMinutes })
+        .eq('id', pidV.value!)
+        .select('id');
+      if (shiftErr || !touched || touched.length === 0) {
+        log.error('[settings/clean-times:PUT] shift_minutes update failed', {
+          requestId: ctx.requestId, err: shiftErr, rows: touched?.length ?? 0,
+        });
+        return ctx.err('Failed to save the shift length', { status: 500, code: ApiErrorCode.InternalError });
+      }
+    }
+
     // Echo the canonical persisted state (re-read so the client reflects the
     // table exactly, including any concurrent edit).
     const standards = shapeStandards(await fetchCleanTimeStandards(pidV.value!));
-    return ctx.ok({ standards, canEdit: true });
+    const shiftMinutes = await fetchShiftMinutes(pidV.value!);
+    return ctx.ok({
+      standards, shiftMinutes, canEdit: true,
+      canEditShift: canEditShiftLength(account),
+    });
   },
 });

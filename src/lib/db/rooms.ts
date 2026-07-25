@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Rooms — the housekeeping board's data source.
+// Rooms — today's room list, read-only. Consumed by the dashboard.
 //
 // 2026-05-24 (Plan v4 cutover):
 //   The legacy `rooms` table was dropped by migration 0204. The new source
@@ -14,8 +14,8 @@
 //                                    → mergePmsRoomsForDate() server-side
 //                                    → Room[] JSON envelope
 //
-//   Live updates: a 6s polling loop drives refreshes for the manager
-//   board. CUA polls the PMS every 30s±10s, so 6s on the UI is the right
+//   Live updates: a 6s polling loop drives refreshes for the dashboard.
+//   CUA polls the PMS every 30s±10s, so 6s on the UI is the right
 //   tradeoff between perceived freshness and request volume. The
 //   subscribeTable wrapper from _common.ts is intentionally NOT used —
 //   it's the right tool when realtime events can fire, which they can't
@@ -26,17 +26,20 @@
 //   rapid tab-switching (M5).
 //
 // 2026-05-25 (post-merge sweep):
-//   - Critical: silent no-op writes (no longer throw — RoomsTab handleToggle
-//     has no try/catch); monotonic sequence guard in subscribeViaPolling.
+//   - Critical: monotonic sequence guard in subscribeViaPolling.
 //   - Major (this followup): visibility debounce, 403/404 terminate polling
 //     so a permission-revoked session stops hammering the API.
 //
-// Writes (addRoom / updateRoom) go through
-// POST /api/housekeeping/room-action → applyRoom* helpers in
-// src/lib/pms-rooms-writes.ts, which upsert pms_housekeeping_assignments
-// AND append pms_room_status_log (source='manual') for the audit trail.
-// Server bypasses RLS via supabaseAdmin; the route gates on requireSession
-// + property access.
+// 2026-07-24 (report-email architecture):
+//   READ-ONLY module. The manager Rooms board — the only surface that let a
+//   manager flip a room's cleanliness from the whole-hotel grid — was deleted
+//   along with its write path (addRoom / updateRoom / POST
+//   /api/housekeeping/room-action). The PMS is the source of truth for room
+//   status now: a manager-typed status would be silently overwritten by the
+//   next report email 30-60 minutes later, so the control was removed rather
+//   than left there lying. Room status still changes from the housekeeper's
+//   own phone view (POST /api/housekeeper/room-action) and from the agent
+//   tools — both real events, not a manager overriding the PMS.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import type { Room } from '@/types';
@@ -245,66 +248,3 @@ export function subscribeToRooms(
     callback,
   );
 }
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Write functions — wired into /api/housekeeping/room-action.
-// ═══════════════════════════════════════════════════════════════════════════
-// All writes go through the server route which uses supabaseAdmin to bypass
-// RLS on the new pms_* tables. The route:
-//   - validates the session + property access
-//   - rate-limits per (user, property)
-//   - hands off to pms-rooms-writes helpers that upsert into
-//     pms_housekeeping_assignments (and pms_rooms_inventory for adds) AND
-//     append pms_room_status_log with source='manual' so the audit trail
-//     records every PMS-visible state change.
-//
-// Errors propagate to callers (RoomsTab.handleToggle) rather than being
-// silently swallowed — that was the legacy bug class where writes looked
-// successful while RLS filtered the UPDATE to zero rows. RoomsTab's
-// handleToggle still needs a try/catch around these calls to avoid
-// unhandled promise rejections on hard failures; manager-visible toast
-// for the failure case ships in the UI branch.
-
-async function postRoomAction<T>(
-  action: 'update' | 'add',
-  body: Record<string, unknown>,
-): Promise<T> {
-  const res = await fetchWithAuth('/api/housekeeping/room-action', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action, ...body }),
-  });
-  // 207 carries a partial-success body and is acceptable for bulk-add.
-  if (!res.ok && res.status !== 207) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`/api/housekeeping/room-action ${res.status}: ${text.slice(0, 200)}`);
-  }
-  const json = (await res.json().catch(() => null)) as
-    | { ok?: boolean; data?: T; details?: T; error?: string }
-    | null;
-  if (json?.ok) return json.data as T;
-  if (res.status === 207) return (json?.details ?? json?.data) as T;
-  throw new Error(`/api/housekeeping/room-action: ${json?.error ?? 'unknown error'}`);
-}
-
-export async function addRoom(_uid: string, pid: string, room: Omit<Room, 'id'>): Promise<string> {
-  try {
-    const data = await postRoomAction<{ id: string }>('add', { pid, room });
-    return data.id;
-  } catch (err) {
-    logErr('addRoom', err);
-    throw err;
-  }
-}
-
-export async function updateRoom(
-  _uid: string, pid: string, rid: string, data: Partial<Room>,
-): Promise<void> {
-  try {
-    await postRoomAction('update', { pid, rid, room: data });
-  } catch (err) {
-    logErr('updateRoom', err);
-    throw err;
-  }
-}
-

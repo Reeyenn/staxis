@@ -312,8 +312,6 @@ type TranslationKey =
   | 'noHistoryYet' | 'historyTab' | 'liveToday'
   | 'totalAssigned' | 'checkoutsShort' | 'stayoversShort'
   | 'loadingHistory' | 'topPerformer'
-  // Offline / sync status
-  | 'syncingChanges' | 'backOnline' | 'changesQueued'
   // CSV room import
   | 'roomImport' | 'csvImportTitle' | 'uploadCsv' | 'csvPreviewLabel'
   | 'importRoomsBtn' | 'csvHelpText' | 'csvRoomsFound' | 'csvImportDone'
@@ -1001,10 +999,6 @@ const translations: TranslationMaps = {
     stayoversShort: 'SO',
     loadingHistory: 'Loading history...',
     topPerformer: 'Top Performer',
-    // Offline / sync status
-    syncingChanges: 'Syncing changes…',
-    backOnline: 'Back online',
-    changesQueued: 'changes queued',
     // CSV import
     roomImport: 'Room Import',
     csvImportTitle: 'Occupancy Import',
@@ -1859,10 +1853,6 @@ const translations: TranslationMaps = {
     stayoversShort: 'CON',
     loadingHistory: 'Cargando historial...',
     topPerformer: 'Mejor Desempeño',
-    // Offline / sync status
-    syncingChanges: 'Sincronizando cambios…',
-    backOnline: 'Conexión restaurada',
-    changesQueued: 'cambios en cola',
     // CSV import
     roomImport: 'Importar Hab.',
     csvImportTitle: 'Importar Ocupación',

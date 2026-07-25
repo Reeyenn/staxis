@@ -33,11 +33,17 @@ export interface BoardHk {
   language: 'en' | 'es';
   is_senior: boolean;
   is_active: boolean;
-  scheduled_today: boolean;
+  is_scheduled: boolean;
+  scheduled_minutes: number;
   schedule_priority: 'priority' | 'normal' | 'excluded';
   has_phone: boolean;
   workload_minutes: number;
 }
+
+// Where the crew list came from. 'scheduled' = these are the people on
+// the Staff schedule for this date. 'unscheduled_fallback' = nobody is
+// scheduled, so the board is showing everyone (and says so).
+export type CrewSource = 'scheduled' | 'unscheduled_fallback';
 
 // Mirrors the task shape from /api/housekeeping/board.
 export interface BoardTask {
@@ -181,13 +187,14 @@ function Chip({
 // ───────────────────────────────────────────────────────────────────────
 
 function CrewRow({
-  hk, tasks, shiftMinutes, lang, isHover,
+  hk, tasks, shiftMinutes, crewSource, lang, isHover,
   onDragStartTask, onDragEndTask, onClickTask,
   onDragOver, onDragLeave, onDrop,
 }: {
   hk: BoardHk;
   tasks: BoardTask[];
   shiftMinutes: number;
+  crewSource: CrewSource;
   lang: Language;
   isHover: boolean;
   onDragStartTask: (taskId: string) => void;
@@ -198,11 +205,19 @@ function CrewRow({
   onDrop: () => void;
 }) {
   const load = tasks.reduce((s, t) => s + t.estimated_minutes_resolved, 0);
-  const st = loadStatus(load, shiftMinutes);
-  const pct = Math.min(100, Math.round((load / Math.max(1, shiftMinutes)) * 100));
+  // Capacity is this person's REAL shift length for this date (from the
+  // Staff schedule). A 4-hour shift must not read like an 8-hour one.
+  // Falls back to the property-wide shift when no times are on file.
+  const capacity = hk.scheduled_minutes > 0 ? hk.scheduled_minutes : shiftMinutes;
+  const st = loadStatus(load, capacity);
+  const pct = Math.min(100, Math.round((load / Math.max(1, capacity)) * 100));
   const barColor = st === 'over' ? T.warm : st === 'near' ? T.caramelDeep : T.sageDeep;
   const sc = statusColors(st);
   const isExcluded = hk.schedule_priority === 'excluded';
+  // On the board without a shift — they already hold rooms today
+  // ("called in"). Only meaningful when the rest of the list IS from the
+  // schedule; in fallback mode nobody has a shift.
+  const calledIn = crewSource === 'scheduled' && !hk.is_scheduled;
 
   return (
     <div
@@ -230,11 +245,13 @@ function CrewRow({
             fontFamily: FONT_SANS, fontWeight: 600, fontSize: 14, color: T.ink,
             whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', lineHeight: 1.1,
           }}>{hk.name}</div>
-          {(hk.is_senior || isExcluded) && (
+          {(hk.is_senior || isExcluded || calledIn) && (
             <div style={{ fontFamily: FONT_MONO, fontSize: 9, color: T.ink3, marginTop: 1, letterSpacing: '0.04em' }}>
-              {hk.is_senior ? (lang === 'es' ? 'SÉNIOR' : 'SENIOR') : ''}
-              {hk.is_senior && isExcluded ? ' · ' : ''}
-              {isExcluded ? (lang === 'es' ? 'EXCLUIDO' : 'EXCLUDED') : ''}
+              {[
+                hk.is_senior ? (lang === 'es' ? 'SÉNIOR' : 'SENIOR') : null,
+                isExcluded ? (lang === 'es' ? 'EXCLUIDO' : 'EXCLUDED') : null,
+                calledIn ? (lang === 'es' ? 'SIN TURNO' : 'NOT SCHEDULED') : null,
+              ].filter(Boolean).join(' · ')}
             </div>
           )}
         </div>
@@ -280,12 +297,14 @@ function CrewRow({
 // ───────────────────────────────────────────────────────────────────────
 
 export function ScheduleBoard({
-  crew, tasks, shiftMinutes, lang,
+  crew, tasks, shiftMinutes, crewSource = 'scheduled', lang,
   onReassign, onUnassign, onOpenTask,
 }: {
   crew: BoardHk[];
   tasks: BoardTask[];
   shiftMinutes: number;
+  /** Where `crew` came from — drives the "nobody's scheduled" hint. */
+  crewSource?: CrewSource;
   lang: Language;
   onReassign: (taskId: string, toHkId: string) => void;
   onUnassign: (taskId: string) => void;
@@ -327,12 +346,29 @@ export function ScheduleBoard({
       {/* Hide the chip-lane scrollbar so each crew row stays one avatar tall. */}
       <style>{`.hk-chiprow{scrollbar-width:none;-ms-overflow-style:none;}.hk-chiprow::-webkit-scrollbar{display:none;}`}</style>
 
+      {/* Never leave a manager guessing who the board is showing. */}
+      {crew.length > 0 && (
+        <div style={{
+          fontFamily: FONT_SANS, fontSize: 11.5, color: T.ink3,
+          padding: '2px 2px 4px', lineHeight: 1.35,
+        }}>
+          {crewSource === 'unscheduled_fallback'
+            ? (lang === 'es'
+              ? 'Nadie está programado para hoy — mostrando a todos. Pon el horario en Personal para ver solo quién trabaja.'
+              : "Nobody's scheduled for today — showing everyone. Set the schedule in Staff to see just who's working.")
+            : (lang === 'es'
+              ? 'Mostrando a quienes tienen turno hoy según el horario en Personal.'
+              : "Showing who's on shift today, from the schedule in Staff.")}
+        </div>
+      )}
+
       {crew.map(hk => (
         <CrewRow
           key={hk.id}
           hk={hk}
           tasks={tasksByHk.get(hk.id) ?? []}
           shiftMinutes={shiftMinutes}
+          crewSource={crewSource}
           lang={lang}
           isHover={hoverZone === hk.id}
           onDragStartTask={setDragTaskId}

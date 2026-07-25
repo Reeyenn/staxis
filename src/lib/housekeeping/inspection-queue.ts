@@ -18,7 +18,7 @@ import type { InspectionQueueRoom } from '@/types/inspections';
 
 export async function buildInspectionQueue(pid: string, date: string): Promise<InspectionQueueRoom[]> {
   // 1. All rooms for today with current status + last completed time +
-  // assignment. Same shape the manager RoomsTab uses.
+  // assignment. Same shape every other rooms consumer gets.
   const rooms = await mergePmsRoomsForDate(pid, date);
   const cleanRooms = rooms.filter((r) => r.status === 'clean' && r.completedAt);
 
