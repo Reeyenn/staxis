@@ -25,12 +25,22 @@
 import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { scopedDb } from '@/lib/agent/scoped-db';
 import { gatherOperationalSignals } from '@/lib/agent/operational-signals';
 import { checkOperationalAlerts } from '@/lib/agent/nudges';
 import { runRulesEngineForProperty, type PropertyRunResult } from '@/lib/rules-engine';
 import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
+import {
+  collapseByDate,
+  dollarsToCents,
+  earliestDate,
+  type ActivityStream,
+  type DailySeriesPoint,
+  type InventoryItemUsage,
+  type UsageInterval,
+} from './history';
 import type { FeedId, FeedOutcome, FeedResult } from './types';
 
 /** Everything the loaders share, resolved once per hotel per run. */
@@ -127,10 +137,418 @@ const loadCleaningPlan: FeedLoader<'cleaning_plan'> = async (env) => {
   };
 };
 
+// ─── Phase 2A: the hotel's own trailing record ───────────────────────────────
+//
+// Four feeds, all built the same way: read the hotel's own rows through
+// `scopedDb` (which pre-applies the hotel filter, so there is no unfiltered
+// builder to forget it on), convert every timestamp to a HOTEL-LOCAL calendar
+// date and every dollar amount to cents ONCE, at this edge, and hand the
+// detectors plain arrays they can reason about without a clock or a currency.
+//
+// ON `asOf` AND `weakestInputAgeDays`
+// These read live and cover through the moment they run, so our KNOWLEDGE is
+// current even when the newest row in it is nine days old. That nine-day
+// silence is the finding, not a caveat on it — stamping the feed as stale would
+// make the absence detector degrade exactly the claim it exists to make.
+//
+// ON THE OVERLAP
+// `operating_rhythm` re-reads work-order and inventory-count timestamps that
+// two other feeds also read. That is deliberate: folding the streams into the
+// baseline feeds would mean the absence detector declares three feeds, and the
+// runner skips a detector when ANY declared feed misses its minimum — so a
+// hotel with no work orders would lose the inventory-count watch too. Four
+// small indexed reads a night is the cheaper mistake.
+
+/** 14 weeks: one current window, twelve baseline windows, and slack. */
+const HISTORY_WINDOW_DAYS = 98;
+
+/** Hard ceilings so one strange hotel cannot pull an unbounded result set. */
+const MAX_ROWS = 20_000;
+
+interface QueryResult<T> {
+  data: T[] | null;
+  error: { message: string } | null;
+}
+
+/** Unwrap a PostgREST result or throw, so the runner records a feed failure. */
+function rowsOf<T>(result: QueryResult<T>, what: string): T[] {
+  if (result.error) throw new Error(`${what} read failed: ${result.error.message}`);
+  return result.data ?? [];
+}
+
+/** The ISO instant `HISTORY_WINDOW_DAYS` before now. */
+function windowStartIso(now: Date): string {
+  return new Date(now.getTime() - HISTORY_WINDOW_DAYS * MS_PER_DAY).toISOString();
+}
+
+/** A timestamp column as the hotel's own calendar date, or null. */
+function localDateOf(value: unknown, timezone: string | null): string | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return null;
+  return propertyLocalToday(at, timezone);
+}
+
+/** Numeric columns arrive as number or string depending on the driver. */
+function numberOf(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const n = typeof value === 'string' ? Number(value) : (value as number);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * What the hotel spent restocking, per day, from its own delivery log.
+ * Correction rows are summed in with receipts — a correction is the ledger
+ * retracting a mistyped delivery, so the net is the truth and dropping it would
+ * leave a phantom spike that the baseline would then learn as normal.
+ */
+const loadSupplySpendHistory: FeedLoader<'supply_spend_history'> = async (env) => {
+  const result = (await scopedDb(env.propertyId)
+    .from('inventory_orders')
+    .select('received_at, total_cost, unit_cost, quantity')
+    .gte('received_at', windowStartIso(env.now))
+    .order('received_at', { ascending: true })
+    .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+
+  const points: DailySeriesPoint[] = [];
+  for (const row of rowsOf(result, 'inventory_orders')) {
+    const date = localDateOf(row.received_at, env.timezone);
+    if (!date) continue;
+    let cents = dollarsToCents(numberOf(row.total_cost));
+    if (cents === null) {
+      const unitCost = numberOf(row.unit_cost);
+      const quantity = numberOf(row.quantity);
+      cents = unitCost !== null && quantity !== null ? dollarsToCents(unitCost * quantity) : null;
+    }
+    if (cents === null) continue;
+    points.push({ date, value: cents });
+  }
+
+  const days = collapseByDate(points);
+  return {
+    value: {
+      days,
+      coverageStartDate: earliestDate(days.map((d) => d.date)),
+      windowDays: HISTORY_WINDOW_DAYS,
+    },
+    recordCount: days.length,
+    asOf: env.now,
+    weakestInputAgeDays: 0,
+  };
+};
+
+/**
+ * Work orders the hotel opened, per day, plus what it has actually paid to fix
+ * things. The repair costs are the ONLY honest basis for "what is a work order
+ * worth here" — when the hotel has never recorded one, the detector says
+ * nothing about money rather than borrowing a number from somewhere else.
+ */
+const loadWorkOrderHistory: FeedLoader<'work_order_history'> = async (env) => {
+  const result = (await scopedDb(env.propertyId)
+    .from('work_orders')
+    .select('created_at, repair_cost')
+    .gte('created_at', windowStartIso(env.now))
+    .order('created_at', { ascending: true })
+    .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+
+  const points: DailySeriesPoint[] = [];
+  const repairCostCentsSamples: number[] = [];
+  for (const row of rowsOf(result, 'work_orders')) {
+    const date = localDateOf(row.created_at, env.timezone);
+    if (date) points.push({ date, value: 1 });
+    const cents = dollarsToCents(numberOf(row.repair_cost));
+    if (cents !== null && cents > 0) repairCostCentsSamples.push(cents);
+  }
+
+  const createdPerDay = collapseByDate(points);
+  return {
+    value: {
+      createdPerDay,
+      repairCostCentsSamples,
+      coverageStartDate: earliestDate(createdPerDay.map((d) => d.date)),
+      windowDays: HISTORY_WINDOW_DAYS,
+    },
+    recordCount: points.length,
+    asOf: env.now,
+    weakestInputAgeDays: 0,
+  };
+};
+
+interface CountRow {
+  item_id: string;
+  item_name: string | null;
+  counted_stock: unknown;
+  counted_at: string;
+}
+
+/**
+ * How fast the hotel is actually going through each item, measured between its
+ * own consecutive counts:
+ *
+ *   used = stock at the earlier count + delivered - discarded - stock at the later count
+ *
+ * Deliberately the same arithmetic as `inventory_observed_rate_v` (0086/0293),
+ * including its two sanity gates: at least a day between counts, and never a
+ * negative consumption. It is recomputed here rather than read from the view
+ * because the detector needs the intervals themselves, not a per-count rate.
+ */
+const loadInventoryUsageHistory: FeedLoader<'inventory_usage_history'> = async (env) => {
+  const db = scopedDb(env.propertyId);
+  const sinceIso = windowStartIso(env.now);
+
+  const [countsResult, ordersResult, discardsResult, itemsResult] = await Promise.all([
+    db
+      .from('inventory_counts')
+      .select('item_id, item_name, counted_stock, counted_at')
+      .gte('counted_at', sinceIso)
+      .order('counted_at', { ascending: true })
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<CountRow>>,
+    db
+      .from('inventory_orders')
+      .select('item_id, quantity, unit_cost, received_at')
+      .gte('received_at', sinceIso)
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
+    db
+      .from('inventory_discards')
+      .select('item_id, quantity, discarded_at')
+      .gte('discarded_at', sinceIso)
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
+    db.from('inventory').select('id, name, unit').limit(MAX_ROWS) as unknown as Promise<
+      QueryResult<Record<string, unknown>>
+    >,
+  ]);
+
+  const counts = rowsOf(countsResult, 'inventory_counts');
+  const orders = rowsOf(ordersResult, 'inventory_orders');
+  const discards = rowsOf(discardsResult, 'inventory_discards');
+  const items = rowsOf(itemsResult, 'inventory');
+
+  const unitById = new Map<string, string>();
+  const nameById = new Map<string, string>();
+  for (const item of items) {
+    const id = typeof item.id === 'string' ? item.id : null;
+    if (!id) continue;
+    if (typeof item.unit === 'string') unitById.set(id, item.unit);
+    if (typeof item.name === 'string') nameById.set(id, item.name);
+  }
+
+  /** Movements per item, as (instant, quantity) so a window sum is a filter. */
+  const movements = (
+    rows: Array<Record<string, unknown>>,
+    timeColumn: string,
+  ): Map<string, Array<{ at: number; quantity: number }>> => {
+    const byItem = new Map<string, Array<{ at: number; quantity: number }>>();
+    for (const row of rows) {
+      const itemId = typeof row.item_id === 'string' ? row.item_id : null;
+      const quantity = numberOf(row.quantity);
+      const raw = row[timeColumn];
+      if (!itemId || quantity === null || typeof raw !== 'string') continue;
+      const at = new Date(raw).getTime();
+      if (Number.isNaN(at)) continue;
+      const list = byItem.get(itemId) ?? [];
+      list.push({ at, quantity });
+      byItem.set(itemId, list);
+    }
+    return byItem;
+  };
+
+  const ordersByItem = movements(orders, 'received_at');
+  const discardsByItem = movements(discards, 'discarded_at');
+
+  const unitCostByItem = new Map<string, number[]>();
+  for (const row of orders) {
+    const itemId = typeof row.item_id === 'string' ? row.item_id : null;
+    const cents = dollarsToCents(numberOf(row.unit_cost));
+    if (!itemId || cents === null || cents <= 0) continue;
+    const list = unitCostByItem.get(itemId) ?? [];
+    list.push(cents);
+    unitCostByItem.set(itemId, list);
+  }
+
+  const countsByItem = new Map<string, CountRow[]>();
+  for (const row of counts) {
+    if (typeof row.item_id !== 'string') continue;
+    const list = countsByItem.get(row.item_id) ?? [];
+    list.push(row);
+    countsByItem.set(row.item_id, list);
+  }
+
+  const sumBetween = (
+    list: Array<{ at: number; quantity: number }> | undefined,
+    afterExclusive: number,
+    throughInclusive: number,
+  ): number => {
+    let total = 0;
+    for (const m of list ?? []) {
+      if (m.at > afterExclusive && m.at <= throughInclusive) total += m.quantity;
+    }
+    return total;
+  };
+
+  const usageItems: InventoryItemUsage[] = [];
+  let intervalCount = 0;
+  for (const [itemId, itemCounts] of countsByItem) {
+    const ordered = [...itemCounts].sort((a, b) =>
+      a.counted_at < b.counted_at ? -1 : a.counted_at > b.counted_at ? 1 : 0,
+    );
+    const intervals: UsageInterval[] = [];
+    for (let i = 1; i < ordered.length; i += 1) {
+      const older = ordered[i - 1];
+      const newer = ordered[i];
+      const olderAt = new Date(older.counted_at).getTime();
+      const newerAt = new Date(newer.counted_at).getTime();
+      const olderStock = numberOf(older.counted_stock);
+      const newerStock = numberOf(newer.counted_stock);
+      const endDate = localDateOf(newer.counted_at, env.timezone);
+      if (olderStock === null || newerStock === null || !endDate) continue;
+
+      const days = (newerAt - olderAt) / MS_PER_DAY;
+      if (!(days >= 1)) continue;
+
+      const unitsUsed =
+        olderStock +
+        sumBetween(ordersByItem.get(itemId), olderAt, newerAt) -
+        sumBetween(discardsByItem.get(itemId), olderAt, newerAt) -
+        newerStock;
+      if (!(unitsUsed >= 0)) continue;
+
+      intervals.push({ endDate, days, unitsUsed });
+    }
+    if (intervals.length === 0) continue;
+    intervalCount += intervals.length;
+    usageItems.push({
+      itemId,
+      itemName: nameById.get(itemId) ?? ordered[ordered.length - 1].item_name ?? 'this item',
+      unit: unitById.get(itemId) ?? 'units',
+      intervals,
+      unitCostCentsSamples: unitCostByItem.get(itemId) ?? [],
+    });
+  }
+
+  usageItems.sort((a, b) => (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0));
+
+  const allEndDates = usageItems.flatMap((item) => item.intervals.map((i) => i.endDate));
+  return {
+    value: {
+      items: usageItems,
+      coverageStartDate: earliestDate(
+        counts.map((c) => localDateOf(c.counted_at, env.timezone)).filter((d): d is string => !!d),
+      ) ?? earliestDate(allEndDates),
+      windowDays: HISTORY_WINDOW_DAYS,
+    },
+    recordCount: intervalCount,
+    asOf: env.now,
+    weakestInputAgeDays: 0,
+  };
+};
+
+/**
+ * The things this hotel does over and over, and the days it did them. No
+ * expected cadence is configured anywhere — the detector learns each rhythm
+ * from these dates alone, because a "linen should be counted every 3 days"
+ * that nobody at the hotel chose is a number the hotel will rightly resent.
+ */
+const loadOperatingRhythm: FeedLoader<'operating_rhythm'> = async (env) => {
+  const db = scopedDb(env.propertyId);
+  const sinceIso = windowStartIso(env.now);
+  const sinceDate = propertyLocalToday(
+    new Date(env.now.getTime() - HISTORY_WINDOW_DAYS * MS_PER_DAY),
+    env.timezone,
+  );
+
+  const [countsResult, logsResult, workOrdersResult] = await Promise.all([
+    db
+      .from('inventory_counts')
+      .select('counted_at, variance_value')
+      .gte('counted_at', sinceIso)
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
+    db
+      .from('daily_logs')
+      .select('date')
+      .gte('date', sinceDate)
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
+    db
+      .from('work_orders')
+      .select('created_at')
+      .gte('created_at', sinceIso)
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
+  ]);
+
+  const countRows = rowsOf(countsResult, 'inventory_counts');
+  const countDates: string[] = [];
+  const varianceCents: number[] = [];
+  for (const row of countRows) {
+    const date = localDateOf(row.counted_at, env.timezone);
+    if (date) countDates.push(date);
+    // What counting actually turns up here: stock the books could not account
+    // for, in this hotel's own dollars. The sign does not matter — a count that
+    // finds 40 units too FEW and one that finds 40 too many are both the ledger
+    // being wrong by the same amount.
+    const cents = dollarsToCents(numberOf(row.variance_value));
+    if (cents !== null && Math.abs(cents) > 0) varianceCents.push(Math.abs(cents));
+  }
+
+  const logDates: string[] = [];
+  for (const row of rowsOf(logsResult, 'daily_logs')) {
+    if (typeof row.date === 'string' && /^\d{4}-\d{2}-\d{2}/.test(row.date)) {
+      logDates.push(row.date.slice(0, 10));
+    }
+  }
+
+  const workOrderDates: string[] = [];
+  for (const row of rowsOf(workOrdersResult, 'work_orders')) {
+    const date = localDateOf(row.created_at, env.timezone);
+    if (date) workOrderDates.push(date);
+  }
+
+  const streams: ActivityStream[] = [
+    {
+      id: 'inventory_counts',
+      label: 'counting inventory',
+      dates: countDates,
+      worthCentsSamples: varianceCents,
+      worthBasis: 'stock the books could not account for',
+    },
+    {
+      id: 'daily_log_closings',
+      // Deliberately not "closing out the daily log": these rows are written by
+      // the nightly seal job as often as by a person, and a card that blames
+      // the front desk for a cron outage is a card nobody trusts twice. The
+      // data is missing either way, and that is what the sentence says.
+      label: 'recording the daily numbers',
+      dates: logDates,
+      worthCentsSamples: [],
+      worthBasis: null,
+    },
+    {
+      id: 'work_order_flow',
+      label: 'logging maintenance',
+      dates: workOrderDates,
+      worthCentsSamples: [],
+      worthBasis: null,
+    },
+  ];
+
+  return {
+    value: {
+      streams,
+      coverageStartDate: earliestDate(streams.flatMap((s) => s.dates)),
+      windowDays: HISTORY_WINDOW_DAYS,
+    },
+    recordCount: streams.reduce((total, s) => total + new Set(s.dates).size, 0),
+    asOf: env.now,
+    weakestInputAgeDays: 0,
+  };
+};
+
 export const FEED_LOADERS: { [K in FeedId]: FeedLoader<K> } = {
   operational_signals: loadOperationalSignals,
   nudge_drafts: loadNudgeDrafts,
   cleaning_plan: loadCleaningPlan,
+  supply_spend_history: loadSupplySpendHistory,
+  work_order_history: loadWorkOrderHistory,
+  inventory_usage_history: loadInventoryUsageHistory,
+  operating_rhythm: loadOperatingRhythm,
 };
 
 /**
