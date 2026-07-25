@@ -262,6 +262,17 @@ export type RateLimitEndpoint =
   // public / heavy-IO endpoints, not generic authenticated manager CRUD.
   | 'knowledge-presign'
   | 'knowledge-write'
+  // ── Knows screen intake (0358) ────────────────────────────────────────────
+  // The open box on /feed → Knows: a manager types a note or drops in a file,
+  // and one Claude call turns it into proposed facts. Billing-impacting (real
+  // token spend, and an uploaded PDF can be 4 MB of text), so it fails CLOSED
+  // below. Keyed on the RAW property id — api_limits.property_id FKs
+  // properties(id), so a hashToRateLimitKey composite would FK-violate → the
+  // RPC errors → the endpoint would fail closed for the wrong reason.
+  | 'knows-intake'
+  // Confirm / Edit / Remove on the same screen. No model, no email — a person
+  // tapping buttons. Per-property, fails OPEN.
+  | 'knows-write'
   // ── PMS auth-code inbox (Okta 2FA email reader; migration 0274) ────────────
   // Cloudflare Email Worker → /api/pms-inbox/inbound. Keyed on the RESOLVED RAW
   // property id (api_limits.property_id has an FK to properties(id), so a hashed
@@ -496,6 +507,14 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // a runaway/stolen session caps fast.
   'knowledge-presign':          120,
   'knowledge-write':            120,
+  // Knows intake — one Claude call per submission. A manager describing their
+  // hotel does this a handful of times ever, then occasionally after that; 20/hr
+  // per property leaves room for a document-by-document session while capping a
+  // runaway tab or a stolen session at ~20 model calls an hour.
+  'knows-intake':                20,
+  // Confirm / Edit / Remove taps. A first pass through a freshly-extracted
+  // vendor list is realistically 30-40 taps; 400/hr is far above that.
+  'knows-write':                400,
   // PMS auth-code inbox — per-property (raw pid). Real Okta sends are a few a
   // day; 60/hr bounds a forged flood to a known inbox without ever dropping a
   // legitimate burst of re-login codes.
@@ -656,6 +675,10 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Anthropic / Twilio spend.
   'financials-scan-invoice',
   'financials-scan-quote',
+  // Knows-screen intake — one Sonnet call over up to 24K characters of pasted
+  // text or extracted PDF. Fail CLOSED so a Supabase blip can't uncap spend;
+  // the UI degrades to "couldn't read that just now, try again".
+  'knows-intake',
   // Packages — scan-label (Claude Vision). Fail CLOSED so a DB blip can't
   // uncap Anthropic spend.
 ]);

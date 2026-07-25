@@ -408,6 +408,11 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
       modelLockReason: 'Display only because this fixed vector space is shared with protected Knowledge OCR. Any model change requires a versioned full knowledge re-index.',
     },
   ),
+  'knowledge.fact_extraction': defineFeature(
+    'knowledge.fact_extraction', 'Knowledge', 'Learning from what you tell it',
+    'Turns a note you type — or a file you drop in — into the short facts about your hotel that show up on the Knows screen for you to confirm.',
+    ['text', 'pdf_input'], SONNET,
+  ),
   'speech.ask_staxis_dictation': defineFeature(
     'speech.ask_staxis_dictation', 'Speech & input', 'Ask Staxis dictation',
     'The free talk-to-type used when dictating into Ask Staxis. Runs in the browser — costs nothing, nothing to configure.',

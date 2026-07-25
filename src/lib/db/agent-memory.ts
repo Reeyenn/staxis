@@ -10,6 +10,11 @@
 
 import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import {
+  coerceMemoryCategory,
+  type MemoryCategory,
+  type MemoryReviewState,
+} from '@/lib/agent/memory-facets';
 
 export type MemoryScope = 'property' | 'user';
 export type MemorySource = 'explicit_user' | 'inferred' | 'correction' | 'consolidation' | 'operational';
@@ -36,12 +41,20 @@ export interface MemoryRow {
   createdByName: string | null;
   subjectAccountId: string | null;
   updatedAt: string;
+  /** 0358 — one of the five Knows buckets. Never null (DB trigger fills it). */
+  category: MemoryCategory;
+  /** 0358 — 'unreviewed' facts are awaiting a manager and never reach the model. */
+  reviewState: MemoryReviewState;
+  expiresAt: string | null;
 }
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+// Kept as ONE string literal: supabase-js infers the row type from the literal,
+// and splitting it across a `+` concatenation collapses that inference to
+// GenericStringError[]. Long line on purpose.
 const SELECT_COLS =
-  'id, scope, topic, content, source, confidence, created_by_role, created_by_name, subject_account_id, updated_at';
+  'id, scope, topic, content, source, confidence, created_by_role, created_by_name, subject_account_id, updated_at, category, review_state, expires_at';
 
 interface RawRow {
   id: string;
@@ -54,6 +67,9 @@ interface RawRow {
   created_by_name: string | null;
   subject_account_id: string | null;
   updated_at: string;
+  category: string | null;
+  review_state: string | null;
+  expires_at: string | null;
 }
 
 function mapRow(r: RawRow): MemoryRow {
@@ -68,6 +84,12 @@ function mapRow(r: RawRow): MemoryRow {
     createdByName: r.created_by_name,
     subjectAccountId: r.subject_account_id,
     updatedAt: r.updated_at,
+    category: coerceMemoryCategory(r.category),
+    // Anything but the explicit 'unreviewed' marker reads as established —
+    // matching the DB default, so a pre-0358 row (or a NULL that somehow
+    // survived) is never mistaken for something awaiting approval.
+    reviewState: r.review_state === 'unreviewed' ? 'unreviewed' : 'confirmed',
+    expiresAt: r.expires_at,
   };
 }
 
@@ -76,6 +98,12 @@ function mapRow(r: RawRow): MemoryRow {
  * PLUS this user's own user-scope rows. Capped at 200 (ranking + token-budget
  * trimming happens in memory-context.ts). subjectAccountId may be null (a user
  * with no account row) — then only property-scope memory is returned.
+ *
+ * 0358: rows with review_state='unreviewed' are EXCLUDED. That is the whole
+ * guarantee behind the Knows screen's open box — a fact extracted from pasted
+ * text or an uploaded PDF must not act as established truth before a human
+ * approves it. The UI badge is a label; THIS filter is the enforcement. Do not
+ * remove it to "show the model more context".
  */
 export async function getActiveMemoryForTurn(
   propertyId: string,
@@ -94,6 +122,7 @@ export async function getActiveMemoryForTurn(
       .select(SELECT_COLS)
       .eq('property_id', propertyId)
       .eq('is_active', true)
+      .eq('review_state', 'confirmed')
       .or(`expires_at.is.null,expires_at.gt.${nowIso}`);
 
   const queries = [base().eq('scope', 'property').limit(150)];
@@ -122,6 +151,19 @@ export interface StoreMemoryInput {
   createdByRole?: string | null;
   sourceConversationId?: string | null;
   expiresAt?: string | null;
+  /**
+   * 0358 — the Knows bucket. Optional, and applied in a second property-scoped
+   * UPDATE after the RPC returns the row id: deliberately NOT a new RPC
+   * parameter, because widening staxis_store_memory's signature would mean
+   * dropping and recreating a function every other write path calls. Omit it
+   * and the DB trigger classifies the row, exactly as before this migration.
+   *
+   * There is intentionally NO reviewState here. Review state is not something
+   * a caller gets to choose: the 0358 trigger derives it from `source`
+   * ('inferred' ⇒ always unreviewed), so the guarantee holds even for a write
+   * path that has never heard of this field.
+   */
+  category?: MemoryCategory;
 }
 
 /**
@@ -149,11 +191,23 @@ export async function storeMemory(
   if (error) return { ok: false, error: error.message };
   // Table-returning RPC → array of one row { memory_id, action }.
   const row = Array.isArray(data) ? data[0] : data;
-  return {
-    ok: true,
-    action: row?.action as StoreMemoryAction | undefined,
-    memoryId: (row?.memory_id as string | null) ?? null,
-  };
+  const action = row?.action as StoreMemoryAction | undefined;
+  const memoryId = (row?.memory_id as string | null) ?? null;
+
+  // Apply the caller's chosen bucket. Scoped by property_id AND id — the id
+  // came from our own RPC call, but the tenant filter is the guarantee here
+  // (agent_memory is deny-all RLS; supabaseAdmin bypasses it), so it is never
+  // dropped. A failure here is cosmetic: the row keeps the bucket the DB
+  // trigger picked, so we log-and-continue rather than fail the whole write.
+  if (memoryId && input.category !== undefined && (action === 'inserted' || action === 'updated')) {
+    await supabaseAdmin
+      .from('agent_memory')
+      .update({ category: input.category })
+      .eq('property_id', input.propertyId)
+      .eq('id', memoryId);
+  }
+
+  return { ok: true, action, memoryId };
 }
 
 /**
@@ -270,4 +324,130 @@ export async function deactivateMemoryById(
     .select('id');
   if (error) return { ok: false, removed: 0, error: error.message };
   return { ok: true, removed: (data ?? []).length };
+}
+
+// ─── The Knows screen's three actions ───────────────────────────────────────
+// Every one is scoped by property_id AND id, and only ever touches an ACTIVE
+// row. property_id is the per-tenant guarantee (RLS is deny-all and
+// supabaseAdmin bypasses it) — never drop it, and never look a row up by id
+// alone "because ids are unguessable".
+
+export interface FactActor {
+  accountId: string | null;
+  name: string | null;
+  role: string | null;
+}
+
+/**
+ * CONFIRM — the manager says "yes, that's right."
+ *
+ * This is deliberately not a boolean flip. Confirming PROMOTES the row to a
+ * human-authored fact (source 'explicit_user', confidence high) and clears its
+ * expiry, which buys three behaviors from mechanisms that already exist:
+ *
+ *   • it stops expiring       — expires_at NULL, so the nightly sweep leaves it;
+ *   • it stops being auto-overwritable — 0260/0261 make a consolidation or
+ *     operational write DEFER to any active non-auto-learned row for the topic;
+ *   • it starts reaching the model — the 0358 trigger only forces
+ *     review_state='unreviewed' while source is still 'inferred'.
+ *
+ * Inventing a separate "confirmed" flag would have left all three unchanged.
+ */
+export async function confirmMemoryFact(
+  propertyId: string,
+  id: string,
+  actor: FactActor,
+): Promise<{ ok: boolean; confirmed: boolean; error?: string }> {
+  if (!UUID_RX.test(propertyId) || !UUID_RX.test(id)) {
+    return { ok: false, confirmed: false, error: 'bad id' };
+  }
+  const { data, error } = await supabaseAdmin
+    .from('agent_memory')
+    .update({
+      source: 'explicit_user',
+      review_state: 'confirmed',
+      confidence: 'high',
+      expires_at: null,
+      created_by_account_id: actor.accountId,
+      created_by_name: actor.name,
+      created_by_role: actor.role,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('property_id', propertyId)
+    .eq('id', id)
+    .eq('is_active', true)
+    .select('id');
+  if (error) return { ok: false, confirmed: false, error: error.message };
+  return { ok: true, confirmed: (data ?? []).length > 0 };
+}
+
+/**
+ * EDIT — the manager rewrites the fact (and optionally re-files it).
+ *
+ * An edited fact is a CORRECTION: a human has now authored it, so it gets the
+ * same promotion (and the same protection from auto-overwrite) as Confirm.
+ * Content is capped at the 500-char column CHECK by the caller.
+ */
+export async function editMemoryFact(
+  propertyId: string,
+  id: string,
+  patch: { content: string; category?: MemoryCategory },
+  actor: FactActor,
+): Promise<{ ok: boolean; updated: boolean; error?: string }> {
+  if (!UUID_RX.test(propertyId) || !UUID_RX.test(id)) {
+    return { ok: false, updated: false, error: 'bad id' };
+  }
+  const content = patch.content.trim();
+  if (!content || content.length > 500) {
+    return { ok: false, updated: false, error: 'bad content' };
+  }
+  const { data, error } = await supabaseAdmin
+    .from('agent_memory')
+    .update({
+      content,
+      ...(patch.category ? { category: patch.category } : {}),
+      source: 'correction',
+      review_state: 'confirmed',
+      confidence: 'high',
+      expires_at: null,
+      created_by_account_id: actor.accountId,
+      created_by_name: actor.name,
+      created_by_role: actor.role,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('property_id', propertyId)
+    .eq('id', id)
+    .eq('is_active', true)
+    .select('id');
+  if (error) return { ok: false, updated: false, error: error.message };
+  return { ok: true, updated: (data ?? []).length > 0 };
+}
+
+/**
+ * REMOVE — soft-delete ANY active fact for this property.
+ *
+ * Deliberately wider than deactivateMemoryById above, which is restricted to
+ * auto-learned sources because the DASHBOARD card it serves shows only those
+ * and a stray tap there must not destroy a manager's own note. The Knows screen
+ * is the opposite surface: it shows everything and its entire purpose is "tell
+ * me if I'm wrong", so it must be able to remove a fact the manager themselves
+ * once stated. The row is retained (is_active=false) for audit, and the
+ * removed-topics list is what stops it being re-learned.
+ */
+export async function removeMemoryFact(
+  propertyId: string,
+  id: string,
+): Promise<{ ok: boolean; removed: boolean; error?: string }> {
+  if (!UUID_RX.test(propertyId) || !UUID_RX.test(id)) {
+    return { ok: false, removed: false, error: 'bad id' };
+  }
+  const { data, error } = await supabaseAdmin
+    .from('agent_memory')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('property_id', propertyId)
+    .eq('id', id)
+    .eq('is_active', true)
+    .select('id');
+  if (error) return { ok: false, removed: false, error: error.message };
+  return { ok: true, removed: (data ?? []).length > 0 };
 }

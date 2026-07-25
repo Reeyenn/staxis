@@ -6,7 +6,7 @@
  * client + server import the same source of truth.
  */
 
-export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type OnboardingStep = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 export type OnboardingReviewStep = 1 | 2;
 
 /**
@@ -57,6 +57,16 @@ export interface OnboardingState {
   staffAt?: string;
 
   /**
+   * Step 8: the owner either told Staxis something about their hotel in the
+   * open box, or skipped it. ENTIRELY OPTIONAL — the step is one paragraph and
+   * a Skip button, and the timestamp is written either way so the wizard moves
+   * on. Whatever they typed becomes UNCONFIRMED facts on the Knows screen
+   * (/feed → Knows) for them to approve later; nothing here is treated as
+   * established truth just because it was typed during setup.
+   */
+  hotelContextAt?: string;
+
+  /**
    * Step 5: when the operator picks "Other / Not Listed" as their PMS, the
    * free-text name they typed for their booking system. Persisted so it isn't
    * lost (the registry only knows the generic `other` id) and so whoever maps
@@ -86,7 +96,9 @@ export interface OnboardingState {
  *   4 → 5 (hotel → PMS) requires hotelDetailsAt
  *   5 → 6 (PMS → mapping) requires pmsCredentialsAt + pmsJobId
  *   6 → 7 (mapping → team) requires mappingCompletedAt
- *   7 → 8 (team → done) requires staffAt
+ *   7 → 8 (team → about your hotel) requires staffAt
+ *   8 → 9 (about your hotel → done) requires hotelContextAt, which the step
+ *         writes whether the owner typed something or pressed Skip
  */
 export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
   // The welcome→account hop is the only transition with no completion
@@ -103,7 +115,11 @@ export function deriveCurrentStep(state: OnboardingState): OnboardingStep {
   if (!state.pmsCredentialsAt && !state.pmsSkippedAt) return 5;
   if (!state.mappingCompletedAt && !state.pmsSkippedAt) return 6;
   if (!state.staffAt) return 7;
-  return 8;
+  // Optional, skippable, and never a wall: the step itself stamps
+  // hotelContextAt on both "Add this" and "Skip", so an owner is one click
+  // from Done either way.
+  if (!state.hotelContextAt) return 8;
+  return 9;
 }
 
 /**
@@ -184,7 +200,7 @@ export const RESUME_GUARD_KEY = 'staxis-onboard-resume-tried';
 const ONBOARDING_STATE_STRING_KEYS = [
   'accountCreatedAt', 'emailVerifiedAt', 'hotelDetailsAt',
   'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
-  'mappingCompletedAt', 'staffAt', 'pmsOtherName', 'pmsSkippedAt',
+  'mappingCompletedAt', 'staffAt', 'pmsOtherName', 'pmsSkippedAt', 'hotelContextAt',
 ] as const;
 const ONBOARDING_STATE_KEYS = new Set<string>(['step', ...ONBOARDING_STATE_STRING_KEYS]);
 /** Generous upper bound on any single persisted string field. Timestamps (~30),
@@ -209,7 +225,7 @@ export function isValidPartialState(value: unknown): value is Partial<Onboarding
     if (!ONBOARDING_STATE_KEYS.has(key)) return false;
   }
   if (obj.step !== undefined) {
-    if (typeof obj.step !== 'number' || obj.step < 1 || obj.step > 8) return false;
+    if (typeof obj.step !== 'number' || obj.step < 1 || obj.step > 9) return false;
   }
   for (const key of ONBOARDING_STATE_STRING_KEYS) {
     const v = obj[key];

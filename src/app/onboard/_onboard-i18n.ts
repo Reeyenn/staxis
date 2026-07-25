@@ -17,9 +17,23 @@ type Lang = 'en' | 'es';
 
 const STRINGS = {
   en: {
-    // Step 1 — welcome (step-count copy; wizard is 8 steps, "services" removed)
+    // Step 1 — welcome (step-count copy; wizard is 9 steps, "services" removed)
     welcomeSteps:
-      "We'll walk you through 8 quick steps — creating your account, your hotel details, connecting your booking system, and adding your team. Takes about 10 minutes.",
+      "We'll walk you through 9 quick steps — creating your account, your hotel details, connecting your booking system, and adding your team. Takes about 10 minutes.",
+
+    // Step 8 — tell Staxis about your hotel (optional, skippable)
+    contextTitle: 'Anything we should know? (optional)',
+    contextBody:
+      'Tell Staxis about your hotel in your own words — how things run, who to call, what keeps breaking. One or two sentences is plenty. You can skip this and do it any time from the Staxis tab.',
+    contextPlaceholder:
+      'e.g. Breakfast runs 6–9. Ace Plumbing handles anything with water. The third-floor ice machine fails every summer.',
+    contextSkip: 'Skip for now',
+    contextSubmit: 'Add this →',
+    contextSubmitting: 'Reading…',
+    contextFailed:
+      "Staxis couldn't read that just now. You can skip and add it later from the Staxis tab.",
+    contextNote:
+      'Whatever you write becomes a short list of facts you review and confirm later — nothing is treated as certain until you say so.',
 
     // Step 5 — Connect PMS picker
     pmsLabel: 'Your booking system (PMS) *',
@@ -54,7 +68,20 @@ const STRINGS = {
   },
   es: {
     welcomeSteps:
-      'Te guiaremos en 8 pasos rápidos — crear tu cuenta, los datos de tu hotel, conectar tu sistema de reservas y agregar a tu equipo. Toma unos 10 minutos.',
+      'Te guiaremos en 9 pasos rápidos — crear tu cuenta, los datos de tu hotel, conectar tu sistema de reservas y agregar a tu equipo. Toma unos 10 minutos.',
+
+    contextTitle: '¿Algo que debamos saber? (opcional)',
+    contextBody:
+      'Cuéntale a Staxis sobre tu hotel con tus palabras: cómo funciona todo, a quién llamar, qué se rompe siempre. Con una o dos frases basta. Puedes saltar esto y hacerlo cuando quieras desde la pestaña Staxis.',
+    contextPlaceholder:
+      'p. ej. El desayuno es de 6 a 9. Ace Plomería ve todo lo de agua. La máquina de hielo del tercer piso falla cada verano.',
+    contextSkip: 'Saltar por ahora',
+    contextSubmit: 'Agregar esto →',
+    contextSubmitting: 'Leyendo…',
+    contextFailed:
+      'Staxis no pudo leer eso ahora mismo. Puedes saltar y agregarlo después desde la pestaña Staxis.',
+    contextNote:
+      'Lo que escribas se convierte en una lista corta de datos que tú revisas y confirmas después: nada se da por cierto hasta que tú lo digas.',
 
     pmsLabel: 'Tu sistema de reservas (PMS) *',
     pmsSelectPlaceholder: '— Selecciona tu sistema de reservas —',

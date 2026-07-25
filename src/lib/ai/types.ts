@@ -41,6 +41,7 @@ export const AI_FEATURE_KEYS = [
   'reports.run_summary',
   'communications.voice_transcription',
   'knowledge.embeddings',
+  'knowledge.fact_extraction',
   'speech.ask_staxis_dictation',
   'ml.housekeeping_demand',
   'ml.housekeeping_supply',

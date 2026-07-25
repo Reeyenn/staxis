@@ -35,6 +35,9 @@ function row(p: Partial<MemoryRow> = {}): MemoryRow {
     createdByName: p.createdByName ?? 'GM',
     subjectAccountId: p.subjectAccountId ?? null,
     updatedAt: p.updatedAt ?? '2026-06-01T00:00:00.000Z',
+    category: p.category ?? 'rhythm',
+    reviewState: p.reviewState ?? 'confirmed',
+    expiresAt: p.expiresAt ?? null,
   };
 }
 

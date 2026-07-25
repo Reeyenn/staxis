@@ -259,7 +259,8 @@ function OnboardWizard() {
       {displayStep === 5 && <Step6ConnectPms code={code} wizard={wizard} onNext={advance} />}
       {displayStep === 6 && <Step7Mapping code={code} onNext={advance} />}
       {displayStep === 7 && <Step8AddTeam code={code} wizard={wizard} onNext={advance} />}
-      {displayStep === 8 && <Step9AllSet code={code} wizard={wizard} />}
+      {displayStep === 8 && <Step9TellUs code={code} wizard={wizard} onNext={advance} />}
+      {displayStep === 9 && <Step10AllSet code={code} wizard={wizard} />}
     </WizardLayout>
   );
 }
@@ -268,7 +269,7 @@ function OnboardWizard() {
 
 const STEP_LABELS = [
   'Welcome', 'Account', 'Verify email', 'Hotel',
-  'PMS', 'Mapping', 'Team', 'Done',
+  'PMS', 'Mapping', 'Team', 'Your hotel', 'Done',
 ];
 
 // Warm animated mesh + paper grain — the same backdrop the /signin flow uses,
@@ -1787,9 +1788,118 @@ function Step8AddTeam({ code, wizard, onNext }: { code: string; wizard: WizardSt
   );
 }
 
-// ─── Step 9: All set ────────────────────────────────────────────────────
+// ─── Step 9: Tell Staxis about your hotel (optional, skippable) ─────────
+//
+// The same open box that lives on the Knows screen (/feed → Knows), offered
+// once during setup while the owner is already thinking about their hotel.
+//
+// Rules this step obeys, deliberately:
+//   • It never blocks. Skip always advances, and it advances even if the
+//     extraction call fails — an outage in an optional nicety must not strand
+//     someone in a signup wizard.
+//   • It never silently swallows what they typed. A failure keeps the text on
+//     screen with an honest message and Skip still available.
+//   • Whatever it extracts lands UNCONFIRMED (source='inferred'), exactly like
+//     a paste on the Knows screen. Typing it during setup does not make it
+//     established truth.
 
-function Step9AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
+function Step9TellUs({ code, wizard, onNext }: {
+  code: string;
+  wizard: WizardStateResponse;
+  onNext: () => Promise<void>;
+}) {
+  const { lang } = useLang();
+  const o = ot(lang);
+  const [note, setNote] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const markDone = async () => {
+    const res = await fetch('/api/onboard/wizard', {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        code,
+        partialState: { hotelContextAt: new Date().toISOString() },
+      }),
+    });
+    await requireApiSuccess(res, 'Could not save progress. Please try again.');
+    await onNext();
+  };
+
+  const skip = async () => {
+    setErr(null);
+    setSubmitting(true);
+    try {
+      await markDone();
+    } catch (e) {
+      if (e instanceof SessionEndedError) return;
+      setErr(e instanceof Error ? e.message : 'Save failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submit = async () => {
+    const text = note.trim();
+    if (!text) { await skip(); return; }
+    setErr(null);
+    setSubmitting(true);
+    try {
+      const res = await fetchWithAuth('/api/memory/knows/intake', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ propertyId: wizard.propertyId, note: text }),
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok || !json?.ok) {
+        // Keep their words on screen; Skip is still right there.
+        setErr(o.contextFailed);
+        return;
+      }
+      await markDone();
+    } catch (e) {
+      if (e instanceof SessionEndedError) return;
+      setErr(o.contextFailed);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div>
+      <Sparkles size={28} color="#C99644" style={{ marginBottom: '12px' }} />
+      <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>{o.contextTitle}</h2>
+      <p style={{ color: '#5C625C', marginBottom: '16px', fontSize: '13px' }}>{o.contextBody}</p>
+      {err && <ErrorBox msg={err} />}
+      <textarea
+        className="input"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder={o.contextPlaceholder}
+        aria-label={o.contextTitle}
+        maxLength={8000}
+        rows={5}
+        style={{ width: '100%', minHeight: '110px', resize: 'vertical', lineHeight: 1.5 }}
+      />
+      <p style={{ color: '#8A8F88', fontSize: '11.5px', marginTop: '8px', lineHeight: 1.45 }}>
+        {o.contextNote}
+      </p>
+      <div style={{ display: 'flex', gap: '8px', marginTop: '14px' }}>
+        <button className="btn btn-secondary" onClick={skip} disabled={submitting} style={{ flex: 1, justifyContent: 'center' }}>
+          {o.contextSkip}
+        </button>
+        <button className="btn btn-primary" onClick={submit} disabled={submitting} style={{ flex: 1, justifyContent: 'center' }}>
+          {submitting ? o.contextSubmitting : o.contextSubmit}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Step 10: All set ───────────────────────────────────────────────────
+
+function Step10AllSet({ code, wizard }: { code: string; wizard: WizardStateResponse; }) {
   const { lang } = useLang();
   const [going, setGoing] = useState(false);
   const [err, setErr] = useState<string | null>(null);

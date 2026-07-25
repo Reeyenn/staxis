@@ -286,7 +286,7 @@ const ALLOWED_PROPERTY_UPDATE_FIELDS = new Set([
 // account is also not reversible here (nothing to edit on the welcome screen).
 const CLEARABLE_STATE_KEYS = new Set<keyof OnboardingState>([
   'hotelDetailsAt', 'servicesAt', 'pmsCredentialsAt', 'pmsJobId',
-  'mappingCompletedAt', 'staffAt',
+  'mappingCompletedAt', 'staffAt', 'hotelContextAt',
 ]);
 
 export async function PATCH(req: NextRequest) {
