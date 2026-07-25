@@ -5,6 +5,14 @@
 //
 // Keep this cheap — runs on every user turn. Heavy queries (financial
 // reports, multi-day aggregations) should be left for explicit tool calls.
+//
+// DATA-AGE CONTRACT (A2, 2026-07-24): the room / occupancy / reservation
+// numbers below are NOT live — they are as old as the last PMS report, so the
+// snapshot carries the raw capture TIME (never a pre-rendered age, which the
+// 30s cache would freeze) and formatSnapshotForPrompt renders the as-of line
+// at prompt-build time. The line is emitted ONLY for `mode === 'live'` hotels:
+// a manual hotel is its own system of record and warning it about staleness
+// would be a lie in the opposite direction.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
@@ -12,7 +20,15 @@ import { computeRoomTotal } from './tools/_helpers';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
-import { learningFeeds, countsTrusted, isDataPending } from '@/lib/pms/feed-status';
+import {
+  learningFeeds,
+  countsTrusted,
+  isDataPending,
+  freshnessTier,
+  formatAsOfClock,
+  PMS_STALE_MAX_MINUTES,
+  type FreshnessSource,
+} from '@/lib/pms/feed-status';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface HotelSnapshot {
@@ -71,6 +87,20 @@ export interface HotelSnapshot {
   /** Review pass — first sync hasn't landed: EVERY pms-derived number above
    *  is an empty-table zero. */
   pmsConnectionPending?: boolean;
+  /**
+   * A2 — ISO time the PMS numbers above were captured, or null when this
+   * hotel's feed carries no capture time. Raw ISO on purpose: a pre-rendered
+   * "22 min ago" would be frozen by the 30s snapshot cache and go on claiming
+   * 22 minutes for half a minute after it was true.
+   *
+   * `pmsDataSource` is the GATE, not this field: it is set if and only if the
+   * property is a live-PMS hotel, so `undefined` means "manual or onboarding
+   * hotel — say nothing about data age", while `pmsDataCapturedAt: null` means
+   * "live PMS hotel whose feed has no capture time — say the age is unknown".
+   */
+  pmsDataCapturedAt?: string | null;
+  /** A2 — which signal produced pmsDataCapturedAt. Present ⇔ live-PMS hotel. */
+  pmsDataSource?: FreshnessSource;
   // Only populated for housekeeping role — their own assigned rooms.
   myRooms?: Array<{
     id: string;
@@ -301,6 +331,10 @@ async function buildHotelSnapshotUncached(
   let pmsLearningFeeds: string[] | undefined;
   let pmsCountsUnavailable = false;
   let pmsConnectionPending = false;
+  // A2 — capture time. Only ever set for mode==='live'; its presence is what
+  // tells formatSnapshotForPrompt this hotel gets an as-of line at all.
+  let pmsDataSource: FreshnessSource | undefined;
+  let pmsDataCapturedAt: string | null = null;
   try {
     const fs = await getPropertyFeedStatus(propertyId);
     if (fs.mode === 'live') {
@@ -308,6 +342,9 @@ async function buildHotelSnapshotUncached(
       if (learning.length > 0) pmsLearningFeeds = learning;
       pmsCountsUnavailable = !countsTrusted(fs);
       pmsConnectionPending = isDataPending(fs);
+      // Same cached object — zero extra queries.
+      pmsDataSource = fs.freshness?.source ?? 'none';
+      pmsDataCapturedAt = fs.freshness?.capturedAt ?? null;
     }
   } catch {
     // non-fatal
@@ -322,6 +359,7 @@ async function buildHotelSnapshotUncached(
     ...(pmsLearningFeeds ? { pmsLearningFeeds } : {}),
     ...(pmsCountsUnavailable ? { pmsCountsUnavailable: true } : {}),
     ...(pmsConnectionPending ? { pmsConnectionPending: true } : {}),
+    ...(pmsDataSource ? { pmsDataSource, pmsDataCapturedAt } : {}),
   };
 
   cache.set(key, { snapshot, expiresAt: Date.now() + CACHE_TTL_MS });
@@ -463,7 +501,68 @@ export async function getVoiceContextHint(propertyId: string): Promise<string> {
   return parts.join(' ');
 }
 
-export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
+/**
+ * A2 — the single data-age line, or null when this hotel must not get one.
+ *
+ * Suppressed for:
+ *   • manual (no_pms) and onboarding hotels — `pmsDataSource` is undefined for
+ *     them. Warning a manual hotel that its own numbers might be stale is the
+ *     exact opposite of honesty: the app IS its system of record.
+ *   • a live-PMS hotel whose first sync hasn't landed — the existing
+ *     pmsConnectionPending CAUTION already says something stronger.
+ *
+ * The age is computed from `now` at RENDER time (not stored on the snapshot),
+ * so the 30s snapshot cache can never serve a frozen "22 min ago".
+ */
+function asOfLine(snap: HotelSnapshot, now: Date): string | null {
+  if (!snap.pmsDataSource) return null;
+  if (snap.pmsConnectionPending) return null;
+
+  const unknown =
+    'PMS data age unknown — this hotel\'s feed carries no capture time. ' +
+    'Do NOT state the room, occupancy or reservation numbers below as current; ' +
+    'say you can\'t tell how old they are.';
+
+  const capturedAt = snap.pmsDataCapturedAt ?? null;
+  const tier = freshnessTier(capturedAt, snap.pmsDataSource, now);
+  if (tier === 'unknown' || !capturedAt) return unknown;
+
+  const clock = formatAsOfClock(capturedAt, snap.property.timezone, now);
+  if (!clock) return unknown;
+
+  const at = esc(clock.time);
+  const stamp = `${at} (${esc(clock.zone)})`;
+  const age = esc(clock.age);
+
+  switch (tier) {
+    case 'fresh':
+      return (
+        `PMS data as of ${stamp}, ${age} — the room, occupancy and reservation ` +
+        'numbers below describe that moment.'
+      );
+    case 'stale':
+      return (
+        `PMS data as of ${stamp}, ${age}. CAUTION: that is older than one report cycle. ` +
+        `The room, occupancy and reservation numbers below are from ${at}, not now — ` +
+        'say the as-of time whenever you use them.'
+      );
+    case 'very_stale':
+      return (
+        `PMS data as of ${stamp}, ${age}. CAUTION: this hotel's PMS reports have not ` +
+        `arrived in over ${PMS_STALE_MAX_MINUTES / 60} hours. Do NOT state the room, ` +
+        'occupancy or reservation numbers below as the current situation — say the last ' +
+        `update landed at ${at} and the connection looks stuck.`
+      );
+    case 'change_only':
+      return (
+        `PMS data last CHANGED at ${stamp}, ${age}; this hotel's connection does not ` +
+        'report when it last checked, so the numbers below may be newer. Give ' +
+        `${at} as the as-of time and don't claim they are live.`
+      );
+  }
+}
+
+export function formatSnapshotForPrompt(snap: HotelSnapshot, now: Date = new Date()): string {
   const lines: string[] = [];
   lines.push('<staxis-snapshot trust="system">');
   lines.push(`Today: ${esc(snap.today)}`);
@@ -471,6 +570,8 @@ export function formatSnapshotForPrompt(snap: HotelSnapshot): string {
     `Property: ${esc(snap.property.name ?? 'Unnamed')} (${esc(snap.property.id)})` +
     (snap.property.timezone ? `, timezone ${esc(snap.property.timezone)}` : ''),
   );
+  const asOf = asOfLine(snap, now);
+  if (asOf) lines.push(asOf);
   // PMS-state counts from the live pms_* feed. dirty/clean/checkouts/
   // stayovers/in-house/OOO are real; in_progress/DND/issue/help are
   // overlay-table workflow fields that stay 0 until that table lands —

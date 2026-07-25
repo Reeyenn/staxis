@@ -95,9 +95,10 @@ registerTool<Record<string, never>>({
   // occupancy?" in the copilot for a hotel that turned only Housekeeping off —
   // occupancy is still shown on the dashboard. Mirrors get_occupancy staying ungated.
   description:
-    'Get a live snapshot of the hotel: occupancy (dirty/clean/in-progress/DND), staff active today, and (for housekeepers) the user\'s assigned rooms. Read-only. Use when the user asks about current property state ("what\'s our occupancy", "how many DND rooms", "what\'s next for me").',
+    'Get the hotel snapshot as of its last PMS report (NOT live): occupancy (dirty/clean/in-progress/DND), staff active today, and (for housekeepers) the user\'s assigned rooms. Carries pmsDataCapturedAt + asOf — quote the as-of time. Read-only. Use when the user asks about current property state ("what\'s our occupancy", "how many DND rooms", "what\'s next for me").',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk', 'housekeeping', 'maintenance'],
+  pmsFreshness: 'stamped',
   handler: async (_, ctx): Promise<ToolResult> => {
     try {
       // Reuses the 30 s in-process cache in buildHotelSnapshot so back-to-back
@@ -116,6 +117,7 @@ registerTool<Record<string, never>>({
 registerTool<Record<string, never>>({
   name: 'list_my_rooms',
   section: 'housekeeping',
+  pmsFreshness: 'stamped',
   description:
     'List the rooms currently assigned to the user (housekeeper). Returns room number, status, and any flags (DND, issue, help requested) for each.',
   inputSchema: { type: 'object', properties: {} },
@@ -165,6 +167,7 @@ registerTool<Record<string, never>>({
 registerTool<Record<string, never>>({
   name: 'get_my_next_room',
   section: 'housekeeping',
+  pmsFreshness: 'stamped',
   description:
     'Get the next room the housekeeper should clean (first non-clean, non-DND room from their assigned list).',
   inputSchema: { type: 'object', properties: {} },
@@ -211,8 +214,9 @@ registerTool<Record<string, never>>({
 registerTool<{ roomNumber: string }>({
   name: 'query_room_status',
   section: 'housekeeping',
+  pmsFreshness: 'stamped',
   description:
-    'Get current status of a specific room. Returns status, assigned housekeeper, DND state, any flagged issues. Read-only.',
+    'Get a room\'s status as of the hotel\'s last PMS report (NOT live). Returns status, assigned housekeeper, DND state, any flagged issues, and asOf — quote the as-of time. Read-only.',
   inputSchema: {
     type: 'object',
     properties: { roomNumber: { type: 'string', description: 'Room number as digits.' } },
@@ -269,8 +273,9 @@ registerTool<{ roomNumber: string }>({
 registerTool<Record<string, never>>({
   name: 'get_today_summary',
   section: 'housekeeping',
+  pmsFreshness: 'stamped',
   description:
-    'Get a quick rollup of today: rooms cleaned so far, in progress, dirty, DND, active issues, help requests. Useful when the manager asks "how are we doing today?".',
+    'Get a quick rollup of today as of the hotel\'s last PMS report (NOT live): rooms cleaned, in progress, dirty, DND, active issues, help requests. Useful when the manager asks "how are we doing today?". Quote the as-of time it returns.',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   handler: async (_, ctx): Promise<ToolResult> => {
@@ -373,6 +378,7 @@ registerTool<Record<string, never>>({
 registerTool<Record<string, never>>({
   name: 'get_deep_clean_queue',
   section: 'housekeeping',
+  pmsFreshness: 'stamped',
   description:
     'List rooms currently scheduled for deep cleaning (longer than standard turn). Returns room number, scheduled date, and status. Read-only.',
   inputSchema: { type: 'object', properties: {} },

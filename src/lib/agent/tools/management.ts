@@ -64,6 +64,8 @@ registerTool<{ roomNumber: string; staffName: string }>({
 registerTool<{ period?: 'today' | 'week' | 'month' }>({
   name: 'get_staff_performance',
   section: 'staff',
+  // Reads cleaning_events (Staxis's own labor audit trail), not a pms_ table.
+  pmsFreshness: 'independent',
   description:
     'Get per-staff cleaning performance metrics over a period. Returns: name, rooms cleaned, average duration in minutes, flagged events. Period defaults to "today".',
   inputSchema: {
@@ -140,8 +142,10 @@ registerTool<{ period?: 'today' | 'week' | 'month' }>({
 registerTool<{ date?: string }>({
   name: 'generate_schedule',
   section: 'staff',
+  // Room assignments come from pms_housekeeping_assignments via the merge.
+  pmsFreshness: 'stamped',
   description:
-    'Generate (or look up) the housekeeper schedule for a given date. Returns which housekeepers are scheduled and how many rooms each has assigned. Date format: YYYY-MM-DD. Defaults to today.',
+    'Generate (or look up) the housekeeper schedule for a given date, as of the hotel\'s last PMS report (NOT live). Returns which housekeepers are scheduled and how many rooms each has assigned. Date format: YYYY-MM-DD. Defaults to today.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -194,8 +198,10 @@ registerTool<{ date?: string }>({
 
 registerTool<Record<string, never>>({
   name: 'get_pms_status',
+  // The freshness fields ARE the answer to this tool's question.
+  pmsFreshness: 'stamped',
   description:
-    'Check the status of the PMS (Property Management System) connection. Returns when the last successful sync happened and whether anything is broken.',
+    'Check the status of the PMS (Property Management System) connection. Returns when the last successful sync happened, how old the hotel\'s numbers are (asOf / dataAgeMinutes / dataFreshness), and whether anything is broken.',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   handler: async (_, ctx): Promise<ToolResult> => {
@@ -226,6 +232,7 @@ const TOR_STATUS_FILTERS = ['pending', 'approved', 'denied', 'all'] as const;
 
 registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
   name: 'get_time_off_requests',
+  pmsFreshness: 'independent', // Staxis's own time-off table — genuinely live
   section: 'staff',
   description:
     'List staff time-off (PTO) requests for this property. Use when a manager asks things like "any time-off requests?", "who wants time off?", or "show pending PTO". Returns each request\'s staff name, date, reason, and status. Defaults to pending requests only.',

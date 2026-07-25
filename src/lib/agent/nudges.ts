@@ -9,12 +9,21 @@
 // V1 scope: implement operational alerts + daily summary fully. Inventory
 // and revenue anomalies are scaffolded but return early when data isn't
 // available — we don't want to fabricate alerts.
+//
+// DATA-AGE CONTRACT (A2, 2026-07-24): room state arrives in scheduled PMS
+// reports, so "how long has this room been in progress?" is measured against
+// the report's CAPTURE time, never the wall clock — otherwise a room whose
+// report lands 60 minutes late looks 60 minutes more overdue than it is and
+// the manager gets a false alarm. When the feed itself is older than one
+// report cycle the whole run is suppressed: a push notification computed from
+// stale data is worse than none (the correct alert during an ingestion outage
+// is "reports stopped arriving", which the ingestion layer owns).
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
-import { countsTrusted } from '@/lib/pms/feed-status';
+import { countsTrusted, formatAsOfClock, freshnessTier } from '@/lib/pms/feed-status';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface NudgeRunResult {
@@ -141,6 +150,28 @@ interface NudgeDraft {
   dedupeKey: string;
 }
 
+/** The slice of a merged Room the operational checks actually read. Narrow on
+ *  purpose so the pure draft builders can be exercised without a live merge. */
+export interface NudgeRoomInput {
+  /** Composite "${date}:${room_number}" — stable per day, used for dedupe. */
+  id: string;
+  number: string;
+  status: string;
+  startedAt?: Date | string | null;
+  assignedName?: string | null;
+  helpRequested?: boolean;
+}
+
+/** How long a room may sit in progress before it's worth a look. Measured in
+ *  OBSERVED minutes (capture time − start time), not elapsed wall time. */
+export const OVERDUE_ROOM_MINUTES = 90;
+
+function toMillis(v: Date | string | null | undefined): number | null {
+  if (!v) return null;
+  const ms = v instanceof Date ? v.getTime() : new Date(v).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
 /** Find the accounts that should receive nudges for a property.
  *
  * Codex adversarial review 2026-05-13 (A-H9): the prior version included
@@ -233,37 +264,54 @@ async function insertNudgeIfNew(opts: {
 
 // ─── 1. Operational alerts ────────────────────────────────────────────────
 
-async function checkOperationalAlerts(propertyId: string): Promise<NudgeDraft[]> {
+/**
+ * Rooms that have been in progress too long — measured on the DATA's clock.
+ *
+ * `capturedAt` is the moment the room states were read. Elapsed time is
+ * `capturedAt − startedAt` (OBSERVED elapsed), not `now − startedAt`: the
+ * report tells us the room was still in progress AT capture, and nothing
+ * since. The 90-minute threshold is unchanged — only the reference frame is.
+ * A room reported an hour late used to look an hour more overdue than it was;
+ * that false-alarm class is the whole point of this function.
+ *
+ * `capturedAt === null` means the hotel has no PMS capture time (a manual
+ * hotel, where Staxis IS the system of record) — those numbers really are
+ * live, so `now` is the correct reference and behaviour is unchanged.
+ *
+ * Pure, with both clocks injected: there is no ambient `Date.now()` in here
+ * for a future edit to reach for.
+ */
+export function overdueRoomDrafts(
+  rooms: NudgeRoomInput[],
+  propertyId: string,
+  capturedAt: Date | null,
+  now: Date,
+  asOfLabel: string | null = null,
+): NudgeDraft[] {
   const drafts: NudgeDraft[] = [];
-
-  // Plan v4: the legacy `rooms` table was dropped (migration 0204). Live room
-  // status now flows into the pms_* tables, surfaced via the per-(property,
-  // date) merge below (Room[] in the legacy camel-cased shape). Resolve the
-  // property's local "today" the way the doctor does (Intl tz-aware) since
-  // there is no rooms.date anymore.
-  const date = await getPropertyToday(propertyId);
-  const rooms = await mergePmsRoomsForDate(propertyId, date);
-
-  // Overdue rooms: in_progress for > 90 minutes. The merge derives
-  // status='in_progress' from a started-but-not-completed HK assignment, and
-  // carries the start timestamp as startedAt — both real pms_* signals.
-  const overdueCutoffMs = Date.now() - 90 * 60 * 1000;
+  const reference = (capturedAt ?? now).getTime();
   for (const r of rooms) {
-    if (r.status !== 'in_progress' || !r.startedAt) continue;
-    const startedTime = new Date(r.startedAt).getTime();
-    if (Number.isNaN(startedTime) || startedTime > overdueCutoffMs) continue;
-    const minutesAgo = Math.round((Date.now() - startedTime) / 60_000);
+    if (r.status !== 'in_progress') continue;
+    const startedTime = toMillis(r.startedAt);
+    if (startedTime === null) continue;
+    const observedMinutes = Math.round((reference - startedTime) / 60_000);
+    if (observedMinutes < OVERDUE_ROOM_MINUTES) continue;
     // assignedName comes through the merge (housekeeper_name on the
     // assignment); no extra staff lookup needed.
     const staffName = r.assignedName ?? null;
+    const who = staffName ? ` (${staffName})` : '';
+    const summary = asOfLabel
+      ? `Room ${r.number} had been in progress for ${observedMinutes} min as of ${asOfLabel}${who} — usually takes ~25 min, worth checking in.`
+      : `Room ${r.number} has been in progress for ${observedMinutes} min${who}. Usually takes ~25 min — worth checking in.`;
     drafts.push({
       severity: 'warning',
       payload: {
-        summary: `Room ${r.number} has been in progress for ${minutesAgo} min${staffName ? ` (${staffName})` : ''}. Usually takes ~25 min — worth checking in.`,
+        summary,
         type: 'overdue_room',
         roomNumber: r.number,
         staffName,
-        minutesElapsed: minutesAgo,
+        minutesElapsed: observedMinutes,
+        ...(capturedAt ? { asOf: capturedAt.toISOString() } : {}),
       },
       // r.id is the composite "${date}:${room_number}" — stable per day,
       // so the dedupe key behaves the same as the old per-room-row id.
@@ -273,36 +321,102 @@ async function checkOperationalAlerts(propertyId: string): Promise<NudgeDraft[]>
       dedupeKey: `overdue_room:${propertyId}:${r.id}`,
     });
   }
+  return drafts;
+}
 
-  // Unresolved help requests > 5 min.
-  // TODO(overlay): `helpRequested` is a housekeeper-set workflow field with
-  // no pms_* home yet — it lands in a future overlay table. The merge shape
-  // does not provide it (r.helpRequested is always undefined), so this check
-  // produces nothing for now. That preserves current behavior: in prod the
-  // legacy `rooms` table is empty (0 rows), so this alert never fired anyway.
-  // Once the overlay lands, filter `rooms` on `r.helpRequested === true` here.
+/**
+ * Unresolved help requests.
+ *
+ * The old 5-minute wall-clock window is gone: against a 30-60 minute report
+ * cadence any help request that shows up in a report is ALREADY older than
+ * the report lag, so the window only ever suppressed the first cycle's worth
+ * of genuine requests. Per-day dedupe (the composite room id) is what keeps
+ * this from repeating.
+ *
+ * TODO(overlay): `helpRequested` is a housekeeper-set workflow field with no
+ * pms_* home yet — the merge shape never sets it, so this branch is dormant
+ * today. It stays here so the overlay lands into a correct clock, not a
+ * wall-clock one.
+ */
+export function unresolvedHelpDrafts(
+  rooms: NudgeRoomInput[],
+  propertyId: string,
+  capturedAt: Date | null,
+  now: Date,
+  asOfLabel: string | null = null,
+): NudgeDraft[] {
+  const drafts: NudgeDraft[] = [];
+  const reference = (capturedAt ?? now).getTime();
   for (const r of rooms) {
     if (!r.helpRequested) continue;
-    // started_at is the proxy for "when did help get raised". If absent, skip.
-    if (!r.startedAt) continue;
-    const startedTime = new Date(r.startedAt).getTime();
-    if (Number.isNaN(startedTime)) continue;
-    const helpCutoffMs = Date.now() - 5 * 60 * 1000;
-    if (startedTime > helpCutoffMs) continue;
-    const minutesAgo = Math.round((Date.now() - startedTime) / 60_000);
+    // startedAt is the proxy for "when did help get raised"; when it's absent
+    // we still raise the alert (a pending request is urgent regardless) and
+    // simply omit the elapsed time rather than inventing one.
+    const startedTime = toMillis(r.startedAt);
+    const observedMinutes =
+      startedTime === null ? null : Math.max(0, Math.round((reference - startedTime) / 60_000));
+    const when = observedMinutes === null ? '' : ` ${observedMinutes} min ago`;
+    const asOf = asOfLabel ? ` (as of ${asOfLabel})` : '';
     drafts.push({
       severity: 'urgent',
       payload: {
-        summary: `Help requested for room ${r.number} ${minutesAgo} min ago — nobody has responded yet.`,
+        summary: `Help requested for room ${r.number}${when}${asOf} — nobody has responded yet.`,
         type: 'unresolved_help',
         roomNumber: r.number,
-        minutesAgo,
+        minutesAgo: observedMinutes,
+        ...(capturedAt ? { asOf: capturedAt.toISOString() } : {}),
       },
       dedupeKey: `unresolved_help:${propertyId}:${r.id}`,
     });
   }
-
   return drafts;
+}
+
+/** Exported for `agent-nudge-data-clock.test.ts`, which pins the run-level
+ *  staleness guard (a stale feed must not even look at room state). */
+export async function checkOperationalAlerts(propertyId: string): Promise<NudgeDraft[]> {
+  const now = new Date();
+
+  // Plan v4: the legacy `rooms` table was dropped (migration 0204). Live room
+  // status now flows into the pms_* tables, surfaced via the per-(property,
+  // date) merge below (Room[] in the legacy camel-cased shape). Resolve the
+  // property's local "today" the way the doctor does (Intl tz-aware) since
+  // there is no rooms.date anymore.
+  const { today: date, timezone } = await getPropertyDay(propertyId);
+
+  // A2 run-level guard. Only live-PMS hotels have a data age at all; for a
+  // manual hotel `capturedAt` stays null and the checks run on the wall clock
+  // exactly as before.
+  let capturedAt: Date | null = null;
+  let asOfLabel: string | null = null;
+  try {
+    const fs = await getPropertyFeedStatus(propertyId);
+    if (fs.mode === 'live') {
+      const tier = freshnessTier(fs.freshness?.capturedAt, fs.freshness?.source ?? 'none', now);
+      // Older than one report cycle (PMS_FRESH_MAX_MINUTES), or age unknown
+      // ⇒ every room-level conclusion is a guess. Say nothing rather than
+      // push a false alarm.
+      if (tier === 'stale' || tier === 'very_stale' || tier === 'unknown') return [];
+      const iso = fs.freshness?.capturedAt ?? null;
+      if (iso) {
+        const at = new Date(iso);
+        if (!Number.isNaN(at.getTime())) {
+          capturedAt = at;
+          asOfLabel = formatAsOfClock(iso, timezone, now)?.time ?? null;
+        }
+      }
+      // 'change_only' does NOT suppress — absence of change is not evidence
+      // of staleness — but it does force the as-of wording above.
+    }
+  } catch {
+    // Fail-safe: a status lookup hiccup must not silence real alerts.
+  }
+
+  const rooms = await mergePmsRoomsForDate(propertyId, date);
+  return [
+    ...overdueRoomDrafts(rooms, propertyId, capturedAt, now, asOfLabel),
+    ...unresolvedHelpDrafts(rooms, propertyId, capturedAt, now, asOfLabel),
+  ];
 }
 
 // ─── 2. Daily summary ─────────────────────────────────────────────────────
@@ -345,14 +459,20 @@ async function shouldFireDailySummary(propertyId: string): Promise<boolean> {
  * by an explicit date. We mirror the doctor's Intl.DateTimeFormat approach via
  * the shared `propertyLocalToday` helper: format `now` in the property's IANA
  * timezone, falling back to UTC when timezone is null/invalid. */
-async function getPropertyToday(propertyId: string): Promise<string> {
+async function getPropertyDay(
+  propertyId: string,
+): Promise<{ today: string; timezone: string | null }> {
   const { data } = await supabaseAdmin
     .from('properties')
     .select('timezone')
     .eq('id', propertyId)
     .maybeSingle();
   const tz = (data?.timezone as string) ?? null;
-  return propertyLocalToday(new Date(), tz);
+  return { today: propertyLocalToday(new Date(), tz), timezone: tz };
+}
+
+async function getPropertyToday(propertyId: string): Promise<string> {
+  return (await getPropertyDay(propertyId)).today;
 }
 
 async function buildDailySummary(propertyId: string): Promise<Record<string, unknown>> {

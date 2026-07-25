@@ -195,6 +195,30 @@ export const INVENTORY_ACCOUNTING_ROUTING_PROMPT = `─── Inventory accounti
 
 const INVENTORY_ACCOUNTING_ROUTING_VERSION = 'inventory-accounting-v1';
 
+/**
+ * A2 — code-owned data-age rule. The hotel's numbers arrive in scheduled PMS
+ * reports, not continuously, so "what's our occupancy right now" can only ever
+ * be answered as of a moment in the past.
+ *
+ * This is the constant RULE and belongs in the STABLE (cached) block: it is
+ * identical for every turn of every conversation on a given deploy, so the
+ * cached prefix stays byte-identical. The as-of VALUE lives in the dynamic
+ * snapshot block, which llm.ts appends without cache_control. Moving the value
+ * up here to "make sure the model sees it" would break the prompt cache on
+ * EVERY turn — a large, silent, recurring bill increase. That is what the
+ * cache-purity test exists to prevent.
+ */
+export const DATA_FRESHNESS_PROMPT = `─── How old the numbers are ───
+
+- The hotel snapshot is NOT live. Room, occupancy, arrival/departure and money numbers arrive in scheduled PMS reports, typically every 30-60 minutes. The snapshot's "PMS data as of" line is the moment those numbers describe, and tool results carry the same moment as \`asOf\` with \`dataAgeMinutes\`.
+- When your answer USES occupancy, room counts, arrivals/departures, balances or money — or when the user asks about "now", "right now", "currently", "at the moment" — give the as-of time in your answer ("As of the 2:40 PM report, 62 of 88 rooms are occupied").
+- When the snapshot or a tool result marks the data older than one report cycle, say so plainly and give its age.
+- Otherwise stay quiet about freshness: no disclaimers, and don't repeat the as-of time on questions that aren't about the current state (policies, schedules, history, to-dos, knowledge documents).
+- NEVER tell the user to refresh the page. Refreshing does not fetch new PMS numbers — those only change when the next report arrives.
+- If a number looks wrong to the user, do not claim refreshing updates it. Say when it was last captured, and that a manager can check the hotel's report connection.`;
+
+const DATA_FRESHNESS_VERSION = 'data-freshness-v1';
+
 export function maybeVoiceModeAddendum(mode: VoiceMode | undefined): string | null {
   if (!mode) return null;
   return VOICE_MODE_ADDENDA[mode] ?? null;
@@ -245,9 +269,13 @@ export async function buildSystemPrompt(
   const hasInventoryAccountingAccess = role === 'admin'
     || role === 'owner'
     || role === 'general_manager';
-  const effectiveVersionLabel = hasInventoryAccountingAccess
-    ? `${versionLabel}+${INVENTORY_ACCOUNTING_ROUTING_VERSION}`
-    : versionLabel;
+  // Every code-owned rule folded into the stable block also folds its version
+  // into the label persisted on agent_messages.prompt_version, so a behaviour
+  // change is auditable after the fact.
+  const versionParts = [versionLabel];
+  if (hasInventoryAccountingAccess) versionParts.push(INVENTORY_ACCOUNTING_ROUTING_VERSION);
+  versionParts.push(DATA_FRESHNESS_VERSION);
+  const effectiveVersionLabel = versionParts.join('+');
 
   // Feature #11: when a voice mode addendum exists, glue it onto the role
   // prompt. The addendum is part of the STABLE block — it doesn't change
@@ -276,13 +304,20 @@ export async function buildSystemPrompt(
   if (hasInventoryAccountingAccess) {
     stableParts.push('', INVENTORY_ACCOUNTING_ROUTING_PROMPT);
   }
+  // Unconditional: every role can be handed a PMS-derived number, so every
+  // role needs the data-age rule. Constant per deploy ⇒ safe in the cached block.
+  stableParts.push('', DATA_FRESHNESS_PROMPT);
   stableParts.push('', `Prompt version: ${effectiveVersionLabel}`);
 
+  // The snapshot (including its "PMS data as of" line) is the only place a
+  // per-turn VALUE may appear. Anything added here is re-sent uncached.
+  //
+  // 2026-07-24: the old "suggest they refresh the page — it's rebuilt every
+  // turn from live data" line was deleted. Both halves were false: the numbers
+  // come from scheduled PMS reports, and refreshing fetches nothing new.
   const dynamicParts = [
     '─── Current hotel snapshot ───',
     formatSnapshotForPrompt(snapshot),
-    '',
-    'If anything in this snapshot looks wrong to the user, suggest they refresh the page — it\'s rebuilt every turn from live data.',
   ];
   // Long-term memory (migration 0256). DYNAMIC block only — it changes as the
   // hotel teaches the copilot, and must never poison the cached stable prefix.

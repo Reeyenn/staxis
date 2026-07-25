@@ -32,6 +32,30 @@ function addDays(iso: string, delta: number): string {
   return dt.toISOString().slice(0, 10);
 }
 
+/**
+ * A2 — the newest `captured_at` across the rows this tool just read, or null.
+ *
+ * Every one of these five tables stamps `captured_at NOT NULL DEFAULT now()`
+ * on every row (migration 0276; a future-dated value is refused by 0337), so
+ * this is a TRUER data age than the property-level signal. executeTool honors
+ * an `asOf` the handler already set and computes the age/tier from it.
+ */
+function latestCapturedAt(rows: Array<Record<string, unknown>>): string | null {
+  let newest: string | null = null;
+  let newestMs = -Infinity;
+  for (const r of rows) {
+    const c = r.captured_at;
+    if (typeof c !== 'string') continue;
+    // Parse rather than compare strings: two rows can legitimately carry
+    // different UTC-offset renderings of the same instant.
+    const ms = Date.parse(c);
+    if (Number.isNaN(ms) || ms <= newestMs) continue;
+    newestMs = ms;
+    newest = c;
+  }
+  return newest;
+}
+
 const FEED_ROLES = ['admin', 'owner', 'general_manager', 'front_desk'] as const;
 
 // ─── get_outstanding_balances ────────────────────────────────────────────────
@@ -40,10 +64,11 @@ registerTool<Record<string, never>>({
   name: 'get_outstanding_balances',
   section: 'financials',
   description:
-    'List guests who currently OWE money (outstanding folio balances), highest first. Use for "who owes a balance?", "outstanding balances", "who hasn\'t paid". Read-only.',
+    'List guests with an outstanding folio balance as of the hotel\'s last PMS report (NOT live), highest first. Use for "who owes a balance?", "outstanding balances", "who hasn\'t paid". The result carries asOf — quote it. Read-only.',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: FEED_ROLES,
   mutates: false,
+  pmsFreshness: 'stamped',
   handler: async (_, ctx): Promise<ToolResult> => {
     const { data, error } = await ctx.db
       .from('pms_guest_balances')
@@ -57,6 +82,7 @@ registerTool<Record<string, never>>({
     return {
       ok: true,
       data: {
+        asOf: latestCapturedAt(rows),
         count: rows.length,
         totalOutstanding: usd(totalCents),
         guests: rows.map((r) => ({
@@ -80,7 +106,7 @@ registerTool<{ date?: string }>({
   name: 'get_payments_summary',
   section: 'financials',
   description:
-    'Get money COLLECTED for a day (cash + card + deposits), defaulting to today. Use for "how much did we collect today?", "today\'s payments", "cashier totals". Read-only.',
+    'Get money COLLECTED for a day (cash + card + deposits), defaulting to today, as of the hotel\'s last PMS report — so today\'s total is partial and may lag by up to an hour. Use for "how much did we collect today?", "today\'s payments", "cashier totals". Read-only.',
   inputSchema: {
     type: 'object',
     properties: { date: { type: 'string', description: 'YYYY-MM-DD; defaults to today (property-local).' } },
@@ -93,6 +119,7 @@ registerTool<{ date?: string }>({
   // the per-hotel Access-tab toggle. (Security audit 2026-06-26.)
   requiresCapability: 'view_financials',
   mutates: false,
+  pmsFreshness: 'stamped',
   handler: async ({ date }, ctx): Promise<ToolResult> => {
     const today = await getPropertyToday(ctx.db);
     const target = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : today;
@@ -106,7 +133,9 @@ registerTool<{ date?: string }>({
       // Fall back to the most recent day we have, so the model can still answer.
       const { data: latest } = await ctx.db
         .from('pms_payments_daily')
-        .select('business_date, cash_collected_cents, card_collected_cents, deposits_collected_cents, total_collected_cents')
+        // captured_at was missing from THIS select while the primary path
+        // above had it — the fallback answer arrived with no data age at all.
+        .select('business_date, cash_collected_cents, card_collected_cents, deposits_collected_cents, total_collected_cents, captured_at')
           .order('business_date', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -116,6 +145,7 @@ registerTool<{ date?: string }>({
       return {
         ok: true,
         data: {
+          asOf: latestCapturedAt([latest as Record<string, unknown>]),
           date: latest.business_date,
           requestedDate: target,
           note: `No data for ${target}; showing the most recent day on file.`,
@@ -129,6 +159,7 @@ registerTool<{ date?: string }>({
     return {
       ok: true,
       data: {
+        asOf: latestCapturedAt([data as Record<string, unknown>]),
         date: data.business_date,
         cash: usd(data.cash_collected_cents),
         card: usd(data.card_collected_cents),
@@ -144,7 +175,7 @@ registerTool<{ date?: string }>({
 registerTool<{ startDate?: string; endDate?: string }>({
   name: 'get_future_bookings',
   description:
-    'List upcoming on-the-books reservations by arrival date (booking pace). Use for "how booked are we next weekend?", "upcoming arrivals", "reservations next week". Defaults to the next 14 days. Read-only.',
+    'List upcoming on-the-books reservations by arrival date (booking pace) as of the hotel\'s last PMS report, not live. Use for "how booked are we next weekend?", "upcoming arrivals", "reservations next week". Defaults to the next 14 days. Read-only.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -154,13 +185,14 @@ registerTool<{ startDate?: string; endDate?: string }>({
   },
   allowedRoles: FEED_ROLES,
   mutates: false,
+  pmsFreshness: 'stamped',
   handler: async ({ startDate, endDate }, ctx): Promise<ToolResult> => {
     const today = await getPropertyToday(ctx.db);
     const start = typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate) ? startDate : today;
     const end = typeof endDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : addDays(start, 14);
     const { data, error } = await ctx.db
       .from('pms_future_bookings')
-      .select('pms_reservation_id, guest_name, room_number, room_type, arrival_date, departure_date, rate_per_night_cents, total_amount_cents, status, channel_name')
+      .select('pms_reservation_id, guest_name, room_number, room_type, arrival_date, departure_date, rate_per_night_cents, total_amount_cents, status, channel_name, captured_at')
       .gte('arrival_date', start)
       .lte('arrival_date', end)
       .order('arrival_date', { ascending: true })
@@ -176,6 +208,7 @@ registerTool<{ startDate?: string; endDate?: string }>({
     return {
       ok: true,
       data: {
+        asOf: latestCapturedAt(rows),
         range: { start, end },
         totalBookings: rows.length,
         arrivalsByDate: byArrivalDate,
@@ -203,20 +236,21 @@ registerTool<{ startDate?: string; endDate?: string }>({
 registerTool<{ nights?: number }>({
   name: 'get_recent_no_shows',
   description:
-    'List recent no-show reservations (guests who never checked in). Defaults to the last night. Use for "any no-shows last night?", "recent no-shows". Read-only.',
+    'List recent no-show reservations (guests who never checked in) as of the hotel\'s last PMS report, not live. Defaults to the last night. Use for "any no-shows last night?", "recent no-shows". Read-only.',
   inputSchema: {
     type: 'object',
     properties: { nights: { type: 'number', description: 'How many nights back to include (default 1 = last night).' } },
   },
   allowedRoles: FEED_ROLES,
   mutates: false,
+  pmsFreshness: 'stamped',
   handler: async ({ nights }, ctx): Promise<ToolResult> => {
     const today = await getPropertyToday(ctx.db);
     const back = Number.isFinite(nights) && (nights as number) > 0 ? Math.floor(nights as number) : 1;
     const cutoff = addDays(today, -back);
     const { data, error } = await ctx.db
       .from('pms_no_shows')
-      .select('pms_reservation_id, guest_name, room_number, arrival_date, rate_per_night_cents, total_amount_cents, channel_name, no_show_date')
+      .select('pms_reservation_id, guest_name, room_number, arrival_date, rate_per_night_cents, total_amount_cents, channel_name, no_show_date, captured_at')
       .gte('arrival_date', cutoff)
       .order('arrival_date', { ascending: false })
       .limit(100);
@@ -225,6 +259,7 @@ registerTool<{ nights?: number }>({
     return {
       ok: true,
       data: {
+        asOf: latestCapturedAt(rows),
         since: cutoff,
         count: rows.length,
         noShows: rows.map((r) => ({
@@ -246,20 +281,21 @@ registerTool<{ nights?: number }>({
 registerTool<{ days?: number }>({
   name: 'get_recent_cancellations',
   description:
-    'List recently cancelled reservations. Defaults to the last 7 days. Use for "recent cancellations", "what cancelled this week?". Read-only.',
+    'List recently cancelled reservations as of the hotel\'s last PMS report, not live. Defaults to the last 7 days. Use for "recent cancellations", "what cancelled this week?". Read-only.',
   inputSchema: {
     type: 'object',
     properties: { days: { type: 'number', description: 'How many days back to include (default 7).' } },
   },
   allowedRoles: FEED_ROLES,
   mutates: false,
+  pmsFreshness: 'stamped',
   handler: async ({ days }, ctx): Promise<ToolResult> => {
     const today = await getPropertyToday(ctx.db);
     const back = Number.isFinite(days) && (days as number) > 0 ? Math.floor(days as number) : 7;
     const cutoff = addDays(today, -back);
     const { data, error } = await ctx.db
       .from('pms_cancellations')
-      .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, reason')
+      .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, reason, captured_at')
       .gte('cancelled_date', cutoff)
       .order('cancelled_date', { ascending: false })
       .limit(100);
@@ -268,6 +304,7 @@ registerTool<{ days?: number }>({
     return {
       ok: true,
       data: {
+        asOf: latestCapturedAt(rows),
         since: cutoff,
         count: rows.length,
         cancellations: rows.map((r) => ({

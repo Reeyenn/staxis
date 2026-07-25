@@ -200,6 +200,85 @@ Each invariant has:
 - **Assumed by:** Every AI surface that reports "X total rooms" — the agent reads the max signal, so under-reporting is impossible even mid-drift. Also the ML stack which reads `total_rooms` for property sizing.
 - **History:** Codex round-2 adversarial review of Round 14 (2026-05-14). Round 14 chose `room_inventory` as the single source for the agent layer and added a doctor check that ONLY read inventory — so a stale or empty inventory (with `total_rooms` still 74) silently passed status=ok while the AI under-reported.
 
+### INV-32: The six PMS feed tables the model reads directly never record a capture time in the future
+
+- **Enforced by:** `captured_at timestamptz NOT NULL DEFAULT now()` (already live on
+  `pms_in_house_snapshot`, `pms_guest_balances`, `pms_payments_daily`,
+  `pms_future_bookings`, `pms_no_shows`, `pms_cancellations` — verified in prod
+  2026-07-24) **plus** six CHECK constraints `<table>_captured_at_not_future`
+  in migration `0337_pms_capture_time_sanity.sql`. Code backstop:
+  `freshnessAgeMinutes` ([feed-status.ts](src/lib/pms/feed-status.ts)) clamps a
+  negative age to 0 and `console.warn`s.
+- **Scope — read this before quoting it.** This covers the six feed tables and
+  nothing else. It is explicitly **NOT** "every PMS row the model can see":
+  the snapshot's room numbers flow from `pms_room_status_log`,
+  `pms_housekeeping_assignments` and `pms_reservations`, **none of which have a
+  `captured_at` column at all**. Adding one is an ingestion-schema decision
+  owned by the intake layer, not the AI layer; until then those numbers borrow
+  the property-level signal from `fetchFreshness`
+  ([pms-feed-status-server.ts](src/lib/pms-feed-status-server.ts)), which is an
+  approximation and is labelled as such by its `source` field.
+- **Assumed by:** every age/tier judgement in
+  [feed-status.ts](src/lib/pms/feed-status.ts), the snapshot as-of line, the
+  tool stamp, and the nudge suppression guard. A future-dated capture makes
+  every age negative and every tier read `fresh` — the honesty layer would
+  then state hours-old numbers as live, worse than the silence it replaced.
+- **History:** A2 data-age honesty, 2026-07-24.
+
+### INV-33: The as-of VALUE never appears in the cached stable system block
+
+- **Enforced by:** `src/lib/__tests__/agent-prompt-cache-purity.test.ts` — two
+  snapshots 40 minutes apart must yield a byte-identical `stable`, the rendered
+  clock and age from the dynamic block must not appear in `stable`, and
+  `stable` must contain no "min ago"/"hr ago" wording. Only the constant RULE
+  (`DATA_FRESHNESS_PROMPT`) lives in the stable block; the value lives in the
+  dynamic snapshot, which llm.ts appends without `cache_control`.
+- **NOT DB-enforceable:** this is a property of string composition inside
+  `buildSystemPrompt`, invisible to Postgres.
+- **Assumed by:** the entire prompt-cache cost model. The plausible bug —
+  someone appends the as-of line to `stableParts` to "make sure the model sees
+  it" — breaks nothing visible while multiplying the input-token bill on every
+  single turn, indefinitely, silently.
+- **History:** A2 data-age honesty, 2026-07-24.
+
+### INV-34: Operational nudges are computed against the data's capture time, and are suppressed when the feed is older than one report cycle
+
+- **Enforced by:** the signatures themselves —
+  `overdueRoomDrafts(rooms, propertyId, capturedAt, now, asOfLabel)` and
+  `unresolvedHelpDrafts(...)` in [nudges.ts](src/lib/agent/nudges.ts) are pure
+  with both clocks injected, so there is no ambient `Date.now()` inside them to
+  reach for — plus `src/lib/__tests__/agent-nudge-data-clock.test.ts`, whose
+  first case fails against the pre-A2 wall-clock code. The run-level guard in
+  `checkOperationalAlerts` returns `[]` for tiers `stale` / `very_stale` /
+  `unknown` (> `PMS_FRESH_MAX_MINUTES` = 75).
+- **Gated on `mode === 'live'`.** A manual (`no_pms`) hotel has no capture time,
+  falls back to `now`, and is never suppressed — its data genuinely is live.
+- **Known approximation:** `capturedAt` comes from the in-house snapshot feed
+  while `startedAt` comes from the housekeeping-assignments feed. That is only
+  exact if one ingest run writes both near-simultaneously. **To verify against
+  the report-intake writer when it lands**; if the feeds diverge, anchor on
+  `pms_housekeeping_assignments.last_synced_at` instead.
+- **Accepted cost:** a genuinely overdue room goes unflagged during an
+  ingestion outage. The correct alert then is "reports stopped arriving", which
+  the intake layer owns; duplicating it here would be the overlap to avoid.
+- **History:** A2 data-age honesty, 2026-07-24.
+
+### INV-35: Every agent tool that reads PMS data declares an explicit `pmsFreshness`, and every 'stamped' one is stamped by the dispatcher
+
+- **Enforced by:** `src/lib/__tests__/agent-pms-freshness-completeness.test.ts`
+  — an explicit `PMS_BACKED_TOOL_NAMES` list (14 tools, including the 7 that
+  read PMS data INDIRECTLY through `mergePmsRoomsForDate` /
+  `fetchTodayPropertyCounts` and therefore contain no `.from('pms_` to grep
+  for), plus a source-scan backstop over `src/lib/agent/tools/*.ts` and an
+  assertion that no `mutates: true` tool declares a data age. Mirrors the
+  existing approval-tier completeness test.
+- **Stamping is structural:** it happens once in `executeTool`, not per tool, so
+  a new tool cannot forget to stamp — only to declare the flag, which the test
+  above catches. A handler that resolves its own per-row `captured_at` wins over
+  the property-level signal.
+- **NOT DB-enforceable:** the tool registry is an in-process TypeScript map.
+- **History:** A2 data-age honesty, 2026-07-24.
+
 ## Counter-heal mechanism
 
 `staxis_heal_conversation_counters(p_dry_run boolean)` runs daily via

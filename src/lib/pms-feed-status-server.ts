@@ -17,6 +17,10 @@
 //   - PUBLIC pages (housekeeper / laundry) → riding their existing rooms /
 //     bootstrap responses as a top-level sibling key (ok()'s `extra`)
 //
+// A2 (2026-07-24): also resolves `freshness` — WHEN the numbers were captured
+// — for live-mode hotels only (fetchFreshness below). Same 30s cache, same
+// last-known-good fail-safe.
+//
 // Fail-safe: ANY error returns NO_PMS_FEED_STATUS — surfaces render exactly
 // as today. This layer may only ever ADD honesty, never block data.
 // ═══════════════════════════════════════════════════════════════════════════
@@ -25,8 +29,11 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 import {
   deriveFeedStatus,
+  NO_FRESHNESS,
   NO_PMS_FEED_STATUS,
+  type FeedFreshness,
   type FeedGaps,
+  type FeedStatusSessionRow,
   type PropertyFeedStatus,
 } from '@/lib/pms/feed-status';
 
@@ -81,17 +88,84 @@ async function fetchFeedStatus(propertyId: string): Promise<PropertyFeedStatus> 
       }
     : null;
 
-  const status = deriveFeedStatus(
-    {
-      pms_family: session.pms_family as string,
-      status: session.status as string,
-      last_successful_read_at: (session.last_successful_read_at as string | null) ?? null,
-    },
-    knowledge,
-  );
+  const sessionRow: FeedStatusSessionRow = {
+    pms_family: session.pms_family as string,
+    status: session.status as string,
+    last_successful_read_at: (session.last_successful_read_at as string | null) ?? null,
+  };
+  const status = deriveFeedStatus(sessionRow, knowledge);
+  // Freshness is derived ONLY for live-mode hotels. A manual (no_pms) hotel is
+  // its own system of record and an onboarding hotel has no numbers yet — for
+  // either, an age claim would be a false staleness warning (A2 review).
   if (status.mode !== 'live') return status;
 
-  return { ...status, derived: await fetchDerived(propertyId, status) };
+  const [derived, freshness] = await Promise.all([
+    fetchDerived(propertyId, status),
+    fetchFreshness(propertyId, sessionRow),
+  ]);
+  return { ...status, derived, freshness };
+}
+
+/**
+ * A2 — WHEN did this property's PMS numbers get captured?
+ *
+ * Ordered chain, first hit wins. Each step is a genuinely different signal,
+ * and the `source` we return says which one answered so a wrong age can be
+ * traced instead of guessed at:
+ *
+ *   1. D4's per-run ingest heartbeat — THE seam. When the report-email
+ *      intake lands, it plugs in here and nothing else in A2 moves. If its
+ *      writer only stamps on change, it reports source 'row_change' and the
+ *      classifier degrades to 'change_only' rather than inventing confidence.
+ *   2. pms_in_house_snapshot.captured_at — PK (property_id), rewritten every
+ *      ingest, NOT NULL.
+ *   3. property_sessions.last_successful_read_at — already in hand, no query.
+ *   4. max(pms_room_status_log.last_synced_at) — a real per-sync stamp for the
+ *      room-status feed, which is where the snapshot's room numbers come from.
+ *
+ * Best-effort throughout: a failed lookup degrades to the next source and
+ * ultimately to NO_FRESHNESS ("age unknown"), never to a confident wrong age.
+ */
+async function fetchFreshness(
+  propertyId: string,
+  session: FeedStatusSessionRow,
+): Promise<FeedFreshness> {
+  // (1) D4 ingest heartbeat — not built yet. This comment is the seam.
+
+  // (2) in-house snapshot capture time.
+  try {
+    const { data } = await supabaseAdmin
+      .from('pms_in_house_snapshot')
+      .select('captured_at')
+      .eq('property_id', propertyId)
+      .maybeSingle();
+    const capturedAt = typeof data?.captured_at === 'string' ? data.captured_at : null;
+    if (capturedAt) return { capturedAt, source: 'snapshot_capture' };
+  } catch {
+    /* fall through to the next source */
+  }
+
+  // (3) last successful session read — free, already fetched above.
+  if (session.last_successful_read_at) {
+    return { capturedAt: session.last_successful_read_at, source: 'session_read' };
+  }
+
+  // (4) newest room-status sync.
+  try {
+    const { data } = await supabaseAdmin
+      .from('pms_room_status_log')
+      .select('last_synced_at')
+      .eq('property_id', propertyId)
+      .order('last_synced_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const syncedAt = typeof data?.last_synced_at === 'string' ? data.last_synced_at : null;
+    if (syncedAt) return { capturedAt: syncedAt, source: 'room_status_sync' };
+  } catch {
+    /* fall through */
+  }
+
+  return NO_FRESHNESS;
 }
 
 /**

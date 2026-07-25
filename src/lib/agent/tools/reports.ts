@@ -14,9 +14,12 @@ import { countsTrusted } from '@/lib/pms/feed-status';
 registerTool<Record<string, never>>({
   name: 'get_occupancy',
   description:
-    'Get current hotel occupancy. Returns total rooms, occupied count, vacant count, and occupancy percentage.',
+    'Hotel occupancy as of the hotel\'s last PMS report (typically 0-60 min old, NOT live). Returns total rooms, occupied count, vacant count, occupancy percentage and asOf — quote the as-of time when you answer.',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
+  // asOfDate below is a CALENDAR date (which day the counts describe); the
+  // stamped `asOf` is the CAPTURE time (when they were read). Both, not either.
+  pmsFreshness: 'stamped',
   handler: async (_, ctx): Promise<ToolResult> => {
     // Plan v4 (2026): live room state now comes from the pms_* tables the
     // persistent CUA writes (the legacy `rooms` table is empty). Occupancy
@@ -116,6 +119,7 @@ registerTool<{ period?: 'today' | 'week' | 'month' | 'quarter' | 'year' }>({
   name: 'get_revenue',
   section: 'financials',
   requiresCapability: 'view_financials',
+  pmsFreshness: 'independent', // stub; no PMS-sourced figures to age
   description:
     'Get revenue figures for a period. Returns total revenue, ADR (average daily rate), and RevPAR. Period defaults to "today".',
   inputSchema: {
@@ -145,6 +149,7 @@ registerTool<{ period?: 'week' | 'month' | 'quarter' }>({
   name: 'get_financial_report',
   section: 'financials',
   requiresCapability: 'view_financials',
+  pmsFreshness: 'independent', // stub; no PMS-sourced figures to age
   description:
     'Get a detailed financial report for a period. Includes revenue breakdown, labor costs, and net margin. Returns structured data the chat can render as a table.',
   inputSchema: {
@@ -171,6 +176,7 @@ registerTool<{ period?: 'week' | 'month' | 'quarter' }>({
 registerTool<{ category?: 'housekeeping' | 'maintenance' | 'breakfast' | 'all' }>({
   name: 'get_inventory',
   section: 'inventory',
+  pmsFreshness: 'independent', // Staxis's own inventory table — genuinely live
   description:
     'Get current inventory levels by category. Returns items, current stock, and any below the reorder threshold. Categories: housekeeping, maintenance, breakfast, or all.',
   inputSchema: {
@@ -228,6 +234,7 @@ registerTool<{ category?: 'housekeeping' | 'maintenance' | 'breakfast' | 'all' }
 registerTool<{ metric?: 'revenue' | 'occupancy' | 'labor_cost' }>({
   name: 'compare_properties',
   requiresCapability: 'view_financials',
+  pmsFreshness: 'independent', // stub; returns a fixed "not enabled" note
   description:
     'Compare metrics across all properties this user owns (revenue, occupancy, labor cost). Returns a ranked list.',
   inputSchema: {

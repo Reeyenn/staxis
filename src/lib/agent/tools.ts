@@ -16,6 +16,8 @@ import type { AppRole } from '@/lib/roles';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
 import { canForProperty } from '@/lib/capabilities/server';
 import { scopedDb, type ScopedDb } from './scoped-db';
+import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
+import { freshnessAgeMinutes, freshnessTier } from '@/lib/pms/feed-status';
 import {
   isSectionEnabled,
   type AppSection,
@@ -213,6 +215,25 @@ export interface ToolDefinition<TArgs = unknown> {
    * the hotel's section map is unavailable, every section is treated as ON.
    */
   section?: AppSection;
+  /**
+   * A2 (data-age honesty) — does this tool's answer describe PMS data that
+   * arrives in scheduled reports rather than live?
+   *
+   *   'stamped'     — yes. executeTool merges `asOf` / `asOfSource` /
+   *                   `dataAgeMinutes` / `dataFreshness` into the payload after
+   *                   the handler returns, so the model can quote the as-of
+   *                   time. Read-only tools only.
+   *   'independent' — no. The answer comes from Staxis's own tables (inventory,
+   *                   cleaning events, time-off, knowledge), which ARE live.
+   *
+   * REQUIRED on every read-only tool in a file that reads a `pms_*` table
+   * (directly or through mergePmsRoomsForDate / fetchTodayPropertyCounts) —
+   * enforced by `agent-pms-freshness-completeness.test.ts`. Declaring
+   * 'independent' explicitly is what makes "this tool doesn't need it" a
+   * recorded decision instead of a forgotten one. MUST be absent on
+   * `mutates: true` tools (a proposal card has no data age).
+   */
+  pmsFreshness?: 'stamped' | 'independent';
   /** Implementation — typically wraps an existing API handler. Receives the
    *  hotel-scoped database accessor as `ctx.db`. */
   handler: (args: TArgs, ctx: ToolHandlerContext) => Promise<ToolResult>;
@@ -406,12 +427,69 @@ export async function executeTool(
         return (db ??= scopedDb(ctx.propertyId));
       },
     };
-    return await tool.handler(args, handlerCtx);
+    const result = await tool.handler(args, handlerCtx);
+    return await stampFreshness(tool, result, ctx);
   } catch (err) {
     return {
       ok: false,
       error: `Tool execution failed: ${err instanceof Error ? err.message : String(err)}`,
     };
+  }
+}
+
+// ─── Data-age stamp (A2) ────────────────────────────────────────────────────
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Merge the data-age fields into a `pmsFreshness: 'stamped'` tool's payload.
+ *
+ * ONE dispatcher rule instead of a copy-pasted block per tool: a new PMS tool
+ * cannot forget to stamp, it can only forget the flag — and the completeness
+ * test catches that. Mirrors the section / capability double-enforcement in
+ * executeTool above.
+ *
+ * Precision: when the handler already returned its own `asOf` (its table
+ * stamps every row with `captured_at`, e.g. pms_guest_balances), that value
+ * WINS over the property-level signal and the age/tier are computed from it.
+ *
+ * `dataAgeMinutes` is computed here from the raw ISO rather than read off a
+ * cached number, so the 30s feed-status cache can't serve a frozen age.
+ *
+ * Gated on `mode === 'live'`: a manual hotel's numbers are live by definition,
+ * so stamping an age on them would invent staleness that doesn't exist.
+ * Fail-safe: any error leaves the result exactly as the handler returned it.
+ */
+async function stampFreshness(
+  tool: ToolDefinition<unknown>,
+  result: ToolResult,
+  ctx: ToolContext,
+): Promise<ToolResult> {
+  if (tool.pmsFreshness !== 'stamped') return result;
+  if (!result.ok || !isPlainObject(result.data)) return result;
+  try {
+    const status = await getPropertyFeedStatus(ctx.propertyId);
+    if (status.mode !== 'live') return result;
+
+    const data = result.data;
+    const handlerAsOf = typeof data.asOf === 'string' ? data.asOf : null;
+    const capturedAt = handlerAsOf ?? status.freshness?.capturedAt ?? null;
+    const source = handlerAsOf ? 'feed_capture' : (status.freshness?.source ?? 'none');
+    const now = new Date();
+    return {
+      ...result,
+      data: {
+        ...data,
+        asOf: capturedAt,
+        asOfSource: source,
+        dataAgeMinutes: freshnessAgeMinutes(capturedAt, now),
+        dataFreshness: freshnessTier(capturedAt, source, now),
+      },
+    };
+  } catch {
+    return result;
   }
 }
 

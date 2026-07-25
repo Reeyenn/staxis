@@ -27,7 +27,15 @@
  *                    newly-learned family) or simply never expected. Copy
  *                    must say "not provided by this PMS connection" — never
  *                    a false "retrying" claim.
+ *
+ * A2 (2026-07-24) extends the same module with the OTHER half of the same
+ * question: not just "can I trust this feed?" but "how old is what it told
+ * me?". See the "Data-age honesty" section below. Both halves are gated on
+ * `mode === 'live'` by their callers — a manual (no_pms) hotel's numbers are
+ * live by definition and must never be given a staleness warning.
  */
+
+import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export type FeedState = 'live' | 'learning' | 'unavailable';
 
@@ -106,6 +114,190 @@ export interface PropertyFeedStatus {
   };
   /** True iff a REQUIRED feed is learning. BC-only gaps do not amber the UI. */
   isPartial: boolean;
+  /**
+   * A2 (data-age honesty) — WHEN the numbers behind this property's feeds were
+   * captured. Optional because it is only resolved for `mode === 'live'`
+   * hotels: a manual (no_pms) hotel's numbers ARE live (the app is the system
+   * of record) and an onboarding hotel has no numbers yet, so claiming an age
+   * for either would be a false staleness warning.
+   */
+  freshness?: FeedFreshness;
+}
+
+// ─── Data-age honesty (A2) ──────────────────────────────────────────────────
+// The report-email intake replaces the 30s robot poll, so PMS numbers arrive
+// in scheduled batches (typically every 30-60 min) instead of continuously.
+// Every surface that states an occupancy / room / money number needs to know
+// HOW OLD it is; this is the pure half of that answer (the queries live in
+// src/lib/pms-feed-status-server.ts).
+
+/**
+ * How much to trust the capture time.
+ *  - 'fresh'       — within one report cycle. State the numbers, quote the time.
+ *  - 'stale'       — older than a cycle but under PMS_STALE_MAX_MINUTES.
+ *  - 'very_stale'  — nothing has arrived in over PMS_STALE_MAX_MINUTES.
+ *  - 'change_only' — the only signal we have moves when the DATA changes, not
+ *                    when the feed was read. Absence of change is not evidence
+ *                    of staleness, so age is reported without a caution.
+ *  - 'unknown'     — no capture time at all. Say so; never imply "now".
+ */
+export type FreshnessTier = 'fresh' | 'stale' | 'very_stale' | 'change_only' | 'unknown';
+
+/**
+ * Where the capture time came from, in resolution order. Recorded so a wrong
+ * answer can be traced to the signal that produced it rather than guessed at.
+ *  - 'heartbeat'        — the ingestion layer's own per-run heartbeat (D4). The
+ *                         only true "when did we last check" signal; the single
+ *                         seam D4 plugs into.
+ *  - 'snapshot_capture' — pms_in_house_snapshot.captured_at.
+ *  - 'session_read'     — property_sessions.last_successful_read_at.
+ *  - 'room_status_sync' — max(pms_room_status_log.last_synced_at).
+ *  - 'feed_capture'     — a tool's own table stamps every row (captured_at);
+ *                         more precise than the property-level signal.
+ *  - 'row_change'       — a stamp that only moves when the data changes. Always
+ *                         classifies 'change_only'.
+ *  - 'none'             — nothing available.
+ */
+export type FreshnessSource =
+  | 'heartbeat'
+  | 'snapshot_capture'
+  | 'session_read'
+  | 'room_status_sync'
+  | 'feed_capture'
+  | 'row_change'
+  | 'none';
+
+export interface FeedFreshness {
+  /** ISO timestamp. NEVER a pre-rendered age — the 30s status cache would
+   *  otherwise serve a frozen "22 min ago" for half a minute. */
+  capturedAt: string | null;
+  source: FreshnessSource;
+}
+
+/**
+ * Worst supported report cadence (60 min) + headroom for report generation,
+ * email routing and parse (15 min). Below one cadence the copilot would append
+ * a caution to every answer all day and staff would learn to ignore it, which
+ * is worse than saying nothing. If real cadence grows a long tail this number
+ * moves up — the wording does not change.
+ */
+export const PMS_FRESH_MAX_MINUTES = 75;
+
+/** Past this, treat the connection as stuck rather than merely lagging. */
+export const PMS_STALE_MAX_MINUTES = 360;
+
+/** The "we have no idea" value. */
+export const NO_FRESHNESS: FeedFreshness = Object.freeze({
+  capturedAt: null,
+  source: 'none',
+});
+
+/**
+ * Whole minutes between `capturedAt` and `now`, or null when there is no
+ * usable timestamp. A capture time in the FUTURE would make every age negative
+ * and every tier read 'fresh' — the exact failure the honesty layer exists to
+ * prevent — so it clamps to 0 and warns loudly. (Migration 0337 forbids it at
+ * the DB level for the six feed tables; this is the belt.)
+ */
+export function freshnessAgeMinutes(
+  capturedAt: string | null | undefined,
+  now: Date,
+): number | null {
+  if (!capturedAt) return null;
+  const at = new Date(capturedAt).getTime();
+  if (Number.isNaN(at)) return null;
+  const minutes = (now.getTime() - at) / 60_000;
+  if (minutes < 0) {
+    console.warn('[pms/feed-status] captured_at is in the future — clamping age to 0', {
+      capturedAt,
+      now: now.toISOString(),
+    });
+    return 0;
+  }
+  return Math.floor(minutes);
+}
+
+/** Classify a capture time. Pure; `now` is injected so callers are testable. */
+export function freshnessTier(
+  capturedAt: string | null | undefined,
+  source: FreshnessSource,
+  now: Date,
+): FreshnessTier {
+  const age = freshnessAgeMinutes(capturedAt, now);
+  if (age === null) return 'unknown';
+  // A change-stamp cannot distinguish "nothing happened" from "nothing
+  // arrived", so it never escalates to a staleness caution.
+  if (source === 'row_change') return 'change_only';
+  if (age <= PMS_FRESH_MAX_MINUTES) return 'fresh';
+  if (age <= PMS_STALE_MAX_MINUTES) return 'stale';
+  return 'very_stale';
+}
+
+/** Rendered pieces of an as-of statement. Kept separate so callers can compose
+ *  their own sentence without re-deriving the clock. */
+export interface AsOfClock {
+  /** '2:40 PM', or 'Jul 23, 11:05 PM' when the capture is not on the
+   *  property's local today. */
+  time: string;
+  /** The IANA zone `time` is expressed in ('UTC' when the property has none). */
+  zone: string;
+  /** 'just now' | '22 min ago' | '3 hr 35 min ago' | '2 days ago' */
+  age: string;
+}
+
+function resolveZone(timezone: string | null | undefined): string {
+  if (!timezone) return 'UTC';
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezone }).format(new Date());
+    return timezone;
+  } catch {
+    return 'UTC';
+  }
+}
+
+/** Human age wording. Deliberately coarse — hotel staff read "about an hour",
+ *  not "63.4 minutes". */
+export function formatAge(minutes: number): string {
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 1440) {
+    const hr = Math.floor(minutes / 60);
+    const min = minutes % 60;
+    return min === 0 ? `${hr} hr ago` : `${hr} hr ${min} min ago`;
+  }
+  const days = Math.floor(minutes / 1440);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * Format a capture time for a human (12-hour clock with AM/PM — US
+ * limited-service hotel staff). The date prefix appears ONLY when the capture
+ * is not on the property's local today, so the common case stays short.
+ * Returns null for an unusable timestamp.
+ */
+export function formatAsOfClock(
+  capturedAt: string,
+  timezone: string | null,
+  now: Date,
+): AsOfClock | null {
+  const at = new Date(capturedAt);
+  if (Number.isNaN(at.getTime())) return null;
+  const zone = resolveZone(timezone);
+  try {
+    const clock = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    }).format(at);
+    const sameLocalDay = propertyLocalToday(at, zone) === propertyLocalToday(now, zone);
+    const time = sameLocalDay
+      ? clock
+      : `${new Intl.DateTimeFormat('en-US', { timeZone: zone, month: 'short', day: 'numeric' }).format(at)}, ${clock}`;
+    return { time, zone, age: formatAge(freshnessAgeMinutes(capturedAt, now) ?? 0) };
+  } catch {
+    return null;
+  }
 }
 
 /** Minimal slice of property_sessions this derivation needs. */
@@ -138,6 +330,11 @@ export const NO_PMS_FEED_STATUS: PropertyFeedStatus = Object.freeze({
     dashboardCounts: 'live',
   }),
   isPartial: false,
+  // Defined (not left undefined) so a consumer that reads `.freshness` without
+  // checking `mode` gets the honest "no capture time" value rather than a
+  // TypeError. Nothing should emit a staleness claim for a manual hotel — the
+  // mode gate, not this value, is what prevents that.
+  freshness: NO_FRESHNESS,
 }) as PropertyFeedStatus;
 
 const PAUSED_STATUSES = new Set([
