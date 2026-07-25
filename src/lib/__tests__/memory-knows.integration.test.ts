@@ -57,6 +57,8 @@ import {
   type PglitePostgrest,
 } from '../../../tests/fixtures/postgrest-pglite';
 import { seedTwoHotels, PID_A, PID_B } from '../../../tests/fixtures/pglite-two-hotel-seed';
+import { loadManagerCaller } from '@/lib/team-auth';
+import { callerManagesProperty } from '@/lib/memory-knows-access';
 
 let pg: PGlite;
 let catalog: Catalog;
@@ -363,6 +365,57 @@ describe('agent_memory categories + review state, against a real database', () =
     test('a malformed property id reads nothing rather than falling through to everything', async () => {
       assert.deepEqual(await listMemory('not-a-uuid', { scope: 'property' }), []);
       assert.deepEqual(await getActiveMemoryForTurn('not-a-uuid', null), []);
+    });
+  });
+
+  // ── The gate the whole screen sits behind ────────────────────────────────
+  //
+  // Every test above proves the DATA layer is right. None of them touched the
+  // account lookup the routes run first — and that is where this feature broke
+  // in production: the lookup asked for `accounts.name`, PostgREST errored, the
+  // route read the error as "no such account", and every manager got "Could not
+  // load what Staxis knows right now". Green build, green suite, dead feature.
+  //
+  // Run against the real migrated schema, so naming a column that does not
+  // exist fails here instead of in front of a hotel.
+  describe('the account gate the Knows routes run before any read', () => {
+    const AUTH_UID = 'aaaaaaaa-0000-4000-8000-0000000000a1';
+    let accountId: string;
+
+    before(async () => {
+      await pg.query(`insert into auth.users (id, email) values ($1, 'gm@knows.test')
+                      on conflict do nothing`, [AUTH_UID]);
+      const r = await pg.query<{ id: string }>(
+        `insert into public.accounts (username, display_name, role, property_access, data_user_id, password_hash)
+         values ('knows.gm', 'Maria (GM)', 'general_manager', array[$1::uuid], $2, 'x')
+         returning id`,
+        [PID_A, AUTH_UID],
+      );
+      accountId = r.rows[0].id;
+    });
+
+    test('finds the manager behind the session and reports who they are', async () => {
+      const caller = await loadManagerCaller(AUTH_UID);
+      assert.ok(caller, 'the lookup must find a real account — a null here is the production bug');
+      assert.equal(caller.accountId, accountId);
+      assert.equal(caller.role, 'general_manager');
+      assert.equal(caller.displayName, 'Maria (GM)', 'the name column is display_name, not name');
+    });
+
+    test('opens their own hotel and refuses one they do not manage', async () => {
+      const caller = (await loadManagerCaller(AUTH_UID))!;
+      assert.equal(callerManagesProperty(caller, PID_A), true);
+      assert.equal(callerManagesProperty(caller, PID_B), false, 'hotel B is not theirs');
+    });
+
+    test('a deactivated account stops being a manager', async () => {
+      await pg.query('update public.accounts set active = false where id = $1', [accountId]);
+      assert.equal(await loadManagerCaller(AUTH_UID), null);
+      await pg.query('update public.accounts set active = true where id = $1', [accountId]);
+    });
+
+    test('an unknown session is nobody', async () => {
+      assert.equal(await loadManagerCaller('aaaaaaaa-0000-4000-8000-00000000dead'), null);
     });
   });
 });

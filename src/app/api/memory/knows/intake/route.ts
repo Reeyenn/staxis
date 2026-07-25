@@ -34,7 +34,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { canManageTeam } from '@/lib/roles';
-import { loadKnowsCaller, callerManagesProperty } from '@/lib/memory-knows-access';
+import { callerManagesProperty } from '@/lib/memory-knows-access';
+import { loadManagerCaller } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { storeMemory } from '@/lib/db/agent-memory';
 import { redactMemoryContent } from '@/lib/agent/memory-redact';
@@ -120,7 +121,7 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as Body | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  const caller = await loadKnowsCaller(session.userId);
+  const caller = await loadManagerCaller(session.userId);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   if (!canManageTeam(caller.role)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
@@ -222,7 +223,7 @@ export async function POST(req: NextRequest) {
           uid: caller.accountId,
           accountId: caller.accountId,
           username: 'knows-intake',
-          displayName: caller.name ?? 'Manager',
+          displayName: caller.displayName ?? 'Manager',
           role: caller.role,
           propertyAccess: [propertyId],
         },

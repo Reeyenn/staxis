@@ -33,7 +33,8 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { canManageTeam } from '@/lib/roles';
-import { loadKnowsCaller, callerManagesProperty } from '@/lib/memory-knows-access';
+import { callerManagesProperty } from '@/lib/memory-knows-access';
+import { loadManagerCaller } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import {
   listMemory,
@@ -55,7 +56,7 @@ async function gate(req: NextRequest, requestId: string, propertyIdRaw: unknown)
   const session = await requireSession(req, { requestId });
   if (!session.ok) return { ok: false as const, response: session.response };
 
-  const caller = await loadKnowsCaller(session.userId);
+  const caller = await loadManagerCaller(session.userId);
   if (!caller) {
     return {
       ok: false as const,
@@ -168,7 +169,7 @@ export async function POST(req: NextRequest) {
   const rl = await checkAndIncrementRateLimit('knows-write', g.propertyId);
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const actor = { accountId: g.caller.accountId, name: g.caller.name, role: g.caller.role };
+  const actor = { accountId: g.caller.accountId, name: g.caller.displayName, role: g.caller.role };
 
   if (action === 'confirm') {
     const res = await confirmMemoryFact(g.propertyId, idV.value!, actor);

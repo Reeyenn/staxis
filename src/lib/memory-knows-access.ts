@@ -8,35 +8,21 @@
 // agent_memory is deny-all RLS and every read/write goes through supabaseAdmin,
 // so `callerManagesProperty` is not defense in depth — it IS the tenant
 // boundary for this feature.
+//
+// HISTORY: this module used to carry its OWN `loadKnowsCaller`, selecting
+// `accounts.name` — a column that does not exist. PostgREST errors on it, the
+// call site reads the error as "no such account", and the Knows screen showed
+// "Could not load what Staxis knows right now" to every single user, live,
+// through a green build and a green test suite. It was the fourth instance of
+// that bug class in a week, and it happened because two branches built the same
+// account lookup at the same time: one fixed the bad column, the other
+// reintroduced it. So there is now exactly ONE loader — `loadManagerCaller` —
+// and this module deliberately has no query of its own to drift from it.
 
 import 'server-only';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import type { AppRole } from '@/lib/roles';
+import { type ManagerCaller } from '@/lib/team-auth';
 
-export interface KnowsCaller {
-  accountId: string;
-  name: string | null;
-  role: AppRole;
-  propertyAccess: string[];
-}
-
-export async function loadKnowsCaller(authUserId: string): Promise<KnowsCaller | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('id, name, role, property_access')
-    .eq('data_user_id', authUserId)
-    .maybeSingle();
-  if (error || !data) return null;
-  const row = data as { id: string; name: string | null; role: string; property_access?: unknown };
-  return {
-    accountId: row.id,
-    name: row.name ?? null,
-    role: row.role as AppRole,
-    propertyAccess: Array.isArray(row.property_access) ? (row.property_access as string[]) : [],
-  };
-}
-
-export function callerManagesProperty(caller: KnowsCaller, propertyId: string): boolean {
+export function callerManagesProperty(caller: ManagerCaller, propertyId: string): boolean {
   if (caller.role === 'admin') return true;
   if (caller.propertyAccess.includes('*')) return true;
   return caller.propertyAccess.includes(propertyId);
