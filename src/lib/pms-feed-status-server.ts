@@ -36,6 +36,7 @@ import {
   type FeedStatusSessionRow,
   type PropertyFeedStatus,
 } from '@/lib/pms/feed-status';
+import { feedStatusFromHealth, parseFeedHealthRows } from '@/lib/pms/feed-health';
 
 const CACHE_TTL_MS = 30_000;
 const cache = new Map<string, { at: number; value: PropertyFeedStatus }>();
@@ -64,6 +65,27 @@ export async function getPropertyFeedStatus(propertyId: string): Promise<Propert
 }
 
 async function fetchFeedStatus(propertyId: string): Promise<PropertyFeedStatus> {
+  // D4 (2026-07-24) — THE HEARTBEAT SWAP.
+  //
+  // Freshness is now grounded on "when did this hotel's last PMS report
+  // actually arrive" (pms_feed_health_v1, migration 0339) instead of on the
+  // 24/7 robot session that stopped writing on ~2026-07-06.
+  //
+  // The swap is deliberately a FALL-THROUGH, not a replacement:
+  //   • a hotel with report expectations configured → the view answers;
+  //   • a hotel with NONE → zero rows → we fall through to the legacy
+  //     session derivation below, which returns NO_PMS_FEED_STATUS for a
+  //     manual / skip-PMS hotel. That fail-safe (mode 'no_pms', every feed
+  //     live, countsTrusted true, surfaces render exactly as today) is
+  //     load-bearing and MUST survive: treating "no expectation row" as
+  //     "unavailable" would neutralise the dashboard and housekeeper board of
+  //     every hotel that was never supposed to have PMS data.
+  const health = await fetchFeedHealth(propertyId);
+  if (health) {
+    const derived = await fetchDerived(propertyId, health);
+    return { ...health, derived };
+  }
+
   const { data: session, error: sessErr } = await supabaseAdmin
     .from('property_sessions')
     .select('pms_family, status, last_successful_read_at')
@@ -107,6 +129,45 @@ async function fetchFeedStatus(propertyId: string): Promise<PropertyFeedStatus> 
 }
 
 /**
+ * D4 — read the ONE definition of feed freshness.
+ *
+ * Returns null in exactly two cases, and both mean "this view has nothing to
+ * say about this hotel, ask the old path":
+ *   • the hotel has no report expectations (zero rows) — the manual-hotel
+ *     fail-safe described in fetchFeedStatus;
+ *   • the query failed — a broken read must never be mistaken for a hotel
+ *     with no PMS.
+ *
+ * A hotel WITH expectations gets its whole status (including `freshness`,
+ * source 'heartbeat' — the seam A2 documented in fetchFreshness below) from
+ * this one read.
+ */
+async function fetchFeedHealth(propertyId: string): Promise<PropertyFeedStatus | null> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pms_feed_health_v1')
+      .select(
+        'property_id, feed_key, label, required, target_table, legacy_target, report_type, enabled, ' +
+          'cadence_kind, expected_every_minutes, expected_at_local, timezone, grace_minutes, alert_channel, ' +
+          'last_report_at, last_delivery_at, last_signal_at, minutes_late, ' +
+          'open_quarantine_count, open_unmapped_count, state',
+      )
+      .eq('property_id', propertyId);
+    if (error) throw error;
+    return feedStatusFromHealth(parseFeedHealthRows(data));
+  } catch (err) {
+    // Expected for the window between deploy and the hand-applied migration
+    // 0339 (relation does not exist) — the legacy derivation covers it, so
+    // this is a note, not an incident.
+    console.warn('[pms-feed-status-server] feed-health read failed — using the legacy derivation', {
+      propertyId,
+      msg: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
  * A2 — WHEN did this property's PMS numbers get captured?
  *
  * Ordered chain, first hit wins. Each step is a genuinely different signal,
@@ -130,7 +191,11 @@ async function fetchFreshness(
   propertyId: string,
   session: FeedStatusSessionRow,
 ): Promise<FeedFreshness> {
-  // (1) D4 ingest heartbeat — not built yet. This comment is the seam.
+  // (1) D4 ingest heartbeat — WIRED (2026-07-24). It is resolved one level up,
+  // in fetchFeedHealth: a hotel with report expectations gets
+  // `freshness = { capturedAt: newest report signal, source: 'heartbeat' }`
+  // straight off pms_feed_health_v1 and never reaches this function. The chain
+  // below is now the LEGACY path — hotels with no expectations configured yet.
 
   // (2) in-house snapshot capture time.
   try {
@@ -170,16 +235,27 @@ async function fetchFreshness(
 
 /**
  * Tile values for feeds whose numbers are trustworthy. Each query is small,
- * indexed, and only runs when its source feed is live. Best-effort: a failed
- * derived query degrades that tile to its "—" state, never the whole status.
+ * indexed, and only runs when its source feed has a real source. Best-effort:
+ * a failed derived query degrades that tile to its "—" state, never the whole
+ * status.
+ *
+ * D4: 'stale' counts as a real source. The whole point of the fourth state is
+ * that the number came from a genuine report and is merely old — fetching it
+ * and letting the surface stamp it "as of 6:40 AM" is the honest render.
+ * Gating these queries on 'live' alone would blank the tiles the moment a
+ * report ran late, which is the behaviour 'stale' exists to replace.
  */
+function hasRealSource(state: PropertyFeedStatus['feeds'][keyof PropertyFeedStatus['feeds']]): boolean {
+  return state === 'live' || state === 'stale';
+}
+
 async function fetchDerived(
   propertyId: string,
   status: PropertyFeedStatus,
 ): Promise<NonNullable<PropertyFeedStatus['derived']>> {
   const derived: NonNullable<PropertyFeedStatus['derived']> = {};
 
-  if (status.feeds.dashboardCounts === 'live') {
+  if (hasRealSource(status.feeds.dashboardCounts)) {
     try {
       const { data } = await supabaseAdmin
         .from('pms_in_house_snapshot')
@@ -197,7 +273,7 @@ async function fetchDerived(
     }
   }
 
-  if (status.feeds.arrivals === 'live') {
+  if (hasRealSource(status.feeds.arrivals)) {
     try {
       const { data: prop } = await supabaseAdmin
         .from('properties')

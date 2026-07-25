@@ -279,6 +279,99 @@ Each invariant has:
 - **NOT DB-enforceable:** the tool registry is an in-process TypeScript map.
 - **History:** A2 data-age honesty, 2026-07-24.
 
+### INV-36: There is exactly ONE definition of "is this feed fresh", and it lives in SQL
+
+- **Enforced by:** `pms_feed_health_v1` (migration 0339) is the only place the
+  live / stale / learning / unavailable rules are written. `src/lib/pms/feed-health.ts`
+  reads `state` and `minutes_late` off the view and deliberately contains **no
+  copy** of the state machine; the rules are proved against real Postgres in
+  `src/lib/__tests__/pms-ingest-quality.integration.test.ts`.
+- **NOT DB-enforceable** as a uniqueness claim — a second implementation in
+  TypeScript would compile fine. What makes it hold is that there is nothing to
+  duplicate: the app never receives the inputs (grace, cadence, table stamps)
+  in a form it could recompute from, only the answer.
+- **Assumed by:** `src/lib/pms-feed-status-server.ts` (the view's only reader),
+  the doctor's `pms_report_freshness` check, `get_pms_status`.
+- **History:** D4 quality, 2026-07-24.
+
+### INV-37: A hotel with no PMS report expectation renders exactly as it does today
+
+- **Statement:** zero rows in `pms_feed_health_v1` for a property means "this
+  hotel has no PMS report schedule", NOT "every feed is unavailable".
+- **Enforced by:** the view's row source is `pms_feed_expectations`, so a hotel
+  with no expectations produces no rows at all;
+  `feedStatusFromHealth()` returns `null` for the empty case and
+  `pms-feed-status-server.ts` falls through to the legacy derivation, which
+  yields `NO_PMS_FEED_STATUS` (mode `no_pms`, every feed live, countsTrusted
+  true). `'unavailable'` is reserved for an expectation row that EXISTS and is
+  disabled.
+- **Why it matters:** skip-PMS onboarding is a shipped path. Reading "no
+  expectation" as "unavailable" would neutralise the dashboard tiles and
+  housekeeper board of every manual hotel — hotels that were never supposed to
+  have PMS data at all.
+- **Backed by:** `pms-feed-health.test.ts` ("the manual-hotel fail-safe") and
+  the FLAW B case in the pglite integration test.
+- **History:** D4 quality, 2026-07-24.
+
+### INV-38: Every row a report delivers is either written or quarantined — a row is never silently dropped
+
+- **Enforced by:** the per-delivery open-dedupe indexes
+  `pms_ingest_quarantine_open_per_delivery_uidx` (delivery_id, fingerprint) and
+  `pms_ingest_quarantine_open_no_delivery_uidx` (property_id, fingerprint),
+  plus `public.pms_delivery_quarantine_count(uuid)` — the number the intake
+  ledger's own trigger writes into `rows_quarantined`, so the writer cannot
+  supply it (migration 0339). **The CHECK
+  `rows_parsed = rows_written + rows_quarantined` belongs to the intake
+  ledger's table and lands with the report-intake workstream** — see
+  "Accounting seam" in 0339.
+- **Why the dedupe is scoped per delivery:** a GLOBAL dedupe on fingerprint
+  makes the accounting CHECK unsatisfiable. Delivery #2 carrying the same 3
+  persistent bad rows would insert nothing (the dedupe bumps rows owned by
+  delivery #1), report `rows_quarantined = 0` against a short `rows_written`,
+  and could never be marked 'parsed'. The pipeline would wedge on the second
+  occurrence of any recurring bad row. Cross-delivery "this has happened N
+  times" is answered by `pms_quarantine_rollup_v1`, a display-side view.
+- **Fingerprint composition:** `sha256(property_id | target_table |
+  reason_code | natural key or canonicalised raw row)` —
+  `quarantineFingerprint()` in `src/lib/pms/quarantine.ts`. property_id and
+  target_table are IN the hash so two hotels' identical bad rows cannot
+  collide.
+- **History:** D4 quality, 2026-07-24.
+
+### INV-39: A column appearing in a report that we do not recognise is captured and surfaced, never ignored
+
+- **Enforced by:** the value lands under the reserved key `raw->'_unmapped'`
+  on the row (the `raw` jsonb column already exists on every pms_* table from
+  0202 — no per-table DDL), and a `pms_unmapped_columns` row is upserted with
+  `status='open'`. `pms_feed_health_v1` computes `state='learning'` whenever an
+  open row exists for that (hotel, report). There is deliberately **no second
+  denormalised review flag** — the review state is derived in one view, so
+  there is no copy to drift.
+- **Deliberately NOT a learning trigger:** open QUARANTINE count. Five bad rows
+  out of three hundred leaves 295 good ones, and 'learning' blanks
+  user-visible numbers. Backlog is a doctor warn plus the admin queue.
+- **Backed by:** `pms-ingest-quarantine.test.ts` (capture + PII redaction) and
+  the unmapped-column cases in the pglite integration test.
+- **History:** D4 quality, 2026-07-24.
+
+### INV-40: An anomaly flags; only a validator error or an SLO breach alerts. Anomalies never block a write
+
+- **NOT DB-ENFORCEABLE** — it is a routing policy over which sink each detector
+  writes to. Enforced structurally: `src/lib/pms/ingest-anomaly.ts` is a PURE
+  module with no write access and no sink parameter. It returns findings; its
+  only caller writes `pms_ingest_anomalies` rows. There is no input on any
+  doctor evaluator through which an anomaly could travel, so adding one would
+  be a compile-level decision rather than a silent drift.
+- **What DOES alert** (doctor fail → the existing 5-minute
+  `/api/cron/vercel-watchdog` → Sentry + business-hours SMS): a required feed
+  past 2× its grace on an expectation that opted into `doctor_fail`; a delivery
+  where every row was rejected; quarantine backlog over threshold.
+- **Why:** containment for bad data is last-good preservation plus honest
+  staleness, and a hotel really can sell out overnight.
+- **Backed by:** `pms-ingest-anomaly.test.ts` and the alert-policy cases in
+  `pms-feed-health.test.ts`.
+- **History:** D4 quality, 2026-07-24.
+
 ## Counter-heal mechanism
 
 `staxis_heal_conversation_counters(p_dry_run boolean)` runs daily via

@@ -3,6 +3,7 @@
 
 import { registerTool, type ToolResult } from '../tools';
 import { findRoomByNumber, findStaffByName } from './_helpers';
+import { newestSignalAt, parseFeedHealthRows } from '@/lib/pms/feed-health';
 import { applyTimeOffDecision } from '@/lib/schedule/decide-time-off';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { applyRoomUpdate } from '@/lib/pms-rooms-writes';
@@ -193,32 +194,89 @@ registerTool<{ date?: string }>({
 });
 
 // ─── get_pms_status ───────────────────────────────────────────────────────
-// Reads property_sessions (the per-hotel CUA worker state) — the Plan v4
-// replacement for the dropped scraper_status table.
+// WAS BROKEN, NOT MERELY MIS-POINTED (fixed 2026-07-24, D4).
+//
+// The previous handler selected `last_poll_at` from property_sessions. That
+// column has never existed — 0201 defines last_alive_at and
+// last_successful_read_at only (verified against live Postgres). PostgREST
+// answered 42703 on EVERY call, the handler took its error branch, and every
+// manager who asked the copilot "is the PMS connected?" got
+// "Failed to read PMS status." The tool has been dead since it shipped.
+//
+// It now answers the question the report era actually has: not "is a robot
+// logged in" but "are this hotel's reports arriving, and how old is what we
+// have". Source: pms_feed_health_v1 (migration 0339) — the single definition
+// of feed freshness. A hotel with no report expectations configured returns a
+// clear "not set up yet", never an error.
+
+const FEED_STATE_SENTENCE: Record<string, (label: string, mins: number | null) => string> = {
+  live: (label) => `${label}: arriving on time`,
+  stale: (label, mins) =>
+    `${label}: last report is ${mins === null ? 'overdue' : `${Math.round(mins)} min past due`}`,
+  learning: (label) => `${label}: nothing usable yet (report format still being learned)`,
+  unavailable: (label) => `${label}: this hotel does not send this report`,
+};
 
 registerTool<Record<string, never>>({
   name: 'get_pms_status',
   // The freshness fields ARE the answer to this tool's question.
   pmsFreshness: 'stamped',
   description:
-    'Check the status of the PMS (Property Management System) connection. Returns when the last successful sync happened, how old the hotel\'s numbers are (asOf / dataAgeMinutes / dataFreshness), and whether anything is broken.',
+    'Check whether the hotel\'s PMS (Property Management System) data is arriving and how current it is. Use for "is the PMS connected?", "how old are these numbers?", "are the reports coming through?". Returns one line per report feed with its state (arriving on time / late / not set up), when each last arrived, and how old the hotel\'s numbers are overall (asOf / dataAgeMinutes / dataFreshness).',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   handler: async (_, ctx): Promise<ToolResult> => {
     const { data, error } = await ctx.db
-      .from('property_sessions')
-      .select('status, paused_reason, last_poll_at, updated_at')
-      .maybeSingle();
-    if (error) return { ok: false, error: 'Failed to read PMS status.' };
-    if (!data) {
-      return { ok: true, data: { heartbeat: null, lastSuccessfulSync: null, lastError: 'no active session' } };
+      .from('pms_feed_health_v1')
+      .select(
+        'property_id, feed_key, label, required, target_table, legacy_target, report_type, enabled, ' +
+          'cadence_kind, expected_every_minutes, expected_at_local, timezone, grace_minutes, alert_channel, ' +
+          'last_report_at, last_delivery_at, last_signal_at, minutes_late, ' +
+          'open_quarantine_count, open_unmapped_count, state',
+      );
+    if (error) return { ok: false, error: 'Failed to read PMS report health.' };
+
+    const rows = parseFeedHealthRows(data);
+    if (rows.length === 0) {
+      return {
+        ok: true,
+        data: {
+          configured: false,
+          feeds: [],
+          summary:
+            'This hotel has no PMS report schedule set up in Staxis, so its numbers come from the app itself rather than the PMS.',
+        },
+      };
     }
+
+    const feeds = rows.map((r) => ({
+      feedKey: r.feedKey,
+      label: r.label,
+      state: r.state,
+      required: r.required,
+      lastReportAt: r.lastSignalAt,
+      minutesLate: r.minutesLate === null ? null : Math.round(r.minutesLate),
+      openQuarantineCount: r.openQuarantineCount,
+      openUnmappedCount: r.openUnmappedCount,
+    }));
+
+    const problems = rows.filter((r) => r.enabled && (r.state === 'stale' || r.state === 'learning'));
+    const summary =
+      problems.length === 0
+        ? `All ${rows.filter((r) => r.enabled).length} expected report(s) are arriving on time.`
+        : problems
+            .map((r) => (FEED_STATE_SENTENCE[r.state] ?? ((l: string) => l))(r.label, r.minutesLate))
+            .join('. ') + '.';
+
     return {
       ok: true,
       data: {
-        heartbeat: data.updated_at,
-        lastSuccessfulSync: data.last_poll_at,
-        lastError: data.status !== 'running' ? (data.paused_reason ?? data.status) : null,
+        configured: true,
+        feeds,
+        // The property-level "as of" the copilot quotes. stampFreshness may
+        // refine it, but a handler-supplied asOf wins, and this one is exact.
+        asOf: newestSignalAt(rows),
+        summary,
       },
     };
   },

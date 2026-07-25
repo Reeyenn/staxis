@@ -23,7 +23,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
-import { countsTrusted, formatAsOfClock, freshnessTier } from '@/lib/pms/feed-status';
+import { countsFresh, formatAsOfClock, freshnessTier } from '@/lib/pms/feed-status';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
 export interface NudgeRunResult {
@@ -490,9 +490,15 @@ async function buildDailySummary(propertyId: string): Promise<Record<string, unk
   // snapshot-COALESCE-0s when the counts feed has no source; a daily
   // "0 rooms cleaned, 0 dirty remaining" summary would be a confident wrong
   // claim written every day. Null + note instead. Fail-safe: error → as-is.
+  // D4 (2026-07-24): countsFresh, not countsTrusted. A NUDGE speaks first —
+  // nobody asked, and nobody sees an as-of stamp on a push. Summarising
+  // "0 rooms cleaned" off a room-status report that last arrived nine hours
+  // ago is worse than sending nothing. (Answering a direct question is a
+  // different bargain: there countsTrusted plus the stamp is right, which is
+  // why the agent tools keep countsTrusted.)
   let countsOk = true;
   try {
-    countsOk = countsTrusted(await getPropertyFeedStatus(propertyId));
+    countsOk = countsFresh(await getPropertyFeedStatus(propertyId));
   } catch { /* non-fatal */ }
   const clean = countsOk ? counts.vacant_clean : null;
   const dirty = countsOk ? counts.vacant_dirty : null;

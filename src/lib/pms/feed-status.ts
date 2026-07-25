@@ -37,7 +37,23 @@
 
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 
-export type FeedState = 'live' | 'learning' | 'unavailable';
+/**
+ * D4 (2026-07-24) adds a FOURTH state, 'stale', and the report era needs it.
+ *
+ * The three-word vocabulary above forces a false choice between lying and
+ * blanking. When a hotel's 6:40 AM room-status report is the newest thing we
+ * have at 11 AM, the number is REAL — it is just OLD. Calling it 'live' lies;
+ * calling it 'learning' blanks a number a GM can genuinely use.
+ *
+ *  - 'stale' — the number is real but past its promised arrival window. SHOW
+ *              it, with an "as of 6:40 AM" stamp. Never null it.
+ *
+ * The rule that produces it lives in SQL (pms_feed_health_v1, migration 0339)
+ * — there is exactly one definition of freshness and this file is not it. The
+ * split between "the number is real" and "the number is current" is
+ * countsTrusted() vs countsFresh() below.
+ */
+export type FeedState = 'live' | 'stale' | 'learning' | 'unavailable';
 
 /** Mirror of cua-service/src/knowledge-file.ts FeedGapEntry — keep in sync. */
 export interface FeedGapEntry {
@@ -428,6 +444,12 @@ export function learningFeeds(status: PropertyFeedStatus): FeedKey[] {
  * stale data; staleness is the doctor/freshness domain, and masking
  * everything on every overnight MFA pause would train users to ignore the
  * honest states.)
+ *
+ * D4 (2026-07-24): the MEANING is unchanged, the SOURCE moves. In the report
+ * era `connection === 'pending'` is set when every enabled report expectation
+ * for this hotel has never received a single delivery (feedStatusFromHealth in
+ * src/lib/pms/feed-health.ts) — the same fact, asked of reports instead of a
+ * robot session. Callers do not change.
  */
 export function isDataPending(status: PropertyFeedStatus): boolean {
   return status.mode === 'live' && status.connection === 'pending';
@@ -444,7 +466,38 @@ export function isDataPending(status: PropertyFeedStatus): boolean {
  */
 export function countsTrusted(status: PropertyFeedStatus): boolean {
   if (status.mode !== 'live') return true; // manual/onboarding: render as today
+  // 'stale' counts as trusted: the number came from a real report, it is just
+  // older than promised. Blanking it would throw away a usable figure — see
+  // the FeedState comment at the top of this file.
+  const state = status.feeds.dashboardCounts;
+  return (state === 'live' || state === 'stale') && status.connection !== 'pending';
+}
+
+/**
+ * The stricter half of the countsTrusted split: the number is not merely real,
+ * it is CURRENT.
+ *
+ * Use this — not countsTrusted — anywhere the app SPEAKS FIRST rather than
+ * answering: a proactive nudge, a daily seal, an alert. A nudge fired off
+ * nine-hour-old occupancy is worse than no nudge, because nobody asked and
+ * nobody sees the as-of stamp. Answering a direct question is different: there
+ * countsTrusted plus the stamp is the honest response.
+ */
+export function countsFresh(status: PropertyFeedStatus): boolean {
+  if (status.mode !== 'live') return true; // manual/onboarding: render as today
   return status.feeds.dashboardCounts === 'live' && status.connection !== 'pending';
+}
+
+/** The feeds whose numbers are real but past their promised arrival — the
+ *  ones that render an "as of 6:40 AM" chip rather than a learning banner. */
+export function staleFeeds(status: PropertyFeedStatus): FeedKey[] {
+  if (status.mode !== 'live') return [];
+  return (Object.keys(status.feeds) as FeedKey[]).filter((k) => status.feeds[k] === 'stale');
+}
+
+/** True when any feed is showing real-but-old numbers. */
+export function isStale(status: PropertyFeedStatus): boolean {
+  return staleFeeds(status).length > 0;
 }
 
 /**

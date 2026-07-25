@@ -318,6 +318,95 @@ curl -i -H "Authorization: Bearer $CRON_SECRET" \
 
 ---
 
+## A hotel's numbers look old (or a report stopped arriving)
+
+### Symptom
+- The dashboard or housekeeping board shows an "as of 6:40 AM" stamp hours after 6:40 AM.
+- The copilot says "the last report from this hotel arrived at ... , N hours ago".
+- Doctor check `pms_report_freshness` is `warn` or `fail`.
+- Or: numbers went blank and a "still learning" banner appeared.
+
+### What this means
+In the report era a hotel's PMS emails scheduled reports instead of a robot
+reading the screen. Four states, and they mean genuinely different things:
+
+| State | Meaning | What the app does |
+|---|---|---|
+| `live` | arriving on schedule | shows the numbers |
+| `stale` | the number is REAL but past its promised arrival | shows the number WITH an as-of stamp — never blanks it |
+| `learning` | the report's shape changed, or nothing has arrived yet | blanks the number rather than lie |
+| `unavailable` | someone switched this report off for this hotel | says "not provided" |
+
+### Diagnosis
+Run these in order. The first one that is not clean is the cause.
+
+```sql
+-- 1. Which feed, how late, and why. THE single source of truth.
+select feed_key, state, last_signal_at, round(minutes_late) as late_min,
+       grace_minutes, open_quarantine_count, open_unmapped_count
+  from public.pms_feed_health_v1
+ where property_id = '<hotel uuid>'
+ order by state, feed_key;
+
+-- 2. state = 'learning' with open_unmapped_count > 0 → the report grew a
+--    column we do not read. The VALUE is safe (it is in raw->'_unmapped'),
+--    the feed is just held back until a human decides what it is.
+select report_type, column_label, sample_values, occurrences, first_seen_at
+  from public.pms_unmapped_columns
+ where property_id = '<hotel uuid>' and status = 'open';
+
+-- 3. Rows the parser refused, grouped by the actual problem.
+select reason_code, open_rows, deliveries_affected, latest_reason_detail
+  from public.pms_quarantine_rollup_v1
+ where property_id = '<hotel uuid>'
+ order by open_rows desc;
+
+-- 4. Nothing wrong on our side? Then the report stopped being SENT.
+--    Check the hotel's own PMS report scheduler.
+select feed_key, report_type, cadence_kind, expected_every_minutes,
+       expected_at_local, timezone, grace_minutes, alert_channel, enabled
+  from public.pms_feed_expectations
+ where property_id = '<hotel uuid>';
+```
+
+Zero rows from query 1 is NOT a bug: it means this hotel has no PMS report
+expectation at all (a manual / skip-PMS hotel). Its numbers come from the app
+and every surface renders exactly as it always has.
+
+### Fix
+- **`stale`, nothing wrong in queries 2–3** → the fix is almost always in the
+  HOTEL's PMS, not in Staxis. Confirm the scheduled report is still enabled and
+  still emailing us. If the hotel genuinely changed its schedule, update the
+  ROW (`pms_feed_expectations`), never the code.
+- **`learning` with an unmapped column** → map the column into the table
+  descriptor (`pms_table_schemas`) and set the row to `status='mapped'`, or set
+  it to `'ignored'` if the column carries nothing we want. Either way the feed
+  leaves `learning` on the next read.
+- **Quarantine backlog** → read `latest_reason_detail`, fix the parser or widen
+  the column range in the descriptor, then replay the rows. Replay is
+  idempotent by construction.
+- **False amber (a normal 5-minute email delay keeps ambering the board)** →
+  the grace is too tight. Widen `grace_minutes` on that row. Start at roughly
+  2/3 of the cadence. A signal everyone learns to ignore is worse than none.
+
+### Verify
+```bash
+curl -s -H "Authorization: Bearer $CRON_SECRET" \
+  https://hotelops-ai.vercel.app/api/admin/doctor | jq '.checks[] | select(.name|startswith("pms_"))'
+```
+All three `pms_*` checks green, and query 1 shows the feed back to `live`.
+
+### Prevention
+- `pms_report_freshness` runs in the doctor, which the existing 5-minute
+  Vercel watchdog already polls — a hotel whose reports stop produces an alert
+  within about 15 minutes instead of a phone call from the customer.
+- A required feed past 2× its grace on a `doctor_fail` expectation is a hard
+  fail (503 on the doctor), which is what escalates to SMS.
+- An unrecognised column can never be silently dropped: its value lands in
+  `raw->'_unmapped'` and its existence holds the feed at `learning`.
+
+---
+
 ## GitHub Actions workflow failing
 
 ### Symptom

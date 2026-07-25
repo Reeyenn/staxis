@@ -67,6 +67,12 @@ import { errToString } from '@/lib/utils';
 import { env } from '@/lib/env';
 import { SUPERSEDED_MIGRATIONS } from '@/lib/migration-policy';
 import { evaluatePromptTierHealth } from '@/lib/agent/prompt-tiers';
+import {
+  evaluateFeedSlos,
+  evaluateQuarantineBacklog,
+  evaluateUnmappedColumns,
+  parseFeedHealthRows,
+} from '@/lib/pms/feed-health';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -151,6 +157,22 @@ const checks: Array<[string, CheckFn]> = [
   // copilot just quietly loses that tier's instructions. Only a query can see
   // it. Deliberately silent (ok, not warn) while the PMS-family slot is empty.
   ['agent_prompt_tiers',          checkAgentPromptTiers],
+  // D4 (2026-07-24) — the report-era heartbeat. These three make the EXISTING
+  // 5-minute /api/cron/vercel-watchdog loop the late-report watchdog: no new
+  // cron entry, no vercel.json change, no schedule-registry row. A hotel
+  // whose PMS stops emailing reports produces a fail here within about 15
+  // minutes, and the watchdog escalates it to Sentry + business-hours SMS.
+  //
+  // The three cua_* checks above are deliberately LEFT IN PLACE for now.
+  // cua_sessions_alive is the only fail-CAPABLE check of the three (any
+  // fail-severity check 503s the deploy gate; cost-cap and MFA are warn-only
+  // by design). Deleting it before pms_report_freshness has been seen to fire
+  // on a real breach would leave a window with NO hard health gate. Their
+  // removal belongs to the robot-decommission workstream, after this one has
+  // proven itself on real deliveries.
+  ['pms_report_freshness',        checkPmsReportFreshness],
+  ['pms_quarantine_backlog',      checkPmsQuarantineBacklog],
+  ['pms_unmapped_columns_open',   checkPmsUnmappedColumns],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1109,6 +1131,147 @@ async function checkAgentPromptTiers(): Promise<Omit<Check, 'name' | 'durationMs
       status: health.status,
       detail: health.detail,
       fix: 'Activate the intended row with select public.staxis_activate_prompt(\'<id>\', \'<role>\', \'<pms_family or null>\'); it deactivates the others in the same tier atomically.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Migrations here are applied BY HAND (project convention), so a deploy can
+ * legitimately reach production minutes before its migration does. A check
+ * that reports `warn` for that window teaches the founder to ignore amber for
+ * the exact objects it was built to watch.
+ *
+ * A missing relation is therefore reported as `ok` with a plain "not applied
+ * yet" line. Nothing is hidden: `supabase_migrations_applied` is the check
+ * that exists to notice an unapplied migration, and it will.
+ */
+function isMissingRelation(error: unknown): boolean {
+  const e = error as { code?: string; message?: string } | null;
+  if (!e) return false;
+  if (e.code === '42P01' || e.code === 'PGRST205') return true;
+  return /does not exist|could not find the table|schema cache/i.test(e.message ?? '');
+}
+
+/**
+ * pms_report_freshness — is every hotel's PMS report still arriving?
+ *
+ * THE point of this check: in the report era the dominant failure mode is not
+ * "never connected", it is "the hotel's report schedule got switched off in
+ * the PMS and nothing noticed". Nothing else in the product can see that.
+ *
+ * The judgement itself is a pure function (evaluateFeedSlos) over rows of
+ * pms_feed_health_v1 — the single SQL definition of freshness — so the
+ * thresholds are testable without a database, and a hotel on a different
+ * report schedule is a ROW, never a branch in this file.
+ *
+ * A fleet with no expectations configured yet reads `ok`, not `warn`: warning
+ * about an SLO nobody has set is noise, and noise is how a founder learns to
+ * ignore amber.
+ */
+async function checkPmsReportFreshness(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pms_feed_health_v1')
+      .select(
+        'property_id, feed_key, label, required, enabled, grace_minutes, alert_channel, ' +
+          'last_report_at, last_delivery_at, last_signal_at, minutes_late, ' +
+          'open_quarantine_count, open_unmapped_count, state',
+      );
+    if (error) {
+      if (isMissingRelation(error)) {
+        return { status: 'ok', detail: 'report-freshness tables not applied yet (migration 0339)' };
+      }
+      return { status: 'warn', detail: `pms_feed_health_v1 read failed: ${errToString(error)}` };
+    }
+    const verdict = evaluateFeedSlos(parseFeedHealthRows(data));
+    if (verdict.status === 'ok') return { status: 'ok', detail: verdict.detail };
+    return {
+      status: verdict.status,
+      detail: verdict.detail,
+      fix: 'The fix is almost always in the HOTEL\'s PMS, not in Staxis: check that the scheduled report is still enabled and still emailing us. If the cadence genuinely changed, update the row in pms_feed_expectations rather than widening the code.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * pms_quarantine_backlog — rows the parser could not accept, piling up.
+ *
+ * Warn on a backlog; FAIL only on a delivery where every row was rejected,
+ * which is a format change rather than a data problem. Deliberately NOT a
+ * reason to blank the hotel's numbers: five bad rows out of three hundred
+ * leaves 295 good ones, and the containment for bad data is last-good
+ * preservation plus honest staleness.
+ */
+async function checkPmsQuarantineBacklog(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pms_ingest_quarantine')
+      .select('property_id')
+      .eq('status', 'open');
+    if (error) {
+      if (isMissingRelation(error)) {
+        return { status: 'ok', detail: 'quarantine table not applied yet (migration 0339)' };
+      }
+      return { status: 'warn', detail: `pms_ingest_quarantine read failed: ${errToString(error)}` };
+    }
+    const counts = new Map<string, number>();
+    for (const row of (data ?? []) as Array<{ property_id: string }>) {
+      counts.set(row.property_id, (counts.get(row.property_id) ?? 0) + 1);
+    }
+    const verdict = evaluateQuarantineBacklog({
+      perProperty: [...counts.entries()].map(([propertyId, openRows]) => ({ propertyId, openRows })),
+      // Supplied by the report-intake ledger once it lands; until then there
+      // is no delivery to call fully-rejected, and claiming zero is honest.
+      allRejectedDeliveriesLastHour: 0,
+    });
+    if (verdict.status === 'ok') return { status: 'ok', detail: verdict.detail };
+    return {
+      status: verdict.status,
+      detail: verdict.detail,
+      fix: 'Open the quarantine queue, read the reason on the sample row, fix the parser or widen the column descriptor in pms_table_schemas, then replay the rows.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * pms_unmapped_columns_open — a hotel's report grew a column we do not read.
+ *
+ * Always warn, never fail: the value is already captured in the row's
+ * `raw->_unmapped`, so nothing is lost while it waits for a human. What IS
+ * lost if nobody looks is trust — pms_feed_health_v1 holds that feed at
+ * 'learning' until the column is mapped or explicitly ignored.
+ */
+async function checkPmsUnmappedColumns(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('pms_unmapped_columns')
+      .select('property_id, report_type, column_label')
+      .eq('status', 'open');
+    if (error) {
+      if (isMissingRelation(error)) {
+        return { status: 'ok', detail: 'unmapped-column table not applied yet (migration 0339)' };
+      }
+      return { status: 'warn', detail: `pms_unmapped_columns read failed: ${errToString(error)}` };
+    }
+    type Row = { property_id: string; report_type: string; column_label: string };
+    const verdict = evaluateUnmappedColumns(
+      ((data ?? []) as Row[]).map((r) => ({
+        propertyId: r.property_id,
+        reportType: r.report_type,
+        columnLabel: r.column_label,
+      })),
+    );
+    if (verdict.status === 'ok') return { status: 'ok', detail: verdict.detail };
+    return {
+      status: verdict.status,
+      detail: verdict.detail,
+      fix: 'Map the column into the table descriptor (pms_table_schemas) and set the row to \'mapped\', or set it to \'ignored\' if the column genuinely carries nothing we want. Either way the feed leaves the "learning" state.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

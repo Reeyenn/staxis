@@ -40,7 +40,7 @@ import { errToString } from '@/lib/utils';
 import { runWithConcurrency } from '@/lib/parallel';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
-import { countsTrusted, isDataPending } from '@/lib/pms/feed-status';
+import { countsFresh, isDataPending } from '@/lib/pms/feed-status';
 import {
   datesNeedingOccupancyBackfill,
   hasFreshPmsEvidence,
@@ -374,14 +374,21 @@ async function sealOne(
   // Fail-safe: lookup error → flags default to trusted → exact pre-existing
   // behavior (incl. for manual no-PMS hotels, whose mode is no_pms).
   let reservationsUntrusted = false;
-  let sealCountsTrusted = true;
+  let sealCountsFresh = true;
   try {
     const fs = await getPropertyFeedStatus(p.id);
     if (fs.mode === 'live') {
       const pending = isDataPending(fs);
       reservationsUntrusted = pending ||
         fs.feeds.arrivals === 'learning' || fs.feeds.departures === 'learning';
-      sealCountsTrusted = countsTrusted(fs);
+      // D4 (2026-07-24): countsFresh, not countsTrusted. A seal is a
+      // PERMANENT record of what was true on a given day. A real-but-nine-
+      // hours-old occupancy figure is fine to SHOW with an as-of stamp, and
+      // wrong to freeze into history as today's truth — the seal carries no
+      // stamp, so a stale number sealed here is indistinguishable from a
+      // fresh one forever after. Stale ⇒ leave the field null; the day is
+      // re-sealable, a wrong sealed number is not.
+      sealCountsFresh = countsFresh(fs);
     }
   } catch { /* non-fatal */ }
 
@@ -406,7 +413,7 @@ async function sealOne(
   // Prefer the CUA's actual in_house count over the derived total_rooms
   // minus vacancies. Both paths read snapshot-sourced columns, so both are
   // gated on the counts feed being trusted AND on fresh CUA evidence.
-  const occupied = planRow && sealCountsTrusted && pmsEvidenceFresh
+  const occupied = planRow && sealCountsFresh && pmsEvidenceFresh
     ? planRow.in_house > 0
       ? planRow.in_house
       : Math.max(0, (planRow.total_rooms || 0) - (planRow.vacant_clean || 0) - (planRow.vacant_dirty || 0) - (planRow.ooo || 0))
@@ -452,7 +459,7 @@ async function sealOne(
     // Derived from checkouts/stayovers (reservations) + vacant_dirty
     // (snapshot) — meaningless unless BOTH sources are trusted AND the CUA
     // has fresh evidence.
-    recommended_staff: planRow && !reservationsUntrusted && sealCountsTrusted && pmsEvidenceFresh && snapshotDescribesTargetDate ? recommendedHKs : null,
+    recommended_staff: planRow && !reservationsUntrusted && sealCountsFresh && pmsEvidenceFresh && snapshotDescribesTargetDate ? recommendedHKs : null,
   };
 
   // Never regress a sealed real value back to NULL on a later tick of the
