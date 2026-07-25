@@ -103,13 +103,17 @@ export async function GET(
   const payload = (jobRes.data.payload ?? {}) as Record<string, unknown>;
   let property: { display_name: string; pms_family: string | null } | null = null;
   if (jobRes.data.property_id) {
+    // `properties` has `name`, never `display_name`. PostgREST rejects the
+    // WHOLE select on an unknown column, so this returned null every time and
+    // the board silently fell back to showing a raw UUID — a failure that
+    // looks exactly like "this hotel has no name yet".
     const { data: prop } = await supabaseAdmin
       .from('properties')
-      .select('display_name')
+      .select('name')
       .eq('id', jobRes.data.property_id)
       .maybeSingle();
     property = {
-      display_name: (prop?.display_name as string | undefined) ?? jobRes.data.property_id,
+      display_name: (prop?.name as string | undefined) ?? jobRes.data.property_id,
       pms_family: typeof payload.pms_family === 'string' ? payload.pms_family : null,
     };
   }

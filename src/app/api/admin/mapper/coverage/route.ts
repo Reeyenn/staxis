@@ -83,7 +83,10 @@ export async function GET(req: NextRequest): Promise<Response> {
   // Property name + how many hotels share this family map (so the page can warn
   // that an edit changes every hotel on the family).
   const [{ data: prop }, { count: hotelsOnFamily }] = await Promise.all([
-    supabaseAdmin.from('properties').select('display_name').eq('id', propertyId).maybeSingle(),
+    // `properties` has `name`, never `display_name`. PostgREST rejects the whole
+    // select on an unknown column, so this returned null every time and the
+    // coverage screen showed a raw UUID instead of the hotel's name.
+    supabaseAdmin.from('properties').select('name').eq('id', propertyId).maybeSingle(),
     supabaseAdmin.from('property_sessions').select('property_id', { count: 'exact', head: true }).eq('pms_family', pmsFamily),
   ]);
 
@@ -127,7 +130,7 @@ export async function GET(req: NextRequest): Promise<Response> {
     // Neither active NOR draft (onboarding not started / all discarded).
     return ok({
       propertyId,
-      propertyName: (prop?.display_name as string | undefined) ?? propertyId,
+      propertyName: (prop?.name as string | undefined) ?? propertyId,
       pmsFamily,
       familyLabel,
       hotelsOnFamily: hotelsOnFamily ?? 0,
@@ -180,7 +183,7 @@ export async function GET(req: NextRequest): Promise<Response> {
 
   return ok({
     propertyId,
-    propertyName: (prop?.display_name as string | undefined) ?? propertyId,
+    propertyName: (prop?.name as string | undefined) ?? propertyId,
     pmsFamily,
     familyLabel,
     hotelsOnFamily: hotelsOnFamily ?? 0,
