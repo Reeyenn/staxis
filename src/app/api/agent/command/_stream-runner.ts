@@ -21,6 +21,8 @@ import {
   recordSyntheticAbortToolResult,
 } from '@/lib/agent/memory';
 import { createPendingActions, sweepConversationPending } from '@/lib/agent/pending-actions';
+import { recordDecisionProposal } from '@/lib/agent/decisions';
+import type { HotelSnapshot } from '@/lib/agent/context';
 import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
 import {
   finalizeCostReservation,
@@ -332,6 +334,13 @@ export function makePendingApprovalHandler(opts: {
   conversationId: string;
   accountId: string;
   send: (obj: unknown) => void;
+  /** Decision-corpus context (migration 0350). Omitted by callers that have no
+   *  snapshot to record; the corpus write is skipped rather than faked. */
+  corpus?: {
+    snapshot: HotelSnapshot;
+    actorRole: string | null;
+    promptVersion: string | null;
+  };
 }): PendingApprovalHandler {
   return async (ev) => {
     const [row] = await createPendingActions({
@@ -342,6 +351,27 @@ export function makePendingApprovalHandler(opts: {
       actions: [{ toolCallId: ev.call.id, toolName: ev.call.name, toolArgs: ev.call.args, tier: ev.tier }],
     });
     if (!row) return;
+
+    // Record what the hotel looked like at the moment the AI proposed this.
+    // This is the ONLY place that state is still in hand — buildHotelSnapshot's
+    // output is otherwise stringified into the prompt and discarded, making
+    // "what did the AI see" unreconstructable forever. Fail-soft: a corpus
+    // write must never cost the user their action card.
+    if (opts.corpus) {
+      await recordDecisionProposal({
+        propertyId: opts.propertyId,
+        snapshot: opts.corpus.snapshot,
+        surface: 'chat',
+        actorKind: 'ai_proposed',
+        actorAccountId: opts.accountId,
+        actorRole: opts.corpus.actorRole,
+        conversationId: opts.conversationId,
+        pendingActionId: row.id,
+        toolName: ev.call.name,
+        proposedArgs: ev.call.args,
+        promptVersion: opts.corpus.promptVersion,
+      });
+    }
     opts.send({
       type: 'tool_call_pending_approval',
       pendingActionId: row.id,

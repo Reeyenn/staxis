@@ -26,7 +26,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # fetch-depth: 0 is LOAD-BEARING, not a convenience. The lint chain runs
+      # scripts/audit-eval-regressions.mjs (the ratchet: a `fix(` commit to the
+      # agent/PMS/ingestion code must carry a test). It audits the commit range
+      # of THIS event — github.event.before..after on a push, merge-base..head
+      # on a PR. The default depth-1 checkout has neither endpoint's history, so
+      # the audit cannot see the pushed commits. It fails loudly rather than
+      # passing vacuously, so removing this line turns the gate red, not silent.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:

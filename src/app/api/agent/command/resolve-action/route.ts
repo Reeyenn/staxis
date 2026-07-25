@@ -57,6 +57,7 @@ import {
 } from '@/lib/agent/pending-actions';
 import { buildActionSummary, findAddon } from '@/lib/agent/approval';
 import { validateToolArgs } from '@/lib/agent/validate-tool-args';
+import { recordDecisionResolution, actorKindForDecision } from '@/lib/agent/decisions';
 // Side-effect import — registers all tools against the catalog.
 import '@/lib/agent/tools/index';
 
@@ -247,12 +248,32 @@ export async function POST(req: NextRequest): Promise<Response> {
   const addonNotes: string[] = [];
   const addonErrors: string[] = [];
 
+  // How long the card sat before the human decided. Free at write time and a
+  // real signal — a 40-second pause on a one-tap action means the proposal was
+  // not obviously right. Migration 0350.
+  const decisionMs = Math.max(0, Date.now() - new Date(pending.createdAt).getTime());
+
   if (body.decision === 'deny') {
     // Deny is a TERMINAL 'denied' status — not 'failed'. A denial is a
     // first-class, queryable outcome (allActionsResolved treats 'denied' as
     // terminal; the DB CHECK allows it). Overwriting to 'failed' with a generic
     // error made denials indistinguishable from real execution failures.
-    await finalizePendingAction({ id: pending.id, status: 'denied', error: 'declined by user' });
+    await finalizePendingAction({
+      id: pending.id,
+      status: 'denied',
+      error: 'declined by user',
+      executedArgs: null,
+      decisionMs,
+    });
+    await recordDecisionResolution({
+      propertyId: body.pid,
+      pendingActionId: pending.id,
+      actorKind: 'human_denied',
+      actorAccountId: userCtx.accountId,
+      executedArgs: null,
+      decisionMs,
+      error: 'declined by user',
+    });
     toolResultForModel = 'The user declined this action.';
     toolResultIsError = true;
   } else {
@@ -264,6 +285,21 @@ export async function POST(req: NextRequest): Promise<Response> {
     await finalizePendingAction({
       id: pending.id,
       status: res.ok ? 'executed' : 'failed',
+      result: res.ok ? res.data ?? null : null,
+      error: res.ok ? null : actionError,
+      executedArgs: effectiveArgs,
+      decisionMs,
+    });
+    // The corpus row learns what actually ran. args_diff (proposal vs executed
+    // — the human-correction signal) is computed by a DB trigger, so no call
+    // site can forget it.
+    await recordDecisionResolution({
+      propertyId: body.pid,
+      pendingActionId: pending.id,
+      actorKind: actorKindForDecision('approve', pending.toolArgs, effectiveArgs),
+      actorAccountId: userCtx.accountId,
+      executedArgs: effectiveArgs,
+      decisionMs,
       result: res.ok ? res.data ?? null : null,
       error: res.ok ? null : actionError,
     });
@@ -458,6 +494,13 @@ export async function POST(req: NextRequest): Promise<Response> {
             conversationId: pending.conversationId,
             accountId: userCtx.accountId,
             send,
+            // Decision corpus (0350) — same capture on the resume turn, so a
+            // follow-up proposal is recorded against the state it was made in.
+            corpus: {
+              snapshot,
+              actorRole: userCtx.role,
+              promptVersion: systemPrompt.versionLabel,
+            },
           }),
         });
 

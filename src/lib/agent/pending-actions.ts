@@ -161,6 +161,12 @@ export async function finalizePendingAction(opts: {
   status: 'executed' | 'failed' | 'denied';
   result?: unknown;
   error?: string | null;
+  /** What the tool ACTUALLY ran with (post-edit). `tool_args` keeps the model's
+   *  proposal — it is never overwritten — so without this the human's
+   *  correction is the one thing the row does not record. Migration 0350. */
+  executedArgs?: Record<string, unknown> | null;
+  /** Time from card shown to decision, ms. Hesitation is a free signal. */
+  decisionMs?: number | null;
 }): Promise<void> {
   const { error } = await supabaseAdmin
     .from('agent_pending_actions')
@@ -169,6 +175,8 @@ export async function finalizePendingAction(opts: {
       result: opts.result === undefined ? null : opts.result,
       error: opts.error ?? null,
       resolved_at: new Date().toISOString(),
+      ...(opts.executedArgs !== undefined ? { executed_args: opts.executedArgs } : {}),
+      ...(opts.decisionMs !== undefined ? { decision_ms: opts.decisionMs } : {}),
     })
     .eq('id', opts.id);
   if (error) throw new Error(`finalizePendingAction failed: ${error.message}`);

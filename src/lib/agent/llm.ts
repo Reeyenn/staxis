@@ -256,6 +256,37 @@ export function wrapToolResultForModel(toolName: string, rawContent: string): st
 
 // ─── Client ────────────────────────────────────────────────────────────────
 
+/**
+ * The exact slice of the Anthropic SDK this module calls — nothing more.
+ *
+ * Two call sites in the whole runtime touch the SDK: `messages.create`
+ * (runAgent, sync path) and `messages.stream` (streamAgent, SSE path). Naming
+ * that slice as an interface is what lets an eval hand in a scripted model and
+ * still run the REAL loop — real prompt assembly, real tool dispatch, real
+ * approval gate — with no API spend and no network. See
+ * `src/lib/agent/evals/hermetic-runner.ts`.
+ *
+ * Deliberately NOT a general provider abstraction: it is a test seam. A real
+ * `Anthropic` instance satisfies it structurally, so production is unchanged.
+ */
+export interface AgentMessageStream
+  extends AsyncIterable<Anthropic.Messages.RawMessageStreamEvent> {
+  finalMessage(): Promise<Anthropic.Messages.Message>;
+}
+
+export interface MessagesClient {
+  messages: {
+    create(
+      body: Anthropic.Messages.MessageCreateParamsNonStreaming,
+      options?: { signal?: AbortSignal },
+    ): Promise<Anthropic.Messages.Message>;
+    stream(
+      body: Anthropic.Messages.MessageStreamParams,
+      options?: { signal?: AbortSignal },
+    ): AgentMessageStream;
+  };
+}
+
 let cachedClient: Anthropic | null = null;
 
 function getClient(): Anthropic {
@@ -567,6 +598,13 @@ export interface RunAgentOpts {
    * are byte-for-byte preserved) because its branch is checked first.
    */
   voiceApprovalMode?: boolean;
+  /**
+   * Override the Anthropic client for THIS call. Production never passes it;
+   * the hermetic eval harness passes a scripted fake so the full loop runs
+   * with zero API spend and zero network. When absent, `getClient()` is used
+   * exactly as before (and still throws when ANTHROPIC_API_KEY is missing).
+   */
+  modelClient?: MessagesClient;
 }
 
 export interface RunAgentResult {
@@ -805,7 +843,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   // L4 part B (2026-05-13): caller can override the default tier. The
   // summarizer cron passes 'haiku' for cheaper text-only work.
   const model = opts.model ?? pickModel();
-  const client = getClient();
+  const client: MessagesClient = opts.modelClient ?? getClient();
   const tools = toAnthropicTools(opts.tools);
   const configured = await resolveAgentExecutionPlan(opts, model);
   // resolveAgentExecutionPlan applies the legacy override only to code defaults;
@@ -1113,7 +1151,7 @@ export type AgentEvent =
  */
 export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEvent> {
   const model = opts.model ?? pickModel();
-  const client = getClient();
+  const client: MessagesClient = opts.modelClient ?? getClient();
   const tools = toAnthropicTools(opts.tools);
   let configured;
   try {

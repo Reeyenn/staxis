@@ -33,6 +33,9 @@ interface RetentionEntry {
 
 // ─── Retention windows ─────────────────────────────────────────────────────
 // 2026-07-24: the first three windows were RAISED from 365/90/90 to 5 years.
+// (Correction to the note below: the workflow schedule has been commented out
+// since 2026-05-30, so nothing was actively being deleted — this defuses the
+// re-enable moment rather than stopping a live bleed.)
 // They were sized in May 2026 to bound table bloat for a single hotel. That
 // reasoning is obsolete: these three tables ARE the longitudinal corpus the
 // product's strategy depends on — operational history, AI spend history, and
@@ -50,6 +53,32 @@ interface RetentionEntry {
 // because hoarding short-lived auth capability rows is a privacy negative,
 // not an asset. Retention is per-table on purpose.
 const CORPUS_RETENTION_DAYS = 1825; // 5 years
+/**
+ * Tables this cron may NEVER delete from, and the test that keeps it true.
+ *
+ * The decision corpus is the point of the whole A4-RATCHET workstream: a record
+ * of what the AI proposed, what the hotel looked like at the time, what the
+ * human did about it, and whether it held up. It is the one dataset that cannot
+ * be rebuilt after the fact — the state snapshot is gone the moment the turn
+ * ends. A future edit that adds `agent_decisions` to RETENTION would quietly
+ * delete it 90 days at a time.
+ *
+ * `src/lib/__tests__/retention-purge-exemptions.test.ts` asserts this set and
+ * RETENTION are disjoint AND that every migration-defined table matching
+ * /^agent_decision/ appears here. The guarantee is a test, not a comment.
+ *
+ * NOTE on the schedule: `.github/workflows/ml-retention-purge.yml` has had its
+ * `schedule:` block commented out since 2026-05-30, so nothing is being deleted
+ * today. The risk is the RE-ENABLE moment — the first run after report
+ * ingestion restores data flow deletes everything past the window in one shot.
+ * This exemption list must be correct BEFORE that switch is flipped.
+ */
+export const EXEMPT_FROM_PURGE: ReadonlySet<string> = new Set([
+  'agent_decisions',
+  'agent_pending_actions',
+  'user_feedback',
+  'agent_eval_baselines',
+]);
 
 const RETENTION: ReadonlyArray<RetentionEntry> = [
   { table: 'prediction_log', column: 'logged_at',  days: CORPUS_RETENTION_DAYS },
@@ -77,6 +106,14 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   let degraded = false;
 
   for (const { table, column, days } of RETENTION) {
+    // Runtime twin of the disjointness test: even if the two lists drift in a
+    // future edit, this loop refuses to delete from an exempt table.
+    if (EXEMPT_FROM_PURGE.has(table)) {
+      log.error('retention-purge: refusing to purge an EXEMPT table', { requestId, table });
+      errors[table] = 'table is on EXEMPT_FROM_PURGE — refusing to delete';
+      degraded = true;
+      continue;
+    }
     const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
     try {
       const { count, error } = await supabaseAdmin
