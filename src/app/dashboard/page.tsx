@@ -51,6 +51,9 @@ import { type Complaint, isOverdue, isCallbackDue, isOpenStatus } from '@/lib/co
 import { fetchTodayPropertyCounts, type TodayPropertyCounts } from '@/lib/db/today-room-work';
 import { useTodayStr } from '@/lib/use-today-str';
 import { useFeedStatus } from '@/lib/use-feed-status';
+import { useAsOfLabel } from '@/lib/use-as-of-label';
+import { FeedAsOfLabel } from '@/components/FeedAsOfLabel';
+import type { AsOfLabel } from '@/lib/pms/as-of-label';
 import type { FeedKey } from '@/lib/pms/feed-status';
 import type { Room, WorkOrder } from '@/types';
 import {
@@ -123,12 +126,17 @@ function Delta({ v, size = 12 }: { v: number; size?: number }) {
 }
 
 // ─── ops tile ─────────────────────────────────────────────────────────
-function OpsTile({ label, value, sub, tone }: { label: string; value: React.ReactNode; sub: string; tone?: string }) {
+// `asOf` is the data-age stamp: when a hotel's PMS report runs late the tile
+// keeps its last real number and says WHEN it was taken, instead of blanking.
+// Null for tiles Staxis computes itself (turnover) and for manual hotels,
+// where the app is the system of record and the numbers really are live.
+function OpsTile({ label, value, sub, tone, asOf }: { label: string; value: React.ReactNode; sub: string; tone?: string; asOf?: AsOfLabel | null }) {
   return (
     <div style={{ flex: 1, minWidth: 0 }}>
       <div style={{ ...LABEL, marginBottom: 8 }}>{label}</div>
       <div style={{ fontFamily: SANS, fontWeight: 600, fontSize: 34, lineHeight: 1, letterSpacing: '-0.02em', color: tone || C.ink, fontVariantNumeric: 'tabular-nums' }}>{value}</div>
       <div style={{ fontSize: 12, color: C.ink3, marginTop: 4 }}>{sub}</div>
+      {asOf && <div style={{ marginTop: 3 }}><FeedAsOfLabel label={asOf} /></div>}
     </div>
   );
 }
@@ -251,6 +259,23 @@ export default function DashboardPage() {
   const inHouseState = tileState(['dashboardCounts']);
   const arrivalsState = tileState(['dashboardCounts', 'arrivals']);
   const departuresState = tileState(['departures', 'dashboardCounts']);
+
+  // ── data-age stamps ─────────────────────────────────────────────────
+  // PMS numbers now arrive as scheduled report emails, not a 30s poll, so a
+  // tile can be showing a genuinely useful figure that was taken hours ago.
+  // Rather than blank it, each PMS-sourced tile carries WHEN its number was
+  // taken ("42 · as of 6:40 AM"). The hook returns null — no chip at all —
+  // for a manual hotel (Staxis IS its record) and for a connection that has
+  // never delivered (the tile already says "connecting…"), so nothing changes
+  // for hotels without a PMS. Turnover and the housekeeping count are
+  // computed by Staxis from its own tables, so they carry no PMS stamp.
+  const propertyTz = activeProperty?.timezone ?? null;
+  const inHouseAsOf = useAsOfLabel({ status: feedStatus, feeds: ['dashboardCounts'], timezone: propertyTz });
+  const arrivalsAsOf = useAsOfLabel({ status: feedStatus, feeds: ['dashboardCounts', 'arrivals'], timezone: propertyTz });
+  const departuresAsOf = useAsOfLabel({ status: feedStatus, feeds: ['departures', 'dashboardCounts'], timezone: propertyTz });
+  // The occupancy ring is the headline number on this page; it reads the same
+  // snapshot the counts tiles do, so it gets the same stamp.
+  const occupancyAsOf = useAsOfLabel({ status: feedStatus, feeds: ['dashboardCounts', 'roomStatus'], timezone: propertyTz });
 
   // A room whose status came from the catch-all default is NOT a real dirty
   // while the room-status feed is still learning — counting it would turn a
@@ -605,14 +630,17 @@ export default function DashboardPage() {
             </div>
           </section>
 
-          {/* ring legend */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px 20px', marginTop: -10 }}>
+          {/* ring legend — with the occupancy picture's data-age stamp. The
+              ring shows the last real room mix; the chip says when it was
+              taken so an hours-old picture is never read as "right now". */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px 20px', marginTop: -10 }}>
             {(['occupied', 'departing', 'arriving', 'clean', 'dirty', 'inprog', 'ooo'] as RingKey[]).filter(k => (ringCounts[k] || 0) > 0).map(k => (
               <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.ink2 }}>
                 <span style={{ width: 9, height: 9, borderRadius: 2, background: RING[k] }} />
                 {STATUS[k]} <span style={{ fontFamily: MONO, color: C.ink3 }}>{ringCounts[k]}</span>
               </span>
             ))}
+            {ringReady && !roomStatusLearning && <FeedAsOfLabel label={occupancyAsOf} variant="pill" />}
           </div>
 
           {/* KPI strip — synthetic financials; shown on a demo property only,
@@ -664,27 +692,27 @@ export default function DashboardPage() {
                     inHouseState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
                       : inHouseState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : inHouseState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
-                      : (ES ? 'en casa' : 'in-house'), C.green],
+                      : (ES ? 'en casa' : 'in-house'), C.green, typeof inHouse === 'number' ? inHouseAsOf : null],
                   [ES ? 'Llegadas' : 'Arrivals', arrivals,
                     arrivalsState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
                       : arrivalsState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : arrivalsState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
-                      : (ES ? 'esperadas' : 'expected'), C.greenL],
+                      : (ES ? 'esperadas' : 'expected'), C.greenL, typeof arrivals === 'number' ? arrivalsAsOf : null],
                   [ES ? 'Salidas' : 'Departures', departures,
                     departuresState === 'connecting' ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
                       : departuresState === 'learning' ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
                       : departuresState === 'unavailable' ? (ES ? 'no provisto por el PMS' : 'not in this PMS feed')
-                      : (ES ? 'saliendo' : 'checking out'), C.gold],
+                      : (ES ? 'saliendo' : 'checking out'), C.gold, typeof departures === 'number' ? departuresAsOf : null],
                   // Housekeeping tile is owned by the housekeeping section —
                   // dropped entirely when that section is off for the hotel.
                   ...(housekeepingEnabled ? [[ES ? 'Limpieza' : 'Housekeeping', roomStatusLearning ? '—' : dirtyRooms,
                     connPending ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
                       : roomStatusLearning ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
-                      : (ES ? 'por limpiar' : 'rooms to clean'), C.rust]] : []),
-                  [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink],
-                ] as [string, React.ReactNode, string, string][]).map((o, i) => (
+                      : (ES ? 'por limpiar' : 'rooms to clean'), C.rust, null]] : []),
+                  [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink, null],
+                ] as [string, React.ReactNode, string, string, AsOfLabel | null][]).map((o, i) => (
                   <div key={o[0]} style={{ flex: 1, minWidth: 90, paddingLeft: i ? 22 : 0, borderLeft: i ? `1px solid ${C.line}` : 'none' }}>
-                    <OpsTile label={o[0]} value={o[1]} sub={o[2]} tone={o[3]} />
+                    <OpsTile label={o[0]} value={o[1]} sub={o[2]} tone={o[3]} asOf={o[4]} />
                   </div>
                 ))}
               </div>

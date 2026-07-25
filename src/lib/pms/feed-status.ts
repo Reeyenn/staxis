@@ -257,7 +257,8 @@ export interface AsOfClock {
   time: string;
   /** The IANA zone `time` is expressed in ('UTC' when the property has none). */
   zone: string;
-  /** 'just now' | '22 min ago' | '3 hr 35 min ago' | '2 days ago' */
+  /** 'just now' | '22 min ago' | '3 hr 35 min ago' | '2 days ago' — localized
+   *  when a `lang` is passed ('hace 22 min', …). */
   age: string;
 }
 
@@ -271,9 +272,28 @@ function resolveZone(timezone: string | null | undefined): string {
   }
 }
 
+/**
+ * The two languages the manager-facing UI ships in. Narrow on purpose — the
+ * copilot's own prompt copy is English-only (it is instructions to a model,
+ * not user-visible text), so 'en' stays the default and every existing caller
+ * is untouched.
+ */
+export type AsOfLang = 'en' | 'es';
+
 /** Human age wording. Deliberately coarse — hotel staff read "about an hour",
  *  not "63.4 minutes". */
-export function formatAge(minutes: number): string {
+export function formatAge(minutes: number, lang: AsOfLang = 'en'): string {
+  if (lang === 'es') {
+    if (minutes < 1) return 'ahora mismo';
+    if (minutes < 60) return `hace ${minutes} min`;
+    if (minutes < 1440) {
+      const hr = Math.floor(minutes / 60);
+      const min = minutes % 60;
+      return min === 0 ? `hace ${hr} h` : `hace ${hr} h ${min} min`;
+    }
+    const d = Math.floor(minutes / 1440);
+    return `hace ${d} ${d === 1 ? 'día' : 'días'}`;
+  }
   if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes} min ago`;
   if (minutes < 1440) {
@@ -290,11 +310,17 @@ export function formatAge(minutes: number): string {
  * limited-service hotel staff). The date prefix appears ONLY when the capture
  * is not on the property's local today, so the common case stays short.
  * Returns null for an unusable timestamp.
+ *
+ * The CLOCK itself is deliberately identical in both languages (US 12-hour
+ * AM/PM): the same hotel's EN and ES screens must quote the same "6:40 AM" or
+ * a bilingual team ends up comparing two different-looking stamps for one
+ * report. Only `age` — the surrounding words — is localized.
  */
 export function formatAsOfClock(
   capturedAt: string,
   timezone: string | null,
   now: Date,
+  lang: AsOfLang = 'en',
 ): AsOfClock | null {
   const at = new Date(capturedAt);
   if (Number.isNaN(at.getTime())) return null;
@@ -310,7 +336,7 @@ export function formatAsOfClock(
     const time = sameLocalDay
       ? clock
       : `${new Intl.DateTimeFormat('en-US', { timeZone: zone, month: 'short', day: 'numeric' }).format(at)}, ${clock}`;
-    return { time, zone, age: formatAge(freshnessAgeMinutes(capturedAt, now) ?? 0) };
+    return { time, zone, age: formatAge(freshnessAgeMinutes(capturedAt, now) ?? 0, lang) };
   } catch {
     return null;
   }
@@ -486,6 +512,21 @@ export function countsTrusted(status: PropertyFeedStatus): boolean {
 export function countsFresh(status: PropertyFeedStatus): boolean {
   if (status.mode !== 'live') return true; // manual/onboarding: render as today
   return status.feeds.dashboardCounts === 'live' && status.connection !== 'pending';
+}
+
+/**
+ * Does this feed's number come from something that actually happened?
+ *
+ * 'stale' says yes: the report was real, it is merely old — SHOW the number
+ * and stamp it "as of 6:40 AM". 'learning' / 'unavailable' say no: there is no
+ * number, and the surface says why instead.
+ *
+ * One definition, three consumers (the server's derived-tile queries, the
+ * dashboard tiles, the as-of label) — the split between "real" and "current"
+ * is exactly the thing that must not drift.
+ */
+export function feedHasRealSource(state: FeedState): boolean {
+  return state === 'live' || state === 'stale';
 }
 
 /** The feeds whose numbers are real but past their promised arrival — the

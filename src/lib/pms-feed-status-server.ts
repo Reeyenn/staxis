@@ -29,6 +29,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 import {
   deriveFeedStatus,
+  feedHasRealSource,
   NO_FRESHNESS,
   NO_PMS_FEED_STATUS,
   type FeedFreshness,
@@ -244,18 +245,18 @@ async function fetchFreshness(
  * and letting the surface stamp it "as of 6:40 AM" is the honest render.
  * Gating these queries on 'live' alone would blank the tiles the moment a
  * report ran late, which is the behaviour 'stale' exists to replace.
+ *
+ * The predicate itself is `feedHasRealSource` in src/lib/pms/feed-status.ts —
+ * shared with the dashboard's as-of label so the "we fetched it" and "we
+ * stamped it" decisions can never disagree.
  */
-function hasRealSource(state: PropertyFeedStatus['feeds'][keyof PropertyFeedStatus['feeds']]): boolean {
-  return state === 'live' || state === 'stale';
-}
-
 async function fetchDerived(
   propertyId: string,
   status: PropertyFeedStatus,
 ): Promise<NonNullable<PropertyFeedStatus['derived']>> {
   const derived: NonNullable<PropertyFeedStatus['derived']> = {};
 
-  if (hasRealSource(status.feeds.dashboardCounts)) {
+  if (feedHasRealSource(status.feeds.dashboardCounts)) {
     try {
       const { data } = await supabaseAdmin
         .from('pms_in_house_snapshot')
@@ -273,7 +274,7 @@ async function fetchDerived(
     }
   }
 
-  if (hasRealSource(status.feeds.arrivals)) {
+  if (feedHasRealSource(status.feeds.arrivals)) {
     try {
       const { data: prop } = await supabaseAdmin
         .from('properties')
