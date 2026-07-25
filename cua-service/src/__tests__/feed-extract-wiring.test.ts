@@ -298,11 +298,17 @@ describe('net-new feeds: getRoomLayout / getDashboardCounts / getHistoricalOccup
     assert.equal(byTable.getRoomLayout!.tableName, 'pms_rooms_inventory');
     assert.deepEqual(byTable.getRoomLayout!.keys, ['property_id', 'room_number']);
 
-    assert.equal(byTable.getDashboardCounts!.tableName, 'pms_in_house_snapshot');
-    assert.deepEqual(byTable.getDashboardCounts!.keys, ['property_id']);
+    // Migration 0343: every reading of the live counts is its own row, so the
+    // key gained observed_at and the strategy became append. A key of
+    // ['property_id'] here is the bug that kept one occupancy row per hotel.
+    assert.equal(byTable.getDashboardCounts!.tableName, 'pms_occupancy_observation');
+    assert.deepEqual(byTable.getDashboardCounts!.keys, ['property_id', 'observed_at']);
+    assert.equal(byTable.getDashboardCounts!.writeStrategy, 'append');
 
+    // Migration 0343: `date` became business_date (it is an accounting day) and
+    // as_of joined the key so a corrected report cannot destroy the original.
     assert.equal(byTable.getHistoricalOccupancy!.tableName, 'pms_revenue_daily');
-    assert.deepEqual(byTable.getHistoricalOccupancy!.keys, ['property_id', 'date']);
+    assert.deepEqual(byTable.getHistoricalOccupancy!.keys, ['property_id', 'business_date', 'as_of']);
 
     // None flagged incomplete (each has a source url).
     for (const t of templates) assert.equal(t.incomplete, undefined);

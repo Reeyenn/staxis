@@ -256,3 +256,86 @@ Investigate; don't just heal and move on.
   `memory-redact.test.ts`. Code-level and imperfect by nature (regex) — one layer
   of several (also: management-gated hotel writes, guest-data-default-deny);
   documented gap, not a hard guarantee.
+
+## PMS time model (migrations 0343 / 0344)
+
+The agent answers "how did we do on the 9th?" and "how is next weekend
+filling?" out of these tables. Before 0343 neither question had an answer:
+occupancy held one row per hotel and booking pace collapsed a stay night's
+whole history into a single row.
+
+- **INV-TIME-1 — the writer registry cannot lie about the schema.** Every
+  `pms_table_schemas` row names a real base table (not a view), its
+  `natural_key` is backed by an actual non-partial UNIQUE index, and its
+  `time_grain` is consistent with its `write_strategy` and its columns
+  (observation ⇒ append; daily_fact ⇒ has `business_date`, with `business_date`
+  AND `as_of` in the key; as_of_grid ⇒ `as_of` or `snapshot_date` in the key).
+  **Enforced by:** trigger `staxis_pms_registry_matches_reality()` BEFORE INSERT
+  OR UPDATE on `pms_table_schemas` (0343). **Surfaced by:**
+  `staxis_pms_registry_violations()` → the `/api/admin/doctor` check
+  `pms_time_model_ok`, polled every 5 minutes by vercel-watchdog. **Assumed
+  by:** `cua-service/src/persistence/generic-table-writer.ts`, which builds its
+  ON CONFLICT target from `natural_key` — a key with no index behind it silently
+  duplicates every poll instead of upserting. **History:** D2-TIME 2026-07-24.
+
+- **INV-TIME-2 — a PMS daily fact's business date is the date the report
+  printed.** It is never derived from a timestamp. **Enforced by:**
+  `business_date_source text NOT NULL CHECK (IN ('report_printed',
+  'operator_entered'))` on `pms_revenue_daily`, `pms_payments_daily`,
+  `pms_channel_performance` (0343) — NOT NULL with **no default**, so a writer
+  that will not say where the date came from cannot insert at all, and there is
+  no `'derived'` value in the domain to record. **Assumed by:**
+  `src/lib/business-date.ts` (`businessDateFromReport` is the only sanctioned
+  path for a daily fact; `businessDate(property, instant)` is for observations
+  and for choosing which day to seal).
+
+- **INV-TIME-3 — occupancy is never overwritten.** Each reading of the live
+  in-house counts is a distinct row identified by when it was observed.
+  **Enforced by:** `pms_occupancy_observation` UNIQUE (property_id,
+  observed_at) + `observed_at` NOT NULL + the append-only trigger below; the old
+  PRIMARY KEY (property_id) is dropped (0343). The old name survives as a
+  DISTINCT ON view so every existing reader keeps its column contract.
+
+- **INV-TIME-4 — booking pace is stored as-of.** On-the-books figures for a stay
+  night are keyed by the day they were observed, so thirty readings ARE the
+  pickup curve. **Enforced by:** `pms_booking_pace` UNIQUE (property_id,
+  as_of_date, stay_date) + CHECK (stay_date >= as_of_date - 1) (0343).
+  **Assumed by:** `src/lib/agent/tools/pms-feeds.ts` `get_future_bookings`.
+
+- **INV-TIME-5 — a restatement never destroys the report it corrects, and never
+  double-counts.** Corrections land as a new `as_of` generation; current truth
+  is the newest generation. **Enforced by:** UNIQUE (property_id, business_date,
+  as_of[, dimension]) on the daily facts + the `*_current` DISTINCT ON views
+  (0343). **Assumed by — every range reader MUST use the view:**
+  `src/lib/financials/revenue.ts` (`pms_revenue_daily_current`,
+  `pms_forecast_daily_current`), `src/app/api/dashboard/labor-cost/route.ts`,
+  `src/lib/agent/tools/pms-feeds.ts` (`pms_payments_daily_current`). Summing a
+  base table over a range counts a restated day twice. **Backed by:**
+  `pms-as-of-readers.test.ts` (money) + `pms-time-model-invariants.integration.test.ts`
+  (the view semantics).
+
+- **INV-TIME-6 — a changed PMS entity is recorded before the old value is
+  lost.** **Enforced by:** AFTER UPDATE trigger `staxis_pms_log_entity_change()`
+  on `pms_reservations`, `pms_guests`, `pms_guest_balances`,
+  `pms_work_orders_v2`, `pms_rooms_inventory` → `pms_entity_change_log` (0343).
+  Cannot be bypassed by the CUA writer, an API route, or direct psql. Returns
+  early when only bookkeeping columns moved, which is what keeps a 30-second
+  poll cadence free.
+
+- **INV-TIME-7 — observations are append-only.** **Enforced by:** REVOKE UPDATE,
+  DELETE FROM service_role + trigger `staxis_pms_observation_immutable()` on
+  `pms_room_status_log`, `pms_activity_log`, `pms_occupancy_observation`,
+  `pms_booking_pace`, `pms_entity_change_log` (0343). Two carve-outs, both
+  explicit: the SECURITY DEFINER `staxis_pms_purge_observations()` retention
+  path, and a property cascade (delete-hotel is a 129-FK cascade off one
+  `properties` DELETE and must not be bricked).
+
+- **INV-TIME-8 — a daily_logs bucket is NULL or it names its source; a missing
+  feed can never seal as zero.** **Enforced by:** paired CHECKs
+  `daily_logs_<bucket>_source_domain` / `_required` (0344). ADR, RevPAR,
+  occupancy % and day-of-week are `GENERATED ALWAYS ... STORED`, so a client
+  that tries to write a derived number gets 428C9 and the derived value can
+  never disagree with the counts it claims to come from. **Careful:**
+  `daily_logs.occupied` (legacy, robot-derived, read by ml-service
+  `_exposure.py`) and `daily_logs.rooms_sold` (report-printed) are two different
+  numbers on one row — anything showing one must say which.

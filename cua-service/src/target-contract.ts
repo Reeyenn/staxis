@@ -306,10 +306,12 @@ export const TARGET_VALUE_CONTRACTS: Partial<
   // None carry an enum column, so a dashboard/inventory/revenue report needs
   // ONLY generic format parsers (integer / numeric / currency / date). Mirrors
   // the LIVE pms_table_schemas descriptors (migration 0207, unchanged by
-  // 0209/0224/0237). Writer-stamped timestamptz (pms_in_house_snapshot's
-  // captured_at) is excluded, same as the other feeds above.
+  // 0209/0224/0237). Writer-stamped timestamptz (pms_occupancy_observation's
+  // observed_at) is excluded, same as the other feeds above.
   getDashboardCounts: {
-    table: 'pms_in_house_snapshot',
+    // Renamed from pms_in_house_snapshot in 0343 — that name is now a view of
+    // the newest row, and a writer cannot target a view.
+    table: 'pms_occupancy_observation',
     columns: [
       { name: 'total_guests_in_house', type: 'integer' },
       { name: 'total_occupied_rooms', type: 'integer' },
@@ -331,7 +333,10 @@ export const TARGET_VALUE_CONTRACTS: Partial<
   getHistoricalOccupancy: {
     table: 'pms_revenue_daily',
     columns: [
-      { name: 'date', type: 'date' },
+      // Renamed from `date` by migration 0343 — it is an accounting day, and
+      // the name now says so. A contract naming a column the table no longer
+      // has makes PostgREST reject the whole batch, not just that column.
+      { name: 'business_date', type: 'date' },
       { name: 'rooms_revenue_cents', type: 'bigint' },
       { name: 'fnb_revenue_cents', type: 'bigint' },
       { name: 'tax_cents', type: 'bigint' },
@@ -369,20 +374,19 @@ export const TARGET_VALUE_CONTRACTS: Partial<
       { name: 'total_collected_cents', type: 'bigint' },
     ],
   },
+  // Booking PACE, not a second copy of the reservation list. pms_future_bookings
+  // was dropped in 0343: it duplicated pms_reservations column for column, and
+  // its key (property_id, pms_reservation_id) made a pickup curve unqueryable.
+  // What a pace report actually carries is one aggregate row per stay night.
   getFutureBookings: {
-    table: 'pms_future_bookings',
+    table: 'pms_booking_pace',
     columns: [
-      { name: 'pms_reservation_id', type: 'text' },
-      { name: 'guest_name', type: 'text' },
-      { name: 'room_number', type: 'text' },
-      { name: 'room_type', type: 'text' },
-      { name: 'arrival_date', type: 'date' },
-      { name: 'departure_date', type: 'date' },
-      { name: 'num_nights', type: 'integer' },
-      { name: 'rate_per_night_cents', type: 'bigint' },
-      { name: 'total_amount_cents', type: 'bigint' },
-      { name: 'status', type: 'text' },
-      { name: 'channel_name', type: 'text' },
+      { name: 'as_of_date', type: 'date' },
+      { name: 'stay_date', type: 'date' },
+      { name: 'rooms_otb', type: 'integer' },
+      { name: 'revenue_otb_cents', type: 'bigint' },
+      { name: 'adr_otb_cents', type: 'bigint' },
+      { name: 'rooms_available', type: 'integer' },
     ],
   },
   getNoShows: {

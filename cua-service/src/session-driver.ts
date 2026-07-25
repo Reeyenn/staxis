@@ -181,7 +181,9 @@ export function decideNoKnowledgeFileAction(
 // Lower number = runs earlier. Dashboard / in-house snapshot first
 // (cheapest, most-displayed); then list pages; then drill-down.
 const TABLE_PRIORITY: Record<string, number> = {
-  pms_in_house_snapshot: 1,
+  // Renamed from pms_in_house_snapshot by migration 0343; a table missing from
+  // this map sorts last, so a stale name silently deprioritizes the feed.
+  pms_occupancy_observation: 1,
   pms_reservations: 2,
   pms_rooms_inventory: 3,
   pms_room_status_log: 4,

@@ -151,6 +151,12 @@ const checks: Array<[string, CheckFn]> = [
   //     never landed, and files quarantined before any parse.
   ['pms_lineage_columns_complete', checkPmsLineageColumns],
   ['pms_report_intake_health',     checkPmsReportIntakeHealth],
+  // Time model (migration 0343). pms_table_schemas is the descriptor every PMS
+  // writer reads before it writes; when it drifts from the physical schema the
+  // symptom is silent — duplicated rows, or a feed that has simply never
+  // written anything. The trigger prevents new drift; this catches drift caused
+  // some other way (a hand-run ALTER, a dropped index) within 5 minutes.
+  ['pms_time_model_ok',            checkPmsTimeModel],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1109,6 +1115,46 @@ async function checkPmsLineageColumns(): Promise<Omit<Check, 'name' | 'durationM
       status: 'fail',
       detail: `${gaps.length} pms_* table(s) missing lineage: ${gaps.map((g) => `${g.missing_table} (${g.reason})`).join('; ')}`,
       fix: 'Add `ingest_run_id uuid not null references pms_ingest_runs(id) on delete cascade` to each table, backfill it, and stamp it in the writer. See migration 0341.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * INVARIANT TRIPWIRE — "the writer registry cannot lie about the schema."
+ *
+ * staxis_pms_registry_violations() (migration 0343) compares every
+ * pms_table_schemas row against the real database: does the table exist, is it
+ * a base table rather than a view, does its declared natural_key have an actual
+ * UNIQUE index behind it, and is its declared time grain consistent with its
+ * write strategy and columns.
+ *
+ * FAIL, not warn. A natural_key with no unique index means every poll appends
+ * duplicates instead of upserting; a stale table_name means a feed that has
+ * never once written a row. Both look like healthy silence from the outside.
+ */
+async function checkPmsTimeModel(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin.rpc('staxis_pms_registry_violations');
+    if (error) {
+      if (errToString(error).includes('does not exist') || (error as { code?: string }).code === 'PGRST202') {
+        return {
+          status: 'warn',
+          detail: 'staxis_pms_registry_violations() not present — migration 0343 has not been applied yet.',
+          fix: 'Apply supabase/migrations/0343_pms_time_model.sql (after 0342). Idempotent.',
+        };
+      }
+      return { status: 'warn', detail: `staxis_pms_registry_violations() failed: ${errToString(error)}` };
+    }
+    const rows = (data ?? []) as Array<{ table_name: string; violation: string }>;
+    if (rows.length === 0) {
+      return { status: 'ok', detail: 'every pms_table_schemas row matches the real schema' };
+    }
+    return {
+      status: 'fail',
+      detail: `${rows.length} registry row(s) disagree with the schema: ${rows.map((r) => `${r.table_name} (${r.violation})`).join('; ')}`,
+      fix: 'Either fix the pms_table_schemas row or add the missing index/column. The BEFORE INSERT OR UPDATE trigger staxis_pms_registry_matches_reality() blocks new drift, so a violation here means the SCHEMA moved under a valid row.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

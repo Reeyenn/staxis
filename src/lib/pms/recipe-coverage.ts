@@ -126,7 +126,10 @@ export const ACTION_FEED_CONTRACTS: Record<string, ActionFeedContract> = {
   getArrivals:            { label: 'Arrivals',              table: 'pms_reservations' },
   getDepartures:          { label: 'Departures',            table: 'pms_reservations' },
   getWorkOrders:          { label: 'Work orders',           table: 'pms_work_orders_v2' },
-  getDashboardCounts:     { label: 'Dashboard counts',      table: 'pms_in_house_snapshot' },
+  // pms_occupancy_observation, not the pms_in_house_snapshot compat view: the
+  // view is DISTINCT ON (property_id) and would report "1 row" forever, which
+  // is exactly the thing migration 0343 stopped being true.
+  getDashboardCounts:     { label: 'Dashboard counts',      table: 'pms_occupancy_observation' },
   getRoomLayout:          { label: 'Room layout',           table: 'pms_rooms_inventory' },
   getHistoricalOccupancy: { label: 'Historical occupancy',  table: 'pms_revenue_daily' },
   getRevenueDaily:        { label: 'Daily revenue',         table: 'pms_revenue_daily' },
@@ -139,7 +142,7 @@ export const ACTION_FEED_CONTRACTS: Record<string, ActionFeedContract> = {
   getGuests:              { label: 'Guests',                table: 'pms_guests' },
   getGuestBalances:       { label: 'Guest balances',        table: 'pms_guest_balances' },
   getPaymentsDaily:       { label: 'Daily payments',        table: 'pms_payments_daily' },
-  getFutureBookings:      { label: 'Future bookings',       table: 'pms_future_bookings' },
+  getFutureBookings:      { label: 'Booking pace',          table: 'pms_booking_pace' },
   getNoShows:             { label: 'No-shows',              table: 'pms_no_shows' },
   getCancellations:       { label: 'Cancellations',         table: 'pms_cancellations' },
 };

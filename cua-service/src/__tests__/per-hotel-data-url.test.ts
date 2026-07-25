@@ -203,11 +203,12 @@ describe('rehostFeedUrl applied to recipeToTableTemplates output (source.url + r
 
 // ─── Task 2 — descriptor fixtures verbatim from migration 0207 ───────────────
 
+// Reshaped by migration 0343: append-only, keyed by WHEN the reading was taken.
 const IN_HOUSE_DESCRIPTOR: TableSchemaDescriptor = {
-  table_name: 'pms_in_house_snapshot',
-  write_strategy: 'upsert',
+  table_name: 'pms_occupancy_observation',
+  write_strategy: 'append',
   snapshot_scope_default: 'full',
-  natural_key: ['property_id'],
+  natural_key: ['property_id', 'observed_at'],
   reconcile_key_field: null,
   columns: [
     { name: 'total_guests_in_house', type: 'integer', required: false, nullable: true, range_min: 0 },
@@ -215,7 +216,7 @@ const IN_HOUSE_DESCRIPTOR: TableSchemaDescriptor = {
     { name: 'total_vacant_clean', type: 'integer', required: false, nullable: true, range_min: 0 },
     { name: 'arrivals_remaining_today', type: 'integer', required: true, nullable: false, range_min: 0 },
     { name: 'departures_remaining_today', type: 'integer', required: true, nullable: false, range_min: 0 },
-    { name: 'captured_at', type: 'timestamptz', required: true, nullable: false },
+    { name: 'observed_at', type: 'timestamptz', required: true, nullable: false },
   ],
 };
 
@@ -238,10 +239,12 @@ const REVENUE_DESCRIPTOR: TableSchemaDescriptor = {
   table_name: 'pms_revenue_daily',
   write_strategy: 'upsert',
   snapshot_scope_default: 'full',
-  natural_key: ['property_id', 'date'],
+  // 0343: `date` -> business_date, and as_of joined the key so a corrected
+  // report lands as a new generation instead of overwriting the day.
+  natural_key: ['property_id', 'business_date', 'as_of'],
   reconcile_key_field: null,
   columns: [
-    { name: 'date', type: 'date', required: true, nullable: false },
+    { name: 'business_date', type: 'date', required: true, nullable: false },
     { name: 'rooms_revenue_cents', type: 'bigint', required: true, nullable: false, range_min: 0 },
     { name: 'fnb_revenue_cents', type: 'bigint', required: false, nullable: true, range_min: 0 },
     { name: 'tax_cents', type: 'bigint', required: false, nullable: true, range_min: 0 },
@@ -278,17 +281,17 @@ function pipelineRow(
 }
 
 describe('Task 2 — the 3 feeds now extract-and-WRITE (raw DOM strings → parsers → validateRows PASS)', () => {
-  test('getDashboardCounts: string counts normalize → pms_in_house_snapshot row PASSES', () => {
+  test('getDashboardCounts: string counts normalize → pms_occupancy_observation row PASSES', () => {
     const cols = {
       total_guests_in_house: 's.g', total_occupied_rooms: 's.occ', total_vacant_clean: 's.vc',
       arrivals_remaining_today: 's.arr', departures_remaining_today: 's.dep',
     };
     const raw = { 's.g': '60', 's.occ': '42', 's.vc': '10', 's.arr': '5', 's.dep': '3' };
-    const row = pipelineRow('getDashboardCounts', 'pms_in_house_snapshot', cols, raw);
+    const row = pipelineRow('getDashboardCounts', 'pms_occupancy_observation', cols, raw);
     assert.equal(row.total_occupied_rooms, 42);            // generic_integer "42" → 42 (was a rejecting string)
     assert.equal(row.arrivals_remaining_today, 5);
-    // captured_at is writer-stamped (required timestamptz) — mirror that here.
-    const v = validateRows([{ ...row, property_id: PID, captured_at: '2026-06-10T12:00:00.000Z' }], IN_HOUSE_DESCRIPTOR);
+    // observed_at is writer-stamped (required timestamptz) — mirror that here.
+    const v = validateRows([{ ...row, property_id: PID, observed_at: '2026-06-10T12:00:00.000Z' }], IN_HOUSE_DESCRIPTOR);
     assert.equal(v.rejected.length, 0, JSON.stringify(v.rejected));
     assert.equal(v.valid.length, 1);
   });
@@ -305,7 +308,7 @@ describe('Task 2 — the 3 feeds now extract-and-WRITE (raw DOM strings → pars
 
   test('getHistoricalOccupancy: currency/percent strings normalize → pms_revenue_daily row PASSES', () => {
     const cols = {
-      date: 's.d', rooms_revenue_cents: 's.rev', fnb_revenue_cents: 's.fnb', tax_cents: 's.tax',
+      business_date: 's.d', rooms_revenue_cents: 's.rev', fnb_revenue_cents: 's.fnb', tax_cents: 's.tax',
       occupied_rooms: 's.occ', occupancy_pct: 's.pct', adr_cents: 's.adr', revpar_cents: 's.rp',
     };
     const raw = {
@@ -328,7 +331,7 @@ describe('Task 2 — the 3 feeds now extract-and-WRITE (raw DOM strings → pars
   test('contrast: the SAME revenue row WITHOUT the parser contract rejects on type', () => {
     // Prove the contract is load-bearing: feed validateRows the raw strings.
     const v = validateRows([{
-      property_id: PID, date: '2026-06-10', rooms_revenue_cents: '$12,345.00',
+      property_id: PID, business_date: '2026-06-10', rooms_revenue_cents: '$12,345.00',
       occupied_rooms: '42', occupancy_pct: '75.5%', adr_cents: '$120.00', revpar_cents: '$90.60',
     }], REVENUE_DESCRIPTOR);
     assert.equal(v.valid.length, 0);
@@ -341,7 +344,7 @@ describe('Task 2 — the 3 feeds now extract-and-WRITE (raw DOM strings → pars
     // stops layer-2 (validateRevenueDaily) from double-rejecting a row layer-1
     // already accepts. Making occupancy-only rows WRITE needs a descriptor change
     // (a migration) — out of this change's owned scope. This pins that boundary.
-    const occOnly = { property_id: PID, date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80 };
+    const occOnly = { property_id: PID, business_date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80 };
     assert.deepEqual(validateRevenueDaily(occOnly), { ok: true });   // layer-2 allows it
     const v = validateRows([occOnly], REVENUE_DESCRIPTOR);            // layer-1 still gates it
     assert.equal(v.valid.length, 0);
@@ -359,7 +362,7 @@ describe('Task 2 — parserForLearnedColumn resolves for the 3 newly-wired feeds
   });
 
   test('getHistoricalOccupancy date/currency/numeric columns map to the right generic parsers', () => {
-    assert.equal(parserForLearnedColumn('getHistoricalOccupancy', 'date'), 'generic_date');
+    assert.equal(parserForLearnedColumn('getHistoricalOccupancy', 'business_date'), 'generic_date');
     assert.equal(parserForLearnedColumn('getHistoricalOccupancy', 'rooms_revenue_cents'), 'generic_currency');
     assert.equal(parserForLearnedColumn('getHistoricalOccupancy', 'adr_cents'), 'generic_currency');
     assert.equal(parserForLearnedColumn('getHistoricalOccupancy', 'occupied_rooms'), 'generic_integer');
@@ -367,7 +370,7 @@ describe('Task 2 — parserForLearnedColumn resolves for the 3 newly-wired feeds
   });
 
   test('the 3 feeds are present with the table names that match recipe-adapter routes', () => {
-    assert.equal(TARGET_VALUE_CONTRACTS.getDashboardCounts?.table, 'pms_in_house_snapshot');
+    assert.equal(TARGET_VALUE_CONTRACTS.getDashboardCounts?.table, 'pms_occupancy_observation');
     assert.equal(TARGET_VALUE_CONTRACTS.getRoomLayout?.table, 'pms_rooms_inventory');
     assert.equal(TARGET_VALUE_CONTRACTS.getHistoricalOccupancy?.table, 'pms_revenue_daily');
   });
@@ -378,7 +381,7 @@ describe('Task 2 — parserForLearnedColumn resolves for the 3 newly-wired feeds
 describe('Task 3 — validateRevenueDaily: present-only metric checks', () => {
   test('an occupancy-only row (no revenue/ADR/RevPAR) PASSES layer-2', () => {
     assert.deepEqual(
-      validateRevenueDaily({ date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80 }),
+      validateRevenueDaily({ business_date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80 }),
       { ok: true },
     );
   });
@@ -386,7 +389,7 @@ describe('Task 3 — validateRevenueDaily: present-only metric checks', () => {
   test('null metrics (the writer\'s "not extracted" sentinel) are treated as absent', () => {
     assert.deepEqual(
       validateRevenueDaily({
-        date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80,
+        business_date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80,
         rooms_revenue_cents: null, adr_cents: null, revpar_cents: null,
       }),
       { ok: true },
@@ -396,7 +399,7 @@ describe('Task 3 — validateRevenueDaily: present-only metric checks', () => {
   test('a full, self-consistent revenue row still PASSES', () => {
     assert.deepEqual(
       validateRevenueDaily({
-        date: '2026-06-10', occupied_rooms: 42, occupancy_pct: 75.5,
+        business_date: '2026-06-10', occupied_rooms: 42, occupancy_pct: 75.5,
         rooms_revenue_cents: 1234500, adr_cents: 12000, revpar_cents: 9060,
       }),
       { ok: true },
@@ -404,14 +407,14 @@ describe('Task 3 — validateRevenueDaily: present-only metric checks', () => {
   });
 
   test('a PRESENT but invalid metric still rejects (leniency ≠ skipping the check)', () => {
-    assert.equal(validateRevenueDaily({ date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80, adr_cents: -5 }).ok, false);
-    assert.equal(validateRevenueDaily({ date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 150 }).ok, false); // pct > 100
-    assert.equal(validateRevenueDaily({ date: '2026-06-10', occupied_rooms: 40, rooms_revenue_cents: 1.5 }).ok, false);
+    assert.equal(validateRevenueDaily({ business_date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 80, adr_cents: -5 }).ok, false);
+    assert.equal(validateRevenueDaily({ business_date: '2026-06-10', occupied_rooms: 40, occupancy_pct: 150 }).ok, false); // pct > 100
+    assert.equal(validateRevenueDaily({ business_date: '2026-06-10', occupied_rooms: 40, rooms_revenue_cents: 1.5 }).ok, false);
   });
 
   test('the RevPAR cross-check still fires when ADR + occ + RevPAR are all present', () => {
     const bad = validateRevenueDaily({
-      date: '2026-06-10', occupied_rooms: 42, occupancy_pct: 75.5,
+      business_date: '2026-06-10', occupied_rooms: 42, occupancy_pct: 75.5,
       adr_cents: 12000, revpar_cents: 1, // wildly off vs ADR×occ
     });
     assert.equal(bad.ok, false);
@@ -420,6 +423,6 @@ describe('Task 3 — validateRevenueDaily: present-only metric checks', () => {
 
   test('still requires date and occupied_rooms (nothing else loosened)', () => {
     assert.equal(validateRevenueDaily({ occupied_rooms: 40, occupancy_pct: 80 }).ok, false);        // no date
-    assert.equal(validateRevenueDaily({ date: '2026-06-10', occupancy_pct: 80 }).ok, false);        // no occupied_rooms
+    assert.equal(validateRevenueDaily({ business_date: '2026-06-10', occupancy_pct: 80 }).ok, false);        // no occupied_rooms
   });
 });

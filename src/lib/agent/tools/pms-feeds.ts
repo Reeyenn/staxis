@@ -1,15 +1,29 @@
 // ─── PMS money / booking feed query tools (feat/pms-universal-translate) ─────
-// Read-only access to the 4 new universal PMS feeds (migration 0276):
-//   • get_outstanding_balances → pms_guest_balances  ("who owes a balance?")
-//   • get_payments_summary     → pms_payments_daily   ("how much did we collect today?")
-//   • get_future_bookings      → pms_future_bookings  ("how booked are we next weekend?")
-//   • get_recent_no_shows      → pms_no_shows         ("any no-shows last night?")
+// Read-only access to the universal PMS feeds (migration 0276):
+//   • get_outstanding_balances → pms_guest_balances          ("who owes a balance?")
+//   • get_payments_summary     → pms_payments_daily_current  ("how much did we collect today?")
+//   • get_future_bookings      → pms_reservations + pms_booking_pace
+//                                                            ("how booked are we next weekend?")
+//   • get_recent_no_shows      → pms_no_shows                ("any no-shows last night?")
 //   • get_recent_cancellations → pms_cancellations
 //
 // These pms_* tables are RLS deny-all-browser (migration 0276) — they MUST be
 // read with the service-role client and scoped by ctx.propertyId (tenant
 // isolation). Money is stored as integer cents; surfaced to the model as USD
 // strings + raw cents. All read-only (mutates:false).
+//
+// AS-OF GRAIN (migration 0343). Two things changed under this file:
+//   1. pms_payments_daily is restatable — a corrected report lands as a new
+//      as_of generation for the same business_date instead of overwriting it.
+//      Reading the base table would now return several rows for one day and
+//      .maybeSingle() would fail on the second one, so both reads here go
+//      through pms_payments_daily_current (newest generation per day).
+//   2. pms_future_bookings is GONE. It duplicated pms_reservations down to
+//      arrival_date / departure_date / status / rate / channel, and its key
+//      (property_id, pms_reservation_id) meant a stay date seen on thirty
+//      different days collapsed into one row — a booking pace curve that could
+//      never be drawn. Individual future stays now come from pms_reservations;
+//      the aggregate on-the-books curve comes from pms_booking_pace.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { registerTool, type ToolResult } from '../tools';
@@ -97,7 +111,7 @@ registerTool<{ date?: string }>({
     const today = await getPropertyToday(ctx.propertyId);
     const target = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : today;
     const { data, error } = await supabaseAdmin
-      .from('pms_payments_daily')
+      .from('pms_payments_daily_current')
       .select('business_date, cash_collected_cents, card_collected_cents, deposits_collected_cents, total_collected_cents, captured_at')
       .eq('property_id', ctx.propertyId)
       .eq('business_date', target)
@@ -106,7 +120,7 @@ registerTool<{ date?: string }>({
     if (!data) {
       // Fall back to the most recent day we have, so the model can still answer.
       const { data: latest } = await supabaseAdmin
-        .from('pms_payments_daily')
+        .from('pms_payments_daily_current')
         .select('business_date, cash_collected_cents, card_collected_cents, deposits_collected_cents, total_collected_cents')
         .eq('property_id', ctx.propertyId)
         .order('business_date', { ascending: false })
@@ -143,10 +157,15 @@ registerTool<{ date?: string }>({
 
 // ─── get_future_bookings ─────────────────────────────────────────────────────
 
+/** Cancelled / no-show rows are not "on the books" — counting them would
+ *  overstate how full next weekend is. NULL status is kept: several PMS
+ *  families leave it blank on an ordinary confirmed booking. */
+const ON_THE_BOOKS_STATUSES = ['booked', 'checked_in'] as const;
+
 registerTool<{ startDate?: string; endDate?: string }>({
   name: 'get_future_bookings',
   description:
-    'List upcoming on-the-books reservations by arrival date (booking pace). Use for "how booked are we next weekend?", "upcoming arrivals", "reservations next week". Defaults to the next 14 days. Read-only.',
+    'List upcoming on-the-books reservations by arrival date, plus how the on-the-books room count for those nights has built up over time (booking pace). Use for "how booked are we next weekend?", "upcoming arrivals", "is next week pacing ahead?". Defaults to the next 14 days. Read-only.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -160,22 +179,66 @@ registerTool<{ startDate?: string; endDate?: string }>({
     const today = await getPropertyToday(ctx.propertyId);
     const start = typeof startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(startDate) ? startDate : today;
     const end = typeof endDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(endDate) ? endDate : addDays(start, 14);
-    const { data, error } = await supabaseAdmin
-      .from('pms_future_bookings')
-      .select('pms_reservation_id, guest_name, room_number, room_type, arrival_date, departure_date, rate_per_night_cents, total_amount_cents, status, channel_name')
-      .eq('property_id', ctx.propertyId)
-      .gte('arrival_date', start)
-      .lte('arrival_date', end)
-      .order('arrival_date', { ascending: true })
-      .limit(200);
-    if (error) return { ok: false, error: 'Could not load future bookings.' };
-    const rows = data ?? [];
+
+    // Individual future stays: pms_reservations, which has carried every one of
+    // these columns since 0202 and is the only place a reservation lives now.
+    const [resQ, paceQ] = await Promise.all([
+      supabaseAdmin
+        .from('pms_reservations')
+        .select('pms_reservation_id, guest_name, room_number, room_type, arrival_date, departure_date, rate_per_night_cents, total_amount_cents, status, channel_name')
+        .eq('property_id', ctx.propertyId)
+        .gte('arrival_date', start)
+        .lte('arrival_date', end)
+        .order('arrival_date', { ascending: true })
+        .limit(200),
+      // The pace curve: on-the-books rooms for each of those nights, as seen on
+      // each day we looked. Best-effort — a hotel with no pace report still gets
+      // the reservation list.
+      supabaseAdmin
+        .from('pms_booking_pace')
+        .select('stay_date, as_of_date, rooms_otb, rooms_available, revenue_otb_cents')
+        .eq('property_id', ctx.propertyId)
+        .gte('stay_date', start)
+        .lte('stay_date', end)
+        .order('stay_date', { ascending: true })
+        .order('as_of_date', { ascending: true })
+        .limit(500),
+    ]);
+
+    if (resQ.error) return { ok: false, error: 'Could not load future bookings.' };
+    const rows = (resQ.data ?? []).filter(
+      (r) => r.status == null || (ON_THE_BOOKS_STATUSES as readonly string[]).includes(String(r.status)),
+    );
+
     // Arrivals per date so the model can answer "how full is next weekend".
     const byArrivalDate: Record<string, number> = {};
     for (const r of rows) {
       const k = String(r.arrival_date);
       byArrivalDate[k] = (byArrivalDate[k] ?? 0) + 1;
     }
+
+    // One curve per stay night: [{asOf, rooms}, …] oldest first. This is the
+    // whole reason pms_booking_pace exists — the old shape could only ever
+    // answer "how many rooms right now", never "is it building faster than
+    // last week".
+    const paceByStayDate: Record<string, Array<{ asOf: string; rooms: number | null }>> = {};
+    let latestOtbByStayDate: Record<string, { rooms: number | null; roomsAvailable: number | null; revenue: string | null }> = {};
+    if (!paceQ.error) {
+      latestOtbByStayDate = {};
+      for (const p of paceQ.data ?? []) {
+        const stay = String(p.stay_date);
+        const rooms = typeof p.rooms_otb === 'number' ? p.rooms_otb : null;
+        (paceByStayDate[stay] ??= []).push({ asOf: String(p.as_of_date), rooms });
+        // Rows arrive as_of ascending, so the last write per stay date is newest.
+        latestOtbByStayDate[stay] = {
+          rooms,
+          roomsAvailable: typeof p.rooms_available === 'number' ? p.rooms_available : null,
+          revenue: usd(p.revenue_otb_cents),
+        };
+      }
+    }
+    const hasPace = Object.keys(paceByStayDate).length > 0;
+
     return {
       ok: true,
       data: {
@@ -193,9 +256,13 @@ registerTool<{ startDate?: string; endDate?: string }>({
           status: r.status ?? null,
           channel: r.channel_name ?? null,
         })),
+        onTheBooksByStayDate: hasPace ? latestOtbByStayDate : undefined,
+        paceCurveByStayDate: hasPace ? paceByStayDate : undefined,
         note: rows.length === 0
           ? 'No upcoming bookings in this range. (The PMS reader may not capture a future-reservations report on this property yet.)'
-          : undefined,
+          : !hasPace
+            ? 'Booking pace history is not available for this property yet, so I can only show the current reservation list — not how it built up.'
+            : undefined,
       },
     };
   },

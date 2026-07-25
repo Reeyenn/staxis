@@ -244,7 +244,7 @@ const FEED_CATALOG: { key: string; label: string; table: string }[] = [
   { key: 'getArrivals',       label: "Today's arrivals",                   table: 'pms_reservations' },
   { key: 'getDepartures',     label: "Today's departures",                 table: 'pms_reservations' },
   { key: 'getWorkOrders',     label: 'Maintenance / work orders',          table: 'pms_work_orders_v2' },
-  { key: 'getFutureBookings', label: 'Future bookings',                    table: 'pms_future_bookings' },
+  { key: 'getFutureBookings', label: 'Booking pace (how next week is filling)', table: 'pms_booking_pace' },
   { key: 'getGuestBalances',  label: 'Guest balances owed',                table: 'pms_guest_balances' },
   { key: 'getPaymentsDaily',  label: "Today's payments",                   table: 'pms_payments_daily' },
   { key: 'getNoShows',        label: 'No-shows',                           table: 'pms_no_shows' },

@@ -425,10 +425,13 @@ describe('value contract drift guard vs migration 0276', () => {
     return cols;
   };
 
+  // getFutureBookings is deliberately absent: migration 0343 dropped
+  // pms_future_bookings (it duplicated pms_reservations and its key made a
+  // pickup curve unqueryable) and repointed the feed at pms_booking_pace,
+  // whose descriptor is defined in 0343, not 0276. It gets its own guard below.
   const NEW_FEEDS: Array<[keyof Recipe['actions'], string]> = [
     ['getGuestBalances', 'pms_guest_balances'],
     ['getPaymentsDaily', 'pms_payments_daily'],
-    ['getFutureBookings', 'pms_future_bookings'],
     ['getNoShows', 'pms_no_shows'],
     ['getCancellations', 'pms_cancellations'],
   ];
@@ -444,6 +447,38 @@ describe('value contract drift guard vs migration 0276', () => {
         norm(contract!.columns.map((c) => ({ name: c.name, type: c.type }))),
         norm(mig),
         `${key} value contract drifted from 0276`,
+      );
+    }
+  });
+
+  test('getFutureBookings tracks the pms_booking_pace descriptor from 0343', () => {
+    const MIGRATION_REL_0343 = path.join('supabase', 'migrations', '0343_pms_time_model.sql');
+    const PATH_0343 = [
+      path.resolve(process.cwd(), '..', MIGRATION_REL_0343),
+      path.resolve(process.cwd(), MIGRATION_REL_0343),
+    ].find((p) => existsSync(p));
+    assert.ok(PATH_0343, `0343 migration not found relative to ${process.cwd()}`);
+    const mig = readFileSync(PATH_0343, 'utf8');
+
+    // The registry row 0343 writes for pms_booking_pace carries the descriptor
+    // the generic writer validates against. If the contract here names a column
+    // that descriptor doesn't have, the feed writes rows the DB rejects.
+    const start = mig.indexOf("table_name     = 'pms_booking_pace'");
+    assert.ok(start >= 0, 'pms_booking_pace registry row not found in 0343');
+    const block = mig.slice(start, start + 4000);
+    const re = /"name":\s*"([^"]+)",\s*"type":\s*"([^"]+)"/g;
+    const descriptor: string[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(block)) !== null) descriptor.push(m[1]!);
+
+    const contract = TARGET_VALUE_CONTRACTS.getFutureBookings;
+    assert.ok(contract, 'getFutureBookings missing from TARGET_VALUE_CONTRACTS');
+    assert.equal(contract!.table, 'pms_booking_pace');
+    assert.ok(descriptor.length > 0, 'failed to parse the 0343 descriptor');
+    for (const col of contract!.columns) {
+      assert.ok(
+        descriptor.includes(col.name),
+        `${col.name} is in the value contract but not in the pms_booking_pace descriptor`,
       );
     }
   });
@@ -932,7 +967,13 @@ describe('parser selection', () => {
     assert.equal(parserForLearnedColumn('getArrivals', 'adults'), undefined);     // extra field not in descriptor
     // The 5 net-new feeds now resolve (the latent "non-core gets no parser" gap is closed).
     assert.equal(parserForLearnedColumn('getGuestBalances', 'balance_cents'), 'generic_currency');
-    assert.equal(parserForLearnedColumn('getFutureBookings', 'arrival_date'), 'generic_date');
+    // getFutureBookings is a PACE feed since 0343 — one aggregate row per stay
+    // night, not a copy of the reservation list. Its dates are stay_date and
+    // as_of_date; arrival_date no longer exists on it.
+    assert.equal(parserForLearnedColumn('getFutureBookings', 'stay_date'), 'generic_date');
+    assert.equal(parserForLearnedColumn('getFutureBookings', 'as_of_date'), 'generic_date');
+    assert.equal(parserForLearnedColumn('getFutureBookings', 'rooms_otb'), 'generic_integer');
+    assert.equal(parserForLearnedColumn('getFutureBookings', 'arrival_date'), undefined);
     assert.equal(parserForLearnedColumn('getCancellations', 'cancelled_date'), 'generic_date');
   });
 

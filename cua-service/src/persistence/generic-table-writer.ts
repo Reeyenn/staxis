@@ -534,7 +534,7 @@ export async function saveGenericTable(
   try {
     switch (descriptor.write_strategy) {
       case 'append':
-        result = await writeAppend(targetTable, validation.valid, validation.rejected.length);
+        result = await writeAppend(targetTable, validation.valid, descriptor, validation.rejected.length);
         break;
       case 'upsert':
         result = await writeUpsert(targetTable, validation.valid, descriptor, validation.rejected.length);
@@ -573,12 +573,27 @@ export async function saveGenericTable(
   return result;
 }
 
+/**
+ * Append, but idempotent on re-delivery.
+ *
+ * A plain insert() means a re-forwarded report email — or any retry of a run
+ * that partially succeeded — doubles the event log, and every retry after that
+ * dies on the unique index with an opaque 23505 that looks like a broken feed.
+ * Every append table now has a real unique index behind its natural key
+ * (0342 for room_status/activity, 0343 for occupancy/booking pace), so
+ * ignoreDuplicates lets a redelivery be a no-op instead of either a duplicate
+ * or an error.
+ */
 async function writeAppend(
   tableName: string,
   rows: Array<Record<string, unknown>>,
+  descriptor: TableSchemaDescriptor,
   rejected: number,
 ): Promise<SaveGenericTableResult> {
-  const { error } = await supabase.from(tableName).insert(rows);
+  const onConflict = descriptor.natural_key.join(',');
+  const { error } = await supabase
+    .from(tableName)
+    .upsert(rows, { onConflict, ignoreDuplicates: true });
   if (error) throw error;
   return {
     ok: true, tableName, inserted: rows.length, updated: 0, autoResolved: 0,
@@ -691,35 +706,19 @@ async function hasInterveningChange(
 }
 
 /**
- * Tables with a documented last-good contract (migration 0202): one row per
- * natural key, overwritten every poll, where an optional column that
- * extracted blank/absent this poll must PRESERVE the previous good value.
- * An explicit null in an upsert payload overwrites; an omitted column is
- * left untouched by the conflict-update. So for these tables, optional
- * columns that are null across the whole batch are dropped from the payload
- * (column-level, keeping row keys homogeneous for PostgREST).
+ * LAST-GOOD PRESERVATION IS GONE, AND THAT IS THE POINT (migration 0343).
+ *
+ * pms_in_house_snapshot was the only table that needed it: one row per hotel,
+ * overwritten every poll, so a half-rendered PMS tile could null out a good
+ * count. The fix was to drop all-null optional columns from the payload so the
+ * conflict-update left the previous value alone.
+ *
+ * That table is now pms_occupancy_observation with write_strategy='append' —
+ * every reading is its own row and nothing is ever overwritten, so there is no
+ * previous value to protect. A blank column on one reading is simply a blank
+ * reading, which is the truth. Do not reintroduce this for an append table: it
+ * would make a row silently inherit a neighbour's number.
  */
-const LAST_GOOD_UPSERT_TABLES = new Set(['pms_in_house_snapshot']);
-
-function dropAllNullOptionalColumns(
-  rows: Array<Record<string, unknown>>,
-  descriptor: TableSchemaDescriptor,
-): Array<Record<string, unknown>> {
-  const droppable = descriptor.columns
-    .filter((c) => !c.required)
-    .map((c) => c.name)
-    .filter((name) => rows.every((r) => r[name] === null || r[name] === undefined));
-  if (droppable.length === 0) return rows;
-  log.info('generic-table-writer: preserving last-good values for blank optional columns', {
-    tableName: descriptor.table_name,
-    columns: droppable,
-  });
-  return rows.map((r) => {
-    const out = { ...r };
-    for (const name of droppable) delete out[name];
-    return out;
-  });
-}
 
 async function writeUpsert(
   tableName: string,
@@ -730,12 +729,7 @@ async function writeUpsert(
   // ON CONFLICT target = the natural_key columns. Supabase JS client's
   // upsert() takes `onConflict` as a comma-separated string of columns.
   const onConflict = descriptor.natural_key.join(',');
-  // Last-good preservation (0202): one half-rendered PMS tile must not null
-  // out a good count in the property's only snapshot row.
-  const payload = LAST_GOOD_UPSERT_TABLES.has(descriptor.table_name)
-    ? dropAllNullOptionalColumns(rows, descriptor)
-    : rows;
-  const { error } = await supabase.from(tableName).upsert(payload, { onConflict });
+  const { error } = await supabase.from(tableName).upsert(rows, { onConflict });
   if (error) throw error;
   // upsert() doesn't distinguish inserts from updates in the response.
   // For now, report all as 'inserted' — admin UI cares about the delta,
