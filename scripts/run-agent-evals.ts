@@ -48,6 +48,24 @@ async function main(): Promise<void> {
 
   console.log(`\n${summary.passed}/${summary.total} passed  ·  $${summary.totalCostUsd.toFixed(4)} spent  ·  ${(summary.totalDurationMs / 1000).toFixed(1)}s total\n`);
 
+  // A run that records nothing is indistinguishable from a run that never
+  // happened — which is exactly the state prod was found in (0 rows in
+  // agent_eval_baselines). Fail loudly rather than printing a happy summary
+  // on top of a bank that left no trace. See runner.ts's baseline block.
+  if (summary.total > 0 && summary.baselinesRecorded === 0) {
+    console.error(
+      '\n✗ The run recorded ZERO baseline rows in agent_eval_baselines.\n' +
+      '  Nothing above can be compared to a previous run, and /api/admin/doctor\n' +
+      '  will report the live bank as stale. Fix the write before trusting this run.\n',
+    );
+    process.exit(1);
+  }
+  if (summary.baselinesRecorded < summary.total) {
+    console.warn(
+      `⚠ only ${summary.baselinesRecorded}/${summary.total} cases recorded a baseline row.`,
+    );
+  }
+
   if (summary.failed > 0) {
     process.exit(1);
   }

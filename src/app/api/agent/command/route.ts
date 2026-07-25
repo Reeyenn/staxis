@@ -331,6 +331,14 @@ export async function POST(req: NextRequest): Promise<Response> {
             conversationId: finalConversationId,
             accountId: userCtx.accountId,
             send,
+            // Decision corpus (0350): the snapshot the model was shown this
+            // turn is only in hand HERE. Persisting it is what makes "what did
+            // the AI see when it proposed that" answerable later.
+            corpus: {
+              snapshot,
+              actorRole: userCtx.role,
+              promptVersion: systemPrompt.versionLabel,
+            },
           }),
         });
 

@@ -28,6 +28,8 @@ export interface EvalResult {
   costUsd: number;
   toolsCalled: Array<{ name: string; args: Record<string, unknown> }>;
   finalText: string;
+  /** True when this case's row landed in agent_eval_baselines. */
+  baselineRecorded: boolean;
 }
 
 export interface EvalRunSummary {
@@ -36,6 +38,9 @@ export interface EvalRunSummary {
   failed: number;
   totalCostUsd: number;
   totalDurationMs: number;
+  /** How many cases recorded a baseline row. ZERO across a whole run means the
+   *  bank ran but left no trace — see runOneEval's baseline block. */
+  baselinesRecorded: number;
   results: EvalResult[];
 }
 
@@ -218,6 +223,13 @@ export async function runOneEval(
   // in the row's reason. CI consumers (run-agent-evals.ts) can choose to
   // fail the build on regression.
   let regressionWarning: string | null = null;
+  // 2026-07-24 (A4-RATCHET): prod had ZERO rows in agent_eval_baselines, so
+  // either this bank never ran or every insert failed silently — the catch
+  // below only console.warns. Both readings mean the same thing: a bank whose
+  // silence is indistinguishable from success gates nothing. We now REPORT
+  // whether the row landed; the CLI exits non-zero when a whole run recorded
+  // none, and /api/admin/doctor warns when the newest row goes stale.
+  let baselineRecorded = false;
   try {
     const { data: prior } = await supabaseAdmin
       .from('agent_eval_baselines')
@@ -238,7 +250,7 @@ export async function runOneEval(
       }
     }
 
-    await supabaseAdmin.from('agent_eval_baselines').insert({
+    const { error: insertErr } = await supabaseAdmin.from('agent_eval_baselines').insert({
       case_name: evalCase.name,
       prompt_version: systemPrompt.versionLabel,
       model,
@@ -249,6 +261,12 @@ export async function runOneEval(
       tokens_out: tokensOut,
       duration_ms: durationMs,
     });
+    if (insertErr) {
+      // A PostgREST error is returned, not thrown — the old catch never saw it.
+      console.warn('[eval-runner] baseline insert rejected', insertErr);
+    } else {
+      baselineRecorded = true;
+    }
   } catch (baselineErr) {
     console.warn('[eval-runner] baseline write/compare failed (non-fatal)', baselineErr);
   }
@@ -262,18 +280,24 @@ export async function runOneEval(
     costUsd,
     toolsCalled,
     finalText: finalText.slice(0, 200),
+    baselineRecorded,
   };
 }
 
-/** Run the full bank. */
+/**
+ * Run the LIVE bank. Hermetic cases are excluded here on purpose: they run for
+ * free in CI (src/lib/__tests__/agent-evals-hermetic.test.ts) and firing them
+ * at the real API would spend money to learn nothing new.
+ */
 export async function runAllEvals(opts: {
   propertyId: string;
   userId: string;
   filter?: string;
 }): Promise<EvalRunSummary> {
+  const live = EVAL_CASES.filter(c => c.mode === 'live');
   const cases = opts.filter
-    ? EVAL_CASES.filter(c => c.name.includes(opts.filter!) || c.category === opts.filter)
-    : EVAL_CASES;
+    ? live.filter(c => c.name.includes(opts.filter!) || c.category === opts.filter)
+    : live;
 
   const results: EvalResult[] = [];
   for (const c of cases) {
@@ -289,6 +313,7 @@ export async function runAllEvals(opts: {
     failed: results.filter(r => !r.passed).length,
     totalCostUsd: results.reduce((acc, r) => acc + r.costUsd, 0),
     totalDurationMs: results.reduce((acc, r) => acc + r.durationMs, 0),
+    baselinesRecorded: results.filter(r => r.baselineRecorded).length,
     results,
   };
 }

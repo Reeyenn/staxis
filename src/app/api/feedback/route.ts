@@ -19,7 +19,19 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 10;
 
-const VALID_CATEGORIES = new Set(['bug', 'feature_request', 'general', 'complaint', 'love']);
+// Kept in lock-step with the CHECK constraint on user_feedback.category
+// (originally migration 0052, widened by 0350). Adding a category here without
+// the migration means every such insert is rejected by Postgres.
+//   ai_answer — a thumbs verdict on one AI answer/action, carrying decisionId.
+//   ai_wrong  — "the AI got this wrong". Resolving one obliges naming the
+//               permanent eval case that now covers it.
+const VALID_CATEGORIES = new Set([
+  'bug', 'feature_request', 'general', 'complaint', 'love', 'ai_answer', 'ai_wrong',
+]);
+
+/** Categories that must reference the decision they are about. A thumbs-down
+ *  with no decision id is an opinion; with one it is a labelled example. */
+const DECISION_LINKED_CATEGORIES = new Set(['ai_answer']);
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -27,13 +39,45 @@ export async function POST(req: NextRequest) {
   if (!session.ok) return session.response;
 
   const body = await req.json().catch(() => ({}));
-  const message = (body.message as string | undefined)?.trim();
+  const rawMessage = (body.message as string | undefined)?.trim();
+  // A thumbs click carries a rating and no words. Requiring prose there would
+  // mean the cheapest, most-used signal never gets collected — so a
+  // decision-linked rating supplies its own message.
+  const isThumbsOnly =
+    !rawMessage
+    && body.category === 'ai_answer'
+    && (body.rating === -1 || body.rating === 0 || body.rating === 1);
+  const message = rawMessage || (isThumbsOnly
+    ? (body.rating === 1 ? 'thumbs up' : body.rating === -1 ? 'thumbs down' : 'neutral')
+    : undefined);
   if (!message) return err('message is required', { requestId, status: 400 });
   if (message.length > 10_000) return err('message too long (10k char limit)', { requestId, status: 400 });
 
   const category = (body.category as string | undefined) ?? 'general';
   if (!VALID_CATEGORIES.has(category)) {
     return err(`invalid category: ${category}`, { requestId, status: 400 });
+  }
+
+  // Optional link to the AI decision this feedback is about (migration 0350).
+  // A DB trigger mirrors the rating onto agent_decisions, so the corpus read
+  // path stays single-table and cannot drift from the feedback row.
+  let decisionId: string | null = null;
+  if (body.decisionId !== undefined && body.decisionId !== null && body.decisionId !== '') {
+    const check = validateUuid(body.decisionId, 'decisionId');
+    if (check.error) return err(check.error, { requestId, status: 400 });
+    decisionId = check.value!;
+  }
+  if (DECISION_LINKED_CATEGORIES.has(category) && !decisionId) {
+    return err(`category ${category} requires decisionId`, { requestId, status: 400 });
+  }
+
+  let rating: number | null = null;
+  if (body.rating !== undefined && body.rating !== null) {
+    const n = Number(body.rating);
+    if (![-1, 0, 1].includes(n)) {
+      return err('rating must be -1, 0 or 1', { requestId, status: 400 });
+    }
+    rating = n;
   }
 
   // Pull user display name + email AND property_access in one round-trip
@@ -73,6 +117,8 @@ export async function POST(req: NextRequest) {
       user_display_name: (account?.display_name as string | undefined) ?? null,
       message,
       category,
+      decision_id: decisionId,
+      rating,
     })
     .select('id')
     .single();

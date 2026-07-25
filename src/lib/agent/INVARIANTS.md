@@ -141,7 +141,7 @@ Each invariant has:
 
 ### INV-16: Only one prompt row per role can be is_active=true at a time
 
-- **Enforced by:** Partial unique index `agent_prompts_active_per_role_uniq` (migration 0102)
+- **Enforced by:** Partial unique index `agent_prompts_active_per_role_uq` (migration 0102)
 - **Backstop:** Atomic `staxis_activate_prompt` RPC (migration 0106) inside one transaction
 - **Assumed by:** prompts-store.ts (returns first match)
 - **History:** Round-2 L2; Round-10 F5 added the atomic activate path
@@ -256,3 +256,76 @@ Investigate; don't just heal and move on.
   `memory-redact.test.ts`. Code-level and imperfect by nature (regex) — one layer
   of several (also: management-gated hotel writes, guest-data-default-deny);
   documented gap, not a hard guarantee.
+
+### INV-25: the decision corpus survives the conversation and the account
+
+Every AI decision recorded in `agent_decisions` outlives the archival of its
+conversation and the offboarding of the employee who made the call. Only
+deleting the HOTEL deletes its decisions.
+
+- **Enforced by:** DB shape in migration 0350 —
+  `agent_decisions.conversation_id` carries NO foreign key (deliberate, and
+  commented as such in the migration), `actor_account_id` is
+  `on delete set null`, and only `property_id` cascades. `agent_pending_actions`
+  is `on delete cascade` to both `agent_conversations` and `accounts`
+  (migration 0300), which is exactly why the corpus could not simply live there.
+  Plus trigger `agent_decisions_immutable`, which rejects any UPDATE that
+  changes the proposal or the state snapshot it was made against.
+- **Assumed by:** [decisions.ts](src/lib/agent/decisions.ts), the
+  `makePendingApprovalHandler` capture in
+  `src/app/api/agent/command/_stream-runner.ts`
+- **History:** A4-RATCHET, 2026-07-24. The corpus is the stated business moat and
+  it was previously 10 rows in a cascade-deleted table, none of which recorded
+  what the hotel looked like at decision time.
+
+### INV-26: the decision corpus is exempt from the retention purge
+
+No scheduled cleanup deletes from `agent_decisions`, `agent_pending_actions`,
+`user_feedback`, or `agent_eval_baselines`.
+
+- **Enforced by:** `EXEMPT_FROM_PURGE` in
+  `src/app/api/cron/ml-retention-purge/route.ts` (a runtime refusal, not just a
+  list) plus `src/lib/__tests__/retention-purge-exemptions.test.ts`, which drives
+  the real handler with a stubbed client and fails if it attempts a delete
+  against any exempt table, and which fails if a NEW `agent_decision*` table
+  appears in the migrations without being exempted. NOT DB-enforced — Postgres
+  cannot tell a legitimate delete from a purge — so the test is the guarantee.
+- **Assumed by:** every "prove the AI was right" question the corpus exists to
+  answer.
+- **History:** A4-RATCHET, 2026-07-24. The purge workflow's schedule has been
+  commented out since 2026-05-30; the risk is the re-enable moment, when the
+  first run would delete everything past the window in one shot.
+
+### INV-27: no fix to the agent, PMS, or ingestion code lands without a test
+
+A commit whose subject starts with `fix(` and which touches `src/lib/agent/**`,
+`src/lib/pms/**`, `src/app/api/agent/**`, `src/app/api/pms-inbox/**`, or
+`cua-service/src/**` must also touch a test, the eval bank, or a golden fixture
+— in the SAME commit.
+
+- **Enforced by:** LINT — `scripts/audit-eval-regressions.mjs` in the
+  `npm run lint` chain (already CI-blocking). The audited range is derived from
+  the GitHub event (`before..after` on push, merge-base on PR) rather than from
+  `origin/main..HEAD`, because on this repo's primary flow — pushing straight to
+  main — that range is EMPTY and the gate would pass having checked nothing.
+  `.github/workflows/tests.yml` sets `fetch-depth: 0` for the same reason, and
+  the script FAILS rather than skips when the range cannot be resolved.
+  Escape hatch: `[no-eval: <reason>]` in the commit body, counted and printed on
+  every run, with a hard ceiling of 5 exemptions per range.
+- **Assumed by:** the claim that a bug fixed once cannot ship twice.
+- **History:** A4-RATCHET, 2026-07-24.
+
+### INV-28: every mutating tool declares how you would know it worked — PLANNED
+
+Every `mutates: true` ToolDefinition declares an outcome probe (a window plus a
+check) or an explicit `notObservable` reason.
+
+- **Enforced by:** **PLANNED-NOT-ENFORCED.** `agent_decisions` carries the
+  `outcome_kind` / `outcome_observed_at` / `outcome_facts` columns from
+  migration 0350 so the probe layer is a code change rather than another
+  migration, but the per-tool contract and the daily probe cron are not built.
+  **Trigger condition: before the corpus is used to make any claim about whether
+  the AI's actions worked.** Until then every row is an intention, not an
+  outcome, and must be described that way.
+- **History:** A4-RATCHET, 2026-07-24 — deliberately deferred, and recorded here
+  so the deferral is visible rather than forgotten.
