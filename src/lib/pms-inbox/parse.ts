@@ -19,7 +19,7 @@
  *     domain is asserted, so mail to other domains can't resolve.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
 // ─── Bearer auth (shared secret, constant-time, rotation-aware) ────────────
 
@@ -147,6 +147,115 @@ export function normalizeRecipient(
   if (!local) return null;
   if (domain !== inboxDomain.toLowerCase()) return null;
   return `${local}@${domain}`;
+}
+
+// ─── Report-inbox addressing (migration 0342) ──────────────────────────────
+//
+// THE TRAP THIS EXISTS TO AVOID: normalizeRecipient() above STRIPS
+// plus-addressing, so `token+anything@…` collapses to `token@…`. That is
+// correct for the Okta 2FA path (the local part is a human-chosen property
+// code) and catastrophic for the report path, where the local part IS the
+// capability token — a '+' in it would silently truncate the secret and
+// either fail to resolve or, worse, resolve a shorter prefix. Report
+// recipients therefore go through parseRecipient(), which preserves the
+// local part byte-for-byte, and the token must match in full.
+
+export interface ParsedRecipient {
+  /** Local part, lowercased, VERBATIM — plus-addressing is NOT stripped. */
+  local: string;
+  domain: string;
+}
+
+/** Split "Name <a+b@c.com>" into { local: 'a+b', domain: 'c.com' }, or null. */
+export function parseRecipient(addr: string | null | undefined): ParsedRecipient | null {
+  if (!addr) return null;
+  const angle = /<([^>]+)>/.exec(addr);
+  const email = (angle ? angle[1] : addr).trim().toLowerCase();
+  const at = email.lastIndexOf('@');
+  if (at < 0) return null;
+  const local = email.slice(0, at).replace(/^"+|"+$/g, '');
+  const domain = email
+    .slice(at + 1)
+    .replace(/[>\s]+$/, '')
+    .trim();
+  if (!local || !domain) return null;
+  return { local, domain };
+}
+
+/**
+ * Shape of a report-inbox capability token. Mirrors the CHECK inside
+ * staxis_set_report_inbox (migration 0342) exactly — 20-64 chars so guessing
+ * is hopeless, and only characters every mail system handles identically.
+ */
+export const REPORT_INBOX_LOCAL_RE = /^[a-z0-9][a-z0-9._-]{19,63}$/;
+
+/** sha256 hex of a UTF-8 string. */
+export function sha256Hex(s: string): string {
+  return createHash('sha256').update(s, 'utf8').digest('hex');
+}
+
+/** The scraper_credentials.report_inbox_hash lookup key for a local part. */
+export function reportInboxHash(local: string): string {
+  return sha256Hex(local.trim().toLowerCase());
+}
+
+export interface RecipientClassOptions {
+  /** Domain the Okta 2FA inbox receives on (the apex today). */
+  authDomain: string;
+  /** Domain report mail receives on. May equal authDomain (see below). */
+  reportDomain: string;
+  /**
+   * Local-part prefix that marks report mail when it arrives on the SAME
+   * domain as auth-code mail. Cloudflare Email Routing on a subdomain is not
+   * confirmed available on the current zone, so the apex-with-prefix shape has
+   * to work too. Whichever shape is live, the two classes stay disjoint.
+   */
+  reportLocalPrefix: string;
+}
+
+export type ClassifiedRecipient =
+  | { kind: 'report'; local: string; domain: string }
+  | { kind: 'auth_code'; local: string; domain: string; normalized: string };
+
+/**
+ * Decide, from the RECIPIENT ADDRESS ALONE, whether an inbound message is a
+ * PMS report or an Okta 2FA code. Never inferred from content: a forged report
+ * must not be able to ride in on the 2FA path, and vice versa.
+ *
+ * Returns null for anything that isn't a well-formed recipient on a domain we
+ * accept, or a report-shaped address whose token doesn't match the required
+ * capability-token shape.
+ */
+export function classifyRecipient(
+  addr: string | null | undefined,
+  opts: RecipientClassOptions,
+): ClassifiedRecipient | null {
+  const parsed = parseRecipient(addr);
+  if (!parsed) return null;
+  const authDomain = opts.authDomain.trim().toLowerCase();
+  const reportDomain = opts.reportDomain.trim().toLowerCase();
+  const prefix = opts.reportLocalPrefix.trim().toLowerCase();
+  const { local, domain } = parsed;
+
+  const asReport = (): ClassifiedRecipient | null =>
+    REPORT_INBOX_LOCAL_RE.test(local) ? { kind: 'report', local, domain } : null;
+
+  // Dedicated report domain (subdomain routing, if it turns out to be available).
+  if (reportDomain && reportDomain !== authDomain && domain === reportDomain) {
+    return asReport();
+  }
+
+  if (domain === authDomain) {
+    // Apex fallback: an unambiguous prefix separates the two classes when they
+    // share a domain. Checked BEFORE the auth-code path so a report address can
+    // never be resolved as an Okta inbox.
+    if (prefix && local.startsWith(prefix)) return asReport();
+    const normalized = normalizeRecipient(`${local}@${domain}`, authDomain);
+    if (!normalized) return null;
+    return { kind: 'auth_code', local, domain, normalized };
+  }
+
+  return null;
 }
 
 // ─── OTP code extraction ───────────────────────────────────────────────────

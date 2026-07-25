@@ -159,7 +159,14 @@ describe('saveGenericTable: empty batch is a healthy no-op (Codex P1)', () => {
   test('zero rows return ok:true with zero writes and never touch the DB', async () => {
     // Returns before the descriptor load — works offline against the
     // placeholder Supabase env, proving no network round-trip happens.
-    const result = await saveGenericTable(PID, 'pms_cancellations', []);
+    // Lineage options are deliberately BLANK here: the zero-row check runs
+    // ahead of the ingestRunId guard, so this also pins that ordering. If a
+    // future edit moved the lineage guard first, an empty feed would start
+    // reporting ok:false and every legitimately-empty poll would look broken.
+    const result = await saveGenericTable(PID, 'pms_cancellations', [], {
+      ingestRunId: '',
+      sourceCapturedAt: '',
+    });
     assert.equal(result.ok, true);
     assert.equal(result.inserted, 0);
     assert.equal(result.rejected, 0);

@@ -7079,7 +7079,7 @@ const REVENUE_DAILY_GOAL =
   `exist — if so, emit unavailable per the system prompt rules (after ` +
   `meeting the evidence floor).\n\n` +
   `Columns we need:\n` +
-  `  - date (required)\n` +
+  `  - business_date (required — the accounting date printed on the report)\n` +
   `  - rooms_revenue_cents (required)\n` +
   `  - fnb_revenue_cents (nice-to-have)\n` +
   `  - tax_cents (nice-to-have)\n` +
@@ -7112,7 +7112,7 @@ const CHANNEL_PERFORMANCE_GOAL =
   `"Revenue Management". Most modern PMSes have this; tiny franchise ` +
   `PMSes may not.\n\n` +
   `Columns we need:\n` +
-  `  - date (required)\n` +
+  `  - business_date (required — the accounting date printed on the report)\n` +
   `  - channel (required — string, e.g. "Expedia")\n` +
   `  - bookings_count (required)\n` +
   `  - rooms_sold (required)\n` +
@@ -7177,8 +7177,8 @@ const RATES_AND_INVENTORY_GOAL =
   `Usually under "Rates", "Revenue Management", or "Inventory". This ` +
   `is the busiest data shape — often a GRID (date × room type) rather ` +
   `than a table. Find it; report the row+column structure.\n\n` +
-  `Columns we need (one row per room_type × date × rate_plan):\n` +
-  `  - date (required)\n` +
+  `Columns we need (one row per room_type × stay night × rate_plan):\n` +
+  `  - stay_date (required — the FUTURE NIGHT this rate applies to)\n` +
   `  - room_type (required)\n` +
   `  - rate_plan (required — e.g. "Best Available Rate")\n` +
   `  - rate_amount_cents (required)\n` +
@@ -7328,7 +7328,7 @@ const HISTORICAL_OCCUPANCY_GOAL =
   `emit unavailable per the system prompt rules (after the evidence floor). Do ` +
   `NOT confuse it with the FORWARD-looking forecast/pace report.\n\n` +
   `Use these EXACT keys in your "columns" object:\n` +
-  `  - date (required — the business date this row is for)\n` +
+  `  - business_date (required — the business date this row is for)\n` +
   `  - occupied_rooms (required — rooms sold that night)\n` +
   `  - occupancy_pct (optional — percent occupied)\n` +
   `  - available_rooms (optional — rooms available to sell)\n` +
@@ -7422,7 +7422,7 @@ TARGETS = [
   {
     key: 'getRevenueDaily',
     goal: REVENUE_DAILY_GOAL,
-    requiredFields: ['date', 'rooms_revenue_cents', 'occupied_rooms', 'adr_cents'],
+    requiredFields: ['business_date', 'rooms_revenue_cents', 'occupied_rooms', 'adr_cents'],
     classification: 'report_menu',
     optional: true,        // franchise tiers may not expose this
     progressLabel: 'Finding the daily revenue summary…',
@@ -7430,12 +7430,13 @@ TARGETS = [
   },
   {
     // feature/cua-feed-extract — historical daily occupancy. Shares the
-    // pms_revenue_daily table with getRevenueDaily (upsert by property_id+date),
+    // pms_revenue_daily table with getRevenueDaily (upsert by
+    // property_id + business_date + as_of since 0343),
     // but focuses on the OCCUPANCY columns and PAST dates. Optional — never
     // gates promotion.
     key: 'getHistoricalOccupancy',
     goal: HISTORICAL_OCCUPANCY_GOAL,
-    requiredFields: ['date', 'occupied_rooms'],
+    requiredFields: ['business_date', 'occupied_rooms'],
     classification: 'report_menu',
     optional: true,
     progressLabel: 'Finding historical daily occupancy…',
@@ -7444,7 +7445,7 @@ TARGETS = [
   {
     key: 'getRatesAndInventory',
     goal: RATES_AND_INVENTORY_GOAL,
-    requiredFields: ['date', 'room_type', 'rate_plan', 'rate_amount_cents'],
+    requiredFields: ['stay_date', 'room_type', 'rate_plan', 'rate_amount_cents'],
     classification: 'report_menu',
     optional: true,
     progressLabel: 'Finding rate plans + available inventory…',
@@ -7453,7 +7454,7 @@ TARGETS = [
   {
     key: 'getChannelPerformance',
     goal: CHANNEL_PERFORMANCE_GOAL,
-    requiredFields: ['date', 'channel', 'bookings_count', 'revenue_cents'],
+    requiredFields: ['business_date', 'channel', 'bookings_count', 'revenue_cents'],
     classification: 'report_menu',
     optional: true,
     progressLabel: 'Finding the booking-channel breakdown…',

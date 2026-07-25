@@ -29,6 +29,23 @@
  * where the (property, date, staff) tuple has no row. If Mario marked
  * someone present or no-show via the UI, the auto-mark step skips them.
  *
+ * WHICH DAY IS "YESTERDAY" (migration 0343). The target date is now
+ * businessDate(property, now) minus one — the previous BUSINESS day, which
+ * ends at the hotel's own night-audit hour rather than at midnight. Every
+ * property ships with business_date_cutoff_hour = 0, for which businessDate()
+ * IS the local calendar day, so this is a numeric no-op today and stays one
+ * until a hotel sets its cutoff.
+ *
+ * WHAT THE SEAL DOES **NOT** WRITE. 0344 added the closing-photo buckets to
+ * daily_logs (occupancy / revenue / flow / channel / housekeeping / labor) with
+ * a CHECK that a bucket must be entirely NULL unless it names its source. The
+ * seal writes NONE of them, because the report ingestion that fills them is not
+ * live yet, and a *_source label over an empty bucket is a receipt for a number
+ * nobody measured. What it does write is provenance for the row it actually
+ * produced: sealed_at, seal_version, and source_completeness — the record of
+ * which gates passed, so a NULL day can be read as "the feed was down" instead
+ * of "unknown".
+ *
  * Auth: Bearer ${CRON_SECRET}.
  */
 
@@ -47,6 +64,7 @@ import {
   localDatesForProjection,
   OCCUPANCY_BACKFILL_LOOKBACK_DAYS,
   preserveSealedOccupancy,
+  sealTargetBusinessDate,
   type PmsSnapshotEvidence,
   type SealedOccupancyFields,
 } from '@/lib/seal-daily';
@@ -55,15 +73,15 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 90;
 
-// We only seal yesterday's data when local time has crossed past 01:00 in
-// the property's tz — gives stragglers (late checkouts, late cleans) an
-// hour to land before we freeze the labels.
-const SEAL_AFTER_HOUR_LOCAL = 1;
+/** Bump when the seal changes what its numbers MEAN, so a consumer can tell
+ *  rows produced by different logic apart instead of trending across them. */
+const SEAL_VERSION = 1;
 
 type PropertyRow = {
   id: string;
   name: string;
   timezone: string | null;
+  business_date_cutoff_hour: number | null;
 };
 
 interface SealOutcome {
@@ -108,11 +126,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     );
   }
 
-  // Pull every property with its timezone — timezone is what determines
-  // which 24h window we're sealing.
+  // Pull every property with its timezone AND its night-audit hour — together
+  // they define which 24h window we're sealing (migration 0343).
   const { data: properties, error: propErr } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone');
+    .select('id, name, timezone, business_date_cutoff_hour');
   if (propErr) {
     log.error('seal-daily: properties query failed', { requestId, err: propErr });
     return NextResponse.json({ ok: false, error: errToString(propErr), requestId }, { status: 500 });
@@ -202,36 +220,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 }
 
 /**
- * Compute the YYYY-MM-DD of "yesterday in this tz" — but only if the
- * current local hour is past SEAL_AFTER_HOUR_LOCAL. Otherwise returns
- * null (too early to seal today's previous day yet).
+ * The previous BUSINESS day for this property — the day the seal should close
+ * — or null when that day is still open (too early on this tick).
  *
- * Why "yesterday": at 01:00 local on May 12, "yesterday" = May 11. We
- * seal May 11's data once across the entire run-window of May 12 by
- * keying the writes on the date (idempotent).
+ * At 01:00 local on May 12 with the default cutoff of 0, that is May 11. We
+ * seal May 11 once across the whole run-window of May 12 by keying the writes
+ * on the date (idempotent). The real arithmetic lives in
+ * sealTargetBusinessDate() in src/lib/seal-daily.ts so it can be tested
+ * directly, including the cutoff-hour case no cron tick can exercise.
  */
-function targetDateForProperty(tz: string): string | null {
-  // Intl.DateTimeFormat with the property's tz gives us a deterministic
-  // "what local time/date is it right now in this hotel's zone".
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: tz,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    hour12: false,
-  });
-  const parts = fmt.formatToParts(new Date());
-  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
-  const localHour = parseInt(get('hour'), 10);
-  if (Number.isNaN(localHour) || localHour < SEAL_AFTER_HOUR_LOCAL) {
-    return null;
-  }
-  const todayLocal = `${get('year')}-${get('month')}-${get('day')}`;
-  // Subtract one day → yesterday in YYYY-MM-DD form.
-  const yesterday = new Date(`${todayLocal}T12:00:00Z`);
-  yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-  return yesterday.toISOString().slice(0, 10);
+function targetDateForProperty(p: PropertyRow, now: Date = new Date()): string | null {
+  return sealTargetBusinessDate(
+    { timezone: p.timezone || 'America/Chicago', business_date_cutoff_hour: p.business_date_cutoff_hour },
+    now,
+  );
 }
 
 async function sealOne(
@@ -243,7 +245,7 @@ async function sealOne(
   // Backfill mode bypasses the local-time gate — caller is asserting "I
   // know this date is fully past, seal it." Production cron uses the
   // computed-yesterday path.
-  const targetDate = overrideDate ?? targetDateForProperty(tz);
+  const targetDate = overrideDate ?? targetDateForProperty(p);
   if (!targetDate) {
     return {
       property_id: p.id,
@@ -447,7 +449,7 @@ async function sealOne(
   // seal NULL there (checkouts/stayovers are date-parameterized from
   // pms_reservations, so they stay correct for any date).
   const snapshotDescribesTargetDate =
-    overrideDate === null || overrideDate === targetDateForProperty(tz);
+    overrideDate === null || overrideDate === targetDateForProperty(p);
 
   const computed: SealedOccupancyFields = {
     occupied: occupied !== null && snapshotDescribesTargetDate ? Math.round(occupied) : null,
@@ -485,6 +487,36 @@ async function sealOne(
     sealed = preserveSealedOccupancy(computed, (existingLog ?? null) as SealedOccupancyFields | null);
   }
 
+  // The receipt for the row itself (migration 0344). Not a number — a record of
+  // which gates passed, so a NULL day reads as "the counts feed was down on the
+  // 3rd" instead of as an unexplained hole. This is what makes it possible to
+  // tell a genuinely-zero day from a day nobody measured.
+  //
+  // NOTE: `null` here is a real answer, not a missing one — it means the gate
+  // could not be evaluated, which is itself worth recording.
+  const sourceCompleteness: Record<string, unknown> = {
+    pms_evidence_fresh: pmsEvidenceFresh,
+    // Renamed at the merge of the as-of and feed-health work: the gate this
+    // records is now FRESHNESS (is the number current enough to freeze into
+    // history), not TRUST (is the feed working at all). The stored key keeps
+    // its name so existing seals stay comparable.
+    counts_trusted: sealCountsFresh,
+    reservations_trusted: !reservationsUntrusted,
+    snapshot_describes_target_date: snapshotDescribesTargetDate,
+    cleaning_events_seen: roomsCompleted,
+    // Which of the closing-photo buckets this seal could fill. All of the
+    // report-fed ones are 'no_source' until report ingestion lands; saying so
+    // explicitly is the difference between "blank" and "unknown".
+    buckets: {
+      occupancy: pmsEvidenceFresh && sealCountsFresh ? 'legacy_derived' : 'no_source',
+      revenue: 'no_source',
+      flow: 'no_source',
+      channel: 'no_source',
+      housekeeping: roomsCompleted > 0 ? 'staxis_cleaning_events' : 'no_source',
+      labor: 'no_source',
+    },
+  };
+
   const row: Record<string, unknown> = {
     property_id: p.id,
     date: targetDate,
@@ -492,7 +524,18 @@ async function sealOne(
     rooms_completed: Math.round(roomsCompleted),
     avg_turnaround_minutes: avgTurnaround,
     total_minutes: totalMinutes > 0 ? Math.round(totalMinutes) : null,
+    sealed_at: new Date().toISOString(),
+    seal_version: SEAL_VERSION,
+    source_completeness: sourceCompleteness,
   };
+  // Guard the sharp edge 0344 introduced: daily_logs.occupancy_pct / adr_cents /
+  // revpar_cents / day_of_week are GENERATED ALWAYS, and Postgres hard-errors
+  // (428C9) on an INSERT that so much as names one. This upsert is built by
+  // spreading `sealed`, so a future field rename could collide silently — and
+  // the failure would be a nightly cron dying under a green-looking schedule.
+  for (const generated of ['occupancy_pct', 'adr_cents', 'revpar_cents', 'day_of_week']) {
+    delete row[generated];
+  }
 
   const { error: upErr } = await supabaseAdmin
     .from('daily_logs')

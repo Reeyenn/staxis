@@ -44,8 +44,44 @@ inbox on — the apex was previously catch-all → "Drop".
 | Var | Where | Purpose |
 |---|---|---|
 | `WEBHOOK_URL` | `wrangler.toml` `[vars]` | The webhook URL. Prod = `https://getstaxis.com/api/pms-inbox/inbound`. Point at a Vercel **preview** URL during end-to-end testing. |
-| `MAX_BYTES` | `wrangler.toml` `[vars]` | Max raw message size to forward. Default 256 KiB (Okta code mails are tiny). |
+| `COMMIT_URL` | `wrangler.toml` `[vars]` | Phase two of the attachment handshake. Defaults to `WEBHOOK_URL` with `/inbound` → `/attachment-commit`. |
+| `MAX_BYTES` | `wrangler.toml` `[vars]` | Max raw message size to forward. **25 MiB** (was 256 KiB) — report emails carry CSV/PDF/XLSX attachments. Must stay ≤ the `pms-raw` bucket's `file_size_limit` (migration 0340). |
 | `PMS_INBOX_WEBHOOK_SECRET` | `wrangler secret` | Shared Bearer secret. **Must equal** the Vercel `PMS_INBOX_WEBHOOK_SECRET`. Never commit it. |
+
+## Report emails (migrations 0340–0342)
+
+The same Worker now also carries **scheduled PMS report emails**, the new data
+intake path. Which class a message is depends ONLY on the recipient address, and
+the **webhook** decides — the Worker never classifies anything.
+
+```
+PMS report scheduler → <unguessable-token>@in.getstaxis.com  (or r-<token>@getstaxis.com)
+     → Cloudflare Email Routing → THIS Worker
+     → POST {…, attachments:[{filename,mimeType,size,sha256}]}   ← METADATA ONLY (~2 KB)
+     → webhook replies per attachment: 'skip' | 'upload' + signed Storage URL
+     → Worker PUTs raw bytes straight to Supabase Storage (never through Vercel)
+     → POST /api/pms-inbox/attachment-commit {messageId, sha256[]}
+```
+
+Attachment bytes never enter a Vercel function's memory or request log, a
+duplicate file transfers **zero** bytes, and an interrupted upload leaves a
+visible `pending_upload` ledger row that the daily purge cron sweeps to `failed`
+after an hour.
+
+### ⚠️ Human deploy steps (nobody else can do these)
+
+1. `cd email-worker && npm install && npx wrangler deploy` — ships the
+   attachment handshake and the 25 MiB limit.
+2. Decide the report address shape in the Cloudflare dashboard:
+   - **Preferred:** Email Routing on `in.getstaxis.com` (MX for the subdomain +
+     a catch-all → this Worker). If the zone/plan doesn't allow a subdomain,
+   - **Fallback:** keep the apex catch-all and set the Vercel env var
+     `PMS_REPORT_INBOX_DOMAIN=getstaxis.com`. Report mail is then addressed
+     `r-<token>@getstaxis.com` and stays disjoint from the 2FA inbox by prefix.
+   No DB constraint hard-codes either shape, so this decision can be made after
+   the migrations are applied.
+3. Set each hotel's report address via the `staxis_set_report_inbox` RPC (only
+   the sha256 and a vault-encrypted copy are stored — never the plaintext).
 
 ### DNS — no record changes needed
 
@@ -76,8 +112,12 @@ leave; remove its MX/TXT/`_dmarc` records later if you want to tidy up.
   fail-closed rejects. It never trusts the first/last raw header.
 - **No backscatter:** the Worker never `setReject()`s or bounces these — it acks
   and forwards, so a probing sender learns nothing.
-- **Size-capped** and attachments are not forwarded (only subject/text/bounded
-  html). The webhook caps body size again and rate-limits per property.
+- **Size-capped.** Attachment BYTES are still never forwarded through the
+  webhook — only `{filename, mimeType, size, sha256}`. The webhook caps body
+  size again and rate-limits per property.
+- **Report-address secrecy:** the per-hotel report address is an unguessable
+  capability token. Only its sha256 reaches the database lookup, and the
+  webhook never writes the token into `pms_inbox_messages.email_to`.
 - **Secret** is a Cloudflare secret + a Vercel env var; rotate via the webhook's
   `PMS_INBOX_WEBHOOK_SECRET_NEXT` slot (accepts either during the overlap).
 

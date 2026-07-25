@@ -52,20 +52,23 @@ const ROOM_STATUS_DESCRIPTOR: TableSchemaDescriptor = {
   ],
 };
 
-const FUTURE_BOOKINGS_DESCRIPTOR: TableSchemaDescriptor = {
-  table_name: 'pms_future_bookings',
-  write_strategy: 'upsert',
+// Migration 0343 replaced pms_future_bookings (a duplicate of pms_reservations,
+// keyed so a pickup curve could never be drawn) with pms_booking_pace: one
+// aggregate row per stay night per vantage point.
+const BOOKING_PACE_DESCRIPTOR: TableSchemaDescriptor = {
+  table_name: 'pms_booking_pace',
+  write_strategy: 'append',
   snapshot_scope_default: 'delta',
-  natural_key: ['property_id', 'pms_reservation_id'],
+  natural_key: ['property_id', 'as_of_date', 'stay_date'],
   reconcile_key_field: null,
   columns: [
-    { name: 'pms_reservation_id', type: 'text', required: true, nullable: false },
-    { name: 'guest_name', type: 'text', required: false, nullable: true },
-    { name: 'arrival_date', type: 'date', required: true, nullable: false },
-    { name: 'departure_date', type: 'date', required: false, nullable: true },
-    { name: 'rate_per_night_cents', type: 'bigint', required: false, nullable: true },
-    { name: 'total_amount_cents', type: 'bigint', required: false, nullable: true },
-    { name: 'captured_at', type: 'timestamptz', required: true, nullable: false },
+    { name: 'as_of_date', type: 'date', required: true, nullable: false },
+    { name: 'stay_date', type: 'date', required: true, nullable: false },
+    { name: 'rooms_otb', type: 'integer', required: false, nullable: true },
+    { name: 'revenue_otb_cents', type: 'bigint', required: false, nullable: true },
+    { name: 'adr_otb_cents', type: 'bigint', required: false, nullable: true },
+    { name: 'rooms_available', type: 'integer', required: false, nullable: true },
+    { name: 'observed_at', type: 'timestamptz', required: true, nullable: false },
   ],
 };
 
@@ -207,7 +210,7 @@ describe('PMS X — full pipeline: recipe → templates → parse → validateRo
     assert.equal(v.rejected.length, 0);
   });
 
-  test('future-bookings feed: DD.MM.YYYY dates + European money → ISO + cents, validates', () => {
+  test('booking-pace feed: DD.MM.YYYY dates + European money → ISO + cents, validates', () => {
     const recipe: Recipe = {
       schema: 1,
       login: { startUrl: 'https://pmsx.example/login', steps: [], successSelectors: ['#home'] },
@@ -215,30 +218,30 @@ describe('PMS X — full pipeline: recipe → templates → parse → validateRo
         getFutureBookings: {
           steps: [{ kind: 'goto', url: 'https://pmsx.example/reservations' }],
           parse: { mode: 'table', hint: { rowSelector: 'tr.res', columns: {
-            pms_reservation_id: 'td.id', arrival_date: 'td.arr', rate_per_night_cents: 'td.rate',
+            as_of_date: 'td.asof', stay_date: 'td.stay', revenue_otb_cents: 'td.rev',
           } } },
         },
       },
     };
     const { templates } = recipeToTableTemplates(recipe, learned);
-    const tmpl = templates.find((t) => t.tableName === 'pms_future_bookings')!;
-    assert.ok(tmpl, 'future-bookings template built');
-    assert.equal(tmpl.fields.arrival_date!.parser, 'generic_date');
-    assert.equal(tmpl.fields.arrival_date!.parserConfig?.dateFormat?.order, 'DMY');
-    assert.equal(tmpl.fields.rate_per_night_cents!.parser, 'generic_currency');
+    const tmpl = templates.find((t) => t.tableName === 'pms_booking_pace')!;
+    assert.ok(tmpl, 'booking-pace template built');
+    assert.equal(tmpl.fields.stay_date!.parser, 'generic_date');
+    assert.equal(tmpl.fields.stay_date!.parserConfig?.dateFormat?.order, 'DMY');
+    assert.equal(tmpl.fields.revenue_otb_cents!.parser, 'generic_currency');
 
     const rawRows = [
-      { 'td.id': 'R-900', 'td.arr': '13.06.2026', 'td.rate': '1.234,56 €' },
-      { 'td.id': 'R-901', 'td.arr': '02.11.2026', 'td.rate': '89,90 €' },
+      { 'td.asof': '01.06.2026', 'td.stay': '13.06.2026', 'td.rev': '1.234,56 €' },
+      { 'td.asof': '01.06.2026', 'td.stay': '02.11.2026', 'td.rev': '89,90 €' },
     ];
     const parsed = rawRows.map((r) => applyTemplateParsers(r, tmpl, 'list_row'));
-    assert.equal(parsed[0]!.arrival_date, '2026-06-13');
-    assert.equal(parsed[0]!.rate_per_night_cents, 123456);
-    assert.equal(parsed[1]!.arrival_date, '2026-11-02');
-    assert.equal(parsed[1]!.rate_per_night_cents, 8990);
+    assert.equal(parsed[0]!.stay_date, '2026-06-13');
+    assert.equal(parsed[0]!.revenue_otb_cents, 123456);
+    assert.equal(parsed[1]!.stay_date, '2026-11-02');
+    assert.equal(parsed[1]!.revenue_otb_cents, 8990);
 
-    const stamped = parsed.map((p) => ({ ...p, property_id: PID, captured_at: new Date().toISOString() }));
-    const v = validateRows(stamped, FUTURE_BOOKINGS_DESCRIPTOR);
+    const stamped = parsed.map((p) => ({ ...p, property_id: PID, observed_at: new Date().toISOString() }));
+    const v = validateRows(stamped, BOOKING_PACE_DESCRIPTOR);
     assert.equal(v.valid.length, 2, `all PMS-X booking rows valid; rejected: ${JSON.stringify(v.rejected)}`);
     assert.equal(v.rejected.length, 0);
   });
@@ -254,7 +257,7 @@ describe('PMS X — full pipeline: recipe → templates → parse → validateRo
         },
         getFutureBookings: {
           steps: [{ kind: 'goto', url: 'https://pmsx.example/res' }],
-          parse: { mode: 'table', hint: { rowSelector: 'tr', columns: { pms_reservation_id: 'a', arrival_date: 'b', rate_per_night_cents: 'c' } } },
+          parse: { mode: 'table', hint: { rowSelector: 'tr', columns: { as_of_date: 'a', stay_date: 'b', revenue_otb_cents: 'c' } } },
         },
       },
     };

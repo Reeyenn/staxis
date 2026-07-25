@@ -6,6 +6,15 @@
 // revenue number anywhere: the Financials summary AND the Dashboard finance tile
 // both call getMonthRevenue(), so they can never disagree.
 //
+// READ pms_revenue_daily_current, NEVER THE BASE TABLE (migration 0343).
+// Since 0343 a corrected report lands as a NEW as_of generation next to the one
+// it corrects, keyed (property_id, business_date, as_of) — nothing is deleted,
+// so the earlier belief stays queryable. Summing the BASE table over a month
+// therefore counts a restated Tuesday twice, and the hotel is shown revenue it
+// never earned. The _current view is DISTINCT ON (property_id, business_date)
+// ordered by as_of desc: exactly one row per day, the newest one.
+// Covered by src/lib/__tests__/pms-as-of-readers.test.ts.
+//
 // Cold-start honesty: the first paying hotel is on a Choice Advantage franchise
 // PMS that does not expose financials, so pms_revenue_daily is empty today. When
 // there are no rows for the month we return revenueCents = null (NOT 0) so the
@@ -38,11 +47,11 @@ export async function getMonthRevenue(pid: string, month: string): Promise<Month
   const endExcl = nextMonthStartISO(month);
   try {
     const { data, error } = await supabaseAdmin
-      .from('pms_revenue_daily')
-      .select('total_revenue_cents, occupied_rooms, date')
+      .from('pms_revenue_daily_current')
+      .select('total_revenue_cents, occupied_rooms, business_date')
       .eq('property_id', pid)
-      .gte('date', start)
-      .lt('date', endExcl);
+      .gte('business_date', start)
+      .lt('business_date', endExcl);
     if (error) {
       log.warn('[financials/revenue] getMonthRevenue read failed', { pid, month, err: error.message });
       return { revenueCents: null, revenueIsLive: false, occupiedRoomNights: null };
@@ -89,6 +98,11 @@ export async function getMonthRevenue(pid: string, month: string): Promise<Month
  * busier (so spend will pace up); <1 means it slows down. Returns null when the
  * PMS forecast feed (pms_forecast_daily) has no usable data — the forecast then
  * falls back to pure linear pacing (honest cold start, no fabricated trend).
+ *
+ * Reads pms_forecast_daily_current: the table has always carried one row per
+ * (forecast_date, snapshot_date), so the base table holds every vintage of the
+ * same forecast day and averaging across them weights whichever day happened to
+ * be re-forecast most often. The view keeps the newest snapshot per day.
  */
 export async function getOccupancyPacingFactor(
   pid: string,
@@ -99,7 +113,7 @@ export async function getOccupancyPacingFactor(
   const endExcl = nextMonthStartISO(month);
   try {
     const { data, error } = await supabaseAdmin
-      .from('pms_forecast_daily')
+      .from('pms_forecast_daily_current')
       .select('forecast_date, projected_occupancy_pct')
       .eq('property_id', pid)
       .gte('forecast_date', start)

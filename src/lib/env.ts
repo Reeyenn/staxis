@@ -162,6 +162,16 @@ const ServerSchema = z.object({
   // Only set this to point at a different domain during testing; setting it to the
   // retired `pms.getstaxis.com` subdomain would make the route reject all apex mail.
   PMS_INBOX_DOMAIN: z.string().optional(),
+  // ── PMS report intake (migrations 0340-0342) ─────────────────────────────
+  // The domain scheduled PMS report emails arrive on. Defaults to the
+  // `in.getstaxis.com` subdomain. If Cloudflare Email Routing turns out not to
+  // support a subdomain on this zone, set this to the apex and reports are
+  // distinguished by the PMS_REPORT_LOCAL_PREFIX below instead — the route
+  // handles both shapes and keeps the two message classes disjoint either way.
+  PMS_REPORT_INBOX_DOMAIN: z.string().optional(),
+  // Local-part prefix that marks report mail when it shares a domain with the
+  // 2FA inbox. Also harmless (and still enforced) on a dedicated subdomain.
+  PMS_REPORT_LOCAL_PREFIX: z.string().optional(),
 
   // ── Sentry ────────────────────────────────────────────
   SENTRY_DSN: z.string().url().optional(),

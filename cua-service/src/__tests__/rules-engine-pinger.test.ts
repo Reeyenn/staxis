@@ -219,8 +219,8 @@ describe('rules-engine-pinger — predicate selectivity', () => {
     assert.equal(pinger.isPending(PROP_A), false);
   });
 
-  test('pms_in_house_snapshot: any write fires (debouncer collapses)', () => {
-    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [
+  test('pms_occupancy_observation: any write fires (debouncer collapses)', () => {
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_occupancy_observation', [
       { total_occupied_rooms: 42 },
     ]);
     assert.equal(pinger.isPending(PROP_A), true);
@@ -460,7 +460,7 @@ describe('rules-engine-pinger — diff-signal (Codex follow-up Major #1 + #2)', 
     pinger = newPinger({ timers, mockFetch });
   });
 
-  test('pms_in_house_snapshot: identical re-upsert does NOT fire', () => {
+  test('pms_occupancy_observation: identical re-upsert does NOT fire', () => {
     const row = {
       total_guests_in_house: 42,
       total_occupied_rooms: 30,
@@ -472,18 +472,18 @@ describe('rules-engine-pinger — diff-signal (Codex follow-up Major #1 + #2)', 
       checked_in_today_count: 1,
       checked_out_today_count: 4,
     };
-    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [row]);
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_occupancy_observation', [row]);
     assert.equal(pinger.isPending(PROP_A), true);
 
     // Fire and clear.
     timers.fireNext();
 
     // Same exact row re-upserted → no new fire.
-    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [row]);
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_occupancy_observation', [row]);
     assert.equal(pinger.isPending(PROP_A), false);
   });
 
-  test('pms_in_house_snapshot: changed total_occupied_rooms fires', () => {
+  test('pms_occupancy_observation: changed total_occupied_rooms fires', () => {
     const baseline = {
       total_guests_in_house: 42,
       total_occupied_rooms: 30,
@@ -495,11 +495,11 @@ describe('rules-engine-pinger — diff-signal (Codex follow-up Major #1 + #2)', 
       checked_in_today_count: 1,
       checked_out_today_count: 4,
     };
-    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [baseline]);
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_occupancy_observation', [baseline]);
     timers.fireNext();
 
     // Bump occupied count → new fire.
-    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_occupancy_observation', [
       { ...baseline, total_occupied_rooms: 31 },
     ]);
     assert.equal(pinger.isPending(PROP_A), true);
@@ -621,8 +621,8 @@ describe('rules-engine-pinger — diff-signal (Codex follow-up Major #1 + #2)', 
       checked_in_today_count: 0,
       checked_out_today_count: 0,
     };
-    pinger.notifyHighPriorityChange(PROP_A, 'pms_in_house_snapshot', [sameRow]);
-    pinger.notifyHighPriorityChange(PROP_B, 'pms_in_house_snapshot', [sameRow]);
+    pinger.notifyHighPriorityChange(PROP_A, 'pms_occupancy_observation', [sameRow]);
+    pinger.notifyHighPriorityChange(PROP_B, 'pms_occupancy_observation', [sameRow]);
     // Both fire on first sight even though the row content matches.
     assert.equal(pinger.isPending(PROP_A), true);
     assert.equal(pinger.isPending(PROP_B), true);

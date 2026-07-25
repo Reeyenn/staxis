@@ -102,15 +102,19 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
   getDashboardCounts: {
-    tableName: 'pms_in_house_snapshot',
-    keys: ['property_id'],
-    writeStrategy: 'upsert',  // one row per property — always overwritten
+    tableName: 'pms_occupancy_observation',
+    keys: ['property_id', 'observed_at'],
+    // 0343: every reading is its own row. The old 'upsert' onto a single
+    // (property_id) row is what threw away 48 occupancy readings a day.
+    writeStrategy: 'append',
     snapshotScope: 'full',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
   getHistoricalOccupancy: {
     tableName: 'pms_revenue_daily',
-    keys: ['property_id', 'date'],
+    // 0343 renamed `date` -> business_date and added the as_of generation, so a
+    // corrected report no longer destroys the day it corrects.
+    keys: ['property_id', 'business_date', 'as_of'],
     writeStrategy: 'upsert',
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
@@ -125,7 +129,8 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
   },
   getRevenueDaily: {
     tableName: 'pms_revenue_daily',
-    keys: ['property_id', 'date'],
+    // 0343: `date` -> business_date, plus the as_of generation.
+    keys: ['property_id', 'business_date', 'as_of'],
     writeStrategy: 'upsert',
     snapshotScope: 'full',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
@@ -139,7 +144,7 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
   },
   getChannelPerformance: {
     tableName: 'pms_channel_performance',
-    keys: ['property_id', 'date', 'channel'],
+    keys: ['property_id', 'business_date', 'as_of', 'channel'],
     writeStrategy: 'upsert',
     snapshotScope: 'full',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
@@ -167,7 +172,9 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
   },
   getRatesAndInventory: {
     tableName: 'pms_rates_and_inventory',
-    keys: ['property_id', 'date', 'room_type', 'rate_plan'],
+    // 0343: `date` -> stay_date (it is a FUTURE night, not an accounting day)
+    // and as_of records which day's grid this is.
+    keys: ['property_id', 'as_of', 'stay_date', 'room_type', 'rate_plan'],
     writeStrategy: 'upsert',
     snapshotScope: 'full',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
@@ -192,15 +199,15 @@ const ACTION_ROUTES: Record<keyof Recipe['actions'], ActionRoute> = {
   },
   getPaymentsDaily: {
     tableName: 'pms_payments_daily',
-    keys: ['property_id', 'business_date'],
+    keys: ['property_id', 'business_date', 'as_of'],
     writeStrategy: 'upsert',
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
   getFutureBookings: {
-    tableName: 'pms_future_bookings',
-    keys: ['property_id', 'pms_reservation_id'],
-    writeStrategy: 'upsert',
+    tableName: 'pms_booking_pace',
+    keys: ['property_id', 'as_of_date', 'stay_date'],
+    writeStrategy: 'append',
     snapshotScope: 'delta',
     modeFromParseHint: (m) => PARSE_HINT_TO_MODE[m],
   },
@@ -765,9 +772,9 @@ export function dashboardCountsTemplateFromLegacy(
   // does the merge today; in the new pipeline, the multi-source-runner
   // applies these rules.
   return {
-    tableName: 'pms_in_house_snapshot',
-    keys: ['property_id'],
-    writeStrategy: 'upsert',
+    tableName: 'pms_occupancy_observation',
+    keys: ['property_id', 'observed_at'],
+    writeStrategy: 'append',
     snapshotScope: 'full',
     sources,
     aggregate: {

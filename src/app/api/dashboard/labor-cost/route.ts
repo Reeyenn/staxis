@@ -6,10 +6,14 @@
  *   labor cost = Σ over every PUBLISHED, filled shift today
  *                  (scheduled hours per shift × that person's resolved wage),
  *                with daily overtime (>8h/person) paid at 1.5×.
- *   revenue    = pms_revenue_daily.total_revenue_cents for today — the SAME
- *                canonical PMS table the Financials summary + owner Dashboard
+ *   revenue    = pms_revenue_daily_current.total_revenue_cents for today — the
+ *                SAME canonical source the Financials summary + owner Dashboard
  *                read (src/lib/financials/revenue.ts), so the numbers reconcile.
  *                Empty (cold-start CA franchise PMS) → null, NOT 0.
+ *                _current, not the base table: since migration 0343 a corrected
+ *                report lands as a new as_of generation beside the one it
+ *                corrects, so the base table can hold several rows for today and
+ *                .maybeSingle() would error out on the second one.
  *
  * Hours source: scheduled_shifts (migration 0147). Only PUBLISHED, filled
  * shifts count — kind='shift', staff_id not null, status in
@@ -159,10 +163,10 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         .eq('property_id', propertyId)
         .returns<WageSettingRow[]>(),
       supabaseAdmin
-        .from('pms_revenue_daily')
+        .from('pms_revenue_daily_current')
         .select('total_revenue_cents')
         .eq('property_id', propertyId)
-        .eq('date', today)
+        .eq('business_date', today)
         .maybeSingle<{ total_revenue_cents: number | null }>(),
       supabaseAdmin
         .from('week_publications')
@@ -188,7 +192,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     // Revenue: empty / unavailable → null (cost-only), never 0.
     let revenueCents: number | null = null;
     if (revenueRes.error) {
-      log.warn('labor-cost: pms_revenue_daily read failed; treating revenue as unknown', {
+      log.warn('labor-cost: pms_revenue_daily_current read failed; treating revenue as unknown', {
         requestId, msg: revenueRes.error.message,
       });
     } else {

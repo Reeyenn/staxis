@@ -69,11 +69,12 @@ const HIGH_PRIORITY_PREDICATES: Record<
     return false;
   },
 
-  // In-house snapshot is upserted every poll. We fire on every write —
+  // An occupancy observation is appended every poll. We fire on every write —
   // the debouncer collapses bursts and the engine endpoint is idempotent.
   // Worst case: one ping every poll cycle (~30s), which IS the cron
   // cadence we want anyway when arrivals/departures are active.
-  pms_in_house_snapshot: () => true,
+  // (Renamed from pms_in_house_snapshot by migration 0343.)
+  pms_occupancy_observation: () => true,
 };
 
 const VIP_TEXT_RE = /\bvip\b|platinum|diamond|titanium|ambassador/i;
@@ -113,8 +114,8 @@ export class RulesEnginePinger {
    *  network call so events arriving during the fetch start a fresh window. */
   private readonly pendingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  /** Per-property last-seen signature for `pms_in_house_snapshot`. Without
-   *  this, an unchanged snapshot upserted every ~30s poll arms a fresh
+  /** Per-property last-seen signature for `pms_occupancy_observation`. Without
+   *  this, an unchanged reading appended every ~30s poll arms a fresh
    *  debounce window every cycle. (Codex follow-up Major #2.) */
   private readonly lastSnapshotSignature = new Map<string, string>();
 
@@ -278,9 +279,11 @@ export class RulesEnginePinger {
     tableName: string,
     rows: ReadonlyArray<Record<string, unknown>>,
   ): boolean {
-    if (tableName === 'pms_in_house_snapshot') {
-      // 1-row upsert per poll. Hash the count fields the engine cares
-      // about; if identical to last seen, skip.
+    if (tableName === 'pms_occupancy_observation') {
+      // One appended reading per poll. Hash the count fields the engine cares
+      // about; if identical to last seen, skip. The row is now a NEW row every
+      // time (0343), so without this every poll would ping.
+
       const firstRow = rows[0];
       if (!firstRow) return false;
       const sig = JSON.stringify({

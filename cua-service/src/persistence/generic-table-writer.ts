@@ -322,6 +322,31 @@ export interface SaveGenericTableOptions {
   /** Override descriptor's snapshot_scope_default. Required when caller
    *  knows the extractor produced a partial view (e.g. filtered to today). */
   snapshotScope?: SnapshotScope;
+  /**
+   * REQUIRED — the pms_ingest_runs row this batch belongs to (migrations
+   * 0340/0341). Stamped onto every written row as ingest_run_id, which is
+   * NOT NULL in the database: there is no number in the system without a
+   * receipt. Typed as required so every call site is a compile error until it
+   * supplies one; the DB constraint is the real enforcement, this is the fast
+   * feedback loop.
+   */
+  ingestRunId: string;
+  /**
+   * REQUIRED — the run's source_captured_at as an ISO-8601 string: the
+   * "as-of" time of the data being written (the report's own timestamp, or
+   * the moment a poll started).
+   *
+   * THIS IS LOAD-BEARING FOR DEDUP, not decoration. The append tables'
+   * natural keys are (property_id, room_number, changed_at) and
+   * (property_id, captured_at, pms_user, action). The extractor usually
+   * can't produce those timestamps, so the writer fills them — and if it
+   * filled them with now(), re-parsing the SAME file at a different wall
+   * clock would produce DIFFERENT keys, the unique indexes from 0342 would
+   * never collide, and a replay would silently DOUBLE the event log. Filling
+   * from source_captured_at makes the key deterministic per source, which is
+   * what makes replay a genuine no-op.
+   */
+  sourceCapturedAt: string;
 }
 
 export interface SaveGenericTableResult {
@@ -340,7 +365,7 @@ export async function saveGenericTable(
   propertyId: string,
   tableName: string,
   rows: Array<Record<string, unknown>>,
-  options: SaveGenericTableOptions = {},
+  options: SaveGenericTableOptions,
 ): Promise<SaveGenericTableResult> {
   // A zero-row batch is a HEALTHY no-op (no cancellations today, empty
   // lost-and-found…), not a write failure. Returning ok:false here made
@@ -350,6 +375,19 @@ export async function saveGenericTable(
   if (rows.length === 0) {
     return { ok: true, tableName, inserted: 0, updated: 0, autoResolved: 0, rejected: 0, errors: [] };
   }
+
+  // Fail LOUDLY rather than falling back to now(). A silent fallback is
+  // exactly the bug this parameter exists to prevent (see the option's doc):
+  // it would restore non-deterministic natural keys and re-open replay
+  // duplication on the append tables.
+  const capturedAtMs = Date.parse(options.sourceCapturedAt ?? '');
+  if (!options.ingestRunId || !Number.isFinite(capturedAtMs)) {
+    return {
+      ok: false, tableName, inserted: 0, updated: 0, autoResolved: 0, rejected: rows.length,
+      errors: ['saveGenericTable requires a valid ingestRunId and ISO-8601 sourceCapturedAt'],
+    };
+  }
+  const sourceCapturedIso = new Date(capturedAtMs).toISOString();
 
   const descriptor = await loadDescriptor(tableName);
   if (!descriptor) {
@@ -496,7 +534,7 @@ export async function saveGenericTable(
   try {
     switch (descriptor.write_strategy) {
       case 'append':
-        result = await writeAppend(targetTable, validation.valid, validation.rejected.length);
+        result = await writeAppend(targetTable, validation.valid, descriptor, validation.rejected.length);
         break;
       case 'upsert':
         result = await writeUpsert(targetTable, validation.valid, descriptor, validation.rejected.length);
@@ -535,12 +573,27 @@ export async function saveGenericTable(
   return result;
 }
 
+/**
+ * Append, but idempotent on re-delivery.
+ *
+ * A plain insert() means a re-forwarded report email — or any retry of a run
+ * that partially succeeded — doubles the event log, and every retry after that
+ * dies on the unique index with an opaque 23505 that looks like a broken feed.
+ * Every append table now has a real unique index behind its natural key
+ * (0342 for room_status/activity, 0343 for occupancy/booking pace), so
+ * ignoreDuplicates lets a redelivery be a no-op instead of either a duplicate
+ * or an error.
+ */
 async function writeAppend(
   tableName: string,
   rows: Array<Record<string, unknown>>,
+  descriptor: TableSchemaDescriptor,
   rejected: number,
 ): Promise<SaveGenericTableResult> {
-  const { error } = await supabase.from(tableName).insert(rows);
+  const onConflict = descriptor.natural_key.join(',');
+  const { error } = await supabase
+    .from(tableName)
+    .upsert(rows, { onConflict, ignoreDuplicates: true });
   if (error) throw error;
   return {
     ok: true, tableName, inserted: rows.length, updated: 0, autoResolved: 0,
@@ -653,35 +706,19 @@ async function hasInterveningChange(
 }
 
 /**
- * Tables with a documented last-good contract (migration 0202): one row per
- * natural key, overwritten every poll, where an optional column that
- * extracted blank/absent this poll must PRESERVE the previous good value.
- * An explicit null in an upsert payload overwrites; an omitted column is
- * left untouched by the conflict-update. So for these tables, optional
- * columns that are null across the whole batch are dropped from the payload
- * (column-level, keeping row keys homogeneous for PostgREST).
+ * LAST-GOOD PRESERVATION IS GONE, AND THAT IS THE POINT (migration 0343).
+ *
+ * pms_in_house_snapshot was the only table that needed it: one row per hotel,
+ * overwritten every poll, so a half-rendered PMS tile could null out a good
+ * count. The fix was to drop all-null optional columns from the payload so the
+ * conflict-update left the previous value alone.
+ *
+ * That table is now pms_occupancy_observation with write_strategy='append' —
+ * every reading is its own row and nothing is ever overwritten, so there is no
+ * previous value to protect. A blank column on one reading is simply a blank
+ * reading, which is the truth. Do not reintroduce this for an append table: it
+ * would make a row silently inherit a neighbour's number.
  */
-const LAST_GOOD_UPSERT_TABLES = new Set(['pms_in_house_snapshot']);
-
-function dropAllNullOptionalColumns(
-  rows: Array<Record<string, unknown>>,
-  descriptor: TableSchemaDescriptor,
-): Array<Record<string, unknown>> {
-  const droppable = descriptor.columns
-    .filter((c) => !c.required)
-    .map((c) => c.name)
-    .filter((name) => rows.every((r) => r[name] === null || r[name] === undefined));
-  if (droppable.length === 0) return rows;
-  log.info('generic-table-writer: preserving last-good values for blank optional columns', {
-    tableName: descriptor.table_name,
-    columns: droppable,
-  });
-  return rows.map((r) => {
-    const out = { ...r };
-    for (const name of droppable) delete out[name];
-    return out;
-  });
-}
 
 async function writeUpsert(
   tableName: string,
@@ -692,12 +729,7 @@ async function writeUpsert(
   // ON CONFLICT target = the natural_key columns. Supabase JS client's
   // upsert() takes `onConflict` as a comma-separated string of columns.
   const onConflict = descriptor.natural_key.join(',');
-  // Last-good preservation (0202): one half-rendered PMS tile must not null
-  // out a good count in the property's only snapshot row.
-  const payload = LAST_GOOD_UPSERT_TABLES.has(descriptor.table_name)
-    ? dropAllNullOptionalColumns(rows, descriptor)
-    : rows;
-  const { error } = await supabase.from(tableName).upsert(payload, { onConflict });
+  const { error } = await supabase.from(tableName).upsert(rows, { onConflict });
   if (error) throw error;
   // upsert() doesn't distinguish inserts from updates in the response.
   // For now, report all as 'inserted' — admin UI cares about the delta,

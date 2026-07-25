@@ -49,36 +49,73 @@
 
 begin;
 
-alter table public.pms_in_house_snapshot
-  add constraint pms_in_house_snapshot_captured_at_not_future
-  check (captured_at <= now() + interval '5 minutes') not valid;
+-- Driven off a list rather than hardcoded ALTERs, because the target set is
+-- not stable across the migration history. 0343 (a sibling workstream, merged
+-- alongside this one) renames pms_in_house_snapshot to
+-- pms_occupancy_observation and leaves a compat VIEW behind at the old name,
+-- and it drops pms_future_bookings outright in favour of pms_booking_pace.
+-- Hardcoding either name makes this migration fail depending on which order a
+-- database happened to receive them in — "ALTER action ADD CONSTRAINT cannot
+-- be performed on relation" for the view, "does not exist" for the dropped
+-- table.
+--
+-- So: name every table that has EVER been a target, and skip any entry that is
+-- not currently a base table with a captured_at column. Adding a name here is
+-- always safe; the guard decides whether it applies.
+--
+-- NOT VALID first, then VALIDATE, so the existing-row scan takes a weaker lock
+-- than a plain ADD CONSTRAINT would.
+do $$
+declare
+  tbl      text;
+  con      text;
+  targets  text[] := array[
+    'pms_occupancy_observation',  -- 0343's name for the in-house snapshot
+    'pms_in_house_snapshot',      -- pre-0343 name; a VIEW after it, hence skipped
+    'pms_guest_balances',
+    'pms_payments_daily',
+    'pms_booking_pace',           -- 0343's replacement for pms_future_bookings
+    'pms_future_bookings',        -- dropped by 0343; skipped once it is gone
+    'pms_no_shows',
+    'pms_cancellations'
+  ];
+begin
+  foreach tbl in array targets loop
+    -- relkind 'r' = ordinary table. Excludes the compat view explicitly.
+    if not exists (
+      select 1
+        from pg_class c
+        join pg_namespace n on n.oid = c.relnamespace
+       where n.nspname = 'public' and c.relname = tbl and c.relkind = 'r'
+    ) then
+      raise notice '0351: skipping %, not a base table here', tbl;
+      continue;
+    end if;
 
-alter table public.pms_guest_balances
-  add constraint pms_guest_balances_captured_at_not_future
-  check (captured_at <= now() + interval '5 minutes') not valid;
+    if not exists (
+      select 1 from information_schema.columns
+       where table_schema = 'public' and table_name = tbl and column_name = 'captured_at'
+    ) then
+      raise notice '0351: skipping %, no captured_at column', tbl;
+      continue;
+    end if;
 
-alter table public.pms_payments_daily
-  add constraint pms_payments_daily_captured_at_not_future
-  check (captured_at <= now() + interval '5 minutes') not valid;
+    con := tbl || '_captured_at_not_future';
+    if exists (select 1 from pg_constraint where conname = con) then
+      continue;
+    end if;
 
-alter table public.pms_future_bookings
-  add constraint pms_future_bookings_captured_at_not_future
-  check (captured_at <= now() + interval '5 minutes') not valid;
-
-alter table public.pms_no_shows
-  add constraint pms_no_shows_captured_at_not_future
-  check (captured_at <= now() + interval '5 minutes') not valid;
-
-alter table public.pms_cancellations
-  add constraint pms_cancellations_captured_at_not_future
-  check (captured_at <= now() + interval '5 minutes') not valid;
-
-alter table public.pms_in_house_snapshot validate constraint pms_in_house_snapshot_captured_at_not_future;
-alter table public.pms_guest_balances    validate constraint pms_guest_balances_captured_at_not_future;
-alter table public.pms_payments_daily    validate constraint pms_payments_daily_captured_at_not_future;
-alter table public.pms_future_bookings   validate constraint pms_future_bookings_captured_at_not_future;
-alter table public.pms_no_shows          validate constraint pms_no_shows_captured_at_not_future;
-alter table public.pms_cancellations     validate constraint pms_cancellations_captured_at_not_future;
+    execute format(
+      'alter table public.%I add constraint %I check (captured_at <= now() + interval ''5 minutes'') not valid',
+      tbl, con
+    );
+    -- A failure here is a REAL future-dated row, not a migration bug. Let it
+    -- raise: a clock-skewed capture time is exactly what this constraint exists
+    -- to surface, and silently skipping it would defeat the point.
+    execute format('alter table public.%I validate constraint %I', tbl, con);
+    raise notice '0351: constrained %', tbl;
+  end loop;
+end $$;
 
 insert into public.applied_migrations (version, description) values (
   '0351',

@@ -42,6 +42,7 @@ import {
 // the generic-table-writer driven by mapper-produced TableTemplates
 // is the only write path now.
 import { saveGenericTable } from './persistence/generic-table-writer.js';
+import { openCuaIngestRun, closeCuaIngestRun } from './persistence/ingest-run.js';
 import { captureLiveFeedProvenance, upsertFeedValues } from './feed-capture.js';
 import { runSingleSourceTemplate } from './extractors/template-runner.js';
 import { runMultiSourceTemplate } from './extractors/multi-source-runner.js';
@@ -181,7 +182,9 @@ export function decideNoKnowledgeFileAction(
 // Lower number = runs earlier. Dashboard / in-house snapshot first
 // (cheapest, most-displayed); then list pages; then drill-down.
 const TABLE_PRIORITY: Record<string, number> = {
-  pms_in_house_snapshot: 1,
+  // Renamed from pms_in_house_snapshot by migration 0343; a table missing from
+  // this map sorts last, so a stale name silently deprioritizes the feed.
+  pms_occupancy_observation: 1,
   pms_reservations: 2,
   pms_rooms_inventory: 3,
   pms_room_status_log: 4,
@@ -1350,6 +1353,20 @@ export class SessionDriver {
     // (cheapest, most-displayed), then list pages, then drill-down.
     const sorted = [...runnable].sort((a, b) => priorityOf(a.tableName) - priorityOf(b.tableName));
 
+    // Lineage (migration 0341): every pms_* row must name the run that wrote
+    // it. ONE run per poll cycle — a sweep is a single observation of the
+    // hotel, and per-table runs would make cross-feed reconciliation
+    // impossible to line up. Stamped with when the robot LOOKED, so the
+    // monotonic guard can reject a slow poll carrying stale data.
+    // No run → no write: an unattributable row is worse than a missing one.
+    const ingestRun = await openCuaIngestRun(
+      this.propertyId,
+      this.knowledgeFile?.id ?? null,
+    );
+    if (!ingestRun) return;
+    let rowsWrittenThisCycle = 0;
+    let rowsRejectedThisCycle = 0;
+
     for (const template of sorted) {
       if (signal.aborted) break;
       try {
@@ -1402,8 +1419,14 @@ export class SessionDriver {
           // Fix 3: drive delta-vs-full reconcile safety off the TEMPLATE's
           // snapshotScope, not the descriptor default. A template that only
           // sees a partial view ('delta') must never trigger auto-resolve.
-          { snapshotScope: template.snapshotScope },
+          {
+            snapshotScope: template.snapshotScope,
+            ingestRunId: ingestRun.ingestRunId,
+            sourceCapturedAt: ingestRun.sourceCapturedAt,
+          },
         );
+        rowsWrittenThisCycle += saveResult.inserted + saveResult.updated;
+        rowsRejectedThisCycle += saveResult.rejected;
         // Feed-level PAGE values (e.g. "Guest Count: 23") — store ONCE per
         // (property, feed) in pms_feed_values, NOT stamped onto every row.
         // Best-effort, never throws; a poll that captured none preserves the
@@ -1520,6 +1543,15 @@ export class SessionDriver {
         err: err instanceof Error ? err.message : String(err),
       });
     }
+
+    // Close the lineage run. Best-effort by design: the rows are already
+    // committed, so failing the cycle over bookkeeping would throw away good
+    // data. A run stuck in 'running' is visibly stale in the ledger, which is
+    // the failure mode we want — loud, not silent.
+    await closeCuaIngestRun(ingestRun.ingestRunId, {
+      rowsWritten: rowsWrittenThisCycle,
+      rowsRejected: rowsRejectedThisCycle,
+    });
   }
 
   // ─── Internals: heartbeat + status ───────────────────────────────────

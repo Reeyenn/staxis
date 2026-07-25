@@ -173,6 +173,21 @@ const checks: Array<[string, CheckFn]> = [
   ['pms_report_freshness',        checkPmsReportFreshness],
   ['pms_quarantine_backlog',      checkPmsQuarantineBacklog],
   ['pms_unmapped_columns_open',   checkPmsUnmappedColumns],
+  // Report-email intake (migrations 0340-0342). Two signals only, in the
+  // spirit of the 2026-07-17 slimming:
+  //   - lineage is the INVARIANT tripwire: a future pms_* table shipping
+  //     without a receipt column is a silent data-provenance hole, and this is
+  //     the only thing that would ever notice.
+  //   - intake health surfaces the two states a constraint cannot: bytes that
+  //     never landed, and files quarantined before any parse.
+  ['pms_lineage_columns_complete', checkPmsLineageColumns],
+  ['pms_report_intake_health',     checkPmsReportIntakeHealth],
+  // Time model (migration 0343). pms_table_schemas is the descriptor every PMS
+  // writer reads before it writes; when it drifts from the physical schema the
+  // symptom is silent — duplicated rows, or a feed that has simply never
+  // written anything. The trigger prevents new drift; this catches drift caused
+  // some other way (a hand-run ALTER, a dropped index) within 5 minutes.
+  ['pms_time_model_ok',            checkPmsTimeModel],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1272,6 +1287,140 @@ async function checkPmsUnmappedColumns(): Promise<Omit<Check, 'name' | 'duration
       status: verdict.status,
       detail: verdict.detail,
       fix: 'Map the column into the table descriptor (pms_table_schemas) and set the row to \'mapped\', or set it to \'ignored\' if the column genuinely carries nothing we want. Either way the feed leaves the "learning" state.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * INVARIANT TRIPWIRE — "there is no number in the system without a receipt."
+ *
+ * pms_lineage_gaps() (migration 0341) compares the live schema against
+ * pms_table_schemas and returns any pms_* write target lacking a NOT NULL
+ * ingest_run_id with an FK to pms_ingest_runs. Empty result = invariant holds.
+ *
+ * This is FAIL, not warn: a data table without lineage is a table whose numbers
+ * cannot be traced to the report that produced them, and every hour it stays
+ * that way is another hour of untraceable rows.
+ */
+async function checkPmsLineageColumns(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin.rpc('pms_lineage_gaps');
+    if (error) {
+      // Before 0341 is applied the function doesn't exist. Warn (with the fix)
+      // rather than fail so a pre-apply deploy doesn't go red on a known gap.
+      if (errToString(error).includes('does not exist') || (error as { code?: string }).code === 'PGRST202') {
+        return {
+          status: 'warn',
+          detail: 'pms_lineage_gaps() not present — migration 0341 has not been applied yet.',
+          fix: 'Apply supabase/migrations/0341_pms_lineage_and_monotonic_writes.sql (after 0340). Idempotent.',
+        };
+      }
+      return { status: 'warn', detail: `pms_lineage_gaps() failed: ${errToString(error)}` };
+    }
+    const gaps = (data ?? []) as Array<{ missing_table: string; reason: string }>;
+    if (gaps.length === 0) {
+      return { status: 'ok', detail: 'every pms_* write target carries a NOT NULL ingest_run_id' };
+    }
+    return {
+      status: 'fail',
+      detail: `${gaps.length} pms_* table(s) missing lineage: ${gaps.map((g) => `${g.missing_table} (${g.reason})`).join('; ')}`,
+      fix: 'Add `ingest_run_id uuid not null references pms_ingest_runs(id) on delete cascade` to each table, backfill it, and stamp it in the writer. See migration 0341.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * INVARIANT TRIPWIRE — "the writer registry cannot lie about the schema."
+ *
+ * staxis_pms_registry_violations() (migration 0343) compares every
+ * pms_table_schemas row against the real database: does the table exist, is it
+ * a base table rather than a view, does its declared natural_key have an actual
+ * UNIQUE index behind it, and is its declared time grain consistent with its
+ * write strategy and columns.
+ *
+ * FAIL, not warn. A natural_key with no unique index means every poll appends
+ * duplicates instead of upserting; a stale table_name means a feed that has
+ * never once written a row. Both look like healthy silence from the outside.
+ */
+async function checkPmsTimeModel(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin.rpc('staxis_pms_registry_violations');
+    if (error) {
+      if (errToString(error).includes('does not exist') || (error as { code?: string }).code === 'PGRST202') {
+        return {
+          status: 'warn',
+          detail: 'staxis_pms_registry_violations() not present — migration 0343 has not been applied yet.',
+          fix: 'Apply supabase/migrations/0343_pms_time_model.sql (after 0342). Idempotent.',
+        };
+      }
+      return { status: 'warn', detail: `staxis_pms_registry_violations() failed: ${errToString(error)}` };
+    }
+    const rows = (data ?? []) as Array<{ table_name: string; violation: string }>;
+    if (rows.length === 0) {
+      return { status: 'ok', detail: 'every pms_table_schemas row matches the real schema' };
+    }
+    return {
+      status: 'fail',
+      detail: `${rows.length} registry row(s) disagree with the schema: ${rows.map((r) => `${r.table_name} (${r.violation})`).join('; ')}`,
+      fix: 'Either fix the pms_table_schemas row or add the missing index/column. The BEFORE INSERT OR UPDATE trigger staxis_pms_registry_matches_reality() blocks new drift, so a violation here means the SCHEMA moved under a valid row.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * Report-intake health: the two failure modes no database constraint can see.
+ *
+ *   - pending_upload older than an hour = the Worker → Storage PUT never
+ *     landed. A pile of these is a systematic upload failure, which otherwise
+ *     looks like silence rather than an outage.
+ *   - quarantined_pan / hash_mismatch in the last 24h = a file was refused
+ *     before any parse. Both are "look at this now" events.
+ */
+async function checkPmsReportIntakeHealth(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const staleCutoff = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const dayCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const [pending, quarantined] = await Promise.all([
+      supabaseAdmin
+        .from('pms_report_files')
+        .select('id', { count: 'exact', head: true })
+        .eq('status', 'pending_upload')
+        .lt('received_at', staleCutoff),
+      supabaseAdmin
+        .from('pms_report_files')
+        .select('id', { count: 'exact', head: true })
+        .in('status', ['quarantined_pan', 'hash_mismatch'])
+        .gte('received_at', dayCutoff),
+    ]);
+
+    if (pending.error || quarantined.error) {
+      const e = errToString(pending.error ?? quarantined.error);
+      if (e.includes('does not exist')) {
+        return {
+          status: 'warn',
+          detail: 'pms_report_files not present — migration 0340 has not been applied yet.',
+          fix: 'Apply supabase/migrations/0340_report_intake_raw_zone_and_ledger.sql. Idempotent.',
+        };
+      }
+      return { status: 'warn', detail: `pms_report_files read failed: ${e}` };
+    }
+
+    const stuck = pending.count ?? 0;
+    const refused = quarantined.count ?? 0;
+    if (stuck === 0 && refused === 0) {
+      return { status: 'ok', detail: 'no stuck uploads, no quarantined report files' };
+    }
+    return {
+      status: 'warn',
+      detail: `${stuck} report upload(s) stuck over an hour; ${refused} file(s) quarantined or hash-mismatched in the last 24h`,
+      fix: 'Stuck uploads: check the Email Worker (wrangler tail) for failed PUTs to Supabase Storage. Quarantined: open the file in /admin/pms-inbox — a PAN hit or tampered bytes needs a human decision.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };

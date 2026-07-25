@@ -81,7 +81,10 @@ export function validateRoomsInventory(row: Record<string, unknown>): ValidatorR
 // ─── pms_revenue_daily ───────────────────────────────────────────────────
 
 export function validateRevenueDaily(row: Record<string, unknown>): ValidatorResult {
-  if (!validISODate(row.date)) return { ok: false, reason: 'date must be ISO YYYY-MM-DD' };
+  // business_date since migration 0343 — `date` was ambiguous between the
+  // accounting day and the app's operational day, and on this table it is
+  // unambiguously the accounting day the report printed.
+  if (!validISODate(row.business_date)) return { ok: false, reason: 'business_date must be ISO YYYY-MM-DD' };
   if (!validInteger(row.occupied_rooms, { min: 0 })) return { ok: false, reason: 'occupied_rooms required, non-negative' };
   // feature/cua-per-hotel-data — validate the revenue / RevPAR metrics ONLY when
   // the feed actually extracted them. A historical-OCCUPANCY report (and some
@@ -142,7 +145,8 @@ export function validateForecastDaily(row: Record<string, unknown>): ValidatorRe
 // ─── pms_channel_performance ─────────────────────────────────────────────
 
 export function validateChannelPerformance(row: Record<string, unknown>): ValidatorResult {
-  if (!validISODate(row.date)) return { ok: false, reason: 'date must be ISO' };
+  // business_date since migration 0343 (see validateRevenueDaily).
+  if (!validISODate(row.business_date)) return { ok: false, reason: 'business_date must be ISO' };
   if (!validNonEmptyString(row.channel)) return { ok: false, reason: 'channel required' };
   if (!validInteger(row.bookings_count, { min: 0 })) return { ok: false, reason: 'bookings_count must be non-negative' };
   if (!validInteger(row.rooms_sold, { min: 0 })) return { ok: false, reason: 'rooms_sold must be non-negative' };
@@ -215,7 +219,9 @@ export function validateGroupsAndBlocks(row: Record<string, unknown>): Validator
 // ─── pms_rates_and_inventory ─────────────────────────────────────────────
 
 export function validateRatesAndInventory(row: Record<string, unknown>): ValidatorResult {
-  if (!validISODate(row.date)) return { ok: false, reason: 'date must be ISO' };
+  // stay_date since migration 0343: this row is a rate for a FUTURE NIGHT, not
+  // an accounting day, and calling it `date` is what let it be read as one.
+  if (!validISODate(row.stay_date)) return { ok: false, reason: 'stay_date must be ISO' };
   if (!validNonEmptyString(row.room_type)) return { ok: false, reason: 'room_type required' };
   if (!validNonEmptyString(row.rate_plan)) return { ok: false, reason: 'rate_plan required' };
   if (!validCents(row.rate_amount_cents)) return { ok: false, reason: 'rate_amount_cents must be non-negative integer' };
@@ -273,7 +279,10 @@ export const VALIDATOR_REGISTRY: Record<string, Validator> = {
       ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }
       : { ok: false as const, reason: r.errors.join('; ') };
   },
-  pms_in_house_snapshot: (row: Record<string, unknown>) => {
+  // Renamed from pms_in_house_snapshot by migration 0343. getValidator() looks
+  // up by the descriptor's table_name, so a stale key here means the counts
+  // feed writes UNVALIDATED rows — silently.
+  pms_occupancy_observation: (row: Record<string, unknown>) => {
     const r = validateInHouseSnapshot(row as InHouseSnapshotRow);
     return r.ok
       ? { ok: true as const, clean: r.clean as Record<string, unknown>, warnings: r.warnings }

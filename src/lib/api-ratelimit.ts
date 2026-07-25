@@ -267,7 +267,16 @@ export type RateLimitEndpoint =
   // day; 60/hr/property bounds a forged flood to a known inbox. NOT billing-
   // impacting (a DB-write webhook) → fail OPEN so a Supabase blip never drops a
   // real login code.
-  | 'pms-inbox-inbound';
+  | 'pms-inbox-inbound'
+  // ── PMS report intake (migrations 0340-0342) ──────────────────────────────
+  // Scheduled report mail → /api/pms-inbox/inbound (kind='report') and the
+  // follow-up /api/pms-inbox/attachment-commit. Keyed on the RESOLVED RAW
+  // property id, same FK reason as pms-inbox-inbound. A hotel scheduling every
+  // 30 min tops out at 48 deliveries/day; 20/hr/property leaves room for a
+  // burst of catch-up sends while bounding a flood at a known-good address.
+  // NOT billing-impacting (a DB write + a signed-URL mint) → fails OPEN, so a
+  // Supabase blip never silently drops a real report.
+  | 'pms-report-inbound';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -479,6 +488,8 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // day; 60/hr bounds a forged flood to a known inbox without ever dropping a
   // legitimate burst of re-login codes.
   'pms-inbox-inbound':           60,
+  // Report deliveries — see the union comment above. 48/day expected.
+  'pms-report-inbound':          20,
 };
 
 /**

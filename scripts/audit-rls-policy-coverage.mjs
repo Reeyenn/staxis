@@ -168,7 +168,19 @@ const SERVICE_ROLE_ONLY = new Set([
   'pms_revenue_daily',
   'pms_forecast_daily',
   'pms_channel_performance',
+  // Renamed to pms_report_files by migration 0340 (repurposed from the empty
+  // 0202 stub). This parser doesn't follow `alter table ... rename to`, so the
+  // old name stays in its table map — keep the entry, and see the two below.
   'pms_reports_cache',
+  // ─── Migration 0340 — report-email intake. ───────────────────────────
+  // pms_report_files (the renamed pms_reports_cache) and pms_ingest_runs.
+  // Both: RLS enabled + REVOKE from public/anon/authenticated + explicit
+  // `*_deny_all_browser` policy, via the same dynamic `do $$ ... execute
+  // format(...)` loop the static parser can't follow. Report receipts carry
+  // guest-bearing filenames/subjects; the webhook + cron/admin routes are the
+  // only readers, always through supabaseAdmin.
+  'pms_report_files',
+  'pms_ingest_runs',
   'pms_in_house_snapshot',
   'pms_activity_log',
   'pms_lost_and_found',
