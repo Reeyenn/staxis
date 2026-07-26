@@ -31,6 +31,7 @@ import {
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { EquipmentRegistry } from './EquipmentRegistry';
 import { WheelDatePicker } from '@/components/ui/WheelDatePicker';
+import { PatternChip } from '@/components/concourse/PatternChip';
 
 type Band = 'overdue' | 'soon' | 'upcoming';
 const BAND: Record<Band, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string; es: string }> = {
@@ -60,6 +61,31 @@ function bandFor(t: PreventiveTask): Band {
   if (d < 0) return 'overdue';
   if (d <= 30) return 'soon';
   return 'upcoming';
+}
+
+// ── "somebody's been called" ────────────────────────────────────────────────
+//
+// The state between overdue and done (0366). It is deliberately NOT a band: the
+// task is still late, and moving it out of Overdue would hide a job nobody has
+// actually done behind a phone call. It shows as a line ON the card instead, so
+// the board still tells the truth about what is outstanding while also saying
+// that somebody is on it.
+//
+// Set from the Staxis due card ("Somebody's been called") or from this tab's own
+// button below. Cleared by a database trigger the moment last-done moves, so a
+// task marked done from anywhere stops claiming a pending call.
+function calledLine(t: PreventiveTask, es: boolean): string | null {
+  if (!t.calledAt) return null;
+  const days = Math.max(0, daysBetween(t.calledAt, new Date()));
+  const who = t.calledBy?.trim();
+  const when =
+    days === 0
+      ? (es ? 'hoy' : 'today')
+      : days === 1
+        ? (es ? 'ayer' : 'yesterday')
+        : (es ? `hace ${days} días` : `${days} days ago`);
+  if (es) return who ? `${who} llamó a alguien ${when}` : `Llamaron a alguien ${when}`;
+  return who ? `${who} called somebody ${when}` : `Somebody was called ${when}`;
 }
 // Editor draft (count text + unit + optional last-done ISO date) → concrete
 // cadence numbers. Shared by the New-task and edit modals, which previously
@@ -188,13 +214,15 @@ function NewTaskModal({
 
 // ── editable task detail modal ───────────────────────────────────────────────
 function TaskModal({
-  task, open, onClose, onSave, onCompleteToday,
+  task, open, onClose, onSave, onCompleteToday, onCalled, propertyId,
 }: {
   task: PreventiveTask | null;
   open: boolean;
   onClose: () => void;
   onSave: (id: string, args: { frequencyDays: number; lastCompletedISO: string | null; notes: string }) => Promise<void>;
   onCompleteToday: (id: string, args: { frequencyDays: number; notes: string }) => Promise<void>;
+  onCalled: (id: string) => Promise<void>;
+  propertyId: string | null;
 }) {
   const { lang } = useLang();
   const es = lang === 'es';
@@ -240,6 +268,18 @@ function TaskModal({
     catch { /* failed — the board surfaced a toast; keep the modal open */ }
     finally { setBusy(false); }
   };
+  // Deliberately does NOT touch last-done. Arranging the work is not doing it,
+  // and recording a call as a completion would restart this task's clock on a
+  // job nobody has performed — after which Staxis would stay quiet about it for
+  // a full cadence, which is the worst thing this feature could get wrong.
+  const called = async () => {
+    setBusy(true);
+    try { await onCalled(task.id); onClose(); }
+    catch { /* failed — the board surfaced a toast; keep the modal open */ }
+    finally { setBusy(false); }
+  };
+  const wasCalled = calledLine(task, es);
+  const isLate = daysBetween(new Date(), nextDueDate(task)) < 0;
 
   return (
     <Modal
@@ -247,6 +287,14 @@ function TaskModal({
       title={task.name} subtitle={task.area} width={580}
       footer={<>
         <Btn variant="ghost" onClick={onClose}>{es ? 'Cerrar' : 'Close'}</Btn>
+        {/* Only offered on a task that is actually late. On one that is not yet
+            due there is nothing to have called anybody about, and a button that
+            silences a card which does not exist would be a trap. */}
+        {isLate && !task.calledAt && (
+          <Btn variant="ghost" disabled={busy} onClick={called}>
+            {busy ? '…' : (es ? 'Ya llamamos a alguien' : "Somebody's been called")}
+          </Btn>
+        )}
         <Btn variant="sage" disabled={busy} onClick={completeToday}>{busy ? '…' : (es ? '✓ Hecho hoy' : '✓ Done today')}</Btn>
         <Btn variant="primary" disabled={busy} onClick={save}>{busy ? '…' : (es ? 'Guardar' : 'Save changes')}</Btn>
       </>}
@@ -256,6 +304,23 @@ function TaskModal({
           <Pill tone={meta.tone}>{es ? meta.es : meta.en}</Pill>
           <Caps size={11} tracking="0.06em">{es ? 'Próxima' : 'Next due'} {fmtDate(nextDue, es)} · {relDue(du, es)}</Caps>
         </div>
+
+        {/* On the THING, not the tab: this modal is one upkeep schedule, so the
+            signpost to its card in the Staxis queue belongs here and nowhere on
+            the board behind it. Renders nothing at all when there is no card. */}
+        <PatternChip propertyId={propertyId} kind="preventive_task" value={task.id} lang={lang} />
+
+        {wasCalled && (
+          <div style={{
+            background: 'rgba(201,150,68,0.12)', border: '1px solid rgba(176,124,60,0.28)',
+            borderRadius: 12, padding: '12px 14px', fontFamily: FONT_SANS, fontSize: 13.5,
+            color: '#7A5518', lineHeight: 1.45,
+          }}>
+            {wasCalled}. {es
+              ? 'Sigue pendiente hasta que se marque como hecha.'
+              : 'It still counts as outstanding until it is marked done.'}
+          </div>
+        )}
         <Field label={es ? 'Frecuencia' : 'Frequency'} required hint={es ? '¿Cada cuánto vuelve?' : 'How often does it come around?'}>
           <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />
         </Field>
@@ -356,6 +421,23 @@ export function PreventiveTab() {
     }
   };
 
+  // "Somebody's been called": arranged, not done. Writes only the called flag —
+  // last-done stays exactly where it was, because the job has not happened.
+  const handleCalled = async (id: string) => {
+    if (!user || !activePropertyId) return;
+    try {
+      await updatePreventiveTask(user.uid, activePropertyId, id, {
+        calledAt: new Date(),
+        calledBy: user.displayName,
+      });
+    } catch (err) {
+      flash(es
+        ? 'No se pudo guardar — revisa la conexión e inténtalo de nuevo.'
+        : "Couldn't save that — check your connection and try again.");
+      throw err;
+    }
+  };
+
   if (registryOpen) {
     return <EquipmentRegistry onBack={() => setRegistryOpen(false)} />;
   }
@@ -401,6 +483,14 @@ export function PreventiveTab() {
                         <span style={{ fontFamily: FONT_MONO, fontSize: 10.5, fontWeight: 600, color: meta.color, whiteSpace: 'nowrap', flexShrink: 0 }}>{relDue(du, es)}</span>
                       </div>
                       <span style={{ fontFamily: FONT_SANS, fontSize: 12.5, color: T.ink2, lineHeight: 1.4 }}>{t.area ? `${t.area} · ` : ''}{cadenceLabel(t.frequencyDays, es)}</span>
+                      {/* Still outstanding, but somebody is on it. Said on the
+                          card so the board is not silently identical to one
+                          where nobody has done anything at all. */}
+                      {calledLine(t, es) && (
+                        <span style={{ fontFamily: FONT_SANS, fontSize: 12, color: '#8A5A22', lineHeight: 1.4 }}>
+                          {calledLine(t, es)}
+                        </span>
+                      )}
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: 1 }}>
                         <Caps size={10} tracking="0.06em" c={T.ink3}>{es ? 'próx' : 'next'} · {fmtDateShort(nextDueDate(t), es)}</Caps>
                         <Btn variant={b === 'upcoming' ? 'ghost' : 'sage'} size="sm" onClick={(e) => { e.stopPropagation(); handleCompleteToday(t.id).catch(() => { /* toast shown */ }); }}>✓ {es ? 'Hecho hoy' : 'Done today'}</Btn>
@@ -418,9 +508,11 @@ export function PreventiveTab() {
       <TaskModal
         task={sel}
         open={!!sel}
+        propertyId={activePropertyId}
         onClose={() => setSelId(null)}
         onSave={handleSave}
         onCompleteToday={(id, edits) => handleCompleteToday(id, edits)}
+        onCalled={handleCalled}
       />
 
       <ToastHost

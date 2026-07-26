@@ -605,6 +605,12 @@ export interface PreventiveTask {
   completionPhotoPath?: string;
   equipmentId?: string | null;  // optional link to an equipment asset (registry 0249)
   createdAt: Date | null;
+  // Somebody has been called about this but the work has not happened yet — the
+  // state between overdue and done (0366). Cleared automatically whenever
+  // lastCompletedAt moves forward, by a database trigger, so no writer has to
+  // remember to. Null on every task nobody has called about, which is most.
+  calledAt?: Date | null;
+  calledBy?: string | null;
 }
 
 // ─── Shift Confirmation ────────────────────────────────────────────────────

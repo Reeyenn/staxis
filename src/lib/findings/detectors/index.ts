@@ -34,3 +34,10 @@ export { expectedActivityDetector } from './expected-activity';
 // for. Both actions are frozen at proposal time, re-verified inside the
 // transaction that executes them, and undoable; see src/lib/findings/actions.
 export { repeatRoomWorkOrdersDetector } from './repeat-room-work-orders';
+
+// Preventive maintenance, 2026-07-26. The first detector that reads what the
+// hotel SAID rather than what it did: an upkeep schedule a manager typed in
+// once, counted forward forever. It is also the only one that can speak on a
+// three-week-old hotel, because it infers nothing — see the header on why a
+// schedule that has never been done is deliberately not called overdue.
+export { preventiveDueDetector } from './preventive-due';

@@ -25,6 +25,7 @@ import type { PropertyRunResult } from '@/lib/rules-engine';
 import type {
   InventoryUsageHistory,
   OperatingRhythmHistory,
+  PreventiveScheduleFeed,
   RoomWorkOrderHistory,
   SupplySpendHistory,
   WorkOrderHistory,
@@ -67,6 +68,40 @@ export const ACTIVE_STATUSES: readonly FindingStatus[] = Object.freeze([
   'known_problem',
   'muted',
 ]);
+
+/**
+ * Detectors whose cards carry DOMAIN verdicts — buttons that record a fact
+ * about the hotel, not merely a decision about a card.
+ *
+ * ═══ WHY THIS OVERRIDES THE JUDGE ═══
+ * The judge may re-sort any finding, including down to `ask` (route it to the
+ * drip-question card) or `drop` (do not surface it). That is the right power to
+ * have over a card whose only outcomes are "I know" and "stop watching", because
+ * nothing is lost by moving it.
+ *
+ * It is the wrong power over a card that is the ONLY place a stored fact can be
+ * updated. A preventive follow-up reads "…still has not been done. Somebody was
+ * called 9 days ago" and its buttons are "Yes, it got done" / "Still waiting" —
+ * the two taps that move `preventive_tasks.last_completed_at` and `called_at`.
+ * The drip-question card has no such buttons and no way to grow them, so a
+ * finding routed there becomes a question a manager can answer without anything
+ * being recorded, and the schedule goes on reporting overdue forever.
+ *
+ * This happened on the first live run: the judge saw a summary ending in "Did it
+ * happen?", classified it as a question exactly as it was designed to, and the
+ * follow-up card silently left the queue. The phrasing was fixed so it no longer
+ * invites that reading; this list is why it cannot happen again anyway.
+ *
+ * A detector belongs here when its card is the only surface that can record its
+ * outcome. It is NOT a way to make a check louder.
+ */
+export const DETECTORS_WITH_DOMAIN_CLOSURE: readonly string[] = Object.freeze([
+  'preventive_due',
+]);
+
+export function hasDomainClosure(detectorId: string | null | undefined): boolean {
+  return !!detectorId && DETECTORS_WITH_DOMAIN_CLOSURE.includes(detectorId);
+}
 
 /** Statuses that are silenced: present, but deliberately not surfaced. */
 export const SILENCED_STATUSES: readonly FindingStatus[] = Object.freeze([
@@ -112,7 +147,7 @@ export function isUsablePriceRange(price: PriceRange | null | undefined): price 
  * "Staxis sees a pattern here" on the thing's own record. A kind nothing can
  * render is a kind that can only rot.
  */
-export type FindingTargetKind = 'room' | 'inventory_item';
+export type FindingTargetKind = 'room' | 'inventory_item' | 'preventive_task';
 
 /**
  * WHICH thing a finding is about, in a shape a screen can match on.
@@ -185,7 +220,13 @@ export type FeedId =
   // one of the two that has a fix Staxis can offer.
   | 'room_work_order_history'
   | 'inventory_usage_history'
-  | 'operating_rhythm';
+  | 'operating_rhythm'
+  // The one feed here that is not the hotel's trailing RECORD but its stated
+  // INTENTION: the upkeep schedules a manager typed into the Preventive tab.
+  // Nothing is inferred from it — the cadence and the last-done date are both
+  // things a human at this hotel asserted, which is exactly why counting
+  // forward off them is honest.
+  | 'preventive_schedule';
 
 /** Nudge drafts, taken from the live return type so nudges.ts stays untouched. */
 export type NudgeDraftFeed = Awaited<ReturnType<typeof checkOperationalAlerts>>;
@@ -201,6 +242,7 @@ export interface FeedShapes {
   room_work_order_history: RoomWorkOrderHistory;
   inventory_usage_history: InventoryUsageHistory;
   operating_rhythm: OperatingRhythmHistory;
+  preventive_schedule: PreventiveScheduleFeed;
 }
 
 /** A loaded feed plus the honesty metadata every claim on it inherits. */

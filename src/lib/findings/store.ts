@@ -182,6 +182,32 @@ export async function loadActiveFindings(
 }
 
 /**
+ * ONE finding, by id, through the hotel filter.
+ *
+ * Null means this hotel has no such finding — either the id is bogus or it
+ * belongs to somebody else, and the caller must give the same answer for both so
+ * the response cannot be used to probe another hotel's ids.
+ *
+ * Deliberately NOT status-filtered. Its callers ask "what is this card about?"
+ * rather than "is it live", and a silenced or already-resolved row is still a
+ * real answer to that — a second tap on a card that just closed must be able to
+ * find the row it is about.
+ */
+export async function loadFinding(
+  propertyId: string,
+  findingId: string,
+): Promise<Finding | null> {
+  const { data, error } = await scopedDb(propertyId)
+    .from('findings')
+    .select(SELECT_COLUMNS)
+    .eq('id', findingId)
+    .maybeSingle();
+
+  if (error) throw new Error(`findings read failed: ${error.message}`);
+  return data ? rowToFinding(data as unknown as FindingRow) : null;
+}
+
+/**
  * The statuses a card is still LIVE in. `known_problem` and `muted` still hold
  * the one-row-per-problem slot, but they are silences a manager armed and
  * neither the queue nor the badge asks again. Same set `listFindings` defaults
