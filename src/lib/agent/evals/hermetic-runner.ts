@@ -32,6 +32,7 @@ import {
   streamAgent,
   type AgentEvent,
   type AgentMessage,
+  type MessagesClient,
   type RunAgentOpts,
 } from '@/lib/agent/llm';
 import {
@@ -51,7 +52,7 @@ import { formatMemoryForPrompt } from '@/lib/agent/memory-context';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import type { MemoryRow } from '@/lib/db/agent-memory';
 import type { AppRole } from '@/lib/roles';
-import { createFakeModel, type ScriptedTurn } from './fake-model';
+import { createFakeModel, recordingClient, type ScriptedTurn } from './fake-model';
 import '@/lib/agent/tools/index';
 
 /** Stable ids so a hermetic run is byte-reproducible. */
@@ -122,6 +123,20 @@ export interface HermeticCaseInput {
    * Defaults to `input`, i.e. a normal fresh user turn.
    */
   newUserMessage?: string | null;
+  /**
+   * Run this case against a REAL model instead of the scripted fake.
+   *
+   * Nothing in CI passes it — the default is `script`, and this harness's
+   * offline promise is what makes the eval bank free to run on every commit.
+   * It exists so a provider change can be checked against a live model on
+   * purpose: everything else in the case stays identical (real prompt
+   * assembly, real tool dispatch through fixture handlers, real guards), so a
+   * failure points at the model or the provider adapter rather than at a
+   * difference in the harness.
+   *
+   * `script` is ignored when this is set.
+   */
+  modelClient?: MessagesClient;
 }
 
 export interface HermeticToolInvocation {
@@ -235,7 +250,11 @@ export async function runHermetic(input: HermeticCaseInput): Promise<HermeticRes
   }
 
   const surface: AgentSurface = input.surface ?? 'chat';
-  const fake = createFakeModel(input.script);
+  // A live client still has to be recorded, or every prompt/tool assertion in
+  // this harness would pass by vacuity against a real model.
+  const fake = input.modelClient
+    ? recordingClient(input.modelClient)
+    : createFakeModel(input.script);
   const toolInvocations: HermeticToolInvocation[] = [];
   const restore = stubAllHandlers(input.fixture, toolInvocations);
 

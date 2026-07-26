@@ -62,6 +62,50 @@ export interface FakeModel {
   remaining(): number;
 }
 
+/** Capture what a request asked the model for. Shared by the scripted fake and
+ * by the recording wrapper below so both produce identical evidence. */
+function recordRequestInto(
+  requests: RecordedModelRequest[],
+  body: Anthropic.Messages.MessageCreateParams | Anthropic.Messages.MessageStreamParams,
+): void {
+  requests.push({
+    modelId: String(body.model),
+    systemText: systemTextOf(body.system),
+    toolNames: (body.tools ?? []).map((t) => ('name' in t ? String(t.name) : '?')),
+    messages: body.messages as Anthropic.Messages.MessageParam[],
+    toolResultTexts: toolResultTextsOf(body.messages as Anthropic.Messages.MessageParam[]),
+  });
+}
+
+/**
+ * Wrap a REAL client so the harness still records what the model was shown.
+ *
+ * Without this, pointing the hermetic runner at a live model would leave
+ * `promptsSeenByModel`, `toolNamesOffered` and `toolResultsSeenByModel` empty —
+ * and every assertion built on them would PASS by vacuity. That is precisely
+ * the shape of failure the eval bank exists to catch, so the recording must not
+ * depend on which client is in use.
+ */
+export function recordingClient(inner: MessagesClient): FakeModel {
+  const requests: RecordedModelRequest[] = [];
+  return {
+    requests,
+    remaining: () => 0,
+    client: {
+      messages: {
+        create(body, options) {
+          recordRequestInto(requests, body);
+          return inner.messages.create(body, options);
+        },
+        stream(body, options) {
+          recordRequestInto(requests, body);
+          return inner.messages.stream(body, options);
+        },
+      },
+    },
+  };
+}
+
 // Fixed usage. Real numbers would make cost assertions non-deterministic, and
 // the hermetic bank asserts behaviour, not spend. Non-zero so the runtime's
 // billing-evidence branches behave like production.
@@ -194,15 +238,7 @@ export function createFakeModel(script: ScriptedTurn[]): FakeModel {
 
   const record = (
     body: Anthropic.Messages.MessageCreateParams | Anthropic.Messages.MessageStreamParams,
-  ): void => {
-    requests.push({
-      modelId: String(body.model),
-      systemText: systemTextOf(body.system),
-      toolNames: (body.tools ?? []).map((t) => ('name' in t ? String(t.name) : '?')),
-      messages: body.messages as Anthropic.Messages.MessageParam[],
-      toolResultTexts: toolResultTextsOf(body.messages as Anthropic.Messages.MessageParam[]),
-    });
-  };
+  ): void => recordRequestInto(requests, body);
 
   const client: MessagesClient = {
     messages: {
