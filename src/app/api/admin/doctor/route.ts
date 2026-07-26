@@ -80,6 +80,7 @@ import {
   parseFeedHealthRows,
 } from '@/lib/pms/feed-health';
 import { CUA_DECOMMISSIONED, decommissionedCheck } from '@/lib/pms/decommission';
+import { FEATURE_ABANDON_MINUTES } from '@/lib/findings/judge-budget';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -199,6 +200,12 @@ const checks: Array<[string, CheckFn]> = [
   // "the AI got this wrong" report could be closed with nothing learned.
   ['eval_bank_freshness',         checkEvalBankFreshness],
   ['eval_bank_incident_coverage', checkEvalBankIncidentCoverage],
+  // The findings layer's spend gate is self-healing by design — an abandoned
+  // hold stops counting once its window passes (0361), so nothing ever blocks
+  // forever and no cron sweeps it. What that design cannot do is TELL anybody,
+  // and a caller that has started leaking holds looks exactly like a quiet
+  // night. This is the only place that difference is visible.
+  ['findings_spend_stale_holds',  checkFindingsSpendStaleHolds],
 ];
 
 // ─── Individual checks ───────────────────────────────────────────────────
@@ -1027,6 +1034,64 @@ async function checkEvalBankIncidentCoverage(): Promise<Omit<Check, 'name' | 'du
     }
     const rows = (data ?? []) as Array<{ id: string }>;
     return evalBankIncidentVerdict(rows.map(r => r.id));
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * findings_spend_stale_holds — background AI holds nobody ever reconciled.
+ *
+ * The findings spend gate reserves the worst-case cost of a call, then
+ * finalizes it to what actually happened or cancels it. A run that dies in
+ * between leaves a `reserved` row, and 0361 handles that gracefully INSIDE the
+ * sum: once the row is older than its feature's abandon window it stops
+ * counting, so a crash can never lock a hotel out of its own findings.
+ *
+ * That is the right runtime behaviour and a terrible operational one on its
+ * own, because the symptom of a caller that leaks holds every single night —
+ * templates instead of judged phrasing, silently, on every hotel — is
+ * indistinguishable from a quiet night. Nothing anywhere counted them.
+ *
+ * WARN, never fail: nothing is broken for a manager, and a check that could
+ * 503 the deploy gate over background bookkeeping would be its own outage.
+ */
+async function checkFindingsSpendStaleHolds(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  // The longest window any feature declares. A hold younger than this is simply
+  // a call in flight, which is the normal state of the nightly run.
+  const longestWindowMin = Math.max(...Object.values(FEATURE_ABANDON_MINUTES), 60);
+  const cutoff = new Date(Date.now() - longestWindowMin * 60_000).toISOString();
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('findings_ai_spend')
+      .select('feature, created_at')
+      .eq('state', 'reserved')
+      .lt('created_at', cutoff)
+      .limit(200);
+    if (error) {
+      if (isMissingRelation(error)) {
+        return { status: 'ok', detail: 'findings spend ledger not applied yet (migration 0361)' };
+      }
+      return { status: 'warn', detail: `findings_ai_spend read failed: ${errToString(error)}` };
+    }
+    const rows = (data ?? []) as Array<{ feature: string | null; created_at: string }>;
+    if (rows.length === 0) {
+      return { status: 'ok', detail: 'no findings AI holds left unreconciled' };
+    }
+    const byFeature = new Map<string, number>();
+    for (const row of rows) {
+      const key = row.feature ?? 'unknown';
+      byFeature.set(key, (byFeature.get(key) ?? 0) + 1);
+    }
+    const breakdown = [...byFeature.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([feature, count]) => `${feature} x${count}`)
+      .join(', ');
+    return {
+      status: 'warn',
+      detail: `${rows.length} findings AI spend hold(s) older than ${longestWindowMin} min never finalized or cancelled — ${breakdown}`,
+      fix: 'A background findings caller is dying between reserve and finalize. Check the findings cron logs for that feature; the holds themselves stop counting against the cap on their own.',
+    };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };
   }

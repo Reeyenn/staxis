@@ -36,6 +36,8 @@ import {
   AGING_CLIMB_CENTS,
   AGING_CLIMB_DAYS,
   BIG_DOLLAR_CLIMB_CENTS,
+  CRITICAL_CLIMB_DAYS,
+  type ClimbReason,
   climbReasonFor,
   climbReasonLine,
   climbStatusAllows,
@@ -72,7 +74,13 @@ import {
   type CardSignOff,
   type QueueFinding,
 } from '@/components/concourse/finding-cards';
-import { formatCentsBand, formatMoney, formatMoneyRange } from '@/lib/findings/pricing';
+import {
+  formatCentsBand,
+  formatCentsBandEs,
+  formatMoney,
+  formatMoneyRange,
+  toPriceRange,
+} from '@/lib/findings/pricing';
 import { templatePriceSentence } from '@/lib/findings/template-phrasing';
 import type { PriceRange } from '@/lib/findings/types';
 
@@ -104,6 +112,9 @@ function candidate(over: Partial<ClimbCandidate> = {}): ClimbCandidate {
   return {
     status: 'open',
     price: price(10_000, 20_000),
+    // 'attention' by default so the severity rule is opted INTO by the tests
+    // that are about it, rather than firing under every other test's feet.
+    severity: 'attention',
     firstSeenAt: '2026-07-20T00:00:00.000Z',
     magnitude: 4,
     silencedAtMagnitude: null,
@@ -437,9 +448,100 @@ describe('what reaches the boss', () => {
 
   // Mutation: treat an unpriced card as worth anything. Every FYI in the fleet
   // would climb after a week.
-  test('an unpriced card never climbs on money or on age', () => {
+  test('an unpriced ORDINARY card never climbs on money or on age', () => {
     const ancient = new Date(NOW.getTime() - 400 * 86_400_000).toISOString();
-    assert.equal(climbReasonFor(candidate({ price: null, firstSeenAt: ancient }), NOW), null);
+    assert.equal(
+      climbReasonFor(candidate({ price: null, severity: 'attention', firstSeenAt: ancient }), NOW),
+      null,
+    );
+    assert.equal(
+      climbReasonFor(candidate({ price: null, severity: 'info', firstSeenAt: ancient }), NOW),
+      null,
+    );
+  });
+
+  // ═══ THE RULE THAT NEVER LOOKS AT MONEY ═══
+  //
+  // Every other bar here is a dollar bar, and this product REFUSES to invent a
+  // price it cannot derive from the hotel's own records — `preventive_due` emits
+  // critical findings with `price: null` by design. So before this rule, a water
+  // heater a full cycle overdue was not ranked low on the VP's screen, it was
+  // structurally unable to appear on it, and nothing said so.
+  //
+  // MUTATION PROOF: delete the severity branch in `climbReasonFor` and the first
+  // two assertions below both come back null — the exact invisible state.
+  test('a CRITICAL card climbs with no price at all, once it has stood for the window', () => {
+    const justUnder = new Date(NOW.getTime() - (CRITICAL_CLIMB_DAYS - 1) * 86_400_000).toISOString();
+    const onTheDay = new Date(NOW.getTime() - CRITICAL_CLIMB_DAYS * 86_400_000).toISOString();
+
+    assert.equal(
+      climbReasonFor(candidate({ price: null, severity: 'critical', firstSeenAt: onTheDay }), NOW),
+      'critical',
+    );
+    // And not on day one: a GM who is already dealing with it is not
+    // second-guessed the same morning.
+    assert.equal(
+      climbReasonFor(candidate({ price: null, severity: 'critical', firstSeenAt: justUnder }), NOW),
+      null,
+    );
+  });
+
+  test('severity does not outrank money — a big-dollar critical still reports the money', () => {
+    const onTheDay = new Date(NOW.getTime() - CRITICAL_CLIMB_DAYS * 86_400_000).toISOString();
+    assert.equal(
+      climbReasonFor(
+        candidate({
+          price: price(BIG_DOLLAR_CLIMB_CENTS, BIG_DOLLAR_CLIMB_CENTS * 2),
+          severity: 'critical',
+          firstSeenAt: onTheDay,
+        }),
+        NOW,
+      ),
+      'big_dollar',
+    );
+  });
+
+  test('a resolved critical still does not climb — the status gate is first for every reason', () => {
+    const onTheDay = new Date(NOW.getTime() - CRITICAL_CLIMB_DAYS * 86_400_000).toISOString();
+    for (const status of ['resolved', 'expired'] as const) {
+      assert.equal(
+        climbReasonFor(
+          candidate({ status, price: null, severity: 'critical', firstSeenAt: onTheDay }),
+          NOW,
+        ),
+        null,
+      );
+    }
+  });
+
+  // The founder's one exception to "mute means gone" was being COMPUTED and then
+  // thrown away: `climbStatusAllows` let a worsening muted row through, and then
+  // every remaining rule asked for a price it did not have.
+  //
+  // MUTATION PROOF: delete the trailing `status === 'muted'` branch and the
+  // first assertion returns null — a problem that doubled after a manager
+  // declined it stays invisible to the only person who could fund it.
+  test('a muted card that outgrew its mute climbs even with no price', () => {
+    const worsening = candidate({
+      status: 'muted',
+      price: null,
+      severity: 'attention',
+      silencedAtMagnitude: 4,
+      magnitude: 9,
+    });
+    assert.equal(climbReasonFor(worsening, NOW), 'outgrew_mute');
+
+    // And a mute that is holding still means what it says.
+    assert.equal(
+      climbReasonFor({ ...worsening, magnitude: 5 }, NOW),
+      null,
+      'a problem that crept from 4 to 5 is not an overruled decision',
+    );
+    assert.equal(
+      climbReasonFor({ ...worsening, silencedAtMagnitude: null }, NOW),
+      null,
+      'with no recorded consent point there is nothing to have outgrown',
+    );
   });
 
   // Mutation: let a resolved card climb because it is expensive. The status
@@ -486,13 +588,27 @@ describe('the "why am I seeing this" line', () => {
     assert.match(climbReasonLine(c, 'es'), /1 día\b/);
   });
 
+  test('the urgent reason carries its day count too, in both languages', () => {
+    const c = card({ climbReason: 'critical', daysOpen: 4 });
+    assert.match(climbReasonLine(c, 'en'), /4 days/);
+    assert.match(climbReasonLine(c, 'es'), /4 días/);
+  });
+
+  // EVERY reason, listed exhaustively rather than sampled: a new climb reason
+  // with no copy renders a blank line under a card, and a blank line is how a
+  // VP learns the screen is unfinished.
   test('every reason has copy in both languages and they differ', () => {
-    for (const reason of ['sign_off', 'big_dollar', 'portfolio'] as const) {
-      const c = card({ climbReason: reason });
+    const everyReason: readonly ClimbReason[] = [
+      'sign_off', 'big_dollar', 'critical', 'unresolved', 'outgrew_mute', 'portfolio',
+    ];
+    for (const reason of everyReason) {
+      const c = card({ climbReason: reason, daysOpen: 5 });
       const en = climbReasonLine(c, 'en');
       const es = climbReasonLine(c, 'es');
       assert.ok(en.length > 0 && es.length > 0, `${reason} had a blank line`);
       assert.notEqual(en, es, `${reason} was not translated`);
+      assert.doesNotMatch(en, /undefined/, `${reason} rendered undefined`);
+      assert.doesNotMatch(es, /undefined/, `${reason} rendered undefined`);
     }
   });
 
@@ -1116,6 +1232,32 @@ describe('money is printed one way', () => {
   test('a statistical band uses the same dash as a stored price', () => {
     assert.equal(formatCentsBand({ low: 70_000, high: 210_000 }), '$700–$2,100');
     assert.ok(formatCentsBand({ low: 70_000, high: 210_000 }).includes('–'));
+  });
+
+  // ═══ "$1,203–$1,203" IS A POINT ESTIMATE WEARING A DASH ═══
+  // `formatCents` rounds to whole dollars, so a band narrower than a dollar
+  // printed the same figure twice — inside a basis line whose entire job is to
+  // show the reader a spread. It is the $340 bug with extra punctuation.
+  //
+  // MUTATION PROOF: remove the collapse branch and the first assertion prints
+  // "$1,203–$1,203".
+  test('a band whose ends round to the same dollar says "about", never a fake range', () => {
+    const collapsed = formatCentsBand({ low: 120_301, high: 120_349 });
+    assert.equal(collapsed, 'about $1,203');
+    assert.ok(!collapsed.includes('–'), 'a dash here would claim a spread we do not have');
+    // Spanish gets the same treatment, in Spanish.
+    assert.equal(formatCentsBandEs({ low: 120_301, high: 120_349 }), 'unos $1,203');
+    // And a band that IS a range is untouched in both languages.
+    assert.equal(formatCentsBand({ low: 70_000, high: 210_000 }), '$700–$2,100');
+    assert.equal(formatCentsBandEs({ low: 70_000, high: 210_000 }), '$700–$2,100');
+  });
+
+  // The other half of the same promise: a STORED price is never approximate, so
+  // the collapse rule must not have loosened the schema-level refusal.
+  test('the prose hedge did not soften what may be stored as a price', () => {
+    assert.equal(toPriceRange({ low: 120_301, high: 120_349 }, 'b')?.lowCents !== undefined, true);
+    assert.equal(toPriceRange({ low: 120_301, high: 120_301 }, 'b'), null);
+    assert.equal(formatPriceRange({ lowCents: 120_300, highCents: 120_300, currency: 'USD', basis: 'b' }), null);
   });
 
   // Mutation: drop the thousands separator, which is how "$1750" got on screen.

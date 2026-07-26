@@ -42,7 +42,12 @@ import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
-import { authorityRuleFor, listAuthorityRules, type AuthorityRule } from '@/lib/company/authority';
+import {
+  listAuthorityRules,
+  readAuthorityRuleFor,
+  type AuthorityRule,
+  type AuthorityRuleRead,
+} from '@/lib/company/authority';
 import { companyForProperty, loadHats, type MembershipHat } from '@/lib/company/access';
 import { listFindings } from '@/lib/findings/store';
 import { loadActionsForFindings } from '@/lib/findings/actions/store';
@@ -227,39 +232,58 @@ export interface ResolveSignOffArgs {
 }
 
 /**
- * Does this offer need somebody else's signature, and whose?
+ * The three answers, kept apart.
  *
- * Returns null for "nothing governs this" — no company, no price, an unmapped
- * action kind, no rule that reaches this amount, or a store that could not
- * answer. Null is the pre-company behaviour, and it is never a claim that
- * anything was approved.
+ *   none         nothing in the rulebook governs this offer. The pre-company
+ *                behaviour, and the overwhelmingly common case.
+ *   requirement  a rule reaches it; `requirement.callerMayApprove` says whether
+ *                the person looking at it holds the signature.
+ *   unreadable   WE DO NOT KNOW. The rulebook could not be read.
+ *
+ * The third is not a variant of the first. A renderer may treat them alike and
+ * draw an ordinary card; the execute gate must not, because "we could not check
+ * whether this needs the owner's signature" and "the owner does not need to sign
+ * this" are opposite statements and only one of them is safe to spend on.
  */
-export async function resolveSignOff(
+export type SignOffResolution =
+  | { kind: 'none' }
+  | { kind: 'requirement'; requirement: SignOffRequirement }
+  | { kind: 'unreadable'; error: string };
+
+/**
+ * Does this offer need somebody else's signature, and whose — with "we could
+ * not tell" kept as its own answer.
+ *
+ * Anything that WRITES calls this one. Anything that merely renders may call
+ * `resolveSignOff` below, which folds `unreadable` into null.
+ */
+export async function resolveSignOffStrict(
   args: ResolveSignOffArgs,
-): Promise<SignOffRequirement | null> {
+): Promise<SignOffResolution> {
   const { organizationId, propertyId, callerAccountId } = args;
-  if (!organizationId || !UUID_RX.test(organizationId)) return null;
+  if (!organizationId || !UUID_RX.test(organizationId)) return { kind: 'none' };
 
   const authorityKind = authorityKindForAction(args.actionKind);
-  if (!authorityKind) return null;
+  if (!authorityKind) return { kind: 'none' };
 
   const amountCents = routingAmountCents(args.price);
-  if (amountCents === null) return null;
+  if (amountCents === null) return { kind: 'none' };
 
-  let rule: AuthorityRule | null = null;
+  let read: AuthorityRuleRead;
   try {
-    rule = await authorityRuleFor(organizationId, authorityKind, amountCents);
+    read = await readAuthorityRuleFor(organizationId, authorityKind, amountCents);
   } catch (e) {
-    // A rulebook that cannot be read governs nothing. This is the same answer
-    // authorityRuleFor gives itself on an error, restated here so the failure
-    // cannot arrive as an exception at a card renderer.
-    log.warn('[signoff] the rulebook could not be read; nothing is routed', {
-      organizationId,
-      err: e instanceof Error ? e.message : String(e),
-    });
-    return null;
+    read = { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
-  if (!rule) return null;
+  if (!read.ok) {
+    log.warn('[signoff] the rulebook could not be read', {
+      organizationId,
+      err: read.error,
+    });
+    return { kind: 'unreadable', error: read.error };
+  }
+  const rule = read.rule;
+  if (!rule) return { kind: 'none' };
 
   const hats = args.callerHats ?? (await loadHats(callerAccountId));
   const callerMayApprove = hatsSatisfyApprover(
@@ -270,21 +294,45 @@ export async function resolveSignOff(
   );
 
   return {
-    ruleId: rule.id,
-    organizationId,
-    actionKind: rule.actionKind,
-    approverRole: rule.approverRole,
-    thresholdCents: rule.thresholdCents,
-    thresholdInclusive: rule.thresholdInclusive,
-    amountCents,
-    approvers: approversFrom(
-      args.directory ?? (await loadApproverDirectory(organizationId)),
+    kind: 'requirement',
+    requirement: {
+      ruleId: rule.id,
       organizationId,
-      propertyId,
-      rule.approverRole,
-    ),
-    callerMayApprove,
+      actionKind: rule.actionKind,
+      approverRole: rule.approverRole,
+      thresholdCents: rule.thresholdCents,
+      thresholdInclusive: rule.thresholdInclusive,
+      amountCents,
+      approvers: approversFrom(
+        args.directory ?? (await loadApproverDirectory(organizationId)),
+        organizationId,
+        propertyId,
+        rule.approverRole,
+      ),
+      callerMayApprove,
+    },
   };
+}
+
+/**
+ * Does this offer need somebody else's signature, and whose?
+ *
+ * Returns null for "nothing governs this" — no company, no price, an unmapped
+ * action kind, no rule that reaches this amount, or a store that could not
+ * answer. Null is the pre-company behaviour, and it is never a claim that
+ * anything was approved.
+ *
+ * FAIL-OPEN, DELIBERATELY, AND ONLY FOR READERS. A card that cannot resolve the
+ * rulebook renders as an ordinary card — a cosmetic degradation that the execute
+ * gate then catches, because /api/findings/actions calls
+ * `resolveSignOffStrict` and REFUSES on `unreadable`. Never use this function to
+ * decide whether something may run.
+ */
+export async function resolveSignOff(
+  args: ResolveSignOffArgs,
+): Promise<SignOffRequirement | null> {
+  const resolution = await resolveSignOffStrict(args);
+  return resolution.kind === 'requirement' ? resolution.requirement : null;
 }
 
 /**

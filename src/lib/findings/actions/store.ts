@@ -22,6 +22,12 @@
 // So the older, untapped offer is marked `superseded` rather than deleted: an
 // offer nobody acted on is still a record of what Staxis was willing to do that
 // night, and the audit trail costs one row.
+//
+// The supersede and the insert are ONE statement —
+// `staxis_replace_finding_action` (0369) — for the same reason execute and undo
+// are: two PostgREST round trips have no transaction between them, and the
+// window in the middle is a card that lost its button and cannot get it back
+// until tomorrow.
 
 import 'server-only';
 
@@ -71,6 +77,36 @@ const LIVE_ACTION_STATES: readonly FindingActionState[] = Object.freeze([
   'declined_changed',
   'undone',
   'failed',
+]);
+
+/**
+ * The states that mean THE MANAGER DECIDED — the only two that stop Staxis ever
+ * offering this fix again.
+ *
+ * ═══ WHY `declined_changed` AND `failed` ARE NOT ON THIS LIST ═══
+ * They used to be, by virtue of "anything not `proposed` is settled", and the
+ * consequence was that one bad moment disarmed a fix permanently:
+ *
+ *   • declined_changed is not a decision, it is Staxis REFUSING TO ACT because
+ *     the facts moved between the offer and the tap. The manager wanted it done.
+ *     Treating their tap as an answer means the next night's card — for a
+ *     problem that is still true, with a plan that is now correct against the
+ *     new facts — arrives with no button on it, forever, and nothing says why.
+ *   • failed is a write that did not happen. Nothing about the hotel changed
+ *     except that Staxis broke. Refusing to try again is the worst possible
+ *     reading of our own error.
+ *
+ * So both re-arm: the next run proposes again, with `verify` recomputed from
+ * tonight's facts (that is the whole point — the old offer rested on facts that
+ * have moved). A re-offer of the IDENTICAL plan resting on IDENTICAL facts is
+ * still refused, by the database: `idempotency_key` is
+ * `<finding>:<params>:<verify>` (0369), so "nothing has changed since we
+ * declined" cannot become a second card, and the manager is not asked again
+ * about a question whose answer would be the same.
+ */
+const DECIDED_ACTION_STATES: readonly FindingActionState[] = Object.freeze([
+  'executed',
+  'undone',
 ]);
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -168,39 +204,44 @@ export async function proposeAction(
     // manager who approved a work order on Monday would be asked again on
     // Tuesday, and again on Wednesday, for as long as the underlying problem
     // took to clear — which is exactly the nagging the silencer exists to
-    // prevent, wearing a button.
-    if (rows.some((row) => row.state !== 'proposed')) return 'settled';
+    // prevent, wearing a button. See DECIDED_ACTION_STATES for why a decline or
+    // a failure is NOT one of those decisions.
+    if (rows.some((row) => DECIDED_ACTION_STATES.includes(row.state))) return 'settled';
 
     const open = rows.find((row) => row.state === 'proposed');
     if (open && samePlan(open, draft)) return 'unchanged';
 
-    if (open) {
-      const superseded = await db
-        .from('finding_actions')
-        .update({ state: 'superseded' })
-        .eq('id', open.id)
-        .eq('state', 'proposed');
-      if (superseded.error) throw new Error(superseded.error.message);
-    }
-
-    // `params_fingerprint` and `idempotency_key` are deliberately NOT supplied:
-    // the database computes both from `params` on insert (0363), so a
-    // fingerprint can never disagree with the plan it fingerprints.
-    const inserted = await db.from('finding_actions').insert({
-      finding_id: findingId,
-      action_kind: draft.kind,
-      params: draft.params,
-      verify: draft.verify,
-      state: 'proposed',
+    // ═══ SUPERSEDE AND INSERT ARE ONE STATEMENT, IN THE DATABASE ═══
+    // They used to be two PostgREST round trips, and PostgREST has no
+    // transaction: a supersede that succeeded followed by an insert that failed
+    // left the finding with NO live offer at all — the card silently lost its
+    // button until the next night's run, and only if that one got further. One
+    // RPC, one transaction, and the only two outcomes are "the new offer is
+    // there" or "nothing moved".
+    //
+    // `params_fingerprint` and `idempotency_key` are still computed BY THE
+    // DATABASE from params + verify on insert (0363/0369), so a fingerprint can
+    // never disagree with the plan it fingerprints.
+    const { data, error } = await db.rpc('staxis_replace_finding_action', {
+      p_property_id: propertyId,
+      p_finding_id: findingId,
+      p_supersede_id: open?.id ?? null,
+      p_action_kind: draft.kind,
+      p_params: draft.params,
+      p_verify: draft.verify,
     });
+    if (error) throw new Error(error.message);
 
-    if (inserted.error) {
-      // 23505: another runner froze the identical plan a millisecond earlier.
-      // One offer exists, which is the outcome we wanted.
-      if (/duplicate key value|unique constraint/i.test(inserted.error.message)) return 'unchanged';
-      throw new Error(inserted.error.message);
-    }
-    return 'proposed';
+    const envelope = asObject(data);
+    const code = typeof envelope.code === 'string' ? envelope.code : 'unknown';
+    // 'duplicate': another runner froze the identical plan on the identical
+    // facts a millisecond earlier. One offer exists, which is the outcome we
+    // wanted. 'superseded_gone': the row we meant to replace left the proposed
+    // state under us — a manager tapped it while the run was mid-flight — so the
+    // insert stood down rather than racing their decision.
+    if (code === 'proposed') return 'proposed';
+    if (code === 'duplicate' || code === 'superseded_gone') return 'unchanged';
+    throw new Error(`staxis_replace_finding_action returned ${code}`);
   } catch (e) {
     log.error('[findings:actions] could not attach an action to a finding', {
       propertyId,
@@ -274,12 +315,7 @@ export async function loadActionsForFindings(
     for (const row of (data ?? []) as unknown as ActionRow[]) {
       const action = rowToAction(row);
       const current = out.get(action.findingId);
-      // A finding can carry at most one live offer plus at most one settled
-      // one (the offer was executed, and a later run did not re-offer). Prefer
-      // the settled row: "here is what happened" outranks "here is what could".
-      if (!current || (current.state === 'proposed' && action.state !== 'proposed')) {
-        out.set(action.findingId, action);
-      }
+      if (!current || outranks(action, current)) out.set(action.findingId, action);
     }
   } catch (e) {
     log.warn('[findings:actions] action read failed; cards render without their buttons', {
@@ -288,6 +324,30 @@ export async function loadActionsForFindings(
     });
   }
   return out;
+}
+
+/**
+ * Which of two rows for the SAME finding the card is about: the LATEST OFFER.
+ *
+ * A finding used to carry at most one live offer plus at most one settled one,
+ * and settled won — "here is what happened" outranking "here is what could".
+ * Re-arming changed the arithmetic: a declined or failed row can now be followed
+ * by a genuinely newer proposal, and showing the older refusal above it would
+ * put a dead explanation on a card whose fix is live again.
+ *
+ * `executed` and `undone` cannot be outranked in practice, because
+ * `proposeAction` never offers again after either (DECIDED_ACTION_STATES) — so
+ * "newest first" and "a real decision wins" are the same rule here, and the
+ * proposed_at tiebreak below only ever separates rows written in the same
+ * millisecond.
+ */
+function outranks(candidate: FindingAction, current: FindingAction): boolean {
+  const a = Date.parse(candidate.proposedAt);
+  const b = Date.parse(current.proposedAt);
+  if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a > b;
+  // Same instant (or an unreadable timestamp): a settled row is the more
+  // informative of the two, exactly as it always was.
+  return current.state === 'proposed' && candidate.state !== 'proposed';
 }
 
 /** One action, scoped to this hotel. Null when it belongs to another one. */

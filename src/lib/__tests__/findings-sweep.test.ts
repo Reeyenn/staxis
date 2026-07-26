@@ -203,14 +203,20 @@ interface Harness {
   reserved: number;
 }
 
-function harness(f: SweepFeeds, opts: { capExhausted?: boolean } = {}): Harness {
+function harness(
+  f: SweepFeeds,
+  opts: { capExhausted?: boolean; capUnavailable?: boolean } = {},
+): Harness {
   const h: Harness = { deps: {}, localFindings: [], routed: [], recorded: [], reserved: 0 };
   h.deps = {
     loadSweepFeeds: async () => ({ feeds: f, businessDate: BUSINESS_DATE }),
     loadOpenFindings: async () => [],
     reserve: async () => {
       h.reserved += 1;
-      return opts.capExhausted ? { ok: false } : { ok: true, reservationId: 'res-1' };
+      if (opts.capUnavailable) return { ok: false as const, reason: 'unavailable' as const };
+      return opts.capExhausted
+        ? { ok: false as const, reason: 'property_daily_cap' as const }
+        : { ok: true as const, reservationId: 'res-1' };
     },
     finalize: async () => {},
     cancel: async () => {},
@@ -474,6 +480,27 @@ describe('one hotel, one sweep', () => {
     assert.equal(h.reserved, 1);
     assert.equal(h.recorded.length, 1, 'a skipped sweep still records — silence must be legible');
     assert.equal(result.costUsd, 0);
+  });
+
+  // A hotel that spent its budget and a budget system that did not answer are
+  // different weeks. Recording the second as 'skipped_cap' reads on the admin
+  // screens as this hotel spending money it never spent, and hides an outage
+  // behind a spending line.
+  //
+  // MUTATION PROOF: collapse the two reasons back into one `{ ok: false }` and
+  // this run reports 'skipped_cap' with nothing broken-looking anywhere.
+  test('a cap system that cannot answer is a failure, not a budget verdict', async () => {
+    const h = harness(feeds(), { capUnavailable: true });
+    const model = scriptedModel(['unused']);
+
+    const result = await sweepProperty({
+      propertyId: PID_A, deps: h.deps, modelClient: model.client,
+    });
+
+    assert.equal(result.mode, 'fallback_error');
+    assert.notEqual(result.mode, 'skipped_cap');
+    assert.equal(model.calls, 0, 'no hold, no call — the gate still holds');
+    assert.equal(h.recorded.length, 1);
   });
 
   test('a malformed reply costs a run, not a crash', async () => {

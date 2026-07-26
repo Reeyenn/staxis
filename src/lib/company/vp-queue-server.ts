@@ -303,6 +303,7 @@ export async function hotelHealthChips(
         const candidate: ClimbCandidate = {
           status: finding.status,
           price: finding.price,
+          severity: finding.severity,
           firstSeenAt: finding.firstSeenAt,
           magnitude: finding.magnitude,
           silencedAtMagnitude: finding.silencedAtMagnitude,
@@ -505,6 +506,7 @@ async function climbedAtHotel(
     const candidate: ClimbCandidate = {
       status: finding.status,
       price: finding.price,
+      severity: finding.severity,
       firstSeenAt: finding.firstSeenAt,
       magnitude: finding.magnitude,
       silencedAtMagnitude: finding.silencedAtMagnitude,

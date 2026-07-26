@@ -91,6 +91,27 @@ export function ruleApplies(rule: AuthorityRule, amountCents: number): boolean {
 }
 
 /**
+ * WHAT THE READER ANSWERS — and the distinction the execute gate depends on.
+ *
+ *   { ok: true,  rule: AuthorityRule }  this rule governs the amount
+ *   { ok: true,  rule: null }           NOTHING in the rulebook governs it
+ *   { ok: false, error }                WE DO NOT KNOW — the rulebook could not
+ *                                       be read
+ *
+ * The third case used to be folded into the second, and the difference is the
+ * whole point: "no rule applies" is a fact about the company, and "the query
+ * failed" is a fact about us. A card renderer may treat them alike (it draws
+ * the pre-company card, which is a cosmetic degradation). The button that
+ * SPENDS THE HOTEL'S MONEY may not — a stale PostgREST schema cache, a
+ * connection blip or a permissions change would otherwise turn every locked
+ * proposal in the company into a GM-tappable one for as long as it lasted, and
+ * nothing anywhere would say so.
+ */
+export type AuthorityRuleRead =
+  | { ok: true; rule: AuthorityRule | null }
+  | { ok: false; error: string };
+
+/**
  * THE READER. Which rule governs `amountCents` of `actionKind` at this company?
  *
  * When several rules apply — "over $500 → VP", "over $5,000 → owner" — a $6,000
@@ -100,18 +121,23 @@ export function ruleApplies(rule: AuthorityRule, amountCents: number): boolean {
  * rule for a $6,000 order would route around the owner entirely, which is the
  * one failure this function must never have.
  *
- * Returns null for: no rules, an amount under every threshold, a different
- * action kind, another company's rules, or a store that cannot answer. Null
- * means "nothing in the rulebook governs this" — never "approved".
+ * `{ ok: true, rule: null }` for: no rules, an amount under every threshold, a
+ * different action kind, another company's rules, or an argument that is not a
+ * question this rulebook can be asked. `{ ok: false }` ONLY when the store did
+ * not answer. Neither is ever a claim that somebody approved.
  */
-export async function authorityRuleFor(
+export async function readAuthorityRuleFor(
   organizationId: string,
   actionKind: string,
   amountCents: number,
-): Promise<AuthorityRule | null> {
-  if (!UUID_RX.test(organizationId ?? '')) return null;
-  if (!isAuthorityActionKind(actionKind)) return null;
-  if (!Number.isFinite(amountCents) || amountCents < 0) return null;
+): Promise<AuthorityRuleRead> {
+  // A malformed question is not an unreadable rulebook: there is genuinely no
+  // rule for a non-uuid company, an action kind the rulebook has no vocabulary
+  // for, or a negative amount. Answering "unknown" here would refuse every
+  // unpriced plan at the execute gate, which is most of them.
+  if (!UUID_RX.test(organizationId ?? '')) return { ok: true, rule: null };
+  if (!isAuthorityActionKind(actionKind)) return { ok: true, rule: null };
+  if (!Number.isFinite(amountCents) || amountCents < 0) return { ok: true, rule: null };
 
   const { data, error } = await supabaseAdmin
     .from('company_authority_rules')
@@ -119,7 +145,8 @@ export async function authorityRuleFor(
     .eq('organization_id', organizationId)
     .eq('action_kind', actionKind)
     .eq('is_active', true);
-  if (error || !Array.isArray(data)) return null;
+  if (error) return { ok: false, error: error.message };
+  if (!Array.isArray(data)) return { ok: false, error: 'company_authority_rules returned no rows object' };
 
   let winner: AuthorityRule | null = null;
   for (const raw of data as RawRule[]) {
@@ -132,7 +159,23 @@ export async function authorityRuleFor(
       winner = rule;
     }
   }
-  return winner;
+  return { ok: true, rule: winner };
+}
+
+/**
+ * The rule-or-nothing reader, for callers that genuinely cannot act on "we do
+ * not know" — the card renderer and the badge, both of which degrade to the
+ * pre-company behaviour and are re-checked at the execute gate anyway.
+ *
+ * ANYTHING THAT WRITES MUST USE `readAuthorityRuleFor` and refuse on `ok:false`.
+ */
+export async function authorityRuleFor(
+  organizationId: string,
+  actionKind: string,
+  amountCents: number,
+): Promise<AuthorityRule | null> {
+  const read = await readAuthorityRuleFor(organizationId, actionKind, amountCents);
+  return read.ok ? read.rule : null;
 }
 
 /** Every live rule for a company — the rulebook screen's "what this means" list. */

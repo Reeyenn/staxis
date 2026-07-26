@@ -41,6 +41,12 @@
 // shows it (its own board bands off the same field); Staxis simply does not
 // claim to know it is late.
 //
+// WHAT IT DOES SAY INSTEAD — ONCE. Not claiming lateness is not the same as
+// saying nothing. A schedule with no starting date can never produce a card at
+// all, which means the hotel asked to be reminded about something and Staxis
+// silently cannot. So it gets exactly one `fyi` card, magnitude zero, that
+// reports the missing date and nothing else — see `neverDoneDraft`.
+//
 // MONEY: NONE, EVER. There is no honest dollar figure for "the flush is due".
 // `work_orders.repair_cost` is what this hotel paid to fix things that BROKE —
 // a reactive number — and quoting it as the cost of preventive service, or as
@@ -187,9 +193,84 @@ function lateness(daysOverdue: number): string {
  */
 export const PREVENTIVE_TASK_NAME_MAX_CHARS = 120;
 
+/**
+ * The ONE card a never-started schedule gets, and everything it refuses to say.
+ *
+ * ═══ SILENCE FOREVER WAS THE WRONG HALF OF A RIGHT ARGUMENT ═══
+ * The header above is still correct that a schedule with no last-done date is
+ * NOT OVERDUE: there is no elapsed interval to count, and inventing one from
+ * `created_at` or from today would be a service history the hotel never claimed.
+ * What did not follow is that Staxis should say nothing at all. A row somebody
+ * typed into the Preventive tab and never completed is a real state — the hotel
+ * asked to be reminded about something and can never be, and the only place that
+ * fact was visible was a band in a tab nobody opens on purpose.
+ *
+ * So: one card, exactly once, that makes NO claim about lateness. It reports the
+ * thing that is actually true — this schedule has no starting date, so nothing
+ * counts forward from it — and it says what would fix that. Its magnitude is 0
+ * because there is no lateness to measure, and `fyi` because there is nothing to
+ * decide: "Got it" files it under the silencer and it never comes back, and the
+ * escalation policy can never re-fire on a magnitude of zero.
+ *
+ * Its dedupe key is NOT `task:<id>`. A schedule that later gets a date and then
+ * goes overdue is a different problem with a different sentence, and sharing one
+ * row would make the overdue card inherit this one's silence.
+ */
+function neverDoneDraft(task: PreventiveScheduleEntry): FindingDraft {
+  // Capped ONCE, here, exactly as `draftFor` does it: this card puts the name in
+  // a summary, a basis and an evidence field, and all three reach the nightly
+  // judge inside one batched call. A boundary that covers five of six places is
+  // not a boundary.
+  const taskName = task.name.slice(0, PREVENTIVE_TASK_NAME_MAX_CHARS);
+  const cadence = plural(task.frequencyDays, 'day');
+  const where = task.area ? ` (${task.area})` : '';
+  return {
+    key: `task:${task.id}:never_started`,
+    summary:
+      `${taskName}${where} is on this hotel's upkeep schedule — every ${cadence} — but has never `
+      + 'been marked done, so Staxis cannot tell when it is next due. Record when it was last done '
+      + 'and it starts counting.',
+    severity: 'info',
+    disposition: 'fyi',
+    // Not a lateness. There is none to measure, and a non-zero number here would
+    // be a claim about how late something is.
+    magnitude: 0,
+    evidence: {
+      queryId: RECEIPT,
+      params: {
+        preventive_task_id: task.id,
+        task_name: taskName,
+        area: task.area,
+        frequency_days: task.frequencyDays,
+      },
+      values: {
+        last_done: null,
+        last_done_at: null,
+        due_on: null,
+        days_since_last_done: null,
+        days_overdue: null,
+        somebody_called_on: task.calledDate,
+        days_since_called: null,
+        called_by: task.calledBy,
+        price_basis:
+          'no dollar figure: nothing here is late yet, and there is no honest number for a job '
+          + 'nobody has recorded doing',
+      },
+      basis:
+        `${taskName} has a cadence of every ${cadence} and no recorded completion, so there is no `
+        + 'date to count forward from',
+      target: { kind: 'preventive_task', value: task.id },
+    },
+    price: null,
+    asOf: null,
+    weakestInputAgeDays: 0,
+  };
+}
+
 function draftFor(task: PreventiveScheduleEntry, today: string): FindingDraft | null {
   const state = scheduleState(task, today);
-  if (state.kind === 'not_due' || state.kind === 'never_done' || state.kind === 'resting') {
+  if (state.kind === 'never_done') return neverDoneDraft(task);
+  if (state.kind === 'not_due' || state.kind === 'resting') {
     return null;
   }
 
@@ -399,6 +480,13 @@ export const preventiveDueDetector: Detector<DetectorParams> = {
     receiptQueryId: RECEIPT,
     defaultDisposition: 'propose',
     defaultSeverity: 'attention',
+    // The due date is what tells a DEFERRAL apart from a COMPLETION. "Somebody's
+    // been called" closes the card and leaves `due_on` exactly where it was;
+    // marking the job done moves it. So a follow-up card a week later keeps the
+    // clock the company's aging rules measure from, and a genuinely new cycle
+    // starts a fresh one. See `occurrenceMarker` in types.ts for the invisible
+    // mute this closes.
+    occurrenceMarker: 'due_on',
     // Silencing at 10 days late is consent to 10, not to a skipped year.
     escalation: { factor: 2, minDelta: 14 },
     maxPerRun: 6,
@@ -425,13 +513,16 @@ export const preventiveDueDetector: Detector<DetectorParams> = {
         expectKeys: [],
       },
       {
-        name: 'a schedule that has never been done is not overdue — it is unstarted, and Staxis says nothing',
+        // Unstarted, NOT overdue: one card at magnitude zero that says the date
+        // is missing, and no claim of lateness anywhere in it.
+        name: 'a schedule that has never been done gets one card about the missing date, not an overdue one',
         feeds: {
           preventive_schedule: feed([
             task({ lastDoneDate: null, lastDoneAtIso: null, nextDueDate: null }),
           ]),
         },
-        expectKeys: [],
+        expectKeys: ['task:11111111-1111-4111-8111-111111111111:never_started'],
+        expectMagnitude: { 'task:11111111-1111-4111-8111-111111111111:never_started': 0 },
       },
       {
         name: 'somebody was called two days ago, so the card rests',

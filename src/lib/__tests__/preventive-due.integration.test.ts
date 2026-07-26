@@ -359,10 +359,20 @@ describe('preventive maintenance, proven against a real database', () => {
       assert.match(rows[0].summary, /Water heater flush/);
     });
 
-    test('a schedule nobody has ever done stays silent — unstarted is not overdue', async () => {
-      await addSchedule(PID_A, 'Elevator inspection', 365, null);
+    test('a schedule nobody has ever done gets one card about the missing date, and no lateness claim', async () => {
+      const id = await addSchedule(PID_A, 'Elevator inspection', 365, null);
       await runFindingsForProperty(PID_A, ONLY_PM);
-      assert.deepEqual(await findingsFor(PID_A), []);
+      const rows = await liveFindings(PID_A);
+      assert.equal(rows.length, 1, 'one unstarted schedule is one card, not silence and not a nag');
+      assert.equal(rows[0].dedupe_key, `preventive_due:task:${id}:never_started`);
+      assert.equal(rows[0].disposition, 'fyi');
+      assert.equal(Number(rows[0].magnitude), 0);
+      const severity = await pg.query<{ severity: string }>(
+        'select severity from public.findings where id = $1',
+        [rows[0].id],
+      );
+      assert.equal(severity.rows[0].severity, 'info', 'nothing here is urgent — nothing is even late');
+      assert.doesNotMatch(rows[0].summary, /past due|overdue/i);
     });
 
     test('running twice UPDATES the one card instead of stacking a second', async () => {
@@ -474,6 +484,87 @@ describe('preventive maintenance, proven against a real database', () => {
       // A follow-up asks; it does not offer. Nobody should be dispatched twice.
       assert.equal(rows[0].disposition, 'recommend');
       assert.equal(await openActionFor(rows[0].id), null);
+    });
+
+    // ═══ A WEEKLY TAP MUST NOT BE A PERMANENT INVISIBLE MUTE ═══
+    //
+    // "Somebody's been called" closes the card and the follow-up opens a NEW
+    // row a week later. That row used to carry a fresh `first_seen_at`, and
+    // every aging rule the company screen has — how long has this been true —
+    // measures from exactly that column. So a manager who tapped the reminder
+    // once a week could keep a year-old overdue job permanently under the climb
+    // bar without ever muting anything, and nothing on any screen said so.
+    //
+    // MUTATION PROOF: drop `occurrenceMarker: 'due_on'` from the declaration (or
+    // the carry-forward in store.ts) and the second row's first_seen_at is the
+    // day of the follow-up rather than the day Staxis first saw the problem.
+    test('a deferral does not restart the clock the company measures from', async () => {
+      const id = await addSchedule(PID_A, 'Water heater flush', 180, 200);
+      await runFindingsForProperty(PID_A, ONLY_PM);
+      const [findingId] = await queueIds(PID_A);
+      const firstRow = await pg.query<{ first_seen_at: string; dedupe_key: string }>(
+        'select first_seen_at, dedupe_key from public.findings where id = $1',
+        [findingId],
+      );
+      const originally = firstRow.rows[0].first_seen_at;
+
+      // Backdate the first sighting: a real card would have been standing for a
+      // fortnight before anybody tapped anything.
+      await pg.query(
+        `update public.findings set first_seen_at = now() - interval '14 days' where id = $1`,
+        [findingId],
+      );
+      await verdict(PID_A, findingId, 'pm_called');
+
+      await pg.query('update public.preventive_tasks set called_at = $2 where id = $1', [
+        id,
+        new Date(Date.now() - (FOLLOW_UP_DAYS + 1) * DAY).toISOString(),
+      ]);
+      await runFindingsForProperty(PID_A, ONLY_PM);
+
+      const rows = await liveFindings(PID_A);
+      assert.equal(rows.length, 1, 'the follow-up is one card');
+      const followUp = await pg.query<{ first_seen_at: string }>(
+        'select first_seen_at from public.findings where id = $1',
+        [rows[0].id],
+      );
+      const ageDays =
+        (Date.now() - Date.parse(followUp.rows[0].first_seen_at)) / 86_400_000;
+      assert.ok(
+        ageDays > 13,
+        `the follow-up must keep the original clock; it read ${ageDays.toFixed(1)} days old`,
+      );
+      assert.notEqual(followUp.rows[0].first_seen_at, originally, 'sanity: the backdate applied');
+    });
+
+    test('a completed cycle DOES start a fresh clock — carrying it forward would libel the hotel', async () => {
+      const id = await addSchedule(PID_A, 'Water heater flush', 180, 200);
+      await runFindingsForProperty(PID_A, ONLY_PM);
+      const [findingId] = await queueIds(PID_A);
+      await pg.query(
+        `update public.findings set first_seen_at = now() - interval '30 days' where id = $1`,
+        [findingId],
+      );
+      // The job was actually done, which moves the due date — a different
+      // occurrence of the problem, whenever it next comes round.
+      await verdict(PID_A, findingId, 'pm_done');
+      // 190 days, not the original 200: the completion moved the due date, which
+      // is exactly what tells a finished cycle apart from a deferred one.
+      await pg.query(
+        `update public.preventive_tasks
+            set last_completed_at = now() - interval '190 days' where id = $1`,
+        [id],
+      );
+
+      await runFindingsForProperty(PID_A, ONLY_PM);
+      const rows = await liveFindings(PID_A);
+      assert.equal(rows.length, 1);
+      const fresh = await pg.query<{ first_seen_at: string }>(
+        'select first_seen_at from public.findings where id = $1',
+        [rows[0].id],
+      );
+      const ageDays = (Date.now() - Date.parse(fresh.rows[0].first_seen_at)) / 86_400_000;
+      assert.ok(ageDays < 1, `a new cycle starts today, not ${ageDays.toFixed(1)} days ago`);
     });
 
     test('answering the follow-up "yes it got done" restarts the clock and clears the call', async () => {

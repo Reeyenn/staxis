@@ -272,6 +272,12 @@ export async function runFindingsForProperty(
           states.get(declaration.id)?.stepsDown ?? 0,
         ),
         now,
+        // Declaration-driven, like everything else the runner enforces: a
+        // detector whose cards can be closed while the problem is still true
+        // says which field identifies the occurrence, and the store carries the
+        // clock forward when a re-opened row is the SAME occurrence. See
+        // `occurrenceMarker` in types.ts for the tap this closes.
+        occurrenceMarker: declaration.occurrenceMarker ?? null,
       };
 
       try {

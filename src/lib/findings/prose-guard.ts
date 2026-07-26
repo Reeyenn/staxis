@@ -102,7 +102,7 @@
 // free phrasing.
 
 import type { FindingEvidence, JsonValue, PriceRange } from './types';
-import { formatMoney, formatMoneyRange } from './pricing';
+import { formatMoneyRange } from './pricing';
 
 // ─── What the prose is allowed to say ────────────────────────────────────────
 
@@ -301,6 +301,42 @@ const NUMBER_WORDS: Readonly<Record<string, number>> = Object.freeze({
   veintiuno: 21, veintidos: 22, veintitres: 23, treinta: 30, cuarenta: 40,
   cincuenta: 50, sesenta: 60, setenta: 70, ochenta: 80, noventa: 90,
   cien: 100, ciento: 100,
+
+  // ═══ MAGNITUDES AND FRACTIONS — the hole the list above left open ═══
+  //
+  // The list stopped at a hundred, so it caught "$1000" and waved through
+  // "a thousand dollars", "millions", "half your budget", "mil", "quinientos"
+  // and "medio". Every one of those is a quantity a manager reads as a fact,
+  // and the vaguer the word the LARGER the claim tends to be — which is the
+  // wrong way round for a guard that already refuses the precise version.
+  //
+  // In slot mode any of them is refused outright (a spelled number is bound to
+  // nothing). In presence mode they must appear in the payload like every other
+  // number, which is why the values below are the literal quantities the words
+  // name: "half" is 0.5, so a finding whose evidence holds 0.5 backs it and
+  // nothing else does.
+  //
+  // `couple` is here at 2 for the same reason `two` is; `dozen`/`docena` at 12.
+  // English "a couple of days" is a count wearing a hedge.
+  hundreds: 100, thousand: 1_000, thousands: 1_000,
+  million: 1_000_000, millions: 1_000_000,
+  billion: 1_000_000_000, billions: 1_000_000_000,
+  dozen: 12, dozens: 12, couple: 2, half: 0.5,
+  // Spanish. `mil` is thousand and is never an article; `medio` is half. The
+  // hundreds are spelled out because Spanish writes them as one word, so a token
+  // scan sees "quinientos" and not "cinco" + "cientos".
+  mil: 1_000, miles: 1_000, millon: 1_000_000, millones: 1_000_000,
+  cientos: 100, doscientos: 200, trescientos: 300, cuatrocientos: 400,
+  quinientos: 500, seiscientos: 600, setecientos: 700, ochocientos: 800,
+  novecientos: 900,
+  docena: 12, docenas: 12, medio: 0.5,
+  // DELIBERATELY ABSENT, on the same precision-over-coverage doctrine that
+  // keeps `one`/`un`/`una` out: `cuarto` is the ordinary Spanish word for a room
+  // before it is ever a quarter, `media` is "average" as often as "half", and a
+  // guard that fires on "el cuarto 214" is a guard somebody switches off.
+  // `miles` is kept despite the English distance unit — nothing in hotel
+  // operations prose measures miles, and "miles de dólares" is exactly the
+  // vague overstatement this block exists to refuse.
 });
 
 /** Ordinals are positional, not quantitative — "the 3rd invoice" makes no claim
@@ -520,17 +556,18 @@ function offerSlot(into: Map<string, string>, name: string, value: JsonValue): v
 }
 
 /**
- * Money in a slot is money on a CARD, so it is spelled by the one money
- * formatter in the product (`pricing.ts`) — thousands separated, en dash.
+ * MONEY IN A SLOT IS MONEY ON A CARD, so it is spelled by the one money
+ * formatter in the product (`pricing.ts` — thousands separated, en dash), and
+ * `formatMoneyRange` is called directly below.
  *
- * This file used to carry its own, and the slot path is where that mattered
- * most: `{price_range}` rendered "$750-$1750" INSIDE the model's sentence while
- * the price chip a centimetre below it said "$750–$1,750" about the same two
- * numbers. Same defect the deterministic floor had, on the primary path.
+ * This file used to carry its own formatter, and the slot path is where that
+ * mattered most: `{price_range}` rendered "$750-$1750" INSIDE the model's
+ * sentence while the price chip a centimetre below it said "$750–$1,750" about
+ * the same two numbers.
  *
- * ─── THIS DOES NOT LOOSEN THE BINDING GUARD ───────────────────────────────
- * The order of operations is what makes that safe, and it is worth stating
- * because a comma inside a rendered number looks like exactly the thing
+ * ─── THAT DOES NOT LOOSEN THE BINDING GUARD ───────────────────────────────
+ * The order of operations is what makes it safe, and it is worth stating because
+ * a comma inside a rendered number looks like exactly the thing
  * `unbound_numeral` exists to catch. `checkSlotProse` strips every `{…}` group
  * and runs the digit and number-word checks on what is LEFT — the model's own
  * typing — and only then calls `renderProseSlots`. A slot's value is therefore
@@ -539,9 +576,6 @@ function offerSlot(into: Map<string, string>, name: string, value: JsonValue): v
  * collide with, and the receipt's own harvester strips commas and folds en
  * dashes to hyphens, so a rendered "$1,750" still matches the payload's 1750.
  */
-function slotMoney(cents: number): string {
-  return formatMoney(cents);
-}
 
 /**
  * What this finding's phrasing may print, and under what name.
@@ -572,11 +606,21 @@ export function buildProseSlots(input: ProseReceiptInput): ProseSlots {
   }
 
   if (input.price) {
-    // A price is a RANGE or it is absent (types.ts PriceRange). `price_range` is
-    // offered as one slot precisely so the model cannot print half of it: there
-    // is no `{price}` that could become a point estimate.
-    slots.set('price_low', slotMoney(input.price.lowCents));
-    slots.set('price_high', slotMoney(input.price.highCents));
+    // ═══ ONE SLOT, AND IT IS THE WHOLE RANGE ═══
+    // A price is a RANGE or it is absent (types.ts PriceRange), and `price_range`
+    // is offered as a single slot precisely so the model cannot print half of it.
+    //
+    // `price_low` and `price_high` used to be offered here as well, seven lines
+    // under the comment explaining why they must not exist. They were a working
+    // point estimate: "this will cost about {price_low}" renders "$750." on the
+    // card — every rule in this file satisfied, no digit typed by the model, and
+    // a number on a manager's screen that the hotel's own records do not
+    // support. The guard cannot catch it, because the slot machinery is what
+    // printed it. So the halves are simply not offered.
+    //
+    // Nothing else may reintroduce them: a detector that puts a bare dollar
+    // amount in `evidence.values` would offer it as a slot under its own name,
+    // which is why prices live in `price`, in cents, and are formatted here.
     slots.set(
       'price_range',
       formatMoneyRange(input.price.lowCents, input.price.highCents, input.price.currency),
