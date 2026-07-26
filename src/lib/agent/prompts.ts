@@ -28,6 +28,7 @@ import {
   formatCompanyRulebookForPrompt,
 } from './company-tier';
 import { escapeTrustMarkerContent } from './loop-core';
+import { lensFor } from './lenses';
 import { familyContentIsSafe } from './prompt-tiers';
 import { resolvePrompts, type ResolvedFamilyPrompt } from './prompts-store';
 import type { VoiceMode } from './tools';
@@ -561,8 +562,27 @@ export async function buildSystemPrompt(
   // rides in on the snapshot the caller already built — no extra query, no
   // signature change at any of the three call sites.
   const pmsFamily = snapshot.property.pmsFamily ?? null;
-  const { base, role: rolePrompt, family, versionLabel } =
+  const { base, role: dbRolePrompt, family, versionLabel: dbVersionLabel } =
     await resolvePrompts(role, conversationId, pmsFamily);
+
+  // WHO LENSES (2026-07-27). A hat with a lens gets the lens's own job
+  // description INSTEAD of the DB role row, not layered on top of it.
+  //
+  // Layering is the version that looks safer and is wrong. `prompts-store` maps
+  // front_desk → the general_manager row and maintenance → the housekeeping
+  // row, because `agent_prompts.role`'s CHECK has never had a value for either
+  // hat. So an addendum would leave the model holding two job descriptions —
+  // one listing manager tools it cannot call — and picking. Nothing
+  // operator-editable is lost by owning this in code: there was never a row to
+  // edit. The lens version replaces the role segment of the stamp, so which
+  // text ran is still answerable from `agent_messages.prompt_version` alone.
+  const lens = lensFor(role, 'chat');
+  const rolePrompt = lens && lens.mounted
+    ? { version: lens.promptVersion, content: lens.prompt }
+    : dbRolePrompt;
+  const versionLabel = lens && lens.mounted
+    ? `base:${base.version}+role:${lens.promptVersion}`
+    : dbVersionLabel;
   const hasInventoryAccountingAccess = role === 'admin'
     || role === 'owner'
     || role === 'general_manager';

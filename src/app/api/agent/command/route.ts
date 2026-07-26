@@ -49,6 +49,7 @@ import {
 import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import { getToolsForRole } from '@/lib/agent/tools';
+import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt, PROMPT_VERSION } from '@/lib/agent/prompts';
@@ -137,6 +138,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
   const { userCtx, staffId } = ctxLoad;
+
+  // ── WHO LENSES: the hat at THIS hotel decides whether there is a chat ──
+  // Housekeeping has no Ask Staxis, by product rule: their whole surface is the
+  // room card on the phone they already carry, and the standing rule is that
+  // Staxis never adds a step to that job. Refused HERE, before the cost
+  // reservation, so an unmounted hat can never spend a cent. The bar does not
+  // render for them either — this is the door behind the door.
+  if (!chatIsMountedForRole(userCtx.role)) {
+    return Response.json(
+      { ok: false, error: 'Ask Staxis is not part of this role at this hotel.', code: 'chat_not_mounted', requestId },
+      { status: 403 },
+    );
+  }
 
   // ── Cost reservation (Codex review fix #1) ────────────────────────────
   // Atomic: cap check + reservation insert happen under an advisory lock

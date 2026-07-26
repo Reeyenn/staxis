@@ -34,6 +34,7 @@ import {
 import { scaleAiReservationUsd, type AiExecutionPlan } from '@/lib/ai/runtime';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import { executeTool, getTool, getToolsForRole, type ToolContext } from '@/lib/agent/tools';
+import { chatIsMountedForRole } from '@/lib/agent/lenses';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { buildHotelSnapshot } from '@/lib/agent/context';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
@@ -114,6 +115,16 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: 'account not found', requestId }, { status: 404 });
   }
   const { userCtx, staffId } = ctxLoad;
+
+  // WHO LENSES: same door as /api/agent/command. A hat with no chat cannot
+  // resolve an approval card either — including one minted before the lens
+  // existed, which is exactly the case a route-level check has to cover.
+  if (!chatIsMountedForRole(userCtx.role)) {
+    return Response.json(
+      { ok: false, error: 'Ask Staxis is not part of this role at this hotel.', code: 'chat_not_mounted', requestId },
+      { status: 403 },
+    );
+  }
 
   // ── Load + validate the pending action ────────────────────────────────
   const pending = await getPendingAction(body.pendingActionId);

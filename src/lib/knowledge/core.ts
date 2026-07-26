@@ -709,8 +709,38 @@ export interface KnowledgePassage {
   similarity: number | null;
 }
 
+/**
+ * One CONFIRMED fact this hotel has told Staxis about itself (`agent_memory`,
+ * property scope) — the Knows screen's rows: the wifi password, when breakfast
+ * runs, the pet fee.
+ *
+ * These reach the model two ways and the difference matters. Every turn injects
+ * the hotel's confirmed facts into the prompt, but that injection is CAPPED
+ * (20 entries / 6000 chars, `memory-context.ts`), ranked by source and
+ * recency — so at a hotel with a full Knows screen the pet fee simply may not
+ * be in the prompt when a guest asks about it. This arm is the lookup: it
+ * searches ALL of them, not the top twenty.
+ */
+export interface KnowledgeFactHit {
+  id: string;
+  /** The dedupe slug — 'pet-fee', 'breakfast-hours'. */
+  topic: string;
+  content: string;
+  /** One of the five Knows buckets (rooms/people/rhythm/vendors/guests). */
+  category: string;
+  /** Who taught it: a role word, or 'Staxis-auto' / 'Staxis-observed'. */
+  by: string;
+  confidence: string;
+  updatedAt: string;
+}
+
 export interface KnowledgeSearchResult {
   query: string;
+  /**
+   * Confirmed facts from the Knows screen matching the query. NEVER contains an
+   * unreviewed fact — see the `review_state` filter in the facts arm below.
+   */
+  facts: KnowledgeFactHit[];
   /** The relevant passages (chunks) with their document/SOP + section refs. */
   passages: KnowledgePassage[];
   articles: { id: string; title: string; category: string | null; snippet: string }[];
@@ -764,7 +794,7 @@ export async function searchKnowledge(
   const deptNorm = includeManagerOnly ? null : normalizeDept(opts.dept ?? null);
   if (term.length < 2) {
     return {
-      query: term, passages: [], articles: [], documents: [], contacts: [], events: [],
+      query: term, facts: [], passages: [], articles: [], documents: [], contacts: [], events: [],
       note: 'Search term too short — ask the user to be more specific.',
     };
   }
@@ -837,8 +867,39 @@ export async function searchKnowledge(
   // Four keyword arms — name, company, address, AND local_category — so "nearest
   // pharmacy" matches a Pharmacy-typed local contact ("Walgreens") whose name
   // never contains the word, and "pharmacy on Main St" matches by street too.
+  // ── Knows-facts arm: what this hotel has CONFIRMED about itself ──────────
+  //
+  // Two filters here are the security boundary, not a nicety:
+  //
+  //   .eq('review_state', 'confirmed')  — a fact extracted from a pasted email
+  //     or an uploaded PDF sits `unreviewed` until a human approves it. The
+  //     Knows screen shows those rows badged "Not confirmed yet"; the model must
+  //     never see one. `getActiveMemoryForTurn` enforces this for the prompt
+  //     injection, and this line enforces the same thing for the lookup —
+  //     opening a second door into the same table without the same lock is
+  //     exactly how that guarantee would have been lost. Do not remove it to
+  //     "let the assistant see more context".
+  //
+  //   .eq('scope', 'property')  — user-scope rows are one person's private
+  //     preferences. A front-desk agent searching for "breakfast" must not be
+  //     handed the GM's personal note.
+  //
+  // Expiry is dropped in JS below rather than with a PostgREST `.or()`. The
+  // agent tool-sweep proves each tool's hotel filter by REPLAYING its query,
+  // and it cannot evaluate `.or`, so an `.or` here would leave a query the
+  // sweep reports as unnarrowed. Every filter that is load-bearing for safety
+  // stays a plain `.eq` the sweep does evaluate; expiry is presentation.
+  const factSelect = 'id, topic, content, category, source, confidence, created_by_role, expires_at, updated_at';
+  const factBase = () => supabaseAdmin
+    .from('agent_memory')
+    .select(factSelect)
+    .eq('property_id', pid)
+    .eq('is_active', true)
+    .eq('review_state', 'confirmed')
+    .eq('scope', 'property');
+
   const CONTACT_SELECT = 'id, name, company, phone, email, category, address, city_state_zip, hours, local_category, notes';
-  const [chunkKwRes, artTitle, docTitle, conName, conCompany, conAddress, conLocalCat, evtTitle, evtNotes] = await Promise.all([
+  const [chunkKwRes, artTitle, docTitle, conName, conCompany, conAddress, conLocalCat, evtTitle, evtNotes, factTopic, factContent] = await Promise.all([
     chunkKw.limit(8),
     artTitleQ.limit(5),
     docTitleQ.limit(5),
@@ -848,6 +909,12 @@ export async function searchKnowledge(
     supabaseAdmin.from(C).select(CONTACT_SELECT).eq('property_id', pid).ilike('local_category', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('title', pattern).limit(5),
     supabaseAdmin.from(E).select('id, title, event_date, end_date, notes').eq('property_id', pid).ilike('notes', pattern).limit(5),
+    // Two arms rather than one `.or(topic.ilike…,content.ilike…)`: the term is
+    // user text, and a comma or a parenthesis inside a PostgREST `.or()` string
+    // re-parses the whole filter. Same reason the contact directory runs four
+    // separate ilike queries and merges them.
+    factBase().ilike('topic', pattern).limit(10),
+    factBase().ilike('content', pattern).limit(10),
   ]);
 
   const keywordHits: ChunkHit[] = ((chunkKwRes.data ?? []) as Record<string, unknown>[]).map((r) => ({
@@ -903,12 +970,43 @@ export async function searchKnowledge(
     8,
   );
 
+  // An expired fact is not a fact. The column never deactivates a row (that is
+  // deliberate — the audit trail survives), so the lapse is applied here, at
+  // read time, exactly as `getActiveMemoryForTurn` applies it for the prompt.
+  const nowMs = Date.now();
+  const unexpired = (rows: Record<string, unknown>[]) => rows.filter((r) => {
+    const exp = r.expires_at;
+    if (exp === null || exp === undefined) return true;
+    const t = Date.parse(String(exp));
+    return Number.isNaN(t) || t > nowMs;
+  });
+  const factRows = mergeById(
+    unexpired((factTopic.data ?? []) as Record<string, unknown>[]),
+    unexpired((factContent.data ?? []) as Record<string, unknown>[]),
+    8,
+  );
+
   const note = semantic
-    ? 'Hybrid semantic + keyword search over this property\'s SOPs and documents (and the contact directory + calendar). The `passages` are the most relevant excerpts — quote the document/SOP title (and section) when you answer. If passages is empty, it isn\'t documented yet — say so; don\'t invent.'
-    : 'Keyword search over this property\'s knowledge (semantic search was unavailable this turn). Quote the source title when you answer; if nothing matched, say it isn\'t documented yet.';
+    ? 'Hybrid semantic + keyword search over this property\'s confirmed facts, SOPs and documents (and the contact directory + calendar). `facts` are things this hotel has CONFIRMED about itself — the shortest, most trustworthy answer to a guest\'s question, so read them first. The `passages` are the most relevant document excerpts — quote the document/SOP title (and section) when you answer from one. If everything is empty, it isn\'t written down yet — say so; don\'t invent.'
+    : 'Keyword search over this property\'s confirmed facts and knowledge (semantic search was unavailable this turn). Read `facts` first; quote the source title when you answer from a document; if nothing matched, say it isn\'t written down yet.';
 
   return {
     query: term,
+    facts: factRows.map((r) => ({
+      id: r.id as string,
+      topic: (r.topic as string) ?? '',
+      content: (r.content as string) ?? '',
+      category: (r.category as string) ?? 'rhythm',
+      // Same provenance vocabulary the prompt injection uses, so "who told you
+      // that" reads identically whether the fact arrived by injection or lookup.
+      by: r.source === 'consolidation'
+        ? 'Staxis-auto'
+        : r.source === 'operational'
+          ? 'Staxis-observed'
+          : ((r.created_by_role as string | null) ?? 'unknown'),
+      confidence: (r.confidence as string) ?? 'normal',
+      updatedAt: (r.updated_at as string) ?? '',
+    })),
     passages,
     articles: articleRows.map((r) => ({
       id: r.id as string,

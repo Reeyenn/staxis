@@ -209,15 +209,34 @@ describe('the SEE tools — registration and gates', () => {
     }
   });
 
-  it('floor staff cannot reach any of them', async () => {
+  it('the front desk, housekeeping and legacy staff cannot reach any of them', async () => {
     // They mirror manager-tier surfaces (the findings routes all gate on
-    // loadManagerCaller). A housekeeper reading the hotel's money-ranged
+    // loadManagerCaller). A front-desk agent reading the hotel's money-ranged
     // findings list would be a role escalation through the chat.
     for (const name of SEE_TOOLS) {
-      for (const role of ['housekeeping', 'maintenance', 'front_desk', 'staff'] as AppRole[]) {
+      for (const role of ['housekeeping', 'front_desk', 'staff'] as AppRole[]) {
         const res = await run(name, {}, role);
         assert.equal(res.ok, false, `${name} answered a ${role}`);
-        assert.match(res.error ?? '', /role|allowed/i, `${name}/${role}: refused for the wrong reason`);
+      }
+    }
+  });
+
+  it('the maintenance hat reaches five of the six — but never the approval queue', async () => {
+    // WHO LENSES (2026-07-27). The person holding the wrench could not ask what
+    // Staxis had noticed about the room they were standing in; that was
+    // STAXIS_ROLES being the only constant in the file, not a decision. What is
+    // a decision: `staxis_pending_decisions` stays manager-only, because an
+    // approval queue is not floor work.
+    for (const name of SEE_TOOLS) {
+      const res = await run(name, {}, 'maintenance' as AppRole);
+      if (name === 'staxis_pending_decisions') {
+        assert.equal(res.ok, false, 'the approval queue must stay manager-only');
+      } else {
+        assert.notEqual(
+          /is not allowed to use|not part of what you can do/.test(res.error ?? ''),
+          true,
+          `${name} refused the maintenance hat on role/lens grounds`,
+        );
       }
     }
   });

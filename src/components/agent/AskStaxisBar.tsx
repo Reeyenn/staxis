@@ -25,6 +25,8 @@ import { useAgentChat } from './useAgentChat';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { DisplayMessage } from './MessageList';
 import { subscribeToAskCommands } from './ask-command-bridge';
+import { chatIsMountedForRole } from '@/lib/agent/lenses';
+import type { AppRole } from '@/lib/roles';
 import { AssistantMarkdown } from './AssistantMarkdown';
 
 type ChatState = 'empty' | 'active' | 'collapsed';
@@ -37,10 +39,36 @@ const LISTENING_PLACEHOLDER = {
   en: 'Listening… speak and it appears here',
   es: 'Escuchando… habla y aparece aquí',
 };
-const SUGGESTIONS = {
+// ─── Suggestion chips, per hat (WHO LENSES, 2026-07-27) ────────────────────
+//
+// The chips are the first thing anyone reads, and until now every role read the
+// manager's: "Should I raise rates?" in front of a housekeeper and a front-desk
+// agent. A chip that opens a door the person cannot walk through is worse than
+// no chip — it teaches them the tool is for somebody else.
+//
+// The Spanish is written FOR the counter, not translated from the English. A
+// front-desk agent asking about breakfast in Spanish is the single most common
+// Spanish-first moment in this product, and "¿A qué hora es el desayuno?" is
+// what a person actually types — not a rendering of the English sentence.
+const SUGGESTIONS_BY_ROLE: Record<string, { en: string[]; es: string[] }> = {
+  front_desk: {
+    en: ['What’s the wifi password?', 'When is breakfast?', 'Do we take pets?'],
+    es: ['¿Cuál es la clave del wifi?', '¿A qué hora es el desayuno?', '¿Se aceptan mascotas?'],
+  },
+  maintenance: {
+    en: ['What’s due this week?', 'History on 214', 'Which units keep breaking?'],
+    es: ['¿Qué mantenimiento toca esta semana?', 'Historial de la 214', '¿Qué equipos fallan más?'],
+  },
+};
+
+const SUGGESTIONS_DEFAULT = {
   en: ['What needs my attention?', "Who's behind on rooms?", 'Should I raise rates?'],
   es: ['¿Qué necesita mi atención?', '¿Quién va atrasado con las habitaciones?', '¿Debería subir tarifas?'],
 };
+
+function suggestionsForRole(role: string | null | undefined): { en: string[]; es: string[] } {
+  return (role && SUGGESTIONS_BY_ROLE[role]) || SUGGESTIONS_DEFAULT;
+}
 const MOBILE_WELCOME = {
   en: 'I’m here and thinking with you. What should we handle first?',
   es: 'Estoy aquí para ayudarte. ¿Qué resolvemos primero?',
@@ -54,6 +82,46 @@ const MOBILE_PROMPTS = {
     { label: '¿Qué necesita atención?', prompt: '¿Qué necesita mi atención esta mañana?' },
     { label: 'Ver turnos abiertos', prompt: 'Muéstrame los turnos abiertos.' },
   ],
+};
+
+// The phone sheet, per hat. Same reasoning as the chips — and the front desk is
+// the hat most likely to be on a phone behind the counter, in Spanish.
+const MOBILE_BY_ROLE: Record<string, {
+  welcome: { en: string; es: string };
+  prompts: { en: Array<{ label: string; prompt: string }>; es: Array<{ label: string; prompt: string }> };
+}> = {
+  front_desk: {
+    welcome: {
+      en: 'Got a guest asking something? I’ll tell you what this hotel has actually confirmed.',
+      es: '¿Te preguntó algo un huésped? Te digo lo que el hotel tiene confirmado.',
+    },
+    prompts: {
+      en: [
+        { label: 'Wifi password', prompt: 'What’s the guest wifi password?' },
+        { label: 'Breakfast hours', prompt: 'What time is breakfast served?' },
+      ],
+      es: [
+        { label: 'Clave del wifi', prompt: '¿Cuál es la clave del wifi para huéspedes?' },
+        { label: 'Horario del desayuno', prompt: '¿A qué hora es el desayuno?' },
+      ],
+    },
+  },
+  maintenance: {
+    welcome: {
+      en: 'Standing in front of something? I’ll pull its history and what’s due.',
+      es: '¿Estás frente a algo? Te saco su historial y lo que toca hacer.',
+    },
+    prompts: {
+      en: [
+        { label: 'What’s due', prompt: 'What preventive maintenance is due this week?' },
+        { label: 'Room history', prompt: 'What’s the work order history on room 214?' },
+      ],
+      es: [
+        { label: 'Qué toca', prompt: '¿Qué mantenimiento preventivo toca esta semana?' },
+        { label: 'Historial de un cuarto', prompt: '¿Cuál es el historial de órdenes de trabajo del cuarto 214?' },
+      ],
+    },
+  },
 };
 const INVENTORY_MOBILE_WELCOME = {
   en: 'I can review what’s under par and help draft the next reorder. Want me to start?',
@@ -101,6 +169,8 @@ export function AskStaxisBar() {
   const { lang } = useLang();
   const pathname = usePathname();
   const onInventory = pathname === '/inventory' || pathname.startsWith('/inventory/');
+  // The phone sheet's copy for this hat, or undefined to keep the general one.
+  const roleMobile = user?.role ? MOBILE_BY_ROLE[user.role] : undefined;
 
   const [input, setInput] = useState('');
   const [chatState, setChatState] = useState<ChatState>('empty');
@@ -333,6 +403,21 @@ export function AskStaxisBar() {
   ].filter(Boolean).join(' '), [idle, chatState, hasText, historyOpen]);
 
   if (!user || !activePropertyId) return null;
+  // WHO LENSES: a hat with no chat does not get a bar. Housekeeping is the only
+  // one, and it is a product rule, not a capability judgement — their surface is
+  // the room card on the phone they already carry, and Staxis never adds a step
+  // to that job. Hiding the control here is cosmetic; the decision is the
+  // route's (403 `chat_not_mounted`), which resolves the hat AT THIS HOTEL.
+  //
+  // The client only has the GLOBAL `accounts.role` — hats are resolved
+  // server-side and there is no per-hotel role in any context. So the honest
+  // statement of what this line does: it hides the bar for an account whose
+  // global role is housekeeping. Someone with a housekeeping global role AND a
+  // manager hat elsewhere would lose the bar, which the invite flow does not
+  // produce today (a hat is granted with a matching role, and `legacyRoleForHat`
+  // maps hats DOWN to legacy words, never up). If that shape ever appears it is
+  // a missing control someone will report, not a leak — the route still decides.
+  if (!chatIsMountedForRole(user.role as AppRole)) return null;
 
   // Keep mounted (chat state persists). On the Concourse hub the hero Ask bar
   // IS the idle surface — the docked capsule only appears there once a
@@ -399,10 +484,10 @@ export function AskStaxisBar() {
             {messages.length === 0 ? (
               <>
                 <div className="asx-mobile-welcome">
-                  {(onInventory ? INVENTORY_MOBILE_WELCOME : MOBILE_WELCOME)[lang]}
+                  {(onInventory ? INVENTORY_MOBILE_WELCOME : roleMobile?.welcome ?? MOBILE_WELCOME)[lang]}
                 </div>
                 <div className="asx-mobile-quick" aria-label={lang === 'es' ? 'Sugerencias' : 'Suggestions'}>
-                  {(onInventory ? INVENTORY_MOBILE_PROMPTS : MOBILE_PROMPTS)[lang].map((item, index) => (
+                  {(onInventory ? INVENTORY_MOBILE_PROMPTS : roleMobile?.prompts ?? MOBILE_PROMPTS)[lang].map((item, index) => (
                     <button
                       key={item.label}
                       type="button"
@@ -507,7 +592,7 @@ export function AskStaxisBar() {
         {/* Suggestion chips (before the first message) */}
         {chatState === 'empty' && (
           <div className="asx-chips">
-            {SUGGESTIONS[lang].map((s) => (
+            {suggestionsForRole(user.role)[lang].map((s) => (
               <button key={s} type="button" className="asx-chip" onClick={() => submit(s)}>
                 {s}
               </button>

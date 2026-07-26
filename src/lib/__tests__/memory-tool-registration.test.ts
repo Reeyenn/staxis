@@ -49,8 +49,12 @@ describe('memory tools — registration shape', () => {
 });
 
 describe('memory tools — surface + voice-mode gating', () => {
-  test('reachable on chat for floor + manager roles', () => {
-    for (const role of ['housekeeping', 'front_desk', 'general_manager', 'owner', 'admin'] as const) {
+  test('reachable on chat for every hat that has a chat', () => {
+    // Housekeeping dropped off this list on 2026-07-27 (WHO LENSES): that hat
+    // has no chat surface at all now. The VOICE cases below deliberately keep
+    // using it — the lens narrows the CHAT mount only, and proving voice is
+    // untouched is the point of leaving them alone.
+    for (const role of ['maintenance', 'front_desk', 'general_manager', 'owner', 'admin'] as const) {
       const names = getToolsForRole(role, 'chat').map((t) => t.name);
       assert.ok(names.includes('remember') && names.includes('forget'), `chat/${role} should see memory tools`);
     }
@@ -76,7 +80,7 @@ describe('memory tools — handler authorization guards (no DB)', () => {
   });
 
   test('remember hotel-scope is refused for a floor role (management-only)', async () => {
-    const r = await executeTool('remember', { scope: 'hotel', topic: 'x', content: 'shared fact' }, ctx('housekeeping'));
+    const r = await executeTool('remember', { scope: 'hotel', topic: 'x', content: 'shared fact' }, ctx('maintenance'));
     assert.equal(r.ok, false);
     assert.match(r.error ?? '', /manager|owner/i);
   });
@@ -88,12 +92,12 @@ describe('memory tools — handler authorization guards (no DB)', () => {
   });
 
   test('remember rejects an empty topic', async () => {
-    const r = await executeTool('remember', { scope: 'me', topic: '   ', content: 'c' }, ctx('housekeeping'));
+    const r = await executeTool('remember', { scope: 'me', topic: '   ', content: 'c' }, ctx('maintenance'));
     assert.equal(r.ok, false);
   });
 
   test('remember rejects content over 500 chars', async () => {
-    const r = await executeTool('remember', { scope: 'me', topic: 't', content: 'x'.repeat(501) }, ctx('housekeeping'));
+    const r = await executeTool('remember', { scope: 'me', topic: 't', content: 'x'.repeat(501) }, ctx('maintenance'));
     assert.equal(r.ok, false);
     assert.match(r.error ?? '', /500|long/i);
   });
