@@ -10,8 +10,9 @@ import 'server-only';
  * switchable in the panel) writes plain-English suggestions from those facts.
  *
  * Every suggestion is server-validated before it reaches the admin: the
- * suggested model must exist in the catalog, be available, run on the
- * feature's runtime provider, and cover the feature's required capabilities.
+ * suggested model must exist in the catalog, be available, belong to one of
+ * the providers the feature can actually run on, and cover the feature's
+ * required capabilities.
  * Applying a suggestion goes through the normal create → test → activate
  * cycle client-side, so a wrong suggestion can never silently break anything.
  *
@@ -100,7 +101,10 @@ function compactFeature(feature: AiFeatureSummary) {
     whatItDoes: feature.description,
     enabled: feature.activeConfig.enabled,
     editable: feature.editable && feature.modelSwitchable,
-    runtimeProvider: feature.runtimeProvider,
+    // Every provider this feature may be moved to, so the recommender can
+    // propose a cross-provider switch when one is genuinely cheaper. Sending
+    // only the current provider is what used to make that unthinkable.
+    runtimeProviders: feature.runtimeProviders,
     requiredCapabilities: feature.requiredCapabilities,
     primaryModel: feature.activeConfig.primary.modelId,
     fallbackModel: feature.activeConfig.fallback?.modelId ?? null,
@@ -156,7 +160,15 @@ function parseRecommendation(
     if (typeof value !== 'string' || !value) return null;
     if (!feature) return null; // model suggestions require a concrete feature
     const definition = getAiFeatureDefinition(feature.key);
-    const entry = modelByKey.get(`${definition.runtimeProvider}:${value}`);
+    // The model writes a bare model id, so try every provider the feature can
+    // actually run on. Looking only under its DEFAULT provider silently
+    // discarded any suggestion to move a text feature from Claude to GPT (or
+    // back) — the one kind of advice this screen exists to give.
+    let entry: AiModelCatalogEntry | null = null;
+    for (const provider of definition.runtimeProviders) {
+      const candidate = modelByKey.get(`${provider}:${value}`);
+      if (candidate) { entry = candidate; break; }
+    }
     if (!entry || !entry.available) return null;
     const capabilities = new Set(entry.capabilities);
     if (definition.requiredCapabilities.some((capability) => !capabilities.has(capability))) return null;
