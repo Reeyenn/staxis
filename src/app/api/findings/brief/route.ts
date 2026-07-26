@@ -84,7 +84,14 @@ export async function GET(req: NextRequest) {
       // first. Same hotel, same daily envelope — this is the books, not the cap.
       accountId: caller.accountId,
     });
-    return ok({ brief: result.brief, cached: result.cached }, { requestId });
+    // `stopped` distinguishes the two reasons there is no brief. A null brief
+    // has always meant "nobody has checked this hotel"; a switched-off Morning
+    // Briefer (admin AI Staff page) means "nobody is writing one". The screen
+    // renders nothing either way — it is the API that must not conflate them.
+    return ok(
+      { brief: result.brief, cached: result.cached, stopped: result.stopped === true },
+      { requestId },
+    );
   } catch (e) {
     // Deliberately NOT a null brief. "No brief" is a statement ("we have never
     // checked this hotel") and we have no right to make it when the read

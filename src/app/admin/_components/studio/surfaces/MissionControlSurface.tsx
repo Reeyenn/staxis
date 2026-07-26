@@ -395,6 +395,11 @@ export function MissionControlSurface() {
           {loadedAt && (
             <span className="mono" style={{ fontSize: 10.5, color: dimWhite(.4) }}>Updated {age(loadedAt)} ago</span>
           )}
+          {/* The named roster — who works here, and the switch that stops one of
+              them. Deliberately a link and not a fourteenth block on this page:
+              Mission Control is the glance, AI Staff is where you go when the
+              glance says one of them is misbehaving. */}
+          <Btn size="sm" variant="ghost" href="/admin/ai-staff" style={{ color: 'var(--gold)', borderColor: 'rgba(201,154,46,.4)' }}>AI Staff →</Btn>
           <Btn size="sm" variant="ghost" onClick={() => { void load(); }} style={{ color: '#fff', borderColor: dimWhite(.25) }}>Refresh</Btn>
         </div>
       </header>

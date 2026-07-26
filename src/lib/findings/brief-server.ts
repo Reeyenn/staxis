@@ -44,6 +44,8 @@ import {
   type UsageReport,
 } from '@/lib/agent/llm';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
+import { MORNING_BRIEFER_ID } from '@/lib/ai/employee-ids';
+import { isEmployeeSwitchedOff } from '@/lib/ai/employee-switches';
 import {
   effectiveDisposition,
   isCardRenderable,
@@ -192,6 +194,15 @@ export interface BriefResult {
   cached: boolean;
   /** True when this call is the one that built the day's brief. */
   generated: boolean;
+  /**
+   * True when the Morning Briefer is switched off and this call did no work.
+   *
+   * It exists because `brief: null` is NOT a neutral absence here — it is a
+   * positive claim, documented below, that this hotel has never been checked.
+   * A switched-off employee has to be distinguishable from an unchecked hotel
+   * or the page below would be answering a question nobody asked.
+   */
+  stopped?: boolean;
 }
 
 export interface GetBriefOptions {
@@ -218,6 +229,17 @@ export async function getMorningBrief(opts: GetBriefOptions): Promise<BriefResul
   const deps: BriefDeps = { ...defaultBriefDeps(), ...(opts.deps ?? {}) };
   const now = opts.now ?? new Date();
   const propertyId = opts.propertyId;
+
+  // ── The Morning Briefer's kill switch ──
+  //
+  // FIRST, before the cache read and before a single query. An employee the
+  // founder switched off does not serve yesterday's cached copy, does not read
+  // the ledger, and does not spend: it does nothing, which is the only thing
+  // "switched off" can honestly mean. Gating here rather than in the route
+  // covers every caller there will ever be — the route is one of them today.
+  if (await isEmployeeSwitchedOff(MORNING_BRIEFER_ID)) {
+    return { brief: null, cached: false, generated: false, stopped: true };
+  }
 
   let input: BriefInput;
   try {
