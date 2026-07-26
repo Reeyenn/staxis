@@ -41,6 +41,7 @@ import {
 } from '@/lib/ai/runtime';
 import {
   getMessagesClientIfConfigured,
+  isMessagesProviderConfigured,
   MESSAGES_RUNTIME_PROVIDERS,
 } from '@/lib/ai/messages-client';
 import type { AiModelRef } from '@/lib/ai/types';
@@ -584,6 +585,17 @@ export async function runStaxisAssistant(args: {
       MESSAGES_RUNTIME_PROVIDERS,
       { requirePricing: true },
     );
+    // Neither the configured primary nor the fallback has a key. To the staff
+    // member that is "unavailable, try later", NOT "something broke" — a
+    // distinction worth keeping, because only one of those is worth reporting
+    // to a manager. Checked after the plan resolves rather than at module load
+    // because WHICH provider serves this feature is an admin setting that can
+    // change without a redeploy.
+    const anyProviderConfigured = [executionPlan.primary, executionPlan.fallback]
+      .some((ref) => ref !== null && isMessagesProviderConfigured(ref.provider));
+    if (!anyProviderConfigured) {
+      return { answer: assistantFallback(args.lang, 'unavailable'), actions: [] };
+    }
     for (let iter = 0; iter < 6; iter++) {
       assertAssistantCanContinue(deadlineAt, args.ai?.abortSignal);
       const configured = await executeAiPlan(
