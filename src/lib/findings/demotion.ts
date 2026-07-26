@@ -106,7 +106,8 @@ export const DEMOTION_THRESHOLDS: DemotionThresholds = Object.freeze({
 export interface DetectorEngagement {
   /** Distinct hotel-days on which a card from this detector was on screen. */
   shown: number;
-  /** Known problem / Fixed / receipt opened. Any one of them is engagement. */
+  /** Any verdict a manager reached, or the receipt opened. Handled it, seen,
+   *  not doing this — all of them are somebody reading this check. */
   acted: number;
   /** Days since the baseline was set. */
   spanDays: number;

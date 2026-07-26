@@ -319,7 +319,16 @@ describe('the findings learning loop, against a real database', () => {
       assert.equal(row?.ignored_count, 0, 'they already told us it was worth reading');
     });
 
-    test('"known problem" and "fixed" count as engagement; "mute" deliberately does not', async () => {
+    test('every verdict counts as engagement — including "not doing this"', async () => {
+      // REVERSED ON PURPOSE. `muted` used to be excluded here, on the theory
+      // that counting a rejection as approval would keep a detector loud that
+      // the manager plainly dislikes. That had the failure mode backwards:
+      // these counters answer "does anybody at this hotel READ this check", and
+      // a manager who read the card and decided against it read the card.
+      // Excluding mute made a deliberate decision indistinguishable from a
+      // scroll-past, which is the single thing this arithmetic exists to tell
+      // apart. Silence is now the only ambiguous signal, which is what silence
+      // means.
       const known = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:k' });
       const fixed = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:f' });
       const muted = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:m' });
@@ -332,8 +341,8 @@ describe('the findings learning loop, against a real database', () => {
       assert.equal((await counters(fixed))?.acted_count, 1);
       assert.equal(
         (await counters(muted))?.acted_count,
-        0,
-        '"never show me this again" must not be read as approval',
+        1,
+        'a manager who said "not doing this" was read as a manager who never looked',
       );
     });
 

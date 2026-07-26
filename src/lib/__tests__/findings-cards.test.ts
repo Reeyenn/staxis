@@ -23,15 +23,14 @@ import {
   RUN_FRESH_HOURS,
   cardEyebrowLabel,
   cardPhrasing,
+  closureButtons,
   dataAgeNote,
   distinctDetectors,
   effectiveDisposition,
   formatPriceRange,
   isCardRenderable,
-  isQuiet,
   livenessLine,
   occurrenceLine,
-  offersResolve,
   rankFindings,
   severityChipClass,
   skippedNote,
@@ -289,20 +288,140 @@ describe('a question is not a card', () => {
     assert.equal(effectiveDisposition({ disposition: 'fyi' }), 'fyi');
   });
 
-  test('an fyi is quiet and offers no "fixed" button; a recommendation offers both', () => {
-    const fyi = finding({ id: 'f', disposition: 'fyi' });
-    const rec = finding({ id: 'r', disposition: 'recommend' });
-    assert.equal(isQuiet(fyi), true);
-    assert.equal(offersResolve(fyi), false);
-    assert.equal(isQuiet(rec), false);
-    assert.equal(offersResolve(rec), true);
-  });
-
   test('severity picks a distinct chip so the three tiers are not one colour', () => {
     const chips = new Set(
       (['critical', 'attention', 'info'] as const).map(severityChipClass),
     );
     assert.equal(chips.size, 3);
+  });
+});
+
+// ─── Closure ────────────────────────────────────────────────────────────────
+
+describe('every card can be put down, and the ways of putting it down differ', () => {
+  const labels = (disposition: QueueFinding['disposition'], lang: 'en' | 'es' = 'en') =>
+    closureButtons({ disposition }, lang).map((b) => b.label);
+  const verdicts = (disposition: QueueFinding['disposition']) =>
+    closureButtons({ disposition }, 'en').map((b) => b.verdict);
+
+  test('a "worth doing" card offers exactly three closures, and three different ones', () => {
+    // The whole feature. Before this, a recommendation had no way to end: it
+    // sat there after the manager had already called the repair guy, and the
+    // demotion counters read that as a hotel that ignores the check.
+    assert.deepEqual(labels('recommend'), ['Handled it', 'Seen', 'Not doing this']);
+    assert.deepEqual(verdicts('recommend'), ['resolved', 'known_problem', 'muted']);
+    assert.equal(new Set(verdicts('recommend')).size, 3, 'two buttons send the same verdict');
+  });
+
+  test('"Seen" is known_problem — it never becomes the button that says it was handled', () => {
+    // THE PIN. "I know, stop showing me" is not "it is fixed". The day these
+    // two collapse into one verdict is the day Staxis starts telling an owner
+    // that a problem is over because a manager wanted quiet.
+    const seen = closureButtons({ disposition: 'recommend' }, 'en').find((b) => b.label === 'Seen');
+    assert.ok(seen, 'the Seen button vanished');
+    assert.equal(seen!.verdict, 'known_problem');
+    assert.notEqual(seen!.verdict as string, 'resolved');
+
+    const handled = closureButtons({ disposition: 'recommend' }, 'en')
+      .find((b) => b.label === 'Handled it');
+    assert.equal(handled!.verdict, 'resolved');
+  });
+
+  test('only the unconditional verdict asks a second time', () => {
+    const rec = closureButtons({ disposition: 'recommend' }, 'en');
+    const asks = rec.filter((b) => b.confirm !== null).map((b) => b.verdict);
+    assert.deepEqual(asks, ['muted'], 'the confirm step moved to the wrong button');
+    const mute = rec.find((b) => b.verdict === 'muted')!;
+    assert.equal(mute.confirm!.prompt, 'Staxis will stop watching this — sure?');
+    assert.ok(mute.confirm!.yes.length > 0);
+    // Handled and Seen are recoverable — a problem that recurs comes back, and
+    // an escalating one pierces the silence — so neither may grow a dialog.
+    assert.equal(rec.find((b) => b.verdict === 'resolved')!.confirm, null);
+    assert.equal(rec.find((b) => b.verdict === 'known_problem')!.confirm, null);
+  });
+
+  test('a proposal keeps the buttons it always had', () => {
+    // Guards the accidental blast radius: this change was meant to touch
+    // recommendations only, and a proposal that suddenly says "Handled it"
+    // would be a different screen than the one that was signed off.
+    assert.deepEqual(labels('propose'), ['Known problem', 'Fixed', 'Mute']);
+    assert.deepEqual(verdicts('propose'), ['known_problem', 'resolved', 'muted']);
+    assert.deepEqual(
+      closureButtons({ disposition: 'propose' }, 'en')
+        .filter((b) => b.confirm).map((b) => b.confirm!.yes),
+      ['Yes, mute it'],
+    );
+  });
+
+  test('an FYI still has exactly one quiet way out and nothing that wants a decision', () => {
+    const fyi = closureButtons({ disposition: 'fyi' }, 'en');
+    assert.deepEqual(fyi.map((b) => b.label), ['Got it']);
+    assert.equal(fyi[0].verdict, 'known_problem');
+    assert.equal(fyi[0].confirm, null);
+    assert.ok(!fyi.some((b) => b.verdict === 'resolved'), 'an FYI grew a "fixed" button');
+  });
+
+  test('a question and a dropped finding offer nothing — they are never cards', () => {
+    assert.deepEqual(closureButtons({ disposition: 'ask' }, 'en'), []);
+    assert.deepEqual(closureButtons({ disposition: 'drop' }, 'en'), []);
+  });
+
+  test('one button leads, the irreversible one is the loud-red one', () => {
+    for (const disposition of ['propose', 'recommend'] as const) {
+      const set = closureButtons({ disposition }, 'en');
+      assert.equal(
+        set.filter((b) => b.tone === 'primary').length,
+        1,
+        `${disposition} has no single lead button`,
+      );
+      assert.equal(set.find((b) => b.verdict === 'muted')!.tone, 'danger', disposition);
+    }
+    // A "worth doing" card leads with the outcome it is asking for.
+    assert.equal(
+      closureButtons({ disposition: 'recommend' }, 'en').find((b) => b.tone === 'primary')!.verdict,
+      'resolved',
+    );
+  });
+
+  test('every button speaks Spanish, and it is not the English string', () => {
+    for (const disposition of ['propose', 'recommend', 'fyi'] as const) {
+      const en = closureButtons({ disposition }, 'en');
+      const es = closureButtons({ disposition }, 'es');
+      assert.equal(en.length, es.length, disposition);
+      for (let i = 0; i < en.length; i += 1) {
+        assert.ok(es[i].label.trim().length > 0, `${disposition}[${i}] has no Spanish label`);
+        assert.notEqual(es[i].label, en[i].label, `${disposition}[${i}] is untranslated`);
+        assert.equal(es[i].verdict, en[i].verdict, 'the Spanish card sends a different verdict');
+        if (en[i].hint) assert.notEqual(es[i].hint, en[i].hint, `${disposition}[${i}] hint`);
+        if (en[i].confirm) {
+          assert.notEqual(es[i].confirm!.prompt, en[i].confirm!.prompt);
+          assert.notEqual(es[i].confirm!.yes, en[i].confirm!.yes);
+        }
+      }
+    }
+  });
+
+  test('a judge demoting a proposal hands the card the recommendation buttons', () => {
+    // /api/findings puts the EFFECTIVE disposition on the card, so a proposal
+    // the judge decided is only worth recommending loses its one-tap fix AND
+    // gains the closures that fit what it became — from one verdict, together.
+    const demoted = effectiveDisposition({ disposition: 'propose', judgedDisposition: 'recommend' });
+    assert.deepEqual(labels(demoted), ['Handled it', 'Seen', 'Not doing this']);
+  });
+
+  test('the Seen hint promises quiet with an exception, not silence forever', () => {
+    // The escalation machinery is what makes this sentence true (silencer.ts:
+    // consent at 4 work orders is not consent at 9). If the words stop
+    // mentioning the exception, a manager reads a promise Staxis does not keep.
+    const seen = closureButtons({ disposition: 'recommend' }, 'en')
+      .find((b) => b.verdict === 'known_problem')!;
+    assert.match(String(seen.hint), /unless it gets meaningfully worse/);
+    assert.equal(
+      seen.hint,
+      closureButtons({ disposition: 'propose' }, 'en')
+        .find((b) => b.verdict === 'known_problem')!.hint,
+      'the same verdict promises two different things on two cards',
+    );
   });
 });
 
