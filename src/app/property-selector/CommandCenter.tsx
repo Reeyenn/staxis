@@ -35,6 +35,7 @@
 import React from 'react';
 
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { AssistantMarkdown } from '@/components/agent/AssistantMarkdown';
 import { hotelChipLabel, type HotelChip } from '@/lib/company/vp-queue';
 import { CxIcon } from '@/components/concourse/icons';
 
@@ -212,9 +213,31 @@ const CC_CSS = `
   .cc-ask-send{flex:1 0 100%;height:38px;}
 }
 .cc-ask-answer{margin-top:11px;padding-top:11px;border-top:1px solid rgba(31,35,28,.07);
-  font-size:13.5px;line-height:1.62;color:#1F231C;white-space:pre-wrap;overflow-wrap:anywhere;}
+  font-size:13.5px;line-height:1.62;color:#1F231C;overflow-wrap:anywhere;}
 .cc-ask-status{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:11px;
   color:#8A9187;letter-spacing:.02em;}
+/* The answer is MARKDOWN (AssistantMarkdown). A model comparing hotels reaches
+   for a pipe table almost every time, so these are load-bearing, not polish:
+   without them the VP reads "| Hotel | Open |" as literal characters. Scoped to
+   .cc-ask-answer so nothing else on the screen inherits them. */
+.cc-ask-answer>*:first-child{margin-top:0;}
+.cc-ask-answer>*:last-child{margin-bottom:0;}
+.cc-ask-answer p{margin:0 0 8px;}
+.cc-ask-answer strong{font-weight:640;}
+.cc-ask-answer ul,.cc-ask-answer ol{margin:4px 0 9px;padding-left:19px;}
+.cc-ask-answer li{margin:2px 0;}
+.cc-ask-answer code{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:.92em;
+  background:rgba(31,35,28,.05);padding:1px 4px;border-radius:4px;}
+.cc-ask-answer a{color:#3E5C48;text-decoration:underline;}
+/* A twenty-hotel table cannot shrink to a phone, so it scrolls inside its own
+   box rather than pushing the whole screen sideways. */
+.cc-ask-answer table{display:block;overflow-x:auto;max-width:100%;
+  border-collapse:collapse;margin:8px 0;font-size:12.5px;}
+.cc-ask-answer th,.cc-ask-answer td{padding:5px 10px;text-align:left;white-space:nowrap;
+  border-bottom:1px solid rgba(31,35,28,.07);}
+.cc-ask-answer th{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10px;
+  text-transform:uppercase;letter-spacing:.06em;color:#5C625C;font-weight:500;
+  border-bottom:1px solid rgba(31,35,28,.14);}
 
 /* ── Hotels ── */
 .cc-eyebrow-row{margin:26px 2px 10px;}
@@ -391,7 +414,10 @@ function AskAcrossHotels({ lang, organizationId }: { lang: Lang; organizationId:
           {state === 'failed'
             ? <span className="cc-ask-status">{pick(S.askFailed, lang)}</span>
             : answer.length > 0
-              ? answer
+              // The SAME renderer the per-hotel copilot uses. A model asked for
+              // a comparison writes a markdown table; rendering it as text is
+              // how this line shipped showing the VP literal pipe characters.
+              ? <AssistantMarkdown text={answer} />
               : <span className="cc-ask-status">{pick(S.askThinking, lang)}</span>}
         </div>
       )}

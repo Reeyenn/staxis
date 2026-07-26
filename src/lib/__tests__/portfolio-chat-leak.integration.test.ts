@@ -402,6 +402,89 @@ describe('the tools answer for company A and never for company B', () => {
     );
   });
 
+  test('every derived figure comes out of the tool, so nothing is left to divide', async () => {
+    // The model got both of these wrong live by dividing in prose. Here the real
+    // tools compute them from real rows: 60-room hotels, seeded work orders.
+    const ctx = await portfolioContextFor(ACCOUNT_MARIA, UID_MARIA);
+    const work = await executeTool('portfolio_work_orders', { days: 365 }, ctx);
+    const byName = new Map(
+      (work.data as { hotels: Array<Record<string, unknown>> }).hotels
+        .map((h) => [h.hotel as string, h]),
+    );
+
+    const lufkin = byName.get('Lufkin Inn')!;
+    assert.equal(lufkin.rooms, 60);
+    assert.equal(lufkin.opened, PORTFOLIO_FACTS.lufkin.workOrders);
+    assert.equal(lufkin.openedPer100Rooms, 8.33, '5 tickets at 60 rooms, worked out here');
+    assert.equal(
+      lufkin.stillOpenPer100Rooms,
+      Math.round(((lufkin.stillOpen as number) / 60) * 100 * 100) / 100,
+    );
+
+    // SEVERITY: the fixture writes every ticket as 'MAJOR' — the housekeeper
+    // app's vocabulary. The old read matched only the literal 'urgent', so this
+    // whole board counted as zero.
+    const buckets = lufkin.stillOpenBySeverity as Record<string, number>;
+    assert.equal(buckets.high, lufkin.stillOpen, 'MAJOR is high, not invisible');
+    assert.equal(buckets.urgent, 0);
+    assert.equal(buckets.ungraded, 0);
+    assert.equal(
+      buckets.urgent + buckets.high + buckets.normal + buckets.low + buckets.ungraded,
+      lufkin.stillOpen,
+      'every open ticket lands in exactly one bucket',
+    );
+
+    const spend = await executeTool('portfolio_supply_spend', { days: 365 }, ctx);
+    const spendByName = new Map(
+      (spend.data as { hotels: Array<Record<string, unknown>> }).hotels
+        .map((h) => [h.hotel as string, h]),
+    );
+    assert.equal(
+      spendByName.get('Lufkin Inn')?.spendPer100RoomsDollars,
+      Math.round((PORTFOLIO_FACTS.lufkin.supplySpendDollars / 60) * 100 * 100) / 100,
+    );
+
+    const items = await executeTool('portfolio_open_items', {}, ctx);
+    const itemsByName = new Map(
+      (items.data as { hotels: Array<Record<string, unknown>> }).hotels
+        .map((h) => [h.hotel as string, h]),
+    );
+    assert.equal(
+      itemsByName.get('Lufkin Inn')?.openItemsPer100Rooms,
+      Math.round((PORTFOLIO_FACTS.lufkin.openFindings / 60) * 100 * 100) / 100,
+    );
+  });
+
+  test('"how many times worse" is in the payload, not left to the sentence', async () => {
+    const ctx = await portfolioContextFor(ACCOUNT_MARIA, UID_MARIA);
+    const compare = await executeTool(
+      'portfolio_compare', { metric: 'work_orders', days: 365 }, ctx,
+    );
+    const data = compare.data as {
+      ranking: Array<Record<string, unknown>>;
+      comparison: Record<string, unknown>;
+    };
+
+    const expected = PORTFOLIO_FACTS.lufkin.workOrders / PORTFOLIO_FACTS.beaumont.workOrders;
+    assert.equal(data.comparison.highestIsTimesTheLowest, expected);
+    assert.deepEqual(data.comparison.highest, { hotel: 'Lufkin Inn', value: PORTFOLIO_FACTS.lufkin.workOrders });
+    assert.deepEqual(data.comparison.lowest, { hotel: 'Beaumont Suites', value: PORTFOLIO_FACTS.beaumont.workOrders });
+    assert.equal(
+      data.comparison.portfolioTotal,
+      PORTFOLIO_FACTS.lufkin.workOrders + PORTFOLIO_FACTS.beaumont.workOrders,
+    );
+    assert.equal(data.ranking[0].timesTheLowest, expected);
+    assert.equal(data.ranking[1].timesTheLowest, 1, 'the lowest is 1x itself');
+    assert.equal(
+      data.ranking.every((r) => !('_exactPerRoom' in r)), true,
+      'the unrounded working value is internal; publishing it would invite the model to divide it',
+    );
+    // A rate is present whether or not the caller asked to rank per room, so a
+    // follow-up "per room?" never becomes a division.
+    assert.equal(data.ranking[0].per100RoomsValue, 8.33);
+    assert.deepEqual(leaksIn(compare.data), [], 'the new fields must not widen the wall either');
+  });
+
   test('the ranking names the right worst hotel — and it is not the loud one', async () => {
     const ctx = await portfolioContextFor(ACCOUNT_MARIA, UID_MARIA);
     const compare = await executeTool(

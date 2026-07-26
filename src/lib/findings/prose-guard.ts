@@ -51,13 +51,55 @@
 //     it is the right trade: the residual is a claim of ONE, the smallest
 //     possible overstatement, in exchange for the guard staying on.
 //
-// ACCEPTED RESIDUAL
+// ═══ THE PRESENCE HOLE, AND WHY THERE IS NOW A SECOND MODE ═══════════════════
+//
+// Everything above checks PRESENCE: does this number appear ANYWHERE in the
+// payload. That is not the promise the layer makes. On 2026-07-26 a live card on
+// Test Hotel proved the gap: the payload said `work_orders: 4, still_open: 3`
+// and the judge's own sentence, English and Spanish, said "3 work orders … 2
+// still open" — printed directly above a receipt reading 4. Both 3 and 2 exist
+// somewhere in that payload (3 is `still_open`, 2 is nothing at all in this
+// case… but a `2` in any field would have done), so presence passed and the
+// BINDING — which quantity each number is the quantity OF — was never checked.
+//
+// Presence cannot be repaired into binding. "Every numeral appears somewhere" is
+// a strictly weaker statement than "this numeral is the value of the field it
+// claims to describe", and no amount of tightening the numeral scan closes it.
+//
+// So the model path no longer authors numbers at all. See `buildProseSlots`,
+// `checkBilingualSlotProse` and `renderProseSlots` below: the judge writes
+// `{work_orders}` and `{still_open}`, CODE substitutes the values from the named
+// payload fields, and a digit typed outside a brace is a rejection. The presence
+// checks above remain, unchanged, as the floor for text that is not slotted —
+// the deterministic template, and anything a future caller phrases itself.
+//
+// WHY SLOTS AND NOT NOUN-PHRASE BINDING. The alternative was to keep free
+// phrasing and verify each numeral against the specific quantity it modifies:
+// extract (number, noun phrase) pairs and map the nouns to payload fields
+// through a per-detector vocabulary. Rejected on two grounds, both of which are
+// this file's existing doctrine rather than new opinion. First, it needs a
+// bilingual noun vocabulary per detector, so a detector shipped without one is
+// silently back to presence-only — the guard would appear to cover code it does
+// not. Second, Spanish noun phrases separate from their number ("{n} órdenes de
+// trabajo, de las cuales {m} siguen abiertas") in ways a window-of-words matcher
+// gets wrong, and a guard that fires on honest Spanish is a guard that gets
+// switched off. Slots need no vocabulary, work identically in both languages,
+// and make the failure mode structural instead of statistical.
+//
+// ACCEPTED RESIDUAL — presence mode
 // A number that happens to appear anywhere in the payload backs any use of that
 // number in the prose. "4 work orders" passes on a finding whose payload holds
-// a 4 for something else. Tightening that would mean teaching the guard what
-// each detector's fields MEAN, which is per-detector knowledge this layer
-// deliberately does not have. The guard's job is "could this number have come
-// from here at all" — the receipt shown next to the card is what proves it did.
+// a 4 for something else. This is why the model no longer runs in this mode.
+//
+// ACCEPTED RESIDUAL — slot mode
+// The model can still choose the WRONG slot: `{still_open} work orders` prints a
+// true number under a false label. That is a much smaller residual than the one
+// it replaces — every printed number is now the real value of a real field of
+// THIS finding, so the worst case is a mislabelled true quantity rather than an
+// invented one — and it is the residual that noun-phrase binding would have
+// closed at the cost above. If a live miss of that shape is ever observed, the
+// fix is a per-detector noun vocabulary layered on top of slots, not a return to
+// free phrasing.
 
 import type { FindingEvidence, JsonValue, PriceRange } from './types';
 
@@ -268,7 +310,15 @@ const ORDINAL_SUFFIX_RE = /^(?:st|nd|rd|th|o|a|er|ro|do|mo|vo|no)\b/;
 
 // ─── The check ───────────────────────────────────────────────────────────────
 
-export type ProseViolationKind = 'numeral' | 'number_word' | 'day_name' | 'month_name';
+export type ProseViolationKind =
+  | 'numeral'
+  | 'number_word'
+  | 'day_name'
+  | 'month_name'
+  /** Slot mode only: a digit typed outside a `{slot}`. */
+  | 'unbound_numeral'
+  /** Slot mode only: a brace that does not name a field of THIS finding. */
+  | 'unknown_slot';
 
 export interface ProseViolation {
   kind: ProseViolationKind;
@@ -397,4 +447,272 @@ export function checkBilingualProse(
   violations.push(...checkProse(es, receipt, 'es').violations);
 
   return { ok: violations.length === 0, violations };
+}
+
+// ─── Slot mode: the model names a field, code prints the value ────────────────
+//
+// The binding fix. Read the header's "THE PRESENCE HOLE" note first — this is
+// the mode the judge actually runs in, and the presence checks above are the
+// floor beneath it, not the thing that protects a card.
+
+/**
+ * The values one finding's phrasing may print, by the name the model must use.
+ *
+ * Names are the detector's OWN field names (`work_orders`, `still_open`,
+ * `window_days`, `location`), because the detector already chose names a human
+ * can read and a second naming scheme would be a second thing to keep in sync.
+ * Values are pre-rendered strings: substitution is a string replace, so there is
+ * exactly one place where a number becomes text and it is this file.
+ */
+export type ProseSlots = ReadonlyMap<string, string>;
+
+/** A name the model can type without ambiguity, and the shape a field name must
+ *  already have to become a slot. Anything else is simply not offered. */
+const SLOT_NAME_RE = /^[a-z][a-z0-9_]{0,39}$/;
+
+/** Longest string a slot will print. A field holding a paragraph (a price
+ *  basis, an explanatory note) is not a thing to drop into a sentence, and
+ *  TRUNCATING one could cut a number in half and print a figure that is in no
+ *  payload anywhere. So an over-long value is not offered as a slot at all. */
+const MAX_SLOT_TEXT = 120;
+
+function slotText(value: JsonValue): string | null {
+  if (typeof value === 'number') {
+    // Two decimals, the same granularity the receipt normalises to, so a slot's
+    // printed value is always a number the receipt also holds.
+    const n = normalizeNumber(value);
+    if (!Number.isFinite(n)) return null;
+    return String(n);
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > MAX_SLOT_TEXT) return null;
+    return trimmed;
+  }
+  // Booleans, nulls, arrays and objects have no honest one-word rendering, and
+  // guessing one ("true", "3 items") would be this layer authoring meaning.
+  return null;
+}
+
+/**
+ * A field name as the model will be shown it: snake_case, lowercase.
+ *
+ * Detectors already write snake_case, so this is almost always the identity.
+ * It exists so that a detector which one day writes `windowDays` gets a slot
+ * called `window_days` rather than no slot at all — silently losing a field's
+ * slot would mean that detector's cards quietly all fall back to templates,
+ * which is the kind of regression nothing would report.
+ */
+function slotNameFor(name: string): string {
+  return name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase();
+}
+
+function offerSlot(into: Map<string, string>, name: string, value: JsonValue): void {
+  const key = slotNameFor(name);
+  if (!SLOT_NAME_RE.test(key)) return;
+  const text = slotText(value);
+  if (text === null) return;
+  into.set(key, text);
+}
+
+function slotMoney(cents: number): string {
+  const dollars = cents / 100;
+  return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
+}
+
+/**
+ * What this finding's phrasing may print, and under what name.
+ *
+ * Built from the SAME input as the receipt, so a slot can never print a number
+ * the receipt does not also hold — which is what keeps the two modes consistent
+ * and lets a test assert it rather than trust it.
+ *
+ * `values` are offered after `params`, so where a detector puts the same name in
+ * both, the measured value wins over the argument it was measured with.
+ */
+export function buildProseSlots(input: ProseReceiptInput): ProseSlots {
+  const slots = new Map<string, string>();
+
+  offerSlot(slots, 'magnitude', input.magnitude);
+  if (typeof input.weakestInputAgeDays === 'number') {
+    offerSlot(slots, 'data_age_days', input.weakestInputAgeDays);
+  }
+
+  const evidence = input.evidence ?? null;
+  if (evidence) {
+    for (const [key, value] of Object.entries(evidence.params ?? {})) {
+      offerSlot(slots, key, value as JsonValue);
+    }
+    for (const [key, value] of Object.entries(evidence.values ?? {})) {
+      offerSlot(slots, key, value as JsonValue);
+    }
+  }
+
+  if (input.price) {
+    // A price is a RANGE or it is absent (types.ts PriceRange). `price_range` is
+    // offered as one slot precisely so the model cannot print half of it: there
+    // is no `{price}` that could become a point estimate.
+    slots.set('price_low', slotMoney(input.price.lowCents));
+    slots.set('price_high', slotMoney(input.price.highCents));
+    slots.set(
+      'price_range',
+      `${slotMoney(input.price.lowCents)}-${slotMoney(input.price.highCents)}`,
+    );
+  }
+
+  return slots;
+}
+
+/** Every `{…}` group in the text, valid or not. A fresh RegExp per call rather
+ *  than one shared global — a shared `lastIndex` across two functions that both
+ *  scan the same string is a bug waiting for the first re-entrant caller. */
+function slotPattern(): RegExp {
+  return /\{([^{}]*)\}/g;
+}
+
+/** Substitute the slots the model named. Unknown names are left untouched — the
+ *  check refuses them before anything is rendered for a manager, and this
+ *  function is also used on the internal rationale line, which is not gated. */
+export function renderProseSlots(text: string, slots: ProseSlots): string {
+  return text.replace(slotPattern(), (whole, inner: string) => {
+    const value = slots.get(slotNameFor(inner));
+    return value === undefined ? whole : value;
+  });
+}
+
+export interface SlotProseResult extends ProseGuardResult {
+  /** The phrasing with every slot substituted — what would be stored. */
+  text: string;
+}
+
+/**
+ * Slot-mode check for one language.
+ *
+ * Four refusals, in the order they matter:
+ *   1. a brace naming a field this finding does not have → `unknown_slot`;
+ *   2. any digit outside a brace → `unbound_numeral`. This is the binding fix:
+ *      the model cannot type "3" at all, so it cannot type a 3 that belongs to
+ *      a different quantity;
+ *   3. a number spelled out as a word → `number_word`. Not presence-checked
+ *      here as it is above: under this contract a spelled-out number is bound to
+ *      nothing, so "cuatro órdenes" is refused even when the payload holds a 4;
+ *   4. day and month names, presence-checked against the payload exactly as in
+ *      free mode — a slot cannot express "since Monday", so that rule still has
+ *      to do its own work.
+ */
+export function checkSlotProse(
+  text: string,
+  receipt: ProseReceipt,
+  slots: ProseSlots,
+  lang: 'en' | 'es',
+): SlotProseResult {
+  const violations: ProseViolation[] = [];
+
+  // ── 1. every brace must name a field of THIS finding ──
+  let stripped = '';
+  let cursor = 0;
+  const pattern = slotPattern();
+  for (let m = pattern.exec(text); m !== null; m = pattern.exec(text)) {
+    const inner = slotNameFor(m[1]);
+    if (!slots.has(inner)) {
+      violations.push({ kind: 'unknown_slot', lang, token: m[1].trim().slice(0, 40) || '(empty)' });
+    }
+    // Replaced with a space, not removed: "{a}{b}" must not fuse into one word
+    // and hide a boundary from the checks below.
+    stripped += `${text.slice(cursor, m.index)} `;
+    cursor = m.index + m[0].length;
+  }
+  stripped += text.slice(cursor);
+
+  // A lone brace is not a typo to be forgiven — braces are reserved here, and a
+  // half-written slot would render literally on a manager's card.
+  if (/[{}]/.test(stripped)) {
+    violations.push({ kind: 'unknown_slot', lang, token: '(unpaired brace)' });
+  }
+
+  const folded = foldForProseMatch(stripped);
+
+  // ── 2. no digit the model typed itself ──
+  for (const match of folded.matchAll(/(\d[\d,]*(?:\.\d+)?)([a-z]*)/g)) {
+    const digits = match[1];
+    const suffix = match[2] ?? '';
+    const value = normalizeNumber(Number(digits.replace(/,/g, '')));
+    // Small ordinals stay exempt for the reason they always were: "the 3rd
+    // invoice" is positional and expresses no quantity, so there is no field it
+    // could be bound to. Bounded, so "the 400th" cannot use the exemption.
+    if (
+      suffix
+      && ORDINAL_SUFFIX_RE.test(suffix)
+      && Number.isFinite(value)
+      && value <= MAX_EXEMPT_ORDINAL
+    ) {
+      continue;
+    }
+    violations.push({ kind: 'unbound_numeral', lang, token: digits + suffix });
+  }
+
+  // ── 3. no number spelled out, backed or not ──
+  for (const match of folded.matchAll(/[a-z]+/g)) {
+    if (NUMBER_WORDS[match[0]] === undefined) continue;
+    violations.push({ kind: 'number_word', lang, token: match[0] });
+  }
+
+  const rendered = renderProseSlots(text, slots);
+
+  // ── 4. days and months, against the payload's text ──
+  const foldedRendered = foldForProseMatch(rendered);
+  for (const day of [...DAY_NAMES_EN, ...DAY_NAMES_ES]) {
+    if (!containsWord(foldedRendered, day)) continue;
+    if (containsWord(receipt.text, day)) continue;
+    violations.push({ kind: 'day_name', lang, token: day });
+  }
+  for (const month of [...MONTH_NAMES_EN, ...MONTH_NAMES_ES]) {
+    if (month === 'may') continue; // the English modal; see checkProse.
+    if (!containsWord(foldedRendered, month)) continue;
+    if (containsWord(receipt.text, month)) continue;
+    violations.push({ kind: 'month_name', lang, token: month });
+  }
+
+  return { ok: violations.length === 0, violations, text: rendered };
+}
+
+export interface BilingualSlotProseResult extends ProseGuardResult {
+  /** Rendered English — only meaningful when `ok`. */
+  en: string;
+  /** Rendered Spanish — only meaningful when `ok`. */
+  es: string;
+}
+
+/**
+ * The bilingual slot gate. Same two structural rules as `checkBilingualProse`:
+ * both languages must pass, and either failing discards both.
+ *
+ * The English-standing-in-for-Spanish check runs on the RENDERED text, because
+ * that is what a Spanish speaker would be shown. Two different slot spellings
+ * that render to the same sentence are the same failure as writing it twice.
+ */
+export function checkBilingualSlotProse(
+  en: string,
+  es: string,
+  receipt: ProseReceipt,
+  slots: ProseSlots,
+): BilingualSlotProseResult {
+  const violations: ProseViolation[] = [];
+  const enResult = checkSlotProse(en, receipt, slots, 'en');
+  const esResult = checkSlotProse(es, receipt, slots, 'es');
+
+  const foldedEn = foldForProseMatch(enResult.text);
+  const foldedEs = foldForProseMatch(esResult.text);
+  if (!foldedEn) violations.push({ kind: 'numeral', lang: 'en', token: '(empty)' });
+  if (!foldedEs) violations.push({ kind: 'numeral', lang: 'es', token: '(empty)' });
+  if (foldedEn && foldedEs && foldedEn === foldedEs) {
+    violations.push({ kind: 'numeral', lang: 'es', token: '(english-standing-in-for-spanish)' });
+  }
+
+  violations.push(...enResult.violations, ...esResult.violations);
+
+  return { ok: violations.length === 0, violations, en: enResult.text, es: esResult.text };
 }

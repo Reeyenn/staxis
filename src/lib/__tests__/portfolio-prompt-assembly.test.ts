@@ -318,7 +318,7 @@ describe('portfolio cache purity', () => {
       companyRole: 'vp', snapshot: portfolioSnapshot(5),
       conversationId: 'conv-portfolio', now: NOW,
     });
-    assert.match(two.versionLabel, /portfolio-mode-v1/);
+    assert.match(two.versionLabel, /portfolio-mode-v2/);
     assert.match(two.versionLabel, new RegExp(`org:${ORG_ID}`));
     assert.notEqual(two.versionLabel, one.versionLabel, 'the reach digest moved with the reach');
     // The PRINTED stamp must not: it is inside the cached block, so a per-turn

@@ -16,7 +16,7 @@
 // can use :hover / ::after / masks / keyframes / color-mix that inline styles
 // can't express, without colliding with the app's global CSS.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -25,6 +25,7 @@ import { useAgentChat } from './useAgentChat';
 import { ApprovalOverlay } from './ApprovalOverlay';
 import type { DisplayMessage } from './MessageList';
 import { subscribeToAskCommands } from './ask-command-bridge';
+import { AssistantMarkdown } from './AssistantMarkdown';
 
 type ChatState = 'empty' | 'active' | 'collapsed';
 
@@ -589,67 +590,6 @@ export function AskStaxisBar() {
       </div>
     </>
   );
-}
-
-// react-markdown + remark-gfm are ~60-100KB gzipped and are needed ONLY to
-// render an assistant reply — which never happens on a page where the user
-// doesn't open the bar and chat. Load them lazily on the first assistant
-// message (module-level promise so every bubble shares one fetch). Until it
-// resolves, show the raw text (whitespace preserved) so a streaming reply is
-// never blank; then swap in the full markdown renderer. If the import fails,
-// the plain-text fallback stays and the reply is still readable.
-type AssistantMarkdownRenderer = (props: { text: string }) => ReactElement;
-let markdownRendererPromise: Promise<AssistantMarkdownRenderer> | null = null;
-function loadMarkdownRenderer(): Promise<AssistantMarkdownRenderer> {
-  if (!markdownRendererPromise) {
-    const load = Promise.all([
-      import('react-markdown'),
-      import('remark-gfm'),
-    ]).then(([rm, gfm]) => {
-      const ReactMarkdown = rm.default;
-      const remarkGfm = gfm.default;
-      const Renderer: AssistantMarkdownRenderer = ({ text }) => (
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            p: ({ children }) => <p>{children}</p>,
-            strong: ({ children }) => <strong>{children}</strong>,
-            ul: ({ children }) => <ul>{children}</ul>,
-            ol: ({ children }) => <ol>{children}</ol>,
-            li: ({ children }) => <li>{children}</li>,
-            code: ({ children }) => <code>{children}</code>,
-            a: ({ href, children }) => (
-              <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
-            ),
-          }}
-        >
-          {text}
-        </ReactMarkdown>
-      );
-      return Renderer;
-    });
-    markdownRendererPromise = load.catch((error) => {
-      // A transient chunk/network failure should not poison the module cache
-      // forever. The current bubble remains readable as plain text; a later
-      // assistant bubble gets a fresh chance to load the renderer.
-      markdownRendererPromise = null;
-      throw error;
-    });
-  }
-  return markdownRendererPromise;
-}
-
-function AssistantMarkdown({ text }: { text: string }) {
-  const [Renderer, setRenderer] = useState<AssistantMarkdownRenderer | null>(null);
-  useEffect(() => {
-    let alive = true;
-    loadMarkdownRenderer()
-      .then((R) => { if (alive) setRenderer(() => R); })
-      .catch(() => { /* keep the plain-text fallback */ });
-    return () => { alive = false; };
-  }, []);
-  if (!Renderer) return <span style={{ whiteSpace: 'pre-wrap' }}>{text}</span>;
-  return <Renderer text={text} />;
 }
 
 // ── One message bubble ────────────────────────────────────────────────────
