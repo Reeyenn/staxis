@@ -161,6 +161,51 @@ export async function deriveCompanyRulebookUncached(
   return { organizationId, facts };
 }
 
+/**
+ * The same rulebook, resolved from the COMPANY rather than from one of its
+ * hotels. The portfolio surface (cross-hotel chat) has an organization id in
+ * hand and no single hotel, so going through `companyForProperty` would mean
+ * picking an arbitrary hotel to ask "which company runs you" about — a
+ * pointless round trip whose answer we already have.
+ *
+ * Wall B is unaffected: the organization id reaching this function came from
+ * the caller's OWN hats (`resolvePortfolioAccess`), never from a request body.
+ * This function is not a lookup a user can aim.
+ *
+ * Shares one cache with the per-hotel path, keyed `org:<uuid>` so a company id
+ * and a property id can never collide on the same entry.
+ */
+export async function deriveCompanyRulebookByOrganization(
+  organizationId: string,
+): Promise<CompanyRulebook | null> {
+  if (!organizationId) return null;
+  const key = `org:${organizationId}`;
+  const hit = cache.get(key);
+  if (hit && hit.expiresAt > Date.now()) return hit.rulebook;
+
+  const existing = inflight.get(key);
+  if (existing) return existing;
+
+  const pending = getConfirmedCompanyFacts(organizationId)
+    .then((facts) => {
+      const rulebook = facts.length === 0 ? null : { organizationId, facts };
+      cache.set(key, { rulebook, expiresAt: Date.now() + RULEBOOK_TTL_MS });
+      return rulebook;
+    })
+    .catch(() => null)
+    .finally(() => inflight.delete(key));
+  inflight.set(key, pending);
+  return pending;
+}
+
+/** Test/eval seam for the organization-keyed path. */
+export function seedCompanyRulebookCacheForOrganization(
+  organizationId: string,
+  rulebook: CompanyRulebook | null,
+): void {
+  cache.set(`org:${organizationId}`, { rulebook, expiresAt: Date.now() + RULEBOOK_TTL_MS });
+}
+
 export async function deriveCompanyRulebook(propertyId: string): Promise<CompanyRulebook | null> {
   if (!propertyId) return null;
   const hit = cache.get(propertyId);

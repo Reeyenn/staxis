@@ -296,6 +296,16 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'The main AI helper — the box at the bottom of the screen where you ask questions and it can take actions for you.',
     ['text', 'tool_use'], SONNET,
   ),
+  // Cross-hotel chat. Its own row rather than a share of Ask Staxis: a company
+  // question fans out over every hotel the company operates, so its token
+  // profile and its blast radius are different, and an operator must be able to
+  // move it (or switch it off) without touching the copilot every hotel uses
+  // every day.
+  'agent.portfolio_chat': defineFeature(
+    'agent.portfolio_chat', 'Agent', 'Company-wide questions',
+    'Lets an owner or VP ask the helper about all of their company\'s hotels at once — comparing spend, maintenance and open problems across the group. Off unless the company turns it on.',
+    ['text', 'tool_use'], SONNET,
+  ),
   'agent.conversation_summary': defineFeature(
     'agent.conversation_summary', 'Agent', 'Conversation summaries',
     'Shortens long AI chats behind the scenes so the helper remembers earlier parts of the conversation.',

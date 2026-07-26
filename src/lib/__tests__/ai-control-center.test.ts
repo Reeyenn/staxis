@@ -39,8 +39,12 @@ describe('AI Control Center feature registry', () => {
   // controllable, 32→33 keys). Haiku, and deliberately not load-bearing: the
   // brief is assembled from stored numbers before this feature is consulted,
   // and the prose guard throws the rewrite away whole if it invents a figure.
-  test('covers 25 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 33);
+  // 2026-07-26: cross-hotel chat added agent.portfolio_chat (25→26 controllable,
+  // 33→34 keys). Its own row rather than a share of Ask Staxis so an operator can
+  // move or switch off the company-wide surface without touching the copilot
+  // every hotel uses every day.
+  test('covers 26 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 34);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

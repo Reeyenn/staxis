@@ -298,6 +298,20 @@ export async function resolveAskStaxisExecutionPlan(): Promise<AiExecutionPlan> 
   return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
 }
 
+/**
+ * Cross-hotel chat's own plan, so the AI Control Center governs which model
+ * answers company questions independently of the per-hotel copilot. Same shape,
+ * same legacy-override handling — only the registry key differs.
+ */
+export async function resolvePortfolioChatExecutionPlan(): Promise<AiExecutionPlan> {
+  const resolved = await resolveAiExecutionPlan(
+    'agent.portfolio_chat',
+    'anthropic',
+    { requirePricing: true },
+  );
+  return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
+}
+
 function agentDeadlineAt(opts: RunAgentOpts): number | null {
   if (typeof opts.deadlineAt === 'number' && Number.isFinite(opts.deadlineAt)) {
     return opts.deadlineAt;

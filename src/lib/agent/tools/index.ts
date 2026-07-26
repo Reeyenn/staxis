@@ -24,6 +24,10 @@ import './inventory-actions';
 import './inventory-monthly-accounting';
 import './reminders';
 import './recurring-todos';
+// Cross-hotel chat. Every tool in here declares `surfaces: ['portfolio']`, so
+// importing it does NOT widen the chat/voice/walkthrough catalogs — the surface
+// filter in getToolsForRole keeps the two sets disjoint by construction.
+import './portfolio';
 
 // Future cross-feature tool modules (registered from other branches/chats)
 // can be added by importing from agent/index.ts at the top level — this

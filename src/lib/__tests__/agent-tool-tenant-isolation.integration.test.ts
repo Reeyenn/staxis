@@ -153,6 +153,28 @@ const NO_DB_TOOLS = new Map<string, string>([
   ['walk_user_through', 'returns UI walkthrough steps from an in-memory registry'],
 ]);
 
+/**
+ * The PER-HOTEL catalog — the subject of this file.
+ *
+ * Cross-hotel chat (2026-07-26) added a disjoint second catalog: tools that
+ * declare `surfaces: ['portfolio']` and answer for a whole management company.
+ * This fixture is TWO HOTELS with no companies at all, and it builds a
+ * one-hotel context with no `portfolio` scope — which `executeTool` refuses
+ * before the handler. Walking them here would record a pre-handler refusal for
+ * every one and prove nothing about their wall.
+ *
+ * That wall is a different question anyway ("was the SET of hotels right", not
+ * "did this query carry a hotel filter") and it is proved against a real
+ * Postgres holding TWO COMPANIES in `portfolio-chat-leak.integration.test.ts`,
+ * including the same statement-level leak audit this file performs.
+ *
+ * The split is asserted below, so a per-hotel tool cannot be hidden from this
+ * suite by tagging it `portfolio`.
+ */
+function perHotelTools(): ReturnType<typeof listAllTools> {
+  return listAllTools().filter((t) => !(t.surfaces ?? ['chat']).includes('portfolio'));
+}
+
 // ─── Argument synthesis ─────────────────────────────────────────────────────
 // Derived from each tool's OWN inputSchema, with named overrides chosen to
 // match the seeded hotel-A row so handlers reach their queries.
@@ -307,7 +329,7 @@ describe('every agent tool is confined to one hotel, proven against a real datab
     }) as typeof fetch;
 
     const rowIdA = seed.ids.get('staff:A') ?? PID_A;
-    for (const tool of listAllTools()) {
+    for (const tool of perHotelTools()) {
       shim.reset();
       let result: ToolRun['result'];
       try {
@@ -364,10 +386,23 @@ describe('every agent tool is confined to one hotel, proven against a real datab
     );
   });
 
-  test('the catalog is non-empty and every tool was exercised', () => {
-    const tools = listAllTools();
+  test('the catalog is non-empty and every per-hotel tool was exercised', () => {
+    const tools = perHotelTools();
     assert.ok(tools.length >= 40, `expected the full catalog, walked ${tools.length}`);
     assert.equal(runs.size, tools.length);
+
+    // The excluded set is EXACTLY the portfolio catalog, and it is non-empty.
+    const walked = new Set(tools.map((t) => t.name));
+    const excluded = listAllTools()
+      .filter((t) => !walked.has(t.name))
+      .map((t) => t.name)
+      .sort();
+    const portfolio = listAllTools()
+      .filter((t) => (t.surfaces ?? ['chat']).includes('portfolio'))
+      .map((t) => t.name)
+      .sort();
+    assert.deepEqual(excluded, portfolio);
+    assert.ok(portfolio.length > 0, 'the portfolio catalog vanished — is it still registered?');
   });
 
   test('no tool is refused before its handler runs', () => {

@@ -272,3 +272,182 @@ export async function seedTwoCompanies(pg: PGlite): Promise<TwoCompanySeed> {
     },
   };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// CROSS-HOTEL CHAT: the operating data, planted so a leak is LOUD
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The portfolio surface answers with numbers, so proving it does not leak means
+// proving company B's NUMBERS never appear in company A's answer. A quiet
+// fixture cannot do that: if both companies looked similar, a tool that
+// accidentally summed all three hotels would produce a plausible total and every
+// assertion would pass.
+//
+// So company B is deliberately enormous. Tyler alone carries more work orders,
+// more supply spend and more open findings than both Gulf Coast hotels put
+// together, by an order of magnitude. Any cross-company sum, ranking or average
+// is therefore dominated by it, and the LEAK_MARKER on every one of its
+// free-text columns makes the leak visible in the tool's own output rather than
+// only in a total somebody has to recompute by hand.
+//
+// The same trick the per-hotel suite uses (`pglite-two-hotel-seed.ts`), applied
+// one level up: there, hotel B's rows share LOOKUP VALUES with hotel A's so an
+// unfiltered `.eq('room_number','101')` matches the wrong hotel. Here, hotel B's
+// rows share nothing but their shape — because a portfolio tool does not look
+// anything up by name, it aggregates a SET of hotels, and the way that goes
+// wrong is the set being wrong.
+
+/** Any of these appearing in company A's answer is a leak. */
+export const PORTFOLIO_LEAK_MARKER = 'ZZLEAKB';
+
+/** Every seeded number, so assertions quote the fixture rather than a literal. */
+export const PORTFOLIO_FACTS = {
+  beaumont: { workOrders: 2, supplySpendDollars: 200, openFindings: 1 },
+  lufkin: { workOrders: 5, supplySpendDollars: 700, openFindings: 3 },
+  /** Company B. Bigger than both of company A's hotels put together, 10x over. */
+  tyler: { workOrders: 99, supplySpendDollars: 99_999, openFindings: 40 },
+} as const;
+
+const DAY_MS = 86_400_000;
+
+async function seedWorkOrders(
+  pg: PGlite,
+  propertyId: string,
+  count: number,
+  label: string,
+  repairCostEach: number,
+): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    await pg.query(
+      `insert into work_orders
+         (property_id, room_number, description, severity, status, repair_cost, created_at)
+       values ($1, $2, $3, 'MAJOR', $4, $5, $6)`,
+      [
+        propertyId,
+        `${100 + i}`,
+        `${label} ticket ${i + 1}`,
+        i % 3 === 0 ? 'resolved' : 'submitted',
+        repairCostEach,
+        new Date(Date.now() - (i + 1) * DAY_MS).toISOString(),
+      ],
+    );
+  }
+}
+
+async function seedSupplySpend(
+  pg: PGlite,
+  propertyId: string,
+  totalDollars: number,
+  label: string,
+): Promise<void> {
+  const itemId = (await pg.query<{ id: string }>(
+    `insert into inventory (property_id, name, category, current_stock, par_level, unit)
+     values ($1, $2, 'housekeeping', $3, 100, 'units') returning id`,
+    [propertyId, `${label} towels`, label.includes(PORTFOLIO_LEAK_MARKER) ? 5 : 90],
+  )).rows[0].id;
+
+  // Two deliveries, so "deliveries" is never 1 and a per-row bug is visible.
+  for (const share of [0.4, 0.6]) {
+    await pg.query(
+      `insert into inventory_orders
+         (property_id, item_id, item_name, quantity, unit_cost, total_cost, received_at)
+       values ($1, $2, $3, 10, $4, $5, $6)`,
+      [
+        propertyId,
+        itemId,
+        `${label} towels`,
+        (totalDollars * share) / 10,
+        totalDollars * share,
+        new Date(Date.now() - 3 * DAY_MS).toISOString(),
+      ],
+    );
+  }
+}
+
+async function seedFindings(
+  pg: PGlite,
+  propertyId: string,
+  count: number,
+  label: string,
+): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    await pg.query(
+      `insert into findings
+         (property_id, detector_id, dedupe_key, summary, severity, disposition, status,
+          receipt_query_id, magnitude, price_low_cents, price_high_cents, price_basis)
+       values ($1, 'seeded_probe', $2, $3, $4, $5, 'open', 'seeded_receipt', $6, $7, $8, $9)`,
+      [
+        propertyId,
+        `seeded_probe:${label}:${i}`,
+        `${label} problem ${i + 1}`,
+        i === 0 ? 'critical' : 'attention',
+        i % 2 === 0 ? 'propose' : 'recommend',
+        i + 1,
+        10_000 * (i + 1),
+        20_000 * (i + 1),
+        `${label} basis`,
+      ],
+    );
+  }
+}
+
+/**
+ * Turn cross-hotel chat on or off for a company, through the same table
+ * `companyAccessSetting` reads. Exposed so a test can flip the switch MID-RUN
+ * and watch the door close — the gate is only proved by both answers.
+ */
+export async function setCrossHotelChat(
+  pg: PGlite,
+  organizationId: string,
+  on: boolean,
+): Promise<void> {
+  await pg.query(
+    `insert into company_access_settings (organization_id, setting_key, setting_value)
+     values ($1, 'cross_hotel_ai_chat', $2)
+     on conflict (organization_id, setting_key)
+       do update set setting_value = excluded.setting_value`,
+    [organizationId, on ? 'true' : 'false'],
+  );
+}
+
+/**
+ * Plant the operating data both companies are asked about, plus each company's
+ * rulebook, plus company A's cross-hotel switch ON and company B's left at its
+ * default (off) — which is what makes Vera the honest "company VP whose company
+ * has not turned it on" probe rather than a synthetic one.
+ */
+export async function seedPortfolioData(pg: PGlite): Promise<void> {
+  await seedWorkOrders(pg, PID_A1, PORTFOLIO_FACTS.beaumont.workOrders, 'Beaumont', 120);
+  await seedWorkOrders(pg, PID_A2, PORTFOLIO_FACTS.lufkin.workOrders, 'Lufkin', 300);
+  await seedWorkOrders(
+    pg, PID_B1, PORTFOLIO_FACTS.tyler.workOrders, `${PORTFOLIO_LEAK_MARKER} Tyler`, 9_999,
+  );
+
+  await seedSupplySpend(pg, PID_A1, PORTFOLIO_FACTS.beaumont.supplySpendDollars, 'Beaumont');
+  await seedSupplySpend(pg, PID_A2, PORTFOLIO_FACTS.lufkin.supplySpendDollars, 'Lufkin');
+  await seedSupplySpend(
+    pg, PID_B1, PORTFOLIO_FACTS.tyler.supplySpendDollars, `${PORTFOLIO_LEAK_MARKER} Tyler`,
+  );
+
+  await seedFindings(pg, PID_A1, PORTFOLIO_FACTS.beaumont.openFindings, 'Beaumont');
+  await seedFindings(pg, PID_A2, PORTFOLIO_FACTS.lufkin.openFindings, 'Lufkin');
+  await seedFindings(
+    pg, PID_B1, PORTFOLIO_FACTS.tyler.openFindings, `${PORTFOLIO_LEAK_MARKER} Tyler`,
+  );
+
+  await pg.query(
+    `insert into company_knowledge
+       (organization_id, topic, content, category, source, review_state, is_active)
+     values
+       ($1, 'chemical_vendor', 'All Gulf Coast hotels use Ecolab for chemicals.', 'vendors', 'explicit_user', 'confirmed', true),
+       ($1, 'draft_rule', 'Gulf Coast is thinking about a new laundry vendor.', 'vendors', 'inferred', 'unreviewed', true),
+       ($2, 'piney_secret', $3, 'money', 'explicit_user', 'confirmed', true)`,
+    [ORG_A, ORG_B, `${PORTFOLIO_LEAK_MARKER} Piney Woods pays $9,999 a month for laundry.`],
+  );
+
+  await setCrossHotelChat(pg, ORG_A, true);
+  // Company B is deliberately left with NO row, so its answer comes from the
+  // documented default. A test that seeded 'false' would prove the reader honors
+  // a stored no; this proves it honors the absence of a yes, which is the state
+  // every company in the product is actually in.
+}
