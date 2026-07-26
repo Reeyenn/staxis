@@ -27,6 +27,7 @@ import {
   deriveCompanyRulebook,
   formatCompanyRulebookForPrompt,
 } from './company-tier';
+import { escapeTrustMarkerContent } from './loop-core';
 import { familyContentIsSafe } from './prompt-tiers';
 import { resolvePrompts, type ResolvedFamilyPrompt } from './prompts-store';
 import type { VoiceMode } from './tools';
@@ -312,6 +313,25 @@ export function familyTrustMarkerOpen(pmsFamily: string): string {
  *  this string — `familyContentIsSafe()` rejects the whole `staxis-` marker
  *  vocabulary, so the boundary is unforgeable rather than merely conventional. */
 export const FAMILY_TRUST_MARKER_CLOSE = '</staxis-pms-family>';
+
+/**
+ * The family row's own text, as it is allowed to reach the model.
+ *
+ * `familyContentIsSafe` is a denylist and denylists have holes: a U+2011
+ * NON-BREAKING HYPHEN wrote `</staxis‑pms‑family>` past the ASCII pattern while
+ * still reading, to the model, as a perfect closing tag — which would have put
+ * the rest of the row OUTSIDE the untrusted envelope, in the cached block,
+ * indistinguishable from Staxis's own rules. The denylist is now
+ * homoglyph-aware, and this escape is why that no longer has to be true to be
+ * safe: after `< > &` become entities, no byte sequence in a row can close the
+ * envelope, in any alphabet.
+ *
+ * Deterministic — the same row escapes to the same bytes every time — so the
+ * cached stable prefix is unaffected (INV-TIER-5).
+ */
+export function renderFamilyContentForPrompt(content: string): string {
+  return escapeTrustMarkerContent(content);
+}
 
 export function maybeVoiceModeAddendum(mode: VoiceMode | undefined): string | null {
   if (!mode) return null;
@@ -655,7 +675,7 @@ export async function buildSystemPrompt(
         FAMILY_TIER_TRUST_NOTE,
         '',
         familyTrustMarkerOpen(familyToRender.pmsFamily),
-        familyToRender.content,
+        renderFamilyContentForPrompt(familyToRender.content),
         FAMILY_TRUST_MARKER_CLOSE,
       ],
     });

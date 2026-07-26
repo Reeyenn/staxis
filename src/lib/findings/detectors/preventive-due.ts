@@ -167,12 +167,36 @@ function lateness(daysOverdue: number): string {
   return daysOverdue === 0 ? 'due today' : `${plural(daysOverdue, 'day')} past due`;
 }
 
+/**
+ * The longest a schedule's name may be before it reaches a prompt.
+ *
+ * Same 120 as `equipment.name` (`equipment/validate.ts`, CHECK
+ * `agent_knowledge_questions_suggested_equipment_name_ck` in 0368), because
+ * these two are the same kind of thing — a short label a manager types for a
+ * piece of the building — and two different limits for one kind of thing is a
+ * limit somebody will pick wrong later.
+ *
+ * WHY IT MATTERS HERE. `preventive_tasks.name` had no limit anywhere: not on
+ * the column, not in the form, not at this boundary. A schedule named with a
+ * 40,000-character paste lands in the summary, the basis and the evidence of
+ * every card this detector writes — six copies per run — and all six go to the
+ * nightly judge inside one batched call. That is somebody else's spend cap,
+ * a truncated batch, and a card nobody can read, from one text field. 0370 adds
+ * the column CHECK and the form adds `maxLength`; this is the third layer,
+ * because rows written before those existed are still in the table.
+ */
+export const PREVENTIVE_TASK_NAME_MAX_CHARS = 120;
+
 function draftFor(task: PreventiveScheduleEntry, today: string): FindingDraft | null {
   const state = scheduleState(task, today);
   if (state.kind === 'not_due' || state.kind === 'never_done' || state.kind === 'resting') {
     return null;
   }
 
+  // Capped ONCE, here, so every one of the six places the name appears below
+  // gets the same bounded string. Capping at each use site is how five of them
+  // end up capped and the sixth does not.
+  const taskName = task.name.slice(0, PREVENTIVE_TASK_NAME_MAX_CHARS);
   const cadence = plural(task.frequencyDays, 'day');
   const where = task.area ? ` (${task.area})` : '';
   // Elapsed, not calendar — see the note above. Null only if the stored date is
@@ -196,9 +220,9 @@ function draftFor(task: PreventiveScheduleEntry, today: string): FindingDraft | 
     // this schedule's last-done date silently disappeared from the product.
     // The buttons are where the asking belongs; the prose states what is true.
     summary: isFollowUp
-      ? `${task.name}${where} still has not been done — ${lateness(state.daysOverdue)}. ` +
+      ? `${taskName}${where} still has not been done — ${lateness(state.daysOverdue)}. ` +
         `Somebody was called about it ${plural(state.daysSinceCalled, 'day')} ago.`
-      : `${task.name}${where} is ${lateness(state.daysOverdue)}` +
+      : `${taskName}${where} is ${lateness(state.daysOverdue)}` +
         `${lastDoneAgo ? ` — last done ${lastDoneAgo},` : ' —'} and this hotel does it every ${cadence}.`,
     // A full extra cycle late is a different kind of late: the hotel has not
     // merely slipped a date, it has skipped a whole round. Self-scaling off the
@@ -216,7 +240,7 @@ function draftFor(task: PreventiveScheduleEntry, today: string): FindingDraft | 
       queryId: RECEIPT,
       params: {
         preventive_task_id: task.id,
-        task_name: task.name,
+        task_name: taskName,
         area: task.area,
         frequency_days: task.frequencyDays,
       },
@@ -243,9 +267,9 @@ function draftFor(task: PreventiveScheduleEntry, today: string): FindingDraft | 
           'preventive service costs, and there is no honest number to put here',
       },
       basis: isFollowUp
-        ? `${task.name} is ${lateness(state.daysOverdue)}; somebody was called ` +
+        ? `${taskName} is ${lateness(state.daysOverdue)}; somebody was called ` +
           `${plural(state.daysSinceCalled, 'day')} ago and it is still not marked done`
-        : `${task.name} was last done ${lastDoneAgo ?? 'an unknown time ago'} and this hotel's ` +
+        : `${taskName} was last done ${lastDoneAgo ?? 'an unknown time ago'} and this hotel's ` +
           `schedule says every ${cadence}, so it is now ${lateness(state.daysOverdue)}`,
       // The chip on this schedule's own record in the Preventive tab.
       target: { kind: 'preventive_task', value: task.id },

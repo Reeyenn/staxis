@@ -96,13 +96,35 @@ export async function GET(req: NextRequest) {
   const hats = (await loadHats(accountId))
     .filter((hat) => hat.organizationId === gate.organizationId);
 
-  const propertyIds = [...new Set(hats.flatMap((hat) => hat.coveredPropertyIds))];
+  // WALL A ON THE NAMES. The card is drawn by whoever is looking, and a
+  // property-scope GM can legitimately open the card of somebody whose job is
+  // company-wide. Resolving every hotel on that person's hats would then print
+  // the whole portfolio's names — "GM — Beaumont · Oversees — Lufkin, Tyler,
+  // Waco" — to a GM who has never been told Lufkin exists. That is the exact
+  // thing a property-scope hat is supposed to prevent, leaking through a
+  // read-only label.
+  //
+  // So names are resolved ONLY for hotels the CALLER can reach. Everything else
+  // is counted, not named: the card still tells the truth about how wide the
+  // job is (and a GM must know that the person they are looking at outranks
+  // their own building), without handing over a directory. An admin, and a
+  // company-scope caller whose own hats cover the portfolio, see every name as
+  // before.
+  const callerReach = gate.isAdmin
+    ? null
+    : new Set((caller.hats ?? []).flatMap((hat) => hat.coveredPropertyIds)
+      .concat(caller.propertyAccess));
+
+  const visibleIds = [...new Set(
+    hats.flatMap((hat) => hat.coveredPropertyIds)
+      .filter((id) => callerReach === null || callerReach.has(id)),
+  )];
   const names = new Map<string, string>();
-  if (propertyIds.length > 0) {
+  if (visibleIds.length > 0) {
     const { data } = await supabaseAdmin
       .from('properties')
       .select('id, name')
-      .in('id', propertyIds);
+      .in('id', visibleIds);
     for (const row of (data ?? []) as Array<{ id: string; name: string }>) {
       names.set(row.id, row.name);
     }
@@ -110,15 +132,24 @@ export async function GET(req: NextRequest) {
 
   return ok({
     organizationId: gate.organizationId,
-    hats: hats.map((hat) => ({
-      membershipId: hat.membershipId,
-      scope: hat.scope,
-      role: hat.role,
-      label: HAT_ROLE_LABELS[hat.role],
-      jobTitle: hat.jobTitle,
-      propertyIds: hat.coveredPropertyIds,
-      propertyNames: hat.coveredPropertyIds.map((id) => names.get(id) ?? id),
-    })),
+    hats: hats.map((hat) => {
+      const named = hat.coveredPropertyIds.filter((id) => names.has(id));
+      const hidden = hat.coveredPropertyIds.length - named.length;
+      return {
+        membershipId: hat.membershipId,
+        scope: hat.scope,
+        role: hat.role,
+        label: HAT_ROLE_LABELS[hat.role],
+        jobTitle: hat.jobTitle,
+        // Ids are the caller's own reach too: a hotel id is a key that opens
+        // every hotel-scoped route, so handing one over is handing over access
+        // to try, not merely a label.
+        propertyIds: named,
+        propertyNames: named.map((id) => names.get(id)!),
+        /** Hotels on this job the caller may not be told the names of. */
+        otherHotelCount: hidden,
+      };
+    }),
   }, { requestId });
 }
 

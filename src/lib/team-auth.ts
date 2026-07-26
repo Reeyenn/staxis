@@ -24,7 +24,7 @@ import {
   MANAGER_FLOOR_CAPABILITIES,
   type CapabilityKey,
 } from '@/lib/capabilities/registry';
-import { loadHats, type MembershipHat } from '@/lib/company/access';
+import { loadHats, resolveEffectiveRole, type MembershipHat } from '@/lib/company/access';
 
 export interface TeamCaller {
   accountId: string;
@@ -124,11 +124,28 @@ export async function verifyTeamManager(
  */
 export function canManageHotel(caller: TeamCaller, hotelId: string): boolean {
   if (caller.isAdmin) return true;
-  if (caller.propertyAccess.includes(hotelId)) return true;
-  // Asked of the JOBS rather than of the pre-computed union, so a caller that
-  // narrows `propertyAccess` on a copy of this object gets the narrower answer
-  // it asked for instead of the union quietly overruling it.
-  return (caller.hats ?? []).some((hat) => hat.coveredPropertyIds.includes(hotelId));
+  // Reach first — asked of the JOBS rather than of the pre-computed union, so a
+  // caller that narrows `propertyAccess` on a copy of this object gets the
+  // narrower answer it asked for instead of the union quietly overruling it.
+  const reaches = caller.propertyAccess.includes(hotelId)
+    || (caller.hats ?? []).some((hat) => hat.coveredPropertyIds.includes(hotelId));
+  if (!reaches) return false;
+  // …then CAPACITY, in the job held here. `verifyTeamManager` decided
+  // manager-ness from the global `accounts.role`; without this, a legacy
+  // manager given a housekeeping hat at a company hotel could invite people and
+  // change jobs at a hotel where her actual job is cleaning rooms. Same fix,
+  // same reasoning, as `managerManagesHotel` — see its header.
+  const roleHere = teamCallerRoleAtHotel(caller, hotelId);
+  return roleHere !== null && canManageTeam(roleHere);
+}
+
+/** The job this caller holds AT this hotel. See `callerRoleAtHotel`. */
+function teamCallerRoleAtHotel(caller: TeamCaller, hotelId: string): AppRole | null {
+  return resolveEffectiveRole({
+    legacyRole: caller.role,
+    legacyPropertyAccess: caller.propertyAccess,
+    hats: caller.hats ?? [],
+  }, hotelId).role;
 }
 
 /**
@@ -145,7 +162,11 @@ export async function callerCan(
   hotelId: string,
 ): Promise<boolean> {
   if (!canManageHotel(caller, hotelId)) return false;
-  return canForProperty({ role: caller.role }, capability, hotelId);
+  // The role AT THIS HOTEL, not the global word. An owner-by-legacy-role who
+  // holds a GM hat at this hotel is a GM here, and a per-hotel override that
+  // restricts general_manager has to actually reach her.
+  const role = teamCallerRoleAtHotel(caller, hotelId) ?? caller.role;
+  return canForProperty({ role }, capability, hotelId);
 }
 
 /**
@@ -159,7 +180,8 @@ export async function callerCapabilityDecision(
   hotelId: string,
 ): Promise<CapabilityDecision> {
   if (!canManageHotel(caller, hotelId)) return 'denied';
-  return capabilityDecisionForProperty({ role: caller.role }, capability, hotelId);
+  const role = teamCallerRoleAtHotel(caller, hotelId) ?? caller.role;
+  return capabilityDecisionForProperty({ role }, capability, hotelId);
 }
 
 /**
@@ -186,7 +208,8 @@ export async function callerCapabilityDecisionFresh(
     if (!isCapabilityKey(row.capability) || !isHotelRole(row.role)) continue;
     (overrides[row.capability] ??= {})[row.role] = !!row.allowed;
   }
-  return can({ role: caller.role }, capability, overrides) ? 'allowed' : 'denied';
+  const role = teamCallerRoleAtHotel(caller, hotelId) ?? caller.role;
+  return can({ role }, capability, overrides) ? 'allowed' : 'denied';
 }
 
 /**
@@ -411,14 +434,67 @@ export async function loadManagerCaller(authUserId: string): Promise<ManagerCall
 }
 
 /**
- * Does this manager manage that hotel? Admins and wildcard access manage all.
+ * Can this person OPEN that hotel at all? Reach, and only reach.
  *
- * Company spine (0364): a hat covering the hotel counts too. This is strictly
- * additive — every hotel that answered true before still answers true.
+ * Admins and wildcard access reach everything; otherwise the legacy array or a
+ * hat covering the hotel. Strictly additive — every hotel that answered true
+ * before the company spine still answers true.
+ *
+ * DELIBERATELY NOT A MANAGER GATE. Two surfaces need reach without capacity: a
+ * company's finance lead reads her company's rulebook and portfolio (her hat
+ * degrades to `front_desk`, so a manager check would refuse the person the
+ * screen was written for), and the hotel picker has to list hotels for
+ * everybody who can sign in. Those call this. Anything that then WRITES, or
+ * shows a manager-only screen, calls `managerManagesHotel` below.
  */
-export function managerManagesHotel(caller: ManagerCaller, propertyId: string): boolean {
+export function callerReachesHotel(caller: ManagerCaller, propertyId: string): boolean {
   if (caller.role === 'admin') return true;
   if (caller.propertyAccess.includes(propertyId) || caller.propertyAccess.includes('*')) return true;
   // Asked of the JOBS, not of the pre-computed union — see canManageHotel.
   return (caller.hats ?? []).some((hat) => hat.coveredPropertyIds.includes(propertyId));
+}
+
+/**
+ * What job does this person hold AT THIS HOTEL — the per-hotel answer, resolved
+ * from what the caller is already carrying. No database round trip.
+ *
+ * The rule itself is `resolveEffectiveRole` in `src/lib/company/access.ts`; this
+ * is that rule fed from a `ManagerCaller`.
+ */
+export function callerRoleAtHotel(caller: ManagerCaller, propertyId: string): AppRole | null {
+  return resolveEffectiveRole({
+    legacyRole: caller.role,
+    legacyPropertyAccess: caller.propertyAccess,
+    hats: caller.hats ?? [],
+  }, propertyId).role;
+}
+
+/**
+ * Does this person manage that hotel — in the capacity they actually hold THERE?
+ *
+ * THE BUG THIS CLOSES. Capacity and reach were answered by two different
+ * questions that were never intersected. `loadManagerCaller` decided
+ * manager-ness from the GLOBAL `accounts.role`; this function then admitted the
+ * hotel if ANY hat covered it, whatever that hat's job was. So a person whose
+ * login still carries a legacy `general_manager` role, given a HOUSEKEEPING hat
+ * at a company hotel, passed both halves: 200 on that hotel's findings queue,
+ * and the right to mute its manager-only cards — while `effectiveRole` said, to
+ * anybody who asked, that she was a housekeeper there. The hat was supposed to
+ * be the demotion; it was read only as an admission ticket.
+ *
+ * Now the two are one question. The hat's own job governs at a hotel the hat
+ * covers, exactly as `effectiveRole` has always said it does, and the legacy
+ * role answers only where the legacy array names the hotel — which is every
+ * account in the product today, unchanged.
+ *
+ * Finance is refused HERE and that is correct: `finance` degrades to
+ * `front_desk` on purpose (least privilege — see `legacyRoleForHat`), and her
+ * read paths go through `callerReachesHotel` plus `rulebookStandingFor` /
+ * `verdictsAllowed`, which are written to answer about her.
+ */
+export function managerManagesHotel(caller: ManagerCaller, propertyId: string): boolean {
+  if (caller.role === 'admin') return true;
+  if (!callerReachesHotel(caller, propertyId)) return false;
+  const roleHere = callerRoleAtHotel(caller, propertyId);
+  return roleHere !== null && canManageTeam(roleHere);
 }

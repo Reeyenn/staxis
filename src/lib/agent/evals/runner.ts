@@ -11,8 +11,10 @@
 import { streamAgent, type RunAgentOpts, type AgentEvent } from '@/lib/agent/llm';
 import { getToolsForRole, listAllTools } from '@/lib/agent/tools';
 import { buildHotelSnapshot } from '@/lib/agent/context';
-import { buildSystemPrompt } from '@/lib/agent/prompts';
+import { buildSystemPrompt, renderFamilyContentForPrompt } from '@/lib/agent/prompts';
 import { setFamilyAddendumOverride } from '@/lib/agent/prompts-store';
+import { clearCompanyRulebookCache, seedCompanyRulebookCache } from '@/lib/agent/company-tier';
+import { escapeTrustMarkerContent } from '@/lib/agent/loop-core';
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { EVAL_CASES, argSatisfied, type EvalCase } from './test-bank';
@@ -137,6 +139,16 @@ export interface EvalRunSummary {
   results: EvalResult[];
 }
 
+/**
+ * The company id a seeded eval rulebook claims to belong to.
+ *
+ * Never looked up and never written — `seedCompanyRulebookCache` bypasses
+ * `companyForProperty` entirely, so this is a label on a cache entry rather
+ * than a claim about any real organization. Fixed rather than random so a
+ * rendered prompt is byte-identical across runs.
+ */
+const EVAL_ORGANIZATION_ID = '00000000-0000-4000-8000-0000000ee1a1';
+
 /** Run a single eval. Returns the structured result. */
 export async function runOneEval(
   evalCase: EvalCase,
@@ -151,8 +163,60 @@ export async function runOneEval(
   // INV-TIER-8: adversarial cases run with a hostile PMS-family addendum armed
   // for exactly one prompt build. The seam throws in production, so this can
   // never be a live injection path.
+  //
+  // INV-TIER-10: a company-rulebook case seeds the derivation cache for this
+  // hotel instead of writing to `company_knowledge`, so the hostile rulebook
+  // exists for exactly this prompt build and touches no company's real book.
+  // Seeded BEFORE the build and cleared after it, in a finally, for the same
+  // reason the family seam is.
   let systemPrompt: Awaited<ReturnType<typeof buildSystemPrompt>>;
-  if (evalCase.familyAddendum) {
+  const armCompanyRulebook = () => {
+    if (!evalCase.companyRulebook) return;
+    seedCompanyRulebookCache(opts.propertyId, {
+      organizationId: EVAL_ORGANIZATION_ID,
+      facts: evalCase.companyRulebook.facts.map((fact, index) => ({
+        id: `eval-fact-${index}`,
+        organizationId: EVAL_ORGANIZATION_ID,
+        topic: fact.topic,
+        content: fact.content,
+        category: fact.category,
+        source: 'explicit_user',
+        reviewState: 'confirmed',
+        policyKey: null,
+        policyValue: null,
+        createdByName: null,
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      })),
+    });
+  };
+
+  if (evalCase.companyRulebook) {
+    armCompanyRulebook();
+    try {
+      systemPrompt = await buildSystemPrompt(evalCase.role, snapshot, evalConversationId);
+    } finally {
+      clearCompanyRulebookCache();
+    }
+    // Same rule as the family seam: a hostile-rulebook case that passes because
+    // the rulebook never arrived is not evidence, it is a green tick.
+    // Compared against the escaped form — `company-tier.ts` escapes every fact.
+    const arrived = evalCase.companyRulebook.facts.every(
+      (fact) => systemPrompt.stable.includes(escapeTrustMarkerContent(fact.content)),
+    );
+    if (!arrived) {
+      return {
+        name: evalCase.name,
+        category: evalCase.category,
+        passed: false,
+        reason: 'company rulebook never reached the system prompt — this case proves nothing; fix the harness',
+        durationMs: Date.now() - start,
+        costUsd: 0,
+        baselineRecorded: false,
+        toolsCalled: [],
+        finalText: '',
+      };
+    }
+  } else if (evalCase.familyAddendum) {
     setFamilyAddendumOverride({
       pmsFamily: evalCase.familyAddendum.pmsFamily,
       version: 'eval-hostile',
@@ -165,7 +229,14 @@ export async function runOneEval(
     }
     // A hostile-family case that passes because the hostile text never made it
     // into the prompt is worse than no case at all — it reads as proof.
-    if (!systemPrompt.stable.includes(evalCase.familyAddendum.content)) {
+    //
+    // Compared against the ESCAPED form: the assembler escapes `< > &` inside
+    // the trust envelope, so a hostile addendum containing an angle bracket
+    // reaches the model as entities and a raw `includes` would report "never
+    // arrived" for a case that arrived exactly as designed.
+    if (!systemPrompt.stable.includes(
+      renderFamilyContentForPrompt(evalCase.familyAddendum.content),
+    )) {
       return {
         name: evalCase.name,
         category: evalCase.category,

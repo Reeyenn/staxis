@@ -43,7 +43,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { loadManagerCaller, managerManagesHotel } from '@/lib/team-auth';
+import { loadSessionAccount, callerReachesHotel } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { companyForProperty } from '@/lib/company/access';
 import { rulebookStandingFor } from '@/lib/company/rulebook-access';
@@ -151,13 +151,24 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as Body | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.InvalidBody });
 
-  const caller = await loadManagerCaller(session.userId);
+  // `loadSessionAccount` + REACH, exactly as the rulebook GET does, because the
+  // authority for this write is `standing.canEdit` below — a COMPANY-scope job
+  // filtered by the company's own `rulebook_editors` choice. The manager gate
+  // reads the global `accounts.role`, where a `vp` hat degrades to
+  // `general_manager` and a `finance` hat to `front_desk`, so it refused some of
+  // the very people allowed to write the book while adding nothing: it can
+  // neither grant nor deny anything `canEdit` does not already decide.
+  //
+  // The refusal keeps its own `AccountNotFound` code so the panel can draw the
+  // Spanish banner for it — a coded refusal is what the screen reads, and a
+  // generic `NotFound` would put it back to an English string.
+  const caller = await loadSessionAccount(session.userId);
   if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.AccountNotFound });
 
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const propertyId = pidV.value!;
-  if (!managerManagesHotel(caller, propertyId)) {
+  if (!callerReachesHotel(caller, propertyId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

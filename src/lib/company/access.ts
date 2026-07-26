@@ -30,6 +30,7 @@ import 'server-only';
 // company's hotels, whatever the caller passes.
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { log } from '@/lib/log';
 import type { AppRole } from '@/lib/roles';
 import {
   hatSeesFinancials,
@@ -104,6 +105,43 @@ interface HatRow {
   status: string | null;
   starts_at: string | null;
   ended_at: string | null;
+}
+
+// ─── Which relationship rows actually GOVERN a hotel ────────────────────────
+//
+// `organization_property_relationships` holds seven kinds of link — operator,
+// owner, brand, franchisor, vendor, consultant, other — and a hotel routinely
+// has several at once. Only two of them mean "this company runs this building",
+// and the database already says which single row is the live one: partial
+// UNIQUE index `organization_property_one_open_primary_idx` on `(property_id)
+// WHERE is_primary_grouping AND ends_at IS NULL`, plus CHECK
+// `..._primary_kind_check` restricting a primary to operator/owner.
+//
+// Every read in this file used to ignore both columns, which meant a brand or
+// franchisor row counted as coverage and, worse, that a hotel appearing under
+// two live organizations was resolved by `real[0]` — the lowest UUID. Filtering
+// on the governing relationship makes the DB's own uniqueness do the work: at
+// most one row can match, so there is nothing left to tie-break.
+
+interface RelationshipRow {
+  organization_id: string;
+  relationship_type?: string | null;
+  is_primary_grouping?: boolean | null;
+  starts_at: string | null;
+  ends_at: string | null;
+}
+
+const GOVERNING_RELATIONSHIP_TYPES = new Set(['operator', 'owner']);
+
+function relationshipIsGoverning(row: RelationshipRow): boolean {
+  return row.is_primary_grouping === true
+    && GOVERNING_RELATIONSHIP_TYPES.has(row.relationship_type ?? '');
+}
+
+function relationshipIsOpen(row: RelationshipRow, nowMs: number): boolean {
+  const startsMs = row.starts_at ? new Date(row.starts_at).getTime() : 0;
+  const endsMs = row.ends_at ? new Date(row.ends_at).getTime() : null;
+  return startsMs <= nowMs && (endsMs === null || endsMs > nowMs);
 }
 
 const NO_ACCESS: AccessibleProperties = {
@@ -242,20 +280,22 @@ async function readHats(accountId: string): Promise<MembershipHat[]> {
 
   const { data: relData, error: relError } = await supabaseAdmin
     .from('organization_property_relationships')
-    .select('organization_id, property_id, starts_at, ends_at')
+    .select('organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
     .in('organization_id', [...liveOrganizationIds]);
   if (relError || !Array.isArray(relData)) return [];
 
   // organization -> the hotels it operates right now. THE ONLY source of
   // coverage in this file, and it is always keyed by the hat's own company.
+  //
+  // GOVERNING rows only. A company that holds a `brand` or `franchisor` link to
+  // a hotel does not run it, and an operator row that is no longer the primary
+  // grouping is a company that USED to — whoever took over stood it down
+  // (`staxis_attach_property_to_organization`, 0325). Counting either as
+  // coverage hands a whole hotel's data to the wrong company's staff.
   const operatedByOrganization = new Map<string, Set<string>>();
-  for (const row of relData as Array<{
-    organization_id: string; property_id: string; starts_at: string | null; ends_at: string | null;
-  }>) {
-    const startsMs = row.starts_at ? new Date(row.starts_at).getTime() : 0;
-    const endsMs = row.ends_at ? new Date(row.ends_at).getTime() : null;
-    if (startsMs > nowMs) continue;
-    if (endsMs !== null && endsMs <= nowMs) continue;
+  for (const row of relData as Array<RelationshipRow & { property_id: string }>) {
+    if (!relationshipIsGoverning(row)) continue;
+    if (!relationshipIsOpen(row, nowMs)) continue;
     const bucket = operatedByOrganization.get(row.organization_id) ?? new Set<string>();
     bucket.add(row.property_id);
     operatedByOrganization.set(row.organization_id, bucket);
@@ -296,24 +336,62 @@ export async function effectiveRole(
   accountId: string,
   propertyId: string,
 ): Promise<EffectiveRole> {
-  const empty: EffectiveRole = {
-    role: null,
-    hatRole: null,
-    scope: null,
-    organizationId: null,
-    source: 'none',
-    seesFinancials: false,
-  };
-  if (!accountId || !propertyId) return empty;
+  if (!accountId || !propertyId) return NO_EFFECTIVE_ROLE;
 
   const account = await loadAccount(accountId);
-  if (!account) return empty;
+  if (!account) return NO_EFFECTIVE_ROLE;
 
   const legacyRole = (account.role as AppRole | null) ?? null;
+  // Staxis administrators are a separate realm and never wear a hat (migration
+  // 0325's `_staxis_guard_customer_membership_account` refuses it), so the hat
+  // read below is skipped rather than merely ignored.
+  const hats = legacyRole === 'admin' ? [] : await loadHats(accountId);
 
-  // Staxis administrators are a separate realm and never wear a hat
-  // (migration 0325's `_staxis_guard_customer_membership_account` refuses it).
-  if (legacyRole === 'admin') {
+  return resolveEffectiveRole({
+    legacyRole,
+    legacyPropertyAccess: toStringArray(account.property_access),
+    hats,
+  }, propertyId);
+}
+
+/** The answer for "this person holds no job at this hotel at all". */
+export const NO_EFFECTIVE_ROLE: EffectiveRole = {
+  role: null,
+  hatRole: null,
+  scope: null,
+  organizationId: null,
+  source: 'none',
+  seesFinancials: false,
+};
+
+/** What `resolveEffectiveRole` needs, in whatever order a caller already has it. */
+export interface EffectiveRoleInputs {
+  /** `accounts.role` — a GLOBAL word. Never a per-hotel answer on its own. */
+  legacyRole: AppRole | null;
+  /** `accounts.property_access`, verbatim. */
+  legacyPropertyAccess: readonly string[];
+  /** Every hat this person wears, coverage already resolved (`loadHats`). */
+  hats: readonly MembershipHat[];
+}
+
+/**
+ * THE ROLE RULE, as a pure function — no database, no round trip.
+ *
+ * `effectiveRole` above is this function plus two reads. It is exported
+ * separately because `src/lib/team-auth.ts` resolves a caller's capacity at a
+ * hotel from a `ManagerCaller` it has ALREADY loaded (role, legacy array and
+ * hats are all on it), and asking the database again for facts in hand would
+ * put two round trips on every findings route. Two implementations of a rule
+ * this load-bearing is how one of them ends up wrong; there is one, and it is
+ * here.
+ */
+export function resolveEffectiveRole(
+  inputs: EffectiveRoleInputs,
+  propertyId: string,
+): EffectiveRole {
+  if (!propertyId) return NO_EFFECTIVE_ROLE;
+
+  if (inputs.legacyRole === 'admin') {
     return {
       role: 'admin',
       hatRole: null,
@@ -324,8 +402,7 @@ export async function effectiveRole(
     };
   }
 
-  const covering = (await loadHats(accountId))
-    .filter((hat) => hat.coveredPropertyIds.includes(propertyId));
+  const covering = inputs.hats.filter((hat) => hat.coveredPropertyIds.includes(propertyId));
 
   if (covering.length > 0) {
     const winner = covering.reduce((best, hat) => (
@@ -346,11 +423,11 @@ export async function effectiveRole(
   // actually naming the hotel, because `accounts.role` is a GLOBAL word and
   // reading it as "her job at hotel #12" is how a company VP would silently
   // become a general manager of a hotel she has never heard of.
-  const legacyAccess = toStringArray(account.property_access);
-  const standsAtHotel = legacyAccess.includes(propertyId) || legacyAccess.includes('*');
-  if (!legacyRole || !standsAtHotel) return empty;
+  const standsAtHotel = inputs.legacyPropertyAccess.includes(propertyId)
+    || inputs.legacyPropertyAccess.includes('*');
+  if (!inputs.legacyRole || !standsAtHotel) return NO_EFFECTIVE_ROLE;
   return {
-    role: legacyRole,
+    role: inputs.legacyRole,
     hatRole: null,
     scope: null,
     organizationId: null,
@@ -444,65 +521,128 @@ export async function propertiesOfOrganization(organizationId: string): Promise<
 async function readPropertiesOfOrganization(organizationId: string): Promise<string[]> {
   const { data, error } = await supabaseAdmin
     .from('organization_property_relationships')
-    .select('property_id, starts_at, ends_at')
+    .select('property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
     .eq('organization_id', organizationId);
   if (error || !Array.isArray(data)) return [];
   const nowMs = Date.now();
-  const ids = (data as Array<{ property_id: string; starts_at: string | null; ends_at: string | null }>)
-    .filter((row) => {
-      const startsMs = row.starts_at ? new Date(row.starts_at).getTime() : 0;
-      const endsMs = row.ends_at ? new Date(row.ends_at).getTime() : null;
-      return startsMs <= nowMs && (endsMs === null || endsMs > nowMs);
-    })
+  // The SAME governing filter `loadHats` applies. These two must agree: this
+  // list is what the hats route offers as "hotels you may put someone at", and
+  // `loadHats` is what decides whether the resulting hat reaches anything. A
+  // wider list here would mint hats that resolve to no coverage at all.
+  const ids = (data as Array<RelationshipRow & { property_id: string }>)
+    .filter((row) => relationshipIsGoverning(row) && relationshipIsOpen(row, nowMs))
     .map((row) => row.property_id);
   return [...new Set(ids)].sort();
+}
+
+/**
+ * "Which company runs this hotel", with the FOUR answers actually distinguished.
+ *
+ * `companyForProperty` below collapses all of them to `string | null`, which is
+ * right for every reader that only wants to render something — an unreadable
+ * rulebook and an independent hotel both mean "show no company section".
+ *
+ * It is WRONG for a gate. A strict caller — the sign-off gate that asks "does a
+ * company rule govern this action?" — reads `null` as "no rule governs, go
+ * ahead", so a transient read error becomes a silent approval. That is the
+ * fail-open class the execute-gate fix closed on the money side, and it comes
+ * in through here. Such callers ask this function and refuse on anything that
+ * is not a definite answer.
+ *
+ *   company      one live company operates this hotel.
+ *   independent  no company does, and we know that. Safe to proceed.
+ *   unavailable  a read failed. We do not know, and must not guess.
+ *   ambiguous    two live companies both claim to run it — a data problem a
+ *                human has to settle. Also not a safe proceed.
+ */
+export type CompanyResolution =
+  | { status: 'company'; organizationId: string }
+  | { status: 'independent' }
+  | { status: 'unavailable' }
+  | { status: 'ambiguous'; organizationIds: string[] };
+
+export async function resolveCompanyForProperty(propertyId: string): Promise<CompanyResolution> {
+  if (!propertyId) return { status: 'unavailable' };
+  try {
+    return await readCompanyResolution(propertyId);
+  } catch {
+    // A thrown read is the same not-knowing as an errored one. It is the LENIENT
+    // wrapper's job to decide that not-knowing renders as nothing; it is not
+    // this function's job to pretend it knew.
+    return { status: 'unavailable' };
+  }
 }
 
 /**
  * Which real company operates this hotel? `null` for an independent hotel —
  * the hidden single-hotel compatibility anchors from 0325 are never an answer,
  * because they are bookkeeping, not a company.
+ *
+ * LENIENT on purpose, and byte-identical to what it has always returned: a read
+ * we could not complete answers `null`, so the caller falls back to the plain
+ * hotel behaviour the product has always had. Anything that GATES on the answer
+ * must call `resolveCompanyForProperty` instead — see its header for why.
  */
 export async function companyForProperty(propertyId: string): Promise<string | null> {
-  if (!propertyId) return null;
-  try {
-    return await readCompanyForProperty(propertyId);
-  } catch {
-    // No company is the safe answer: the caller falls back to the plain hotel
-    // behaviour the product has always had.
-    return null;
-  }
+  const resolution = await resolveCompanyForProperty(propertyId);
+  return resolution.status === 'company' ? resolution.organizationId : null;
 }
 
-async function readCompanyForProperty(propertyId: string): Promise<string | null> {
+async function readCompanyResolution(propertyId: string): Promise<CompanyResolution> {
   const { data, error } = await supabaseAdmin
     .from('organization_property_relationships')
-    .select('organization_id, starts_at, ends_at')
+    .select('organization_id, relationship_type, is_primary_grouping, starts_at, ends_at')
     .eq('property_id', propertyId);
-  if (error || !Array.isArray(data)) return null;
+  if (error || !Array.isArray(data)) return { status: 'unavailable' };
 
   const nowMs = Date.now();
   const openOrganizationIds = [...new Set(
-    (data as Array<{ organization_id: string; starts_at: string | null; ends_at: string | null }>)
-      .filter((row) => {
-        const startsMs = row.starts_at ? new Date(row.starts_at).getTime() : 0;
-        const endsMs = row.ends_at ? new Date(row.ends_at).getTime() : null;
-        return startsMs <= nowMs && (endsMs === null || endsMs > nowMs);
-      })
+    (data as RelationshipRow[])
+      .filter(relationshipIsGoverning)
+      .filter((row) => relationshipIsOpen(row, nowMs))
       .map((row) => row.organization_id),
   )];
-  if (openOrganizationIds.length === 0) return null;
+  // A definite answer: nobody governs this hotel. This is the ONE zero-result
+  // path that means "independent" rather than "we could not tell".
+  if (openOrganizationIds.length === 0) return { status: 'independent' };
 
   const { data: orgData, error: orgError } = await supabaseAdmin
     .from('organizations')
     .select('id, status, organization_type')
     .in('id', openOrganizationIds);
-  if (orgError || !Array.isArray(orgData)) return null;
+  if (orgError || !Array.isArray(orgData)) return { status: 'unavailable' };
   const real = (orgData as Array<{ id: string; status: string | null; organization_type: string | null }>)
     .filter((row) => row.status === 'active' && row.organization_type !== 'single_hotel')
     .map((row) => row.id)
     .sort();
-  return real[0] ?? null;
+
+  // Every governing claim came from a single-hotel compatibility anchor or a
+  // wound-up organization. That is bookkeeping, not a company: independent.
+  if (real.length === 0) return { status: 'independent' };
+  if (real.length > 1) {
+    // NO WINNER, LOUDLY.
+    //
+    // This answer decides whose rulebook goes into the hotel's prompt, whose
+    // money thresholds apply to it, and which company's people appear on its
+    // team list. It used to be `real[0]` — the lowest UUID — which is not a
+    // decision, it is alphabetical order wearing a decision's clothes. A hotel
+    // that ends up in two live organizations would silently be governed by
+    // whichever company happened to sort first, and nothing anywhere would say
+    // so.
+    //
+    // The governing-relationship filter above (operator/owner + primary
+    // grouping) is what makes this genuinely rare — production's three
+    // multi-org properties are all secondary `brand`/anchor rows and resolve
+    // cleanly. Reaching here means two companies both claim to RUN this hotel,
+    // which is a data problem a human has to settle. Lenient readers render
+    // nothing; a gate refuses.
+    log.error('[companyForProperty] a hotel is claimed by two live companies', {
+      propertyId,
+      organizationIds: real,
+    });
+    return { status: 'ambiguous', organizationIds: real };
+  }
+  return { status: 'company', organizationId: real[0] };
 }
 
 /**

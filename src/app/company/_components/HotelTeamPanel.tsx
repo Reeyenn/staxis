@@ -218,6 +218,24 @@ interface CompanyJobLine {
   label: { en: string; es: string };
   propertyIds: string[];
   propertyNames: string[];
+  /**
+   * Hotels on this job the VIEWER may not be told the names of — a GM looking
+   * at a colleague whose job also covers a hotel the GM has never been given.
+   * The route counts them instead of naming them (Wall A); the line says how
+   * wide the job is without turning into a directory.
+   */
+  otherHotelCount?: number;
+}
+
+/** "Beaumont, Lufkin", "Beaumont and 2 other hotels", "3 other hotels". */
+function jobHotelsLabel(job: CompanyJobLine, lang: HotelTeamLang): string {
+  const hidden = job.otherHotelCount ?? 0;
+  const named = job.propertyNames.join(', ');
+  if (hidden === 0) return named;
+  const others = hidden === 1
+    ? copy(lang, '1 other hotel', '1 hotel más')
+    : copy(lang, `${hidden} other hotels`, `${hidden} hoteles más`);
+  return named ? `${named} ${copy(lang, 'and', 'y')} ${others}` : others;
 }
 
 function roleLabel(role: AppRole, lang: HotelTeamLang): string {
@@ -919,7 +937,7 @@ export function HotelTeamPanel({
                             {`${lang === 'es' ? job.label.es : job.label.en} — ${
                               job.scope === 'company'
                                 ? copy(lang, 'every hotel', 'todos los hoteles')
-                                : job.propertyNames.join(', ')
+                                : jobHotelsLabel(job, lang)
                             }`}
                           </em>
                         ))}
