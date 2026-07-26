@@ -86,9 +86,15 @@ interface RunLine {
 
 interface EmployeeSpend {
   /** false when nothing in this employee's bundle books to a per-feature
-   *  ledger. The page shows the feature list and a link, not a number. */
+   *  ledger, or when the read failed. The page shows the feature list and a
+   *  link, not a number. */
   known: boolean;
   usd: number | null;
+  /** The same ledger, narrowed to today. Mission Control's roster quotes spend
+   *  per day next to the copilot's, and a thirty-day total under a column
+   *  headed "spent today" would be a number nothing backs. Null exactly when
+   *  `usd` is — the two come from one read. */
+  todayUsd: number | null;
   windowDays: number;
   /** Bundled features whose spend no ledger separates out. Named so the reader
    *  knows the number is partial rather than wrong. */
@@ -129,8 +135,55 @@ function runLines(e: AiEmployee, scheduled: ReadonlySet<string>): RunLine[] {
   return lines;
 }
 
+export interface SpendRow {
+  feature: string;
+  cost_usd: number | string;
+  created_at: string;
+}
+
+/** Both windows, keyed by feature. One read answers both — the day is a subset
+ *  of the month, so a second query would only be a second chance to disagree. */
+export interface SpendTotals {
+  window: Map<string, number>;
+  today: Map<string, number>;
+}
+
 /**
- * Real dollars per feature key, last `SPEND_WINDOW_DAYS`.
+ * Fold ledger rows into a thirty-day total and a today total per feature.
+ *
+ * Exported for the standing test, and pure so that test needs no database:
+ * every judgement worth checking — which rows count as today, what an
+ * unparseable cost does — is decided here.
+ *
+ * A row whose cost will not parse is dropped, because carrying it forward
+ * turns the whole feature's total into NaN — one bad row would take the entire
+ * figure down with it, and `$NaN` is not a number anybody can act on.
+ */
+export function foldSpendRows(rows: readonly SpendRow[], dayStartMs: number): SpendTotals {
+  const totals: SpendTotals = { window: new Map(), today: new Map() };
+  for (const row of rows) {
+    const usd = typeof row.cost_usd === 'number' ? row.cost_usd : Number(row.cost_usd);
+    if (!Number.isFinite(usd)) continue;
+    totals.window.set(row.feature, (totals.window.get(row.feature) ?? 0) + usd);
+    const at = new Date(row.created_at).getTime();
+    if (Number.isFinite(at) && at >= dayStartMs) {
+      totals.today.set(row.feature, (totals.today.get(row.feature) ?? 0) + usd);
+    }
+  }
+  return totals;
+}
+
+/** Local midnight, the same "today" `/api/agent/metrics` quotes the copilot's
+ *  spend against — so two figures sitting side by side on Mission Control mean
+ *  the same day. */
+function dayStartMs(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/**
+ * Real dollars per feature key, last `SPEND_WINDOW_DAYS` and today.
  *
  * `finalized` only. A `reserved` row is a hold priced at the worst case the
  * caller could have cost, sitting there until the call comes back — including
@@ -140,39 +193,38 @@ function runLines(e: AiEmployee, scheduled: ReadonlySet<string>): RunLine[] {
  * Returns null when the read failed, which the caller renders as "we could not
  * work it out" rather than as zero. Zero is a claim.
  */
-async function spendByFeature(): Promise<Map<string, number> | null> {
+async function spendByFeature(): Promise<SpendTotals | null> {
   const since = new Date(Date.now() - SPEND_WINDOW_DAYS * 86_400_000).toISOString();
   const { data, error } = await supabaseAdmin
     .from('findings_ai_spend')
-    .select('feature, cost_usd')
+    .select('feature, cost_usd, created_at')
     .in('feature', [...SPEND_TRACKED_FEATURES])
     .eq('state', 'finalized')
     .gte('created_at', since)
     .limit(SPEND_ROW_CAP);
   if (error) return null;
 
-  const totals = new Map<string, number>();
-  for (const row of (data ?? []) as Array<{ feature: string; cost_usd: number | string }>) {
-    const usd = typeof row.cost_usd === 'number' ? row.cost_usd : Number(row.cost_usd);
-    if (!Number.isFinite(usd)) continue;
-    totals.set(row.feature, (totals.get(row.feature) ?? 0) + usd);
-  }
-  return totals;
+  return foldSpendRows((data ?? []) as SpendRow[], dayStartMs());
 }
 
-function employeeSpend(e: AiEmployee, totals: Map<string, number> | null): EmployeeSpend | null {
+function employeeSpend(e: AiEmployee, totals: SpendTotals | null): EmployeeSpend | null {
   if (!e.hired) return null;
   const untracked = e.bundle.features.filter((k) => !SPEND_TRACKED_FEATURES.has(k));
   const tracked = e.bundle.features.filter((k) => SPEND_TRACKED_FEATURES.has(k));
   if (totals === null || tracked.length === 0) {
-    return { known: false, usd: null, windowDays: SPEND_WINDOW_DAYS, untracked: [...untracked] };
+    return {
+      known: false, usd: null, todayUsd: null,
+      windowDays: SPEND_WINDOW_DAYS, untracked: [...untracked],
+    };
   }
   // Rounded to the cent it is quoted in. The ledger stores six decimal places
   // because a single Haiku call costs a fraction of one.
-  const sum = tracked.reduce((acc, k) => acc + (totals.get(k) ?? 0), 0);
+  const cents = (m: Map<string, number>) =>
+    Math.round(tracked.reduce((acc, k) => acc + (m.get(k) ?? 0), 0) * 100) / 100;
   return {
     known: true,
-    usd: Math.round(sum * 100) / 100,
+    usd: cents(totals.window),
+    todayUsd: cents(totals.today),
     windowDays: SPEND_WINDOW_DAYS,
     untracked: [...untracked],
   };

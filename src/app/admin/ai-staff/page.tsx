@@ -59,6 +59,7 @@ import { DarkScope, SurfaceShell, DarkCard, DarkSpinner, dimWhite } from '@/app/
 // This page renders OUTSIDE StudioShell, so it imports the studio stylesheet
 // itself — otherwise `.admin-studio` resolves every var to nothing.
 import '@/app/admin/_components/studio/studio.css';
+import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_TONE } from '@/lib/ai/employee-registry';
 import type { AiEmployeeStatus, Bilingual } from '@/lib/ai/employee-registry';
 
 type Lang = 'en' | 'es';
@@ -116,15 +117,12 @@ const COPY = {
   refresh: { en: 'Refresh', es: 'Actualizar' },
 } as const;
 
-const STATUS_COPY: Record<AiEmployeeStatus, { label: Bilingual; tone: DotTone }> = {
-  not_hired: { label: { en: 'Not hired yet', es: 'Aún no contratado' }, tone: 'muted' },
-  switched_off: { label: { en: 'Switched off by you', es: 'Apagado por ti' }, tone: 'terracotta' },
-  waiting_for_master: {
-    label: { en: 'Ready — waiting for the master switch', es: 'Listo — esperando el interruptor principal' },
-    tone: 'gold',
-  },
-  on: { label: { en: 'On', es: 'Encendido' }, tone: 'forest' },
-};
+/** Label and colour for a status, both from the registry so this page and
+ *  Mission Control's roster cannot drift apart on what a status says or how it
+ *  looks. */
+function statusCopy(status: AiEmployeeStatus): { label: Bilingual; tone: DotTone } {
+  return { label: EMPLOYEE_STATUS_LABEL[status], tone: EMPLOYEE_STATUS_TONE[status] };
+}
 
 function pillOf(tone: DotTone): PillTone {
   return tone === 'muted' ? 'neutral' : (tone as PillTone);
@@ -358,7 +356,7 @@ function Note({ text, tone }: { text: string; tone?: 'gold' }) {
 function HiredCard({ e, l, busy, onFlip }: {
   e: EmployeeView; l: Lang; busy: boolean; onFlip: (next: boolean) => void;
 }) {
-  const s = STATUS_COPY[e.status];
+  const s = statusCopy(e.status);
   const crons = e.runs.filter((r) => r.kind === 'cron');
   const rest = e.runs.filter((r) => r.kind !== 'cron');
 
@@ -459,7 +457,7 @@ function PlannedCard({ e, l }: { e: EmployeeView; l: Lang }) {
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 9, flexWrap: 'wrap' }}>
         <span style={{ fontFamily: FONT_SERIF, fontSize: 16, color: dimWhite(.82) }}>{e.name[l]}</span>
         <span className="mono" style={{ fontFamily: FONT_MONO, fontSize: 9, color: dimWhite(.38), letterSpacing: '.08em', textTransform: 'uppercase' }}>
-          {STATUS_COPY.not_hired.label[l]}
+          {EMPLOYEE_STATUS_LABEL.not_hired[l]}
         </span>
       </div>
       <div style={{ fontSize: 12, color: dimWhite(.45), marginTop: 6, lineHeight: 1.5 }}>{e.job[l]}</div>

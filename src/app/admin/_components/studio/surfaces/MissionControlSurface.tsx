@@ -10,7 +10,8 @@
    Three blocks, top → bottom:
      1. Three health lights — App · Robots · AI spend today. Big status dot +
         plain-English one-liner, click to expand the detail.
-     2. AI employees roster — the copilot, the per-hotel robots (with inline
+     2. AI employees roster — the copilot, the NAMED AI staff (the roster the
+        /admin/ai-staff page owns), the per-hotel robots (with inline
         Restart / Stop / Reset-cap / Enter-2FA controls), and the background
         workers grouped by job family.
      3. Needs-your-okay inbox + the 72h grouped-errors panel (the same card UI
@@ -22,7 +23,17 @@
      • GET /api/agent/metrics              → copilot spend / requests / errors
      • GET /api/admin/mission/workers      → background cron heartbeats  (NEW)
      • GET /api/admin/mission/inbox        → robot attention items       (NEW)
+     • GET /api/admin/mission/ai-staff     → the named AI employees
      • GET /api/admin/recent-errors?since= → 72h grouped app errors
+
+   WHY THE NAMED STAFF COME FROM THE SAME ENDPOINT THE AI STAFF PAGE USES.
+   Their status is derived, never stored — from whether they are built, whether
+   the founder switched them off, and whether the jobs they depend on are
+   actually scheduled. Deriving it a second time here would give two screens
+   two chances to disagree about whether an employee is running, so this
+   surface reads the answer rather than working it out. The consequence worth
+   knowing: hiring employee #2 is a flag in the roster registry and nothing on
+   this page changes.
 
    The two /api/admin/mission/* endpoints are landing in parallel. This
    surface tolerates them 404-ing or returning partial shapes: the errors
@@ -35,7 +46,11 @@
    ─────────────────────────────────────────────────────────────────────── */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { useLang } from '@/contexts/LanguageContext';
+import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_TONE } from '@/lib/ai/employee-registry';
+import type { AiEmployeeStatus, Bilingual } from '@/lib/ai/employee-registry';
 import {
   FONT_SERIF, Pill, Dot, Btn, SerifNum, countUp, age,
   type DotTone, type PillTone,
@@ -44,6 +59,8 @@ import {
   SurfaceShell, DarkCard, DarkSpinner, DarkEmpty, dimWhite,
 } from '../surface-kit';
 import { PromotionQueue } from './PromotionQueue';
+
+type Lang = 'en' | 'es';
 
 // $5/hotel/day Claude cost cap (cua-service operational guardrail).
 const ROBOT_CAP_USD = 5;
@@ -108,6 +125,23 @@ interface InboxRow {
   detail?: string | null;
   action?: InboxAction | string | null;
   count?: number | null;
+}
+
+// mission/ai-staff row. Kept as loose as its neighbours: the endpoint owns the
+// derivation, this surface only draws it. `spend` is optional and its `known`
+// flag is what decides whether a figure is drawn at all — see AiEmployeeRow.
+export interface StaffSpend {
+  known?: boolean;
+  usd?: number | null;
+  todayUsd?: number | null;
+}
+export interface StaffMember {
+  id: string;
+  name: Bilingual;
+  job: Bilingual;
+  hired: boolean;
+  status: AiEmployeeStatus;
+  spend?: StaffSpend | null;
 }
 
 interface ErrorGroup {
@@ -201,11 +235,15 @@ function asArray(v: unknown): unknown[] {
 //  SURFACE
 // ════════════════════════════════════════════════════════════════════════
 export function MissionControlSurface() {
+  const { lang } = useLang();
+  const l: Lang = lang === 'es' ? 'es' : 'en';
+
   const [system, setSystem] = useState<SystemServices | null>(null);
   const [sessions, setSessions] = useState<CuaSession[]>([]);
   const [metrics, setMetrics] = useState<AgentMetrics | null>(null);
   const [workers, setWorkers] = useState<WorkerRow[] | null>(null); // null = not loaded / unavailable
   const [inboxRows, setInboxRows] = useState<InboxRow[] | null>(null); // null = endpoint not live yet
+  const [staff, setStaff] = useState<StaffMember[] | null>(null); // null = roster not read yet
   const [errors, setErrors] = useState<ErrorGroup[]>([]);
 
   const [loaded, setLoaded] = useState(false);
@@ -223,6 +261,7 @@ export function MissionControlSurface() {
       fetchWithAuth('/api/admin/mission/workers'),
       fetchWithAuth('/api/admin/mission/inbox'),
       fetchWithAuth(`/api/admin/recent-errors?since=${encodeURIComponent(since72h)}`),
+      fetchWithAuth('/api/admin/mission/ai-staff'),
     ]);
 
     if (settled.every((r) => r.status === 'rejected')) {
@@ -232,9 +271,8 @@ export function MissionControlSurface() {
     }
     setFatalError(null);
 
-    const [sysJson, cuaJson, metricsJson, workersJson, inboxJson, errorsJson] = await Promise.all(
-      settled.map(jsonOf),
-    );
+    const [sysJson, cuaJson, metricsJson, workersJson, inboxJson, errorsJson, staffJson] =
+      await Promise.all(settled.map(jsonOf));
 
     // system-status returns services at the top level (no data envelope).
     if (sysJson?.services) setSystem(sysJson.services as SystemServices);
@@ -254,6 +292,13 @@ export function MissionControlSurface() {
     if (inboxJson?.ok) {
       const arr = asArray(inboxJson.data?.items ?? inboxJson.data) as InboxRow[];
       setInboxRows(arr);
+    }
+
+    // mission/ai-staff — the named roster. Left null on a failed read, which
+    // draws the copilot and the robots and says nothing about the staff,
+    // rather than drawing a roster of nobody.
+    if (staffJson?.ok) {
+      setStaff(asArray(staffJson.data?.employees) as StaffMember[]);
     }
 
     if (errorsJson?.data?.groups) setErrors(errorsJson.data.groups as ErrorGroup[]);
@@ -317,9 +362,15 @@ export function MissionControlSurface() {
   const aiWorkers = (workers ?? []).filter((w) => tierOf(w) === 'ai');
   const predictionWorkers = (workers ?? []).filter((w) => tierOf(w) === 'prediction');
   const timerWorkers = (workers ?? []).filter((w) => tierOf(w) === 'timer');
-  // Headline counts ONLY the AI staff — the copilot, the hotel robots, and the
-  // thinking-model background jobs. Prediction + chores are not "AI staff".
-  const aiStaffCount = 1 /* copilot */ + liveRobots.length + aiWorkers.length;
+  // The named employees that actually exist. The roster carries the whole plan
+  // — twelve of the thirteen are names on it — and a name is not staff.
+  const hiredStaff = (staff ?? []).filter((e) => e.hired === true);
+  // Headline counts ONLY the AI staff — the copilot, the named employees, the
+  // hotel robots, and the thinking-model background jobs. Prediction + chores
+  // are not "AI staff". Counted the way everything else here is counted, by
+  // existing rather than by being healthy: a stopped robot and a switched-off
+  // employee are both still on the payroll, and their row says which.
+  const aiStaffCount = 1 /* copilot */ + hiredStaff.length + liveRobots.length + aiWorkers.length;
 
   // App light — website + database drive the colour; expanded shows all four.
   const appLight = (() => {
@@ -419,29 +470,14 @@ export function MissionControlSurface() {
           on narrow windows. */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(340px, 1fr))', gap: 20, alignItems: 'start', marginBottom: 26 }}>
         {/* LEFT — the thinking-model workforce doing the real work. */}
-        <RosterSection
-          eyebrow="AI staff"
-          count={1 + liveRobots.length}
-          eyebrowColor={dimWhite(.62)}
-          subtitle="Thinks with a language model — couldn't exist before AI."
-          last
-        >
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            <CopilotRow metrics={metrics} />
-            {/* Hotel robots appear here ONLY once graduated — zero robots
-                means zero mention (learning ones are Onboarding's business). */}
-            {liveRobots.length > 0 && (
-              <div>
-                <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {liveRobots.length}</span>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 9 }}>
-                  {liveRobots.map((s) => (
-                    <RobotRow key={s.property_id} s={s} busyKey={busyKey} onAction={runAction} />
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </RosterSection>
+        <AiStaffColumn
+          metrics={metrics}
+          employees={hiredStaff}
+          robots={liveRobots}
+          l={l}
+          busyKey={busyKey}
+          onAction={runAction}
+        />
 
         {/* MIDDLE — the AI-written background jobs. */}
         <RosterSection
@@ -655,6 +691,117 @@ function SpendDetail({ copilotSpend, robots }: {
         </Btn>
       </div>
     </div>
+  );
+}
+
+// ══ The AI staff column ════════════════════════════════════════════════════
+//
+// The copilot, then the named employees, then the hotel robots — in that
+// order because that is how permanent they are: the copilot is always here,
+// an employee is a job Staxis has hired for, a robot belongs to one hotel.
+//
+// HOOK-FREE ON PURPOSE. Every row below owns its own open/closed state, so
+// this component holds none, and the standing test can call it as a plain
+// function and read the tree it returns. That is what makes the header count
+// checkable — a roster that grew a new hire while the count stayed at one is
+// exactly the regression this column is here to prevent, and it is invisible
+// to any test that only looks at the rows.
+
+const AI_STAFF_COPY = {
+  spentToday: { en: 'Spent today', es: 'Gastado hoy' },
+  openRoster: { en: 'Open the AI Staff page', es: 'Abrir la página de Personal de IA' },
+} as const;
+
+export function AiStaffColumn({ metrics, employees, robots, l, busyKey, onAction }: {
+  metrics: AgentMetrics | null;
+  employees: StaffMember[];
+  robots: CuaSession[];
+  l: Lang;
+  busyKey: string | null;
+  onAction: (key: string, propertyId: string, action: string) => void;
+}) {
+  return (
+    <RosterSection
+      eyebrow="AI staff"
+      count={1 /* copilot */ + employees.length + robots.length}
+      eyebrowColor={dimWhite(.62)}
+      subtitle="Thinks with a language model — couldn't exist before AI."
+      last
+    >
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <CopilotRow metrics={metrics} />
+        {/* The named roster, straight from the registry by way of the
+            endpoint. Hiring employee #2 is a flag in that registry; nothing
+            here needs editing for their row to appear. */}
+        {employees.map((e) => <AiEmployeeRow key={e.id} e={e} l={l} />)}
+        {/* Hotel robots appear here ONLY once graduated — zero robots
+            means zero mention (learning ones are Onboarding's business). */}
+        {robots.length > 0 && (
+          <div>
+            <span className="caps" style={{ color: dimWhite(.4), fontSize: 9.5 }}>Hotel robots · {robots.length}</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 9 }}>
+              {robots.map((s) => (
+                <RobotRow key={s.property_id} s={s} busyKey={busyKey} onAction={onAction} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </RosterSection>
+  );
+}
+
+/**
+ * One named AI employee, drawn to match the copilot's row above it: a dot,
+ * who they are, what they do in one line, and what they cost today.
+ *
+ * WHAT IT WILL NOT SAY. The status is the endpoint's derived answer, rendered
+ * with the registry's own sentence — this row never works out for itself
+ * whether an employee is running. And a spend figure is drawn only when the
+ * ledger can back it: "$0.00" beside an employee whose spend nothing separates
+ * out reads as "it ran today and cost nothing", which is a claim, and the
+ * wrong one. An absent number is the honest version of not knowing.
+ *
+ * The whole card is a link to /admin/ai-staff, where the controls are. There
+ * is nothing to click here — Mission Control is the glance.
+ */
+export function AiEmployeeRow({ e, l }: { e: StaffMember; l: Lang }) {
+  const tone: DotTone = EMPLOYEE_STATUS_TONE[e.status] ?? 'muted';
+  const label = (EMPLOYEE_STATUS_LABEL[e.status] ?? EMPLOYEE_STATUS_LABEL.not_hired)[l];
+  const spentToday = e.spend?.known === true && typeof e.spend.todayUsd === 'number'
+    ? e.spend.todayUsd
+    : null;
+
+  return (
+    <Link
+      href="/admin/ai-staff"
+      aria-label={`${e.name[l]} — ${AI_STAFF_COPY.openRoster[l]}`}
+      style={{ textDecoration: 'none', display: 'block' }}
+    >
+      <DarkCard style={{ padding: '13px 15px', cursor: 'pointer' }}>
+        {/* Two rows rather than the copilot's one. A job description is a
+            whole sentence and a status is a whole sentence, and side by side
+            in a third of the page width they push the dot onto a line of its
+            own. Name up top, the claims underneath, indented to sit under the
+            name. */}
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 11 }}>
+          <Dot tone={tone} size={9} style={{ marginTop: 4 }} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#fff' }}>{e.name[l]}</div>
+            <div style={{ fontSize: 11, color: dimWhite(.45), marginTop: 2, lineHeight: 1.45 }}>{e.job[l]}</div>
+          </div>
+          <span className="mono" style={{ fontSize: 12, color: dimWhite(.4), flexShrink: 0 }}>→</span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: 10, flexWrap: 'wrap', marginTop: 11, paddingLeft: 20 }}>
+          <Pill tone={pillOf(tone)} style={{ fontSize: 9, padding: '2px 7px' }}>{label}</Pill>
+          {spentToday !== null && (
+            <div style={{ marginLeft: 'auto' }}>
+              <Metric label={AI_STAFF_COPY.spentToday[l]} value={money(spentToday)} />
+            </div>
+          )}
+        </div>
+      </DarkCard>
+    </Link>
   );
 }
 

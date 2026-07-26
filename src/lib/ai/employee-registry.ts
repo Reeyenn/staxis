@@ -331,6 +331,26 @@ export const EMPLOYEE_STATUS_LABEL: Readonly<Record<AiEmployeeStatus, Bilingual>
   on: { en: 'On', es: 'Encendido' },
 };
 
+/**
+ * The colour each status is drawn in. Values are the studio kit's DotTone
+ * names, spelled out here rather than imported so this module stays free of
+ * any component tree.
+ *
+ * It lives beside the sentence because two screens now show these statuses —
+ * Mission Control's glance and the AI Staff page — and a status that is amber
+ * on one and red on the other is a status nobody trusts. The AI Staff page
+ * used to keep its own copy of both maps; that copy was one careless edit away
+ * from the two screens disagreeing about whether an employee was off.
+ */
+export const EMPLOYEE_STATUS_TONE: Readonly<
+  Record<AiEmployeeStatus, 'muted' | 'terracotta' | 'gold' | 'forest'>
+> = {
+  not_hired: 'muted',
+  switched_off: 'terracotta',
+  waiting_for_master: 'gold',
+  on: 'forest',
+};
+
 // ─── Integrity ──────────────────────────────────────────────────────────────
 
 export class AiEmployeeRegistryError extends Error {
