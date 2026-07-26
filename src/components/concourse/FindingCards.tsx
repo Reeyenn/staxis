@@ -5,9 +5,13 @@
 //
 // THE FIVE PROMISES THIS COMPONENT KEEPS
 //
-//   1. Nothing chases you. No popup, no toast, no badge that must be cleared.
-//      The cards sit in the Staxis tab; ignoring one costs nothing and the
-//      screen never mentions it again until the numbers change.
+//   1. Nothing chases you. No popup, no toast, and nothing that has to be
+//      CLEARED. The Staxis pill does carry a count of decisions waiting
+//      (/api/findings/badge), but it is a mirror of this list and nothing
+//      else: it falls on its own as cards are dealt with, there is no "mark
+//      all read", and no notification is ever pushed at anybody. The cards sit
+//      in the Staxis tab; ignoring one costs nothing and the screen never
+//      mentions it again until the numbers change.
 //
 //   2. One problem, one card, for as long as it is true. A re-find UPDATES
 //      the card ("now 5 work orders") — that guarantee is a unique index in
@@ -112,6 +116,13 @@ const S = {
     en: 'Staxis could not check just now. Do not read this as "nothing is wrong".',
     es: 'Staxis no pudo revisar ahora. No lo tomes como "no pasa nada".',
   },
+  // Said ONLY when there has never been a check here. Deliberately not an
+  // all-clear and deliberately not an apology: it reports that the watching
+  // has not begun, which is the one true thing available to say.
+  neverChecked: {
+    en: 'Staxis has not started checking this hotel yet. Nothing here means "all clear" — it means nothing has been looked at.',
+    es: 'Staxis todavía no ha empezado a revisar este hotel. Esto no significa "todo bien": significa que aún no se ha revisado nada.',
+  },
 
   // ── the hands ──
   doIt: { en: 'Yes, do it', es: 'Sí, hazlo' },
@@ -146,6 +157,8 @@ const FD_CSS = `
 .fd-livedot{width:6px;height:6px;border-radius:50%;background:#9EB7A6;flex-shrink:0;}
 .fd-live.fd-stale .fd-livedot{background:#C99644;}
 .fd-skipped{font-size:11.5px;color:#A6ABA6;margin-top:4px;}
+.fd-empty{margin-top:20px;border-radius:16px;border:1px solid rgba(31,35,28,.08);background:#FAFBF9;
+  padding:16px 17px;font-size:13px;line-height:1.6;color:#5C625C;}
 .fd-head{display:flex;align-items:baseline;justify-content:space-between;gap:10px;margin-top:22px;flex-wrap:wrap;}
 .fd-headt{font-size:15px;font-weight:600;color:#1F231C;}
 .fd-price{display:inline-flex;align-items:baseline;gap:7px;margin-top:7px;flex-wrap:wrap;}
@@ -233,7 +246,12 @@ function humanKey(key: string): string {
   return key.replace(/[_-]+/g, ' ').trim();
 }
 
-function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }) {
+/**
+ * The numbers behind one card. Exported for its own test: it is hook-free, so
+ * it can be called directly and its element tree walked — which is the only
+ * way to prove the fallback line below actually reaches a Spanish reader.
+ */
+export function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }) {
   const es = lang === 'es';
   const entries = [
     ...Object.entries(finding.evidence.values ?? {}),
@@ -244,7 +262,11 @@ function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }) {
     <div className="fd-rcpt">
       {entries.length === 0 ? (
         <div className="fd-rv" style={{ textAlign: 'left', fontSize: 12, color: '#8A9187' }}>
-          {finding.evidence.basis}
+          {/* The same basis line the card above shows, through the same
+              language pick. Reading `evidence.basis` straight — which this
+              branch used to do — printed English into a Spanish receipt for
+              exactly the findings that have no numbered rows to fall back on. */}
+          {basisInLang(finding.evidence.basis, finding.evidence.basisEs, lang)}
         </div>
       ) : (
         entries.map(([k, v]) => (
@@ -692,6 +714,21 @@ export interface FindingCardsViewProps {
   hrefLabel?: string;
   /** Replaces "What Staxis noticed" on a screen that is not about one hotel. */
   heading?: string;
+  /**
+   * What to say when there is NOTHING — no cards and no run to describe, i.e.
+   * this hotel has never been checked.
+   *
+   * Opt-in because the two callers are in different positions. The portfolio
+   * queue writes its own two empty states (it distinguishes "we looked and
+   * nothing reached you" from "nothing has been checked"), so it passes
+   * nothing and this component stays silent for it. The hotel queue does NOT:
+   * it prints a title, a subtitle, and then whatever this component renders —
+   * which was `null`, leaving the paying hotel's Staxis tab a heading over
+   * blank space with no way to tell "quiet" from "never started".
+   *
+   * Whatever is passed must never read as an all-clear.
+   */
+  emptyNote?: string;
   /** True on the portfolio queue — see `hideOccurrence` on the card. */
   hideOccurrence?: boolean;
   /**
@@ -699,6 +736,45 @@ export interface FindingCardsViewProps {
    * its buttons. See the note in QueueView.
    */
   bottomHeadroom?: boolean;
+}
+
+/**
+ * What the list does when it has NOTHING: no card survived the filters and
+ * there is no run to describe, i.e. this hotel has never been checked.
+ *
+ * It used to be an unconditional `return null`, justified in a comment saying
+ * "QueueView's own do-not-read-this-as-an-all-clear block below is what the
+ * manager sees". That block was deleted when QueueView's pilot-era copy was
+ * rewritten — on the grounds that FindingCards owned every claim about an
+ * empty queue. Each file then deferred to the other and neither said
+ * anything, so the paying hotel's Staxis tab became a title over blank space:
+ * a manager reads that as "nothing is wrong here", which is the one thing this
+ * screen must never say about a hotel nobody has looked at.
+ *
+ * A caller that owns its own empty copy — the portfolio queue writes two, one
+ * for "we looked and nothing reached you" and one for "nothing has been
+ * checked" — passes no note and still gets silence.
+ *
+ * A FAILED read is never blank: the error note owns that screen, and an error
+ * shown as an empty queue is the same lie in a different costume.
+ *
+ * Exported so this decision can be exercised without a renderer.
+ */
+export type BlankQueueOutcome =
+  | { kind: 'cards' }
+  | { kind: 'silent' }
+  | { kind: 'note'; note: string };
+
+export function blankQueueOutcome(opts: {
+  readFailed: boolean;
+  livenessText: string | null;
+  visibleCount: number;
+  emptyNote?: string;
+}): BlankQueueOutcome {
+  const blank = !opts.readFailed && !opts.livenessText && opts.visibleCount === 0;
+  if (!blank) return { kind: 'cards' };
+  const note = (opts.emptyNote ?? '').trim();
+  return note ? { kind: 'note', note } : { kind: 'silent' };
 }
 
 /**
@@ -724,6 +800,7 @@ export function FindingCardsView({
   hrefFor,
   hrefLabel,
   heading,
+  emptyNote,
   hideOccurrence = false,
   bottomHeadroom = false,
 }: FindingCardsViewProps) {
@@ -738,11 +815,20 @@ export function FindingCardsView({
   const liveness = livenessLine(run, distinctDetectors(all), lang);
   const skipped = skippedNote(run, lang);
 
-  if (!readFailed && !liveness.text && visible.length === 0) {
-    // Never checked here, nothing found. Rendering nothing is the honest
-    // outcome: QueueView's own "do not read this as an all-clear" block below
-    // is what the manager sees, and it does not claim anything we can't back.
-    return null;
+  const blank = blankQueueOutcome({
+    readFailed,
+    livenessText: liveness.text,
+    visibleCount: visible.length,
+    emptyNote,
+  });
+  if (blank.kind === 'silent') return null;
+  if (blank.kind === 'note') {
+    return (
+      <>
+        <style dangerouslySetInnerHTML={{ __html: FD_CSS }} />
+        <div className="fd-empty">{blank.note}</div>
+      </>
+    );
   }
 
   return (
@@ -976,6 +1062,10 @@ export function FindingCards({
       focusId={focusId}
       hideLiveness={hideLiveness}
       bottomHeadroom={bottomHeadroom}
+      // Only once the read has actually landed. Passed while `data` is still
+      // undefined, "nothing has been checked here" would flash on every load
+      // of a hotel that IS checked — a worse lie than the silence it replaces.
+      emptyNote={readState === 'ready' ? (lang === 'es' ? S.neverChecked.es : S.neverChecked.en) : undefined}
       onVerdict={onVerdict}
       onEngage={onEngage}
       onAction={onAction}

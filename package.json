@@ -16,7 +16,8 @@
     "agent:evals": "tsx --conditions=react-server scripts/run-agent-evals.ts",
     "agent:summarizer-evals": "tsx --conditions=react-server scripts/run-summarizer-evals.ts",
     "agent:invariant-evals": "tsx --conditions=react-server scripts/run-agent-invariant-evals.ts",
-    "test": "npm run test:pii-logs && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 OPENAI_API_KEY=sk-placeholder-test-key-min-20-chars npx tsx --conditions=react-server --test src/lib/__tests__/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && npm run test:pii-logs && NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 OPENAI_API_KEY=sk-placeholder-test-key-min-20-chars npx tsx --conditions=react-server --test src/lib/__tests__/*.test.ts",
     "test:pii-logs": "bash scripts/check-no-pii-logs.sh",
     "test:integration": "NEXT_PUBLIC_SUPABASE_URL=https://placeholder.supabase.co SUPABASE_SERVICE_ROLE_KEY=placeholder-service-role-key-min-20-chars NEXT_PUBLIC_SUPABASE_ANON_KEY=placeholder-anon-key-min-20-chars CRON_SECRET=placeholder-cron-secret-min-16 OPENAI_API_KEY=sk-placeholder-test-key-min-20-chars npx tsx --conditions=react-server --test src/lib/__tests__/*.integration.test.ts"
   },
@@ -65,6 +66,9 @@
     "next": {
       "postcss": "8.5.21"
     },
-    "sharp": "^0.35.0"
+    "sharp": "^0.35.0",
+    "@sentry/nextjs": {
+      "brace-expansion": "^5.0.8"
+    }
   }
 }

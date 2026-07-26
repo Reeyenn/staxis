@@ -25,7 +25,7 @@ import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
-import { readEnvelope } from '@/lib/api-envelope';
+import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
 import {
   CATEGORY_LABELS,
   MEMORY_CATEGORIES,
@@ -61,7 +61,10 @@ interface KnowsData {
 interface IntakeResult {
   added: Array<{ id: string; topic: string; content: string; category: string }>;
   skipped: number;
+  /** English, from the server. Kept for compatibility; NOT rendered — see
+   *  readNoteCode, which is the same fact in a form this screen can translate. */
   readNote: string | null;
+  readNoteCode: string | null;
   nothingFound: boolean;
 }
 
@@ -129,7 +132,197 @@ const S = {
   },
   pending: { en: 'waiting for you', es: 'esperando tu revisión' },
   known: { en: 'confirmed', es: 'confirmados' },
+
+  // ── What the banner says when the server refuses ──────────────────────────
+  // The routes' own `error` strings are English and always will be — they are
+  // the log line. The SENTENCE is this screen's job, because the person reading
+  // it may only read Spanish. One entry per code the Knows routes can return.
+  bannerGeneric: {
+    en: 'That did not work. Nothing changed — try again in a moment.',
+    es: 'No funcionó. Nada cambió: inténtalo de nuevo en un momento.',
+  },
+  errAccountNotFound: {
+    en: 'Staxis could not find your account. Sign out and sign back in.',
+    es: 'Staxis no encontró tu cuenta. Cierra sesión y vuelve a entrar.',
+  },
+  errForbidden: {
+    en: 'You do not have access to this hotel.',
+    es: 'No tienes acceso a este hotel.',
+  },
+  errInvalidBody: {
+    en: 'Staxis could not read that. Nothing changed — try again.',
+    es: 'Staxis no pudo leer eso. Nada cambió: inténtalo de nuevo.',
+  },
+  errUnknownAction: {
+    en: 'Staxis did not understand that. Nothing changed.',
+    es: 'Staxis no entendió eso. Nada cambió.',
+  },
+  errUnknownCategory: {
+    en: 'Pick one of the groups in the list.',
+    es: 'Elige uno de los grupos de la lista.',
+  },
+  errContentRequired: {
+    en: 'Write something first — a fact cannot be empty.',
+    es: 'Escribe algo primero: un dato no puede quedar vacío.',
+  },
+  errConfirmFailed: {
+    en: 'Could not confirm that. Nothing changed — try again in a moment.',
+    es: 'No se pudo confirmar. Nada cambió: inténtalo de nuevo en un momento.',
+  },
+  errFactGone: {
+    en: 'That one is not here anymore — somebody may have removed it.',
+    es: 'Ese ya no está: puede que alguien lo haya quitado.',
+  },
+  errRemoveFailed: {
+    en: 'Could not remove that. Nothing changed — try again in a moment.',
+    es: 'No se pudo quitar. Nada cambió: inténtalo de nuevo en un momento.',
+  },
+  errSaveFailed: {
+    en: 'Could not save that. Nothing changed — try again in a moment.',
+    es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
+  },
+  errNothingToRead: {
+    en: 'Type something or add a file first.',
+    es: 'Escribe algo o agrega un archivo primero.',
+  },
+  errFileNoText: {
+    en: 'There was no text in that file for Staxis to read.',
+    es: 'Ese archivo no tenía texto que Staxis pudiera leer.',
+  },
+  errFileUnreadable: {
+    en: 'Staxis could not read that file. Try another copy of it.',
+    es: 'Staxis no pudo leer ese archivo. Prueba con otra copia.',
+  },
+  errFileMalformed: {
+    en: 'That file did not come through. Add it again.',
+    es: 'Ese archivo no llegó completo. Agrégalo de nuevo.',
+  },
+  errNothingReadable: {
+    en: 'There was nothing readable in that — nothing was saved.',
+    es: 'No había nada legible en eso: no se guardó nada.',
+  },
+  errAiDisabled: {
+    en: 'Reading with AI is turned off right now. Nothing was saved.',
+    es: 'La lectura con IA está desactivada ahora mismo. No se guardó nada.',
+  },
+  errAiUnavailable: {
+    en: 'Staxis could not read that just now. Nothing was saved — try again in a moment.',
+    es: 'Staxis no pudo leerlo ahora mismo. No se guardó nada: inténtalo de nuevo en un momento.',
+  },
+  errBudget: {
+    en: 'Your hotel has used up its AI for today. It starts fresh at midnight.',
+    es: 'Tu hotel ya usó toda su IA de hoy. Se reinicia a medianoche.',
+  },
+  errRateLimited: {
+    en: 'That is a lot of changes in one hour. Give it a few minutes.',
+    es: 'Son muchos cambios en una hora. Espera unos minutos.',
+  },
+  errOffline: {
+    en: 'Staxis could not reach the server. Check your connection and try again.',
+    es: 'Staxis no pudo conectarse. Revisa tu conexión e inténtalo de nuevo.',
+  },
+  readNoteTruncated: {
+    en: 'That file is long — Staxis read the first part of it.',
+    es: 'Ese archivo es largo: Staxis leyó solo la primera parte.',
+  },
+  readNoteVision: {
+    en: 'That looked like a scan, so Staxis read it with AI — double-check the wording.',
+    es: 'Parecía un escaneo, así que Staxis lo leyó con IA: revisa bien el texto.',
+  },
 } as const;
+
+// ─── Server codes → this screen's sentences ─────────────────────────────────
+
+/**
+ * Every machine code /api/memory/knows and its intake sibling can answer with.
+ * Deliberately a lookup rather than a switch on the server's English: the
+ * English is a log line that can be reworded any day without anybody thinking
+ * about Spanish.
+ */
+const BANNER_COPY = new Map<string, keyof typeof S>([
+  ['account_not_found', 'errAccountNotFound'],
+  ['forbidden', 'errForbidden'],
+  ['invalid_body', 'errInvalidBody'],
+  ['unknown_action', 'errUnknownAction'],
+  ['unknown_category', 'errUnknownCategory'],
+  ['content_required', 'errContentRequired'],
+  ['confirm_failed', 'errConfirmFailed'],
+  ['fact_gone', 'errFactGone'],
+  ['remove_failed', 'errRemoveFailed'],
+  ['save_failed', 'errSaveFailed'],
+  ['nothing_to_read', 'errNothingToRead'],
+  ['file_no_text', 'errFileNoText'],
+  ['file_unreadable', 'errFileUnreadable'],
+  ['file_malformed', 'errFileMalformed'],
+  ['file_type_unsupported', 'fileWrongType'],
+  ['file_too_big', 'fileTooBig'],
+  ['nothing_readable', 'errNothingReadable'],
+  ['ai_disabled', 'errAiDisabled'],
+  ['ai_unavailable', 'errAiUnavailable'],
+  ['ai_budget_exhausted', 'errBudget'],
+  // NOT an envelope code. checkAndIncrementRateLimit answers with a bare
+  // { error: 'rate_limited', detail } — no `ok`, no `code` — so readEnvelope
+  // hands the token back in the ERROR slot and the screen used to print the
+  // word "rate_limited" at the manager. Matched here, on the client, because
+  // that response shape is shared by every rate-limited route in the app.
+  ['rate_limited', 'errRateLimited'],
+  // Set by post() below when the request never left the building.
+  ['request_failed', 'errOffline'],
+]);
+
+const READ_NOTE_COPY = new Map<string, keyof typeof S>([
+  ['file_truncated', 'readNoteTruncated'],
+  ['file_read_with_ai', 'readNoteVision'],
+]);
+
+/**
+ * The sentence for a refusal, in the reader's language.
+ *
+ * `code` is the server's machine-readable reason. `serverError` is its English
+ * message and is used ONLY as a second lookup key, never as output — the rate
+ * limiter's response is not an envelope at all, so its reason arrives in the
+ * error slot with no code beside it.
+ *
+ * An unrecognized key — a route that grows a new code, an HTML error page from
+ * the proxy — falls through to the generic bilingual line. A Spanish screen
+ * must never leak an English sentence just because nobody updated this map.
+ */
+export function knowsBannerText(
+  code: string | undefined,
+  serverError: string | undefined,
+  lang: 'en' | 'es',
+): string {
+  const key = code ?? serverError;
+  const entry = key !== undefined ? BANNER_COPY.get(key) : undefined;
+  return S[entry ?? 'bannerGeneric'][lang];
+}
+
+/** How a file got read, in the reader's language. Empty when there is nothing
+ *  worth saying (or the server sent a note this build does not know). */
+export function knowsReadNoteText(code: string | null | undefined, lang: 'en' | 'es'): string {
+  const entry = code ? READ_NOTE_COPY.get(code) : undefined;
+  return entry ? S[entry][lang] : '';
+}
+
+/**
+ * What the banner is saying.
+ *
+ *   failure  a refusal from the server, carried as its CODE. The server's own
+ *            English stays in the log where it belongs.
+ *   text     a sentence this screen owns outright — the file picker's own
+ *            checks, and the result of an intake.
+ */
+export type KnowsBanner =
+  | { kind: 'bad'; failure: { code?: string; serverError?: string } }
+  | { kind: 'good' | 'bad'; text: string };
+
+/** The banner element. Hookless and exported so it can be rendered on its own. */
+export function knowsBannerNote(banner: KnowsBanner, lang: 'en' | 'es'): React.ReactElement {
+  const text = 'failure' in banner
+    ? knowsBannerText(banner.failure.code, banner.failure.serverError, lang)
+    : banner.text;
+  return <div className={`kn-note ${banner.kind === 'good' ? 'kn-good' : 'kn-bad'}`}>{text}</div>;
+}
 
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 const ACCEPT =
@@ -234,7 +427,7 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   const [note, setNote] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
-  const [banner, setBanner] = useState<{ kind: 'good' | 'bad'; text: string } | null>(null);
+  const [banner, setBanner] = useState<KnowsBanner | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
   // Per-row UI state
@@ -245,8 +438,11 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
 
+  // Returns readEnvelope's own result type on purpose: the previous narrower
+  // signature dropped `code`, which is the only part of a refusal this screen
+  // can translate.
   const post = useCallback(
-    async <T,>(url: string, payload: unknown): Promise<{ data?: T; error?: string }> => {
+    async <T,>(url: string, payload: unknown): Promise<EnvelopeResult<T>> => {
       try {
         const res = await fetchWithAuth(url, {
           method: 'POST',
@@ -256,7 +452,11 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
         return await readEnvelope<T>(res);
       } catch (e) {
         if (e instanceof SessionEndedError) throw e;
-        return { error: e instanceof Error ? e.message : 'Request failed' };
+        // The message is for the console; `code` is what the banner reads.
+        return {
+          error: e instanceof Error ? e.message : 'Request failed',
+          code: 'request_failed',
+        };
       }
     },
     [],
@@ -287,7 +487,7 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
       }
       const res = await post<IntakeResult>('/api/memory/knows/intake', payload);
       if (res.error !== undefined || !res.data) {
-        setBanner({ kind: 'bad', text: res.error || 'Something went wrong.' });
+        setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
         return;
       }
       const added = res.data.added ?? [];
@@ -295,12 +495,17 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
       setNote('');
       setFile(null);
       if (fileRef.current) fileRef.current.value = '';
-      const tail = res.data.readNote ? ` ${res.data.readNote}` : '';
+      // readNoteCode, not readNote: the server's version of this sentence is
+      // English, and it used to be pasted onto the end of a Spanish headline.
+      const tail = knowsReadNoteText(res.data.readNoteCode, lang);
       const headline =
         added.length === 0 ? L('intakeNothing')
           : added.length === 1 ? L('intakeDoneOne')
             : `${added.length} ${L('intakeDoneMany')}`;
-      setBanner({ kind: added.length > 0 ? 'good' : 'bad', text: `${headline}${tail}` });
+      setBanner({
+        kind: added.length > 0 ? 'good' : 'bad',
+        text: tail ? `${headline} ${tail}` : headline,
+      });
       await reload();
     } finally {
       setBusy(false);
@@ -312,8 +517,11 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
     setRowBusy(id);
     try {
       const res = await post('/api/memory/knows', { propertyId: activePropertyId, action, id });
-      if (res.error !== undefined) setBanner({ kind: 'bad', text: res.error });
-      else setConfirmingRemove(null);
+      if (res.error !== undefined) {
+        setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
+      } else {
+        setConfirmingRemove(null);
+      }
       await reload();
     } finally {
       setRowBusy(null);
@@ -331,8 +539,11 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
         content: draft.trim(),
         category: draftCat,
       });
-      if (res.error !== undefined) setBanner({ kind: 'bad', text: res.error });
-      else setEditing(null);
+      if (res.error !== undefined) {
+        setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
+      } else {
+        setEditing(null);
+      }
       await reload();
     } finally {
       setRowBusy(null);
@@ -438,9 +649,7 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
         <div className="kn-hint">{L('boxHint')}</div>
       </div>
 
-      {banner && (
-        <div className={`kn-note ${banner.kind === 'good' ? 'kn-good' : 'kn-bad'}`}>{banner.text}</div>
-      )}
+      {banner && knowsBannerNote(banner, lang)}
 
       {/* An error must never look like "your hotel has no facts". */}
       {error && !data && <div className="kn-note kn-bad">{L('loadFailed')}</div>}

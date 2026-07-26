@@ -22,7 +22,7 @@ import { useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
 import { ConcourseBarView, type BarItem } from './ConcourseBarView';
-import { QUEUE_COUNT_EVENT, staxisPillBadge } from './queue-count';
+import { QUEUE_COUNT_EVENT, shouldReadDecisionBadge, staxisPillBadge } from './queue-count';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { PhoneHandoffDialog } from '@/components/phone-handoff/PhoneHandoffDialog';
 import { InstallStaxisDialog } from '@/components/pwa/InstallStaxisDialog';
@@ -119,6 +119,7 @@ export function ConcourseBar() {
   // Starts with no badge at all and stays that way at zero.
   const propertyId = activeProperty?.id ?? null;
   const signedIn = !!user;
+  const canSeeBadge = shouldReadDecisionBadge(user, propertyId);
   const [badge, setBadge] = React.useState<{ pid: string; count: number } | null>(SESSION_BADGE);
 
   const readBadge = React.useCallback(async (pid: string) => {
@@ -146,25 +147,25 @@ export function ConcourseBar() {
   // remembered count on the floor: the next person at this browser must not
   // inherit a number read against someone else's hotel access.
   React.useEffect(() => {
-    if (!signedIn || !propertyId) {
+    if (!canSeeBadge || !propertyId) {
       if (!signedIn) SESSION_BADGE = null;
       setBadge(null);
       return;
     }
     if (SESSION_BADGE?.pid === propertyId) { setBadge(SESSION_BADGE); return; }
     void readBadge(propertyId);
-  }, [signedIn, propertyId, readBadge]);
+  }, [canSeeBadge, signedIn, propertyId, readBadge]);
 
   // Back to the tab. A manager who left Staxis open on a second monitor all
   // morning should not come back to last night's number.
   React.useEffect(() => {
-    if (!signedIn || !propertyId) return;
+    if (!canSeeBadge || !propertyId) return;
     const onVisible = () => {
       if (document.visibilityState === 'visible') void readBadge(propertyId);
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [signedIn, propertyId, readBadge]);
+  }, [canSeeBadge, propertyId, readBadge]);
 
   // Walking away from the feed — the one navigation that always re-reads.
   // Written against `pathname` rather than mount order so it holds whether or
@@ -172,19 +173,19 @@ export function ConcourseBar() {
   React.useEffect(() => {
     const cameFrom = LAST_SHELL_PATH;
     LAST_SHELL_PATH = pathname;
-    if (!signedIn || !propertyId) return;
+    if (!canSeeBadge || !propertyId) return;
     if (!cameFrom || cameFrom === pathname) return;
     if (cameFrom === '/feed' || cameFrom.startsWith('/feed/')) void readBadge(propertyId);
-  }, [pathname, signedIn, propertyId, readBadge]);
+  }, [pathname, canSeeBadge, propertyId, readBadge]);
 
   // A live queue source saying "something changed". Treated as a nudge to
   // re-read, never as the number itself — see queue-count.ts.
   React.useEffect(() => {
-    if (!signedIn || !propertyId) return;
+    if (!canSeeBadge || !propertyId) return;
     const onQueueCount = () => { void readBadge(propertyId); };
     window.addEventListener(QUEUE_COUNT_EVENT, onQueueCount);
     return () => window.removeEventListener(QUEUE_COUNT_EVENT, onQueueCount);
-  }, [signedIn, propertyId, readBadge]);
+  }, [canSeeBadge, propertyId, readBadge]);
 
   const decisionBadge = staxisPillBadge(
     badge && badge.pid === propertyId ? badge.count : 0,

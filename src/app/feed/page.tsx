@@ -4,13 +4,18 @@
 // Staxis — the section the pill-bar badge points at. Two views behind
 // one toggle:
 //
-//   Queue  the AI approval queue (decision cards). Unchanged.
+//   Queue  what Staxis has NOTICED at this hotel — findings, each with
+//          the numbers behind it, and where Staxis has a fix it can
+//          perform, an offer the manager approves. (It was once an "AI
+//          approval queue" and only that; calling it one now describes
+//          a minority of what is on the screen, and reads as though
+//          nothing appears here unless a robot wants permission.)
 //   Knows  everything the copilot believes about this hotel, where it
 //          learned each thing, and Confirm / Edit / Remove for each.
 //
 // Deliberately NOT a new top-level nav tab — Knows belongs beside the
 // queue because they are two halves of the same relationship with the
-// copilot: what it wants to do, and what it thinks it knows.
+// copilot: what it has seen, and what it thinks it knows.
 //
 // (The pre-Concourse editorial feed and its /demo/feed showcase were
 // deleted 2026-07-13 as retired design.)

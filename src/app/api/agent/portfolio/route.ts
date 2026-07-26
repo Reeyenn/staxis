@@ -379,7 +379,18 @@ export async function POST(req: NextRequest): Promise<Response> {
         log.error('[agent/portfolio] stream loop threw', {
           requestId, conversationId: finalConversationId, reservationId, e,
         });
-        send({ type: 'error', message: e instanceof Error ? e.message : String(e) });
+        // A CODE, never the exception. Whatever threw here was not written to
+        // be read by a VP — it is a stack-adjacent sentence about a database
+        // column, a model API, or a JSON parse — and CommandCenter renders the
+        // `message` field verbatim, in whatever language it happens to be in.
+        // The real error is already on the log line above, with the requestId
+        // that ties it to this stream. `message` is kept as an English
+        // last-resort for any reader that does not know the code.
+        send({
+          type: 'error',
+          code: 'stream_failed',
+          message: 'Staxis could not finish that answer.',
+        });
       } finally {
         await drainDanglingToolCalls(pendingToolCallIds, runnerCtx);
         await reconcileCostReservation({

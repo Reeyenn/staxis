@@ -17,6 +17,37 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { t, type Language } from '@/lib/translations';
+import { canManageTeam, type AppRole } from '@/lib/roles';
+
+/**
+ * Whether a person's shell should ask /api/findings/badge at all.
+ *
+ * Gate at the FETCH, not the render — the rule QueueView and FindingCards
+ * state for themselves, and for the same reason: a 403 in the logs must always
+ * mean something real. The pill bar renders for EVERY signed-in person and the
+ * badge route is manager-only (loadManagerCaller + managerManagesHotel), so a
+ * housekeeper's shell was asking for the count on every mount, every tab
+ * refocus and every navigation off the feed — a steady drip of refusals with
+ * nothing wrong behind any of them, which is exactly how a log stops being
+ * worth reading.
+ *
+ * `accounts.role` is the same signal FindingCards gates its own read on, so
+ * the pill and the tab it points at agree about whose screen this is: nobody
+ * is shown a number for a queue they would be refused. A company-scope reader
+ * whose legacy role is not a manager one gets no hotel pill count — correct,
+ * because the hotel queue is not their screen either (their cards arrive on
+ * the portfolio queue), and the route would refuse them today regardless.
+ *
+ * Lives here rather than in ConcourseBar for the reason stated above: this
+ * file is the badge's pure decisions, testable without a browser.
+ */
+export function shouldReadDecisionBadge(
+  user: { role: AppRole } | null | undefined,
+  propertyId: string | null,
+): boolean {
+  if (!user || !propertyId) return false;
+  return canManageTeam(user.role);
+}
 
 // Queue-count broadcast — a live queue source may fire this after a manager
 // clears cards. The pill treats it as a NUDGE, not a value: it re-reads the

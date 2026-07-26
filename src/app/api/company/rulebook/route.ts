@@ -118,7 +118,7 @@ async function gate(
   if (!caller) {
     return {
       ok: false,
-      response: err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound }),
+      response: err('Account not found', { requestId, status: 404, code: ApiErrorCode.AccountNotFound }),
     };
   }
 
@@ -145,7 +145,7 @@ async function gate(
     return {
       ok: false,
       response: err('This hotel is not part of a management company', {
-        requestId, status: 404, code: ApiErrorCode.NotFound,
+        requestId, status: 404, code: ApiErrorCode.NoCompany,
       }),
     };
   }
@@ -310,7 +310,7 @@ export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
   const body = (await req.json().catch(() => null)) as PostBody | null;
-  if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.InvalidBody });
 
   const g = await gate(req, requestId, body.propertyId);
   if (!g.ok) return g.response;
@@ -321,7 +321,7 @@ export async function POST(req: NextRequest) {
   // opportunity to forget one.
   if (!g.standing.canEdit) {
     return err('Only company leadership can change the rulebook', {
-      requestId, status: 403, code: ApiErrorCode.Forbidden,
+      requestId, status: 403, code: ApiErrorCode.CompanyLeadershipOnly,
     });
   }
 
@@ -330,7 +330,7 @@ export async function POST(req: NextRequest) {
     action !== 'confirm' && action !== 'edit' && action !== 'remove'
     && action !== 'merge' && action !== 'settings'
   ) {
-    return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.UnknownAction });
   }
 
   const rl = await checkAndIncrementRateLimit('company-rulebook-write', g.propertyId);
@@ -345,7 +345,7 @@ export async function POST(req: NextRequest) {
   if (action === 'settings') {
     const raw = body.settings;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-      return err('settings is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+      return err('settings is required', { requestId, status: 400, code: ApiErrorCode.SettingsRequired });
     }
     const choices: Partial<Record<CompanyAccessKey, string>> = {};
     for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
@@ -355,7 +355,7 @@ export async function POST(req: NextRequest) {
     const res = await saveCompanyAccessSettings(g.organizationId, choices, actor.accountId);
     if (!res.ok) {
       return err(res.error ?? 'Could not save those choices', {
-        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+        requestId, status: 400, code: ApiErrorCode.SettingsSaveFailed,
       });
     }
     return ok({ action, saved: res.saved }, { requestId });
@@ -368,10 +368,10 @@ export async function POST(req: NextRequest) {
     const res = await confirmCompanyFact(g.organizationId, idV.value!, actor);
     if (!res.ok) {
       log.error('[company/rulebook:POST] confirm failed', { requestId, err: res.error });
-      return err('Could not confirm that', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      return err('Could not confirm that', { requestId, status: 500, code: ApiErrorCode.ConfirmFailed });
     }
     if (!res.confirmed) {
-      return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     // The company tier is cached per hotel for ten minutes. A VP who just
     // confirmed a policy should not have to wonder whether the copilot has it.
@@ -389,10 +389,10 @@ export async function POST(req: NextRequest) {
     const res = await mergeCompanyFact(g.organizationId, intoV.value!, idV.value!, actor);
     if (!res.ok) {
       log.error('[company/rulebook:POST] merge failed', { requestId, err: res.error });
-      return err('Could not combine those', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      return err('Could not combine those', { requestId, status: 500, code: ApiErrorCode.MergeFailed });
     }
     if (!res.merged) {
-      return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     clearCompanyRulebookCache();
     return ok({ action, id: idV.value, intoId: intoV.value }, { requestId });
@@ -402,10 +402,10 @@ export async function POST(req: NextRequest) {
     const res = await removeCompanyFact(g.organizationId, idV.value!);
     if (!res.ok) {
       log.error('[company/rulebook:POST] remove failed', { requestId, err: res.error });
-      return err('Could not remove that', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      return err('Could not remove that', { requestId, status: 500, code: ApiErrorCode.RemoveFailed });
     }
     if (!res.removed) {
-      return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     clearCompanyRulebookCache();
     return ok({ action, id: idV.value }, { requestId });
@@ -413,17 +413,17 @@ export async function POST(req: NextRequest) {
 
   // ── edit ──────────────────────────────────────────────────────────────────
   if (typeof body.content !== 'string') {
-    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ContentRequired });
   }
   // Same PII masking every other durable-knowledge write path applies. A VP
   // typing a vendor rep's mobile number into a policy must not turn the company
   // rulebook into a place phone numbers accumulate.
   const content = redactMemoryContent(body.content.slice(0, COMPANY_FACT_MAX_CONTENT)).content.trim();
   if (!content) {
-    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ContentRequired });
   }
   if (body.category !== undefined && !isCompanyCategory(body.category)) {
-    return err('Unknown category', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Unknown category', { requestId, status: 400, code: ApiErrorCode.UnknownCategory });
   }
 
   const res = await editCompanyFact(
@@ -434,10 +434,10 @@ export async function POST(req: NextRequest) {
   );
   if (!res.ok) {
     log.error('[company/rulebook:POST] edit failed', { requestId, err: res.error });
-    return err('Could not save that', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err('Could not save that', { requestId, status: 500, code: ApiErrorCode.SaveFailed });
   }
   if (!res.updated) {
-    return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
   }
   clearCompanyRulebookCache();
   return ok({ action, id: idV.value, content }, { requestId });

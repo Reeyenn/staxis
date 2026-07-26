@@ -99,15 +99,24 @@ function roomCount(value: number | string | null): number {
 }
 
 /** The hotels this account may open, already bounded. Admins and `'*'` holders
- *  reach everything, which is the one case that is not an id list. */
+ *  reach everything, which is the one case that is not an id list.
+ *
+ *  `total` is how many this account reaches BEFORE the cap, counted by the same
+ *  query rather than inferred from the page: a silently truncated list is a
+ *  picker that tells a Staxis administrator their fleet is 60 hotels. The count
+ *  is what lets the screen say "showing 60 of 412" instead of lying by
+ *  omission. `count: 'exact'` ignores `.limit()` — that is the point of it. */
 async function readHotels(
   propertyIds: readonly string[] | null,
-): Promise<PropertyRow[]> {
-  const base = supabaseAdmin.from('properties').select(PROPERTY_COLUMNS);
+): Promise<{ rows: PropertyRow[]; total: number }> {
+  const base = supabaseAdmin.from('properties').select(PROPERTY_COLUMNS, { count: 'exact' });
   const scoped = propertyIds === null ? base : base.in('id', [...propertyIds]);
-  const { data, error } = await scoped.order('name', { ascending: true }).limit(MAX_HOTELS);
+  const { data, error, count } = await scoped.order('name', { ascending: true }).limit(MAX_HOTELS);
   if (error) throw new Error(`property list failed: ${error.message}`);
-  return (data ?? []) as unknown as PropertyRow[];
+  const rows = (data ?? []) as unknown as PropertyRow[];
+  // A backend that does not report a count (the pglite test shim) must not make
+  // the picker claim MORE hotels exist than it drew, so fall back to the page.
+  return { rows, total: typeof count === 'number' ? count : rows.length };
 }
 
 export async function GET(req: NextRequest) {
@@ -150,12 +159,18 @@ export async function GET(req: NextRequest) {
       // No hotels is a real answer, not an error — the client's join-status
       // gate is what explains it to a pending staff signup.
       return ok(
-        { hotels: [], company: null, chat: { available: false }, signedInAs: account.displayName },
+        {
+          hotels: [],
+          reachableHotelCount: 0,
+          company: null,
+          chat: { available: false },
+          signedInAs: account.displayName,
+        },
         { requestId },
       );
     }
 
-    const rows = await readHotels(propertyIds);
+    const { rows, total: reachableHotelCount } = await readHotels(propertyIds);
 
     // Wall A: null for a hotel GM, a front-desk lead, an administrator and
     // every single-hotel account in the product today. No scope, no chips, no
@@ -201,6 +216,10 @@ export async function GET(req: NextRequest) {
     return ok(
       {
         hotels: rankHotels(hotels),
+        /** How many this account reaches in total. Greater than `hotels.length`
+         *  means the list above was capped at MAX_HOTELS and the screen must
+         *  say so. */
+        reachableHotelCount,
         company: scope
           ? {
             organizationId: scope.organizationId,

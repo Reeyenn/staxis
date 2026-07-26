@@ -200,11 +200,13 @@ describe('/api/findings/brief — the morning brief', () => {
     supabaseAdmin.from = shim.from;
     // @ts-expect-error installing the pglite-backed client on the singleton
     supabaseAdmin.rpc = shim.rpc;
-    // @ts-expect-error minimal auth stub
-    supabaseAdmin.auth.getUser = async () =>
+    // Minimal auth stub — the routes only read the id off the session. Cast
+    // rather than @ts-expect-error: the suppression has to sit on whichever
+    // line tsc happens to report, which moves whenever this block is reformatted.
+    supabaseAdmin.auth.getUser = (async () =>
       currentUser
         ? { data: { user: { id: currentUser, email: `${currentUser}@brief.test` } }, error: null }
-        : { data: { user: null }, error: { message: 'invalid token', status: 401, name: 'AuthApiError' } };
+        : { data: { user: null }, error: { message: 'invalid token', status: 401, name: 'AuthApiError' } }) as unknown as typeof supabaseAdmin.auth.getUser;
 
     for (const [uid, email] of [
       [GM_A_UID, 'gm.a@brief.test'],

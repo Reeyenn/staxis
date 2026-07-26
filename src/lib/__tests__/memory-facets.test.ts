@@ -102,7 +102,13 @@ describe('grouping facts', () => {
 // ─── Provenance ─────────────────────────────────────────────────────────────
 
 describe('provenance lines', () => {
-  const base = { topic: 'ice_machine', createdByName: null, updatedAt: '2026-07-12T15:00:00.000Z' };
+  // createdByName is annotated, not inferred: left to inference it narrows to
+  // `null` and every override below ({ createdByName: 'Maria' }) is rejected.
+  const base: { topic: string; createdByName: string | null; updatedAt: string } = {
+    topic: 'ice_machine',
+    createdByName: null,
+    updatedAt: '2026-07-12T15:00:00.000Z',
+  };
   const en = (source: string, extra: Partial<typeof base> = {}) =>
     provenanceLine({ ...base, ...extra, source }, 'en', 'UTC');
 

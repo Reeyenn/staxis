@@ -357,7 +357,13 @@ function AskAcrossHotels({ lang, organizationId }: { lang: Lang; organizationId:
         for (const frame of frames) {
           const line = frame.split('\n').find((l) => l.startsWith('data:'));
           if (!line) continue;
-          let payload: { type?: string; delta?: string; finalText?: string; message?: string };
+          let payload: {
+            type?: string;
+            delta?: string;
+            finalText?: string;
+            message?: string;
+            code?: string;
+          };
           try {
             payload = JSON.parse(line.slice(5).trim());
           } catch {
@@ -367,9 +373,14 @@ function AskAcrossHotels({ lang, organizationId }: { lang: Lang; organizationId:
             streamed += payload.delta;
             setAnswer(streamed);
           } else if (payload.type === 'error') {
-            // The server's own sentence beats ours — it knows whether this was
-            // a closed door, a spend cap or a real fault.
-            streamed = payload.message ?? '';
+            // A CODED error is the server saying "something broke and I am not
+            // going to tell a VP what" — the sentence is ours, and it is
+            // bilingual. Everything else is deliberate server copy (a closed
+            // door, a spend cap), which knows more about the refusal than this
+            // component does and beats anything we could write; only a coded
+            // frame is generic enough for us to speak for.
+            streamed = payload.code ? pick(S.askFailed, lang) : (payload.message ?? '');
+            if (!streamed) streamed = pick(S.askFailed, lang);
             setAnswer(streamed);
           } else if (payload.type === 'done' && !streamed && payload.finalText) {
             streamed = payload.finalText;

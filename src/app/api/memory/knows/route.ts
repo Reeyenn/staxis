@@ -60,7 +60,7 @@ async function gate(req: NextRequest, requestId: string, propertyIdRaw: unknown)
   if (!caller) {
     return {
       ok: false as const,
-      response: err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound }),
+      response: err('Account not found', { requestId, status: 404, code: ApiErrorCode.AccountNotFound }),
     };
   }
   if (!canManageTeam(caller.role)) {
@@ -153,7 +153,7 @@ export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
 
   const body = (await req.json().catch(() => null)) as PostBody | null;
-  if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.InvalidBody });
 
   const g = await gate(req, requestId, body.propertyId);
   if (!g.ok) return g.response;
@@ -163,7 +163,7 @@ export async function POST(req: NextRequest) {
 
   const action = body.action;
   if (action !== 'confirm' && action !== 'edit' && action !== 'remove') {
-    return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.UnknownAction });
   }
 
   const rl = await checkAndIncrementRateLimit('knows-write', g.propertyId);
@@ -175,10 +175,10 @@ export async function POST(req: NextRequest) {
     const res = await confirmMemoryFact(g.propertyId, idV.value!, actor);
     if (!res.ok) {
       log.error('[memory/knows:POST] confirm failed', { requestId, err: res.error });
-      return err('Could not confirm that', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      return err('Could not confirm that', { requestId, status: 500, code: ApiErrorCode.ConfirmFailed });
     }
     if (!res.confirmed) {
-      return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     return ok({ action, id: idV.value }, { requestId });
   }
@@ -187,27 +187,27 @@ export async function POST(req: NextRequest) {
     const res = await removeMemoryFact(g.propertyId, idV.value!);
     if (!res.ok) {
       log.error('[memory/knows:POST] remove failed', { requestId, err: res.error });
-      return err('Could not remove that', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      return err('Could not remove that', { requestId, status: 500, code: ApiErrorCode.RemoveFailed });
     }
     if (!res.removed) {
-      return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     return ok({ action, id: idV.value }, { requestId });
   }
 
   // ── edit ──────────────────────────────────────────────────────────────────
   if (typeof body.content !== 'string') {
-    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ContentRequired });
   }
   // Same PII masking every other memory write path applies. A manager typing a
   // vendor's mobile number into a fact must not turn long-term memory into a
   // place phone numbers accumulate.
   const content = redactMemoryContent(body.content.slice(0, FACT_MAX_CONTENT)).content.trim();
   if (!content) {
-    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('content is required', { requestId, status: 400, code: ApiErrorCode.ContentRequired });
   }
   if (body.category !== undefined && !isMemoryCategory(body.category)) {
-    return err('Unknown category', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    return err('Unknown category', { requestId, status: 400, code: ApiErrorCode.UnknownCategory });
   }
 
   const res = await editMemoryFact(
@@ -218,10 +218,10 @@ export async function POST(req: NextRequest) {
   );
   if (!res.ok) {
     log.error('[memory/knows:POST] edit failed', { requestId, err: res.error });
-    return err('Could not save that', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err('Could not save that', { requestId, status: 500, code: ApiErrorCode.SaveFailed });
   }
   if (!res.updated) {
-    return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    return err('That fact is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
   }
   return ok({ action, id: idV.value, content }, { requestId });
 }

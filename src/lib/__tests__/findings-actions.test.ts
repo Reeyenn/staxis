@@ -54,8 +54,10 @@ import type {
   AnyDetector,
   DetectorContext,
   FindingDraft,
-  RoomWorkOrderHistory,
 } from '@/lib/findings/types';
+// RoomWorkOrderHistory is DECLARED in history.ts; types.ts only imports it to
+// build the feed map, so it has to be sourced from history.ts here.
+import type { RoomWorkOrderHistory } from '@/lib/findings/history';
 import {
   declinedExplanation,
   offersApproval,

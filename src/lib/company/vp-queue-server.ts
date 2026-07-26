@@ -42,6 +42,7 @@ import {
 import { judgedPhrasing, latestRunFacts, listFindings } from '@/lib/findings/store';
 import { loadActionsForFindings } from '@/lib/findings/actions/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
+import { hotelBasisSpanish } from '@/lib/findings/basis-spanish';
 import type { Finding } from '@/lib/findings/types';
 
 import { listCompanyFindings, type CompanyFinding } from './company-findings';
@@ -533,6 +534,11 @@ async function climbedAtHotel(
         action: actions.get(finding.id) ?? null,
         signOff: signOffs.get(finding.id) ?? null,
         hotel,
+        // A CLIMBED card is a hotel finding on a VP's screen — the one place a
+        // hotel detector's English basis is guaranteed to be read by somebody
+        // who may not read English. Same producer the hotel queue uses, so the
+        // card says the same thing in both places.
+        basisEs: hotelBasisSpanish(finding.detectorId, finding.evidence),
       }),
       hotel,
       climbReason: reason,

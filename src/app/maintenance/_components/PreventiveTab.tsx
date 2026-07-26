@@ -450,7 +450,15 @@ export function PreventiveTab() {
         rest={`${tasks.length} ${tasks.length === 1 ? (es ? 'tarea recurrente' : 'recurring task') : (es ? 'tareas recurrentes' : 'recurring tasks')}`}
         actions={<>
           <Btn variant="ghost" onClick={() => setRegistryOpen(true)}>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wrench size={14} /> {es ? 'Activos' : 'Equipment assets'}</span>
+            {/* Two different screens in this section are called "Equipment":
+                this one — the asset REGISTRY, the HVAC units and pumps a hotel
+                owns — and the storeroom board in the Equipment tab. English
+                distinguishes them by a shared head noun and a differing tail
+                ("Equipment assets" / "Equipment · storeroom"). Spanish said
+                "Activos" and "Equipo · almacén", which share no word at all, so
+                a Spanish reader had no way to see that they are two halves of
+                the same subject. "Activos y equipos" restores the pairing. */}
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><Wrench size={14} /> {es ? 'Activos y equipos' : 'Equipment assets'}</span>
           </Btn>
           <Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Nueva tarea' : 'New task'}</Btn>
         </>}

@@ -194,11 +194,12 @@ describe('/api/findings — the queue read and the manager’s verdict', () => {
     supabaseAdmin.rpc = shim.rpc;
     // requireSession's token check. The ROUTE's job is what happens after a
     // valid session; who that session belongs to is what each test varies.
-    // @ts-expect-error minimal auth stub
-    supabaseAdmin.auth.getUser = async () =>
+    // Cast rather than @ts-expect-error: the suppression has to sit on whichever
+    // line tsc happens to report, which moves whenever this block is reformatted.
+    supabaseAdmin.auth.getUser = (async () =>
       currentUser
         ? { data: { user: { id: currentUser, email: `${currentUser}@findings.test` } }, error: null }
-        : { data: { user: null }, error: { message: 'invalid token', status: 401, name: 'AuthApiError' } };
+        : { data: { user: null }, error: { message: 'invalid token', status: 401, name: 'AuthApiError' } }) as unknown as typeof supabaseAdmin.auth.getUser;
 
     // Four people: hotel A's GM, hotel B's GM, a hotel-A housekeeper (a real
     // account with a role that cannot manage), and someone with no account.
@@ -333,10 +334,10 @@ describe('/api/findings — the queue read and the manager’s verdict', () => {
       assert.deepEqual(priced.price, {
         lowCents: 20_000, highCents: 40_000, currency: 'USD',
         basis: 'your last 3 plumber invoices',
-        // A hotel detector writes one language. `basisEs` is the seam the
-        // PORTFOLIO checks fill (their cards are born on a VP's screen and had
-        // no Spanish at all); null here is the honest answer, and the card falls
-        // back to the English basis rather than dropping the figure's receipt.
+        // Null because this probe's `detector_id` is not one anybody has
+        // written a Spanish renderer for — see the Spanish test below, which
+        // uses a REAL detector and does get one. A detector with no renderer
+        // falls back to the English basis rather than dropping the receipt.
         basisEs: null,
       });
       assert.equal(free.price, null);
@@ -361,6 +362,40 @@ describe('/api/findings — the queue read and the manager’s verdict', () => {
         basis: '4 hvac work orders in the last 30 days',
         basisEs: null,
       });
+    });
+
+    test('a REAL detector\'s receipt arrives with a Spanish basis line on it', async () => {
+      // The regression this stands on: every hotel detector writes English
+      // only, and this route never filled the `basisEs` seam — so a
+      // Spanish-reading manager got a Spanish headline over an English
+      // "based on…" line on every card the product produces. Only the
+      // portfolio checks were supplying it.
+      await insertFinding({
+        propertyId: PID_A,
+        detectorId: 'preventive_due',
+        dedupeKey: 'preventive_due:task:aaaa1111',
+        summary: 'Water heater flush is 30 days past due',
+        evidence: {
+          queryId: 'preventive_tasks_due',
+          params: { preventive_task_id: 'aaaa1111', task_name: 'Water heater flush', frequency_days: 180 },
+          values: { days_overdue: 30, days_since_last_done: 210, days_since_called: null },
+          basis: 'Water heater flush was last done 210 days ago and this hotel\'s schedule says every 180 days, so it is now 30 days past due',
+        },
+      });
+
+      const { body } = await readQueue(PID_A);
+      const f = body.data!.findings.find((c) => c.detectorId === 'preventive_due')!;
+      const ev = f.evidence as { basis: string; basisEs: string | null };
+      assert.ok(ev.basisEs, 'a preventive_due card must carry a Spanish basis');
+      // Rebuilt from the receipt, not translated from the sentence: every
+      // number in it is a number in `values`/`params`.
+      assert.match(ev.basisEs, /30 días de retraso/);
+      assert.match(ev.basisEs, /210 días/);
+      assert.match(ev.basisEs, /cada 180 días/);
+      assert.doesNotMatch(ev.basisEs, /past due/);
+      // The English is untouched — a Spanish reader gains a line, an English
+      // reader loses nothing.
+      assert.match(ev.basis, /past due/);
     });
 
     test('with no judge shipped, the card still has words — the detector’s own', async () => {

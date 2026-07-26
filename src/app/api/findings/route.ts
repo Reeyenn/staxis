@@ -73,6 +73,7 @@ import type { Finding, FindingStatus } from '@/lib/findings/types';
 import { loadActionsForFindings } from '@/lib/findings/actions/store';
 import type { FindingAction } from '@/lib/findings/actions/types';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
+import { hotelBasisSpanish } from '@/lib/findings/basis-spanish';
 import { companyForProperty } from '@/lib/company/access';
 import { loadApproverDirectory, resolveSignOff } from '@/lib/company/signoff';
 import {
@@ -236,6 +237,13 @@ export async function GET(req: NextRequest) {
       phrased: phrasing.get(f.id) ?? null,
       action: actions.get(f.id) ?? null,
       signOff: signOffs.get(f.id) ?? null,
+      // The receipt lines, in Spanish, rebuilt from this row's own evidence.
+      // Without it a Spanish-reading manager got a Spanish headline over an
+      // English "based on…" line on every card this product produces — the
+      // `basisEs` seam existed from the start and only the portfolio checks
+      // were filling it. Null for a detector whose basis cannot be rebuilt
+      // from what it stores, and the card keeps its English there.
+      basisEs: hotelBasisSpanish(f.detectorId, f.evidence),
     }));
 
     const run = await latestRunFacts(propertyId);

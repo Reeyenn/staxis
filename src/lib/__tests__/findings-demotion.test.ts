@@ -277,7 +277,7 @@ describe('finding questions obey the drip rules rather than bringing their own',
   });
 
   test('with no finding questions, nothing about the old behaviour changes', () => {
-    assert.equal(pick().topic, signal.topic);
+    assert.equal(pick()?.topic, signal.topic);
     assert.equal(pick({ extra: [] })?.topic, signal.topic);
   });
 });

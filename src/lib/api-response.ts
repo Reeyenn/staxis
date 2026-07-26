@@ -149,6 +149,50 @@ export const ApiErrorCode = {
   // Partial failure — some sub-operations succeeded, some didn't.
   // Paired with HTTP 207; `details` carries per-item outcome.
   PartialFailure: 'partial_failure',
+
+  // ── The knowledge surfaces: the Knows screen and the company rulebook ─────
+  // These screens are bilingual and their banners are read by housekeepers'
+  // and managers' own eyes. A route's `error` string is English and always
+  // will be — it is the log/dev surface. So each refusal ALSO carries a code
+  // narrow enough that the client can own the sentence in EN and ES. Anything
+  // that would read differently to a person gets its own code; anything that
+  // reads the same shares one (every "that row is gone" is `fact_gone`).
+  AccountNotFound: 'account_not_found',
+  InvalidBody: 'invalid_body',
+  UnknownAction: 'unknown_action',
+  UnknownCategory: 'unknown_category',
+  ContentRequired: 'content_required',
+  SettingsRequired: 'settings_required',
+  ConfirmFailed: 'confirm_failed',
+  /** The fact / rulebook line the button pointed at is no longer in the book. */
+  FactGone: 'fact_gone',
+  RemoveFailed: 'remove_failed',
+  SaveFailed: 'save_failed',
+  MergeFailed: 'merge_failed',
+  SettingsSaveFailed: 'settings_save_failed',
+  /** Submitted with an empty box and no file. */
+  NothingToRead: 'nothing_to_read',
+  /** A file we could open, with no text in it at all. */
+  FileNoText: 'file_no_text',
+  /**
+   * We could not get text out of that file. Collapses every developer-facing
+   * parse/vision diagnostic — a person needs one sentence, not the reason
+   * the PDF library gave up.
+   */
+  FileUnreadable: 'file_unreadable',
+  /** Text arrived, but every chunk of it was blank. */
+  NothingReadable: 'nothing_readable',
+  AiDisabled: 'ai_disabled',
+  AiUnavailable: 'ai_unavailable',
+  /** This hotel is independent — it has no management company above it. */
+  NoCompany: 'no_company',
+  CompanyLeadershipOnly: 'company_leadership_only',
+  FileTypeUnsupported: 'file_type_unsupported',
+  FileTooBig: 'file_too_big',
+  FileMalformed: 'file_malformed',
+  /** The hotel's daily AI spend cap. Distinct from `rate_limited` on purpose:
+   *  "come back in a minute" and "come back tomorrow" are different answers. */
+  AiBudgetExhausted: 'ai_budget_exhausted',
 } as const;
 
 export type ApiErrorCodeValue = typeof ApiErrorCode[keyof typeof ApiErrorCode];
