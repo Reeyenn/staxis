@@ -22,7 +22,8 @@ import { useCan } from '@/lib/capabilities/useCan';
 import { useEnabledSections } from '@/lib/sections/useSectionEnabled';
 import { SECTION_LIST } from '@/lib/sections/registry';
 import { ConcourseBarView, type BarItem } from './ConcourseBarView';
-import { QUEUE_COUNT_EVENT } from './queue-count';
+import { QUEUE_COUNT_EVENT, staxisPillBadge } from './queue-count';
+import { fetchWithAuth } from '@/lib/api-fetch';
 import { PhoneHandoffDialog } from '@/components/phone-handoff/PhoneHandoffDialog';
 import { InstallStaxisDialog } from '@/components/pwa/InstallStaxisDialog';
 import { useInstallStaxis } from '@/contexts/InstallStaxisContext';
@@ -36,6 +37,27 @@ import { MobileConcourseNav } from './MobileConcourseNav';
 // on every mount/re-render — ~25 concurrent server renders racing the page's
 // own data load. Prefetch must run ONCE per browser session, on idle.
 let PREFETCHED_THIS_SESSION = false;
+
+// ── The decisions badge, across remounts ────────────────────────────────────
+// Same remount problem, same shape of fix. The bar is torn down and rebuilt on
+// every navigation, so a plain mount fetch would hit the count endpoint on
+// every single page change. These two module-level values survive the remount:
+//
+//   SESSION_BADGE  the last count we actually read, and which hotel it is for.
+//                  Rehydrates the pill instantly on the next mount — no flash
+//                  of a missing badge between pages — and tells the mount
+//                  effect whether it needs to read at all.
+//   LAST_SHELL_PATH  where the manager just came FROM. Leaving /feed is the
+//                  one navigation that must always re-read: they were looking
+//                  at the cards, they may have just cleared them, and a badge
+//                  still claiming "3" over an empty queue is exactly the kind
+//                  of lie that teaches people to stop trusting the number.
+//
+// There is deliberately no polling loop and no realtime subscription. The
+// triggers are: first sight of a hotel, coming back to the tab, and walking
+// away from the feed.
+let SESSION_BADGE: { pid: string; count: number } | null = null;
+let LAST_SHELL_PATH: string | null = null;
 
 export function ConcourseBar() {
   const { user, signOut } = useAuth();
@@ -92,18 +114,82 @@ export function ConcourseBar() {
     ? (lang === 'es' ? 'Gestión' : 'Management')
     : (lang === 'es' ? 'Centro de empresa' : 'Company Hub');
 
-  // Pending-decision badge on the Staxis pill. Starts hidden at zero. A live
-  // queue source may broadcast a verified count; the pilot's unavailable
-  // queue state deliberately does not broadcast a fabricated all-clear.
-  const [pendingCount, setPendingCount] = React.useState(0);
-  React.useEffect(() => {
-    const h = (e: Event) => {
-      const n = (e as CustomEvent).detail?.pending;
-      if (typeof n === 'number') setPendingCount(n);
-    };
-    window.addEventListener(QUEUE_COUNT_EVENT, h);
-    return () => window.removeEventListener(QUEUE_COUNT_EVENT, h);
+  // ── Decisions badge on the Staxis pill ────────────────────────────────────
+  // Counts "do this now" cards only — never FYIs, questions or recommendations.
+  // Starts with no badge at all and stays that way at zero.
+  const propertyId = activeProperty?.id ?? null;
+  const signedIn = !!user;
+  const [badge, setBadge] = React.useState<{ pid: string; count: number } | null>(SESSION_BADGE);
+
+  const readBadge = React.useCallback(async (pid: string) => {
+    try {
+      const res = await fetchWithAuth(
+        `/api/findings/badge?propertyId=${encodeURIComponent(pid)}`,
+      );
+      const body = (await res.json().catch(() => null)) as
+        | { ok?: boolean; data?: { count?: unknown } }
+        | null;
+      const n = body?.ok ? body.data?.count : undefined;
+      if (typeof n !== 'number' || !Number.isFinite(n)) return;
+      // Stamped with the hotel it was read for. A response that lands after the
+      // manager switched hotels is simply not the active hotel's number, and
+      // the render below ignores it rather than showing hotel A's count on
+      // hotel B's pill.
+      SESSION_BADGE = { pid, count: n };
+      setBadge(SESSION_BADGE);
+    } catch {
+      // A failed read is NOT an all-clear. Keep the last known count.
+    }
   }, []);
+
+  // First sight of this hotel in this browser session. Signing out drops the
+  // remembered count on the floor: the next person at this browser must not
+  // inherit a number read against someone else's hotel access.
+  React.useEffect(() => {
+    if (!signedIn || !propertyId) {
+      if (!signedIn) SESSION_BADGE = null;
+      setBadge(null);
+      return;
+    }
+    if (SESSION_BADGE?.pid === propertyId) { setBadge(SESSION_BADGE); return; }
+    void readBadge(propertyId);
+  }, [signedIn, propertyId, readBadge]);
+
+  // Back to the tab. A manager who left Staxis open on a second monitor all
+  // morning should not come back to last night's number.
+  React.useEffect(() => {
+    if (!signedIn || !propertyId) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') void readBadge(propertyId);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [signedIn, propertyId, readBadge]);
+
+  // Walking away from the feed — the one navigation that always re-reads.
+  // Written against `pathname` rather than mount order so it holds whether or
+  // not React reuses the bar across a route change.
+  React.useEffect(() => {
+    const cameFrom = LAST_SHELL_PATH;
+    LAST_SHELL_PATH = pathname;
+    if (!signedIn || !propertyId) return;
+    if (!cameFrom || cameFrom === pathname) return;
+    if (cameFrom === '/feed' || cameFrom.startsWith('/feed/')) void readBadge(propertyId);
+  }, [pathname, signedIn, propertyId, readBadge]);
+
+  // A live queue source saying "something changed". Treated as a nudge to
+  // re-read, never as the number itself — see queue-count.ts.
+  React.useEffect(() => {
+    if (!signedIn || !propertyId) return;
+    const onQueueCount = () => { void readBadge(propertyId); };
+    window.addEventListener(QUEUE_COUNT_EVENT, onQueueCount);
+    return () => window.removeEventListener(QUEUE_COUNT_EVENT, onQueueCount);
+  }, [signedIn, propertyId, readBadge]);
+
+  const decisionBadge = staxisPillBadge(
+    badge && badge.pid === propertyId ? badge.count : 0,
+    lang,
+  );
 
   // Same visibility rules as the old Header: per-hotel section toggles hide
   // pills entirely; Financials additionally needs the view_financials
@@ -120,7 +206,8 @@ export function ConcourseBar() {
       active: pendingHref
         ? pendingHref === m.navHref
         : pathname === m.navHref || pathname.startsWith(m.navHref + '/'),
-      badge: m.key === 'staxis' ? pendingCount : undefined,
+      badge: m.key === 'staxis' ? decisionBadge?.count : undefined,
+      badgeLabel: m.key === 'staxis' ? decisionBadge?.label : undefined,
       onClick: () => go(m.navHref),
     }));
 

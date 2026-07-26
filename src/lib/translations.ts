@@ -96,6 +96,8 @@ type TranslationKey =
   | 'hkNoMessages'
   // Navigation
   | 'dashboard' | 'rooms' | 'settings' | 'maintenance'
+  // Staxis pill badge — the count of decisions waiting on the nav bar
+  | 'navDecisionWaitingOne' | 'navDecisionWaitingMany'
   // Room status / type / priority
   | 'clean' | 'dirty' | 'inProgress' | 'checkout' | 'stayover'
   | 'vip' | 'earlyCheckin' | 'standard'
@@ -490,6 +492,11 @@ const translations: TranslationMaps = {
     loading: 'Loading...',
     signIn: 'Sign In',
     signOut: 'Sign Out',
+    // ── Staxis pill badge ──
+    // Read to a screen reader as "Staxis, 3 decisions waiting". The number is
+    // supplied by the caller so these stay plain nouns rather than templates.
+    navDecisionWaitingOne: 'decision waiting',
+    navDecisionWaitingMany: 'decisions waiting',
     // ── ROI ──
     totalSaved: 'Total Saved',
     totalPaid: 'Total Paid',
@@ -1344,6 +1351,9 @@ const translations: TranslationMaps = {
     loading: 'Cargando...',
     signIn: 'Iniciar Sesión',
     signOut: 'Cerrar Sesión',
+    // ── Staxis pill badge ──
+    navDecisionWaitingOne: 'decisión pendiente',
+    navDecisionWaitingMany: 'decisiones pendientes',
     // ── ROI ──
     totalSaved: 'Total Ahorrado',
     totalPaid: 'Total Pagado',

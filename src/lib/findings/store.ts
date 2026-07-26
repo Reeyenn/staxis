@@ -181,6 +181,14 @@ export async function loadActiveFindings(
   return out;
 }
 
+/**
+ * The statuses a card is still LIVE in. `known_problem` and `muted` still hold
+ * the one-row-per-problem slot, but they are silences a manager armed and
+ * neither the queue nor the badge asks again. Same set `listFindings` defaults
+ * to and the same set /api/findings reads, deliberately.
+ */
+const LIVE_STATUSES: readonly FindingStatus[] = Object.freeze(['open', 'updated']);
+
 export interface ListFindingsOptions {
   statuses?: readonly FindingStatus[];
   detectorId?: string;
@@ -208,6 +216,57 @@ export async function listFindings(
     .limit(Math.min(Math.max(opts.limit ?? 100, 1), 500));
   if (error) throw new Error(`findings list failed: ${error.message}`);
   return ((data ?? []) as unknown as FindingRow[]).map(rowToFinding);
+}
+
+/**
+ * How many "do this now" cards are waiting at this hotel — the number on the
+ * Staxis nav pill, and nothing else.
+ *
+ * WHY THIS IS A COUNT AND NOT `listFindings().filter(...).length`
+ * The badge is read on every shell mount and every time the tab comes back to
+ * the front. Fetching up to 200 rows with their evidence blobs to end up
+ * showing a single integer would be the most-run query in the app doing the
+ * most work in the app. `head: true` means Postgres returns the count and no
+ * rows at all.
+ *
+ * WHY TWO QUERIES AND NOT ONE `.or()`
+ * The rule is `judged_disposition ?? disposition = 'propose'`, which as one
+ * PostgREST filter needs `or(judged.eq.propose, and(judged.is.null,
+ * disposition.eq.propose))` — a nested `and` inside an `or`. Two flat counts
+ * express the same rule, each one index-friendly (0361 indexes
+ * property_id, judged_disposition), and they partition cleanly: a row either
+ * has a judged verdict or it does not, so nothing is counted twice and nothing
+ * is missed.
+ *
+ * WHAT DOES NOT COUNT, on purpose: `recommend`, `fyi`, `ask` and `drop`
+ * findings; anything the manager has already silenced or resolved
+ * (known_problem / muted / resolved / expired all leave the open+updated set);
+ * and any detector this hotel has demoted, because demotion rewrites the
+ * disposition on the row itself.
+ */
+export async function countProposeFindings(propertyId: string): Promise<number> {
+  const db = scopedDb(propertyId);
+  const live = [...LIVE_STATUSES];
+
+  // The judge reached a verdict on this hotel's actual numbers — it wins.
+  const judged = await db
+    .from('findings')
+    .select('id', { count: 'exact', head: true })
+    .in('status', live)
+    .eq('judged_disposition', 'propose');
+  if (judged.error) throw new Error(`findings badge count failed: ${judged.error.message}`);
+
+  // No verdict yet (the judge has not run, or was refused): the detector's own
+  // default stands, exactly as effectiveDisposition() resolves it.
+  const unjudged = await db
+    .from('findings')
+    .select('id', { count: 'exact', head: true })
+    .in('status', live)
+    .is('judged_disposition', null)
+    .eq('disposition', 'propose');
+  if (unjudged.error) throw new Error(`findings badge count failed: ${unjudged.error.message}`);
+
+  return (judged.count ?? 0) + (unjudged.count ?? 0);
 }
 
 /** The most recent run summary for a hotel — "we checked, and here is when". */

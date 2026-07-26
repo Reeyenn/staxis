@@ -18,6 +18,11 @@ export interface BarItem {
   label: string;
   active: boolean;
   badge?: number;
+  /** Spoken form of the badge ("3 decisions waiting"). Required whenever
+   *  `badge` is set: the pill carries an aria-label, which HIDES the badge's
+   *  own text from a screen reader, so without this the number is visible to
+   *  sighted users only. */
+  badgeLabel?: string;
   onClick: () => void;
 }
 
@@ -71,8 +76,8 @@ export function ConcourseBarView({
             type="button"
             className={`cx-pill${it.active ? ' cx-active' : ''}`}
             onClick={it.onClick}
-            title={it.label}
-            aria-label={it.label}
+            title={it.badgeLabel ? `${it.label} — ${it.badgeLabel}` : it.label}
+            aria-label={it.badgeLabel ? `${it.label}, ${it.badgeLabel}` : it.label}
             aria-current={it.active ? 'page' : undefined}
           >
             <CxIcon name={it.key as never} size={16} />
@@ -80,7 +85,7 @@ export function ConcourseBarView({
                 width — smoother than a max-width guess (no end-of-track snap). */}
             <span className="cx-labw"><span className="cx-lab">{it.label}</span></span>
             {typeof it.badge === 'number' && it.badge > 0 && (
-              <span className="cx-badge">{it.badge}</span>
+              <span className="cx-badge" aria-hidden>{it.badge}</span>
             )}
           </button>
         ))}

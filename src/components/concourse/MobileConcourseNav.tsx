@@ -277,7 +277,7 @@ export function MobileConcourseNav({
                 </span>
                 <span className={styles.rowLabel}>{item.label}</span>
                 {typeof item.badge === 'number' && item.badge > 0 ? (
-                  <span className={styles.badge} aria-label={`${item.badge}`}>
+                  <span className={styles.badge} aria-label={item.badgeLabel ?? `${item.badge}`}>
                     {item.badge}
                   </span>
                 ) : null}
