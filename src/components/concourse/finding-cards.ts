@@ -256,16 +256,6 @@ export function isCardRenderable(f: Pick<QueueFinding, 'disposition'>): boolean 
   return f.disposition !== 'ask' && f.disposition !== 'drop';
 }
 
-/** True when the card should render without action buttons beyond "got it". */
-export function isQuiet(f: Pick<QueueFinding, 'disposition'>): boolean {
-  return f.disposition === 'fyi';
-}
-
-/** True when "Fixed" is a thing a manager could plausibly have done. */
-export function offersResolve(f: Pick<QueueFinding, 'disposition'>): boolean {
-  return f.disposition === 'propose' || f.disposition === 'recommend';
-}
-
 // ─── Ordering ───────────────────────────────────────────────────────────────
 
 /**
@@ -483,6 +473,149 @@ export function cardEyebrowLabel(
   lang: Lang,
 ): string {
   return pick(f.disposition === 'propose' ? DECISION_LABEL : SEVERITY_LABEL[f.severity], lang);
+}
+
+// ─── Closure: how a manager puts a card down ────────────────────────────────
+//
+// WHY THIS IS A TABLE AND NOT THREE `if`s IN THE COMPONENT
+//
+// A card with no way to close it is not a quiet card, it is a card that lies
+// twice. It lingers on the screen after the manager has already dealt with the
+// thing, and — worse — the self-demotion counters (demotion.ts) read that
+// absence of taps as "this hotel ignores this check". A manager who called the
+// ice-machine guy and a manager who scrolled past are recorded identically.
+//
+// So every renderable disposition names its closure set HERE, once, and the
+// component renders whatever this returns. That is what makes "propose and fyi
+// did not change" a thing a test can prove rather than a thing a diff review
+// hopes.
+//
+// THE ONE RULE THAT IS NOT NEGOTIABLE
+// "Seen" (`known_problem`) silences the FEED. It must never touch the outcome.
+// The manager saying "I know, stop showing me" is not the manager saying the
+// problem is over, and the two verdicts stay different in the database as well
+// as on the screen: `resolved` stamps resolved_at, `known_problem` records the
+// magnitude the silence was armed at and leaves the outcome alone (store.ts
+// setFindingStatus). Nothing here may map a "Seen" tap onto `resolved`.
+
+export type ClosureVerdict = 'resolved' | 'known_problem' | 'muted';
+
+/** The second tap, for the verdict that cannot be taken back. */
+export interface ClosureConfirm {
+  prompt: string;
+  yes: string;
+}
+
+export interface ClosureButton {
+  /** What POST /api/findings is told. */
+  verdict: ClosureVerdict;
+  label: string;
+  /** The title attribute — what the button actually costs. Null when obvious. */
+  hint: string | null;
+  tone: 'primary' | 'plain' | 'danger';
+  /** Non-null when the verdict must be confirmed before it is sent. */
+  confirm: ClosureConfirm | null;
+}
+
+interface ClosureSpec {
+  verdict: ClosureVerdict;
+  tone: ClosureButton['tone'];
+  label: Bi;
+  hint: Bi | null;
+  confirm: { prompt: Bi; yes: Bi } | null;
+}
+
+/**
+ * Quiet, permanently, EXCEPT escalation. Arming the silencer at 4 work orders
+ * is consent to 4, not to 9 — the same sentence under "Known problem" on a
+ * proposal and under "Seen" on a recommendation, because it is the same verdict.
+ */
+const KNOWN_HINT: Bi = {
+  en: 'Staxis stops bringing this up — unless it gets meaningfully worse.',
+  es: 'Staxis deja de mencionarlo, salvo que empeore de forma clara.',
+};
+
+/**
+ * The honest half of "Handled it": it closes the card, it does not promise the
+ * problem is gone forever. A recurrence opens a genuinely NEW card, because the
+ * handling apparently did not take, and that is information rather than a
+ * relapse of the same nag.
+ */
+const HANDLED_HINT: Bi = {
+  en: 'Staxis closes this out. If it happens again it comes back as a new card.',
+  es: 'Staxis lo da por cerrado. Si vuelve a pasar, volverá como una tarjeta nueva.',
+};
+
+/** Unconditional, so it asks first. The one verdict with no escape hatch. */
+const STOP_WATCHING: Bi = {
+  en: 'Staxis will stop watching this — sure?',
+  es: 'Staxis dejará de vigilar esto. ¿Seguro?',
+};
+
+/**
+ * WHAT EACH KIND OF CARD OFFERS.
+ *
+ * `propose` and `fyi` are exactly what they were before recommendations grew
+ * closure — a proposal's one-tap fix is rendered separately (offersApproval),
+ * and these are the ways to put the card down afterwards.
+ *
+ * `recommend` is the new one: "worth doing" work Staxis cannot do itself, which
+ * until now had no way to end. Three outcomes, and they are genuinely three —
+ * I did it, I know and I do not want to hear it again, I am not doing it — with
+ * a different row state behind each.
+ *
+ * `ask` and `drop` never render as cards at all (isCardRenderable), so their
+ * empty sets are unreachable rather than a design.
+ */
+const CLOSURE_SETS: Record<FindingDisposition, readonly ClosureSpec[]> = {
+  propose: [
+    { verdict: 'known_problem', tone: 'primary', label: { en: 'Known problem', es: 'Ya lo sé' }, hint: KNOWN_HINT, confirm: null },
+    { verdict: 'resolved', tone: 'plain', label: { en: 'Fixed', es: 'Resuelto' }, hint: null, confirm: null },
+    {
+      verdict: 'muted',
+      tone: 'danger',
+      label: { en: 'Mute', es: 'Silenciar' },
+      hint: null,
+      confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, mute it', es: 'Sí, silenciar' } },
+    },
+  ],
+  recommend: [
+    { verdict: 'resolved', tone: 'primary', label: { en: 'Handled it', es: 'Ya me encargué' }, hint: HANDLED_HINT, confirm: null },
+    { verdict: 'known_problem', tone: 'plain', label: { en: 'Seen', es: 'Visto' }, hint: KNOWN_HINT, confirm: null },
+    {
+      verdict: 'muted',
+      tone: 'danger',
+      label: { en: 'Not doing this', es: 'No lo voy a hacer' },
+      hint: null,
+      // The prompt is the same sentence Mute has always asked. The yes button
+      // is not: "Yes, mute it" after tapping "Not doing this" reads like a
+      // different button than the one the manager pressed.
+      confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', es: 'Sí, deja de vigilarlo' } },
+    },
+  ],
+  // Information, not a task. One quiet way to put it away, and nothing that
+  // looks like it wants a decision.
+  fyi: [
+    { verdict: 'known_problem', tone: 'plain', label: { en: 'Got it', es: 'Entendido' }, hint: KNOWN_HINT, confirm: null },
+  ],
+  ask: [],
+  drop: [],
+};
+
+/** The closure buttons this card offers, in render order, in one language. */
+export function closureButtons(
+  f: Pick<QueueFinding, 'disposition'>,
+  lang: Lang,
+): ClosureButton[] {
+  return (CLOSURE_SETS[f.disposition] ?? []).map((spec) => ({
+    verdict: spec.verdict,
+    label: pick(spec.label, lang),
+    hint: spec.hint ? pick(spec.hint, lang) : null,
+    tone: spec.tone,
+    confirm: spec.confirm
+      ? { prompt: pick(spec.confirm.prompt, lang), yes: pick(spec.confirm.yes, lang) }
+      : null,
+  }));
 }
 
 /** Chip colour class from concourse-css. Rust reads as "act", sage as "calm". */

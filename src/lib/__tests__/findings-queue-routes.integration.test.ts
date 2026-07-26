@@ -153,9 +153,10 @@ async function rawFinding(id: string) {
     id: string; property_id: string; status: string; summary: string;
     silenced_at_magnitude: string | null; resolved_at: string | null;
     status_changed_by: string | null; magnitude: string;
+    acted_count: string; escalated_at: string | null;
   }>(
     `select id, property_id, status, summary, silenced_at_magnitude, resolved_at,
-            status_changed_by, magnitude
+            status_changed_by, magnitude, acted_count, escalated_at
        from public.findings where id = $1`,
     [id],
   );
@@ -420,6 +421,22 @@ describe('/api/findings — the queue read and the manager’s verdict', () => {
       const after = await rawFinding(bId);
       assert.equal(after!.status, 'open', "hotel B's finding was modified by hotel A");
       assert.equal(after!.silenced_at_magnitude, null);
+      // The engagement counter is a WRITE that now runs on every verdict,
+      // including mute — so it is a second way into another hotel's row and has
+      // to be scoped exactly like the status change is.
+      assert.equal(Number(after!.acted_count), 0, "hotel A moved hotel B's counters");
+    });
+
+    test("hotel A cannot inflate hotel B's engagement by opening its receipt", async () => {
+      const bRow = await pg.query<{ id: string }>(
+        `select id from public.findings where property_id = $1 and dedupe_key = 'probe:b_private'`,
+        [PID_B],
+      );
+      const res = await POST(postReq({
+        propertyId: PID_A, findingId: bRow.rows[0].id, action: 'receipt_opened',
+      }));
+      assert.equal(res.status, 404);
+      assert.equal(Number((await rawFinding(bRow.rows[0].id))!.acted_count), 0);
     });
 
     test("hotel B's own manager still sees hotel B's findings", async () => {
@@ -486,6 +503,126 @@ describe('/api/findings — the queue read and the manager’s verdict', () => {
       await POST(postReq({ propertyId: PID_A, findingId: a, action: 'muted' }));
       const { body } = await readQueue(PID_A);
       assert.deepEqual(body.data!.findings.map((f) => f.dedupeKey), ['probe:two']);
+    });
+  });
+
+  // ── Closing a "worth doing" card ──────────────────────────────────────────
+  //
+  // The three buttons a recommendation now carries — Handled it, Seen, Not
+  // doing this — are the three verdicts above wearing manager-facing words.
+  // What these prove is the half that is NOT wording: where each one lands in
+  // the database, and that a tap is never mistaken for silence.
+
+  describe('a recommendation can be closed, and each way lands differently', () => {
+    test('every tap tells the counters somebody read this — including "not doing this"', async () => {
+      // The reason the buttons exist. Self-demotion (demotion.ts) asks "does
+      // anyone at this hotel read this check", and before this a manager who
+      // did the thing and a manager who scrolled past looked identical.
+      // `muted` is the one that used to be excluded; it is included here on
+      // purpose, so removing it again fails.
+      for (const action of ['resolved', 'known_problem', 'muted', 'receipt_opened'] as const) {
+        const id = await insertFinding({
+          propertyId: PID_A, dedupeKey: `probe:acted_${action}`, summary: action,
+          disposition: 'recommend',
+        });
+        const res = await POST(postReq({ propertyId: PID_A, findingId: id, action }));
+        assert.equal(res.status, 200, action);
+        assert.equal(Number((await rawFinding(id))!.acted_count), 1, `${action} counted as silence`);
+      }
+    });
+
+    test('"Seen" silences the feed and says NOTHING about the problem being over', async () => {
+      // The never-fool-the-boss pin, at the only layer that can enforce it. A
+      // manager asking for quiet must not become a row that reads, to anything
+      // downstream, as a problem that was dealt with.
+      const id = await insertFinding({
+        propertyId: PID_A, dedupeKey: 'probe:seen', summary: 'three service calls',
+        disposition: 'recommend', magnitude: 3,
+      });
+      assert.equal(
+        (await POST(postReq({ propertyId: PID_A, findingId: id, action: 'known_problem' }))).status,
+        200,
+      );
+
+      const row = await rawFinding(id);
+      assert.equal(row!.status, 'known_problem');
+      assert.equal(row!.resolved_at, null, 'a Seen tap stamped an outcome');
+      assert.notEqual(row!.status, 'resolved');
+      // The consent point IS recorded — that is the escalation input, and a
+      // silence with no recorded magnitude can never break out of itself.
+      assert.equal(Number(row!.silenced_at_magnitude), 3);
+      assert.equal((await readQueue(PID_A)).body.data!.findings.length, 0);
+    });
+
+    test('a Seen problem that outgrows the consent comes back, still unresolved', async () => {
+      // Three service calls quietly becoming six earns its way back onto the
+      // screen. The runner writes the escalation; what this proves is that the
+      // route serves the row again afterwards — and that the trip through
+      // silence never invented a resolved_at along the way.
+      const id = await insertFinding({
+        propertyId: PID_A, dedupeKey: 'probe:escalates', summary: 'three service calls',
+        disposition: 'recommend', magnitude: 3,
+      });
+      await POST(postReq({ propertyId: PID_A, findingId: id, action: 'known_problem' }));
+      assert.equal((await readQueue(PID_A)).body.data!.findings.length, 0);
+
+      await pg.query(
+        `update public.findings
+            set status = 'updated', magnitude = 6, escalated_at = now(),
+                status_changed_at = now(), summary = 'six service calls'
+          where id = $1`,
+        [id],
+      );
+
+      const { body } = await readQueue(PID_A);
+      assert.deepEqual(body.data!.findings.map((f) => f.id), [id], 'the escalation stayed silent');
+      assert.equal((await rawFinding(id))!.resolved_at, null);
+    });
+
+    test('a problem re-found after "Handled it" arrives as a NEW card', async () => {
+      // Which is the honest reading: the handling did not take. The old row
+      // stays resolved as the record that it was tried, and the manager sees a
+      // fresh card rather than a stale one silently reopening.
+      const first = await insertFinding({
+        propertyId: PID_A, dedupeKey: 'probe:recurs', summary: 'ice machine down',
+        disposition: 'recommend',
+      });
+      assert.equal(
+        (await POST(postReq({ propertyId: PID_A, findingId: first, action: 'resolved' }))).status,
+        200,
+      );
+      assert.ok((await rawFinding(first))!.resolved_at, 'Handled it did not stamp when');
+      assert.equal((await readQueue(PID_A)).body.data!.findings.length, 0);
+
+      // The same problem, found again. The partial unique index (0360) admits
+      // it precisely because the first row is no longer active.
+      const second = await insertFinding({
+        propertyId: PID_A, dedupeKey: 'probe:recurs', summary: 'ice machine down again',
+        disposition: 'recommend',
+      });
+
+      const { body } = await readQueue(PID_A);
+      assert.deepEqual(body.data!.findings.map((f) => f.id), [second]);
+      assert.notEqual(second, first);
+      assert.equal((await rawFinding(first))!.status, 'resolved', 'the old card was reopened');
+    });
+
+    test('"Not doing this" needs no second call to the server — one verdict, one write', async () => {
+      // The confirm step is a screen affordance (finding-cards.ts), not a
+      // protocol. The route must not grow a "confirmed" flag, and a mute that
+      // arrives is a mute.
+      const id = await insertFinding({
+        propertyId: PID_A, dedupeKey: 'probe:notdoing', summary: 'not doing it',
+        disposition: 'recommend',
+      });
+      assert.equal(
+        (await POST(postReq({ propertyId: PID_A, findingId: id, action: 'muted' }))).status,
+        200,
+      );
+      const row = await rawFinding(id);
+      assert.equal(row!.status, 'muted');
+      assert.equal(row!.resolved_at, null, 'declining to do something marked it done');
+      assert.equal((await readQueue(PID_A)).body.data!.findings.length, 0);
     });
   });
 });

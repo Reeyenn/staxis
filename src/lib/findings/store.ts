@@ -608,9 +608,12 @@ export async function expireStaleFindings(
 //           Not one per page load: a manager who refreshes eleven times has
 //           looked once, and counting eleven would let one anxious morning rest
 //           a detector for good. `last_shown_on` (0362) is that guard.
-//   acted   Known problem, Fixed, or the receipt opened. Any of the three is a
-//           manager engaging with the card, and one of them is enough to keep a
-//           detector at full volume.
+//   acted   ANY verdict — handled it, seen, not doing this — or the receipt
+//           opened. All four are a manager engaging with the card, and one of
+//           them is enough to keep a detector at full volume. "Not doing this"
+//           counts on purpose: a manager who read the card and decided against
+//           it read the card, and the only thing these counters exist to detect
+//           is a check nobody reads.
 //   ignored a show on a card nothing has ever been done about. It is kept as
 //           its own column rather than derived, so "shown a lot and read" and
 //           "shown a lot and never once opened" are different rows instead of a
@@ -681,7 +684,7 @@ export async function recordFindingsShown(
 }
 
 /**
- * Count one finding as ACTED ON. Known problem, Fixed, or receipt opened.
+ * Count one finding as ACTED ON — any verdict, or the receipt opened.
  *
  * Every call counts, including a second tap on the same card: engagement is
  * evidence that a manager is reading this detector's output, and there is no

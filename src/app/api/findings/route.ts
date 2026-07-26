@@ -11,15 +11,28 @@
  *
  * POST { propertyId, findingId, action }
  *   → { ok, data: { status } }
- *   known_problem   the manager armed the silencer: quiet from now on, EXCEPT
- *                   if the problem outgrows the size they consented to. The
- *                   store records that size; escalation is measured from it.
- *   muted           gone, unconditionally. Their call, no second-guessing.
- *   resolved        dealt with. A recurrence later is a genuinely new card.
+ *   known_problem   "Seen" / "Known problem". The manager armed the silencer:
+ *                   quiet from now on, EXCEPT if the problem outgrows the size
+ *                   they consented to. The store records that size; escalation
+ *                   is measured from it. It says NOTHING about the problem being
+ *                   over — see below.
+ *   muted           "Not doing this" / "Mute". Gone, unconditionally. Their
+ *                   call, no second-guessing.
+ *   resolved        "Handled it" / "Fixed". Dealt with. A recurrence later is a
+ *                   genuinely new card, because the handling did not take.
  *   receipt_opened  not a verdict at all — the manager expanded the numbers.
- *                   Nothing about the card changes; it counts as engagement, so
- *                   a detector somebody actually reads does not quietly demote
- *                   itself for want of a button press (0362).
+ *                   Nothing about the card changes.
+ *
+ * ALL FOUR COUNT AS ENGAGEMENT. Every tap is a manager reading this check and
+ * deciding something, and the only signal left that means "nobody here reads
+ * this" is silence — which is what silence should mean. See demotion.ts.
+ *
+ * SEEN IS NOT HANDLED, IN THE DATA AS WELL AS ON THE SCREEN. `known_problem`
+ * never writes resolved_at and never stands in for an outcome anywhere: the
+ * morning brief's "cleared on its own" reads `expired` only, and the target
+ * chips treat both silences as decisions rather than resolutions. A manager
+ * telling the feed to be quiet must never turn into Staxis telling the owner
+ * the problem was fixed.
  *
  * The GET also records which cards were ON SCREEN, once per hotel-day. Both
  * halves feed the same thing: src/lib/findings/demotion.ts, which is how a
@@ -91,17 +104,6 @@ type PostAction = typeof POST_ACTIONS[number];
 
 function isEngagement(action: PostAction): action is Engagement {
   return (ENGAGEMENTS as readonly string[]).includes(action);
-}
-
-/**
- * Which verdicts count as engagement.
- *
- * `muted` is deliberately absent. It is a manager saying "never show me this
- * again", and counting it as a reason to keep showing the detector at full
- * volume would be reading a rejection as approval.
- */
-function verdictIsEngagement(action: ManagerVerdict): boolean {
-  return action === 'known_problem' || action === 'resolved';
 }
 
 /**
@@ -320,12 +322,20 @@ export async function POST(req: NextRequest) {
     }
 
     const verdict = actionV.value! as ManagerVerdict;
-    if (verdictIsEngagement(verdict)) {
-      // Before the status change, because a resolved card is still the card the
-      // manager engaged with — and after it the row may no longer be one this
-      // hotel's queue reads back.
-      await recordFindingActed(propertyId, idV.value!);
-    }
+    // EVERY verdict counts, including "not doing this". Before the status
+    // change, because a resolved card is still the card the manager engaged
+    // with — and after it the row may no longer be one this hotel's queue reads
+    // back.
+    //
+    // `muted` used to be excluded here, on the theory that counting a rejection
+    // as approval would keep a detector loud that a manager plainly dislikes.
+    // That reasoning had the failure mode backwards. The counters feed
+    // self-demotion, whose question is "does anyone at this hotel READ this
+    // check" — and a manager who read the card and decided against it read the
+    // card. Excluding mute made a deliberate decision look identical to a
+    // scroll-past, which is the one thing these counters exist to tell apart.
+    // Silence is now the only ambiguous signal, which is what silence is.
+    await recordFindingActed(propertyId, idV.value!);
 
     const updated = await setFindingStatus(
       propertyId,

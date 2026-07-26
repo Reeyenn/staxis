@@ -18,9 +18,14 @@
 //      exists only as a sort key and is never rendered. No basis in the
 //      hotel's own numbers means no money is mentioned at all.
 //
-//   4. "Known problem" is permanent quiet, EXCEPT escalation. Arming the
-//      silencer at 4 work orders is consent to 4, not to 9. "Mute" is
-//      unconditional and therefore asks first.
+//   4. Every card can be put down, and the three ways of putting it down mean
+//      three different things. "I handled it" ends the finding; if it comes
+//      back it comes back as a NEW card, because the handling did not take.
+//      "Seen" / "Known problem" is permanent quiet EXCEPT escalation — arming
+//      the silencer at 4 work orders is consent to 4, not to 9 — and it never
+//      claims the problem is over. "Not doing this" / "Mute" is unconditional
+//      and therefore asks first. Which buttons a given card offers is decided
+//      in finding-cards.ts, not here.
 //
 //   5. A quiet system and a dead one look different. The line above the cards
 //      says what was checked and when. If the last check was days ago it says
@@ -47,6 +52,7 @@ import {
   DAILY_CARD_CAP,
   cardEyebrowLabel,
   cardPhrasing,
+  closureButtons,
   dataAgeNote,
   declinedExplanation,
   distinctDetectors,
@@ -54,15 +60,15 @@ import {
   formatPriceRange,
   formatShortDate,
   isCardRenderable,
-  isQuiet,
   livenessLine,
   occurrenceLine,
   offersApproval,
-  offersResolve,
   offersUndo,
   rankFindings,
   severityChipClass,
   skippedNote,
+  type ClosureButton,
+  type ClosureVerdict,
   type Lang,
   type QueueFinding,
   type QueueRun,
@@ -74,26 +80,18 @@ interface QueuePayload {
   cap: number;
 }
 
-type Verdict = 'known_problem' | 'muted' | 'resolved';
+/**
+ * What a manager can tell Staxis about a card. The three verdicts and their
+ * wording per card kind live in finding-cards.ts (`closureButtons`) — this file
+ * renders whatever that returns and never decides which buttons a card gets.
+ */
+type Verdict = ClosureVerdict;
 
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
 const S = {
   heading: { en: 'What Staxis noticed', es: 'Lo que Staxis notó' },
-  knownProblem: { en: 'Known problem', es: 'Ya lo sé' },
-  knownProblemHint: {
-    en: 'Staxis stops bringing this up — unless it gets meaningfully worse.',
-    es: 'Staxis deja de mencionarlo, salvo que empeore de forma clara.',
-  },
-  mute: { en: 'Mute', es: 'Silenciar' },
-  muteSure: {
-    en: 'Staxis will stop watching this — sure?',
-    es: 'Staxis dejará de vigilar esto. ¿Seguro?',
-  },
-  muteYes: { en: 'Yes, mute it', es: 'Sí, silenciar' },
   cancel: { en: 'Cancel', es: 'Cancelar' },
-  fixed: { en: 'Fixed', es: 'Resuelto' },
-  gotIt: { en: 'Got it', es: 'Entendido' },
   seeNumbers: { en: 'See the numbers', es: 'Ver los números' },
   hideNumbers: { en: 'Hide the numbers', es: 'Ocultar los números' },
   tapToSee: { en: 'Tap to see them.', es: 'Toca para verlos.' },
@@ -321,6 +319,13 @@ function ActionRow({
 
 // ─── One card ───────────────────────────────────────────────────────────────
 
+/** Closure-button tone → the class that draws it. The only place the two meet. */
+function toneClass(tone: ClosureButton['tone']): string {
+  if (tone === 'primary') return 'fd-act fd-yes';
+  if (tone === 'danger') return 'fd-act fd-danger';
+  return 'fd-act';
+}
+
 interface CardProps {
   finding: QueueFinding;
   lang: Lang;
@@ -348,7 +353,11 @@ function FindingCard({
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
 
   const [showReceipt, setShowReceipt] = React.useState(false);
-  const [confirmingMute, setConfirmingMute] = React.useState(false);
+  // Which verdict is waiting on its second tap, if any. Keyed on the verdict
+  // rather than a boolean so the confirm step belongs to the button that asked
+  // for it — "Not doing this" and "Mute" are the same verdict wearing different
+  // words, and a shared boolean would put one button's prompt under the other.
+  const [confirming, setConfirming] = React.useState<ClosureVerdict | null>(null);
   // Once per card, not once per toggle. Opening and closing the receipt three
   // times is one manager reading it, and counting three would be inventing
   // engagement out of a fidget.
@@ -357,7 +366,8 @@ function FindingCard({
   const price = formatPriceRange(finding.price);
   const seen = occurrenceLine(finding, lang);
   const age = dataAgeNote(finding, lang);
-  const quiet = isQuiet(finding);
+  const closures = closureButtons(finding, lang);
+  const pending = closures.find((b) => b.verdict === confirming) ?? null;
 
   // Bring the linked card into view when it becomes the focused one.
   //
@@ -444,56 +454,40 @@ function FindingCard({
         <ActionRow finding={finding} lang={lang} busy={busy} onAction={onAction} />
 
         <div className="fd-acts">
-          {confirmingMute ? (
+          {pending ? (
             <>
-              <span className="fd-sure">{L('muteSure')}</span>
+              <span className="fd-sure">{pending.confirm!.prompt}</span>
               <button
                 type="button"
                 className="fd-act fd-danger"
                 disabled={busy}
-                onClick={() => onVerdict(finding.id, 'muted')}
+                onClick={() => onVerdict(finding.id, pending.verdict)}
               >
-                {L('muteYes')}
+                {pending.confirm!.yes}
               </button>
-              <button type="button" className="fd-act" onClick={() => setConfirmingMute(false)}>
+              <button type="button" className="fd-act" onClick={() => setConfirming(null)}>
                 {L('cancel')}
               </button>
             </>
           ) : (
             <>
-              {/* An FYI is information, not a task. One quiet way to put it
-                  away, and nothing that looks like it wants a decision. */}
-              <button
-                type="button"
-                className={quiet ? 'fd-act' : 'fd-act fd-yes'}
-                disabled={busy}
-                title={L('knownProblemHint')}
-                onClick={() => onVerdict(finding.id, 'known_problem')}
-              >
-                {quiet ? L('gotIt') : L('knownProblem')}
-              </button>
-
-              {offersResolve(finding) && (
+              {/* Which buttons, in which order, with which words: all of it
+                  comes from closureButtons(). Nothing about the card kind is
+                  decided here. */}
+              {closures.map((b) => (
                 <button
+                  key={b.verdict}
                   type="button"
-                  className="fd-act"
+                  className={toneClass(b.tone)}
                   disabled={busy}
-                  onClick={() => onVerdict(finding.id, 'resolved')}
+                  title={b.hint ?? undefined}
+                  onClick={() =>
+                    b.confirm ? setConfirming(b.verdict) : onVerdict(finding.id, b.verdict)
+                  }
                 >
-                  {L('fixed')}
+                  {b.label}
                 </button>
-              )}
-
-              {!quiet && (
-                <button
-                  type="button"
-                  className="fd-act fd-danger"
-                  disabled={busy}
-                  onClick={() => setConfirmingMute(true)}
-                >
-                  {L('mute')}
-                </button>
-              )}
+              ))}
 
               <button
                 type="button"
