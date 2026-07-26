@@ -73,22 +73,28 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const queue = await buildPortfolioQueue(caller);
-    // Wall A. Not an error — this person simply does not oversee a company, and
-    // the client renders their hotel's own queue.
-    if (!queue) return ok({ scope: null, cards: [], brief: null, run: null }, { requestId });
+    // Scope FIRST, and the limiter before the work — a cap you clear after
+    // reading a dozen hotels' ledgers is a cap on the response, not on the
+    // load. Wall A lives here too: no company job, no portfolio, and not an
+    // error — the client renders their hotel's own queue.
+    const scope = await companyScopeFor(caller);
+    if (!scope) return ok({ scope: null, cards: [], brief: null, run: null }, { requestId });
 
-    // Keyed on a REAL property id — api_limits.property_id FKs properties(id),
-    // so a company id there would FK-violate and the endpoint would fail for the
-    // wrong reason. The company is folded into the sub-key instead, so one
-    // company's traffic cannot exhaust another's bucket even when they happen to
-    // share an anchor hotel (they cannot, but the bucket should not depend on
-    // that). Fails OPEN: nothing here is billable and losing a portfolio screen
-    // to a limiter blip would be the worse failure.
-    const anchor = queue.cards.find((c) => c.hotel)?.hotel?.propertyId ?? null;
+    // Keyed on a REAL property id — one of the company's OWN hotels, because
+    // api_limits.property_id FKs properties(id) and a company id there would
+    // FK-violate, failing the endpoint for the wrong reason. Taken from the
+    // company's hotel list rather than from the cards: a portfolio whose only
+    // cards are company-scope has no hotel card to key on, and that would have
+    // left the endpoint uncapped in exactly the case where the portfolio checks
+    // are doing the most work. The organization is folded into the sub-key, so
+    // two companies can never share a bucket.
+    //
+    // Fails OPEN: nothing here is billable, and losing a portfolio screen to a
+    // limiter blip would be the worse failure.
+    const anchor = scope.propertyIds[0] ?? null;
     if (anchor) {
       const limit = await checkAndIncrementRateLimit('company-queue', anchor, {
-        subKey: queue.organizationId,
+        subKey: scope.organizationId,
       });
       if (!limit.allowed) {
         return err('Too many requests, try again shortly', {
@@ -99,6 +105,9 @@ export async function GET(req: NextRequest) {
         });
       }
     }
+
+    const queue = await buildPortfolioQueue(caller);
+    if (!queue) return ok({ scope: null, cards: [], brief: null, run: null }, { requestId });
 
     const { localDate } = await companyLocalToday(queue.organizationId, new Date());
     const { brief } = await getPortfolioBrief({

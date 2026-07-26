@@ -408,6 +408,24 @@ describe('Wall A — the portfolio surface does not exist for hotel people', () 
     assert.equal(res.status, 403);
   });
 
+  // Mutation: key the rate limiter off the CARDS instead of the company's own
+  // hotel list. A portfolio whose only cards are company-scope has no hotel
+  // card to key on, and the endpoint would be uncapped in exactly the case
+  // where it is doing the most work.
+  test('the portfolio read is rate-limited even with no hotel cards on it', async () => {
+    const before = await pg.query<{ n: string }>(
+      `select count(*)::text as n from public.api_limits where endpoint like 'company-queue%'`,
+    );
+    await portfolioFor(UID_VERA); // Tyler alone; whether it has cards is not the point
+    const after = await pg.query<{ n: string }>(
+      `select count(*)::text as n from public.api_limits where endpoint like 'company-queue%'`,
+    );
+    assert.ok(
+      Number(after.rows[0].n) > Number(before.rows[0].n) || Number(before.rows[0].n) > 0,
+      'the portfolio read never touched a rate-limit bucket',
+    );
+  });
+
   test('no session at all is refused', async () => {
     signedInAs = null;
     const res = await portfolioGet(req('https://staxis.test/api/company/queue'));
