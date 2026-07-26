@@ -8,6 +8,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { loadConversation, deleteConversation } from '@/lib/agent/memory';
+import { resolvePortfolioAccessUncached } from '@/lib/company/portfolio';
 import { getLivePendingActions } from '@/lib/agent/pending-actions';
 import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
 // Side-effect import — registers all tools so buildActionSummary/addons resolve.
@@ -40,6 +41,23 @@ export async function GET(
     const convo = await loadConversation(id, account.id as string);
     if (!convo) {
       return err('conversation not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+    // Cross-hotel chat: a portfolio conversation holds numbers from every hotel
+    // in a company, so owning the row is not enough to read it back. The gate
+    // that let it be created is re-run — a person whose company job ended, or
+    // whose company switched cross-hotel chat off, gets the same answer as
+    // somebody who was never in it. Deliberately the UNCACHED resolve: this is a
+    // fresh request, not a step inside a turn already in flight.
+    if (convo.organizationId) {
+      const access = await resolvePortfolioAccessUncached(
+        account.id as string,
+        convo.organizationId,
+      );
+      if (!access.ok) {
+        return err('conversation not found', {
+          requestId, status: 404, code: ApiErrorCode.NotFound,
+        });
+      }
     }
     // Rehydrate any approval cards still awaiting a decision (item: card
     // rehydration). Ownership is already proven by loadConversation above.

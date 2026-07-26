@@ -16,6 +16,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
 import type { AgentMessage, AgentToolCall, ModelTier } from './llm';
 import { escapeTrustMarkerContent } from './llm';
+import { orgScopeFromStamp, stampOrgScope } from './portfolio/conversation';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
@@ -26,6 +27,13 @@ export interface ConversationSummary {
   propertyId: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * Cross-hotel chat: the company this conversation answers for, or null for
+   * every ordinary per-hotel conversation. Surfaced so a caller can tell the
+   * two apart — a portfolio conversation's `propertyId` is only its anchor
+   * hotel and must never be read as "this chat is about that hotel".
+   */
+  organizationId: string | null;
 }
 
 export interface ConversationDetail extends ConversationSummary {
@@ -56,7 +64,7 @@ export interface SaveMessageOpts {
 export async function listConversations(userAccountId: string, limit = 30): Promise<ConversationSummary[]> {
   const { data, error } = await supabaseAdmin
     .from('agent_conversations')
-    .select('id, title, role, property_id, created_at, updated_at')
+    .select('id, title, role, property_id, prompt_version, created_at, updated_at')
     .eq('user_id', userAccountId)
     .order('updated_at', { ascending: false })
     .limit(limit);
@@ -68,6 +76,7 @@ export async function listConversations(userAccountId: string, limit = 30): Prom
     propertyId: row.property_id as string,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    organizationId: orgScopeFromStamp(row.prompt_version as string | null),
   }));
 }
 
@@ -179,6 +188,7 @@ export async function loadConversation(
     role: convo.role as AppRole,
     propertyId: convo.property_id as string,
     promptVersion: (convo.prompt_version as string) ?? null,
+    organizationId: orgScopeFromStamp(convo.prompt_version as string | null),
     createdAt: convo.created_at as string,
     updatedAt: convo.updated_at as string,
     messages,
@@ -191,20 +201,61 @@ export async function createConversation(opts: {
   role: AppRole;
   promptVersion?: string;
   title?: string;
+  /**
+   * Cross-hotel chat: the management company this conversation answers for.
+   * Stamped into `prompt_version` (see portfolio/conversation.ts for why there
+   * and not in a column of its own), so the row records the scope it was
+   * created at and the read path can refuse to hand it back to somebody who no
+   * longer holds a company job.
+   */
+  organizationId?: string | null;
 }): Promise<string> {
+  const baseVersion = opts.promptVersion ?? null;
+  const promptVersion = opts.organizationId && baseVersion
+    ? stampOrgScope(baseVersion, opts.organizationId)
+    : baseVersion;
   const { data, error } = await supabaseAdmin
     .from('agent_conversations')
     .insert({
       user_id: opts.userAccountId,
       property_id: opts.propertyId,
       role: opts.role,
-      prompt_version: opts.promptVersion ?? null,
+      prompt_version: promptVersion,
       title: opts.title ?? null,
     })
     .select('id')
     .single();
   if (error) throw error;
   return data.id as string;
+}
+
+/**
+ * The company a conversation belongs to, plus the hotel it is anchored to —
+ * both read from the stored row, never recomputed.
+ *
+ * Ownership is checked here so the caller cannot learn that somebody ELSE's
+ * conversation is org-scoped: a row that is not yours is `null`, exactly as a
+ * row that does not exist is.
+ */
+export async function loadConversationScope(
+  conversationId: string,
+  userAccountId: string,
+): Promise<{ propertyId: string; organizationId: string | null; role: AppRole } | null> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_conversations')
+    .select('id, user_id, property_id, role, prompt_version')
+    .eq('id', conversationId)
+    .maybeSingle();
+  if (error || !data) return null;
+  const row = data as {
+    user_id: string; property_id: string; role: string; prompt_version: string | null;
+  };
+  if (row.user_id !== userAccountId) return null;
+  return {
+    propertyId: row.property_id,
+    organizationId: orgScopeFromStamp(row.prompt_version),
+    role: row.role as AppRole,
+  };
 }
 
 export async function deleteConversation(

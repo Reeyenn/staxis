@@ -23,6 +23,14 @@
  * every assertion here runs WITH the section present. Asserting on a prompt
  * whose derived section silently failed to render would prove nothing.
  *
+ * 2026-07-26 (cross-hotel chat): a THIRD prompt assembler now exists —
+ * `buildPortfolioSystemPrompt`, for a company-scope person asking about every
+ * hotel their company operates. It is the worst version of this hazard yet: one
+ * moving value in its cached block misses the cache on every turn of a
+ * conversation whose prompt is proportional to the SIZE OF THE PORTFOLIO. It is
+ * policed at the bottom of this file, in the same suite, so a contributor who
+ * finds the cache rule here cannot miss that it applies to both surfaces.
+ *
  * 2026-07-26: and a SECOND derived section — the company rulebook (0365),
  * which renders a management company's own rules into every one of its hotels'
  * prompts. It is the same hazard again and a worse one: the block is shared by
@@ -44,7 +52,13 @@ import assert from 'node:assert/strict';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import { clearHotelIdentityCache } from '@/lib/agent/hotel-identity';
-import { clearCompanyRulebookCache, seedCompanyRulebookCache } from '@/lib/agent/company-tier';
+import {
+  clearCompanyRulebookCache,
+  seedCompanyRulebookCache,
+  seedCompanyRulebookCacheForOrganization,
+} from '@/lib/agent/company-tier';
+import { buildPortfolioSystemPrompt } from '@/lib/agent/portfolio/prompt';
+import type { PortfolioSnapshot } from '@/lib/agent/portfolio/snapshot';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 const PROPERTY_ID = '00000000-0000-0000-0000-0000000000e1';
@@ -289,6 +303,104 @@ describe('the refresh-the-page lie is gone', () => {
   it('the stable rule explicitly forbids it instead', async () => {
     const { stable } = await buildSystemPrompt('owner', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
     assert.match(stable, /NEVER tell the user to refresh/i);
+  });
+});
+
+// ─── The portfolio surface, under the same rule ─────────────────────────────
+
+const PORTFOLIO_ORG_ID = '00000000-0000-0000-0000-0000000000c2';
+const PORTFOLIO_PID_B = '00000000-0000-0000-0000-0000000000e2';
+
+function portfolioSnapshot(minutesOld: number): PortfolioSnapshot {
+  return {
+    organizationId: PORTFOLIO_ORG_ID,
+    hotels: [
+      {
+        propertyId: PROPERTY_ID,
+        name: 'Comfort Suites',
+        totalRooms: 88,
+        timezone: 'America/Chicago',
+        openFindings: 2,
+        needsDecision: 1,
+        pmsCapturedAt: agedBy(minutesOld),
+        pmsSource: 'snapshot_capture',
+      },
+      {
+        propertyId: PORTFOLIO_PID_B,
+        name: 'Lufkin Inn',
+        totalRooms: 45,
+        timezone: 'America/Chicago',
+        openFindings: 0,
+        needsDecision: 0,
+        pmsCapturedAt: null,
+        pmsSource: null,
+      },
+    ],
+    omittedHotelCount: 0,
+    failedHotelCount: 0,
+  };
+}
+
+const PORTFOLIO_IDENTITY = {
+  organizationId: PORTFOLIO_ORG_ID,
+  organizationName: 'Gulf Coast Hotels',
+  hotels: [
+    { id: PROPERTY_ID, name: 'Comfort Suites', totalRooms: 88, timezone: 'America/Chicago' },
+    { id: PORTFOLIO_PID_B, name: 'Lufkin Inn', totalRooms: 45, timezone: 'America/Chicago' },
+  ],
+  omittedHotelCount: 0,
+};
+
+describe('prompt cache purity — the portfolio surface', () => {
+  before(() => {
+    // Seeded at ORGANIZATION scope, which is how the portfolio assembler reads
+    // the rulebook. Without it the company section renders nothing and the
+    // assertions below would be policing a prompt missing its riskiest block.
+    seedCompanyRulebookCacheForOrganization(PORTFOLIO_ORG_ID, {
+      organizationId: PORTFOLIO_ORG_ID,
+      facts: [{
+        id: 'p1', organizationId: PORTFOLIO_ORG_ID,
+        topic: 'chemical_vendor', content: 'All our hotels use Ecolab for chemicals.',
+        category: 'vendors', source: 'explicit_user', reviewState: 'confirmed',
+        policyKey: null, policyValue: null, createdByName: 'Ana',
+        updatedAt: '2026-07-20T00:00:00.000Z',
+      }],
+    });
+  });
+
+  it('the derived portfolio sections really are in the block being policed', async () => {
+    const { stable } = await buildPortfolioSystemPrompt({
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
+      snapshot: portfolioSnapshot(5), conversationId: 'conv-p', now: NOW,
+    });
+    assert.match(stable, /The hotels you are being asked about/);
+    assert.match(stable, /Company rulebook/);
+    assert.match(stable, /Comfort Suites — 88 rooms/);
+  });
+
+  it('two turns 40 minutes apart produce byte-identical stable blocks', async () => {
+    const a = await buildPortfolioSystemPrompt({
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
+      snapshot: portfolioSnapshot(5), conversationId: 'conv-p', now: NOW,
+    });
+    const b = await buildPortfolioSystemPrompt({
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
+      snapshot: portfolioSnapshot(45), conversationId: 'conv-p', now: NOW,
+    });
+    assert.equal(a.stable, b.stable);
+    assert.notEqual(a.dynamic, b.dynamic);
+  });
+
+  it('the cached block carries no clock, no age and no live count', async () => {
+    const { stable, dynamic } = await buildPortfolioSystemPrompt({
+      identity: PORTFOLIO_IDENTITY, companyRole: 'vp',
+      snapshot: portfolioSnapshot(5), conversationId: 'conv-p', now: NOW,
+    });
+    const captured = /PMS data as of ([^(]+) \(/.exec(dynamic)?.[1]?.trim();
+    assert.ok(captured && captured.length > 0, 'the dynamic block renders a clock time');
+    assert.equal(stable.includes(captured), false, `stable leaked the clock "${captured}"`);
+    assert.equal(/\b(min|hr|days?) ago\b/i.test(stable), false);
+    assert.equal(/open item/i.test(stable), false);
   });
 });
 

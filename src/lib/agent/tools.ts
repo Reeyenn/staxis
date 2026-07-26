@@ -33,6 +33,18 @@ export type VoiceMode = 'general' | 'housekeeper_issue' | 'compliance';
 
 // ─── Public types ──────────────────────────────────────────────────────────
 
+/**
+ * The company a portfolio turn is answering for, and the hotels the spine said
+ * it covers. Carried on ToolContext, resolved at the route boundary, and
+ * re-verified inside every portfolio tool.
+ */
+export interface PortfolioToolScope {
+  organizationId: string;
+  organizationName: string | null;
+  /** Sorted, from `resolvePortfolioAccess`. Never from a request body. */
+  propertyIds: string[];
+}
+
 export interface ToolContext {
   /** The authenticated account making the call. */
   user: {
@@ -98,6 +110,23 @@ export interface ToolContext {
    *  copy in the voice control tools (confirm/cancel read-backs) — never for
    *  authorization. Absent → treat as 'en'. Voice-only. */
   voiceLang?: string | null;
+  /**
+   * Cross-hotel chat (2026-07-26). Present ONLY on a portfolio-surface turn,
+   * and set ONLY by the portfolio route after the whole gate stack passed:
+   * requireSession → loadManagerCaller → a company-scope hat at this company
+   * → that company's `cross_hotel_ai_chat` setting is on.
+   *
+   * A tool declaring `surfaces: ['portfolio']` is REFUSED by executeTool when
+   * this is absent, so a portfolio tool cannot execute on a context that never
+   * went through the company gate — including the per-hotel chat route's
+   * context, the approval-resolve route's, and the eval harness's.
+   *
+   * The tools do NOT trust it. Each one re-resolves the caller's coverage
+   * through the spine before reading anything (see tools/portfolio.ts): this
+   * field decides WHICH company is being asked about, not what the answer is
+   * allowed to include.
+   */
+  portfolio?: PortfolioToolScope;
   /** When true, mutation tools should run their pre-write validation
    *  (lookups, role checks, etc.) but SKIP the actual DB mutation —
    *  return synthetic success at the would-have-mutated boundary.
@@ -141,8 +170,17 @@ export interface ToolResult {
  * and walkthrough surfaces. Default is 'chat' only — tools must
  * explicitly opt into other surfaces. Stops a voice-specific tool
  * (e.g. play_alert_sound) from being callable from the chat agent.
+ *
+ * 'portfolio' (2026-07-26, cross-hotel chat) is why this mechanism was worth
+ * having. Every one of the ~70 existing tools declares no `surfaces` and is
+ * therefore chat-only, so the portfolio catalog is EMPTY of them by
+ * construction — not by a filter someone has to maintain. The two catalogs are
+ * disjoint in both directions: `getToolsForRole` never offers a hotel tool on
+ * the portfolio surface, and `executeTool` refuses one even if a stale tool
+ * list leaked it. That disjointness is the wall, and it is the reason this
+ * surface did NOT need a second tool registry or a second tool loop.
  */
-export type AgentSurface = 'chat' | 'voice' | 'walkthrough';
+export type AgentSurface = 'chat' | 'voice' | 'walkthrough' | 'portfolio';
 
 export interface ToolDefinition<TArgs = unknown> {
   /** Stable identifier — what the model calls (e.g. "mark_room_clean"). */
@@ -355,6 +393,22 @@ export async function executeTool(
     return {
       ok: false,
       error: `Tool ${name} is not available on the ${ctx.surface} surface.`,
+    };
+  }
+  // Cross-hotel chat gate. A tool that opts into the portfolio surface may only
+  // run on a context the portfolio route built — the one place the company-scope
+  // hat and the `cross_hotel_ai_chat` setting are checked. Without this, a
+  // portfolio tool reached from any other execution path (the per-hotel chat
+  // route, the approval-resolve route, the eval harness) would fall through to
+  // its handler with no company scope at all.
+  //
+  // Stated as "portfolio tool needs portfolio scope" rather than "portfolio
+  // surface needs it", so a tool that ever opts into BOTH surfaces still cannot
+  // read across hotels from a per-hotel turn.
+  if (allowedSurfaces.includes('portfolio') && !ctx.portfolio) {
+    return {
+      ok: false,
+      error: `Tool ${name} answers about a whole management company and can only run in a portfolio conversation. Tell the user this question has to be asked from the company view.`,
     };
   }
   // Feature #11: voice-mode gate. Matches the getToolsForRole filter so

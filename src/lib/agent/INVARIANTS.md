@@ -1307,3 +1307,142 @@ for".
   if the reconciler's ON CONFLICT no longer matched. That is exactly how this
   invariant was discovered.
 - **History:** The company spine, 2026-07-26.
+
+## Cross-hotel chat (no migration — 2026-07-26)
+
+The portfolio surface lets a company-scope person (owner / VP / finance) ask the
+copilot about every hotel their management company operates. It is the first
+place in the product where ONE answer legitimately spans several hotels, so the
+invariants below are about the SET being right rather than about a single
+`property_id` filter being present.
+
+- **INV-PORTFOLIO-1 — a portfolio read is a LOOP over `scopedDb(pid)`, never a
+  cross-property query.** The set of hotels is decided ONCE, by the spine
+  (`resolvePortfolioAccess`), and every read inside a portfolio tool is bounded
+  by one member of that set.
+- **Enforced by:** structure plus the build. `src/lib/agent/tools/portfolio.ts`
+  and `src/lib/agent/portfolio/**` import no service-role client, and
+  `scripts/audit-service-role-imports.mjs` + the eslint
+  `no-restricted-imports` rule refuse one anywhere under `src/lib/agent/**` —
+  so an `.in('property_id', […])` is not expressible there without a visible,
+  counted `unscopedBecause` escape hatch. Every hotel-scoped read goes through
+  `forEachHotel` (`portfolio/hotels.ts`), whose only database handle is
+  `scopedDb(pid)`. **NOT DB-enforceable:** Postgres cannot see which client a
+  statement came from; the guarantee is that the wrong shape does not compile
+  past the audit.
+- **Consequence, stated because it is the point:** a bug in a portfolio tool can
+  return the wrong SUBSET of the caller's own hotels. It cannot reach anybody
+  else's, because the ids never came from the request.
+- **Tested by:** `portfolio-chat-leak.integration.test.ts` — "every portfolio
+  tool runs, returns company A's data, and leaks nothing", which asserts per
+  statement that (a) it carried the hotel filter and (b) the value of that
+  filter was one of company A's two hotels. Verified by mutation: replacing the
+  loop with a single unfiltered read turns the suite red at the statement audit
+  before any assertion about the payload runs.
+- **History:** cross-hotel chat, 2026-07-26.
+
+- **INV-PORTFOLIO-2 — the tools do not trust the context they were handed.**
+  Every portfolio tool re-resolves the caller's company job AND the company's
+  `cross_hotel_ai_chat` setting through the spine before reading anything, and
+  intersects that fresh answer with the context's list. Both must contain a
+  hotel for it to be read.
+- **Enforced by:** one shared gate — `reachFor()` in `tools/portfolio.ts` — that
+  every handler's first line calls. **NOT DB-enforceable** (it is a code path,
+  not a data fact), and deliberately NOT collapsed into "the route checked it":
+  the route checks once per turn, and a company that switches the feature off
+  mid-conversation must close the door on the next tool call, not at the next
+  login. The 15-second cache in `resolvePortfolioAccess` is what makes the
+  re-check affordable, and its TTL is shorter than one model turn for exactly
+  this reason.
+- **Tested by:** "the tool re-checks the company switch, not just the context it
+  was handed" — the setting is flipped off with a context that still says yes,
+  and the tool must refuse on its own. Verified by mutation: reading
+  `ctx.portfolio.propertyIds` directly instead of re-resolving turns that case
+  red and leaves every other case green.
+- **History:** cross-hotel chat, 2026-07-26.
+
+- **INV-PORTFOLIO-3 — a hotel a caller does not cover is refused BY THE TOOL,
+  and refused whole.** A `hotelIds` argument naming any hotel outside the fresh
+  covered set fails the entire call. The bad id is never silently dropped and
+  the remaining ids are never answered.
+- **Enforced by:** `reachFor()`. **NOT DB-enforceable.** Filtering instead of
+  refusing is the tempting version and it is worse: it answers the question and
+  hides that somebody asked for something they may not have. The refusal also
+  does not confirm or deny that the id names a real hotel anywhere — "not one of
+  yours" is the whole answer a caller is owed.
+- **Tested by:** "the other company's hotel is refused INSIDE the tool" (across
+  four tools, asserting additionally that no statement returned a company-B row
+  on the way to saying no) and "a hotel id smuggled in alongside a legitimate
+  one is refused, not filtered".
+- **History:** cross-hotel chat, 2026-07-26.
+
+- **INV-PORTFOLIO-4 — no portfolio tool mutates, and no per-hotel tool is
+  reachable at portfolio scope.** The two catalogs are disjoint in both
+  directions.
+- **Enforced by:** the surface mechanism that already existed. Every per-hotel
+  tool declares no `surfaces` and is therefore chat-only, so
+  `getToolsForRole(role, 'portfolio')` cannot offer one; and `executeTool`'s
+  surface gate refuses one even if a stale tool list leaked it. In the other
+  direction, `executeTool` refuses any tool declaring the portfolio surface when
+  `ctx.portfolio` is absent — which is the shape EVERY other execution path
+  builds (per-hotel chat, approval-resolve, the eval harness). The no-mutation
+  half is a test, not a type: the portfolio route runs with no approval gate, so
+  a mutating tool there would execute with no card.
+- **Why company-wide actions are absent on purpose:** the approval card was
+  designed around one hotel's manager approving one hotel's change, and the
+  blast radius of a wrong action multiplies by the size of the portfolio. This
+  is a deliberate deferral (founder, 2026-07-26), not an oversight.
+- **Tested by:** the whole "the two catalogs are disjoint" suite, including "not
+  one portfolio tool mutates", which fails on `mutates` OR `approval` being set.
+- **History:** cross-hotel chat, 2026-07-26.
+
+- **INV-PORTFOLIO-5 — an individual hotel's private facts never enter a
+  portfolio prompt.** The portfolio prompt carries hotel NAMES and ROOM COUNTS
+  and no other hotel-supplied fact: no hotel-identity tier, no PMS-family tier,
+  no `<staxis-memory>` block.
+- **Enforced by:** `buildPortfolioSystemPrompt` is a separate assembler with its
+  own typed `StableTier` union, which contains no `hotel_identity` and no
+  `pms_family` member — adding one is a compile error, not a review catch.
+  **NOT DB-enforceable** (prompt assembly is code).
+- **Why it matters twice:** one hotel's internal setup in front of a question
+  about a different hotel is a correctness problem; twenty hotels' identity
+  blocks in one CACHED prompt is a cost problem that has no visible symptom at
+  all.
+- **Tested by:** `portfolio-prompt-assembly.test.ts` — a control case first
+  proves the per-hotel prompt genuinely renders those facts (otherwise the
+  absence assertions would be vacuous), then the portfolio prompt for a
+  portfolio containing that same hotel is asserted to contain none of them.
+- **History:** cross-hotel chat, 2026-07-26.
+
+- **INV-PORTFOLIO-6 — the portfolio prompt obeys the same cache contract as the
+  hotel prompt.** Names and room counts are stable; live counts and every as-of
+  value live in the dynamic half.
+- **Enforced by:** the disjoint tier unions above, plus
+  `agent-prompt-cache-purity.test.ts` ("prompt cache purity — the portfolio
+  surface") and the purity cases in `portfolio-prompt-assembly.test.ts`, which
+  build twice at different data ages and require a byte-identical stable block
+  while requiring the dynamic blocks to differ. The PRINTED stamp is constant
+  for the conversation; the PERSISTED label carries the per-turn reach digest
+  and the company id, and asserting that the company id is NOT printed is what
+  keeps the two apart. Same split as INV-TIER-6.
+- **History:** cross-hotel chat, 2026-07-26.
+
+- **INV-PORTFOLIO-7 — a company-wide transcript is readable only while its
+  reader still passes the gate.** Owning the row is not enough.
+- **Enforced by:** code — `/api/agent/conversations/[id]` re-runs
+  `resolvePortfolioAccessUncached` for any conversation carrying an org scope
+  and answers 404 when it fails. **NOT DB-enforced**, and the scope marker is
+  NOT a column: `agent_conversations.property_id` is `NOT NULL` and this work
+  ships no migration, so a portfolio conversation is ANCHORED to one hotel the
+  caller genuinely covers and the company id rides as a trailing `+org:<uuid>`
+  segment in `prompt_version` (see `portfolio/conversation.ts`, which is the
+  only reader and the only writer of that format). The anchor is read BACK from
+  the row on later turns, never recomputed — a company that acquires a hotel
+  sorting before the old anchor would otherwise fail its VP's next message at
+  `staxis_lock_load_and_record_user_turn`'s property check.
+  **Trigger condition: the day `agent_conversations` gains a nullable
+  `organization_id`, `portfolio/conversation.ts` is the only file to move.**
+- **Tested by:** "an org-scoped row reads back for its owner, and stops when the
+  gate closes", "a per-hotel conversation is unaffected and cannot be continued
+  as a company one", "somebody else's company conversation is not readable".
+- **History:** cross-hotel chat, 2026-07-26.
