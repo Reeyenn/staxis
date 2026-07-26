@@ -17,6 +17,7 @@ import { errToString } from '@/lib/utils';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { loadManagerCaller } from '@/lib/team-auth';
 import { listEquipment, createEquipment } from '@/lib/equipment/store';
 import { parseEquipmentInput } from '@/lib/equipment/validate';
 
@@ -90,7 +91,21 @@ export async function POST(req: NextRequest) {
   if (parsed.error) return err(parsed.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
   try {
-    const created = await createEquipment(pid, parsed.value!);
+    // Provenance (0368), and BEST-EFFORT on purpose. The gate that decides who
+    // may create equipment is the manage_equipment capability above; this lookup
+    // only puts a name on the row. `loadManagerCaller` returns null for a role
+    // that cannot manage a team, and such a role can legitimately hold the
+    // capability — so a null here records an anonymous author, and must never
+    // refuse a create the capability check already allowed.
+    //
+    // It is the shared, schema-pinned account lookup rather than a hand-rolled
+    // one: the last three times a route rolled its own it selected a column that
+    // does not exist, PostgREST errored, and the feature died silently.
+    const author = await loadManagerCaller(session.userId);
+    const created = await createEquipment(pid, parsed.value!, {
+      createdByAccountId: author?.accountId ?? null,
+      createdByName: author?.displayName ?? null,
+    });
     return ok({ id: created.id }, { requestId, status: 201 });
   } catch (e) {
     log.error('[maintenance/equipment] create failed', { requestId, pid, msg: errToString(e) });

@@ -18,7 +18,7 @@ const EQUIPMENT_COLUMNS =
   'id, property_id, name, category, location, manufacturer, model_number, serial_number, ' +
   'status, install_date, expected_lifetime_years, purchase_cost, replacement_cost, ' +
   'pm_interval_days, last_pm_at, warranty_provider, warranty_expires_at, notes, ' +
-  'created_at, updated_at';
+  'created_at, updated_at, created_from, created_by_name';
 
 function num(v: unknown): number | null {
   if (v == null) return null;
@@ -51,6 +51,11 @@ function mapRow(r: Record<string, unknown>): Equipment {
     notes: str(r.notes),
     createdAt: str(r.created_at),
     updatedAt: str(r.updated_at),
+    // Anything other than the one suggestion value reads as manual, including
+    // the null a pre-0368 row would carry: "somebody typed this in" is the true
+    // story of every asset that existed before Staxis could offer to add one.
+    createdFrom: r.created_from === 'suggestion' ? 'suggestion' : 'manual',
+    createdByName: str(r.created_by_name),
   };
 }
 
@@ -160,11 +165,61 @@ export async function getEquipmentDetail(pid: string, id: string): Promise<Equip
   };
 }
 
-/** Create an asset. Returns the new id. */
-export async function createEquipment(pid: string, input: EquipmentInput): Promise<{ id: string }> {
+/** Who logged an asset. Cosmetic on the screen, load-bearing in the audit
+ *  trail — see 0368 on why "the hotel put this in" is the whole basis for
+ *  trusting the equipment list. */
+export interface EquipmentAuthor {
+  createdByAccountId?: string | null;
+  createdByName?: string | null;
+}
+
+/** Create an asset somebody typed into the registry form. Returns the new id. */
+export async function createEquipment(
+  pid: string,
+  input: EquipmentInput,
+  author: EquipmentAuthor = {},
+): Promise<{ id: string }> {
   const { data, error } = await supabaseAdmin
     .from('equipment')
-    .insert({ ...inputToRow(input), property_id: pid })
+    .insert({
+      ...inputToRow(input),
+      property_id: pid,
+      created_by_account_id: author.createdByAccountId ?? null,
+      created_by_name: author.createdByName ?? null,
+      created_from: 'manual',
+    })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return { id: String(data.id) };
+}
+
+/**
+ * Create an asset from a manager's one tap on a drip question (0368).
+ *
+ * Everything except the NAME is left null on purpose. Staxis counted a word in
+ * this hotel's work orders; it knows nothing about the machine's category, where
+ * it is, when it was installed or what it cost, and filling any of those in with
+ * a plausible default would put a fact on the registry that nobody at the hotel
+ * asserted. `category` falls to the column's own 'other' default, which is the
+ * honest value for "they have not said". The manager can open the row and fill
+ * in the rest, or leave it as the one true thing they confirmed.
+ *
+ * `created_from: 'suggestion'` is what makes the difference visible afterwards.
+ */
+export async function createEquipmentFromSuggestion(
+  pid: string,
+  spec: { name: string } & EquipmentAuthor,
+): Promise<{ id: string }> {
+  const { data, error } = await supabaseAdmin
+    .from('equipment')
+    .insert({
+      property_id: pid,
+      name: spec.name,
+      created_by_account_id: spec.createdByAccountId ?? null,
+      created_by_name: spec.createdByName ?? null,
+      created_from: 'suggestion',
+    })
     .select('id')
     .single();
   if (error) throw error;

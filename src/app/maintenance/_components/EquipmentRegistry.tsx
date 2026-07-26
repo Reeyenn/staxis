@@ -16,6 +16,7 @@ import { canManageTeam } from '@/lib/roles';
 import { tr } from '@/lib/i18n-utils';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { PatternChip } from '@/components/concourse/PatternChip';
 import {
   fetchEquipmentDetail,
   createEquipmentAsset, updateEquipmentAsset, deleteEquipmentAsset,
@@ -351,7 +352,7 @@ function DetailRow({ label, value }: { label: string; value: React.ReactNode }) 
 }
 
 function EquipmentDetailModal({
-  open, onClose, detail, loading, loadError, lang, isMgr, onEdit, onDelete, onRetry,
+  open, onClose, detail, loading, loadError, lang, isMgr, onEdit, onDelete, onRetry, propertyId,
 }: {
   open: boolean;
   onClose: () => void;
@@ -359,6 +360,10 @@ function EquipmentDetailModal({
   loading: boolean;
   loadError: boolean;
   lang: string;
+  /** For the "Staxis sees a pattern here" chip. This sheet is the only screen
+   *  in Staxis that shows ONE piece of equipment on its own, which is exactly
+   *  the boundary the chip is allowed to live inside — see target-chip.ts. */
+  propertyId: string | null;
   isMgr: boolean;
   onEdit: (e: Equipment) => void;
   onDelete: (e: Equipment) => void;
@@ -422,6 +427,17 @@ function EquipmentDetailModal({
             {w && <WarrantyBadge w={w} />}
           </div>
 
+          {/* "Staxis sees a pattern here →" — renders NOTHING at all unless this
+              asset has an open finding, so a healthy piece of equipment looks
+              exactly as it did before this shipped. A signpost, never a second
+              card: the summary, the money and the verdicts live in the queue. */}
+          <PatternChip
+            propertyId={propertyId}
+            kind="equipment"
+            value={eq.id}
+            lang={lang === 'es' ? 'es' : 'en'}
+          />
+
           {/* spend summary */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
             {[
@@ -448,6 +464,21 @@ function EquipmentDetailModal({
             <DetailRow label={tr(lang, 'Replacement cost', 'Costo de reemplazo')} value={fmtMoney(eq.replacementCost, lang)} />
             <DetailRow label={tr(lang, 'Warranty provider', 'Proveedor garantía')} value={eq.warrantyProvider ?? '—'} />
           </div>
+
+          {/* Where this row came from. Only ever shown when there is something
+              to say — an asset logged before Staxis recorded provenance stays
+              silent rather than claiming an author it does not know. */}
+          {(eq.createdFrom === 'suggestion' || eq.createdByName) && (
+            <p style={{ fontFamily: FONT_SANS, fontSize: 12, color: T.ink3, margin: 0, lineHeight: 1.5 }}>
+              {eq.createdFrom === 'suggestion'
+                ? tr(
+                    lang,
+                    `Staxis noticed this in your work orders and asked${eq.createdByName ? `; ${eq.createdByName} said yes` : ''}.`,
+                    `Staxis lo notó en sus órdenes de trabajo y preguntó${eq.createdByName ? `; ${eq.createdByName} dijo que sí` : ''}.`,
+                  )
+                : tr(lang, `Added by ${eq.createdByName}.`, `Agregado por ${eq.createdByName}.`)}
+            </p>
+          )}
 
           {eq.notes && (
             <div>
@@ -836,6 +867,7 @@ export function EquipmentRegistry({ onBack }: { onBack: () => void }) {
         onEdit={(e) => { closeDetail(); openEdit(e); }}
         onDelete={handleDelete}
         onRetry={() => { if (detailId) void loadDetail(detailId); }}
+        propertyId={activePropertyId ?? null}
       />
 
       <ToastHost

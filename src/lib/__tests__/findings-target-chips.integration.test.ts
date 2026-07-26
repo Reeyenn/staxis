@@ -236,7 +236,11 @@ describe('/api/findings/for-target — the chip’s one question', () => {
     });
 
     test('an unknown kind is 400 rather than a silent empty answer', async () => {
-      for (const kind of ['equipment', 'staff', 'ROOM', '']) {
+      // `equipment` used to be in this list and is now a real kind (0368). The
+      // set is "things no screen in Staxis shows on their own", so it shrinks
+      // whenever one of them grows a detail view — which is exactly the event
+      // that should make somebody edit this line on purpose.
+      for (const kind of ['staff', 'vendor', 'ROOM', '']) {
         const res = await GET(req(`?propertyId=${PID_A}&kind=${encodeURIComponent(kind)}&value=214`));
         assert.equal(res.status, 400, `kind "${kind}" was accepted`);
       }
@@ -466,6 +470,11 @@ describe('the chip appears on things and nowhere else', () => {
     // by another name. That distinction is the reason this map counts per file
     // rather than merely checking membership.
     ['src/app/maintenance/_components/PreventiveTab.tsx', 1],
+    // Maintenance → Equipment registry → one asset's own detail sheet. Inside
+    // `EquipmentDetailModal`, NOT on the registry grid that same file renders:
+    // the grid is a list, and a chip per tile would be the tab strip wearing a
+    // different name.
+    ['src/app/maintenance/_components/EquipmentRegistry.tsx', 1],
   ]);
 
   test('only the per-thing views mount a PatternChip, once each', () => {

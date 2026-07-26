@@ -23,6 +23,7 @@ import type { OperationalSignal } from '@/lib/agent/operational-signals';
 import type { checkOperationalAlerts } from '@/lib/agent/nudges';
 import type { PropertyRunResult } from '@/lib/rules-engine';
 import type {
+  EquipmentWorkOrderHistory,
   InventoryUsageHistory,
   OperatingRhythmHistory,
   PreventiveScheduleFeed,
@@ -147,7 +148,14 @@ export function isUsablePriceRange(price: PriceRange | null | undefined): price 
  * "Staxis sees a pattern here" on the thing's own record. A kind nothing can
  * render is a kind that can only rot.
  */
-export type FindingTargetKind = 'room' | 'inventory_item' | 'preventive_task';
+export type FindingTargetKind =
+  | 'room'
+  | 'inventory_item'
+  | 'preventive_task'
+  /** An `equipment` row — the asset registry in Maintenance. Renders its chip on
+   *  the asset's own detail sheet, which is the only screen in Staxis that shows
+   *  one piece of equipment on its own. */
+  | 'equipment';
 
 /**
  * WHICH thing a finding is about, in a shape a screen can match on.
@@ -219,6 +227,11 @@ export type FeedId =
   // logging maintenance. A different question, a different unit, and the only
   // one of the two that has a fix Staxis can offer.
   | 'room_work_order_history'
+  // Which pieces of the hotel's OWN equipment registry keep breaking. A batch
+  // of PTAC units spans forty rooms, so "that batch is dying" is invisible to a
+  // per-location count — four tickets in four rooms look like four unrelated
+  // faults. Different grouping, different question, different remedy.
+  | 'equipment_work_order_history'
   | 'inventory_usage_history'
   | 'operating_rhythm'
   // The one feed here that is not the hotel's trailing RECORD but its stated
@@ -240,6 +253,7 @@ export interface FeedShapes {
   supply_spend_history: SupplySpendHistory;
   work_order_history: WorkOrderHistory;
   room_work_order_history: RoomWorkOrderHistory;
+  equipment_work_order_history: EquipmentWorkOrderHistory;
   inventory_usage_history: InventoryUsageHistory;
   operating_rhythm: OperatingRhythmHistory;
   preventive_schedule: PreventiveScheduleFeed;

@@ -149,7 +149,15 @@ describe('what a finding is about', () => {
   test('only kinds a screen can actually render are kinds', () => {
     assert.equal(isFindingTargetKind('room'), true);
     assert.equal(isFindingTargetKind('inventory_item'), true);
-    assert.equal(isFindingTargetKind('equipment'), false);
+    assert.equal(isFindingTargetKind('preventive_task'), true);
+    // `equipment` used to be the counter-example here — the kind nothing could
+    // render. It became a real kind when the asset registry grew a detail sheet
+    // (0368), which is exactly the event that should make somebody edit this
+    // line deliberately. The counter-examples are now things Staxis still has no
+    // screen for on their own.
+    assert.equal(isFindingTargetKind('equipment'), true);
+    assert.equal(isFindingTargetKind('staff'), false);
+    assert.equal(isFindingTargetKind('vendor'), false);
     assert.equal(isFindingTargetKind(''), false);
     assert.equal(isFindingTargetKind(null), false);
   });

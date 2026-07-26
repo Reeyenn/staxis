@@ -409,6 +409,12 @@ describe('every shipped detector does what it says it does', () => {
         // SAID rather than what it did, and so the only one that can speak on a
         // hotel too new to have a baseline.
         'preventive_due',
+        // The equipment list: the only detector that groups by a thing the
+        // hotel DESCRIBED. A batch of PTAC units spans forty rooms, so
+        // `repeat_room_work_orders` sees four unrelated faults and nothing else
+        // can see anything at all — the link exists only because somebody at the
+        // hotel put the batch on the list and attached the tickets to it.
+        'repeat_equipment_work_orders',
       ].sort(),
       'every detection system in the app runs under the one runner',
     );
