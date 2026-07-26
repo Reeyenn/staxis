@@ -611,6 +611,17 @@ describe('a quiet watcher and a dead one must not look the same', () => {
     assert.equal(line.text, 'Checked 2 things last night — 0 look normal.');
   });
 
+  // Mutation: hard-code the plural. A hotel on its first night, or one where
+  // every check but one is skipping for want of data, reads "Checked 1 things
+  // last night" — which is the sentence that tells a manager nobody looked at
+  // this screen before they did.
+  test('one check reads as one thing, in both languages', () => {
+    const single = run(1, { detectorsChecked: 1 });
+    assert.equal(livenessLine(single, 0, 'en', NOW).text, 'Checked 1 thing last night — 1 look normal.');
+    assert.equal(livenessLine(single, 1, 'es', NOW).text, 'Se revisó 1 cosa anoche — 0 se ven normales.');
+    assert.equal(livenessLine(single, 0, 'es', NOW).text, 'Se revisó 1 cosa anoche — 1 se ve normal.');
+  });
+
   test('"normal" counts distinct CHECKS, not findings — five cards from one check is one', () => {
     const fromOneDetector = [
       finding({ id: 'a', detectorId: 'det_x' }),

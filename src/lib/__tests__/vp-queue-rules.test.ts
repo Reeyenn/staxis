@@ -296,6 +296,23 @@ describe('the locked card', () => {
     assert.match(signOffNotice(signOff({ approverNames: ['Ana', 'Maria'] }), 'en'), /Ana and Maria/);
     assert.match(signOffNotice(signOff({ approverNames: ['Ana', 'Maria'] }), 'es'), /Ana y Maria/);
   });
+
+  // Mutation: build the Spanish sentence as "de " + the role word. Two of the
+  // four roles then read "de el VP" / "de el gerente", which Spanish contracts
+  // to "del". Caught on screen, so it is pinned here.
+  test('the Spanish notice contracts, for every role', () => {
+    const expected: Record<string, RegExp> = {
+      owner: /Necesita la aprobación de la propiedad\b/,
+      vp: /Necesita la aprobación del VP\b/,
+      finance: /Necesita la aprobación de finanzas\b/,
+      general_manager: /Necesita la aprobación del gerente\b/,
+    };
+    for (const [approverRole, pattern] of Object.entries(expected)) {
+      const text = signOffNotice(signOff({ approverRole, approverNames: [] }), 'es');
+      assert.match(text, pattern, `wrong Spanish for ${approverRole}: ${text}`);
+      assert.doesNotMatch(text, /\bde el\b/, `uncontracted "de el" for ${approverRole}`);
+    }
+  });
 });
 
 // ═══ CLIMBING ══════════════════════════════════════════════════════════════
@@ -908,6 +925,22 @@ describe('the portfolio morning brief', () => {
     }))!;
     const completeLast = complete.lines[complete.lines.length - 1];
     assert.match(completeLast.en, /across all 12 of your hotels\./);
+  });
+
+  // Mutation: hard-code "things". A company on its first night reads
+  // "Checked 1 things overnight", which is the sentence that tells a reader
+  // nobody looked at this screen before they did.
+  test('one thing checked reads as one thing', () => {
+    const one = buildPortfolioBrief(input({
+      run: { ...run, thingsChecked: 1, hotelsChecked: 1, hotelsTotal: 1 },
+      hotelCount: 1,
+      cards: [card({ disposition: 'propose' })],
+    }))!;
+    const last = one.lines[one.lines.length - 1];
+    assert.match(last.en, /Checked 1 thing overnight/);
+    assert.doesNotMatch(last.en, /1 things/);
+    assert.match(last.es, /Se revisó 1 cosa anoche/);
+    assert.doesNotMatch(last.es, /1 cosas/);
   });
 
   // Mutation: drop the Spanish half of any line. A Spanish reader gets English
