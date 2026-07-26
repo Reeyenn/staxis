@@ -53,7 +53,7 @@
 // there is no version of that Staxis should perform. So this stays a
 // recommendation: it tells the manager what it found and gets out of the way.
 
-import { formatCentsBand, plural, priceFromBand, sampleBand } from '../pricing';
+import { formatCentsBand, plural, priceFromBand, sampleBand, type Band } from '../pricing';
 import { registerDetector } from '../registry';
 import type { EquipmentWorkOrderHistory, EquipmentWorkOrders } from '../history';
 import type {
@@ -94,6 +94,43 @@ function describe(asset: EquipmentWorkOrders): string {
   return asset.installYear ? `${asset.name} (installed ${asset.installYear})` : asset.name;
 }
 
+/** A spread of this hotel's own repair costs, and what to CALL those rows. */
+interface CostBasis {
+  band: Band;
+  /** How many recorded costs the band came from. */
+  samples: number;
+  /** Goes straight into the basis line, so it can never name the wrong set. */
+  whose: 'against this equipment' | 'on any work order';
+}
+
+/**
+ * Which of this hotel's repair costs may price this card, in order of how
+ * specific the claim is. Returns null when neither set can support a range,
+ * which is a real answer: the card then quotes no money and says why.
+ */
+function chooseCostBasis(
+  asset: EquipmentWorkOrders,
+  history: EquipmentWorkOrderHistory,
+): CostBasis | null {
+  const own = sampleBand(asset.repairCostCentsSamples, { minSamples: MIN_COST_SAMPLES });
+  if (own) {
+    return {
+      band: own,
+      samples: asset.repairCostCentsSamples.length,
+      whose: 'against this equipment',
+    };
+  }
+  const hotel = sampleBand(history.hotelRepairCostCentsSamples, { minSamples: MIN_COST_SAMPLES });
+  if (hotel) {
+    return {
+      band: hotel,
+      samples: history.hotelRepairCostCentsSamples.length,
+      whose: 'on any work order',
+    };
+  }
+  return null;
+}
+
 function draftFor(
   asset: EquipmentWorkOrders,
   history: EquipmentWorkOrderHistory,
@@ -103,21 +140,20 @@ function draftFor(
   // The asset's own repair history first: "what does fixing one of THESE cost"
   // is a tighter and more defensible claim than the hotel-wide spread, and a
   // hotel that has recorded three of them has earned the tighter one.
-  const ownBand = sampleBand(asset.repairCostCentsSamples, { minSamples: MIN_COST_SAMPLES });
-  const hotelBand = ownBand
-    ? null
-    : sampleBand(history.hotelRepairCostCentsSamples, { minSamples: MIN_COST_SAMPLES });
-  const band = ownBand ?? hotelBand;
-  const sampleCount = ownBand
-    ? asset.repairCostCentsSamples.length
-    : history.hotelRepairCostCentsSamples.length;
+  //
+  // ONE DECISION, AND THE LABEL COMES OUT OF IT. An earlier version chose the
+  // band with `??` and then decided what to CALL it by re-testing which band
+  // existed — two expressions that happened to agree, until one of them changed.
+  // A basis line that names a different set of rows from the one the number came
+  // from is the exact failure the basis exists to prevent, so the number and the
+  // sentence describing it are now produced together or not at all.
+  const quoted = chooseCostBasis(asset, history);
 
   const pricing = priceFromBand(
-    band ? { low: band.low * asset.total, high: band.high * asset.total } : null,
-    band
-      ? `${plural(asset.total, 'work order')} at ${formatCentsBand(band)} each — the range of the ` +
-        `${plural(sampleCount, 'repair cost')} this hotel has recorded ` +
-        `${ownBand ? 'against this equipment' : 'on any work order'}`
+    quoted ? { low: quoted.band.low * asset.total, high: quoted.band.high * asset.total } : null,
+    quoted
+      ? `${plural(asset.total, 'work order')} at ${formatCentsBand(quoted.band)} each — the range ` +
+        `of the ${plural(quoted.samples, 'repair cost')} this hotel has recorded ${quoted.whose}`
       : '',
     history.hotelRepairCostCentsSamples.length < MIN_COST_SAMPLES
       ? 'no dollar figure: this hotel has recorded a repair cost on only ' +

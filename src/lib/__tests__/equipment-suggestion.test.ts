@@ -127,15 +127,25 @@ describe('the stoplist — the words that must never become equipment', () => {
 });
 
 describe('the bar', () => {
-  test(`${MIN_WORK_ORDERS_MENTIONING} separate work orders is the bar, and four is under it`, () => {
+  test('the bar is FIVE, pinned as a number rather than read from the constant', () => {
+    // Written this way on purpose. Every other assertion in this file that
+    // touches the threshold used to say `MIN_WORK_ORDERS_MENTIONING - 1`, which
+    // means the test MOVED whenever the constant did — a mutation from 5 to 4
+    // passed the whole suite. The bar is a product decision about how often
+    // Staxis is allowed to interrupt a manager, so changing it should cost a
+    // deliberate edit here and a sentence about why.
+    assert.equal(MIN_WORK_ORDERS_MENTIONING, 5);
+  });
+
+  test('five separate work orders is the bar, and four is under it', () => {
     const under = equipmentSuggestionCandidates({
-      sources: tickets(MIN_WORK_ORDERS_MENTIONING - 1, 'PTAC failure'),
+      sources: tickets(4, 'PTAC failure'),
       equipmentNames: [],
     });
     assert.deepEqual(under, []);
 
     const at = equipmentSuggestionCandidates({
-      sources: tickets(MIN_WORK_ORDERS_MENTIONING, 'PTAC failure'),
+      sources: tickets(5, 'PTAC failure'),
       equipmentNames: [],
     });
     assert.equal(at.length, 1);
