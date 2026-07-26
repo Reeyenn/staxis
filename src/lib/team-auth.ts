@@ -24,6 +24,7 @@ import {
   MANAGER_FLOOR_CAPABILITIES,
   type CapabilityKey,
 } from '@/lib/capabilities/registry';
+import { loadHats, type MembershipHat } from '@/lib/company/access';
 
 export interface TeamCaller {
   accountId: string;
@@ -32,6 +33,15 @@ export interface TeamCaller {
   role: AppRole;
   propertyAccess: string[];
   isAdmin: boolean;
+  /**
+   * ADDITIVE (company spine, 0364). `propertyAccess` UNION every hotel this
+   * person's company jobs cover. Empty-hat accounts — every single-hotel
+   * account in the product — get exactly `propertyAccess` back, so nothing
+   * about them changes.
+   */
+  accessiblePropertyIds?: string[];
+  /** The jobs behind that union, for surfaces that show a person's hats. */
+  hats?: MembershipHat[];
 }
 
 export async function verifyTeamManager(
@@ -76,19 +86,49 @@ export async function verifyTeamManager(
     return null;
   }
 
+  const propertyAccess = (account.property_access ?? []) as string[];
+
+  // Company hats are ADDITIVE and must never be able to fail the gate. An
+  // account with no hats pays one indexed lookup that finds nothing.
+  let hats: MembershipHat[] = [];
+  if (role !== 'admin') {
+    try {
+      hats = await loadHats(account.id);
+    } catch {
+      hats = [];
+    }
+  }
+
   return {
     accountId: account.id,
     authUserId: session.userId,
     authEmail: session.email ?? undefined,
     role,
-    propertyAccess: (account.property_access ?? []) as string[],
+    propertyAccess,
     isAdmin: role === 'admin',
+    accessiblePropertyIds: [...new Set([
+      ...propertyAccess,
+      ...hats.flatMap((hat) => hat.coveredPropertyIds),
+    ])].filter((id) => id !== '*').sort(),
+    hats,
   };
 }
 
+/**
+ * Does this manager manage that hotel?
+ *
+ * Company spine (0364): a job at a company that operates the hotel counts, in
+ * addition to the legacy `property_access` array. Strictly additive — every
+ * hotel that answered true before still answers true, and a hotel that is in
+ * neither list is still refused, which is Wall A and Wall B at this boundary.
+ */
 export function canManageHotel(caller: TeamCaller, hotelId: string): boolean {
   if (caller.isAdmin) return true;
-  return caller.propertyAccess.includes(hotelId);
+  if (caller.propertyAccess.includes(hotelId)) return true;
+  // Asked of the JOBS rather than of the pre-computed union, so a caller that
+  // narrows `propertyAccess` on a copy of this object gets the narrower answer
+  // it asked for instead of the union quietly overruling it.
+  return (caller.hats ?? []).some((hat) => hat.coveredPropertyIds.includes(hotelId));
 }
 
 /**
@@ -165,8 +205,10 @@ export async function callerControlsEveryTargetHotel(
   const hotelIds = [...new Set(targetAccess.filter((hotelId) => hotelId.length > 0))];
   if (hotelIds.length === 0 || hotelIds.includes('*')) return 'denied';
 
+  // Company spine (0364): a hotel reached through a company job counts the
+  // same as one listed in the legacy array. Never narrower than before.
   if (!caller.propertyAccess.includes('*')
-    && hotelIds.some((hotelId) => !caller.propertyAccess.includes(hotelId))) {
+    && hotelIds.some((hotelId) => !canManageHotel(caller, hotelId))) {
     return 'denied';
   }
 
@@ -268,6 +310,20 @@ export interface ManagerCaller {
   /** For attributing an authored fact to a person. Cosmetic — never a gate. */
   displayName: string | null;
   propertyAccess: string[];
+  /**
+   * ADDITIVE (company spine, 0364). Every job this person holds at a company,
+   * with its hotels resolved. Empty for every single-hotel account, which is
+   * why nothing about them changes. See src/lib/company/access.ts.
+   */
+  hats?: MembershipHat[];
+  /**
+   * ADDITIVE. `propertyAccess` UNION every hat's coverage — the honest answer
+   * to "which hotels can this person reach". Never smaller than
+   * `propertyAccess`. `'*'` and admin still mean everything, and are signalled
+   * by `reachesAllProperties`.
+   */
+  accessiblePropertyIds?: string[];
+  reachesAllProperties?: boolean;
 }
 
 /**
@@ -303,16 +359,45 @@ export async function loadManagerCaller(authUserId: string): Promise<ManagerCall
   const role = (row.role as AppRole | null) ?? null;
   if (!role || !canManageTeam(role)) return null;
 
+  const propertyAccess = Array.isArray(row.property_access) ? (row.property_access as string[]) : [];
+  const reachesAllProperties = role === 'admin' || propertyAccess.includes('*');
+
+  // Company hats are ADDITIVE and must never be able to fail the load. An
+  // account with no hats — every single-hotel account today — pays one indexed
+  // lookup that returns nothing, and the caller sees exactly the shape it saw
+  // before this field existed.
+  let hats: MembershipHat[] = [];
+  if (!reachesAllProperties) {
+    try {
+      hats = await loadHats(row.id);
+    } catch {
+      hats = [];
+    }
+  }
+  const membershipPropertyIds = hats.flatMap((hat) => hat.coveredPropertyIds);
+
   return {
     accountId: row.id,
     role,
     displayName: row.display_name ?? null,
-    propertyAccess: Array.isArray(row.property_access) ? (row.property_access as string[]) : [],
+    propertyAccess,
+    hats,
+    accessiblePropertyIds: [...new Set([...propertyAccess, ...membershipPropertyIds])]
+      .filter((id) => id !== '*')
+      .sort(),
+    reachesAllProperties,
   };
 }
 
-/** Does this manager manage that hotel? Admins and wildcard access manage all. */
+/**
+ * Does this manager manage that hotel? Admins and wildcard access manage all.
+ *
+ * Company spine (0364): a hat covering the hotel counts too. This is strictly
+ * additive — every hotel that answered true before still answers true.
+ */
 export function managerManagesHotel(caller: ManagerCaller, propertyId: string): boolean {
   if (caller.role === 'admin') return true;
-  return caller.propertyAccess.includes(propertyId) || caller.propertyAccess.includes('*');
+  if (caller.propertyAccess.includes(propertyId) || caller.propertyAccess.includes('*')) return true;
+  // Asked of the JOBS, not of the pre-computed union — see canManageHotel.
+  return (caller.hats ?? []).some((hat) => hat.coveredPropertyIds.includes(propertyId));
 }

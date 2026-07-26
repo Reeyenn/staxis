@@ -8,6 +8,13 @@ export interface HotelAccountInviteParams {
   to: string;
   hotelName: string;
   role: AssignableRole;
+  /**
+   * Company spine (0364). A company invitation carries a job the hotel role
+   * enum has never had — "Oversees", "Finance" — so the caller may name the
+   * job the email should say. Absent, the hotel role label is used, exactly as
+   * before. Subject-line sanitisation applies to it like every other value.
+   */
+  roleLabelOverride?: string;
   inviteUrl: string;
   expiresAt: string;
   auditContext?: SendEmailParams['auditContext'];
@@ -40,7 +47,7 @@ export async function sendHotelAccountInvite(
   sender: HotelAccountInviteSender = sendTransactionalEmail,
 ): Promise<SendEmailResult> {
   const hotelName = cleanSubjectValue(params.hotelName) || 'your hotel';
-  const role = roleLabel(params.role);
+  const role = cleanSubjectValue(params.roleLabelOverride ?? '') || roleLabel(params.role);
   const expiry = formattedExpiry(params.expiresAt);
   const subject = `You're invited to ${hotelName} on Staxis`;
   const text = [

@@ -35,6 +35,8 @@ import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { isAssignableRole, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { validateUuid } from '@/lib/api-validate';
+import { companyForProperty, loadHatsForAccounts } from '@/lib/company/access';
+import { HAT_ROLE_LABELS } from '@/lib/company/roles';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -363,7 +365,58 @@ export async function GET(req: NextRequest) {
   }
   const team = teamWithDecisions.map(({ row }) => row);
 
-  return ok({ team }, { requestId });
+  // COMPANY SPINE (0364). A person's card reads as lines — "GM — Beaumont ·
+  // Oversees — Lufkin, Tyler". Attached to the read the panel already makes,
+  // and empty for every independent hotel, where a person has exactly one role
+  // and the card renders as it always has.
+  let hatsByAccountId: Record<string, Array<{
+    membershipId: string;
+    scope: string;
+    role: string;
+    label: { en: string; es: string };
+    propertyIds: string[];
+    propertyNames: string[];
+  }>> = {};
+  try {
+    const organizationId = await companyForProperty(hotelId);
+    if (organizationId) {
+      const loaded = await loadHatsForAccounts(team.map((row) => row.accountId as string));
+      const namedIds = [...new Set(
+        [...loaded.values()].flat()
+          .filter((hat) => hat.organizationId === organizationId)
+          .flatMap((hat) => hat.coveredPropertyIds),
+      )];
+      const names = new Map<string, string>();
+      if (namedIds.length > 0) {
+        const { data: propertyRows } = await supabaseAdmin
+          .from('properties').select('id, name').in('id', namedIds);
+        for (const row of (propertyRows ?? []) as Array<{ id: string; name: string }>) {
+          names.set(row.id, row.name);
+        }
+      }
+      hatsByAccountId = Object.fromEntries(
+        [...loaded.entries()].map(([accountId, hats]) => [
+          accountId,
+          hats
+            .filter((hat) => hat.organizationId === organizationId)
+            .map((hat) => ({
+              membershipId: hat.membershipId,
+              scope: hat.scope,
+              role: hat.role,
+              label: HAT_ROLE_LABELS[hat.role],
+              propertyIds: hat.coveredPropertyIds,
+              propertyNames: hat.coveredPropertyIds.map((id) => names.get(id) ?? id),
+            })),
+        ]).filter(([, hats]) => hats.length > 0),
+      );
+    }
+  } catch (hatsErr) {
+    // The team list is the point of this read. A company lookup that cannot
+    // answer just means the cards show the single role they always showed.
+    log.warn('[team:GET] company jobs unavailable', { requestId, msg: errToString(hatsErr) });
+  }
+
+  return ok({ team, hatsByAccountId }, { requestId });
 }
 
 export async function PUT(req: NextRequest) {

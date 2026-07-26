@@ -1984,3 +1984,61 @@
     transform: none;
   }
 }
+
+/* Company spine: a person's jobs, one line each. Reads as a quiet caption under
+   the name so an independent hotel — which never has any — looks unchanged. */
+.companyJobLines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.companyJobLines em {
+  font-style: normal;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--snow-text-muted, #6b7686);
+}
+
+/* Company spine: the third question — "which hotels?" — asked only of somebody
+   who runs a management company. A plain fieldset inherits the form-field rules
+   above and blows the checkboxes up to input size, so it gets its own box. */
+.hotelChoices {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--snow-border, #e1e6ec);
+  border-radius: 10px;
+  background: var(--snow-surface-subtle, #fbfcfd);
+}
+
+.hotelChoices legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--snow-text-muted, #6b7686);
+}
+
+.hotelChoices label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--snow-text, #172033);
+  cursor: pointer;
+}
+
+.hotelChoices input[type='checkbox'] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--snow-accent, #3f6f52);
+  cursor: pointer;
+}
