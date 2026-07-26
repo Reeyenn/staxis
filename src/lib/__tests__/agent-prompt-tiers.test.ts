@@ -38,6 +38,7 @@ import assert from 'node:assert/strict';
 import {
   buildSystemPrompt,
   parsePromptStamp,
+  FALLBACK_PROMPTS,
   FAMILY_TIER_TRUST_NOTE,
   FAMILY_TRUST_MARKER_CLOSE,
   familyTrustMarkerOpen,
@@ -45,8 +46,13 @@ import {
 import {
   familyContentIsSafe,
   evaluatePromptTierHealth,
+  evaluatePromptToolRouting,
+  extractRoutedToolNames,
   type PromptTierRow,
+  type PromptRoutingRow,
 } from '@/lib/agent/prompt-tiers';
+import { listAllTools, TOOL_ALIASES } from '@/lib/agent/tools';
+import '@/lib/agent/tools/index'; // register the catalog
 import { invalidatePromptsCache } from '@/lib/agent/prompts-store';
 import { assertStableBlockIsCacheable, buildSystemBlocks } from '@/lib/agent/llm';
 import type { HotelSnapshot } from '@/lib/agent/context';
@@ -616,5 +622,96 @@ describe('tier health', () => {
     const h = evaluatePromptTierHealth([...healthyGlobals, famRow('choice_advantage', true)]);
     assert.equal(h.status, 'ok');
     assert.match(h.detail, /1 family tier\(s\) active/);
+  });
+});
+
+// ─── Prompt routing vs the tool catalog ───────────────────────────────────
+//
+// The half of the catalog audit that could not be a code test. `agent-tool-
+// catalog-audit` proves prompts.ts never routes at a retired tool; production
+// reads a ROW, and the 2026-07-27 rebuild left three of them naming seven
+// retired tools plus `send_help_sms`, which was deleted with Twilio and is not
+// aliased at all. Migration 0372 re-seeded them; /api/admin/doctor's
+// `agent_prompt_tool_names` check applies these rules to the live table.
+
+describe('prompt rows vs the tool catalog', () => {
+  const catalog = {
+    live: new Set(listAllTools().map(t => t.name)),
+    retired: TOOL_ALIASES,
+  };
+  const row = (content: string): PromptRoutingRow =>
+    ({ role: 'general_manager', version: 'v1', pmsFamily: null, content });
+
+  it('takes every tool after the arrow, and nothing before it', () => {
+    // The phrasing on the left of the arrow is the USER's words and routinely
+    // contains snake_case that is not a tool. Chained targets on the right
+    // ("→ a + b") are both real routing — that shape is exactly how the stale
+    // manager row hid `send_help_sms` for four months.
+    const names = extractRoutedToolNames([
+      '- "Who has which rooms?" → get_room_assignments',
+      '- "Send everyone the schedule" → generate_schedule + send_help_sms',
+      '- a line about pms_family and original_language with no arrow at all',
+      '- "What\'s next?" → check myRooms snapshot, or get_my_rooms with nextOnly: true',
+    ].join('\n'));
+    assert.deepEqual(
+      names.sort(),
+      ['generate_schedule', 'get_my_rooms', 'get_room_assignments', 'send_help_sms'],
+    );
+    // Prose before the arrow, and prose in arrow-less lines, is never routing.
+    assert.equal(names.includes('pms_family'), false);
+    assert.equal(names.includes('original_language'), false);
+  });
+
+  it('fails on a name that resolves to nothing', () => {
+    const h = evaluatePromptToolRouting([row('- "Text everyone" → send_help_sms')], catalog);
+    assert.equal(h.status, 'fail');
+    assert.match(h.detail, /send_help_sms/);
+  });
+
+  it('warns — does not fail — on a retired but still-aliased name', () => {
+    // The alias layer keeps the row working, so this is staleness, not an
+    // outage. A deploy gate that goes red over text that still works is a gate
+    // that gets waved through.
+    const h = evaluatePromptToolRouting([row('- "Revenue?" → get_revenue')], catalog);
+    assert.equal(h.status, 'warn');
+    assert.match(h.detail, /get_revenue/);
+    assert.match(h.detail, /get_finance_summary/);
+  });
+
+  it('catches a retired name even when no arrow points at it', () => {
+    const h = evaluatePromptToolRouting(
+      [row('Call compare_properties when the owner asks about several hotels.')],
+      catalog,
+    );
+    assert.equal(h.status, 'warn');
+    assert.match(h.detail, /compare_properties/);
+  });
+
+  it('reports the stale names alongside a dangling one, not on the next visit', () => {
+    const h = evaluatePromptToolRouting(
+      [row('- "Schedule" → generate_schedule + send_help_sms')],
+      catalog,
+    );
+    assert.equal(h.status, 'fail');
+    assert.match(h.detail, /send_help_sms/);
+    assert.match(h.detail, /generate_schedule/);
+  });
+
+  it('passes the real fail-soft constants — the content 0372 seeded', () => {
+    // The check that keeps this rule usable. If the evaluator fired on honest
+    // prompt text it would be switched off within a week, and then nothing
+    // would be watching the rows at all. These constants ARE what the three
+    // re-seeded rows now hold, so this is also the code-side twin of what the
+    // doctor asserts against live.
+    const rows: PromptRoutingRow[] = Object.entries(FALLBACK_PROMPTS).map(([role, content]) => ({
+      role, version: 'constant', pmsFamily: null, content,
+    }));
+    const h = evaluatePromptToolRouting(rows, catalog);
+    assert.equal(h.status, 'ok', h.detail);
+  });
+
+  it('is not vacuously passing — the catalog it grades against is real', () => {
+    assert.ok(catalog.live.size >= 40, `only ${catalog.live.size} tools registered`);
+    assert.ok(catalog.retired.size > 0);
   });
 });

@@ -262,3 +262,132 @@ export function evaluatePromptTierHealth(rows: PromptTierRow[]): PromptTierHealt
   }
   return { status: 'ok', detail: census };
 }
+
+// ─── Prompt routing vs the tool catalog ────────────────────────────────────
+//
+// `agent-tool-catalog-audit` already asserts that prompts.ts — the FAIL-SOFT
+// constants — never routes the model at a tool it will not be offered. That
+// test can only see code, and code is not what production reads: the live
+// prompt for every role is a ROW in `agent_prompts`, and a row is data. The
+// 2026-07-27 catalog rebuild renamed and merged tools, updated the constants
+// (forced by that test), and left three live rows pointing at
+// `list_my_rooms`, `generate_schedule`, `get_revenue`, `get_occupancy`,
+// `get_inventory`, `compare_properties` and `get_financial_report` — names the
+// model was no longer offered. Nothing anywhere went red, because nothing
+// anywhere looks at the rows.
+//
+// This is that missing half, expressed as pure rules so the doctor route can
+// apply them to the live table (see `agent_prompt_tool_names`). The catalog
+// itself is passed IN rather than imported: this module is a deliberate leaf
+// (see the file header) and importing the agent tool registry here would drag
+// the whole agent runtime into every caller.
+
+/** What the model is actually offered, and what a retired name now means. */
+export interface PromptToolCatalog {
+  /** Wire-names of registered tools — `listAllTools()`. */
+  live: ReadonlySet<string>;
+  /** Retired wire-name → surviving tool. `TOOL_ALIASES`. */
+  retired: ReadonlyMap<string, string>;
+}
+
+/** One active prompt row, as the routing check needs it. */
+export interface PromptRoutingRow {
+  role: string;
+  version: string;
+  pmsFamily: string | null;
+  content: string;
+}
+
+/** A wire-name shaped token: lower snake_case, at least one underscore. */
+const TOOL_TOKEN = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
+
+/**
+ * The tools a prompt sends the model to.
+ *
+ * Prompt rows route with an arrow — `"Occupancy?" → get_today_summary` — so the
+ * tokens that matter are the ones AFTER the first arrow on a line. Everything
+ * before it is the user's phrasing, and prose elsewhere in a prompt legitimately
+ * contains snake_case that is not a tool (`pms_family`, `original_language`).
+ *
+ * Deliberately the same shape as the constants-side check in
+ * `agent-tool-catalog-audit`, so the two halves cannot disagree about what
+ * counts as routing. A line may chain (`→ a_tool + another_tool`), so every
+ * token after the arrow is taken, not just the first.
+ */
+export function extractRoutedToolNames(content: string): string[] {
+  const found = new Set<string>();
+  for (const line of content.split('\n')) {
+    const arrow = line.indexOf('→');
+    if (arrow === -1) continue;
+    for (const match of line.slice(arrow + 1).matchAll(TOOL_TOKEN)) {
+      found.add(match[0]);
+    }
+  }
+  return [...found];
+}
+
+/**
+ * Do the live prompt rows still point at tools that exist?
+ *
+ * Two failures, deliberately graded differently:
+ *
+ *   FAIL  a routed name that is neither a live tool NOR a retired alias. The
+ *         model calls it and gets "Tool not found" — the answer is already
+ *         broken, and only a query against the rows can see it.
+ *
+ *   WARN  a retired name. The alias layer keeps it working, so nothing is
+ *         broken today; the row is simply stale, and every turn it costs the
+ *         model a routing hop it should not have to take. Warn, not fail,
+ *         because a deploy gate that goes red over text that still works is a
+ *         gate that gets waved through.
+ *
+ * Rows are named by role + version in the detail so the fix is a copy-paste:
+ * write the new revision and activate it.
+ */
+export function evaluatePromptToolRouting(
+  rows: PromptRoutingRow[],
+  catalog: PromptToolCatalog,
+): PromptTierHealth {
+  const dangling: string[] = [];
+  const stale: string[] = [];
+
+  for (const row of rows) {
+    const label = `${row.role}${row.pmsFamily ? `/${row.pmsFamily}` : ''} v${row.version}`;
+    // A retired name ANYWHERE in the row, arrow or not: "Send everyone the
+    // schedule → generate_schedule + send_help_sms" is routing, and so is a
+    // sentence that merely mentions the old name as the thing to call.
+    for (const [retired, survivor] of catalog.retired) {
+      if (new RegExp(`\\b${retired}\\b`).test(row.content)) {
+        stale.push(`${label} names ${retired} (now ${survivor})`);
+      }
+    }
+    for (const name of extractRoutedToolNames(row.content)) {
+      if (catalog.live.has(name) || catalog.retired.has(name)) continue;
+      dangling.push(`${label} routes to ${name}, which is not a tool`);
+    }
+  }
+
+  if (dangling.length > 0) {
+    return {
+      status: 'fail',
+      detail: `active prompt row(s) route the copilot at names that do not exist: ${dangling.join('; ')}. `
+        + 'The model calls them and gets "Tool not found".'
+        // Reported alongside rather than on the next run: a row that has gone
+        // this stale is usually stale in both ways, and fixing it means writing
+        // one new revision. Two visits for one edit is how the second half gets
+        // forgotten.
+        + (stale.length > 0 ? ` Also still naming retired tools: ${stale.join('; ')}.` : ''),
+    };
+  }
+  if (stale.length > 0) {
+    return {
+      status: 'warn',
+      detail: `active prompt row(s) still name retired tools: ${stale.join('; ')}. `
+        + 'The aliases keep them working, but the rows are behind the catalog.',
+    };
+  }
+  return {
+    status: 'ok',
+    detail: `${rows.length} active prompt row(s) route only to live tools`,
+  };
+}

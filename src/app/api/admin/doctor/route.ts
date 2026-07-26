@@ -45,6 +45,10 @@
  *   agent_prompt_tiers          — each copilot instruction tier has exactly
  *                                 one active row (catches the silent
  *                                 "activation left the tier dark" state)
+ *   agent_prompt_tool_names     — the ACTIVE prompt rows route the copilot only
+ *                                 at tools that still exist (catches a tool
+ *                                 rename that updated the code constants and
+ *                                 left the live rows behind)
  *
  * NOT run here (enforced elsewhere): RLS-enabled / RLS-policy-coverage /
  * storage-bucket-RLS / PII-bucket-private invariants are checked at LINT time
@@ -72,7 +76,12 @@ import {
 } from '@/lib/agent/eval-bank-health';
 import { env } from '@/lib/env';
 import { SUPERSEDED_MIGRATIONS } from '@/lib/migration-policy';
-import { evaluatePromptTierHealth } from '@/lib/agent/prompt-tiers';
+import { evaluatePromptTierHealth, evaluatePromptToolRouting } from '@/lib/agent/prompt-tiers';
+// The live tool catalog, for `agent_prompt_tool_names`. The index import is the
+// registration side-effect — without it `listAllTools()` is empty and the check
+// would report every prompt row as routing at names that do not exist.
+import { listAllTools, TOOL_ALIASES } from '@/lib/agent/tools';
+import '@/lib/agent/tools/index';
 import {
   evaluateFeedSlos,
   evaluateQuarantineBacklog,
@@ -165,6 +174,12 @@ const checks: Array<[string, CheckFn]> = [
   // copilot just quietly loses that tier's instructions. Only a query can see
   // it. Deliberately silent (ok, not warn) while the PMS-family slot is empty.
   ['agent_prompt_tiers',          checkAgentPromptTiers],
+  // Earns its place (2026-07-27): the live prompt for a role is a ROW, and the
+  // constants-side audit (agent-tool-catalog-audit) can only see code. A tool
+  // rename updates the constants — that test forces it — and leaves the rows
+  // pointing at names the model is no longer offered, or at names that no
+  // longer exist at all. Nothing else in the system looks at the rows.
+  ['agent_prompt_tool_names',     checkAgentPromptToolNames],
   // D4 (2026-07-24) — the report-era heartbeat. These three make the EXISTING
   // 5-minute /api/cron/vercel-watchdog loop the late-report watchdog: no new
   // cron entry, no vercel.json change, no schedule-registry row. A hotel
@@ -1276,6 +1291,69 @@ async function checkAgentPromptTiers(): Promise<Omit<Check, 'name' | 'durationMs
       status: health.status,
       detail: health.detail,
       fix: 'Activate the intended row with select public.staxis_activate_prompt(\'<id>\', \'<role>\', \'<pms_family or null>\'); it deactivates the others in the same tier atomically.',
+    };
+  } catch (err) {
+    return { status: 'warn', detail: `check threw: ${errToString(err)}` };
+  }
+}
+
+/**
+ * agent_prompt_tool_names — the ACTIVE prompt rows still point at tools that
+ * exist.
+ *
+ * The half of the catalog audit that no test can reach. `agent-tool-catalog-
+ * audit` asserts that src/lib/agent/prompts.ts never routes the model at a tool
+ * it will not be offered, and that assertion holds — but prompts.ts is the
+ * FAIL-SOFT baseline. What production actually reads is an `agent_prompts` row,
+ * and a row is data: a tool rename can update every constant, pass every test,
+ * ship green, and leave the live prompt telling the model to call something
+ * that was merged away three deploys ago.
+ *
+ * That is not hypothetical. The 2026-07-27 rebuild left the housekeeping, GM and
+ * owner rows on their 2026-05-13 seed, naming seven retired tools plus
+ * `send_help_sms`, which was deleted with Twilio and is not even aliased.
+ * Migration 0372 re-seeded them; this check is why it cannot happen quietly
+ * again.
+ *
+ * Read-only, like every check here. The grading (fail for a name that resolves
+ * to nothing, warn for a retired-but-aliased one) lives in prompt-tiers.ts.
+ */
+async function checkAgentPromptToolNames(): Promise<Omit<Check, 'name' | 'durationMs'>> {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('agent_prompts')
+      .select('role, version, pms_family, content')
+      .eq('is_active', true);
+    if (error) {
+      return { status: 'warn', detail: `agent_prompts read failed: ${errToString(error)}` };
+    }
+    type Row = { role: string; version: string; pms_family: string | null; content: string | null };
+    const rows = (data ?? []) as Row[];
+    // An empty catalog would report every row as broken. That state means the
+    // registration side-effect import above was dropped, not that the prompts
+    // rotted — say which, instead of pointing the founder at the wrong thing.
+    const live = new Set(listAllTools().map((t) => t.name));
+    if (live.size === 0) {
+      return {
+        status: 'warn',
+        detail: 'the tool registry is empty, so prompt routing cannot be checked',
+        fix: "Restore the `import '@/lib/agent/tools/index'` side-effect in the doctor route.",
+      };
+    }
+    const health = evaluatePromptToolRouting(
+      rows.map((r) => ({
+        role: r.role,
+        version: r.version,
+        pmsFamily: r.pms_family,
+        content: r.content ?? '',
+      })),
+      { live, retired: TOOL_ALIASES },
+    );
+    if (health.status === 'ok') return { status: 'ok', detail: health.detail };
+    return {
+      status: health.status,
+      detail: health.detail,
+      fix: 'Write a migration in the shape of 0372: insert a new version of the row with the tool names corrected, then activate it with select public.staxis_activate_prompt(\'<new id>\', \'<role>\', null). The superseded row stays as history.',
     };
   } catch (err) {
     return { status: 'warn', detail: `check threw: ${errToString(err)}` };
