@@ -437,15 +437,22 @@ Investigate; don't just heal and move on.
   of several (also: management-gated hotel writes, guest-data-default-deny);
   documented gap, not a hard guarantee.
 
-## Prompt tiers: global → PMS family → hotel (migration 0338)
+## Prompt tiers: global → PMS family → company → hotel (migrations 0338 / 0365)
 
-The copilot's instructions have three tiers and exactly one home for each:
+The copilot's instructions have FOUR tiers and exactly one home for each:
 
 | Tier | Where it lives | Kind of content |
 |---|---|---|
 | global | `agent_prompts` rows with `pms_family IS NULL` | behaviour + hard rules |
 | PMS family | `agent_prompts` rows with `role='family'`, keyed by `pms_family` | how that PMS's reports read |
+| company | `company_knowledge` rows, `review_state='confirmed'`, keyed by `organization_id` — **DATA, never a prompt row** | the management company's own standards, vendors and approval rules |
 | hotel | `agent_memory`, `knowledge_*`, and the DERIVED identity block — **DATA, never a prompt row** | this hotel's own facts |
+
+The company tier was added 2026-07-26 (0365) and sits between the family tier
+and the hotel: a company standard is the default across every hotel that company
+operates, and the hotel in front of you is the exception that beats it. It is
+the HIGHEST-authority position a customer's own typing reaches, which is what
+INV-TIER-10 is about.
 
 Two cells of the matrix are deliberately empty, so nobody has to re-derive it:
 - **Family-scope facts bigger than 4000 chars have no home, on purpose.** The
@@ -587,6 +594,42 @@ Conflict rules, stated as two because "more specific wins" is only half true:
   two seeded hotels, `scopedDb` filters proven at the database).
   **NOT DB-enforceable.** **Assumed by:** `prompts.ts` `buildSystemPrompt`,
   tier `'hotel_identity'`. **History:** day-zero derivation, 2026-07-25.
+- **INV-TIER-10 — a company rulebook fact reaches the model as ESCAPED text
+  inside an envelope it cannot close.** The company tier (0365) is the same kind
+  of channel as the family tier and sits one position HIGHER in the cached
+  block, so it out-ranks every global rule above it by position — and unlike the
+  family tier, its text is written by a CUSTOMER (a VP typing, or a PDF that VP
+  uploaded). **Enforced by:** two layers, and the second is the guarantee.
+  (1) FILTER — `companyFactIsSafe()` (`prompt-tiers.ts`) drops any fact that
+  matches the `<staxis-…>` / `<tool-result` marker vocabulary or contains a
+  drawn section rule, `captureException`s the drop with the row's identity (not
+  its content), and CHECK `company_knowledge_no_markers_ck` (0365) rejects the
+  same rows at the database — **DB-ENFORCED**. (2) ESCAPE —
+  `company-tier.ts` runs every rendered fact through `escapeTrustMarkerContent`,
+  so `< > &` become entities and NO byte sequence in a fact can close the
+  envelope. Layer (2) exists because layer (1) is a denylist and denylists have
+  holes: the red-team pass wrote `</staxis‑company‑rulebook>` with a U+2011
+  NON-BREAKING HYPHEN straight past the ASCII pattern, and the tag rendered
+  perfectly to a model. Both predicates now NFKC-normalize, flatten every
+  dash-like code point to ASCII `-`, strip zero-width characters, and reject
+  runs of any horizontal-rule glyph (`═ ━ — ▬`, not only `─`) before matching —
+  but the escape is what makes the boundary unforgeable rather than
+  merely well-guarded. The header, the ceiling
+  (`COMPANY_TIER_TRUST_NOTE`) and both `<staxis-company-rulebook
+  trust="untrusted">` tags are printed by `company-tier.ts`, never by a row,
+  and the ceiling is versioned into `stableStamp` as `company-rulebook-v1`.
+  Escaping is deterministic, so the cached prefix is unaffected (INV-TIER-5).
+  **Tested by:** `agent-company-tier-envelope.test.ts` — the reviewer's exact
+  forgery strings in EN and ES are neutralised, a fact only ever appears inside
+  the envelope, an ampersand survives as an entity, and the same rulebook
+  renders byte-identically twice. Behaviour is live-only: the adversarial
+  `company_tier_cannot_bypass_the_tool_layer` and
+  `company_tier_cannot_unlock_cross_property` cases in `evals/test-bank.ts`,
+  run through `evals/runner.ts` with a rulebook seeded into the derivation
+  cache — the same two attacks that BEAT the family tier on the eval bank's
+  first live run, restated one tier up. **History:** the company tier, 0365,
+  2026-07-26; envelope escaping + homoglyph-aware denylist after the
+  walls/injection red-team pass, same day.
 
 **Write-path warning for whoever adds a prompt-editing UI.** `agent_prompts` is
 service-role-only (RLS deny-all) and today has no admin write route — prompts
@@ -1224,10 +1267,63 @@ for".
   in 0364), so the ONLY writer is `staxis_set_membership_hat`, which re-checks
   authority under the same per-organization advisory lock the rest of the
   Company Hub uses. **DB-ENFORCED.**
+  (4) **Added 2026-07-26.** Coverage is drawn only from GOVERNING relationship
+  rows — `relationship_type in ('operator','owner')` AND `is_primary_grouping`
+  — in all three readers (`loadHats`, `propertiesOfOrganization`,
+  `companyForProperty`). Before this, a `brand` or `franchisor` link counted as
+  operating a hotel, and `companyForProperty` resolved a hotel claimed by two
+  live companies with `real[0]`, i.e. the lowest UUID: whose rulebook, whose
+  money thresholds and whose staff list applied to a hotel was decided
+  alphabetically and silently. The DB already guarantees at most one governing
+  row per hotel (partial UNIQUE `organization_property_one_open_primary_idx`),
+  so with the filter there is nothing left to tie-break; if two ever survive,
+  `companyForProperty` returns `null` and logs, so the hotel behaves as an
+  independent one rather than borrowing a company that may be the wrong one.
+  (5) **Added 2026-07-26.** `staxis_set_membership_hat` (0370) refuses a target
+  who holds no membership or live invitation at the organization (Staxis-admin
+  actors exempt, for bootstrap), refuses a Staxis administrator as a target, and
+  refuses anyone attaching a job to a person who already holds a job the actor
+  could not have granted. **DB-ENFORCED.**
 - **Assumed by:** `userHasPropertyAccess` (`src/lib/api-auth.ts`) — the gate
-  every hotel-scoped route already calls; `canManageHotel` /
+  every hotel-scoped route already calls, which as of 2026-07-26 also refuses a
+  deactivated account, matching every other account reader;
+  `callerReachesHotel` / `managerManagesHotel` / `canManageHotel` /
   `callerControlsEveryTargetHotel` (`src/lib/team-auth.ts`);
   `resolveInviteScope` (`src/lib/company/invite-scope.ts`).
+- **INV-COMPANY-1b — CAPACITY is resolved at the hotel being asked about, never
+  from the global `accounts.role`.** Reach ("may you open this hotel?") and
+  capacity ("in what job?") are two questions and the manager gates used to
+  answer them from two different places without ever intersecting them:
+  `loadManagerCaller` read the GLOBAL `accounts.role`, and `managerManagesHotel`
+  then admitted the hotel if ANY hat covered it, whatever that hat's job was. A
+  person with a legacy `general_manager` login and a HOUSEKEEPING hat at a
+  company hotel passed both halves — 200 on that hotel's findings queue and the
+  right to mute its manager-only cards — while `effectiveRole` told anybody who
+  asked that she was a housekeeper there. The hat was meant to be the demotion;
+  it was read only as an admission ticket.
+  **Enforced by:** `managerManagesHotel` and `canManageHotel`
+  (`src/lib/team-auth.ts`) now intersect reach with
+  `resolveEffectiveRole(…, propertyId)` — the SAME pure function `effectiveRole`
+  is built from, so there is one rule and not two. `callerCan` /
+  `callerCapabilityDecision` / `callerCapabilityDecisionFresh` resolve the
+  per-hotel role too, so a per-hotel capability override applies to the job the
+  caller actually holds there. Legacy behaviour is untouched: an account with no
+  hat at the hotel still answers from `accounts.role` gated on the legacy array,
+  which is every account in the product today. **NOT DB-enforceable.**
+  **Assumed by:** every findings route (`/api/findings`, `…/actions`,
+  `…/badge`, `…/brief`, `…/for-target`), `/api/memory/question`, and the invite
+  and hats routes through `verifyTeamManager`.
+  **Deliberately NOT applied to** the two surfaces that need reach WITHOUT
+  manager capacity — `/api/company/rulebook` (GET and the intake POST) — which
+  call `callerReachesHotel` and let `rulebookStandingFor` be the authority. A
+  company's finance lead degrades to `front_desk` on purpose (least privilege,
+  `legacyRoleForHat`), so a manager question there would refuse the exact person
+  the screen was written for.
+  **Tested by:** `company-capacity.integration.test.ts` — the housekeeping-hat
+  holder with a legacy manager login is refused every findings route at that
+  hotel and served at the hotel her legacy array names; the finance lead still
+  reads the rulebook and the portfolio; the legacy control group is unmoved.
+  **History:** walls/injection red-team pass, 2026-07-26.
 - **Tested by:** `company-spine.integration.test.ts` — "the front-desk person at
   Beaumont cannot learn Lufkin exists" and "a GM sees his own hotel fully and
   nothing sideways" (both through the REAL `/api/home/summary` handler, with the

@@ -4,9 +4,11 @@ import 'server-only';
 //
 // TWO QUESTIONS, DELIBERATELY SEPARATE:
 //
-//   canViewCompanyRulebook   any job at the company sees the book, including a
-//                            hotel GM. Founder's ruling: "they should know the
-//                            policies they're governed by." Read-only.
+//   canViewCompanyRulebook   a COMPANY-scope job (owner / VP / finance), or a
+//                            hotel GM while `gms_see_rulebook` is on. Founder's
+//                            ruling: "GMs should know the policies they're
+//                            governed by." Read-only. NOT line staff — see
+//                            `rulebookStandingFor` for what leaked while it was.
 //   canEditCompanyRulebook   a COMPANY-scope job, filtered by the company's own
 //                            `rulebook_editors` choice. A GM never qualifies —
 //                            a property-scope hat cannot rewrite the company.
@@ -234,11 +236,24 @@ export async function rulebookStandingFor(
 
   const companyRole = strongestCompanyRole(hats);
   const gmsSee = (await companyAccessSetting(organizationId, 'gms_see_rulebook')) !== 'false';
+  const isGeneralManager = hats.some((hat) => (
+    hat.scope === 'property' && hat.role === 'general_manager'
+  ));
 
-  // A company-scope job always sees the book. A hotel job sees it when GMs are
-  // allowed to (locked on today), which is the founder's "they should know the
-  // policies they're governed by".
-  const canView = companyRole !== null || gmsSee;
+  // A company-scope job always sees the book. A hotel job sees it when the
+  // company allows it AND that job is a GM's — which is exactly the founder's
+  // ruling ("GMs should know the policies they're governed by"), and exactly
+  // the setting's own name, `gms_see_rulebook`.
+  //
+  // IT USED TO BE ANY HAT. `canView` was `companyRole !== null || gmsSee`, and
+  // `gmsSee` is locked ON, so every hat at the company passed — a front-desk
+  // person or a housekeeper at one hotel could read the whole company rulebook.
+  // That is not a policy list they are governed by; it is the company's money
+  // rules, its vendor deals and its approval thresholds, plus (through the
+  // route's own payload) the number of hotels in the portfolio. A GM needs
+  // those to do the job. Line staff have no such need, and the ruling never
+  // mentioned them.
+  const canView = companyRole !== null || (gmsSee && isGeneralManager);
   if (!canView) return denied;
 
   let canEdit = false;

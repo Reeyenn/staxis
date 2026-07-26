@@ -39,7 +39,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { loadSessionAccount, managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
+import { loadSessionAccount, callerReachesHotel, type ManagerCaller } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { companyForProperty } from '@/lib/company/access';
 import { redactMemoryContent } from '@/lib/agent/memory-redact';
@@ -130,7 +130,13 @@ async function gate(
     };
   }
   const propertyId = pidV.value!;
-  if (!managerManagesHotel(caller, propertyId)) {
+  // REACH, not manager capacity. `rulebookStandingFor` below is the authority
+  // for both view and edit, and it answers about company-scope jobs whose
+  // legacy roles are not manager words — a finance lead degrades to
+  // `front_desk` on purpose. Asking a manager question here would refuse the
+  // exact people this screen exists for, which is the bug the hat-access pass
+  // fixed at `loadSessionAccount` and this line has to keep fixed.
+  if (!callerReachesHotel(caller, propertyId)) {
     return {
       ok: false,
       response: err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),

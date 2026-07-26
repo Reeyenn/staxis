@@ -598,12 +598,51 @@ describe('accepting the invitation puts the hat on', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 describe('a person\'s card is a list of lines, and each line is editable on its own', () => {
-  test('answering "what job, and where" a second time adds a second line', async () => {
-    // Gil runs Tyler. Ana gives him Beaumont too — the "one GM can run two
-    // hotels" case, expressed as a second hat rather than a wider array.
+  // Migration 0370. Before it, `staxis_set_membership_hat` validated the target
+  // only as "an active account", so an owner could attach a job at their
+  // company to ANY account id in the product — a stranger, or a competitor's
+  // staff — and that account silently gained their hotels and appeared on their
+  // team lists. The person was never told and never consented.
+  test('a job cannot be handed to somebody with no tie to the company', async () => {
     const anaAuth = await pg.query<{ data_user_id: string }>(
       `select data_user_id from accounts where id = $1`, [ACCOUNT_ANA],
     );
+    // Gil is Piney Woods' GM and has never heard of Gulf Coast.
+    assert.equal(await hatsPost(anaAuth.rows[0].data_user_id, {
+      hotelId: PID_A1,
+      accountId: ACCOUNT_GIL,
+      scope: 'property',
+      role: 'general_manager',
+      propertyIds: [PID_A1],
+      jobTitle: 'General Manager',
+    }), 403);
+    assert.deepEqual(
+      (await loadHats(ACCOUNT_GIL)).map((hat) => hat.organizationId), [ORG_B],
+      'the refused job was written anyway',
+    );
+  });
+
+  test('answering "what job, and where" a second time adds a second line', async () => {
+    // Gil runs Tyler. Ana INVITES him to Gulf Coast, then gives him Beaumont —
+    // the "one GM can run two hotels" case, expressed as a second hat rather
+    // than a wider array. The invitation is the consent step 0370 now requires;
+    // everything after it is exactly as it was.
+    const anaAuth = await pg.query<{ data_user_id: string }>(
+      `select data_user_id from accounts where id = $1`, [ACCOUNT_ANA],
+    );
+    const gilEmail = await pg.query<{ email: string }>(
+      `select u.email from accounts a join auth.users u on u.id = a.data_user_id where a.id = $1`,
+      [ACCOUNT_GIL],
+    );
+    await pg.query(
+      `insert into account_invites
+         (hotel_id, email, role, token_hash, expires_at, invited_by,
+          organization_id, membership_scope, covered_property_ids)
+       values ($1, $2, 'general_manager', $3, now() + interval '7 days', $4,
+               $5, 'property', $6)`,
+      [PID_A1, gilEmail.rows[0].email, 'gil-gulf-coast-invite', ACCOUNT_ANA, ORG_A, [PID_A1]],
+    );
+
     assert.equal(await hatsPost(anaAuth.rows[0].data_user_id, {
       hotelId: PID_A1,
       accountId: ACCOUNT_GIL,

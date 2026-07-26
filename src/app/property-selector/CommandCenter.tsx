@@ -468,7 +468,7 @@ export function CommandCenterView({
             {/* The portfolio queue lives in the Staxis tab; a company-scope
                 reader who opens it gets PortfolioQueueView rather than a
                 hotel's feed, resolved server-side from their own hats. */}
-            <a className="cc-portfolio" href="/feed" data-testid="cc-portfolio-entry">
+            <a className="cc-portfolio" href="/feed">
               <span className="cc-pf-mark" aria-hidden><CxIcon name="staxis" size={17} /></span>
               <span className="cc-pf-body">
                 <span className="cc-pf-title" style={{ display: 'block' }}>
@@ -504,7 +504,6 @@ export function CommandCenterView({
             <button
               key={hotel.propertyId}
               type="button"
-              data-testid="cc-hotel"
               data-chip={hotel.chip?.kind ?? 'none'}
               className={hotel.chip?.kind === 'needs_you' ? 'cc-hotel cc-alert' : 'cc-hotel'}
               onClick={() => onOpenHotel(hotel)}

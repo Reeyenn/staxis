@@ -58,6 +58,19 @@ const TENANT_COLUMNS = new Set([
   'user_id',
   'staff_id',
   'hotel_id',
+  // ADDED 2026-07-26 (red-team pass). A management company is a tenant too.
+  //
+  // The company spine (0364/0365/0367) introduced tables keyed by
+  // `organization_id` and by NOTHING else — `company_knowledge`, the rulebook's
+  // authority rules, `company_access_settings`, `company_findings`. Those hold a
+  // company's money policies, its approval thresholds and its cross-hotel
+  // findings, and this audit could not see a single one of them: with no column
+  // from the list above, each table was simply "not tenant-scoped" and its RLS
+  // was never checked at all. They ARE deny-all today; nothing was ever
+  // required to keep them that way, and the migrations that added them said so
+  // in a comment ("the RLS-coverage audit does not yet treat organization_id as
+  // a tenant column", 0365) instead of in the gate.
+  'organization_id',
 ]);
 
 // Tables intentionally configured as service-role-only:
@@ -230,6 +243,18 @@ const SERVICE_ROLE_ONLY = new Set([
   // (/api/pms-inbox/inbound) writes via supabaseAdmin; the admin viewer reads
   // via the requireAdmin-gated /api/admin/pms-inbox. Never user-readable.
   'pms_inbox_messages',
+  // ─── Migration 0325 — company spine, the three tables with no `@rls`. ─
+  // Surfaced the moment `organization_id` joined TENANT_COLUMNS above; they
+  // were invisible to this audit for as long as they have existed. Each was
+  // read in 0325 before being listed here: RLS enabled (3552/3560/3561),
+  // `revoke all` from public/anon/authenticated (3573-3575), service_role
+  // granted SELECT only (3592/3600/3601), plus an explicit `*_deny_browser`
+  // policy with `using (false)` (3611/3635/3638). Deny-all by three separate
+  // mechanisms; the deny policy's text is what the pattern matcher cannot see,
+  // which is exactly why the allowlist exists.
+  'portfolios',
+  'organization_access_epochs',
+  'organization_access_events',
 ]);
 
 function listMigrations() {

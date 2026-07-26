@@ -42,6 +42,8 @@ import { companyForProperty } from '@/lib/company/access';
 import { getConfirmedCompanyFacts, type CompanyFact } from '@/lib/company/rulebook';
 import { COMPANY_CATEGORY_LABELS, type CompanyCategory } from '@/lib/company/rulebook-policy';
 import { COMPANY_BLOCK_MAX_CHARS, companyFactIsSafe } from '@/lib/agent/prompt-tiers';
+import { escapeTrustMarkerContent } from '@/lib/agent/loop-core';
+import { captureException } from '@/lib/sentry';
 
 export interface CompanyRulebook {
   organizationId: string;
@@ -108,12 +110,41 @@ export function formatCompanyRulebookForPrompt(rulebook: CompanyRulebook | null)
   let budget = COMPANY_BLOCK_MAX_CHARS;
 
   for (const fact of rulebook.facts) {
-    // Defence in depth against a relaxed CHECK, a hand-edited row, or a future
-    // non-DB source: a fact that could forge the envelope is DROPPED, not
-    // escaped, because there is no legitimate rulebook line that needs
-    // `<staxis-` or a section rule in it.
-    if (!companyFactIsSafe(fact.content)) continue;
-    const line = `- ${fact.content.trim()}`;
+    // TWO defences, in this order, and the second one is the guarantee.
+    //
+    // (1) DROP anything the denylist recognises as an attempt to forge the
+    //     envelope. There is no legitimate rulebook line that needs `<staxis-`
+    //     or a drawn section rule in it, so refusing to render one costs
+    //     nothing and keeps the block honest.
+    //
+    // (2) ESCAPE `< > &` in whatever survives. A denylist is a list of attacks
+    //     somebody thought of, and this one had a hole for a week: a U+2011
+    //     NON-BREAKING HYPHEN made `</staxis‑company‑rulebook>` invisible to an
+    //     ASCII pattern while rendering, to the model, as a perfect closing
+    //     tag. Manager-typed prose would then have been sitting OUTSIDE the
+    //     untrusted envelope, in the cached system block of every hotel the
+    //     company operates, wearing Staxis's own authority. Escaping is
+    //     arithmetic rather than recognition: after it, no byte sequence in a
+    //     fact can close the envelope, whatever alphabet it is written in.
+    //
+    // Deterministic, so the cached prefix stays byte-stable (INV-TIER-5).
+    if (!companyFactIsSafe(fact.content)) {
+      // LOUD, like the family tier's drop (prompts.ts). A fact vanishing from a
+      // company's rulebook with no signal is how a real forgery attempt — or a
+      // relaxed CHECK — stays invisible for a month. Sentry gets the row's
+      // identity and never its content: the content is the untrusted part.
+      captureException(
+        new Error('[company-tier] rulebook fact rejected: forged marker or over length cap'),
+        {
+          organizationId: rulebook.organizationId,
+          factId: fact.id,
+          topic: fact.topic,
+          contentLength: fact.content.length,
+        },
+      );
+      continue;
+    }
+    const line = `- ${escapeTrustMarkerContent(fact.content.trim())}`;
     if (line.length > budget) continue;
     budget -= line.length + 1;
     const bucket = byCategory.get(fact.category);

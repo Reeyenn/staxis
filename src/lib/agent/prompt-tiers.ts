@@ -25,17 +25,110 @@ const FAMILY_FORBIDDEN_MARKER = /<\s*\/?\s*(staxis-|tool-result)/i;
 const SECTION_RULE = '───';
 
 /**
+ * EVERY character a reader would see as a horizontal rule, not just the one
+ * this codebase types.
+ *
+ * The old check was `content.includes('───')` — three U+2500 BOX DRAWINGS LIGHT
+ * HORIZONTAL, the exact glyph the assembler prints. A row that opened its fake
+ * section with `═══` (double), `━━━` (heavy), `———` (em dashes) or `▬▬▬` passed
+ * it and rendered as something a model reads as a section boundary anyway. The
+ * denylist has to be about what the text LOOKS like, because that is the only
+ * thing the model can act on.
+ *
+ * Three or more in a row, because one em dash is ordinary prose ("all our
+ * hotels — every one — use Ecolab") and forbidding it would reject real
+ * rulebook lines.
+ */
+const DIVIDER_RUN = new RegExp(
+  '['
+  + '\\u2010-\\u2015'   // hyphen … horizontal bar (em/en dash live in here)
+  + '\\u2212'           // minus sign
+  + '\\u2500-\\u257F'   // box drawing, including the ─ the assembler prints
+  + '\\u2E3A\\u2E3B'    // two-em / three-em dash
+  + '\\u23AF\\u23E4'    // horizontal line extension, straightness symbol
+  + '\\u25AC\\u25AD'    // black / white rectangle
+  + '\\uFE58\\uFE63\\uFF0D' // small + fullwidth hyphen forms
+  + '\\u02D7\\u058A\\u1806\\u2043' // modifier, Armenian, Mongolian, hyphen bullet
+  + ']{3,}',
+);
+
+/**
+ * Fold a string down to the shape the denylists are written against.
+ *
+ * THE HOLE THIS CLOSES. `FAMILY_FORBIDDEN_MARKER` above is an ASCII pattern:
+ * it looks for the literal hyphen in "staxis-". A U+2011 NON-BREAKING HYPHEN is
+ * not that character, so a fact reading `</staxis‑company‑rulebook>` sailed
+ * past the check while rendering, to the model, as a perfect closing tag —
+ * manager-typed prose would have landed in the cached system prompt of every
+ * hotel the company operates, wearing Staxis's own standing. The same trick
+ * works with U+2010, U+2212 MINUS SIGN, U+FF0D FULLWIDTH HYPHEN-MINUS, and
+ * with U+00AD SOFT HYPHEN, which is invisible.
+ *
+ * So: NFKC first (which collapses fullwidth and compatibility forms), then map
+ * every dash-like code point to ASCII `-`, and drop the zero-width characters
+ * that can be sprinkled INSIDE a marker word to break the match without
+ * changing a single rendered glyph.
+ *
+ * NOTE this is used for the CHECK ONLY — never for what gets rendered. The
+ * rendered bytes stay exactly what the author wrote (escaped, see below), so a
+ * normalization quirk can never silently rewrite a company's own policy text.
+ */
+/** Zero-width, soft hyphen, joiners, bidi controls, BOM. Invisible to a reader,
+ *  and each one splits a denylisted word in two (`sta<ZWSP>xis-`) without
+ *  changing a single rendered glyph. */
+const INVISIBLES = new RegExp(
+  '[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u2028\\u2029\\u202A-\\u202E'
+  + '\\u2060-\\u2064\\u206A-\\u206F\\uFEFF]',
+  'g',
+);
+
+/** Every dash-like code point a reader sees as an ASCII `-`. */
+const DASHES = new RegExp(
+  '[\\u2010-\\u2015\\u2212\\u2E3A\\u2E3B\\uFE58\\uFE63\\uFF0D'
+  + '\\u02D7\\u058A\\u1806\\u2043]',
+  'g',
+);
+
+/**
+ * NFKC + strip invisibles. Preserves dash IDENTITY, so a run of em dashes is
+ * still recognisable as a drawn divider. This is what `DIVIDER_RUN` is tested
+ * against.
+ */
+function foldInvisibles(content: string): string {
+  return content.normalize('NFKC').replace(INVISIBLES, '');
+}
+
+/**
+ * `foldInvisibles`, plus every dash flattened to ASCII `-`. This is what the
+ * `<staxis-…>` marker denylist is tested against, and it is the whole point of
+ * the exercise: `staxis‑` (U+2011) now matches `staxis-`.
+ *
+ * Deliberately NOT the input to `DIVIDER_RUN` — flattening `———` to `---` would
+ * hide the divider from the check that exists to catch it.
+ */
+export function normalizeForMarkerCheck(content: string): string {
+  return foldInvisibles(content).replace(DASHES, '-');
+}
+
+/**
  * Is this family addendum safe to splice into the cached prompt?
  *
  * The DB already rejects violating rows. Re-checking here means a relaxed
  * constraint, a hand-edited row, or a future non-DB source of family content
  * still cannot fabricate a `<staxis-snapshot trust="system">` block or open a
  * fake `─── … ───` section — the assembler drops the section instead.
+ *
+ * This predicate is a FILTER, not the guarantee. The guarantee is that the
+ * assembler escapes `< > &` in whatever it does render
+ * (`escapeTrustMarkerContent`), so even a marker this check failed to
+ * recognise cannot close an envelope. A denylist is a list of attacks somebody
+ * thought of; escaping is arithmetic.
  */
 export function familyContentIsSafe(content: string): boolean {
   if (content.length > FAMILY_CONTENT_MAX_CHARS) return false;
-  if (FAMILY_FORBIDDEN_MARKER.test(content)) return false;
-  if (content.includes(SECTION_RULE)) return false;
+  if (FAMILY_FORBIDDEN_MARKER.test(normalizeForMarkerCheck(content))) return false;
+  const visible = foldInvisibles(content);
+  if (visible.includes(SECTION_RULE) || DIVIDER_RUN.test(visible)) return false;
   return true;
 }
 
@@ -61,11 +154,17 @@ export const COMPANY_BLOCK_MAX_CHARS = 4000;
  *
  * Deliberately the same predicate as `familyContentIsSafe`, applied per fact
  * rather than per row: the block-level budget is enforced by the renderer.
+ *
+ * As there, this is the FILTER. The guarantee is `company-tier.ts` escaping
+ * `< > &` in every fact it renders — the homoglyph probe that motivated the
+ * normalization above (`</staxis‑company‑rulebook>` with a U+2011 hyphen)
+ * defeats any denylist eventually, and only escaping is total.
  */
 export function companyFactIsSafe(content: string): boolean {
   if (content.length > COMPANY_BLOCK_MAX_CHARS) return false;
-  if (FAMILY_FORBIDDEN_MARKER.test(content)) return false;
-  if (content.includes(SECTION_RULE)) return false;
+  if (FAMILY_FORBIDDEN_MARKER.test(normalizeForMarkerCheck(content))) return false;
+  const visible = foldInvisibles(content);
+  if (visible.includes(SECTION_RULE) || DIVIDER_RUN.test(visible)) return false;
   return true;
 }
 

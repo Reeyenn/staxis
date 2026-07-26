@@ -193,7 +193,12 @@ function NewTaskModal({
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <Field label={es ? 'Tarea' : 'Task'} required><TextInput value={name} onChange={setName} placeholder={es ? 'ej. "Revisión de extintores"' : 'e.g. "Fire extinguisher check"'} /></Field>
+        {/* 120 chars, matching CHECK preventive_tasks_name_len_ck (0370) and
+            equipment.name. A schedule's name is quoted into the nightly cards
+            and into the model call behind them, so a pasted document in this
+            box is somebody else's spend cap. The database refuses it too — this
+            just means the manager finds out here rather than on save. */}
+        <Field label={es ? 'Tarea' : 'Task'} required><TextInput maxLength={120} value={name} onChange={setName} placeholder={es ? 'ej. "Revisión de extintores"' : 'e.g. "Fire extinguisher check"'} /></Field>
         <Field label={es ? 'Área' : 'Area'} required><TextInput value={area} onChange={setArea} placeholder={es ? 'ej. "Edificio" o "Piscina"' : 'e.g. "Building" or "Pool"'} /></Field>
         <Field label={es ? 'Frecuencia' : 'Frequency'} required hint={es ? '¿Cada cuánto vuelve?' : 'How often does it come around?'}>
           <FreqEditor count={count} unit={unit} onCount={setCount} onUnit={setUnit} es={es} />

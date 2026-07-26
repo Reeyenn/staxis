@@ -762,10 +762,17 @@ export async function userHasPropertyAccess(userId: string, pid: string): Promis
   try {
     const { data, error } = await supabaseAdmin
       .from('accounts')
-      .select('id, role, property_access')
+      .select('id, role, property_access, active')
       .eq('data_user_id', userId)
       .maybeSingle();
     if (error || !data) return false;
+    // A DEACTIVATED account reaches nothing. Every other account reader in this
+    // codebase says so — `loadSessionAccount`, `verifyTeamManager` and
+    // `readAccount` in company/access.ts all refuse `active === false` — and
+    // this one, the gate the most routes call, did not. Deactivation is
+    // supposed to be the one action that ends somebody's access everywhere;
+    // it cannot have an exception, least of all the widest reader.
+    if ((data as { active?: boolean | null }).active === false) return false;
     if (data.role === 'admin') return true;  // admins access every property
     const access = (data.property_access ?? []) as string[];
     if (access.includes(pid) || access.includes('*')) return true;
