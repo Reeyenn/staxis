@@ -22,6 +22,11 @@
 // NULL IS A REAL ANSWER AND THE MOST IMPORTANT ONE. A company not one of whose
 // hotels has ever been checked gets NO brief — not "all quiet", not "nothing
 // needs you". Every sentence below is a claim about having looked.
+//
+// ENGLISH-ONLY, like the hotel brief and for the same founder ruling — see the
+// header of src/lib/findings/brief.ts. A `BriefLine` carries one string. The
+// portfolio CARDS underneath are unchanged and still bilingual, which is why
+// the highlights below ask `cardPhrasing` for English explicitly.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import {
@@ -33,7 +38,6 @@ import {
   cardPhrasing,
   formatPriceRange,
   livenessLine,
-  type Lang,
   type QueueRun,
 } from '@/components/concourse/finding-cards';
 import { rankPortfolio, type PortfolioCard } from './vp-queue';
@@ -127,8 +131,8 @@ function quietHotelCount(
 
 // ─── Assembly ───────────────────────────────────────────────────────────────
 
-function line(en: string, es: string, findingId?: string): BriefLine {
-  return findingId ? { en, es, findingId } : { en, es };
+function line(text: string, findingId?: string): BriefLine {
+  return findingId ? { text, findingId } : { text };
 }
 
 const plural = (n: number, one: string, many: string) => (n === 1 ? one : many);
@@ -151,12 +155,9 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
 
   // "At your hotel" rather than "Across your 1 hotel". A one-hotel company is a
   // real customer (an owner who has bought their second and not opened it yet),
-  // and the counted phrasing reads as machine output in English and is outright
-  // ungrammatical in Spanish ("En tus 1 hotel").
+  // and the counted phrasing reads as machine output.
   const hotels = Math.max(0, Math.round(input.hotelCount));
-  const across = hotels === 1
-    ? { en: 'At your hotel', es: 'En tu hotel' }
-    : { en: `Across your ${hotels} hotels`, es: `En tus ${hotels} hoteles` };
+  const across = hotels === 1 ? 'At your hotel' : `Across your ${hotels} hotels`;
 
   const liveness = companyLivenessLine(run, input.now);
 
@@ -170,10 +171,7 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
   // while the picker one tap away shows "2 WAITING" on a building. So the card
   // count and the chips are both part of the condition.
   if (cards.length === 0 && busy.length === 0) {
-    const lines = [line(
-      `${across.en}: nothing needs a decision this morning.`,
-      `${across.es}: nada requiere una decisión esta mañana.`,
-    )];
+    const lines = [line(`${across}: nothing needs a decision this morning.`)];
     if (liveness) lines.push(liveness);
     return finish(input, 'quiet', lines);
   }
@@ -185,18 +183,13 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
   // look like a contradiction.
   if (cards.length === 0) {
     lines.push(line(
-      `${across.en}: nothing has reached you, but ${busy.length} ${plural(busy.length, 'hotel has', 'hotels have')} something waiting in ${plural(busy.length, 'its', 'their')} own queue.`,
-      `${across.es}: nada llegó hasta ti, pero ${busy.length} ${plural(busy.length, 'hotel tiene', 'hoteles tienen')} algo esperando en su propia cola.`,
+      `${across}: nothing has reached you, but ${busy.length} ${plural(busy.length, 'hotel has', 'hotels have')} something waiting in ${plural(busy.length, 'its', 'their')} own queue.`,
     ));
   } else {
     lines.push(decisionCount > 0
-      ? line(
-        `${across.en}: ${decisionCount} ${plural(decisionCount, 'needs', 'need')} you.`,
-        `${across.es}: ${decisionCount} ${plural(decisionCount, 'necesita', 'necesitan')} tu atención.`,
-      )
+      ? line(`${across}: ${decisionCount} ${plural(decisionCount, 'needs', 'need')} you.`)
       : line(
-        `${across.en}: nothing needs a decision, but ${cards.length} ${plural(cards.length, 'thing is', 'things are')} worth a look.`,
-        `${across.es}: nada requiere una decisión, pero ${plural(cards.length, 'hay 1 cosa', `hay ${cards.length} cosas`)} que vale la pena mirar.`,
+        `${across}: nothing needs a decision, but ${cards.length} ${plural(cards.length, 'thing is', 'things are')} worth a look.`,
       ));
   }
 
@@ -207,10 +200,7 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
 
   // ── how much of the portfolio is fine ──
   if (quiet > 0) {
-    lines.push(line(
-      `${quiet} ${plural(quiet, 'hotel', 'hotels')} quiet.`,
-      `${quiet} ${plural(quiet, 'hotel tranquilo', 'hoteles tranquilos')}.`,
-    ));
+    lines.push(line(`${quiet} ${plural(quiet, 'hotel', 'hotels')} quiet.`));
   }
 
   // ── proof the watchers ran ──
@@ -230,11 +220,7 @@ function highlightLine(card: PortfolioCard): BriefLine {
   const price = formatPriceRange(card.price);
   const suffix = price ? ` — ${price}` : '';
   const prefix = card.hotel ? `${card.hotel.name} — ` : '';
-  return line(
-    `${prefix}${cardPhrasing(card, 'en')}${suffix}`,
-    `${prefix}${cardPhrasing(card, 'es')}${suffix}`,
-    card.id,
-  );
+  return line(`${prefix}${cardPhrasing(card, 'en')}${suffix}`, card.id);
 }
 
 /**
@@ -257,23 +243,15 @@ export function companyLivenessLine(run: PortfolioRun, now: Date): BriefLine | n
   const band = livenessLine(asHotelRun, 0, 'en', now);
   if (band.kind === 'never') return null;
 
-  if (band.kind === 'stale') {
-    const es = livenessLine(asHotelRun, 0, 'es', now);
-    return band.text && es.text ? line(band.text, es.text) : null;
-  }
+  if (band.kind === 'stale') return band.text ? line(band.text) : null;
 
   const things = Math.max(0, Math.round(run.thingsChecked));
   const checked = run.hotelsChecked;
   const total = run.hotelsTotal;
   const where = checked >= total
-    ? (total === 1
-      ? { en: 'your hotel', es: 'tu hotel' }
-      : { en: `all ${total} of your hotels`, es: `los ${total} hoteles` })
-    : { en: `${checked} of your ${total} hotels`, es: `${checked} de tus ${total} hoteles` };
-  return line(
-    `Checked ${things} ${plural(things, 'thing', 'things')} overnight across ${where.en}.`,
-    `Se ${plural(things, 'revisó', 'revisaron')} ${things} ${plural(things, 'cosa', 'cosas')} anoche en ${where.es}.`,
-  );
+    ? (total === 1 ? 'your hotel' : `all ${total} of your hotels`)
+    : `${checked} of your ${total} hotels`;
+  return line(`Checked ${things} ${plural(things, 'thing', 'things')} overnight across ${where}.`);
 }
 
 /** The hard cap, applied in ONE place so no later section can quietly extend

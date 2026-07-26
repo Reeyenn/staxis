@@ -14,8 +14,13 @@
 //      not "no data yet". A blank morning summary on an unscanned hotel reads
 //      as a clean night, and it is not one.
 //   2. Render on a failed read. Same reason: an error is not a quiet night.
-//   3. Invent a line. It prints exactly what the payload holds, in the
-//      manager's language, in order.
+//   3. Invent a line. It prints exactly what the payload holds, in order.
+//
+// THE WHOLE CARD IS IN ENGLISH — the lines, the eyebrow, the link title —
+// whatever language the reader has the app set to. Founder ruling; the reasoning
+// is in the header of src/lib/findings/brief.ts. Everything else on this screen
+// (the cards below, the chips, the buttons) is unchanged and still bilingual, so
+// this card is the exception and it is meant to look like one from here.
 //
 // Read through /api/findings/brief (service-role behind requireSession + the
 // manager gate) — never the browser Supabase client. `findings` and
@@ -37,9 +42,11 @@ export interface BriefPayload {
   cached: boolean;
 }
 
+/** The card's own chrome. English, like the lines it sits around — a Spanish
+ *  eyebrow over eight English sentences would read as a rendering bug. */
 const S = {
-  heading: { en: 'This morning', es: 'Esta mañana' },
-  jump: { en: 'Show me', es: 'Muéstramelo' },
+  heading: 'This morning',
+  jump: 'Show me',
 } as const;
 
 const MB_CSS = `
@@ -77,7 +84,17 @@ export type RenderableBrief = Pick<MorningBrief, 'kind' | 'lines'>;
 
 export interface MorningBriefViewProps {
   brief: RenderableBrief | null;
-  lang: Lang;
+  /**
+   * The reader's language — ACCEPTED AND DELIBERATELY IGNORED.
+   *
+   * It stays on the props for one reason: it is how the English-only ruling gets
+   * said out loud and tested. Both callers already hold a language and pass it,
+   * and a test that hands this card `lang: 'es'` and gets back the full English
+   * brief is an assertion about behaviour rather than a note in a comment. Drop
+   * the prop and the ruling becomes untestable from the outside; honour it and
+   * the test goes red, which is the point.
+   */
+  lang?: Lang;
   /** True when the read failed. Renders nothing — an error is not a quiet night. */
   readFailed?: boolean;
   /** Told which card a line points at, so the queue below can jump to it. */
@@ -91,11 +108,9 @@ export interface MorningBriefViewProps {
  */
 export function MorningBriefView({
   brief,
-  lang,
   readFailed = false,
   onFocusFinding,
 }: MorningBriefViewProps) {
-  const es = lang === 'es';
   if (readFailed || !brief || brief.lines.length === 0) return null;
 
   // The liveness line is the brief's own proof-of-life and reads as machine
@@ -113,10 +128,10 @@ export function MorningBriefView({
           <CxIcon name="staxis" size={17} />
         </div>
         <div className="mb-body">
-          <div className="mb-eyebrow">{es ? S.heading.es : S.heading.en}</div>
+          <div className="mb-eyebrow">{S.heading}</div>
 
           {lines.map((line, index) => {
-            const text = es ? line.es : line.en;
+            const text = line.text;
             const id = line.findingId;
             return (
               <div className="mb-line" key={`${index}-${text.slice(0, 24)}`}>
@@ -125,7 +140,7 @@ export function MorningBriefView({
                   <button
                     type="button"
                     className="mb-jump"
-                    title={es ? S.jump.es : S.jump.en}
+                    title={S.jump}
                     onClick={() => onFocusFinding(id)}
                   >
                     {text}
@@ -138,7 +153,7 @@ export function MorningBriefView({
           })}
 
           {brief.kind !== 'quiet' && last && (
-            <div className="mb-last">{es ? last.es : last.en}</div>
+            <div className="mb-last">{last.text}</div>
           )}
         </div>
       </div>

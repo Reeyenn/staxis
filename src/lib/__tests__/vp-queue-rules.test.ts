@@ -895,6 +895,12 @@ describe('several hotels stopped the same thing', () => {
 });
 
 // ═══ THE BRIEF ═════════════════════════════════════════════════════════════
+//
+// ENGLISH-ONLY, by founder ruling (2026-07-26) — the same ruling that governs
+// the hotel brief, and for the same reason: this card is written and read in
+// English whatever language the reader has the app set to. The tests that used
+// to demand a Spanish half of every line now demand that no such half exists.
+// The portfolio CARDS below the brief are untouched and still bilingual.
 
 describe('the portfolio morning brief', () => {
   const run = {
@@ -927,14 +933,14 @@ describe('the portfolio morning brief', () => {
   test('"nothing needs a decision" is only said when the screen is genuinely empty', () => {
     const empty = buildPortfolioBrief(input())!;
     assert.equal(empty.kind, 'quiet');
-    assert.match(empty.lines[0].en, /nothing needs a decision/i);
+    assert.match(empty.lines[0].text, /nothing needs a decision/i);
 
     const withCards = buildPortfolioBrief(input({
       cards: [card({ disposition: 'recommend', climbReason: 'unresolved' })],
     }))!;
     assert.equal(withCards.kind, 'report');
-    assert.doesNotMatch(withCards.lines[0].en, /^Across your 12 hotels: nothing needs a decision\.$/);
-    assert.match(withCards.lines[0].en, /worth a look/i);
+    assert.doesNotMatch(withCards.lines[0].text, /^Across your 12 hotels: nothing needs a decision\.$/);
+    assert.match(withCards.lines[0].text, /worth a look/i);
   });
 
   // Mutation: count every card as "needs you". FYIs and comparisons would be
@@ -947,8 +953,7 @@ describe('the portfolio morning brief', () => {
         card({ id: 'c', disposition: 'fyi', hotel: { propertyId: PID_2, name: 'Lufkin' } }),
       ],
     }))!;
-    assert.match(brief.lines[0].en, /Across your 12 hotels: 1 needs you\./);
-    assert.match(brief.lines[0].es, /En tus 12 hoteles: 1 necesita tu atención\./);
+    assert.match(brief.lines[0].text, /Across your 12 hotels: 1 needs you\./);
   });
 
   // Mutation: make a sign-off card not count. The one card the reader can
@@ -970,9 +975,9 @@ describe('the portfolio morning brief', () => {
         card({ id: 'b', disposition: 'recommend', hotel: { propertyId: PID_2, name: 'Lufkin' } }),
       ],
     }))!;
-    const quiet = brief.lines.find((l) => /quiet/.test(l.en));
+    const quiet = brief.lines.find((l) => /quiet/.test(l.text));
     assert.ok(quiet, 'the brief never said how much of the portfolio was fine');
-    assert.match(quiet!.en, /10 hotels quiet\./);
+    assert.match(quiet!.text, /10 hotels quiet\./);
   });
 
   // Mutation: use an index or a property id. A VP translating "#7" into a
@@ -988,28 +993,25 @@ describe('the portfolio morning brief', () => {
     }))!;
     const highlight = brief.lines.find((l) => l.findingId === 'top');
     assert.ok(highlight);
-    assert.match(highlight!.en, /^Beaumont — /);
-    assert.match(highlight!.en, /\$1,800–\$2,600/);
-    assert.doesNotMatch(highlight!.en, /\$2,200/, 'a midpoint was rendered as if it were a price');
+    assert.match(highlight!.text, /^Beaumont — /);
+    assert.match(highlight!.text, /\$1,800–\$2,600/);
+    assert.doesNotMatch(highlight!.text, /\$2,200/, 'a midpoint was rendered as if it were a price');
   });
 
-  // Mutation: use the counted phrasing everywhere. "En tus 1 hotel" is not
-  // Spanish, and "Across your 1 hotel" is not English — a one-hotel company is
-  // a real customer (an owner mid-way through buying their second).
+  // Mutation: use the counted phrasing everywhere. "Across your 1 hotel" reads
+  // as machine output — and a one-hotel company is a real customer (an owner
+  // mid-way through buying their second).
   test('a one-hotel company reads as a sentence, not as a count', () => {
     const brief = buildPortfolioBrief(input({
       hotelCount: 1,
       run: { ...run, hotelsChecked: 1, hotelsTotal: 1 },
       cards: [card({ disposition: 'propose', hotel: { propertyId: PID_1, name: 'Beaumont' } })],
     }))!;
-    assert.match(brief.lines[0].en, /^At your hotel: /);
-    assert.match(brief.lines[0].es, /^En tu hotel: /);
+    assert.match(brief.lines[0].text, /^At your hotel: /);
     const last = brief.lines[brief.lines.length - 1];
-    assert.match(last.en, /across your hotel\./);
-    assert.match(last.es, /en tu hotel\./);
+    assert.match(last.text, /across your hotel\./);
     for (const l of brief.lines) {
-      assert.doesNotMatch(l.es, /tus 1 |los 1 /, `ungrammatical Spanish: ${l.es}`);
-      assert.doesNotMatch(l.en, /your 1 hotel\b/, `stilted English: ${l.en}`);
+      assert.doesNotMatch(l.text, /your 1 hotel\b/, `stilted English: ${l.text}`);
     }
   });
 
@@ -1034,9 +1036,9 @@ describe('the portfolio morning brief', () => {
       cards: [card({ disposition: 'propose' })],
     }))!;
     const last = stale.lines[stale.lines.length - 1];
-    assert.doesNotMatch(last.en, /overnight/i);
-    assert.doesNotMatch(last.en, /384/);
-    assert.match(last.en, /Last checked 5 days ago/);
+    assert.doesNotMatch(last.text, /overnight/i);
+    assert.doesNotMatch(last.text, /384/);
+    assert.match(last.text, /Last checked 5 days ago/);
   });
 
   // Mutation: hard-code "all your hotels". A company where one hotel's runner
@@ -1044,15 +1046,14 @@ describe('the portfolio morning brief', () => {
   test('the liveness line says how many hotels actually answered', () => {
     const partial = buildPortfolioBrief(input({ cards: [card({ disposition: 'propose' })] }))!;
     const last = partial.lines[partial.lines.length - 1];
-    assert.match(last.en, /Checked 384 things overnight across 11 of your 12 hotels\./);
-    assert.match(last.es, /384/);
+    assert.match(last.text, /Checked 384 things overnight across 11 of your 12 hotels\./);
 
     const complete = buildPortfolioBrief(input({
       run: { ...run, hotelsChecked: 12 },
       cards: [card({ disposition: 'propose' })],
     }))!;
     const completeLast = complete.lines[complete.lines.length - 1];
-    assert.match(completeLast.en, /across all 12 of your hotels\./);
+    assert.match(completeLast.text, /across all 12 of your hotels\./);
   });
 
   // Mutation: hard-code "things". A company on its first night reads
@@ -1065,15 +1066,15 @@ describe('the portfolio morning brief', () => {
       cards: [card({ disposition: 'propose' })],
     }))!;
     const last = one.lines[one.lines.length - 1];
-    assert.match(last.en, /Checked 1 thing overnight/);
-    assert.doesNotMatch(last.en, /1 things/);
-    assert.match(last.es, /Se revisó 1 cosa anoche/);
-    assert.doesNotMatch(last.es, /1 cosas/);
+    assert.match(last.text, /Checked 1 thing overnight/);
+    assert.doesNotMatch(last.text, /1 things/);
   });
 
-  // Mutation: drop the Spanish half of any line. A Spanish reader gets English
-  // silently standing in for Spanish.
-  test('every line exists in both languages', () => {
+  // THE ENGLISH-ONLY RULING, at this surface. This test used to assert the
+  // opposite ("every line exists in both languages"). Mutation: put `es` back
+  // on BriefLine and fill it in vp-brief.ts — the key sweep fails on every
+  // line, and the Spanish-word sweep fails on the framing sentences.
+  test('every line is one English sentence, with no second language', () => {
     const brief = buildPortfolioBrief(input({
       cards: [
         card({ id: 'a', disposition: 'propose', price: price(100_000, 200_000) }),
@@ -1081,9 +1082,39 @@ describe('the portfolio morning brief', () => {
       ],
     }))!;
     for (const l of brief.lines) {
-      assert.ok(l.en.trim().length > 0, 'a line was blank in English');
-      assert.ok(l.es.trim().length > 0, `a line was blank in Spanish: ${l.en}`);
+      assert.ok(l.text.trim().length > 0, 'a line was blank');
+      for (const key of Object.keys(l)) {
+        assert.ok(
+          key === 'text' || key === 'findingId',
+          `a portfolio brief line carried an unexpected field "${key}"`,
+        );
+      }
     }
+    const joined = brief.lines.map((l) => l.text).join(' ');
+    for (const word of [
+      'En tus', 'En tu hotel', 'necesitan', 'necesita tu atención',
+      'hoteles tranquilos', 'hotel tranquilo', 'revisaron', 'revisó', 'anoche',
+      'nada requiere', 'nada llegó',
+    ]) {
+      assert.ok(!joined.includes(word), `Spanish leaked into the portfolio brief: "${word}"`);
+    }
+  });
+
+  // The card the brief QUOTES is still bilingual — the brief just takes its
+  // English. Mutation: `cardPhrasing(card, 'es')` in highlightLine.
+  test('a card with judged Spanish is still quoted in English', () => {
+    const brief = buildPortfolioBrief(input({
+      cards: [card({
+        id: 'top',
+        summary: 'Room 214 has had 4 HVAC work orders.',
+        phrasedEn: 'Room 214 keeps breaking — 4 HVAC calls.',
+        phrasedEs: 'La habitación 214 sigue fallando: 4 avisos de clima.',
+        hotel: { propertyId: PID_1, name: 'Beaumont' },
+      })],
+    }))!;
+    const highlight = brief.lines.find((l) => l.findingId === 'top')!;
+    assert.match(highlight.text, /Room 214 keeps breaking/);
+    assert.doesNotMatch(highlight.text, /sigue fallando/);
   });
 
   // Mutation: let the model-facing focus ids drift from the lines. A brief line
@@ -1442,9 +1473,9 @@ describe('the brief and the chips agree about "quiet"', () => {
       cards: [card({ hotel: { propertyId: PID_1, name: 'Beaumont' } })],
       busyHotelIds: [PID_2],
     }))!;
-    const quietLine = brief.lines.find((l) => /quiet/.test(l.en));
+    const quietLine = brief.lines.find((l) => /quiet/.test(l.text));
     // 3 hotels, one with a card, one busy by chip → at most one may be quiet.
-    assert.match(String(quietLine?.en), /^1 hotel quiet\./);
+    assert.match(String(quietLine?.text), /^1 hotel quiet\./);
   });
 
   // Mutation: keep the old "nothing needs a decision this morning" whenever the
@@ -1453,8 +1484,7 @@ describe('the brief and the chips agree about "quiet"', () => {
   test('no climbed cards but a busy hotel is not a quiet morning', () => {
     const brief = buildPortfolioBrief(briefInput({ busyHotelIds: [PID_1, PID_2] }))!;
     assert.equal(brief.kind, 'report');
-    assert.match(brief.lines[0].en, /nothing has reached you, but 2 hotels have something waiting/);
-    assert.match(brief.lines[0].es, /nada llegó hasta ti, pero 2 hoteles tienen algo esperando/);
+    assert.match(brief.lines[0].text, /nothing has reached you, but 2 hotels have something waiting/);
   });
 
   // …and a genuinely quiet company still gets the quiet morning. Mutation:
@@ -1463,7 +1493,7 @@ describe('the brief and the chips agree about "quiet"', () => {
   test('nothing anywhere is still a quiet morning', () => {
     const brief = buildPortfolioBrief(briefInput({ busyHotelIds: [] }))!;
     assert.equal(brief.kind, 'quiet');
-    assert.match(brief.lines[0].en, /nothing needs a decision this morning/);
+    assert.match(brief.lines[0].text, /nothing needs a decision this morning/);
   });
 
   // The chip's own rule, as the predicate both surfaces now share. Mutation:

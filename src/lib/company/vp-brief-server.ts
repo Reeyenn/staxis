@@ -37,8 +37,12 @@ import { buildPortfolioBrief, type PortfolioBrief, type PortfolioBriefInput } fr
 const BRIEF_CACHE_ROUTE = 'company-brief';
 
 /** Bumped whenever the stored shape changes. A cached brief from an older shape
- *  is ignored rather than rendered half-empty. */
-const BRIEF_CACHE_VERSION = 2;
+ *  is ignored rather than rendered half-empty.
+ *
+ *  3 — English-only lines (`{ text }`, was `{ en, es }`). The bump is what makes
+ *  today's already-cached bilingual briefs regenerate rather than render as a
+ *  card full of blanks on the first morning after the ruling ships. */
+const BRIEF_CACHE_VERSION = 3;
 
 interface CachedEnvelope {
   v: number;

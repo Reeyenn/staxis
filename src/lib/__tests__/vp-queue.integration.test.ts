@@ -124,7 +124,10 @@ interface PortfolioCardWire {
 interface PortfolioWire {
   scope: { organizationId: string; organizationName: string; hotelCount: number } | null;
   cards: PortfolioCardWire[];
-  brief: { kind: string; lines: Array<{ en: string; es: string }> } | null;
+  // One string per line: the brief is English-only (founder ruling — see the
+  // header of src/lib/findings/brief.ts). Written out here rather than imported
+  // so this stays a description of what actually crosses the wire.
+  brief: { kind: string; lines: Array<{ text: string }> } | null;
   run: { thingsChecked: number; hotelsChecked: number; hotelsTotal: number } | null;
 }
 
@@ -893,7 +896,7 @@ describe('the portfolio morning brief', () => {
   test('every number comes from planted reality', async () => {
     const maria = await portfolioFor(UID_MARIA);
     assert.ok(maria.data.brief, 'a company with checked hotels got no brief');
-    const text = maria.data.brief!.lines.map((l) => l.en).join(' | ');
+    const text = maria.data.brief!.lines.map((l) => l.text).join(' | ');
 
     assert.match(text, /Across your 2 hotels/);
     // 34 + 30 across Beaumont and Lufkin. Tyler's 28 must NOT be in there.

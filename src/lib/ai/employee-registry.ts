@@ -254,9 +254,13 @@ export const AI_EMPLOYEES: readonly AiEmployee[] = [
 
 export const BUNDLE_LABELS: Readonly<Record<string, Bilingual>> = {
   // Features
+  // The brief itself is English-only (founder ruling — src/lib/findings/brief.ts).
+  // This LINE is still bilingual, like every other string on the AI Staff page:
+  // the page is chrome and the house rule applies to it. What changed is what the
+  // line claims, because it used to promise a Spanish brief that no longer exists.
   'findings.brief': {
-    en: 'Rewrites the morning summary so it reads like a person wrote it — in English and Spanish',
-    es: 'Reescribe el resumen de la mañana para que suene a persona — en inglés y español',
+    en: 'Rewrites the morning summary so it reads like a person wrote it — in English',
+    es: 'Reescribe el resumen de la mañana para que suene a persona — en inglés',
   },
   // Scheduled jobs
   'run-findings': {

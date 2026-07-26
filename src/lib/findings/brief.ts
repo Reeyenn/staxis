@@ -27,6 +27,24 @@
 // already wrote, and prose-guard.ts throws the rewrite away whole if it
 // contains a number this file did not put there. Losing the model costs
 // smoothness, never a fact and never a line.
+//
+// ─── THE BRIEF IS ENGLISH-ONLY, AND THAT IS A RULING ────────────────────────
+// Founder ruling, 2026-07-26: the morning brief — this one and the portfolio
+// one in src/lib/company/vp-brief.ts — is written and read in English, whatever
+// language the reader has the app set to. So a `BriefLine` has ONE string on
+// it. There is no `es` half to fall back to, to forget to fill, or for a
+// renderer to select between.
+//
+// This is a deliberate exception to the house rule (CLAUDE.md: every
+// user-facing string ships EN + ES) and it stops at the brief. Cards, chips,
+// buttons, chat and Knows are unchanged and stay bilingual — including the
+// cards this brief QUOTES, which is why the highlight lines below ask
+// `cardPhrasing` for its English rendering explicitly rather than inheriting a
+// language from anywhere.
+//
+// What it buys, besides one fewer half to get wrong: the wording pass writes
+// one language instead of two, which is roughly half its output tokens and half
+// the payload it is sent.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import {
@@ -54,8 +72,8 @@ export const MAX_BRIEF_LINES = 8;
 export const MAX_BRIEF_HIGHLIGHTS = 3;
 
 export interface BriefLine {
-  en: string;
-  es: string;
+  /** The sentence, in English. See the header: the brief has one language. */
+  text: string;
   /**
    * Set on the lines that quote a specific card, so tapping the line can jump
    * to that card (the `?focus=` seam). Absent on the framing sentences.
@@ -155,10 +173,8 @@ export function briefWindowStart(localMidnight: Date, run: QueueRun | null): Dat
 
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
-type Bi = { en: string; es: string };
-
-function line(en: string, es: string, findingId?: string): BriefLine {
-  return findingId ? { en, es, findingId } : { en, es };
+function line(text: string, findingId?: string): BriefLine {
+  return findingId ? { text, findingId } : { text };
 }
 
 /**
@@ -169,22 +185,16 @@ function line(en: string, es: string, findingId?: string): BriefLine {
  * is the precise lie the staleness band in livenessLine exists to prevent, and
  * the brief must not reintroduce it one line higher up the screen.
  */
-function sinceLabel(fresh: boolean): Bi {
-  return fresh
-    ? { en: 'Overnight', es: 'Anoche' }
-    : { en: 'Since the last check', es: 'Desde la última revisión' };
+function sinceLabel(fresh: boolean): string {
+  return fresh ? 'Overnight' : 'Since the last check';
 }
 
-function thingsNew(n: number): Bi {
-  return n === 1
-    ? { en: '1 new thing', es: '1 cosa nueva' }
-    : { en: `${n} new things`, es: `${n} cosas nuevas` };
+function thingsNew(n: number): string {
+  return n === 1 ? '1 new thing' : `${n} new things`;
 }
 
-function thingsChanged(n: number): Bi {
-  return n === 1
-    ? { en: '1 thing changed', es: '1 cosa cambió' }
-    : { en: `${n} things changed`, es: `${n} cosas cambiaron` };
+function thingsChanged(n: number): string {
+  return n === 1 ? '1 thing changed' : `${n} things changed`;
 }
 
 // ─── Assembly ───────────────────────────────────────────────────────────────
@@ -212,7 +222,6 @@ export function buildBrief(input: BriefInput): MorningBrief | null {
   const cleared = [...input.cleared];
 
   const liveness = livenessLine(run, distinctDetectors(cards), 'en', input.now);
-  const livenessEs = livenessLine(run, distinctDetectors(cards), 'es', input.now);
 
   // ── the quiet night ──
   // One line, and it is only allowed to say "all normal" when nothing is
@@ -228,10 +237,7 @@ export function buildBrief(input: BriefInput): MorningBrief | null {
   ) {
     const checked = Math.max(0, Math.round(run.detectorsChecked));
     return finish(input, 'quiet', [
-      line(
-        `Quiet night. Checked ${checked} things, all normal.`,
-        `Noche tranquila. Se revisaron ${checked} cosas, todo normal.`,
-      ),
+      line(`Quiet night. Checked ${checked} things, all normal.`),
     ]);
   }
 
@@ -240,20 +246,15 @@ export function buildBrief(input: BriefInput): MorningBrief | null {
 
   // ── what happened ──
   if (newCards.length > 0 && changedCards.length > 0) {
-    const n = thingsNew(newCards.length);
-    const c = thingsChanged(changedCards.length);
-    lines.push(line(`${since.en}: ${n.en}, and ${c.en}.`, `${since.es}: ${n.es}, y ${c.es}.`));
-  } else if (newCards.length > 0) {
-    const n = thingsNew(newCards.length);
-    lines.push(line(`${since.en}: ${n.en} to look at.`, `${since.es}: ${n.es} para revisar.`));
-  } else if (changedCards.length > 0) {
-    const c = thingsChanged(changedCards.length);
     lines.push(line(
-      `${since.en}: nothing new, ${c.en}.`,
-      `${since.es}: nada nuevo, ${c.es}.`,
+      `${since}: ${thingsNew(newCards.length)}, and ${thingsChanged(changedCards.length)}.`,
     ));
+  } else if (newCards.length > 0) {
+    lines.push(line(`${since}: ${thingsNew(newCards.length)} to look at.`));
+  } else if (changedCards.length > 0) {
+    lines.push(line(`${since}: nothing new, ${thingsChanged(changedCards.length)}.`));
   } else if (fresh) {
-    lines.push(line('Nothing new overnight.', 'Nada nuevo anoche.'));
+    lines.push(line('Nothing new overnight.'));
   }
 
   // ── the two or three worth the attention ──
@@ -266,25 +267,17 @@ export function buildBrief(input: BriefInput): MorningBrief | null {
   // ── what went away by itself ──
   if (cleared.length === 1) {
     const only = cleared[0];
-    lines.push(line(
-      `1 thing cleared on its own: ${cardPhrasing(only, 'en')}`,
-      `1 cosa se resolvió sola: ${cardPhrasing(only, 'es')}`,
-      only.id,
-    ));
+    lines.push(line(`1 thing cleared on its own: ${cardPhrasing(only, 'en')}`, only.id));
   } else if (cleared.length > 1) {
-    lines.push(line(
-      `${cleared.length} things cleared on their own.`,
-      `${cleared.length} cosas se resolvieron solas.`,
-    ));
+    lines.push(line(`${cleared.length} things cleared on their own.`));
   }
 
   // ── proof the watcher ran ──
   // Always last, and always the existing liveness sentence rather than a second
   // implementation of it: one place decides what we are entitled to claim about
-  // having checked, and it is the same place the cards below use.
-  if (liveness.text && livenessEs.text) {
-    lines.push(line(liveness.text, livenessEs.text));
-  }
+  // having checked, and it is the same place the cards below use. Asked for in
+  // English like everything else here — the CARDS still ask it for Spanish.
+  if (liveness.text) lines.push(line(liveness.text));
 
   return finish(input, 'report', lines);
 }
@@ -293,11 +286,10 @@ export function buildBrief(input: BriefInput): MorningBrief | null {
 function highlightLine(card: QueueFinding): BriefLine {
   const price = formatPriceRange(card.price);
   const suffix = price ? ` — ${price}` : '';
-  return line(
-    `${cardPhrasing(card, 'en')}${suffix}`,
-    `${cardPhrasing(card, 'es')}${suffix}`,
-    card.id,
-  );
+  // 'en' explicitly. The card below the brief is still bilingual and a Spanish
+  // reader still sees its Spanish there; the brief's copy of the sentence is
+  // English because the brief is English.
+  return line(`${cardPhrasing(card, 'en')}${suffix}`, card.id);
 }
 
 /**
@@ -357,18 +349,13 @@ export function briefFacts(brief: MorningBrief, input: BriefInput): Record<strin
   };
 }
 
-/** Both languages of the template, joined — the text the guard's receipt is
- *  harvested from, so anything the template already said is backed. */
+/** The template's own text, joined — what the guard's receipt is harvested
+ *  from, so anything the template already said is backed. */
 export function briefTemplateText(brief: MorningBrief): string {
-  return brief.lines.map((l) => `${l.en} ${l.es}`).join(' ');
+  return brief.lines.map((l) => l.text).join(' ');
 }
 
 // ─── The phrasing pass's contract ───────────────────────────────────────────
-
-export interface PhrasedLine {
-  en: string;
-  es: string;
-}
 
 /**
  * Parse a phrasing reply, or refuse it whole.
@@ -378,8 +365,14 @@ export interface PhrasedLine {
  * a card id on this side, and a reordered reply would attach the ice machine's
  * sentence to the breakfast card's link. A reply that does not line up exactly
  * is not partially useful, so it is refused entirely and the template stands.
+ *
+ * A LINE IS A BARE STRING, not an object. That is the English-only ruling made
+ * structural: the reply carries one sentence per line because there is one
+ * language, so there is no second field to leave blank, no key for the model to
+ * add, and no shape in which English could stand in for Spanish. It is also
+ * about half the output tokens the two-language object cost.
  */
-export function parseBriefPhrasing(text: string, expected: number): PhrasedLine[] {
+export function parseBriefPhrasing(text: string, expected: number): string[] {
   const json = extractJson(text);
   if (!json || typeof json !== 'object' || Array.isArray(json)) {
     throw new BriefPhrasingError('reply was not a JSON object');
@@ -392,24 +385,13 @@ export function parseBriefPhrasing(text: string, expected: number): PhrasedLine[
   if (raw.length > MAX_BRIEF_LINES) throw new BriefPhrasingError('reply was over the line cap');
 
   return raw.map((item, index) => {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw new BriefPhrasingError(`line ${index} was not an object`);
+    // An object here is a model still answering the old two-language contract
+    // (or inventing a field of its own). Either way it is not a sentence.
+    if (typeof item !== 'string') {
+      throw new BriefPhrasingError(`line ${index} was not a string`);
     }
-    const keys = Object.keys(item as Record<string, unknown>);
-    // An extra key is a model doing something it was not asked to do. There is
-    // no field here it could add that we would want.
-    if (keys.some((k) => k !== 'en' && k !== 'es')) {
-      throw new BriefPhrasingError(`line ${index} carried an unexpected key`);
-    }
-    const en = (item as { en?: unknown }).en;
-    const es = (item as { es?: unknown }).es;
-    if (typeof en !== 'string' || typeof es !== 'string') {
-      throw new BriefPhrasingError(`line ${index} was missing en or es`);
-    }
-    if (en.trim().length === 0 || es.trim().length === 0) {
-      throw new BriefPhrasingError(`line ${index} was blank in one language`);
-    }
-    return { en: en.trim(), es: es.trim() };
+    if (item.trim().length === 0) throw new BriefPhrasingError(`line ${index} was blank`);
+    return item.trim();
   });
 }
 
@@ -441,16 +423,15 @@ function extractJson(text: string): unknown {
  * never the model's — so a rewritten line still jumps to the card the template
  * chose, and phrasing cannot silently relink anything.
  */
-export function applyBriefPhrasing(brief: MorningBrief, phrased: readonly PhrasedLine[]): MorningBrief {
+export function applyBriefPhrasing(brief: MorningBrief, phrased: readonly string[]): MorningBrief {
   if (phrased.length !== brief.lines.length) return brief;
   return {
     ...brief,
     source: 'model',
-    lines: brief.lines.map((original, index) => {
-      const next = phrased[index];
-      return original.findingId
-        ? { en: next.en, es: next.es, findingId: original.findingId }
-        : { en: next.en, es: next.es };
-    }),
+    lines: brief.lines.map((original, index) => (
+      original.findingId
+        ? { text: phrased[index], findingId: original.findingId }
+        : { text: phrased[index] }
+    )),
   };
 }

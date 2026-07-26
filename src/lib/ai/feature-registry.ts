@@ -342,7 +342,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   // costs polish and nothing else.
   'findings.brief': defineFeature(
     'findings.brief', 'Agent', 'Morning brief wording',
-    'Rewrites the morning summary at the top of the Staxis tab so it reads like a person wrote it, in English and Spanish. It cannot change any number or add anything to the summary — if it tries, the plain version is used instead.',
+    'Rewrites the morning summary at the top of the Staxis tab so it reads like a person wrote it. The brief is written in English only. It cannot change any number or add anything to the summary — if it tries, the plain version is used instead.',
     ['text'], HAIKU,
   ),
   'walkthrough.step_generation': defineFeature(

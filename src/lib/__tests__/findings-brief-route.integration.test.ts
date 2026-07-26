@@ -317,7 +317,7 @@ describe('/api/findings/brief — the morning brief', () => {
     test('leads with the biggest dollars and ends with the liveness line', async () => {
       const { body } = await readBrief(PID_A);
       const brief = body.data!.brief!;
-      const en = brief.lines.map((l) => l.en);
+      const en = brief.lines.map((l) => l.text);
       assert.ok(en[1].startsWith('The ice machine has had 3 service calls.'), en[1]);
       assert.match(en[1], /\$2,100–\$3,800/);
       assert.ok(en[2].startsWith('Room 214'), en[2]);
@@ -343,7 +343,7 @@ describe('/api/findings/brief — the morning brief', () => {
         status: 'expired', statusChangedAt: '2026-07-25T08:30:00.000Z',
       });
       const { brief } = await getMorningBrief({ propertyId: PID_A, now: AFTERNOON, phrasing: false });
-      assert.ok(brief!.lines.some((l) => l.en.startsWith('1 thing cleared on its own:')));
+      assert.ok(brief!.lines.some((l) => l.text.startsWith('1 thing cleared on its own:')));
     });
 
     test('a problem that expired LAST month is not this morning’s good news', async () => {
@@ -354,18 +354,32 @@ describe('/api/findings/brief — the morning brief', () => {
         status: 'expired', statusChangedAt: '2026-06-01T08:30:00.000Z',
       });
       const { brief } = await getMorningBrief({ propertyId: PID_A, now: AFTERNOON, phrasing: false });
-      assert.ok(!brief!.lines.some((l) => /cleared on its own|cleared on their own/.test(l.en)));
+      assert.ok(!brief!.lines.some((l) => /cleared on its own|cleared on their own/.test(l.text)));
     });
 
-    test('every line comes back in both languages', async () => {
+    // Founder ruling (2026-07-26): the brief is ENGLISH-ONLY, whatever language
+    // the reader has the app set to. This test used to demand the opposite — a
+    // Spanish half on every line — and now pins that no such half survives the
+    // whole route: assembly, cache, envelope, JSON.
+    //
+    // Mutation: put `es` back on BriefLine and fill it in brief.ts. The key
+    // sweep below fails on every line.
+    test('every line comes back as one English sentence, with no second language', async () => {
       const { body } = await readBrief(PID_A);
-      for (const l of body.data!.brief!.lines) {
-        assert.ok(l.en.trim().length > 0);
-        assert.ok(l.es.trim().length > 0);
+      const lines = body.data!.brief!.lines;
+      assert.ok(lines.length > 0);
+      for (const l of lines) {
+        assert.ok(l.text.trim().length > 0, 'a line came back blank');
+        for (const key of Object.keys(l)) {
+          assert.ok(
+            key === 'text' || key === 'findingId',
+            `a brief line crossed the wire with an unexpected field "${key}"`,
+          );
+        }
       }
-      const framing = body.data!.brief!.lines.filter((l) => !l.findingId);
-      assert.ok(framing.length > 0);
-      for (const l of framing) assert.notEqual(l.en, l.es);
+      // The wire shape itself, not just the parsed objects: nothing anywhere in
+      // this payload is a Spanish half.
+      assert.ok(!JSON.stringify(body.data!.brief).includes('"es"'));
     });
   });
 
@@ -476,8 +490,8 @@ describe('/api/findings/brief — the morning brief', () => {
       assert.equal(a.brief!.propertyId, PID_A);
       assert.equal(b.brief!.propertyId, PID_B);
       assert.ok(!JSON.stringify(a.brief).includes(LEAK_MARKER));
-      assert.match(a.brief!.lines[a.brief!.lines.length - 1].en, /Checked 34 things/);
-      assert.match(b.brief!.lines[b.brief!.lines.length - 1].en, /Checked 12 things/);
+      assert.match(a.brief!.lines[a.brief!.lines.length - 1].text, /Checked 34 things/);
+      assert.match(b.brief!.lines[b.brief!.lines.length - 1].text, /Checked 12 things/);
 
       const rows = await cacheRows();
       assert.equal(rows.length, 2);
