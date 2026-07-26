@@ -163,6 +163,26 @@ const loadCleaningPlan: FeedLoader<'cleaning_plan'> = async (env) => {
 /** 14 weeks: one current window, twelve baseline windows, and slack. */
 const HISTORY_WINDOW_DAYS = 98;
 
+/**
+ * How far back a "this place keeps breaking" claim reaches.
+ *
+ * THIRTY, AND IT HAS TO BE THIRTY IN THREE PLACES AT ONCE.
+ * The card says "in the last 30 days". `staxis_execute_finding_action`
+ * (migration 0363) re-counts the still-open tickets over
+ * `verify.window_days`, defaulting to 30, INSIDE the transaction that would
+ * write the inspection ticket. This loader used to group locations over the
+ * full 98-day read, so a location whose three tickets were spread over ten
+ * weeks produced a card claiming thirty days — and an offer whose re-verify
+ * looked at thirty days, found nothing still open, and declined with
+ * "somebody is already on it" when nobody was. The sentence, the receipt and
+ * the transaction now measure the same thing.
+ *
+ * Repair COSTS are still sampled from the full 98-day read: "what a repair
+ * costs at this hotel" is a fact about the hotel, not about the last month,
+ * and the price basis claims no window.
+ */
+const LOCATION_WINDOW_DAYS = 30;
+
 /** Hard ceilings so one strange hotel cannot pull an unbounded result set. */
 const MAX_ROWS = 20_000;
 
@@ -305,6 +325,11 @@ const loadRoomWorkOrderHistory: FeedLoader<'room_work_order_history'> = async (e
   const allDates: string[] = [];
   let counted = 0;
 
+  // The first day a ticket may be counted towards "this place keeps breaking".
+  const locationWindowStart = new Date(
+    env.now.getTime() - LOCATION_WINDOW_DAYS * MS_PER_DAY,
+  ).getTime();
+
   for (const row of rowsOf(result, 'work_orders')) {
     const cents = dollarsToCents(numberOf(row.repair_cost));
     if (cents !== null && cents > 0) repairCostCentsSamples.push(cents);
@@ -312,6 +337,10 @@ const loadRoomWorkOrderHistory: FeedLoader<'room_work_order_history'> = async (e
     const location = typeof row.room_number === 'string' ? row.room_number.trim() : '';
     const date = localDateOf(row.created_at, env.timezone);
     if (!location || !date) continue;
+    // Older than the window the card claims: it still counts as evidence of
+    // what a repair costs here (above), never as evidence of a recent pattern.
+    const createdAt = typeof row.created_at === 'string' ? new Date(row.created_at).getTime() : NaN;
+    if (!Number.isFinite(createdAt) || createdAt < locationWindowStart) continue;
     allDates.push(date);
     counted += 1;
 
@@ -339,7 +368,9 @@ const loadRoomWorkOrderHistory: FeedLoader<'room_work_order_history'> = async (e
       locations,
       repairCostCentsSamples,
       coverageStartDate: earliestDate(allDates),
-      windowDays: HISTORY_WINDOW_DAYS,
+      // The window the LOCATIONS were counted over — which is the number the
+      // card prints and the number the execute transaction re-checks.
+      windowDays: LOCATION_WINDOW_DAYS,
     },
     recordCount: counted,
     asOf: env.now,

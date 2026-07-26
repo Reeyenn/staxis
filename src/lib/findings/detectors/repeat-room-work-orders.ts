@@ -51,8 +51,19 @@ import { readFeed } from '../types';
 
 const RECEIPT = 'work_orders_by_location_30d';
 
-/** The window a "lately" claim covers. Matches the operational-signal layer's
- *  own 30 days, so the two never disagree about what "recently" means. */
+/**
+ * The window a "lately" claim covers, when the feed does not say.
+ *
+ * Matches the operational-signal layer's own 30 days, so the two never
+ * disagree about what "recently" means — and matches the default in
+ * `staxis_execute_finding_action` (0363), which re-counts the still-open
+ * tickets over `verify.window_days` inside the transaction that acts.
+ *
+ * The number the card actually prints comes from `history.windowDays`, i.e.
+ * from the loader that did the counting. It used to be this constant while
+ * the loader grouped over ninety-eight days, so a location whose tickets were
+ * spread over ten weeks got a card claiming thirty. One source now.
+ */
 export const WINDOW_DAYS = 30;
 
 /**
@@ -104,6 +115,8 @@ function draftFor(
   );
 
   const stillOpen = entry.stillOpen;
+  // Whatever the loader actually counted over. Never a second opinion.
+  const windowDays = history.windowDays > 0 ? Math.round(history.windowDays) : WINDOW_DAYS;
 
   return {
     // Identity is the PLACE. A fifth work order tomorrow lands on this same row
@@ -111,7 +124,7 @@ function draftFor(
     key: `location:${entry.location}`,
     summary:
       `${entry.location} has had ${plural(entry.total, 'work order')} in the last ` +
-      `${WINDOW_DAYS} days — ${stillOpen === 0 ? 'all of them closed' : `${stillOpen} still open`}.`,
+      `${windowDays} days — ${stillOpen === 0 ? 'all of them closed' : `${stillOpen} still open`}.`,
     severity: entry.total >= MIN_WORK_ORDERS * 2 ? 'critical' : 'attention',
     // Nothing left open means nothing for Staxis to add: the team is evidently
     // on it. Worth saying, not worth a button.
@@ -121,7 +134,7 @@ function draftFor(
       queryId: RECEIPT,
       params: {
         location: entry.location,
-        window_days: WINDOW_DAYS,
+        window_days: windowDays,
       },
       values: {
         work_orders: entry.total,
@@ -167,6 +180,14 @@ export function workOrderActionFor(draft: FindingDraft): FindingActionDraft | nu
   const stillOpen = draft.evidence.values.still_open;
   if (typeof location !== 'string' || location.trim() === '') return null;
   if (typeof stillOpen !== 'number' || stillOpen < 1) return null;
+  // The window the CARD counted over, so the transaction re-checks the same
+  // set of tickets the manager was shown. Rows written before the receipt
+  // carried one fall back to the shared default.
+  const windowDays =
+    typeof draft.evidence.params.window_days === 'number' &&
+    draft.evidence.params.window_days > 0
+      ? Math.round(draft.evidence.params.window_days)
+      : WINDOW_DAYS;
 
   return {
     kind: 'create_work_order',
@@ -177,7 +198,7 @@ export function workOrderActionFor(draft: FindingDraft): FindingActionDraft | nu
     // ticket on top of that is the failure mode this check exists to prevent.
     verify: {
       location,
-      window_days: WINDOW_DAYS,
+      window_days: windowDays,
       open_work_orders: stillOpen,
     },
   };
@@ -187,7 +208,8 @@ const feed = (locations: LocationWorkOrders[], repairCostCentsSamples: number[] 
   locations,
   repairCostCentsSamples,
   coverageStartDate: '2026-06-25',
-  windowDays: 98,
+  // What the loader counts locations over — the same number the card prints.
+  windowDays: WINDOW_DAYS,
 });
 
 export const repeatRoomWorkOrdersDetector: Detector<DetectorParams> = {

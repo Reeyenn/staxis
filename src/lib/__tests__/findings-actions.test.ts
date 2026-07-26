@@ -43,6 +43,7 @@ import { validateDeclaration } from '@/lib/findings/registry';
 import { parseJudgeReplyStrict } from '@/lib/findings/judge';
 import {
   MIN_WORK_ORDERS,
+  WINDOW_DAYS,
   detectRepeatRoomWorkOrders,
   repeatRoomWorkOrdersDetector,
   roomTargetFor,
@@ -70,7 +71,10 @@ function historyContext(history: Partial<RoomWorkOrderHistory>): DetectorContext
     locations: [],
     repairCostCentsSamples: [],
     coverageStartDate: '2026-06-25',
-    windowDays: 98,
+    // The window the LOADER counts locations over. It used to say 98 here while
+    // the card printed 30 and the execute transaction re-checked 30; the fixture
+    // is now the one number all three agree on.
+    windowDays: WINDOW_DAYS,
     ...history,
   };
   return {

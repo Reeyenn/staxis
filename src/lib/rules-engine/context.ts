@@ -64,9 +64,25 @@ interface RawReservation {
   dietary_needs: string | null;
   accessibility_needs: string | null;
   package_name: string | null;
-  rate_code: string | null;
   status: string | null;
 }
+
+/**
+ * `rate_code` is NOT a column on `pms_reservations` (migration 0202 defines
+ * the table; nothing since adds it), and it never was.
+ *
+ * It used to be in the SELECT list below, which made PostgREST answer the
+ * whole reservations read with 42703 "column does not exist". `buildRoomContexts`
+ * rethrows any of its five query errors, so `runRulesEngineForProperty` threw
+ * before evaluating a single room — for every hotel, on every 5-minute cron
+ * tick, since the engine shipped. The findings runner saw it as a failed
+ * `cleaning_plan` feed and skipped `cleaning_plan_health` every night.
+ *
+ * The engine's own types keep a `rate_code` slot because the free-text
+ * detectors (VIP / pet / eco / honeymoon) read one when a PMS supplies it.
+ * Until a feed does, it is honestly null rather than silently fatal.
+ */
+const RATE_CODE_NOT_IN_PMS_SCHEMA = null;
 
 /** Reservation status values that mean "this reservation should NOT
  *  generate a cleaning task" — the guest is no longer coming or has
@@ -139,7 +155,10 @@ export async function buildRoomContexts(
     supabaseAdmin
       .from('pms_reservations')
       .select(
-        'pms_reservation_id, room_number, arrival_date, arrival_time, departure_date, departure_time, num_nights, adults, children, infants, notes, special_requests, dietary_needs, accessibility_needs, package_name, rate_code, status',
+        // Every name here must be a real column on pms_reservations. PostgREST
+        // fails the WHOLE read with 42703 on one bad name, and the throw below
+        // takes the entire cleaning plan with it — see RATE_CODE_NOT_IN_PMS_SCHEMA.
+        'pms_reservation_id, room_number, arrival_date, arrival_time, departure_date, departure_time, num_nights, adults, children, infants, notes, special_requests, dietary_needs, accessibility_needs, package_name, status',
       )
       .eq('property_id', propertyId)
       .lte('arrival_date', prop.business_date)
@@ -350,7 +369,7 @@ function toDeparting(
   const textFields = {
     notes: res.notes,
     special_requests: res.special_requests,
-    rate_code: res.rate_code,
+    rate_code: RATE_CODE_NOT_IN_PMS_SCHEMA,
     package_name: res.package_name,
   };
   return {
@@ -363,7 +382,7 @@ function toDeparting(
     is_vip: detectIsVip(textFields),
     has_pet: detectHasPet(textFields),
     package_name: res.package_name,
-    rate_code: res.rate_code,
+    rate_code: RATE_CODE_NOT_IN_PMS_SCHEMA,
     special_requests: res.special_requests,
   };
 }
@@ -375,7 +394,7 @@ function toArriving(
   const textFields = {
     notes: res.notes,
     special_requests: res.special_requests,
-    rate_code: res.rate_code,
+    rate_code: RATE_CODE_NOT_IN_PMS_SCHEMA,
     package_name: res.package_name,
   };
   return {
@@ -396,7 +415,7 @@ function toArriving(
     children: res.children,
     infants: res.infants,
     package_name: res.package_name,
-    rate_code: res.rate_code,
+    rate_code: RATE_CODE_NOT_IN_PMS_SCHEMA,
     special_requests: res.special_requests,
     has_baby_cot: detectBabyCot({
       notes: res.notes,
@@ -423,7 +442,7 @@ function toStaying(
   const textFields = {
     notes: res.notes,
     special_requests: res.special_requests,
-    rate_code: res.rate_code,
+    rate_code: RATE_CODE_NOT_IN_PMS_SCHEMA,
     package_name: res.package_name,
   };
   return {
@@ -449,7 +468,7 @@ function toStaying(
     dnd_active: hk?.dnd_active === true,
     nsr_active: false,
     package_name: res.package_name,
-    rate_code: res.rate_code,
+    rate_code: RATE_CODE_NOT_IN_PMS_SCHEMA,
     special_requests: res.special_requests,
   };
 }
