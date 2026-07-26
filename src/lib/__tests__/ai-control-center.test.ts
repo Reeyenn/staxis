@@ -6,11 +6,15 @@ import { join } from 'node:path';
 import {
   AI_FEATURE_KEYS,
   AI_FEATURE_REGISTRY,
+  AI_MODEL_OVERLAYS,
   getAiFeatureDefinition,
+  isAiFeatureRuntimeProviderCompatible,
 } from '@/lib/ai/feature-registry';
 import { discoverProviderModels } from '@/lib/ai/provider-discovery';
 import { probeAiModel } from '@/lib/ai/provider-probe';
 import { listRegistryModelFallbacks, mergeAiModelCatalogRows } from '@/lib/ai/model-catalog';
+import { captureTokenUsage } from '@/lib/ai/usage';
+import { isRuntimeCompatibleAiModel } from '@/app/admin/_components/AIControlCenter.helpers';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => {
@@ -134,6 +138,174 @@ describe('AI Control Center feature registry', () => {
     const daily = getAiFeatureDefinition('ml.daily_report_headcount');
     assert.equal(daily.availability, 'unavailable');
     assert.equal(daily.defaultConfig.enabled, false);
+  });
+});
+
+// ─── Which providers may serve a feature ────────────────────────────────────
+//
+// Until 2026-07-26 the answer was "whichever one supplied the default model",
+// so every text feature was pinned to Anthropic by an accident of history. It
+// is now derived from what each provider's ADAPTER implements.
+
+describe('feature/provider compatibility reflects real adapter capability', () => {
+  test('text and tool features can run on either chat provider', () => {
+    for (const key of ['agent.ask_staxis', 'findings.judge', 'communications.message_translation'] as const) {
+      const feature = getAiFeatureDefinition(key);
+      assert.ok(
+        isAiFeatureRuntimeProviderCompatible(key, 'openai'),
+        `${key} should be selectable on OpenAI — it needs only ${feature.requiredCapabilities.join('+')}`,
+      );
+      assert.ok(isAiFeatureRuntimeProviderCompatible(key, 'anthropic'));
+    }
+  });
+
+  test('a feature that needs PDF reading stays Anthropic-only', () => {
+    // The OpenAI adapter translates no document block. Offering GPT here would
+    // produce a blank extraction that looks like a successful one.
+    for (const key of ['inventory.invoice_scan', 'knowledge.fact_extraction'] as const) {
+      assert.ok(getAiFeatureDefinition(key).requiredCapabilities.includes('pdf_input'));
+      assert.equal(isAiFeatureRuntimeProviderCompatible(key, 'openai'), false);
+      assert.equal(isAiFeatureRuntimeProviderCompatible(key, 'anthropic'), true);
+    }
+  });
+
+  test('image features without PDF needs are open to both', () => {
+    for (const key of ['inventory.photo_count', 'financials.invoice_scan', 'housekeeping.board_photo_read'] as const) {
+      assert.equal(getAiFeatureDefinition(key).requiredCapabilities.includes('pdf_input'), false);
+      assert.ok(isAiFeatureRuntimeProviderCompatible(key, 'openai'));
+    }
+  });
+
+  test('locked and non-chat features are never widened', () => {
+    // Embeddings share a versioned vector space; the browser and in-house
+    // entries are not model APIs at all. None may drift onto a chat provider.
+    assert.deepEqual([...getAiFeatureDefinition('knowledge.embeddings').runtimeProviders], ['openai']);
+    assert.deepEqual([...getAiFeatureDefinition('speech.ask_staxis_dictation').runtimeProviders], ['browser']);
+    assert.deepEqual([...getAiFeatureDefinition('ml.housekeeping_demand').runtimeProviders], ['in_house']);
+    // Declares NO required capabilities, which would vacuously match every
+    // provider if the lock were not honoured first.
+    assert.deepEqual([...getAiFeatureDefinition('ml.daily_report_headcount').runtimeProviders], ['in_house']);
+    // Transcription is a separate OpenAI endpoint; Anthropic cannot serve it.
+    assert.deepEqual([...getAiFeatureDefinition('communications.voice_transcription').runtimeProviders], ['openai']);
+  });
+
+  test('every feature can run on the provider of its own default model', () => {
+    // A feature whose picker excluded the model currently serving production
+    // would be a silent trap. runtimeProvidersFor throws at module load on
+    // this; the assertion documents the invariant.
+    for (const key of AI_FEATURE_KEYS) {
+      const feature = AI_FEATURE_REGISTRY[key];
+      assert.ok(
+        feature.runtimeProviders.includes(feature.defaultConfig.primary.provider),
+        `${key} excludes its own default provider`,
+      );
+      assert.ok(feature.runtimeProviders.length >= 1);
+    }
+  });
+});
+
+describe('OpenAI model pricing honesty', () => {
+  const openAiOverlays = AI_MODEL_OVERLAYS.filter((overlay) => overlay.provider === 'openai');
+
+  test('every priced OpenAI chat model cites a source and a date', () => {
+    const chatModels = openAiOverlays.filter((o) => o.capabilities.includes('text'));
+    assert.ok(chatModels.length >= 10, 'the curated OpenAI chat list should not be empty');
+    for (const overlay of chatModels) {
+      const pricing = overlay.pricing;
+      assert.ok(pricing, `${overlay.modelId} must carry pricing to be selectable`);
+      assert.equal(typeof pricing.inputUsdPerMillionTokens, 'number');
+      assert.equal(typeof pricing.outputUsdPerMillionTokens, 'number');
+      // "No number without a receipt": the receipt is the published sheet.
+      assert.match(pricing.source, /^https:\/\/developers\.openai\.com\/api\/docs\/pricing$/);
+      assert.match(pricing.asOf, /^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+
+  test('no OpenAI cache-write rate is invented', () => {
+    // OpenAI publishes input / cached-input / output and charges nothing to
+    // POPULATE a cache. An absent line item is not a published zero, so the
+    // creation fields stay undefined and the estimator's conservative fallback
+    // covers the case that cannot occur (the adapter always reports 0).
+    for (const overlay of openAiOverlays) {
+      assert.equal(overlay.pricing?.cacheCreation5mInputUsdPerMillionTokens, undefined);
+      assert.equal(overlay.pricing?.cacheCreation1hInputUsdPerMillionTokens, undefined);
+    }
+  });
+
+  test('a discovered model with no published price is unpriced and unselectable', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      data: [
+        { id: 'gpt-5.4-mini', created: 1_770_000_000, object: 'model', owned_by: 'openai' },
+        // Still served by the API, no longer on the published price sheet.
+        { id: 'gpt-5.1', created: 1_760_000_000, object: 'model', owned_by: 'openai' },
+      ],
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+
+    const models = await discoverProviderModels('openai');
+    const priced = models.find((m) => m.modelId === 'gpt-5.4-mini');
+    const unpriced = models.find((m) => m.modelId === 'gpt-5.1');
+
+    assert.ok(priced?.pricing, 'a curated model keeps its verified price');
+    assert.ok(priced.capabilities.includes('text'));
+
+    // The honest outcome for a model we cannot price: no capabilities, so it
+    // satisfies no feature's requirements and never reaches the picker. We do
+    // not guess a rate and we do not run a hotel's spend through it.
+    assert.equal(unpriced?.pricing, null);
+    assert.deepEqual(unpriced?.capabilities, []);
+    assert.equal(
+      isRuntimeCompatibleAiModel(
+        { runtimeProviders: ['anthropic', 'openai'], requiredCapabilities: ['text'] },
+        { provider: 'openai', available: true, capabilities: unpriced?.capabilities ?? [] },
+      ),
+      false,
+    );
+  });
+
+  test('an unpriced model cannot produce a costed ledger row', () => {
+    // captureTokenUsage is the only way OpenAI usage reaches agent_costs. With
+    // no pricing it throws rather than booking the turn at $0 — spend that
+    // silently reads as free is worse than a loud failure.
+    assert.throws(
+      () => captureTokenUsage([], { provider: 'openai', modelId: 'gpt-5.1', pricing: null }, 'gpt-5.1', {
+        input_tokens: 1000, output_tokens: 500,
+      }),
+      /Missing pricing for openai\/gpt-5\.1/,
+    );
+  });
+});
+
+describe('missing provider key is loud, never a silent empty feature', () => {
+  test('the configured check and the throwing factory agree', async () => {
+    const { getMessagesClient, getMessagesClientIfConfigured, isMessagesProviderConfigured, resetMessagesClientCache } =
+      await import('@/lib/ai/messages-client');
+    resetMessagesClientCache();
+
+    // npm test injects a placeholder OPENAI_API_KEY and no ANTHROPIC_API_KEY,
+    // which makes this suite a real test of both branches.
+    assert.equal(isMessagesProviderConfigured('openai'), true);
+    assert.equal(isMessagesProviderConfigured('anthropic'), false);
+
+    // Best-effort surfaces get null and degrade quietly.
+    assert.equal(getMessagesClientIfConfigured('anthropic'), null);
+    assert.ok(getMessagesClientIfConfigured('openai'));
+
+    // Surfaces with no degraded answer get a named, actionable error.
+    assert.throws(() => getMessagesClient('anthropic'), /ANTHROPIC_API_KEY is not set/);
+    // A provider with no model API at all is refused outright.
+    assert.throws(() => getMessagesClient('browser'), /no model API/);
+    resetMessagesClientCache();
+  });
+
+  test('an OpenAI probe reports unavailable rather than passing silently', async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      error: { message: 'Incorrect API key provided' },
+    }), { status: 401, headers: { 'Content-Type': 'application/json' } })) as typeof fetch;
+
+    const result = await probeAiModel({ provider: 'openai', modelId: 'gpt-5.4-mini' }, ['text']);
+    assert.equal(result.ok, false);
+    assert.equal(result.kind, 'openai_message');
+    assert.match(result.error ?? '', /OpenAI/);
   });
 });
 
