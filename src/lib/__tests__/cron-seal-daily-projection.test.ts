@@ -23,8 +23,15 @@ import {
   hasFreshPmsEvidence,
   preserveSealedOccupancy,
   datesNeedingOccupancyBackfill,
+  sealCleaningMinutes,
   type SealedOccupancyFields,
 } from '@/lib/seal-daily';
+import {
+  DEFAULT_CHECKOUT_MINUTES,
+  DEFAULT_STAYOVER_DAY1_MINUTES,
+  DEFAULT_STAYOVER_DAY2_MINUTES,
+  DEFAULT_SHIFT_MINUTES,
+} from '@/lib/forecast';
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -233,5 +240,68 @@ describe('seal-daily outage repair — datesNeedingOccupancyBackfill', () => {
       datesNeedingOccupancyBackfill({ targetDate: target, existing, historyFloor: '2026-01-01' }),
       [],
     );
+  });
+});
+
+describe('seal-daily clean times — sealCleaningMinutes', () => {
+  // The bug this covers: the seal read `properties.config.cleaningMinutes`, a
+  // column that has never existed, so a hotel's own Settings → Clean Times
+  // values NEVER reached the sealed row. Every assertion here is "the hotel's
+  // number wins", which is precisely what was broken.
+  test("the hotel's own clean times win over the fallbacks", () => {
+    const cm = sealCleaningMinutes({
+      checkout_minutes: 45,
+      stayover_day1_minutes: 18,
+      stayover_day2_minutes: 22,
+      shift_minutes: 480,
+    });
+    assert.equal(cm.checkout, 45);
+    assert.equal(cm.stayoverDay1, 18);
+    assert.equal(cm.stayoverDay2, 22);
+    assert.equal(cm.shift, 480);
+  });
+
+  test('a vacant-dirty room costs what a checkout costs', () => {
+    // Full clean either way, and there is no column for it. If this ever gains
+    // its own column, it is a second place to keep right — decide deliberately.
+    assert.equal(sealCleaningMinutes({ checkout_minutes: 45 }).vacantDirty, 45);
+    assert.equal(sealCleaningMinutes({}).vacantDirty, DEFAULT_CHECKOUT_MINUTES);
+  });
+
+  test('a null column falls back to the shared forecast default', () => {
+    const cm = sealCleaningMinutes({
+      checkout_minutes: null,
+      stayover_day1_minutes: null,
+      stayover_day2_minutes: null,
+      shift_minutes: null,
+    });
+    assert.equal(cm.checkout, DEFAULT_CHECKOUT_MINUTES);
+    assert.equal(cm.stayoverDay1, DEFAULT_STAYOVER_DAY1_MINUTES);
+    assert.equal(cm.stayoverDay2, DEFAULT_STAYOVER_DAY2_MINUTES);
+    assert.equal(cm.shift, DEFAULT_SHIFT_MINUTES);
+  });
+
+  test('a missing row falls back rather than throwing', () => {
+    // The read can legitimately come back null (a hotel deleted mid-run).
+    // Sealing the fallbacks beats crashing the whole cron for every hotel.
+    for (const input of [null, undefined, {}]) {
+      const cm = sealCleaningMinutes(input);
+      assert.equal(cm.checkout, DEFAULT_CHECKOUT_MINUTES);
+      assert.equal(cm.shift, DEFAULT_SHIFT_MINUTES);
+    }
+  });
+
+  test('a zero or negative shift never reaches the divisor', () => {
+    // recommendedHKs divides by cm.shift. A stored 0 is a broken setting, not
+    // "a shift takes no time", and dividing by it would seal Infinity.
+    assert.equal(sealCleaningMinutes({ shift_minutes: 0 }).shift, DEFAULT_SHIFT_MINUTES);
+    assert.equal(sealCleaningMinutes({ shift_minutes: -60 }).shift, DEFAULT_SHIFT_MINUTES);
+    assert.equal(sealCleaningMinutes({ checkout_minutes: 0 }).checkout, DEFAULT_CHECKOUT_MINUTES);
+  });
+
+  test('NaN in the column does not poison the arithmetic', () => {
+    const cm = sealCleaningMinutes({ checkout_minutes: NaN, shift_minutes: NaN });
+    assert.equal(cm.checkout, DEFAULT_CHECKOUT_MINUTES);
+    assert.equal(cm.shift, DEFAULT_SHIFT_MINUTES);
   });
 });
