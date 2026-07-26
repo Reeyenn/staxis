@@ -49,6 +49,8 @@ import {
   forEachHotel,
   loadPortfolioHotels,
   MAX_PORTFOLIO_HOTELS,
+  readOncePerTurn,
+  turnNow,
   type PortfolioHotel,
 } from '../portfolio/hotels';
 
@@ -88,6 +90,8 @@ interface Reach {
   roomsOf: (propertyId: string) => number | null;
   /** Covered hotels this call is not reading (the per-turn ceiling). */
   omittedHotelCount: number;
+  /** The caller named specific hotels, so they asked for detail on them. */
+  namedHotels: boolean;
 }
 
 type ReachResult = { ok: true; reach: Reach } | { ok: false; error: string };
@@ -133,6 +137,7 @@ async function reachFor(
   }
 
   let requested = covered;
+  let namedHotels = false;
   if (hotelIds !== undefined && hotelIds !== null) {
     if (!Array.isArray(hotelIds)) {
       return { ok: false, error: 'Refused: hotelIds must be a list of hotel ids.' };
@@ -151,7 +156,10 @@ async function reachFor(
           + 'hotels, and call list_my_hotels if you need the list.',
       };
     }
-    if (asked.length > 0) requested = covered.filter((id) => new Set(asked).has(id));
+    if (asked.length > 0) {
+      requested = covered.filter((id) => new Set(asked).has(id));
+      namedHotels = true;
+    }
   }
 
   const { ids, omittedHotelCount } = boundedHotelIds(requested);
@@ -169,6 +177,7 @@ async function reachFor(
       nameOf: (id) => nameById.get(id) ?? 'Unnamed hotel',
       roomsOf: (id) => roomsById.get(id) ?? null,
       omittedHotelCount,
+      namedHotels,
     },
   };
 }
@@ -198,6 +207,15 @@ function windowDays(raw: unknown): number {
 
 function sinceIso(days: number, now: Date): string {
   return new Date(now.getTime() - days * MS_PER_DAY).toISOString();
+}
+
+/** Whole days between a stored timestamp and the turn's clock. Null when the
+ *  column is empty or unparseable — never a 0, which reads as "today". */
+function daysSince(value: unknown, now: Date): number | null {
+  if (typeof value !== 'string') return null;
+  const then = Date.parse(value);
+  if (!Number.isFinite(then)) return null;
+  return Math.max(0, Math.floor((now.getTime() - then) / MS_PER_DAY));
 }
 
 function numberOf(value: unknown): number | null {
@@ -266,13 +284,33 @@ function rowsOf<T>(result: QueryResult<T>, what: string): T[] {
   return result.data ?? [];
 }
 
+/**
+ * The count off a `head: true` read, with no rows behind it.
+ *
+ * A null count is a THROW, not a 0: PostgREST returning no number is a read that
+ * did not happen, and reporting it as zero would put a hotel at the bottom of a
+ * ranking for being unreadable. The per-hotel loop turns the throw into
+ * "unread", which the answer names out loud.
+ */
+function countOnly(
+  result: unknown,
+  what: string,
+): number {
+  const { count, error } = result as { count: number | null; error: { message: string } | null };
+  if (error) throw new Error(`${what} count failed: ${error.message}`);
+  if (count === null || count === undefined) throw new Error(`${what} count came back empty`);
+  return count;
+}
+
 /** The `hotelIds` argument every aggregate tool accepts, described once. */
 const HOTEL_IDS_SCHEMA = {
   type: 'array',
   items: { type: 'string' },
   description:
     'Optional. Narrow the answer to specific hotels by id, from list_my_hotels. '
-    + 'Omit to cover every hotel in the company. Any id outside the company is refused.',
+    + 'Omit to cover every hotel in the company. Any id outside the company is refused. '
+    + 'Naming hotels here also gets you the FULL item-by-item detail for them, which a '
+    + 'company-wide answer only carries for the few hotels in the worst shape.',
 } as const;
 
 /** Read failures, reported per hotel rather than swallowed into a 0. */
@@ -285,6 +323,150 @@ function unreadNote(failed: number): Record<string, unknown> {
           + 'do NOT report them as having nothing.',
       }
     : {};
+}
+
+// ─── Reading N hotels, once per turn ────────────────────────────────────────
+
+interface PerHotelRows {
+  results: Array<{ propertyId: string; value: Record<string, unknown>[] | null }>;
+  failedHotelCount: number;
+  /** Hotels whose read came back AT the row ceiling, so their totals are floors. */
+  cappedHotelCount: number;
+}
+
+/**
+ * One per-hotel row read, memoised for the turn.
+ *
+ * The key names the dataset, the exact hotels and the exact window, so two
+ * different questions never share an answer — and the same question asked twice
+ * inside one turn is read once, which is both cheaper AND the only way both
+ * halves of a reply can quote the same number.
+ *
+ * The key deliberately does NOT include the tool's name: the memo is about what
+ * was read, not who asked. Two tools issuing byte-identical reads should share.
+ */
+async function readRowsPerHotel(
+  ctx: ToolHandlerContext,
+  dataset: string,
+  ids: string[],
+  read: (
+    db: Parameters<Parameters<typeof forEachHotel>[1]>[0],
+    propertyId: string,
+  ) => Promise<Record<string, unknown>[]>,
+): Promise<PerHotelRows> {
+  return readOncePerTurn(ctx, `${dataset}|${ids.join(',')}`, async () => {
+    const { results, failedHotelCount } = await forEachHotel(ids, read);
+    let cappedHotelCount = 0;
+    for (const { value } of results) {
+      if (value !== null && value.length >= MAX_ROWS) cappedHotelCount += 1;
+    }
+    return { results, failedHotelCount, cappedHotelCount };
+  });
+}
+
+/**
+ * A ceiling that was actually reached, said out loud.
+ *
+ * MAX_ROWS exists so one strange hotel cannot dominate a turn. Until now it did
+ * that SILENTLY: a hotel with 6,000 matching rows reported 5,000 as if that were
+ * the whole truth, and a ranking put it below a hotel with 5,500. A bound nobody
+ * is told about is not a bound, it is a wrong answer.
+ */
+function rowLimitNote(capped: number): Record<string, unknown> {
+  return capped > 0
+    ? {
+        hotelsAtRowLimit: capped,
+        rowLimitNote:
+          `${capped} hotel${capped === 1 ? ' has' : 's have'} more than ${MAX_ROWS} matching `
+          + 'records, so the figures for them are a FLOOR, not a total. Say "at least" for those '
+          + 'hotels, and offer to look at one of them on its own.',
+      }
+    : {};
+}
+
+// ─── Bounding the answer ────────────────────────────────────────────────────
+//
+// EVERY HOTEL KEEPS ITS HEADLINE. ONLY THE DETAIL IS RATIONED.
+//
+// At twenty hotels, listing five individual problems per hotel is four fifths of
+// the payload and answers a question nobody asked — "what needs my attention"
+// wants the shape of the portfolio, then the detail behind the worst of it. But
+// dropping HOTELS from a ranking would be the one unforgivable failure of this
+// surface: "which hotel is worst" cannot be answered from a subset.
+//
+// So the split is: every covered hotel always carries its counts and its rates;
+// the nested item lists go only to the few hotels in the worst shape, or to the
+// hotels the caller named. And the payload SAYS SO, because an answer that
+// quietly stopped listing things reads exactly like a company with nothing else
+// wrong with it.
+
+/** How many hotels get item-by-item detail in a company-wide answer. */
+const DETAIL_HOTELS = 3;
+/** …and when the caller named hotels, how many of those get it. */
+const NAMED_DETAIL_HOTELS = 10;
+
+function detailPlan(
+  ranked: readonly string[],
+  namedHotels: boolean,
+): { detailFor: Set<string>; note: Record<string, unknown> } {
+  const budget = namedHotels ? NAMED_DETAIL_HOTELS : DETAIL_HOTELS;
+  const detailFor = new Set(ranked.slice(0, budget));
+  const withheld = ranked.length - detailFor.size;
+  return {
+    detailFor,
+    note: withheld > 0
+      ? {
+          detailNote:
+            `Individual items are listed for the ${detailFor.size} hotel${detailFor.size === 1 ? '' : 's'} `
+            + `in the worst shape. The other ${withheld} still show every total and rate above, but `
+            + 'their item lists were left out to keep one answer readable. Say so if it matters, and '
+            + 'call this tool again with hotelIds set to any hotel to see its items.',
+        }
+      : {},
+  };
+}
+
+// ─── Ranked, not merely listed ──────────────────────────────────────────────
+//
+// The rationing above already worked out which hotels are in the worst shape,
+// in order — and then handed back an answer in ARBITRARY order anyway, because
+// the rows came out in whatever order the hotel ids went in. That is the "17
+// dumps" failure wearing a smaller payload: a VP asking "which of my hotels
+// needs me" got seventeen equal-looking rows and a model left to re-derive the
+// ranking from them, which is exactly the arithmetic this file does in code
+// everywhere else precisely so a model never has to.
+//
+// So the same order that decides who gets detail also decides who is printed
+// first. It costs nothing — no extra bytes, no extra reads — and it means the
+// first row of every answer is the hotel the question was about.
+
+/**
+ * Reorder an answer's rows to match a ranking computed from them.
+ *
+ * Hotels missing from `rankedIds` — the ones whose read failed, which have no
+ * figures to rank on — go LAST, in the order they came in. Sorting them as if
+ * their absent numbers were zeros would put a hotel Staxis could not read at
+ * the bottom of a "worst first" list, which reads as "this one is fine".
+ */
+function inRankedOrder<T extends { hotelId: string }>(
+  rows: readonly T[],
+  rankedIds: readonly string[],
+): T[] {
+  const place = new Map(rankedIds.map((id, i) => [id, i]));
+  // Stable, so unranked rows keep their relative order rather than shuffling.
+  return [...rows].sort(
+    (a, b) => (place.get(a.hotelId) ?? Number.MAX_SAFE_INTEGER)
+      - (place.get(b.hotelId) ?? Number.MAX_SAFE_INTEGER),
+  );
+}
+
+/** Said once per answer, not once per hotel: the order carries meaning. */
+const RANKED_NOTE =
+  ' Listed WORST FIRST — the first row is the hotel to talk about; unread hotels last.';
+
+/** Name-ascending, the tie-break every ranking here shares. */
+function byHotelName(a: { hotel: string }, b: { hotel: string }): number {
+  return a.hotel < b.hotel ? -1 : a.hotel > b.hotel ? 1 : 0;
 }
 
 // ─── 1. list_my_hotels ──────────────────────────────────────────────────────
@@ -343,19 +525,24 @@ registerTool<OpenItemsArgs>({
     const resolved = await reachFor(ctx, args?.hotelIds);
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const { reach } = resolved;
+    const now = turnNow(ctx);
     const perHotel = Math.min(Math.max(Math.round(numberOf(args?.limitPerHotel) ?? 5), 1), 20);
 
-    const { results, failedHotelCount } = await forEachHotel(reach.ids, async (db, propertyId) => {
-      const result = (await db
-        .from('findings')
-        .select('detector_id, summary, severity, disposition, status, magnitude, price_low_cents, price_high_cents, first_seen_at, last_seen_at')
-        .in('status', ['open', 'updated', 'known_problem'])
-        .order('last_seen_at', { ascending: false })
-        .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-      return rowsOf(result, `findings@${propertyId}`);
-    });
+    // `magnitude` used to be selected here and never read — one more numeric
+    // column per row per hotel, for nobody.
+    const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
+      ctx, 'findings', reach.ids, async (db, propertyId) => {
+        const result = (await db
+          .from('findings')
+          .select('detector_id, summary, severity, disposition, status, price_low_cents, price_high_cents, first_seen_at, last_seen_at')
+          .in('status', ['open', 'updated', 'known_problem'])
+          .order('last_seen_at', { ascending: false })
+          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+        return rowsOf(result, `findings@${propertyId}`);
+      },
+    );
 
-    const hotels = results.map(({ propertyId, value }) => {
+    const measured = results.map(({ propertyId, value }) => {
       if (value === null) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
@@ -387,27 +574,50 @@ registerTool<OpenItemsArgs>({
         pricedItems: priced.length,
         estimatedDollarsLow: priced.length > 0 ? dollars(lowTotal / 100) : null,
         estimatedDollarsHigh: priced.length > 0 ? dollars(highTotal / 100) : null,
-        items: ranked.slice(0, perHotel).map((r) => ({
+        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
+        _items: ranked.slice(0, perHotel).map((r) => ({
           summary: r.summary,
           severity: r.severity,
           disposition: r.disposition,
           detector: r.detector_id,
           dollarsLow: numberOf(r.price_low_cents) === null ? null : dollars((numberOf(r.price_low_cents) ?? 0) / 100),
           dollarsHigh: numberOf(r.price_high_cents) === null ? null : dollars((numberOf(r.price_high_cents) ?? 0) / 100),
-          firstSeen: r.first_seen_at,
-          lastSeen: r.last_seen_at,
+          // Two full ISO timestamps per item, when the question is always "how
+          // long has this been sitting there". One integer, computed here, is
+          // both smaller and the thing the sentence actually needs.
+          daysOpen: daysSince(r.first_seen_at, now),
+          daysSinceLastSeen: daysSince(r.last_seen_at, now),
         })),
       };
     });
+
+    // Worst first — criticals outrank volume, because ten paper-cuts is not a
+    // worse morning than one flooded room.
+    const worstFirst = [...measured]
+      .filter((h): h is Extract<typeof h, { read: true }> => h.read)
+      .sort((a, b) => (b.critical - a.critical) || (b.openItems - a.openItems) || byHotelName(a, b))
+      .map((h) => h.hotelId);
+    const { detailFor, note } = detailPlan(worstFirst, reach.namedHotels);
+
+    const hotels = inRankedOrder(
+      measured.map((h) => {
+        if (!h.read) return h;
+        const { _items, ...headline } = h;
+        return detailFor.has(h.hotelId) ? { ...headline, items: _items } : headline;
+      }),
+      worstFirst,
+    );
 
     return {
       ok: true,
       data: envelope(reach, {
         basis: 'Staxis\'s own open findings, read live. Dollar figures are RANGES and only exist '
           + 'for items where this hotel\'s own history supported one. Per-100-rooms figures are '
-          + 'already worked out here — quote them, never divide.',
+          + 'already worked out here — quote them, never divide.' + RANKED_NOTE,
         hotels,
+        ...note,
         ...unreadNote(failedHotelCount),
+        ...rowLimitNote(cappedHotelCount),
       }),
     };
   },
@@ -441,18 +651,22 @@ registerTool<WorkOrderArgs>({
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const { reach } = resolved;
     const days = windowDays(args?.days);
-    const since = sinceIso(days, new Date());
+    const since = sinceIso(days, turnNow(ctx));
 
-    const { results, failedHotelCount } = await forEachHotel(reach.ids, async (db, propertyId) => {
-      const result = (await db
-        .from('work_orders')
-        .select('status, severity, repair_cost, created_at, room_number')
-        .gte('created_at', since)
-        .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-      return rowsOf(result, `work_orders@${propertyId}`);
-    });
+    // `room_number` used to be selected here and never read — a string per
+    // ticket per hotel, carried across the wire for nobody.
+    const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
+      ctx, `work_orders:${days}`, reach.ids, async (db, propertyId) => {
+        const result = (await db
+          .from('work_orders')
+          .select('status, severity, repair_cost, created_at')
+          .gte('created_at', since)
+          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+        return rowsOf(result, `work_orders@${propertyId}`);
+      },
+    );
 
-    const hotels = results.map(({ propertyId, value }) => {
+    const measured = results.map(({ propertyId, value }) => {
       if (value === null) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
@@ -494,8 +708,23 @@ registerTool<WorkOrderArgs>({
         // fills that in reports null, not $0 — $0 would read as "free".
         recordedRepairSpendDollars: costs.length > 0 ? dollars(costs.reduce((a, b) => a + b, 0)) : null,
         repairCostSamples: costs.length,
+        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
       };
     });
+
+    // Worst first on the BACKLOG, not on the volume: a hotel that opened thirty
+    // tickets and closed twenty-eight is being run well, and a hotel with nine
+    // tickets still sitting open is the one to ask about. Urgent breaks the tie,
+    // for the same reason criticals outrank volume in the findings answer.
+    const hotels = inRankedOrder(
+      measured,
+      [...measured]
+        .filter((h): h is Extract<typeof h, { read: true }> => h.read)
+        .sort((a, b) => (b.stillOpen - a.stillOpen)
+          || (b.stillOpenBySeverity.urgent - a.stillOpenBySeverity.urgent)
+          || (b.opened - a.opened) || byHotelName(a, b))
+        .map((h) => h.hotelId),
+    );
 
     return {
       ok: true,
@@ -506,9 +735,12 @@ registerTool<WorkOrderArgs>({
           + 'housekeeper app, low/medium/urgent from the maintenance board), and '
           + 'stillOpenBySeverity folds both into urgent / high / normal / low / ungraded. '
           + '"ungraded" means nobody graded it, not that it is minor. '
-          + 'Per-100-rooms figures are already worked out here — quote them, never divide.',
+          + 'Per-100-rooms figures are already worked out here — quote them, never divide.'
+          + ' Listed by BACKLOG — most still-open tickets first, not most opened;'
+          + ' unread hotels last.',
         hotels,
         ...unreadNote(failedHotelCount),
+        ...rowLimitNote(cappedHotelCount),
       }),
     };
   },
@@ -542,18 +774,20 @@ registerTool<SpendArgs>({
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const { reach } = resolved;
     const days = windowDays(args?.days);
-    const since = sinceIso(days, new Date());
+    const since = sinceIso(days, turnNow(ctx));
 
-    const { results, failedHotelCount } = await forEachHotel(reach.ids, async (db, propertyId) => {
-      const result = (await db
-        .from('inventory_orders')
-        .select('total_cost, unit_cost, quantity, received_at')
-        .gte('received_at', since)
-        .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-      return rowsOf(result, `inventory_orders@${propertyId}`);
-    });
+    const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
+      ctx, `inventory_orders:${days}`, reach.ids, async (db, propertyId) => {
+        const result = (await db
+          .from('inventory_orders')
+          .select('total_cost, unit_cost, quantity, received_at')
+          .gte('received_at', since)
+          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+        return rowsOf(result, `inventory_orders@${propertyId}`);
+      },
+    );
 
-    const hotels = results.map(({ propertyId, value }) => {
+    const measured = results.map(({ propertyId, value }) => {
       if (value === null) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
@@ -581,17 +815,32 @@ registerTool<SpendArgs>({
         spendDollars: priced > 0 ? dollars(total) : null,
         spendPerRoomDollars: priced > 0 && rooms && rooms > 0 ? dollars(total / rooms) : null,
         spendPer100RoomsDollars: priced > 0 ? per100Rooms(dollars(total), rooms) : null,
+        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
       };
     });
+
+    // Biggest spender first, on TOTAL dollars, because that is the plain reading
+    // of "who is spending the most". A hotel whose deliveries were all logged
+    // without a price has no total to rank on and sorts below every hotel that
+    // does — its rows are counted, but it cannot be called the cheapest.
+    const hotels = inRankedOrder(
+      measured,
+      [...measured]
+        .filter((h): h is Extract<typeof h, { read: true }> => h.read)
+        .sort((a, b) => ((b.spendDollars ?? -1) - (a.spendDollars ?? -1)) || byHotelName(a, b))
+        .map((h) => h.hotelId),
+    );
 
     return {
       ok: true,
       data: envelope(reach, {
         windowDays: days,
         basis: `deliveries received in the last ${days} days, from each hotel's own inventory ledger. `
-          + 'Deliveries logged without a cost are counted but not priced.',
+          + 'Deliveries logged without a cost are counted but not priced.'
+          + ' Listed by TOTAL spend, highest first — not per room; unread hotels last.',
         hotels,
         ...unreadNote(failedHotelCount),
+        ...rowLimitNote(cappedHotelCount),
       }),
     };
   },
@@ -618,15 +867,17 @@ registerTool<InventoryArgs>({
     if (!resolved.ok) return { ok: false, error: resolved.error };
     const { reach } = resolved;
 
-    const { results, failedHotelCount } = await forEachHotel(reach.ids, async (db, propertyId) => {
-      const result = (await db
-        .from('inventory')
-        .select('name, current_stock, par_level, unit, archived_at')
-        .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-      return rowsOf(result, `inventory@${propertyId}`);
-    });
+    const { results, failedHotelCount, cappedHotelCount } = await readRowsPerHotel(
+      ctx, 'inventory', reach.ids, async (db, propertyId) => {
+        const result = (await db
+          .from('inventory')
+          .select('name, current_stock, par_level, unit, archived_at')
+          .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+        return rowsOf(result, `inventory@${propertyId}`);
+      },
+    );
 
-    const hotels = results.map(({ propertyId, value }) => {
+    const measured = results.map(({ propertyId, value }) => {
       if (value === null) {
         return { hotelId: propertyId, hotel: reach.nameOf(propertyId), read: false as const };
       }
@@ -648,20 +899,41 @@ registerTool<InventoryArgs>({
         good: classified.filter((i) => i.status === 'good').length,
         low: classified.filter((i) => i.status === 'low').length,
         critical: critical.length,
-        worstItems: critical
+        ...(value.length >= MAX_ROWS ? { atRowLimit: true as const } : {}),
+        _worstItems: critical
           .sort((a, b) => (a.par > 0 ? a.onHand / a.par : 1) - (b.par > 0 ? b.onHand / b.par : 1))
           .slice(0, 5)
           .map((i) => ({ item: i.name, onHand: i.onHand, par: i.par, unit: i.unit })),
       };
     });
 
+    // Worst first: most Critical items, then most Low — a hotel one delivery
+    // away from running out of everything outranks one that is merely untidy.
+    const worstFirst = [...measured]
+      .filter((h): h is Extract<typeof h, { read: true }> => h.read)
+      .sort((a, b) => (b.critical - a.critical) || (b.low - a.low) || byHotelName(a, b))
+      .map((h) => h.hotelId);
+    const { detailFor, note } = detailPlan(worstFirst, reach.namedHotels);
+
+    const hotels = inRankedOrder(
+      measured.map((h) => {
+        if (!h.read) return h;
+        const { _worstItems, ...headline } = h;
+        return detailFor.has(h.hotelId) ? { ...headline, worstItems: _worstItems } : headline;
+      }),
+      worstFirst,
+    );
+
     return {
       ok: true,
       data: envelope(reach, {
         basis: 'on-hand against par right now, using the app-wide 70/30 rule '
-          + '(at or above 70% of par is Good, 30-70% is Low, below 30% is Critical)',
+          + '(at or above 70% of par is Good, 30-70% is Low, below 30% is Critical).'
+          + RANKED_NOTE,
         hotels,
+        ...note,
         ...unreadNote(failedHotelCount),
+        ...rowLimitNote(cappedHotelCount),
       }),
     };
   },
@@ -706,46 +978,58 @@ registerTool<CompareArgs>({
     const { reach } = resolved;
     const metric: CompareMetric = args?.metric ?? 'open_items';
     const days = windowDays(args?.days);
-    const since = sinceIso(days, new Date());
+    const since = sinceIso(days, turnNow(ctx));
     const perRoom = args?.perRoom === true;
 
-    const { results, failedHotelCount } = await forEachHotel(reach.ids, async (db, propertyId) => {
-      switch (metric) {
-        case 'rooms':
-          return reach.roomsOf(propertyId) ?? 0;
-        case 'supply_spend': {
-          const result = (await db
-            .from('inventory_orders')
-            .select('total_cost, unit_cost, quantity')
-            .gte('received_at', since)
-            .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-          let total = 0;
-          for (const row of rowsOf(result, `inventory_orders@${propertyId}`)) {
-            const amount = numberOf(row.total_cost)
-              ?? ((numberOf(row.unit_cost) ?? 0) * (numberOf(row.quantity) ?? 0));
-            total += amount;
+    // A RANKING NEEDS TOTALS, NOT ROWS.
+    //
+    // This used to `select('id')` for every matching row and take `.length`,
+    // which at twenty hotels means dragging every open finding's uuid across the
+    // wire to learn one integer per hotel — and it silently topped out at
+    // MAX_ROWS, so the busiest hotel in a company could rank BELOW a quieter one.
+    // `count: 'exact', head: true` asks Postgres for the number and transfers no
+    // rows at all: constant size per hotel however big the hotel is, and exact.
+    const { results, failedHotelCount } = await readOncePerTurn(
+      ctx,
+      `compare:${metric}:${metric === 'rooms' ? '-' : days}|${reach.ids.join(',')}`,
+      () => forEachHotel(reach.ids, async (db, propertyId) => {
+        switch (metric) {
+          case 'rooms':
+            return reach.roomsOf(propertyId) ?? 0;
+          case 'supply_spend': {
+            const result = (await db
+              .from('inventory_orders')
+              .select('total_cost, unit_cost, quantity')
+              .gte('received_at', since)
+              .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+            let total = 0;
+            for (const row of rowsOf(result, `inventory_orders@${propertyId}`)) {
+              const amount = numberOf(row.total_cost)
+                ?? ((numberOf(row.unit_cost) ?? 0) * (numberOf(row.quantity) ?? 0));
+              total += amount;
+            }
+            return dollars(total);
           }
-          return dollars(total);
+          case 'work_orders':
+            return countOnly(
+              await db
+                .from('work_orders')
+                .select('id', { count: 'exact', head: true })
+                .gte('created_at', since),
+              `work_orders@${propertyId}`,
+            );
+          case 'open_items':
+          default:
+            return countOnly(
+              await db
+                .from('findings')
+                .select('id', { count: 'exact', head: true })
+                .in('status', ['open', 'updated']),
+              `findings@${propertyId}`,
+            );
         }
-        case 'work_orders': {
-          const result = (await db
-            .from('work_orders')
-            .select('id')
-            .gte('created_at', since)
-            .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-          return rowsOf(result, `work_orders@${propertyId}`).length;
-        }
-        case 'open_items':
-        default: {
-          const result = (await db
-            .from('findings')
-            .select('id')
-            .in('status', ['open', 'updated'])
-            .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
-          return rowsOf(result, `findings@${propertyId}`).length;
-        }
-      }
-    });
+      }),
+    );
 
     const scored = results
       .filter((r) => r.value !== null)
@@ -793,8 +1077,13 @@ registerTool<CompareArgs>({
     const bottom = comparable[comparable.length - 1] ?? null;
     const total = scored.reduce((sum, r) => sum + r.value, 0);
 
-    const ranked = scored.map(({ _exactPerRoom, ...r }) => ({
+    // `perRoomValue` is PUBLISHED ONLY WHEN IT WAS ASKED FOR. Ranking by total
+    // left it `null` on every row — seventeen dead keys carried into the model's
+    // context to say nothing, sitting next to a per100RoomsValue that is always
+    // populated and is how a VP says the same thing out loud anyway.
+    const ranked = scored.map(({ _exactPerRoom, perRoomValue, ...r }) => ({
       ...r,
+      ...(perRoom ? { perRoomValue } : {}),
       /** How many times this hotel is the lowest-ranked hotel, on the SAME
        *  measure the ranking used. Null when the lowest is zero. */
       timesTheLowest: timesAsMuch(
