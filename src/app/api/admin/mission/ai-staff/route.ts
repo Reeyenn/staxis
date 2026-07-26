@@ -21,13 +21,41 @@
  * actually scheduled. A stored status could go stale against any of them and
  * would then be a claim the page cannot back.
  *
- * SPEND IS REAL OR ABSENT. The only ledger with a per-feature column is
- * `findings_ai_spend` (0361), and only its `finalized` rows are reconciled to
- * what a provider actually charged — `reserved` rows are worst-case holds. So
- * this sums finalized rows for the bundled features that ledger tracks, and
- * says plainly which ones it does not. There is no estimate anywhere in here:
- * an employee whose features are untracked reports `usd: null` and the page
- * sends the reader to the Money tab rather than printing a number nothing backs.
+ * ─── SPEND: WHICH LEDGER, AND WHY ONLY ONE ─────────────────────────────────
+ *
+ * TWO ledgers record the judge, the sweep and the brief. They are not
+ * duplicates of each other, and only one of them is money:
+ *
+ *   agent_costs (0080, + `feature` since 0374)  — THE BOOKS. One row per
+ *     provider call Staxis actually paid for, reconciled to real usage.
+ *   findings_ai_spend (0361)                    — THE GATE. A per-hotel daily
+ *     ceiling for background work. Its rows are worst-case HOLDS, taken before
+ *     the call and released or reconciled after. 0361 says so in its own table
+ *     comment: "This is the GATE; the books are still agent_costs."
+ *
+ * This route sums THE BOOKS and nothing else. Summing both would count all
+ * three findings features twice — every one of them takes a hold AND writes a
+ * real row. Summing the gate alone (what this route did before 0374, because
+ * it was the only ledger with a feature column) both quoted hold-shaped money
+ * and could only ever describe three features, so employee #2's card would
+ * have been blank for a reason no reader could have guessed.
+ *
+ * FINALIZED ROWS ONLY, and swept rows excluded — the same two filters
+ * /api/agent/metrics uses. A `reserved` row is a hold on a call still in
+ * flight; a swept row is a hold the sweeper recovered from a crash. Neither is
+ * money that was charged.
+ *
+ * FLEET-WIDE ON PURPOSE. There is no property filter: this is the founder's own
+ * Anthropic bill for a named job across every hotel, which is the question the
+ * page asks. No hotel can see another's spend here because no hotel can reach
+ * this route at all — `requireAdmin` is the wall, and the integration suite
+ * drives a real general-manager account at it to prove the refusal.
+ *
+ * NOTHING IS ESTIMATED. `agent_costs.feature` is NULL for every row written
+ * before 0374 and is never backfilled, so the payload reports
+ * `attributionStartedAt` — the moment the ledger began answering "what for".
+ * A card showing a small number in the first weeks is then reading as "this is
+ * what we have measured", not as "this was nearly free".
  *
  * Migration 0373 is applied by hand, so both verbs survive the switches table
  * being absent: GET reports every employee as on (which is what no switches
@@ -54,7 +82,15 @@ import {
   scheduledCronNames,
   setEmployeeSwitch,
 } from '@/lib/ai/employee-switches';
-import { FEATURE_CAP_SHARE } from '@/lib/findings/judge-budget';
+import {
+  SPEND_WINDOW_DAYS,
+  billedBundleKeys,
+  employeeSpend,
+  foldSpendRows,
+  type EmployeeSpend,
+  type SpendRow,
+  type SpendTotals,
+} from '@/lib/ai/employee-spend';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -62,18 +98,9 @@ export const maxDuration = 20;
 
 const NO_STORE = { 'Cache-Control': 'no-store' } as const;
 
-/** How far back the spend figure looks. Matches the AI recommendations screen's
- *  window so two admin surfaces quoting "recent AI spend" mean the same thing. */
-const SPEND_WINDOW_DAYS = 30;
-
 /** Row ceiling on the spend read — the same bound the model-spend roll-up uses.
  *  A cap that is hit is reported as such rather than quietly under-counting. */
 const SPEND_ROW_CAP = 20_000;
-
-/** The feature keys `findings_ai_spend` actually carries a row for. Derived
- *  from the cap-share table rather than typed out again: a feature that gets a
- *  share of the findings cap is exactly a feature that books to that ledger. */
-const SPEND_TRACKED_FEATURES: ReadonlySet<string> = new Set(Object.keys(FEATURE_CAP_SHARE));
 
 interface RunLine {
   /** Kept for the integrity test and for debugging; the UI renders `label`. */
@@ -82,23 +109,6 @@ interface RunLine {
   label: Bilingual;
   /** Only meaningful for kind='cron': is this job actually scheduled today. */
   scheduled?: boolean;
-}
-
-interface EmployeeSpend {
-  /** false when nothing in this employee's bundle books to a per-feature
-   *  ledger, or when the read failed. The page shows the feature list and a
-   *  link, not a number. */
-  known: boolean;
-  usd: number | null;
-  /** The same ledger, narrowed to today. Mission Control's roster quotes spend
-   *  per day next to the copilot's, and a thirty-day total under a column
-   *  headed "spent today" would be a number nothing backs. Null exactly when
-   *  `usd` is — the two come from one read. */
-  todayUsd: number | null;
-  windowDays: number;
-  /** Bundled features whose spend no ledger separates out. Named so the reader
-   *  knows the number is partial rather than wrong. */
-  untracked: string[];
 }
 
 interface EmployeeView {
@@ -135,47 +145,14 @@ function runLines(e: AiEmployee, scheduled: ReadonlySet<string>): RunLine[] {
   return lines;
 }
 
-export interface SpendRow {
-  feature: string;
-  cost_usd: number | string;
-  created_at: string;
-}
-
-/** Both windows, keyed by feature. One read answers both — the day is a subset
- *  of the month, so a second query would only be a second chance to disagree. */
-export interface SpendTotals {
-  window: Map<string, number>;
-  today: Map<string, number>;
-}
-
-/**
- * Fold ledger rows into a thirty-day total and a today total per feature.
- *
- * Exported for the standing test, and pure so that test needs no database:
- * every judgement worth checking — which rows count as today, what an
- * unparseable cost does — is decided here.
- *
- * A row whose cost will not parse is dropped, because carrying it forward
- * turns the whole feature's total into NaN — one bad row would take the entire
- * figure down with it, and `$NaN` is not a number anybody can act on.
- */
-export function foldSpendRows(rows: readonly SpendRow[], dayStartMs: number): SpendTotals {
-  const totals: SpendTotals = { window: new Map(), today: new Map() };
-  for (const row of rows) {
-    const usd = typeof row.cost_usd === 'number' ? row.cost_usd : Number(row.cost_usd);
-    if (!Number.isFinite(usd)) continue;
-    totals.window.set(row.feature, (totals.window.get(row.feature) ?? 0) + usd);
-    const at = new Date(row.created_at).getTime();
-    if (Number.isFinite(at) && at >= dayStartMs) {
-      totals.today.set(row.feature, (totals.today.get(row.feature) ?? 0) + usd);
-    }
-  }
-  return totals;
-}
-
 /** Local midnight, the same "today" `/api/agent/metrics` quotes the copilot's
  *  spend against — so two figures sitting side by side on Mission Control mean
- *  the same day. */
+ *  the same day.
+ *
+ *  LOCAL, and not the UTC midnight `agent_costs`' cap math uses, on purpose:
+ *  this is a DISPLAY window sitting next to another display window, not a cap.
+ *  A cap that drifted by timezone would be a hole; two figures on one screen
+ *  disagreeing about which day it is would be a lie the reader cannot see. */
 function dayStartMs(): number {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -183,51 +160,68 @@ function dayStartMs(): number {
 }
 
 /**
- * Real dollars per feature key, last `SPEND_WINDOW_DAYS` and today.
+ * Real dollars per feature key, last `SPEND_WINDOW_DAYS` and today, from
+ * THE BOOKS.
  *
- * `finalized` only. A `reserved` row is a hold priced at the worst case the
- * caller could have cost, sitting there until the call comes back — including
- * it would report money that was never spent, on the one screen whose figures
- * are supposed to be checkable.
+ * `finalized` and unswept only — see the header. A `reserved` row is a hold
+ * priced at the worst case the caller could have cost, sitting there until the
+ * call comes back; a swept row is such a hold after the sweeper gave up on it.
+ * Including either would report money that was never spent, on the one screen
+ * whose figures are supposed to be checkable.
+ *
+ * ONE READ ANSWERS BOTH WINDOWS. Today is a subset of the month, so a second
+ * query would only be a second chance to disagree — and, since 0374 moved this
+ * read from the findings GATE to the BOOKS, it would be a second chance to
+ * disagree about which ledger is authoritative too.
  *
  * Returns null when the read failed, which the caller renders as "we could not
  * work it out" rather than as zero. Zero is a claim.
  */
-async function spendByFeature(): Promise<SpendTotals | null> {
+async function spendByFeature(keys: string[]): Promise<SpendTotals | null> {
+  if (keys.length === 0) return { window: new Map(), today: new Map() };
   const since = new Date(Date.now() - SPEND_WINDOW_DAYS * 86_400_000).toISOString();
   const { data, error } = await supabaseAdmin
-    .from('findings_ai_spend')
+    .from('agent_costs')
     .select('feature, cost_usd, created_at')
-    .in('feature', [...SPEND_TRACKED_FEATURES])
+    .in('feature', keys)
     .eq('state', 'finalized')
+    .is('swept_at', null)
     .gte('created_at', since)
     .limit(SPEND_ROW_CAP);
   if (error) return null;
 
-  return foldSpendRows((data ?? []) as SpendRow[], dayStartMs());
+  // `.in('feature', keys)` already excludes the unattributed history, but the
+  // column is nullable so the row type is not — drop any null here rather than
+  // widen the fold's contract to a case it can never be handed.
+  const rows = ((data ?? []) as Array<{ feature: string | null; cost_usd: number | string; created_at: string }>)
+    .filter((r): r is SpendRow => typeof r.feature === 'string' && r.feature.length > 0);
+  return foldSpendRows(rows, dayStartMs());
 }
 
-function employeeSpend(e: AiEmployee, totals: SpendTotals | null): EmployeeSpend | null {
-  if (!e.hired) return null;
-  const untracked = e.bundle.features.filter((k) => !SPEND_TRACKED_FEATURES.has(k));
-  const tracked = e.bundle.features.filter((k) => SPEND_TRACKED_FEATURES.has(k));
-  if (totals === null || tracked.length === 0) {
-    return {
-      known: false, usd: null, todayUsd: null,
-      windowDays: SPEND_WINDOW_DAYS, untracked: [...untracked],
-    };
-  }
-  // Rounded to the cent it is quoted in. The ledger stores six decimal places
-  // because a single Haiku call costs a fraction of one.
-  const cents = (m: Map<string, number>) =>
-    Math.round(tracked.reduce((acc, k) => acc + (m.get(k) ?? 0), 0) * 100) / 100;
-  return {
-    known: true,
-    usd: cents(totals.window),
-    todayUsd: cents(totals.today),
-    windowDays: SPEND_WINDOW_DAYS,
-    untracked: [...untracked],
-  };
+/**
+ * When the ledger started answering "what for" — the oldest row that carries a
+ * feature at all.
+ *
+ * One row, off the partial index 0374 creates, and it is what keeps the figures
+ * honest through the changeover. Everything spent before that migration is
+ * NULL and stays NULL (guessing which job a historical row was for would put
+ * invented money on this page permanently), so without this date a card in the
+ * first weeks would quote a fortnight of measurement as though it were a
+ * month's bill.
+ *
+ * `null` means nothing is attributed yet. `undefined` means the read failed and
+ * the page should say nothing rather than imply a date it does not have.
+ */
+async function attributionStartedAt(): Promise<string | null | undefined> {
+  const { data, error } = await supabaseAdmin
+    .from('agent_costs')
+    .select('created_at')
+    .not('feature', 'is', null)
+    .order('created_at', { ascending: true })
+    .limit(1);
+  if (error) return undefined;
+  const row = (data ?? [])[0] as { created_at?: string } | undefined;
+  return row?.created_at ?? null;
 }
 
 export async function GET(req: NextRequest) {
@@ -236,9 +230,10 @@ export async function GET(req: NextRequest) {
   const auth = await requireAdmin(req);
   if (!auth.ok) return auth.response;
 
-  const [switches, totals] = await Promise.all([
+  const [switches, totals, attributedSince] = await Promise.all([
     readEmployeeSwitchesFresh(),
-    spendByFeature(),
+    spendByFeature(billedBundleKeys()),
+    attributionStartedAt(),
   ]);
   const scheduled = scheduledCronNames();
 
@@ -266,7 +261,14 @@ export async function GET(req: NextRequest) {
       windowDays: SPEND_WINDOW_DAYS,
       // The page says where the money figure came from, in its own words, so
       // nobody has to trust an unattributed number.
-      spendSource: 'Finalised model spend booked by the findings layer',
+      spendSource: 'Finalised model spend, booked to the AI ledger by job',
+      // When the ledger began recording which job spent what. Null = nothing is
+      // attributed yet; undefined (omitted) = the read failed and the page must
+      // not imply a date. Everything older than this is real money the ledger
+      // cannot say the job for, and never will be — so a figure that looks low
+      // this month has a stated reason instead of an unstated one.
+      attributedSince: attributedSince ?? null,
+      attributionReadable: attributedSince !== undefined,
       // null means the switch table could not be read. The page says so rather
       // than drawing thirteen confident green dots.
       switchesReadable: switches !== null,

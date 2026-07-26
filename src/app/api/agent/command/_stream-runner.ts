@@ -15,6 +15,7 @@
 import { log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AgentEvent, UsageReport } from '@/lib/agent/llm';
+import type { AiCostFeature } from '@/lib/ai/types';
 import {
   recordAssistantTurn,
   recordToolResult,
@@ -443,8 +444,12 @@ export async function reconcileCostReservation(opts: {
   userId: string;
   propertyId: string;
   requestId: string;
+  /** Which chat this turn was. Passed in rather than assumed: the same runner
+   *  serves the hotel chat, the resume-after-approval route and the portfolio
+   *  chat, and those are two different jobs on the bill (0374). */
+  feature: AiCostFeature;
 }): Promise<void> {
-  const { reservationId, conversationId, finalUsage, userId, propertyId, requestId } = opts;
+  const { reservationId, conversationId, finalUsage, userId, propertyId, requestId, feature } = opts;
   if (finalUsage) {
     try {
       await finalizeCostReservation({
@@ -458,6 +463,7 @@ export async function reconcileCostReservation(opts: {
         cachedInputTokens: finalUsage.cachedInputTokens,
         userId,
         propertyId,
+        feature,
       });
     } catch (finalizeErr) {
       log.error('[agent/stream-runner] finalize failed after retries; cancelling to release budget hold (audit row written)', {

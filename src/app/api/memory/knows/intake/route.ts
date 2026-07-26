@@ -329,6 +329,7 @@ export async function POST(req: NextRequest) {
     if (billable.length > 0) {
       const first = billable[0];
       await recordNonRequestCost({
+        feature: 'knowledge.fact_extraction',
         userId: caller.accountId,
         propertyId,
         conversationId: null,

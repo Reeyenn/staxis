@@ -567,6 +567,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           cachedInputTokens: usageMeta.cachedInputTokens,
           userId: accountId,
           propertyId: body.propertyId,
+          feature: 'walkthrough.step_generation',
         });
       } catch (finalizeErr) {
         log.error('[walkthrough/step] finalize failed; attempting cancel', {

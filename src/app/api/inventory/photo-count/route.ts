@@ -239,6 +239,7 @@ export async function POST(req: NextRequest) {
       const u = usage as VisionUsageReport;
       try {
         await recordNonRequestCost({
+          feature: 'inventory.photo_count',
           userId: accountId,
           propertyId: pid,
           conversationId: null,

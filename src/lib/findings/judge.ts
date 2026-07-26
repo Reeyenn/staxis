@@ -1039,6 +1039,7 @@ export function defaultJudgeDeps(): JudgeDeps {
         return;
       }
       await recordNonRequestCost({
+        feature: 'findings.judge',
         userId: accountId,
         propertyId,
         conversationId: null,

@@ -1594,3 +1594,47 @@ invariants below are about the SET being right rather than about a single
   gate closes", "a per-hotel conversation is unaffected and cannot be continued
   as a company one", "somebody else's company conversation is not readable".
 - **History:** cross-hotel chat, 2026-07-26.
+
+### INV-43: agent_costs is the BOOKS; findings_ai_spend is the GATE. Nothing sums both
+
+- **The rule:** every provider call Staxis pays for is booked exactly once, in
+  `agent_costs`, and any screen quoting spend reads that table and no other.
+  `findings_ai_spend` (0361) is a per-hotel daily CEILING holding worst-case
+  reservations — most of the money in it was never charged. The judge, the sweep
+  and the brief each write to BOTH: a hold in the gate before the call, a real
+  row in the books after it. Adding the two together triple-counts nothing and
+  double-counts those three; reading the gate alone quotes hold-sized money.
+- **Enforced by:** code — `spendByFeature` in
+  [/api/admin/mission/ai-staff](src/app/api/admin/mission/ai-staff/route.ts)
+  reads `agent_costs` only, filtered to `state='finalized'` and
+  `swept_at IS NULL`, over the index `agent_costs_feature_day_idx` (0374). NOT
+  DB-enforced — no constraint can express "do not join these two tables", so the
+  guard is the test below plus this entry.
+- **Both windows, one read.** The AI Staff card quotes thirty days and Mission
+  Control's roster quotes today. They come from ONE query folded twice
+  (`foldSpendRows`), so the day cannot end up sourced from a different ledger
+  than the month — which is exactly what happened before 0374, when the day
+  figure was added against the GATE because it was the only ledger with a
+  feature column. The day boundary is LOCAL midnight, matching
+  `/api/agent/metrics`, because it sits beside that figure on one screen; the
+  UTC boundary the cap math uses is for caps, and this is display.
+- **Attribution:** `agent_costs.feature` (0374) is what makes a per-job figure
+  possible at all. It is REQUIRED at every ledger writer's signature
+  (`recordNonRequestCost`, `finalizeCostReservation`) and typed to the closed
+  `AiCostFeature` union, so a new caller cannot omit or invent one. It is
+  NULLABLE in the database and NEVER backfilled: rows written before 0374 have
+  no recoverable job, so they read as unattributed and the AI Staff payload
+  reports `attributedSince` rather than letting a partial window pass for a full
+  one. `staxis_finalize_agent_spend` COALESCEs the label and keeps its
+  pre-0374 8-argument signature as a delegating shim, so applying the migration
+  by hand ahead of the deploy cannot break a running finalize.
+- **Assumed by:** the per-employee spend figure on /admin/ai-staff.
+- **Tested by:** `agent-costs-feature-attribution.integration.test.ts` — "the
+  figure is the books, once — a hold in the gate is not money", "holds, swept
+  holds and unattributed history stay out of the figure", "a build that predates
+  0374 still finalizes", "the AI-spend screen counts the same money it always
+  did, labelled or not", "today's figure is the same books-only read, narrowed
+  to the day".
+- **History:** 0374, 2026-07-26. Before it, the AI Staff page had to read the
+  GATE because it was the only ledger with a feature column — which both quoted
+  reservation-shaped money and could only ever describe three features.

@@ -25,6 +25,7 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
+import type { AiCostFeature } from '@/lib/ai/types';
 import { MAX_OUTPUT_TOKENS, MAX_TOOL_ITERATIONS } from './llm';
 
 /**
@@ -259,6 +260,12 @@ export interface FinalizeOpts {
    *  round-7 fix F1. */
   userId: string;
   propertyId: string;
+  /** Which named job this turn was. REQUIRED, and typed to the closed
+   *  `AiCostFeature` union, so a new route wiring up the reservation protocol
+   *  cannot ship spend that no AI Staff card can attribute (0374). The reserve
+   *  half writes no feature — a hold is not spend — so this is where the label
+   *  is set. */
+  feature: AiCostFeature;
 }
 
 /**
@@ -282,6 +289,9 @@ export async function finalizeCostReservation(opts: FinalizeOpts): Promise<void>
     p_tokens_in: opts.tokensIn,
     p_tokens_out: opts.tokensOut,
     p_cached_input_tokens: opts.cachedInputTokens ?? 0,
+    // 0374. The RPC COALESCEs this, and keeps an 8-argument shim for builds
+    // that predate the column, so neither deploy order can break a finalize.
+    p_feature: opts.feature,
   };
 
   const attempts: { attempt: number; error: string }[] = [];
@@ -300,9 +310,12 @@ export async function finalizeCostReservation(opts: FinalizeOpts): Promise<void>
   // preserved for later reconciliation. If the audit insert ALSO fails,
   // we log critically but still throw — the route needs to cancel the
   // reservation to release the budget hold.
+  // `feature` rides along in the log because `agent_cost_finalize_failures`
+  // has no column for it: a manual reconciliation from the audit row would
+  // otherwise restore the money and lose which job spent it.
   console.error(
     '[cost-controls] finalize RPC failed after 3 attempts; writing audit row',
-    { reservationId: opts.reservationId, attempts },
+    { reservationId: opts.reservationId, feature: opts.feature, attempts },
   );
   const { error: auditErr } = await supabaseAdmin
     .from('agent_cost_finalize_failures')
@@ -365,11 +378,20 @@ export async function cancelCostReservation(reservationId: string): Promise<void
  * conversations consumed how much summarizer work." If we ever want
  * pure-system attribution, we can introduce a sentinel system account
  * later; the current shape is enough for visibility + correct caps.
+ *
+ * `feature` (0374) is REQUIRED and typed to the closed `AiCostFeature` union.
+ * It is the whole reason an AI employee's card can quote its own bill, and the
+ * one field a new background caller would otherwise forget: an omitted label
+ * cannot be recovered later, because the row does not record what the call was
+ * for anywhere else. Compile-time, not convention — a caller that leaves it out
+ * does not build.
  */
 export async function recordNonRequestCost(opts: {
   userId: string;
   propertyId: string;
   conversationId: string | null;
+  /** Which named job spent it. See `AiCostFeature` in src/lib/ai/types.ts. */
+  feature: AiCostFeature;
   model: string;
   /** Exact Anthropic snapshot ID from response.model. Round-8 fix B4,
    *  2026-05-13: prior version dropped this, so eval cost rows showed
@@ -394,6 +416,7 @@ export async function recordNonRequestCost(opts: {
     cached_input_tokens: opts.cachedInputTokens ?? 0,
     cost_usd: opts.costUsd,
     kind: opts.kind,
+    feature: opts.feature,
     state: 'finalized',
   });
   const { error } = await supabaseAdmin.from('agent_costs').insert(insertRow(opts.conversationId));
@@ -412,6 +435,7 @@ export async function recordNonRequestCost(opts: {
         user_id: opts.userId,
         property_id: opts.propertyId,
         kind: opts.kind,
+        feature: opts.feature,
       });
       const retry = await supabaseAdmin.from('agent_costs').insert(insertRow(null));
       if (retry.error) {

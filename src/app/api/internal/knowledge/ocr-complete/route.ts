@@ -122,6 +122,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     if (costV.value! > 0) {
       await recordNonRequestCost({
+        feature: 'knowledge.document_ocr',
         userId: accountId,
         propertyId,
         conversationId: null,

@@ -44,7 +44,10 @@ import {
   hiredAiEmployees,
   type AiEmployee,
 } from '@/lib/ai/employee-registry';
-import { foldSpendRows, type SpendRow } from '@/app/api/admin/mission/ai-staff/route';
+// The fold moved to the module the route reads it from: since 0374 the AI
+// Staff page needs the same arithmetic, and a lib module cannot import from a
+// route that already imports it. Same function, same contract.
+import { foldSpendRows, type SpendRow } from '@/lib/ai/employee-spend';
 
 // ── Why the React shim ──────────────────────────────────────────────────────
 // React 19's react-server build exports no createContext, and this surface

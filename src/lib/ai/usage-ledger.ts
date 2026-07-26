@@ -2,6 +2,7 @@ import 'server-only';
 
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { log } from '@/lib/log';
+import type { AiCostFeature } from './types';
 import type { AiUsageReport } from './usage';
 
 export const AI_USAGE_LEDGER_WRITE_CONCURRENCY = 8;
@@ -22,7 +23,10 @@ export async function recordAiUsageBestEffort(opts: {
   propertyId: string;
   kind: 'background' | 'audio' | 'vision';
   requestId?: string;
-  feature: string;
+  /** Which named job spent it. Booked onto the row itself since 0374 — it used
+   *  to appear only in the failure log, which meant the ledger could say what a
+   *  call cost but never what it was for. */
+  feature: AiCostFeature;
 }): Promise<void> {
   if (!opts.usage) return;
   const billable = opts.usage.attempts.filter((attempt) => attempt.costUsd > 0);
@@ -41,6 +45,7 @@ export async function recordAiUsageBestEffort(opts: {
           cachedInputTokens: attempt.cachedInputTokens,
           costUsd: attempt.costUsd,
           kind: opts.kind,
+          feature: opts.feature,
         });
       } catch (error) {
         log.error('[ai-usage] agent_costs attribution failed', {

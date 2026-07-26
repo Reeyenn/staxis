@@ -220,6 +220,7 @@ async function recordConsolidationUsageBestEffort(args: {
 }): Promise<void> {
   if (!args.accountId || args.usage.costUsd <= 0) return;
   await recordNonRequestCost({
+    feature: 'agent.memory_consolidation',
     userId: args.accountId,
     propertyId: args.propertyId,
     conversationId: null,

@@ -231,6 +231,7 @@ describe('AI Staff — the kill switch actually stops the Morning Briefer', () =
     currentUser = ADMIN_UID;
     await pg.query('delete from public.ai_employee_switches');
     await pg.query('delete from public.findings_ai_spend');
+    await pg.query('delete from public.agent_costs');
     await pg.query("delete from public.idempotency_log where route = 'findings-brief'");
     invalidateEmployeeSwitchCache();
   });
@@ -409,6 +410,12 @@ describe('AI Staff — the kill switch actually stops the Morning Briefer', () =
     assert.ok(briefer.surfaces.every((s) => s.en.trim() && s.es.trim()));
   });
 
+  // The figure comes from `agent_costs` — THE BOOKS, one row per call Staxis
+  // actually paid for — and never from `findings_ai_spend`, which is the daily
+  // CAP GATE and holds worst-case reservations. The brief writes to both, so a
+  // route that summed both would report this one call twice. Fully exercised in
+  // agent-costs-feature-attribution.integration.test.ts; the shape of the claim
+  // is asserted here because it is what this page prints.
   test('spend is a real finalised figure or an honest absence — never an estimate', async () => {
     const { body } = await readRoster();
     const briefer = body.data!.employees.find((e) => e.id === MORNING_BRIEFER_ID)!;
@@ -419,19 +426,34 @@ describe('AI Staff — the kill switch actually stops the Morning Briefer', () =
     assert.equal(briefer.spend!.usd, 0);
 
     // A finalised row for its feature moves the figure; a RESERVED hold must
-    // not — a hold is worst-case money that was never charged.
+    // not — a hold is worst-case money that was never charged. Nor may the
+    // cap gate's own copy of the same call be added on top of it.
+    const account = await pg.query<{ id: string }>(
+      "select id from public.accounts where username = 'staff.admin'",
+    );
+    for (const [feature, state, usd] of [
+      ['findings.brief', 'finalized', 0.25],
+      ['findings.brief', 'reserved', 9.99],
+      ['findings.judge', 'finalized', 5.00],
+    ] as const) {
+      await pg.query(
+        `insert into public.agent_costs
+           (user_id, property_id, model, tokens_in, tokens_out, cost_usd, kind, state, feature)
+         values ($1,$2,'sonnet',10,5,$3,'background',$4,$5)`,
+        [account.rows[0].id, PID_A, usd, state, feature],
+      );
+    }
     await pg.query(
       `insert into public.findings_ai_spend (property_id, feature, state, cost_usd)
-       values ($1,'findings.brief','finalized',0.25),
-              ($1,'findings.brief','reserved',9.99),
-              ($1,'findings.judge','finalized',5.00)`,
+       values ($1,'findings.brief','finalized',0.40)`,
       [PID_A],
     );
+
     const after = await readRoster();
     const again = after.body.data!.employees.find((e) => e.id === MORNING_BRIEFER_ID)!;
     assert.equal(
       again.spend!.usd, 0.25,
-      'the figure must count only finalised spend for this employee\'s own features',
+      'the figure must count only finalised booked spend for this employee\'s own features',
     );
   });
 

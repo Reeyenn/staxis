@@ -139,6 +139,9 @@ export async function runFinanceScanRoute<TExtract>(
           userId: accountId,
           propertyId: pid,
           conversationId: null,
+          // The same key that chose the model books the spend, so the invoice
+          // scan and the quote scan stay separable on the bill (0374).
+          feature: featureKey,
           model: u.model,
           modelId: u.modelId,
           tokensIn: u.inputTokens,

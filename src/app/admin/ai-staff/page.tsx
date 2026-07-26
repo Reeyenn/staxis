@@ -61,6 +61,9 @@ import { DarkScope, SurfaceShell, DarkCard, DarkSpinner, dimWhite } from '@/app/
 import '@/app/admin/_components/studio/studio.css';
 import { EMPLOYEE_STATUS_LABEL, EMPLOYEE_STATUS_TONE } from '@/lib/ai/employee-registry';
 import type { AiEmployeeStatus, Bilingual } from '@/lib/ai/employee-registry';
+// The money line's shape comes from the module that computes it, so the card
+// and the sum cannot drift apart. Type-only — nothing extra ships to the browser.
+import { spendAttributionNote, type EmployeeSpend } from '@/lib/ai/employee-spend';
 
 type Lang = 'en' | 'es';
 
@@ -110,6 +113,22 @@ const COPY = {
     en: 'The switches could not be read right now, so every employee below is shown as you last left it.',
     es: 'No se pudieron leer los interruptores ahora mismo, así que cada empleado se muestra como lo dejaste.',
   },
+  // The ledger only learned to record WHICH JOB spent the money on the date
+  // below, and nothing older will ever be attributed — a guess would be a made-
+  // up number on the one page that promises not to have any. So a low figure in
+  // the first weeks says why it is low, rather than reading as "nearly free".
+  spendSinceOne: {
+    en: 'Money was only split up by job from',
+    es: 'El dinero solo se separa por trabajo desde el',
+  },
+  spendSinceTwo: {
+    en: '— anything spent before that is on the whole AI bill, not on a card here.',
+    es: '— lo gastado antes está en la factura de IA completa, no en una tarjeta de aquí.',
+  },
+  spendSinceNone: {
+    en: 'No spend has been split up by job yet. The figures below start at zero and fill in as work runs.',
+    es: 'Todavía no se ha separado ningún gasto por trabajo. Las cifras de abajo empiezan en cero y se llenan según se trabaje.',
+  },
   confirmOff: {
     en: 'Switch off the Morning Briefer? No manager gets a morning brief until you switch it back on.',
     es: '¿Apagar el Informante de la mañana? Ningún gerente recibirá el resumen matutino hasta que lo vuelvas a encender.',
@@ -136,12 +155,6 @@ export interface RunLine {
   label: Bilingual;
   scheduled?: boolean;
 }
-export interface EmployeeSpend {
-  known: boolean;
-  usd: number | null;
-  windowDays: number;
-  untracked: string[];
-}
 export interface EmployeeView {
   id: string;
   name: Bilingual;
@@ -159,8 +172,15 @@ export interface EmployeeView {
 interface Payload {
   employees: EmployeeView[];
   switchesReadable: boolean;
+  windowDays: number;
+  /** When the ledger started recording which job spent what. Null = nothing
+   *  attributed yet. Ignored entirely when `attributionReadable` is false — the
+   *  page says nothing rather than implying a date it could not read. */
+  attributedSince: string | null;
+  attributionReadable: boolean;
   asOf: string;
 }
+
 
 // ─── Page ───────────────────────────────────────────────────────────────────
 
@@ -279,6 +299,25 @@ export default function AiStaffPage() {
               {COPY.switchesUnreadable[l]}
             </div>
           )}
+          {payload && (() => {
+            const note = spendAttributionNote(payload);
+            if (!note) return null;
+            return (
+              <div style={{ marginBottom: 16, padding: '11px 14px', background: dimWhite(.05), border: `1px solid ${dimWhite(.14)}`, borderRadius: 12, color: dimWhite(.72), fontSize: 12.5 }}>
+                {note.kind === 'none' ? COPY.spendSinceNone[l] : (
+                  <>
+                    {COPY.spendSinceOne[l]}{' '}
+                    <span className="mono">
+                      {new Date(note.since).toLocaleDateString(l === 'es' ? 'es-ES' : 'en-US', {
+                        year: 'numeric', month: 'short', day: 'numeric',
+                      })}
+                    </span>{' '}
+                    {COPY.spendSinceTwo[l]}
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
           {!loaded ? (
             <div style={{ padding: '60px 0', textAlign: 'center' }}><DarkSpinner /></div>

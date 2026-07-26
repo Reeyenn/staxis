@@ -56,6 +56,38 @@ export const AI_FEATURE_KEYS = [
 ] as const;
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 
+// ─── What the cost ledger is allowed to call a spender ──────────────────────
+//
+// `agent_costs.feature` (migration 0374) answers "which named job spent this",
+// which is what lets an AI employee's card show its own bill. Almost every
+// answer is an AI Control Center feature key — the registry already governs
+// which model each of those calls, so the call site always knows its own key.
+//
+// TWO SPENDERS ARE NOT CONTROL-CENTER FEATURES, and pretending otherwise would
+// put a lie in the ledger:
+//
+//   knowledge.document_ocr — the Fly worker's page-reading pass. Its model is
+//     pinned in cua-service (claude-sonnet-4-6) precisely BECAUSE the vector
+//     space it feeds is shared and versioned; there is no model for an admin to
+//     switch, so there is nothing for the Control Center to show. Booking it as
+//     `knowledge.fact_extraction` would merge two genuinely different jobs.
+//   agent.eval_suite — the eval harness. It drives the chat agent, so its spend
+//     would otherwise land on `agent.ask_staxis` and inflate what real managers
+//     appear to cost.
+//
+// The union is CLOSED on purpose. Every ledger writer takes an `AiCostFeature`,
+// so a new call site cannot invent a label, cannot pass a typo, and cannot omit
+// the field — it fails to compile instead of quietly booking spend that no
+// employee card can ever find again.
+export const AI_LEDGER_ONLY_FEATURES = [
+  'knowledge.document_ocr',
+  'agent.eval_suite',
+] as const;
+export type AiLedgerOnlyFeature = (typeof AI_LEDGER_ONLY_FEATURES)[number];
+
+/** Every value `agent_costs.feature` may hold. */
+export type AiCostFeature = AiFeatureKey | AiLedgerOnlyFeature;
+
 export type AiFeatureGroup =
   | 'Admin'
   | 'Agent'
