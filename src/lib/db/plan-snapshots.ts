@@ -19,6 +19,12 @@
 
 import { supabase } from './_common';
 import {
+  DEFAULT_CHECKOUT_MINUTES,
+  DEFAULT_SHIFT_MINUTES,
+  DEFAULT_STAYOVER_DAY1_MINUTES,
+  DEFAULT_STAYOVER_DAY2_MINUTES,
+} from '@/lib/forecast';
+import {
   fetchTodayRoomWork,
   fetchTodayPropertyCounts,
   subscribeTodayRoomWork,
@@ -41,7 +47,7 @@ export interface PlanSnapshot {
   vacantClean: number;
   vacantDirty: number;
   ooo: number;
-  /** Cleaning minutes per category — read from properties.config when needed. NULL-safe defaults here. */
+  /** Cleaning minutes per category — the hotel's own `properties` columns, with the shared `src/lib/forecast` fallbacks. */
   checkoutMinutes: number;
   stayoverDay1Minutes: number;
   stayoverDay2Minutes: number;
@@ -84,25 +90,46 @@ export interface PlanSnapshot {
  * The rooms[] array + the per-category roomNumbers arrays come from
  * today_room_work_v1 grouped by stay_type.
  *
- * Cleaning-minute fields (checkoutMinutes, stayover_day1_minutes, etc.)
- * come from `properties.config.cleaningMinutes` — the same source the
- * old plan_snapshots cron used. NULL-safe defaults (30/15/20/5) when
- * the config is absent.
+ * Cleaning-minute fields come from the hotel's OWN columns on `properties`
+ * — the same four `/api/housekeeping/forecast` reads, so the Schedule tab
+ * and the Forecast screen answer with one set of numbers. Shared fallbacks
+ * from `src/lib/forecast` apply when a column is null.
+ *
+ * They used to be read from `properties.config.cleaningMinutes`. THAT COLUMN
+ * HAS NEVER EXISTED — not in any migration, not in production. PostgREST
+ * answered `42703 column properties.config does not exist`, the error landed
+ * in `propRow.error` where nothing looked at it, `propRow.data` stayed null,
+ * and every hotel silently got the hard-coded fallbacks no matter what its
+ * manager had set in Settings → Clean Times. The screen was never wrong-
+ * looking, just quietly wrong, which is why it survived this long.
+ *
+ * One visible consequence of reading the real columns: `shift_minutes` is a
+ * NOT NULL column defaulting to 480, so `recommendedHKs` now divides by the
+ * hotel's actual shift length instead of the 420 fallback — the same divisor
+ * the Forecast screen and the crew board have always used. The two screens
+ * agreed on paper (see the comment on DEFAULT_SHIFT_MINUTES) and disagreed in
+ * fact until now.
  */
 async function buildSnapshot(pid: string, date: string): Promise<PlanSnapshot> {
   const [workRows, counts, propRow] = await Promise.all([
     fetchTodayRoomWork(pid, date),
     fetchTodayPropertyCounts(pid, date),
-    supabase.from('properties').select('config').eq('id', pid).maybeSingle(),
+    supabase
+      .from('properties')
+      .select('checkout_minutes, stayover_day1_minutes, stayover_day2_minutes, shift_minutes')
+      .eq('id', pid)
+      .maybeSingle(),
   ]);
 
-  const config = (propRow.data?.config ?? {}) as Record<string, unknown>;
-  const cm = (config.cleaningMinutes ?? {}) as Record<string, unknown>;
-  const checkoutMinutes = numOr(cm.checkout, 30);
-  const stayoverDay1Minutes = numOr(cm.stayoverDay1, 15);
-  const stayoverDay2Minutes = numOr(cm.stayoverDay2, 20);
-  const vacantDirtyMinutes = numOr(cm.vacantDirty, 30);
-  const shiftMinutes = numOr(cm.shift, 420);
+  const prop = (propRow.data ?? {}) as Record<string, unknown>;
+  const checkoutMinutes = numOr(prop.checkout_minutes, DEFAULT_CHECKOUT_MINUTES);
+  const stayoverDay1Minutes = numOr(prop.stayover_day1_minutes, DEFAULT_STAYOVER_DAY1_MINUTES);
+  const stayoverDay2Minutes = numOr(prop.stayover_day2_minutes, DEFAULT_STAYOVER_DAY2_MINUTES);
+  // A vacant-dirty room is a full clean, so it costs what a checkout costs.
+  // There is no separate column for it, and inventing one to hold the same
+  // number the hotel already gave us would be a second place to keep right.
+  const vacantDirtyMinutes = checkoutMinutes;
+  const shiftMinutes = numOr(prop.shift_minutes, DEFAULT_SHIFT_MINUTES);
 
   const checkoutRooms: string[] = [];
   const stayoverDay1Rooms: string[] = [];

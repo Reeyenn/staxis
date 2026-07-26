@@ -70,15 +70,22 @@ import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate'
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ADMIN,
+  ACCOUNT_ANA,
   ACCOUNT_FIONA,
+  ACCOUNT_FRANK,
+  ACCOUNT_HANK,
   ACCOUNT_MARIA,
+  ACCOUNT_VERA,
+  ACCOUNT_WANDA,
   ORG_A,
+  ORG_B,
   PID_A1,
   PID_A2,
   PID_A3,
   PID_B1,
   PID_L1,
   UID_ADMIN,
+  UID_ANA,
   UID_FIONA,
   UID_FRANK,
   UID_HANK,
@@ -226,6 +233,75 @@ async function legacyAccessOf(accountId: string): Promise<string[]> {
   return row.rows[0]?.property_access ?? [];
 }
 
+// ─── The BROWSER's own path ─────────────────────────────────────────────────
+//
+// Every helper above drives a SERVER route: `supabaseAdmin` is shimmed onto
+// pglite, and pglite runs those queries as the table owner — exactly as the
+// service-role key bypasses RLS in production. That is the right model for a
+// route, and it is why none of those tests can see the bug this block is for.
+//
+// A signed-in browser is a different caller. It holds the ANON key, Postgres
+// sees the `authenticated` role, and RLS is the whole of the boundary. So this
+// helper stops being the owner: it drops to `authenticated` and plants the JWT
+// claims a real session carries, transaction-locally, so the policies run for
+// real. What comes back is what the screen would render.
+async function runAs(
+  authUserId: string | null,
+  sql: string,
+  params: unknown[] = [],
+): Promise<Record<string, unknown>[]> {
+  await pg.exec('begin');
+  try {
+    await pg.exec('set local role authenticated');
+    // `mfa_verified` because every policy below is also gated on
+    // `mfa_verified_or_grace()`. Leaving it out would make every assertion here
+    // pass for the wrong reason — an empty read proving the MFA gate works
+    // rather than the reach gate failing.
+    await pg.query('select set_config($1, $2, true)', [
+      'request.jwt.claims',
+      JSON.stringify({ sub: authUserId, role: 'authenticated', mfa_verified: true }),
+    ]);
+    await pg.query('select set_config($1, $2, true)', [
+      'request.jwt.claim.sub', authUserId ?? '',
+    ]);
+    await pg.query('select set_config($1, $2, true)', [
+      'request.jwt.claim.role', 'authenticated',
+    ]);
+    const result = await pg.query<Record<string, unknown>>(sql, params);
+    await pg.exec('commit');
+    return result.rows;
+  } catch (e) {
+    await pg.exec('rollback').catch(() => undefined);
+    throw e;
+  }
+}
+
+/** The hotels this person's BROWSER can actually see, straight out of RLS. */
+async function hotelsVisibleToBrowser(authUserId: string | null): Promise<string[]> {
+  const rows = await runAs(authUserId, 'select id from public.properties');
+  return rows.map((r) => String(r.id)).sort();
+}
+
+/**
+ * The hotels a company GOVERNS right now, read from the ledger rather than
+ * from the test's memory of what it seeded. `is_primary_grouping` +
+ * operator/owner is the one live link that means "this company runs this
+ * building"; a brand or franchisor row, or an operator row stood down when
+ * somebody else took the hotel over, is not coverage.
+ */
+async function hotelsGovernedBy(organizationId: string): Promise<string[]> {
+  const rows = await pg.query<{ property_id: string }>(
+    `select property_id from public.organization_property_relationships
+      where organization_id = $1
+        and is_primary_grouping
+        and relationship_type in ('operator', 'owner')
+        and starts_at <= now()
+        and (ends_at is null or ends_at > now())`,
+    [organizationId],
+  );
+  return rows.rows.map((r) => String(r.property_id)).sort();
+}
+
 /** A company-scope finding, the only kind the portfolio POST accepts. */
 async function plantCompanyFinding(organizationId: string): Promise<string> {
   const row = await pg.query<{ id: string }>(
@@ -275,6 +351,34 @@ before(async () => {
   );
 
   PORTFOLIO_FINDING = await plantCompanyFinding(ORG_A);
+
+  // Supabase's stock grants, which the migrations assume rather than state:
+  // `authenticated` holds table privileges and RLS decides the rows. Without
+  // them the reads in the RLS-DEPTH block below would fail with "permission
+  // denied for table" — a different code path that would go red whether the
+  // reach rule was right or wrong, and therefore prove nothing.
+  await pg.exec(`
+    do $$
+    declare t record;
+    begin
+      for t in select tablename from pg_tables where schemaname = 'public'
+      loop
+        execute format(
+          'grant select, insert, update, delete on public.%I to authenticated', t.tablename);
+      end loop;
+    end $$;
+  `);
+
+  // One housekeeper per hotel. The hotel ROW is only the doorway — the reason
+  // the empty screen was app-wide is that `staff` is read by PropertyContext on
+  // every authenticated page, so a reach rule that stops at `properties` would
+  // let a VP in and then show her a hotel with nobody working at it.
+  await pg.query(
+    `insert into public.staff (property_id, name) values
+       ($1, 'Beaumont Housekeeper'), ($2, 'Lufkin Housekeeper'),
+       ($3, 'Tyler Housekeeper'),    ($4, 'Waco Housekeeper')`,
+    [PID_A1, PID_A2, PID_B1, PID_L1],
+  );
 });
 
 after(async () => {
@@ -624,5 +728,330 @@ describe('nothing about the spine changed while the readers did', () => {
     assert.deepEqual(wanda.propertyIds, [PID_L1]);
     assert.deepEqual(wanda.membershipPropertyIds, []);
     assert.deepEqual(wanda.propertyIds, wanda.legacyPropertyIds);
+  });
+});
+
+// ═══ RLS DEPTH — THE SAME BUG, ONE LAYER DOWN ═══════════════════════════════
+//
+// Every test above proves a SERVER ROUTE now answers for a hat. That closed the
+// door the company owners were standing outside of, and it left the building's
+// other twenty-odd doors keyed to the old lock.
+//
+// `user_owns_property()` — the predicate 52 policies across 46 tables call — has
+// answered from `accounts.property_access` since migration 0002. A hat-only
+// person's array is EMPTY BY DESIGN. So every read a signed-in BROWSER still
+// makes with the anon client came back `[]` with a 200 and no error: the staff
+// roster PropertyContext loads on every page, the Schedule tab's clean times,
+// Maintenance, Inventory, Quality, Deep Clean. Not one of them would have
+// thrown. They would have rendered empty, and looked like a hotel where nothing
+// had happened yet.
+//
+// Migration 0371 moves the rule into `staxis_account_reaches_property` — legacy
+// array OR active governing hat — and leaves `user_owns_property` delegating to
+// it, so all 52 policies inherit hats without a line of policy churn.
+//
+// These tests are the only ones in the file that are NOT the owner. They run as
+// `authenticated`, which is what a browser is, so RLS is the entire boundary.
+describe('RLS itself knows what a hat is (migration 0371)', () => {
+  // THE HEADLINE. Mutation: delete branch 2 of staxis_account_reaches_property,
+  // or point user_owns_property back at 0003's body, and Maria — who runs four
+  // buildings — reads zero hotels from her own browser.
+  test('a hats-only VP reads exactly her hotels, through RLS and nothing else', async () => {
+    const seen = await hotelsVisibleToBrowser(UID_MARIA);
+
+    // The two she was given, and the two she was not. Stated as containment
+    // rather than a fixed list because an earlier block in this file attaches a
+    // THIRD hotel to Gulf Coast, and a test that has to run in one order is a
+    // test that will one day fail for a reason nobody can read.
+    assert.ok(seen.includes(PID_A1) && seen.includes(PID_A2),
+      'the woman who runs Gulf Coast could not see her own hotels from her browser');
+    assert.ok(!seen.includes(PID_B1), "she reached the other company's hotel");
+    assert.ok(!seen.includes(PID_L1), 'she reached a hotel no company operates');
+
+    // And exactly the hotels Gulf Coast governs RIGHT NOW — no more. This is
+    // the company-scope clause in full: coverage is drawn live from the
+    // governing relationships, so a hotel the company picked up AFTER her hat
+    // was written is already hers with nothing re-stamped, and a hotel it never
+    // had never becomes hers.
+    assert.deepEqual(seen, await hotelsGovernedBy(ORG_A),
+      'her browser and the company ledger disagree about which hotels Gulf Coast runs');
+
+    // And the legacy array really is empty, so nothing but the hat did it.
+    assert.deepEqual(
+      await legacyAccessOf(ACCOUNT_MARIA), [],
+      'the fixture leaked legacy access to Maria — this test proves nothing now',
+    );
+  });
+
+  // WALL A. Mutation: resolve a property hat from the company's whole hotel
+  // list (drop `p_property_id = any (m.covered_property_ids)`), and the person
+  // on the Beaumont front desk learns Lufkin exists.
+  test('a front-desk hat reads its own hotel and never its sibling', async () => {
+    assert.deepEqual(
+      await hotelsVisibleToBrowser(UID_FRANK), [PID_A1],
+      'a front-desk hat reached past its own hotel',
+    );
+  });
+
+  // WALL B. Mutation: drop `r.organization_id = m.organization_id` from the
+  // join and every hat reaches every hotel under any company.
+  test('a hat in one company reads nothing of the other company', async () => {
+    const vera = await hotelsVisibleToBrowser(UID_VERA);
+    assert.deepEqual(vera, [PID_B1], "company B's VP saw outside company B");
+    assert.ok(!vera.includes(PID_A1) && !vera.includes(PID_A2), 'Wall B fell');
+
+    const frank = await hotelsVisibleToBrowser(UID_FRANK);
+    assert.ok(!frank.includes(PID_B1), "company A's front desk reached company B");
+  });
+
+  // ZERO REGRESSION, which is the entire risk of touching this function: 0371
+  // rewrote the predicate under 52 live policies. Mutation: add
+  // `and a.active` to branch 1, or reorder it behind the hat branch, and every
+  // account in the product today changes what it can see.
+  test('the legacy control group is byte-identical to before the spine existed', async () => {
+    assert.deepEqual(
+      await hotelsVisibleToBrowser(UID_WANDA), [PID_L1],
+      'the legacy owner lost her own hotel to a migration about hats',
+    );
+    assert.deepEqual(
+      await hotelsVisibleToBrowser(UID_HANK), [PID_L1],
+      'the legacy housekeeper lost her own hotel',
+    );
+  });
+
+  // THE REAL CONTRACT. Everything above is a case; this is the rule. RLS is a
+  // SECOND, INDEPENDENT answer to "which hotels does this person reach", and
+  // the product is only coherent while it agrees with the app's answer. A
+  // divergence in EITHER direction is a bug: RLS narrower is a silent empty
+  // screen, RLS wider is a tenant leak.
+  //
+  // Mutation: any change to accessibleProperties() or to
+  // staxis_account_reaches_property that is not made to both.
+  test('RLS and accessibleProperties() answer the same question for everyone', async () => {
+    const people: Array<[string, string, string]> = [
+      ['Ana (company owner)', ACCOUNT_ANA, UID_ANA],
+      ['Maria (GM + company VP)', ACCOUNT_MARIA, UID_MARIA],
+      ['Frank (front-desk hat)', ACCOUNT_FRANK, UID_FRANK],
+      ['Fiona (company finance)', ACCOUNT_FIONA, UID_FIONA],
+      ['Vera (company B VP)', ACCOUNT_VERA, UID_VERA],
+      ['Wanda (legacy owner)', ACCOUNT_WANDA, UID_WANDA],
+      ['Hank (legacy housekeeper)', ACCOUNT_HANK, UID_HANK],
+      ['Dolores (legacy, company hotel)', ACCOUNT_DOLORES, UID_DOLORES],
+    ];
+    for (const [who, accountId, authUserId] of people) {
+      const fromApp = (await accessibleProperties(accountId)).propertyIds.slice().sort();
+      const fromRls = await hotelsVisibleToBrowser(authUserId);
+      assert.deepEqual(
+        fromRls, fromApp,
+        `${who}: the database and the app disagree about which hotels she reaches`,
+      );
+    }
+  });
+
+  // DEPTH. The point of fixing the PREDICATE rather than the `properties`
+  // policy: a hat has to survive the second read too. Mutation: OR a hat clause
+  // into the `properties` policy alone and this goes red while the headline
+  // test above stays green — which is exactly the half-fix worth catching.
+  test('the hat survives past the hotel row into the staff roster', async () => {
+    const maria = await runAs(UID_MARIA, 'select property_id from public.staff');
+    assert.deepEqual(
+      [...new Set(maria.map((r) => String(r.property_id)))].sort(), [PID_A1, PID_A2].sort(),
+      'a hats-only VP opened her hotels and found nobody working at them',
+    );
+    const frank = await runAs(UID_FRANK, 'select property_id from public.staff');
+    assert.deepEqual(
+      [...new Set(frank.map((r) => String(r.property_id)))], [PID_A1],
+      "a front-desk hat read another hotel's roster",
+    );
+  });
+
+  // THE NAMED LEFTOVER. `src/lib/db/plan-snapshots.ts` reads the hotel's clean
+  // times through the ANON client to draw Housekeeping -> Schedule. This is
+  // that exact statement. It stays a browser read — the page is signed-in, not
+  // a public SMS link, so the RLS bug class does not demand a server route, and
+  // adding one to fetch four integers would be a new surface to secure forever.
+  test("the Schedule tab's clean-times read answers for a hats-only manager", async () => {
+    const rows = await runAs(
+      UID_MARIA,
+      `select checkout_minutes, stayover_day1_minutes, stayover_day2_minutes, shift_minutes
+         from public.properties where id = $1`,
+      [PID_A1],
+    );
+    assert.equal(rows.length, 1, 'the Schedule tab would have fallen back to invented clean times');
+    assert.ok(
+      Number(rows[0].shift_minutes) > 0,
+      'the shift length came back empty, so recommendedHKs would divide by a guess',
+    );
+  });
+
+  // Mutation: grant the helper to `authenticated`, or gate it on anything other
+  // than a matching `accounts.data_user_id`. A caller with no account is the
+  // one input that must never find a hotel.
+  test('a caller with no account reaches nothing', async () => {
+    assert.deepEqual(
+      await hotelsVisibleToBrowser('00000000-0000-4000-8000-0000000000ff'), [],
+      'an auth user with no Staxis account was served the fleet',
+    );
+    assert.deepEqual(
+      await hotelsVisibleToBrowser(null), [],
+      'a session-less caller was served the fleet',
+    );
+  });
+
+  // THE LEAK THE `is_primary_grouping` FILTER EXISTS FOR. When a hotel changes
+  // management company, 0325's attach RPC stands the old operator's row DOWN
+  // rather than deleting it — the row stays open, it just stops being the
+  // primary grouping. Counting it as coverage hands a building's data to the
+  // company that used to run it.
+  //
+  // Mutation: drop `and r.is_primary_grouping` and this goes red.
+  test('an operator row that was stood down grants nothing', async () => {
+    await pg.query(
+      `insert into public.organization_property_relationships
+         (organization_id, property_id, relationship_type, is_primary_grouping)
+       values ($1, $2, 'operator', false)`,
+      [ORG_B, PID_A1],
+    );
+    try {
+      const vera = await hotelsVisibleToBrowser(UID_VERA);
+      assert.ok(
+        !vera.includes(PID_A1),
+        "a stood-down operator row let the previous company keep reading the hotel it lost",
+      );
+      assert.deepEqual(vera, [PID_B1], 'company B reached outside company B');
+    } finally {
+      await pg.query(
+        `delete from public.organization_property_relationships
+          where organization_id = $1 and property_id = $2 and relationship_type = 'operator'
+            and not is_primary_grouping`,
+        [ORG_B, PID_A1],
+      );
+    }
+  });
+
+  // A hat is a job somebody currently holds. Suspended and revoked are the two
+  // ways it stops being one, and `suspended` is the state worth testing hardest
+  // because `ended_at` stays NULL through it — the row still looks open.
+  //
+  // Mutation: drop `and m.status = 'active'` and the suspended half goes red.
+  // (`and m.ended_at is null` is deliberately restated alongside it even though
+  // CHECK `organization_memberships_revoked_shape_check` currently makes the
+  // two equivalent for revoked rows. It is belt over braces: if that CHECK is
+  // ever loosened, the predicate must not widen as a side effect.)
+  test('a hat somebody no longer holds grants nothing', async () => {
+    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:vp`);
+    assert.ok(membershipId, "the fixture did not record Vera's hat");
+
+    await pg.query(
+      `update public.organization_memberships set status = 'suspended' where id = $1`,
+      [membershipId],
+    );
+    try {
+      assert.deepEqual(
+        await hotelsVisibleToBrowser(UID_VERA), [],
+        'a suspended hat still opened the hotel',
+      );
+    } finally {
+      await pg.query(
+        `update public.organization_memberships set status = 'active' where id = $1`,
+        [membershipId],
+      );
+    }
+
+    await pg.query(
+      `update public.organization_memberships
+          set status = 'revoked', ended_at = now() where id = $1`,
+      [membershipId],
+    );
+    try {
+      assert.deepEqual(
+        await hotelsVisibleToBrowser(UID_VERA), [],
+        'a revoked hat still opened the hotel',
+      );
+    } finally {
+      await pg.query(
+        `update public.organization_memberships
+            set status = 'active', ended_at = null where id = $1`,
+        [membershipId],
+      );
+    }
+
+    // ...and she is back, so the restore really restored.
+    assert.deepEqual(await hotelsVisibleToBrowser(UID_VERA), [PID_B1]);
+  });
+
+  // A wound-up company is bookkeeping, not a company. Mutation: drop
+  // `and o.status = 'active'`.
+  test('a company that is no longer trading grants nothing', async () => {
+    await pg.query(`update public.organizations set status = 'inactive' where id = $1`, [ORG_B]);
+    try {
+      assert.deepEqual(
+        await hotelsVisibleToBrowser(UID_VERA), [],
+        'a wound-up company still handed out its hotels',
+      );
+    } finally {
+      await pg.query(`update public.organizations set status = 'active' where id = $1`, [ORG_B]);
+    }
+    assert.deepEqual(await hotelsVisibleToBrowser(UID_VERA), [PID_B1]);
+  });
+
+  // A job that starts on the first of next month is not a job today.
+  // Mutation: drop `and m.starts_at <= now()`.
+  test('a hat that has not started yet grants nothing', async () => {
+    const membershipId = seed.hats.get(`${ACCOUNT_VERA}:company:vp`);
+    await pg.query(
+      `update public.organization_memberships
+          set starts_at = now() + interval '30 days' where id = $1`,
+      [membershipId],
+    );
+    try {
+      assert.deepEqual(
+        await hotelsVisibleToBrowser(UID_VERA), [],
+        'a hat that starts next month already opened the hotel',
+      );
+    } finally {
+      await pg.query(
+        `update public.organization_memberships set starts_at = now() where id = $1`,
+        [membershipId],
+      );
+    }
+    assert.deepEqual(await hotelsVisibleToBrowser(UID_VERA), [PID_B1]);
+  });
+
+  // The company sold the hotel. The relationship row stays for history, closed.
+  // Mutation: drop `and (r.ends_at is null or r.ends_at > now())`.
+  test('a company that has sold the hotel grants nothing', async () => {
+    await pg.query(
+      `update public.organization_property_relationships
+          set ends_at = now()
+        where organization_id = $1 and property_id = $2 and ends_at is null`,
+      [ORG_B, PID_B1],
+    );
+    try {
+      assert.deepEqual(
+        await hotelsVisibleToBrowser(UID_VERA), [],
+        'a company kept reading a hotel it no longer operates',
+      );
+    } finally {
+      await pg.query(
+        `update public.organization_property_relationships
+            set ends_at = null
+          where organization_id = $1 and property_id = $2 and ends_at is not null`,
+        [ORG_B, PID_B1],
+      );
+    }
+    assert.deepEqual(await hotelsVisibleToBrowser(UID_VERA), [PID_B1]);
+  });
+
+  // Widening the reach predicate must not widen anything that was never keyed
+  // on reach. `company_findings` is service-role-only by policy (0367), and a
+  // company OWNER is the likeliest person to be handed it by accident.
+  // Mutation: swap `company_findings_deny_all` for a user_owns_property gate.
+  test('deny-all tables stay deny-all, hat or no hat', async () => {
+    assert.ok(PORTFOLIO_FINDING, 'the fixture planted no finding to probe with');
+    assert.deepEqual(
+      await runAs(UID_ANA, 'select id from public.company_findings'), [],
+      "a company owner's browser read the service-role-only findings ledger",
+    );
   });
 });
