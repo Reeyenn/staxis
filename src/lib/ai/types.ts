@@ -24,6 +24,7 @@ export const AI_FEATURE_KEYS = [
   'agent.memory_consolidation',
   'findings.judge',
   'findings.sweep',
+  'findings.brief',
   'walkthrough.step_generation',
   'inventory.photo_count',
   'inventory.invoice_scan',

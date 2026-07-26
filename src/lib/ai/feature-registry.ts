@@ -325,6 +325,16 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Once a week, for a few hotels at a time, looks over the hotel\'s own totals and suggests things worth watching that nothing checks yet. Every suggestion is re-tested against the real numbers first, and anything that does not hold up is thrown away.',
     ['text'], HAIKU,
   ),
+  // Rewording, not writing. The morning brief is assembled from stored numbers
+  // by code and is complete before this feature is consulted; all it may do is
+  // smooth the sentences, and prose-guard.ts discards the rewrite whole if a
+  // number appears in it that the assembly did not put there. Turning this off
+  // costs polish and nothing else.
+  'findings.brief': defineFeature(
+    'findings.brief', 'Agent', 'Morning brief wording',
+    'Rewrites the morning summary at the top of the Staxis tab so it reads like a person wrote it, in English and Spanish. It cannot change any number or add anything to the summary — if it tries, the plain version is used instead.',
+    ['text'], HAIKU,
+  ),
   'walkthrough.step_generation': defineFeature(
     'walkthrough.step_generation', 'Guidance', 'Guided walkthroughs',
     'Powers the step-by-step guided tours that walk someone through using the app.',

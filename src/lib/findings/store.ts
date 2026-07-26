@@ -185,6 +185,16 @@ export interface ListFindingsOptions {
   statuses?: readonly FindingStatus[];
   detectorId?: string;
   limit?: number;
+  /**
+   * Only rows whose status moved at or after this instant.
+   *
+   * Added for the morning brief's "cleared on its own" section, which asks a
+   * question no other caller asks: not "what is wrong now" but "what stopped
+   * being wrong since the watcher last looked". Without the time bound that
+   * read would return every finding this hotel has ever retired, and a brief
+   * would announce a February expiry as this morning's good news.
+   */
+  statusChangedSince?: Date;
 }
 
 /**
@@ -201,13 +211,40 @@ export async function listFindings(
     .from('findings')
     .select(SELECT_COLUMNS)
     .in('status', [...(opts.statuses ?? ['open', 'updated'])]);
-  const scoped = opts.detectorId ? filtered.eq('detector_id', opts.detectorId) : filtered;
+  const byDetector = opts.detectorId ? filtered.eq('detector_id', opts.detectorId) : filtered;
+  const scoped = opts.statusChangedSince
+    ? byDetector.gte('status_changed_at', opts.statusChangedSince.toISOString())
+    : byDetector;
 
   const { data, error } = await scoped
     .order('last_seen_at', { ascending: false })
     .limit(Math.min(Math.max(opts.limit ?? 100, 1), 500));
   if (error) throw new Error(`findings list failed: ${error.message}`);
   return ((data ?? []) as unknown as FindingRow[]).map(rowToFinding);
+}
+
+/**
+ * The hotel's IANA timezone, or null.
+ *
+ * Read through `scopedDb` like everything else here, so the one-hotel filter is
+ * applied before the query builder is handed back. The morning brief is keyed
+ * on the hotel's own calendar day, which makes this read part of the cache key
+ * — a wrong answer here does not corrupt data, it just builds the brief on the
+ * wrong clock, so it degrades to UTC rather than throwing.
+ */
+export async function propertyTimezone(propertyId: string): Promise<string | null> {
+  const { data, error } = await scopedDb(propertyId)
+    .from('properties')
+    .select('timezone')
+    .maybeSingle();
+  if (error) {
+    log.warn('[findings] timezone read failed; falling back to UTC', {
+      propertyId,
+      err: error.message,
+    });
+    return null;
+  }
+  return (data as { timezone?: string | null } | null)?.timezone ?? null;
 }
 
 /** The most recent run summary for a hotel — "we checked, and here is when". */
@@ -522,9 +559,7 @@ export async function expireStaleFindings(
 
 /** The hotel's own calendar day. "Already shown today?" is a calendar question. */
 async function propertyToday(propertyId: string, now: Date): Promise<string> {
-  const { data } = await scopedDb(propertyId).from('properties').select('timezone').maybeSingle();
-  const tz = (data as { timezone?: string | null } | null)?.timezone ?? null;
-  return propertyLocalToday(now, tz);
+  return propertyLocalToday(now, await propertyTimezone(propertyId));
 }
 
 /**
