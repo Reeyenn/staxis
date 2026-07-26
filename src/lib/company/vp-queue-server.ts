@@ -249,7 +249,7 @@ async function companyCards(scope: CompanyScope, now: Date): Promise<PortfolioCa
     limit: 100,
   });
   return rows
-    .filter((f) => isCardRenderable({ disposition: effectiveDisposition(f) }))
+    .filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }))
     .map((f: CompanyFinding) => ({
       ...toQueueFinding(f, { hotel: null, signOff: null }),
       hotel: null,
@@ -295,7 +295,7 @@ async function climbedAtHotel(
     statuses: [...CLIMB_VISIBLE_STATUSES],
     limit: MAX_FINDINGS_PER_HOTEL,
   });
-  const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f) }));
+  const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }));
   if (showable.length === 0) return [];
 
   // Only a proposal can carry a live offer, and only a live offer can be

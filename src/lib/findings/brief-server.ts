@@ -275,7 +275,7 @@ export async function gatherBriefInput(propertyId: string, now: Date): Promise<B
     limit: CLEARED_LOOKUP_LIMIT,
   });
 
-  const showable = live.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f) }));
+  const showable = live.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }));
   const phrasing = await judgedPhrasing(
     propertyId,
     [...showable, ...cleared].map((f) => f.id),
