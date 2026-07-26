@@ -15,11 +15,16 @@
 // Its hard negatives are the three ways a date can look like lateness and not be
 // one, and all three are pinned below:
 //
-//   pm-03  NEVER DONE is not overdue. With no completion there is no elapsed
-//          interval; counting from created_at would invent a service history the
-//          hotel never claimed. The single most tempting wrong answer in the
-//          whole feature, because a task somebody set up and never did looks
-//          like the most neglected thing in the building.
+//   pm-03  NEVER DONE is not overdue — and is not silence either. With no
+//          completion there is no elapsed interval, so counting from created_at
+//          would invent a service history the hotel never claimed: the single
+//          most tempting wrong answer in the whole feature, because a task
+//          somebody set up and never did looks like the most neglected thing in
+//          the building. What the day now pins is the narrow line between the
+//          two failures: exactly one card per unstarted schedule, at magnitude
+//          ZERO, whose sentence reports the missing date and makes no claim of
+//          lateness anywhere in it. Silence was the other failure — a hotel that
+//          asked to be reminded about something and never could be.
 //   pm-04  SOMEBODY HAS BEEN CALLED. Still late, deliberately quiet — a card
 //          that kept shouting after a manager arranged the work is the nag this
 //          layer exists not to be.
@@ -131,13 +136,19 @@ export const preventiveDueDays: ExamDay[] = [
   {
     id: 'pm-03',
     title: 'a schedule somebody set up a year ago and has never recorded doing',
-    kind: 'hard_negative',
+    // Fires, and the whole day is about WHAT it is allowed to say. "Due" is a
+    // claim that a known interval has elapsed since a known event; with no
+    // completion there is no elapsed interval, so every assertion below pins the
+    // absence of a lateness claim — magnitude zero, no offer, no "past due" in
+    // the sentence — rather than the absence of a card.
+    kind: 'clean_positive',
     detector: 'preventive_due',
     why:
-      'The most tempting wrong answer in the feature. "Due" is a claim that a known interval has ' +
-      'elapsed since a known event, and with no completion there is no elapsed interval — the ' +
-      'only dates available to count from are when somebody typed a row and today, and both ' +
-      'invent a service history this hotel never claimed. Unstarted, not overdue.',
+      'The most tempting wrong answer in the feature, next to the second-most tempting. "Due" is ' +
+      'a claim that a known interval has elapsed since a known event, and with no completion ' +
+      'there is no elapsed interval — the only dates available to count from are when somebody ' +
+      'typed a row and today, and both invent a service history this hotel never claimed. So: ' +
+      'unstarted, not overdue, and said out loud once rather than swallowed.',
     async seed(ctx) {
       await ctx.preventiveTask({
         id: PM(3, 1),
@@ -164,13 +175,43 @@ export const preventiveDueDays: ExamDay[] = [
         area: 'Guest rooms',
       });
     },
-    expect: [],
-    silent: [
+    expect: [
       {
         detectorId: 'preventive_due',
-        why: 'Two schedules with no completion on record. No elapsed interval, so no claim.',
+        key: `task:${PM(3, 1)}:never_started`,
+        why: 'Nobody has ever recorded doing it, so Staxis cannot count forward — and says so.',
+        // ZERO, and the bound is exact. A magnitude here is a lateness, and any
+        // non-zero number would be one invented out of a created_at.
+        magnitude: [0, 0],
+        // Nothing to decide and nothing Staxis can do: a work order for a job
+        // with no history would be Staxis guessing the schedule had lapsed.
+        disposition: 'fyi',
+        severity: 'info',
+        target: { kind: 'preventive_task', value: PM(3, 1) },
+        action: 'none',
+        price: 'none',
+        priceBasisMatches: /no dollar figure: nothing here is late yet/,
+        // The sentence itself is the assertion: it names the missing date, and
+        // the regex would fail the moment "past due" or "overdue" appeared.
+        summaryMatches:
+          /^Generator load test \(Building\) is on this hotel's upkeep schedule — every 90 days — but has never been marked done, so Staxis cannot tell when it is next due\. Record when it was last done and it starts counting\.$/,
+      },
+      {
+        detectorId: 'preventive_due',
+        key: `task:${PM(3, 2)}:never_started`,
+        why: 'The second unstarted schedule, so the day cannot pass on a detector that fired once by luck.',
+        magnitude: [0, 0],
+        disposition: 'fyi',
+        severity: 'info',
+        target: { kind: 'preventive_task', value: PM(3, 2) },
+        action: 'none',
+        price: 'none',
       },
     ],
+    // No `silent` entry for preventive_due here: it speaks on this day. pm-02
+    // is the hard proof that it stays quiet on a hotel that is up to date, and
+    // pm-04 that it stays quiet once somebody has been called.
+    silent: [],
   },
 
   {

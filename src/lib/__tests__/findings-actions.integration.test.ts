@@ -38,6 +38,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { POST as ACTIONS_POST } from '@/app/api/findings/actions/route';
 import { GET as QUEUE_GET } from '@/app/api/findings/route';
 import { proposeAction, loadActionsForFindings } from '@/lib/findings/actions/store';
+import { resolveSignOff, resolveSignOffStrict } from '@/lib/company/signoff';
 import { registerDetector } from '@/lib/findings/registry';
 import { runFindingsForProperty } from '@/lib/findings/runner';
 import { setFindingStatus } from '@/lib/findings/store';
@@ -131,6 +132,20 @@ async function insertWorkOrder(
     [propertyId, location, status],
   );
   return r.rows[0].id;
+}
+
+/**
+ * Age an offer, as a standing card ages. `proposed_at` is immutable through
+ * every ordinary path — that freeze is what makes it safe to anchor the
+ * counting window to — so the trigger comes off for exactly this statement.
+ */
+async function backdateOffer(actionId: string, days: number): Promise<void> {
+  await pg.query('alter table public.finding_actions disable trigger staxis_finding_actions_frozen_tg');
+  await pg.query(
+    `update public.finding_actions set proposed_at = now() - make_interval(days => $2) where id=$1`,
+    [actionId, days],
+  );
+  await pg.query('alter table public.finding_actions enable trigger staxis_finding_actions_frozen_tg');
 }
 
 async function actionRow(id: string) {
@@ -388,12 +403,19 @@ describe('the hands, proven against a real database', () => {
     assert.ok(catalog.tables.has('finding_actions'), 'finding_actions missing from the schema');
     const fns = await pg.query<{ proname: string }>(
       `select proname from pg_proc where proname in
-        ('staxis_execute_finding_action','staxis_undo_finding_action','staxis_finding_actions_frozen')
+        ('staxis_execute_finding_action','staxis_undo_finding_action','staxis_finding_actions_frozen',
+         'staxis_replace_finding_action')
        order by proname`,
     );
     assert.deepEqual(
       fns.rows.map((r) => r.proname),
-      ['staxis_execute_finding_action', 'staxis_finding_actions_frozen', 'staxis_undo_finding_action'],
+      [
+        'staxis_execute_finding_action',
+        'staxis_finding_actions_frozen',
+        // 0369: supersede-and-offer in one transaction.
+        'staxis_replace_finding_action',
+        'staxis_undo_finding_action',
+      ],
     );
   });
 
@@ -413,10 +435,14 @@ describe('the hands, proven against a real database', () => {
       const { actionId } = await offerWorkOrder(PID_A, 'Room 214', 2);
       const row = await actionRow(actionId);
       assert.match(String(row!.params_fingerprint), /^[0-9a-f]{64}$/);
-      assert.equal(
-        row!.idempotency_key,
-        `${String(row!.finding_id)}:${String(row!.params_fingerprint)}`,
-      );
+      // Three parts since 0369: finding, plan, FACTS. The third is what lets an
+      // offer that declined be made again once the facts move, while a retry on
+      // unchanged facts is still refused as one action.
+      const parts = String(row!.idempotency_key).split(':');
+      assert.equal(parts.length, 3);
+      assert.equal(parts[0], String(row!.finding_id));
+      assert.equal(parts[1], String(row!.params_fingerprint));
+      assert.match(parts[2], /^[0-9a-f]{64}$/);
     });
 
     test('the frozen plan CANNOT be edited after the card was written', async () => {
@@ -615,6 +641,333 @@ describe('the hands, proven against a real database', () => {
       await insertWorkOrder(PID_A, 'Room 214');
       const result = await tap(PID_A, actionId);
       assert.equal(result.body.data?.code, 'executed');
+    });
+  });
+
+  // ═══ THE COUNTING WINDOW IS THE ONE THE CARD COUNTED OVER ═══
+  //
+  // The re-verification asks "has the situation that made this worth doing gone
+  // away?" and answers it by re-counting open tickets. Until 0369 it rebuilt the
+  // window from now(), so a card offered on the 1st and tapped on the 6th
+  // counted a DIFFERENT thirty days: tickets aged off the back, the count came
+  // in lower than the frozen one, and the manager was told somebody had closed
+  // work orders nobody had touched. The refusal was wrong AND the sentence was
+  // false, on the one screen whose whole value is that its numbers can be
+  // checked.
+
+  describe('the window the offer was made in does not slide out from under it', () => {
+    // MUTATION PROOF: put `now()` back in place of `a.proposed_at` in the
+    // create_work_order branch of staxis_execute_finding_action and this test
+    // fails with `declined_changed` — the exact false accusation.
+    test('tickets ageing past the window do not read as tickets somebody closed', async () => {
+      const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 501', 3);
+      // The three tickets are real and still open — they are simply old now, as
+      // every ticket becomes. 33 days puts them OUTSIDE a 30-day window measured
+      // from today and INSIDE the same 30-day window measured from the offer
+      // five days ago. That gap is the bug, in two numbers.
+      await pg.query(
+        `update public.work_orders set created_at = now() - interval '33 days'
+          where property_id=$1 and room_number='Room 501'`,
+        [PID_A],
+      );
+      // And the offer itself is five days old, as a standing card would be.
+      // `proposed_at` is immutable through the app (that is the freeze doing its
+      // job), so the trigger comes off for exactly the length of this backdate —
+      // the same technique the tamper test uses.
+      await backdateOffer(actionId, 5);
+
+      const result = await tap(PID_A, actionId);
+      assert.equal(
+        result.body.data?.code,
+        'executed',
+        'nobody closed anything — the tickets just got older',
+      );
+      assert.equal(await workOrderCount(PID_A, 'Room 501'), 4, 'the three originals plus the fix');
+      assert.ok(findingId);
+    });
+
+    // And the honest decline still declines: the guard above must not have
+    // turned the re-verification off.
+    test('a ticket that was actually closed still declines', async () => {
+      const { actionId } = await offerWorkOrder(PID_A, 'Room 502', 3);
+      await pg.query(
+        `update public.work_orders set created_at = now() - interval '33 days'
+          where property_id=$1 and room_number='Room 502'`,
+        [PID_A],
+      );
+      await backdateOffer(actionId, 5);
+      await pg.query(
+        `update public.work_orders set status='resolved'
+          where id in (select id from public.work_orders
+                        where property_id=$1 and room_number='Room 502' limit 2)`,
+        [PID_A],
+      );
+
+      const result = await tap(PID_A, actionId);
+      assert.equal(result.body.data?.code, 'declined_changed');
+      assert.equal(Number(result.body.data?.changed?.now), 1);
+    });
+  });
+
+  // ═══ A DECLINE IS NOT A DECISION ═══
+  //
+  // `declined_changed` means Staxis refused to act because the facts moved
+  // between the offer and the tap — the manager WANTED it done. `failed` means
+  // our own write broke. Neither is the manager answering, and treating them as
+  // answers left the fix disarmed forever: every later card for a problem that
+  // was still true arrived with no button and no explanation.
+
+  describe('a fix that declined or failed can be offered again', () => {
+    // MUTATION PROOF: put 'declined_changed' back into the settled set
+    // (DECIDED_ACTION_STATES in actions/store.ts) and the re-propose below
+    // returns 'settled' with no live offer on the card, forever.
+    test('after a decline, the next run offers again on the new facts', async () => {
+      const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 611', 3);
+      await pg.query(
+        `update public.work_orders set status='resolved'
+          where id in (select id from public.work_orders
+                        where property_id=$1 and room_number='Room 611' limit 2)`,
+        [PID_A],
+      );
+      assert.equal((await tap(PID_A, actionId)).body.data?.code, 'declined_changed');
+
+      // Tonight's run: same problem, same plan, but the facts it rests on have
+      // moved — one ticket open now, not three.
+      const outcome = await proposeAction(PID_A, findingId, {
+        kind: 'create_work_order',
+        params: createWorkOrderParams('Room 611'),
+        verify: { location: 'Room 611', window_days: 30, open_work_orders: 1 },
+      });
+      assert.equal(outcome, 'proposed');
+
+      // The card shows the NEW offer, not the old refusal.
+      const live = await loadActionsForFindings(PID_A, [findingId]);
+      assert.equal(live.get(findingId)?.state, 'proposed');
+
+      // And it works.
+      const fresh = await openActionId(findingId);
+      assert.equal((await tap(PID_A, fresh)).body.data?.code, 'executed');
+    });
+
+    test('re-offering the SAME plan on UNCHANGED facts is still one action', async () => {
+      const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 612', 3);
+      await pg.query(
+        `update public.work_orders set status='resolved'
+          where id in (select id from public.work_orders
+                        where property_id=$1 and room_number='Room 612' limit 2)`,
+        [PID_A],
+      );
+      await tap(PID_A, actionId);
+
+      // Nothing has changed since the decline, so there is nothing new to ask.
+      const outcome = await proposeAction(PID_A, findingId, {
+        kind: 'create_work_order',
+        params: createWorkOrderParams('Room 612'),
+        verify: { location: 'Room 612', window_days: 30, open_work_orders: 3 },
+      });
+      assert.equal(outcome, 'unchanged');
+      const rows = await pg.query<{ n: number }>(
+        `select count(*)::int n from public.finding_actions where finding_id=$1`,
+        [findingId],
+      );
+      assert.equal(rows.rows[0].n, 1, 'one offer, one row — a re-arm is not a second card');
+    });
+
+    test('a decision the manager DID make is still never re-offered', async () => {
+      const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 613', 2);
+      assert.equal((await tap(PID_A, actionId)).body.data?.code, 'executed');
+
+      const outcome = await proposeAction(PID_A, findingId, {
+        kind: 'create_work_order',
+        params: createWorkOrderParams('Room 613'),
+        verify: { location: 'Room 613', window_days: 30, open_work_orders: 9 },
+      });
+      assert.equal(outcome, 'settled', 'approving a fix is an answer; declining to act is not');
+    });
+
+    test('a failed write is re-armed too — our own error is not the manager saying no', async () => {
+      const { findingId, actionId } = await offerWorkOrder(PID_A, 'Room 614', 2);
+      // Simulate the write having blown up inside the transaction. The row
+      // records the failure; nothing partial survived.
+      await pg.query(
+        `update public.finding_actions
+            set state='failed', failure_reason='disk on fire', decided_at=now()
+          where id=$1`,
+        [actionId],
+      );
+
+      const outcome = await proposeAction(PID_A, findingId, {
+        kind: 'create_work_order',
+        params: createWorkOrderParams('Room 614'),
+        verify: { location: 'Room 614', window_days: 30, open_work_orders: 2, attempt: 2 },
+      });
+      assert.equal(outcome, 'proposed');
+      const live = await loadActionsForFindings(PID_A, [findingId]);
+      assert.equal(live.get(findingId)?.state, 'proposed', 'the card gets its button back');
+    });
+  });
+
+  // ═══ SUPERSEDE AND OFFER ARE ONE STATEMENT ═══
+
+  describe('replacing an offer cannot leave a card with none', () => {
+    test('a different plan retires the old offer and lands the new one together', async () => {
+      const { findingId } = await offerWorkOrder(PID_A, 'Room 701', 2);
+      const outcome = await proposeAction(PID_A, findingId, {
+        kind: 'create_work_order',
+        params: createWorkOrderParams('Room 701 (full inspection)'),
+        verify: { location: 'Room 701', window_days: 30, open_work_orders: 2 },
+      });
+      assert.equal(outcome, 'proposed');
+
+      const states = await pg.query<{ state: string }>(
+        `select state from public.finding_actions where finding_id=$1 order by proposed_at`,
+        [findingId],
+      );
+      assert.deepEqual(states.rows.map((r) => r.state).sort(), ['proposed', 'superseded']);
+      // Exactly one live offer, always — the card has one button.
+      const live = await loadActionsForFindings(PID_A, [findingId]);
+      assert.equal(live.get(findingId)?.state, 'proposed');
+    });
+
+    // MUTATION PROOF: split the RPC back into an update and an insert and this
+    // is the state that becomes reachable — the old offer retired, the new one
+    // refused, and a card with no button at all until somebody notices.
+    //
+    // The refused insert here is a REAL one: proposing plan X again collides
+    // with the superseded row that already carries plan X on the same facts, so
+    // the unique key rejects it after the supersede has already run.
+    test('a refused insert rolls the supersede back with it', async () => {
+      const { findingId, actionId: first } = await offerWorkOrder(PID_A, 'Room 702', 2);
+      const planX = createWorkOrderParams('Room 702');
+      const verifyX = { location: 'Room 702', window_days: 30, open_work_orders: 2 };
+
+      // A different plan tonight: the first offer is superseded, the second one
+      // stands.
+      assert.equal(
+        await proposeAction(PID_A, findingId, {
+          kind: 'create_work_order',
+          params: createWorkOrderParams('Room 702 (deep clean)'),
+          verify: verifyX,
+        }),
+        'proposed',
+      );
+      const second = await openActionId(findingId);
+      assert.notEqual(second, first);
+      assert.equal((await actionRow(first))!.state, 'superseded');
+
+      // And now back to the ORIGINAL plan on the ORIGINAL facts — which the
+      // superseded row already holds, so the insert cannot land.
+      const outcome = await proposeAction(PID_A, findingId, {
+        kind: 'create_work_order',
+        params: planX,
+        verify: verifyX,
+      });
+      assert.equal(outcome, 'unchanged', 'a duplicate is not a new offer');
+
+      // THE ASSERTION: the standing offer is still standing. A non-atomic
+      // supersede-then-insert leaves this row 'superseded' and the finding with
+      // nothing live at all.
+      assert.equal(
+        (await actionRow(second))!.state,
+        'proposed',
+        'the supersede rolled back with the refused insert',
+      );
+      const live = await loadActionsForFindings(PID_A, [findingId]);
+      assert.equal(live.get(findingId)?.state, 'proposed', 'the card still has its button');
+    });
+  });
+
+  // ═══ THE COMPANY'S SIGNATURE, WHEN WE CANNOT READ THE RULEBOOK ═══
+  //
+  // The card renders a lock; THIS is the gate. Every read behind it used to fail
+  // open, so an unreadable `company_authority_rules` — a stale PostgREST schema
+  // cache after a migration, the single most common operational fault in this
+  // app — silently answered "no rule governs this" and let a GM tap through a
+  // lock their company had written. Invisible from both ends: the button simply
+  // works, and the money is spent.
+
+  describe('a rulebook we cannot read refuses the button rather than opening it', () => {
+    const ORG = 'cccccccc-0000-4000-8000-00000000c001';
+
+    before(async () => {
+      await pg.query(
+        `insert into public.organizations (id, name, organization_type, status)
+         values ($1, 'Beaumont Operating Co', 'management_company', 'active')
+         on conflict (id) do nothing`,
+        [ORG],
+      );
+      // NOT the primary grouping: 0325 backfills a `single_hotel` organization
+      // per property and holds the one-open-primary index against it. A hotel's
+      // operator sits alongside that, which is also how the real fleet looks.
+      await pg.query(
+        `insert into public.organization_property_relationships
+           (organization_id, property_id, relationship_type, is_primary_grouping)
+         values ($1, $2, 'operator', false)`,
+        [ORG, PID_A],
+      );
+    });
+
+    after(async () => {
+      await pg.query('delete from public.organization_property_relationships where organization_id=$1', [ORG]);
+      await pg.query('delete from public.organizations where id=$1', [ORG]);
+    });
+
+    /** A finding with a dollar figure, so a money rule has something to be about. */
+    async function pricedOffer(location: string) {
+      const made = await offerWorkOrder(PID_A, location, 2);
+      await pg.query(
+        `update public.findings
+            set price_low_cents = 60000, price_high_cents = 90000,
+                price_currency = 'USD', price_basis = 'the last 3 invoices'
+          where id = $1`,
+        [made.findingId],
+      );
+      return made;
+    }
+
+    // MUTATION PROOF: make the execute gate call `resolveSignOff` (the fail-open
+    // reader) instead of `resolveSignOffStrict`, and this tap executes — a work
+    // order booked against a company rulebook nobody could read.
+    test('the tap is refused with a retry-able 503, and nothing is written', async () => {
+      const { actionId } = await pricedOffer('Room 801');
+      const before = await workOrderCount(PID_A, 'Room 801');
+
+      await pg.query('alter table public.company_authority_rules rename to company_authority_rules_hidden');
+      try {
+        const result = await tap(PID_A, actionId);
+        assert.equal(result.status, 503, 'not a 403 — the manager is not being refused permission');
+        assert.equal(await workOrderCount(PID_A, 'Room 801'), before, 'nothing was booked');
+        assert.equal((await actionRow(actionId))!.state, 'proposed', 'and the offer is still live');
+      } finally {
+        await pg.query('alter table public.company_authority_rules_hidden rename to company_authority_rules');
+      }
+    });
+
+    test('and once it can be read again, the same tap goes through', async () => {
+      const { actionId } = await pricedOffer('Room 802');
+      const result = await tap(PID_A, actionId);
+      assert.equal(result.body.data?.code, 'executed', 'an empty rulebook governs nothing');
+    });
+
+    // The renderer's half of the same fact: a card that cannot resolve the
+    // rulebook draws as an ordinary card. Fail-open there is deliberate — the
+    // gate above is what makes it safe.
+    test('the RENDERER stays fail-open while the gate does not', async () => {
+      await pg.query('alter table public.company_authority_rules rename to company_authority_rules_hidden');
+      try {
+        const args = {
+          organizationId: ORG,
+          propertyId: PID_A,
+          actionKind: 'create_work_order',
+          price: { lowCents: 60_000, highCents: 90_000, currency: 'USD', basis: 'b' },
+          callerAccountId: accountA,
+          callerHats: [],
+        };
+        assert.equal(await resolveSignOff(args), null, 'a card still renders');
+        assert.equal((await resolveSignOffStrict(args)).kind, 'unreadable', 'the gate is told the truth');
+      } finally {
+        await pg.query('alter table public.company_authority_rules_hidden rename to company_authority_rules');
+      }
     });
   });
 

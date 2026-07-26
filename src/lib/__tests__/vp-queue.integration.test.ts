@@ -950,3 +950,44 @@ describe('the portfolio morning brief', () => {
     assert.ok(vera.data.cards.length > 0, 'the queue emptied along with the brief');
   });
 });
+
+// ═══ THE PRICE TAG, ON THE COMPANY LEDGER ══════════════════════════════════
+//
+// The hotel ledger's five cases (findings-ledger.integration.test.ts) proved
+// `findings_price_is_a_range` refuses a point estimate. `company_findings` was
+// written with the identical constraint and NOTHING exercised it — so the one
+// screen where a price is read by the person who signs the cheque was the one
+// place the rule was a comment rather than a tested guarantee. Same five cases,
+// same order, against the other table.
+describe('the company ledger refuses a price that is not a range', () => {
+  const withPrice = (low: number | null, high: number | null) =>
+    pg.query(
+      `insert into public.company_findings
+         (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
+          receipt_query_id, evidence, magnitude, price_low_cents, price_high_cents)
+       values ($1, 'probe_price',
+               'price:' || coalesce($2::integer::text, 'n') || ':' || coalesce($3::integer::text, 'n'),
+               'x', 'info', 'fyi', 'open', 'q', '{}'::jsonb, 1, $2::integer, $3::integer)`,
+      [ORG_A, low, high],
+    );
+
+  test('a real range is accepted', async () => {
+    await assert.doesNotReject(() => withPrice(20_000, 40_000));
+  });
+
+  test('no price at all is accepted', async () => {
+    await assert.doesNotReject(() => withPrice(null, null));
+  });
+
+  test('a point estimate wearing a range is refused', async () => {
+    await assert.rejects(() => withPrice(34_000, 34_000), /company_findings_price_is_a_range/);
+  });
+
+  test('an inverted range is refused', async () => {
+    await assert.rejects(() => withPrice(40_000, 20_000), /company_findings_price_is_a_range/);
+  });
+
+  test('half a range is refused', async () => {
+    await assert.rejects(() => withPrice(20_000, null), /company_findings_price_is_a_range/);
+  });
+});

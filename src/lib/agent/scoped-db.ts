@@ -108,6 +108,10 @@ export const PROPERTY_SCOPED_RPCS: ReadonlySet<string> = new Set([
   // and the function's own WHERE clause say the same thing twice.
   'staxis_execute_finding_action',
   'staxis_undo_finding_action',
+  // The atomic half of proposing (0369): retire the standing offer and freeze
+  // the next one, or neither. Takes the hotel as an argument and filters on it,
+  // exactly like the two above.
+  'staxis_replace_finding_action',
 ]);
 
 /** The hotel-argument name every PROPERTY_SCOPED_RPCS member uses. */

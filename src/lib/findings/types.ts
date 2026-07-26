@@ -126,6 +126,22 @@ export interface PriceRange {
   basis: string;
 }
 
+/**
+ * $2,000 — the size at which money reaches the company queue on its own, and
+ * therefore the size at which a PHRASING pass may no longer make a card vanish.
+ *
+ * WHY THE NUMBER LIVES HERE AND NOT IN company/vp-queue.ts
+ * It is one number doing two jobs that must agree by construction. The climb
+ * rule uses it to decide what a VP sees; the judge clamp (finding-cards.ts
+ * `judgeMayHide`) uses it to decide what a model may hide. If those two ever
+ * drifted apart, the gap between them would be a band of findings big enough to
+ * matter to the company and quiet enough for one token to delete — which is
+ * exactly the hole the clamp exists to close. `BIG_DOLLAR_CLIMB_CENTS` in
+ * vp-queue.ts is this constant, re-exported under the name the climbing rules
+ * have always used.
+ */
+export const BIG_DOLLAR_CENTS = 200_000;
+
 /** True when the range is one the schema will accept. */
 export function isUsablePriceRange(price: PriceRange | null | undefined): price is PriceRange {
   if (!price) return false;
@@ -419,6 +435,24 @@ export interface DetectorDeclaration<P extends DetectorParams = DetectorParams> 
    */
   readonly staleAfterDays: number;
   readonly params?: P;
+  /**
+   * The `evidence.values` field that identifies WHICH OCCURRENCE of this
+   * problem a finding is about — and, therefore, when a closed card that comes
+   * back is the same occurrence continuing rather than a new one starting.
+   *
+   * Optional, and absent for almost every detector. Declare one only when a card
+   * from this detector can be CLOSED while the problem underneath it is still
+   * true. `preventive_due` is the case it exists for: "Somebody's been called"
+   * closes the card and the follow-up returns a week later, which was silently
+   * restarting the clock the company's aging rules measure from — one tap a week
+   * kept a year-old problem permanently below the bar (see `carriedFirstSeenAt`
+   * in store.ts).
+   *
+   * The field must be a fact that MOVES when the problem is genuinely dealt with
+   * and STAYS when it is merely deferred. `due_on` is exactly that: marking the
+   * job done recomputes it; saying somebody was called does not.
+   */
+  readonly occurrenceMarker?: string;
   /**
    * The fix, if Staxis is allowed to perform one.
    *

@@ -91,6 +91,10 @@ const SELECT_COLUMNS =
   'judged_disposition, judged_summary_en, judged_summary_es, judged_rationale, ' +
   'judged_rank, judged_source, judged_at, judged_model, judged_guard_rejected';
 
+/** The column default in 0360. Named so the unpriced reset and the schema agree
+ *  in one place rather than by coincidence. */
+const DEFAULT_CURRENCY = 'USD';
+
 function num(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   const n = typeof value === 'string' ? Number(value) : value;
@@ -141,10 +145,21 @@ export function rowToFinding(row: FindingRow): Finding {
 }
 
 /** The price columns, or all-null. An unusable range is dropped, never rounded
- *  into a point estimate — the schema would refuse it anyway (0360). */
+ *  into a point estimate — the schema would refuse it anyway (0360).
+ *
+ *  The CURRENCY is reset with the rest of them. It is `not null default 'USD'`,
+ *  so a row that once carried a price in MXN and now carries none kept `MXN`
+ *  sitting on it — a fact about nothing, which the next price to land on that
+ *  row would silently inherit if it forgot to say. Clearing the whole group
+ *  keeps "there is no price here" a single, complete statement. */
 function priceColumns(price: PriceRange | null | undefined): Record<string, unknown> {
   if (!isUsablePriceRange(price)) {
-    return { price_low_cents: null, price_high_cents: null, price_basis: null };
+    return {
+      price_low_cents: null,
+      price_high_cents: null,
+      price_basis: null,
+      price_currency: DEFAULT_CURRENCY,
+    };
   }
   return {
     price_low_cents: price.lowCents,
@@ -452,6 +467,13 @@ export interface PersistArgs {
   receiptQueryId: string;
   disposition: FindingDisposition;
   now: Date;
+  /**
+   * The `evidence.values` field that says WHICH occurrence of the problem this
+   * is — see `DetectorDeclaration.occurrenceMarker`. Absent for every detector
+   * that does not declare one, and then a new row starts a new clock exactly as
+   * it always has.
+   */
+  occurrenceMarker?: string | null;
 }
 
 /** What actually happened, so the run summary can count it honestly. */
@@ -481,12 +503,13 @@ function draftColumns(args: PersistArgs): Record<string, unknown> {
  */
 export async function openFinding(args: PersistArgs): Promise<PersistOutcome> {
   const iso = args.now.toISOString();
+  const firstSeen = (await carriedFirstSeenAt(args)) ?? iso;
   const { error } = await scopedDb(args.propertyId).from('findings').insert({
     detector_id: args.detectorId,
     dedupe_key: args.dedupeKey,
     status: 'open',
     disposition: args.disposition,
-    first_seen_at: iso,
+    first_seen_at: firstSeen,
     last_seen_at: iso,
     status_changed_at: iso,
     occurrence_count: 1,
@@ -516,6 +539,83 @@ export async function openFinding(args: PersistArgs): Promise<PersistOutcome> {
     return 'suppressed';
   }
   return refreshFinding(args, row.id, 'updated');
+}
+
+/**
+ * When a card CLOSES while the problem underneath it is still true, and the
+ * problem then comes back, `first_seen_at` must not restart.
+ *
+ * ═══ THE TAP THAT BOUGHT A PERMANENT, INVISIBLE MUTE ═══
+ * "Somebody's been called" on an overdue upkeep card is a deferral, not an
+ * outcome: it closes the card (`resolved`) and the detector goes quiet for a
+ * week, then re-emits. That re-emission was landing as a BRAND NEW row with
+ * today's `first_seen_at`, so the company's aging rules — which measure from the
+ * first sighting — were reset every seven days. A manager tapping a reminder
+ * once a week could keep a year-old problem permanently under the climb bar
+ * without ever muting anything, and nothing on any screen said so.
+ *
+ * ═══ WHY THIS IS NOT "CARRY THE CLOCK ACROSS EVERY REOPEN" ═══
+ * Because "Handled it" is the opposite case and its promise is explicit on the
+ * card: *if it happens again it comes back as a new card*. A recurrence after a
+ * real fix genuinely is a new problem, and dragging the old clock onto it would
+ * report a hotel that fixed something as one that never did.
+ *
+ * The two are told apart by a fact rather than by a guess. A detector that has
+ * one nominates an `occurrenceMarker` — a field of its own `evidence.values`
+ * that identifies WHICH occurrence this is. `preventive_due` uses `due_on`: a
+ * deferral leaves the due date exactly where it was, and marking the job done
+ * moves it, so equal marker means "the same overdue event, still not dealt with"
+ * and nothing else. A detector that declares no marker keeps the old behaviour
+ * entirely.
+ *
+ * Never throws, and returns null on anything unclear: a lost carry-forward costs
+ * one clock, and a thrown error would cost the card.
+ */
+async function carriedFirstSeenAt(args: PersistArgs): Promise<string | null> {
+  const marker = args.occurrenceMarker;
+  if (!marker) return null;
+  const mine = markerValue(args.draft.evidence, marker);
+  if (mine === null) return null;
+
+  try {
+    const { data, error } = await scopedDb(args.propertyId)
+      .from('findings')
+      .select('first_seen_at, evidence, status')
+      .eq('dedupe_key', args.dedupeKey)
+      .in('status', ['resolved', 'expired'])
+      .order('status_changed_at', { ascending: false })
+      .limit(5);
+    if (error) throw new Error(error.message);
+
+    for (const row of (data ?? []) as unknown as Array<{
+      first_seen_at: string;
+      evidence: unknown;
+    }>) {
+      if (markerValue(row.evidence as FindingEvidence, marker) !== mine) continue;
+      const carried = row.first_seen_at;
+      // Never carry a clock FORWARD — a stored timestamp later than now would
+      // make the card claim to have been seen in the future.
+      if (!carried || Date.parse(carried) > args.now.getTime()) return null;
+      return carried;
+    }
+    return null;
+  } catch (e) {
+    log.warn('[findings] could not check whether this problem kept its clock', {
+      propertyId: args.propertyId,
+      dedupeKey: args.dedupeKey,
+      err: e instanceof Error ? e.message : String(e),
+    });
+    return null;
+  }
+}
+
+/** The marker's value as a comparable string, or null when it is not a scalar
+ *  the two rows could be compared on. */
+function markerValue(evidence: FindingEvidence | null | undefined, marker: string): string | null {
+  const raw = (evidence?.values ?? {})[marker];
+  if (typeof raw === 'string') return raw.trim() || null;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return String(raw);
+  return null;
 }
 
 /** Refresh a live card: new numbers, one more sighting, same row. */

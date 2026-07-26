@@ -31,7 +31,13 @@
 // computable at all.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import type { EscalationPolicy, FindingStatus, PriceRange } from '@/lib/findings/types';
+import { BIG_DOLLAR_CENTS } from '@/lib/findings/types';
+import type {
+  EscalationPolicy,
+  FindingSeverity,
+  FindingStatus,
+  PriceRange,
+} from '@/lib/findings/types';
 import {
   rankFindings,
   sortValueCents,
@@ -50,8 +56,13 @@ import {
  * needs to be in. A constant rather than a setting on purpose — a per-company
  * knob here would be one more thing nobody configures, and a wrong default
  * pretending to be a choice.
+ *
+ * Defined in findings/types.ts and re-exported here under the name the climbing
+ * rules have always used: the judge's visibility clamp is measured against the
+ * SAME number, so a finding cannot be big enough to belong on the company queue
+ * and small enough for a phrasing pass to hide. One constant, two rules.
  */
-export const BIG_DOLLAR_CLIMB_CENTS = 200_000;
+export const BIG_DOLLAR_CLIMB_CENTS = BIG_DOLLAR_CENTS;
 
 /**
  * The lower bar, for things that climb because of TIME rather than size.
@@ -82,6 +93,29 @@ export const MUTE_OVERRIDE_ESCALATION: EscalationPolicy = Object.freeze({
   minDelta: 2,
 });
 
+/**
+ * How long a CRITICAL problem may stay true at a hotel before the company hears
+ * about it, whatever it costs.
+ *
+ * ═══ WHY THERE HAD TO BE A CLIMB REASON THAT NEVER LOOKS AT MONEY ═══
+ * Every other bar on this screen is a dollar bar, and a great many true, serious
+ * findings carry no price at all — not because they are cheap, but because this
+ * product refuses to invent a figure it cannot derive from the hotel's own
+ * records. `preventive_due` is the standing example: it emits `severity:
+ * 'critical'` with `price: null` BY DESIGN (what a hotel paid to fix things that
+ * broke is not what preventive service costs), so a water-heater flush a full
+ * cycle overdue was structurally unable to reach a VP — not filtered out, not
+ * ranked low, simply invisible, and nothing anywhere said so.
+ *
+ * TWO DAYS, and it is deliberately shorter than the seven the money bar uses.
+ * `critical` on this system's scale is not "important", it is "a full cycle past
+ * due" or its equivalent — the hotel has already had its chance to notice. Two
+ * days means a Friday problem reaches somebody on Sunday and a Monday problem on
+ * Wednesday: long enough that a GM who is already on it is never second-guessed
+ * the same morning, short enough that "we didn't know" stops being true.
+ */
+export const CRITICAL_CLIMB_DAYS = 2;
+
 // ─── The candidate ──────────────────────────────────────────────────────────
 
 /**
@@ -96,6 +130,15 @@ export const MUTE_OVERRIDE_ESCALATION: EscalationPolicy = Object.freeze({
 export interface ClimbCandidate {
   status: FindingStatus;
   price: PriceRange | null;
+  /**
+   * How bad the DETECTOR said it is. On this list for one reason: without it,
+   * every rule below was a money rule, and a finding this product will not put
+   * a price on — which is every preventive card, by design — could not reach the
+   * company however long it stayed true. Severity is a label Staxis chose, so it
+   * is deliberately NOT a tiebreak in the ranking (see rankFindings); it is only
+   * ever asked "is this the kind of thing that climbs on time alone".
+   */
+  severity: FindingSeverity;
   /** ISO. When Staxis first saw the problem, not when the card was refreshed. */
   firstSeenAt: string;
   magnitude: number;
@@ -109,7 +152,15 @@ export interface ClimbCandidate {
   awaitingMySignOff: boolean;
 }
 
-export type ClimbReason = 'sign_off' | 'big_dollar' | 'unresolved' | 'portfolio';
+export type ClimbReason =
+  | 'sign_off'
+  | 'big_dollar'
+  /** Marked critical and still true after CRITICAL_CLIMB_DAYS. No price needed. */
+  | 'critical'
+  | 'unresolved'
+  /** Muted at the hotel, and the problem has since outgrown the mute. */
+  | 'outgrew_mute'
+  | 'portfolio';
 
 // ─── The rules ──────────────────────────────────────────────────────────────
 
@@ -189,13 +240,24 @@ export function climbReasonFor(candidate: ClimbCandidate, now: Date): ClimbReaso
   const value = climbValueCents(candidate);
   if (value !== null && value >= BIG_DOLLAR_CLIMB_CENTS) return 'big_dollar';
 
-  if (
-    value !== null
-    && value >= AGING_CLIMB_CENTS
-    && daysOpen(candidate.firstSeenAt, now) >= AGING_CLIMB_DAYS
-  ) {
+  const days = daysOpen(candidate.firstSeenAt, now);
+
+  // The one rule that never asks what it costs. A critical finding with no
+  // dollar figure is not a small problem — it is a problem this product refuses
+  // to invent a number for, and before this existed those were the only kind
+  // that could never reach the company at all.
+  if (candidate.severity === 'critical' && days >= CRITICAL_CLIMB_DAYS) return 'critical';
+
+  if (value !== null && value >= AGING_CLIMB_CENTS && days >= AGING_CLIMB_DAYS) {
     return 'unresolved';
   }
+
+  // Last, and unconditional on price: `climbStatusAllows` only lets a muted row
+  // through when it has ALREADY outgrown the size it was muted at, and that
+  // judgement — the founder's one exception to "mute means gone" — was being
+  // computed and then thrown away for want of a price. A problem that doubled
+  // after somebody said "not doing this" is news at any size.
+  if (candidate.status === 'muted') return 'outgrew_mute';
 
   return null;
 }
@@ -232,11 +294,17 @@ export function rankPortfolio(cards: readonly PortfolioCard[]): PortfolioCard[] 
 type Bi = { en: string; es: string };
 const pick = (b: Bi, lang: Lang) => (lang === 'es' ? b.es : b.en);
 
-const REASON_COPY: Record<Exclude<ClimbReason, 'unresolved'>, Bi> = {
+const REASON_COPY: Record<Exclude<ClimbReason, 'unresolved' | 'critical'>, Bi> = {
   sign_off: { en: 'Waiting for your sign-off', es: 'Esperando tu aprobación' },
   big_dollar: {
     en: 'Big enough to reach the company queue',
     es: 'Lo bastante grande para llegar a la cola de la empresa',
+  },
+  // Says what the hotel decided as well as what happened, because both halves
+  // are the news: somebody there declined this, and it grew anyway.
+  outgrew_mute: {
+    en: 'This hotel decided against it, and it has grown since',
+    es: 'Este hotel decidió no hacerlo, y desde entonces ha crecido',
   },
   portfolio: { en: 'Across your hotels', es: 'En varios de tus hoteles' },
 };
@@ -255,6 +323,15 @@ export function climbReasonLine(card: PortfolioCard, lang: Lang): string {
     return lang === 'es'
       ? `Sigue sin resolverse ${days} ${days === 1 ? 'día' : 'días'} después de que Staxis lo vio`
       : `Still unresolved ${days} ${days === 1 ? 'day' : 'days'} after Staxis first saw it`;
+  }
+  // Same shape as the aging line, and for the same reason: the number IS the
+  // argument. "Urgent" on its own is a chip; "urgent, and nobody has closed it
+  // in four days" is a question for somebody.
+  if (card.climbReason === 'critical') {
+    const days = Math.max(1, Math.round(card.daysOpen));
+    return lang === 'es'
+      ? `Urgente y sigue abierto ${days} ${days === 1 ? 'día' : 'días'} después`
+      : `Urgent and still open ${days} ${days === 1 ? 'day' : 'days'} later`;
   }
   return pick(REASON_COPY[card.climbReason], lang);
 }

@@ -20,6 +20,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import {
+  BIG_DOLLAR_CENTS,
   hasDomainClosure,
   type FindingDisposition,
   type FindingSeverity,
@@ -356,12 +357,91 @@ export const DAILY_CARD_CAP = 5;
  * a card AND became a drip question — the exact duplication the split exists to
  * prevent. Falling back to the detector's value when the judge has not run
  * keeps every card renderable with no model in the loop.
+ *
+ * WHAT THE JUDGE'S VERDICT CANNOT DO: make a critical or a big-dollar finding
+ * disappear. See `clampJudgedDisposition` immediately below — the verdict is
+ * floored at `fyi` for those, here and again at the point it is stored.
  */
 export function effectiveDisposition(f: {
   disposition: FindingDisposition;
   judgedDisposition?: FindingDisposition | null;
-}): FindingDisposition {
-  return f.judgedDisposition ?? f.disposition;
+} & JudgeClampSubject): FindingDisposition {
+  const judged = f.judgedDisposition ?? null;
+  if (judged === null) return f.disposition;
+  return clampJudgedDisposition(judged, f);
+}
+
+// ─── The floor under the judge's verdict ────────────────────────────────────
+//
+// ═══ WHY CODE, NOT THE MODEL, DECIDES WHETHER A CARD CAN VANISH ═══
+//
+// `drop` and `ask` both remove a finding from the manager's queue, the nav
+// badge and the VP's portfolio — `drop` silently, `ask` by routing it to the
+// drip-question surface, which asks at most once and never nags. That is the
+// right power over a $60 observation and the wrong power over a $40,000 one:
+// one Haiku token, on one bad night, and the most expensive thing Staxis found
+// this month is gone from every screen with nothing anywhere reading "we
+// decided not to mention this".
+//
+// The judge stays in charge of everything it is good at — the order, the
+// wording, the difference between "do this now" and "worth knowing". What it
+// may no longer do is make a card DISAPPEAR when the finding is either marked
+// critical or carries a price the company's own climbing rule would escalate
+// on its own. Those two get re-sorted down at most to `fyi`: still on the
+// screen, still countable, still climbable, saying nothing louder than "for
+// your information".
+//
+// The threshold is BIG_DOLLAR_CENTS (types.ts) — literally the same constant
+// the VP queue climbs on, so the clamp and the climb cannot drift into a band
+// where a finding is big enough for the boss and quiet enough to delete.
+//
+// Enforced in TWO places on purpose, for the same reason sign-off is: judge.ts
+// clamps before the verdict is ever written, so the ledger records what code
+// allowed; this function clamps again on the way out, so a row written by an
+// older deploy, a backfill or psql cannot hide a critical either.
+
+/** What the clamp reads. Both optional so a caller with only a disposition in
+ *  hand still type-checks — an absent severity and price means "nothing here
+ *  says this is big", which is the pre-clamp behaviour. */
+export interface JudgeClampSubject {
+  severity?: FindingSeverity | null;
+  price?: { highCents?: number | null } | null;
+}
+
+/** The lowest verdict a protected finding may be sorted to. */
+export const JUDGE_VISIBILITY_FLOOR: FindingDisposition = 'fyi';
+
+/**
+ * May a phrasing pass take this finding off the screen entirely?
+ *
+ * False for anything the DETECTOR marked critical, and for anything whose price
+ * range TOPS OUT at or above the big-dollar bar. The top of the range rather
+ * than its middle, matching `routingAmountCents` in signoff.ts: a company that
+ * wrote a rule at $2,000 did not mean "unless it might come in at $1,800", and
+ * the same logic applies to a model that would like to say nothing at all.
+ */
+export function judgeMayHide(f: JudgeClampSubject): boolean {
+  if (f.severity === 'critical') return false;
+  const high = f.price?.highCents;
+  if (typeof high === 'number' && Number.isFinite(high) && high >= BIG_DOLLAR_CENTS) return false;
+  return true;
+}
+
+/** True when this verdict would take the finding off every screen. */
+export function dispositionHides(disposition: FindingDisposition): boolean {
+  return disposition === 'drop' || disposition === 'ask';
+}
+
+/**
+ * The judge's verdict, floored. Everything except a hiding verdict on a
+ * protected finding passes through untouched.
+ */
+export function clampJudgedDisposition(
+  judged: FindingDisposition,
+  f: JudgeClampSubject,
+): FindingDisposition {
+  if (!dispositionHides(judged)) return judged;
+  return judgeMayHide(f) ? judged : JUDGE_VISIBILITY_FLOOR;
 }
 
 /**

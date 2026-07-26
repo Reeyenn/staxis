@@ -51,6 +51,14 @@
 //                          the button away with it (finding-cards.ts
 //                          offersApproval) — it can quieten a proposal, never
 //                          author one.
+//   • hide a critical or a → `drop` and `ask` are the two verdicts that take a
+//     big-dollar finding      card off every screen, and on a finding marked
+//                          critical, or one whose price tops the company's own
+//                          big-dollar climb bar, they are floored at `fyi`
+//                          (clampVerdict below, and again on the read path in
+//                          finding-cards.ts). Phrasing may make anything quiet;
+//                          it may not make the most expensive thing Staxis
+//                          found this month vanish with nobody told.
 //
 // Note the asymmetry in those enforcements. A structural violation (unknown id,
 // unknown key, bad disposition) refuses the ENTIRE reply — a model that broke
@@ -89,6 +97,8 @@ import {
 import { recordNonRequestCost } from '@/lib/agent/cost-controls';
 import { getActiveMemoryForTurn } from '@/lib/db/agent-memory';
 import { formatMemoryForPrompt } from '@/lib/agent/memory-context';
+
+import { clampJudgedDisposition } from '@/components/concourse/finding-cards';
 
 import {
   buildProseReceipt,
@@ -464,8 +474,16 @@ export interface JudgeRunResult {
 export interface JudgeDeps {
   loadCandidates(propertyId: string): Promise<JudgeCandidate[]>;
   loadKnowledge(propertyId: string): Promise<string>;
+  /**
+   * `reason` is not decoration: 'property_daily_cap' means this hotel spent its
+   * findings budget today, which is the system working, and 'unavailable' means
+   * the cap system itself did not answer, which is the system broken. Both end
+   * in template phrasing, and recording either as the other turns an outage into
+   * a budget line nobody investigates.
+   */
   reserve(propertyId: string, estimatedUsd: number): Promise<
-    { ok: true; reservationId: string } | { ok: false }
+    { ok: true; reservationId: string }
+    | { ok: false; reason: 'property_daily_cap' | 'unavailable' }
   >;
   finalize(reservationId: string, usage: UsageReport): Promise<void>;
   cancel(reservationId: string): Promise<void>;
@@ -527,11 +545,20 @@ export async function judgeFindingsForProperty(opts: JudgeOptions): Promise<Judg
   // A gate you pass after doing the work is not a gate.
   const reservation = await deps.reserve(propertyId, JUDGE_RESERVATION_USD);
   if (!reservation.ok) {
-    log.warn('[findings] judge over the daily background budget; using templates', {
+    // A budget that ran out and a budget we could not read are different
+    // nights. The first is 'fallback_cap' — the cap doing its job, and a number
+    // an operator reads as spending. The second is a FAILURE and is recorded as
+    // one: 'fallback_unavailable' is not in the run row's vocabulary (0361's
+    // CHECK), so it is filed under `fallback_error`, which is what it is — the
+    // judge could not run because something outside it broke — with the specific
+    // cause in the log line rather than lost.
+    const unavailable = reservation.reason === 'unavailable';
+    log.warn('[findings] judge did not get a spend hold; using templates', {
       propertyId,
       findings: candidates.length,
+      because: reservation.reason,
     });
-    return await templates('fallback_cap');
+    return await templates(unavailable ? 'fallback_error' : 'fallback_cap');
   }
 
   let usage: UsageReport | null = null;
@@ -691,12 +718,51 @@ function toJudgment(
 ): Judgment {
   return {
     ...item,
+    disposition: clampVerdict(candidate, item.disposition),
     rank,
     source,
     guardRejected,
     model: source === 'model' ? model : null,
     inputHash: judgeInputHash(candidate),
   };
+}
+
+/**
+ * THE VISIBILITY FLOOR, applied before a verdict is ever written.
+ *
+ * `drop` and `ask` are the two verdicts that take a finding off every screen,
+ * and this file's whole premise is that the model is trusted with SORTING. The
+ * exception is the finding that is either marked critical or carries a price
+ * the company's own escalation rule would climb on: those may be re-phrased,
+ * re-ordered and quietened all the way to `fyi`, and no further. A model does
+ * not get to delete the most expensive thing Staxis found this month, on any
+ * night, for any reason it can express — because the reason never reaches a
+ * human either.
+ *
+ * The rule itself is `clampJudgedDisposition` in finding-cards.ts, shared with
+ * the read path so a stored row and a rendered card cannot disagree about it.
+ * Clamped verdicts are LOGGED: a model that keeps trying to drop $40,000
+ * findings is a fact about the prompt, and a silent clamp would hide it.
+ */
+function clampVerdict(
+  candidate: JudgeCandidate,
+  judged: FindingDisposition,
+): FindingDisposition {
+  const clamped = clampJudgedDisposition(judged, {
+    severity: candidate.severity,
+    price: candidate.price,
+  });
+  if (clamped !== judged) {
+    log.warn('[findings] judge verdict clamped — a critical or big-dollar finding may not be hidden', {
+      findingId: candidate.id,
+      detectorId: candidate.detectorId,
+      judged,
+      clampedTo: clamped,
+      severity: candidate.severity,
+      priceHighCents: candidate.price?.highCents ?? null,
+    });
+  }
+  return clamped;
 }
 
 async function settleSpend(
@@ -943,8 +1009,14 @@ export function defaultJudgeDeps(): JudgeDeps {
     loadCandidates: loadJudgeCandidates,
     loadKnowledge: loadJudgeKnowledge,
     reserve: async (propertyId, estimatedUsd) => {
-      const result = await reserveFindingsSpend({ propertyId, estimatedUsd });
-      return result.ok ? { ok: true, reservationId: result.reservationId } : { ok: false };
+      const result = await reserveFindingsSpend({
+        propertyId,
+        feature: 'findings.judge',
+        estimatedUsd,
+      });
+      return result.ok
+        ? { ok: true, reservationId: result.reservationId }
+        : { ok: false, reason: result.reason };
     },
     finalize: (reservationId, usage) =>
       finalizeFindingsSpend({

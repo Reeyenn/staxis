@@ -46,10 +46,16 @@ import {
   type Judgment,
 } from '@/lib/findings/judge';
 import {
+  MAX_PROVIDER_ATTEMPTS,
   deriveJudgeReservationUsd,
+  featureAbandonMinutes,
+  featureCapUsd,
   findingsPropertyDailyCapUsd,
 } from '@/lib/findings/judge-budget';
 import { runFindingsForProperty } from '@/lib/findings/runner';
+import { BIG_DOLLAR_CENTS } from '@/lib/findings/types';
+import { BIG_DOLLAR_CLIMB_CENTS } from '@/lib/company/vp-queue';
+import { effectiveDisposition, judgeMayHide } from '@/components/concourse/finding-cards';
 
 // ─── fixtures ───────────────────────────────────────────────────────────────
 
@@ -167,6 +173,54 @@ describe('the prose guard: no number without a receipt', () => {
     // a guard that gets switched off, and then nothing is checked at all.
     const verdict = checkProse('Hay una habitación con 4 órdenes de trabajo.', receipt, 'es');
     assert.equal(verdict.ok, true, JSON.stringify(verdict.violations));
+  });
+
+  // ═══ THE GUARD USED TO STOP AT A HUNDRED ═══
+  // "$1000" was refused and "a thousand dollars" sailed through, which is the
+  // wrong way round: the vaguer the word, the bigger the claim tends to be, and
+  // a manager reads "millions" as a fact exactly as they read a numeral.
+  //
+  // MUTATION PROOF: remove the magnitude block from NUMBER_WORDS and every
+  // sentence below passes the guard unbacked.
+  test('magnitude words are numbers too, in both languages', () => {
+    const unbacked = [
+      ['en', 'This is costing you a thousand dollars a week.'],
+      ['en', 'You are losing millions on this.'],
+      ['en', 'That is half your linen budget.'],
+      ['en', 'There were a couple of work orders here.'],
+      ['en', 'A dozen rooms are affected.'],
+      ['es', 'Esto te cuesta mil dólares por semana.'],
+      ['es', 'Estás perdiendo millones con esto.'],
+      ['es', 'Son quinientos dólares al mes.'],
+      ['es', 'Hay una docena de habitaciones afectadas.'],
+      ['es', 'Es medio presupuesto de lavandería.'],
+    ] as const;
+    for (const [lang, text] of unbacked) {
+      const verdict = checkProse(text, receipt, lang);
+      assert.equal(verdict.ok, false, `unbacked magnitude accepted: ${text}`);
+      assert.ok(
+        verdict.violations.some((v) => v.kind === 'number_word'),
+        `${text} → ${JSON.stringify(verdict.violations)}`,
+      );
+    }
+  });
+
+  test('a magnitude word the payload DOES hold still passes, like every other number', () => {
+    const thousands = buildProseReceipt({
+      summary: 'Supplies ran 1000 over.',
+      magnitude: 1000,
+      evidence: { queryId: 'q', params: {}, values: { over_by: 1000 }, basis: '1000 over' },
+    });
+    assert.equal(checkProse('About a thousand over.', thousands, 'en').ok, true);
+    assert.equal(checkProse('Unos mil de más.', thousands, 'es').ok, true);
+  });
+
+  test('the words that mean something else in ordinary Spanish are deliberately not numbers', () => {
+    // Precision over coverage, the same doctrine that keeps `una` out: `cuarto`
+    // is a room before it is a quarter, and `media` is an average as often as a
+    // half. A guard that fires on "el cuarto 214" is a guard somebody turns off.
+    assert.equal(checkProse('Revisa el cuarto 214.', receipt, 'es').ok, true);
+    assert.equal(checkProse('Está por encima de la media.', receipt, 'es').ok, true);
   });
 
   test('a dollar figure inside a range is not licensed by the range', () => {
@@ -316,6 +370,14 @@ describe('slot mode: the judge names a field, code prints the value', () => {
     );
   });
 
+  test('a magnitude word is refused in slot mode too, backed or not', () => {
+    for (const text of ['About a thousand dollars.', 'Unos mil dólares.']) {
+      const verdict = checkSlotProse(text, receipt, slots, 'en');
+      assert.equal(verdict.ok, false, text);
+      assert.ok(verdict.violations.some((v) => v.kind === 'number_word'), text);
+    }
+  });
+
   test('a Spanish number word is refused even when the payload holds that number', () => {
     // Presence mode allows "cuatro" here (the payload holds a 4). Slot mode does
     // not: a spelled-out number is bound to no field, so it is not a number the
@@ -380,19 +442,46 @@ describe('slot mode: the judge names a field, code prints the value', () => {
     assert.equal(verdict.ok, true, JSON.stringify(verdict.violations));
   });
 
-  test('money gets a range slot and no point-estimate slot', () => {
+  test('money gets a range slot and NO half of it', () => {
     const priced = slotsFor(PRICED);
     // Spelled by the ONE money formatter (pricing.ts): en dash, thousands
     // separated. A slot renders onto a CARD, and the price chip a centimetre
     // below it is formatted by the same function — two spellings of the same two
     // numbers on one card is how a reader stops trusting both.
     assert.equal(priced.get('price_range'), '$200–$400');
-    assert.equal(priced.get('price_low'), '$200');
-    assert.equal(priced.get('price_high'), '$400');
     assert.equal(priced.get('price'), undefined, 'a single price slot would BE the $340 bug');
+    // ═══ THE HALVES ARE THE $340 BUG WEARING A SLOT ═══
+    // `price_low` and `price_high` used to be offered, and every rule in the
+    // guard was satisfied by "this will cost about {price_low}" — no digit typed
+    // by the model, no unbacked number, and "$200." on a manager's card as a
+    // point estimate the hotel's records do not support.
+    assert.equal(priced.get('price_low'), undefined, 'half a range is a point estimate');
+    assert.equal(priced.get('price_high'), undefined, 'half a range is a point estimate');
     const verdict = checkSlotProse('Estimated cost: {price_range}.', receiptFor(PRICED), priced, 'en');
     assert.equal(verdict.ok, true, JSON.stringify(verdict.violations));
     assert.equal(verdict.text, 'Estimated cost: $200–$400.');
+  });
+
+  // MUTATION PROOF, and the reviewer's own probe: re-offer either half and this
+  // sentence renders a confident single figure. With them gone the brace names
+  // no field of this finding and the whole phrasing is thrown away.
+  test('a point-estimate sentence built out of half a range is refused outright', () => {
+    const priced = slotsFor(PRICED);
+    for (const slot of ['price_low', 'price_high']) {
+      const verdict = checkSlotProse(
+        `This will cost about {${slot}}.`,
+        receiptFor(PRICED),
+        priced,
+        'en',
+      );
+      assert.equal(verdict.ok, false, `{${slot}} must not resolve to anything`);
+      assert.ok(
+        verdict.violations.some((v) => v.kind === 'unknown_slot' && v.token === slot),
+        JSON.stringify(verdict.violations),
+      );
+      // And nothing money-shaped reaches the text even on the rejected path.
+      assert.doesNotMatch(verdict.text, /\$\d/);
+    }
   });
 
   // THE REASON THE UNIFICATION IS SAFE, as a test rather than a comment.
@@ -666,7 +755,44 @@ describe('the background spend cap', () => {
     const hold = deriveJudgeReservationUsd({ maxInputTokens: 12_000, maxOutputTokens: 8_192 });
     const onHaikuRates = (12_000 / 1e6) * 1 + (8_192 / 1e6) * 5;
     assert.ok(hold > onHaikuRates * 4, `hold ${hold} must exceed the cheap-model cost by a wide margin`);
-    assert.equal(hold, Math.ceil(((12_000 / 1e6) * 5 + (8_192 / 1e6) * 25) * 100) / 100);
+    const perCall = (12_000 / 1e6) * 5 + (8_192 / 1e6) * 25;
+    assert.equal(hold, Math.ceil(perCall * MAX_PROVIDER_ATTEMPTS * 100) / 100);
+  });
+
+  // A hold sized for ONE call under-reserves the moment runAgent retries a bad
+  // primary against the configured fallback — both calls are billed, and on the
+  // worst configuration an admin can choose (Opus primary, Opus fallback) that
+  // is twice the most expensive call in the product against a hold for one.
+  test('the hold covers the fallback call as well as the primary', () => {
+    const hold = deriveJudgeReservationUsd({ maxInputTokens: 12_000, maxOutputTokens: 8_192 });
+    // The unrounded cost of one worst-case call. Two of them must fit inside the
+    // hold; comparing against the ROUNDED single-call figure would demand a cent
+    // the arithmetic never spends.
+    const oneCall = (12_000 / 1e6) * 5 + (8_192 / 1e6) * 25;
+    assert.ok(hold >= oneCall * 2, `hold ${hold} must cover ${MAX_PROVIDER_ATTEMPTS} attempts`);
+  });
+
+  test('the lesser features stop short of the pool so the judge cannot be starved', () => {
+    // The judge may use the whole envelope; the brief and the sweep may not.
+    assert.equal(featureCapUsd('findings.judge'), findingsPropertyDailyCapUsd());
+    assert.ok(featureCapUsd('findings.brief') < findingsPropertyDailyCapUsd());
+    assert.ok(featureCapUsd('findings.sweep') < findingsPropertyDailyCapUsd());
+    // A caller nobody has thought about is not the one to prioritise.
+    assert.ok(featureCapUsd('findings.something_new') < findingsPropertyDailyCapUsd());
+    // And the brief cannot take enough holds to lock the judge out: even at its
+    // own ceiling there is a judge-sized hold left in the pool.
+    const judgeHold = deriveJudgeReservationUsd({ maxInputTokens: 12_000, maxOutputTokens: 8_192 });
+    assert.ok(
+      findingsPropertyDailyCapUsd() - featureCapUsd('findings.brief') >= judgeHold,
+      'the brief at full stretch must still leave room for one judge run',
+    );
+  });
+
+  test('every feature that draws on the pool declares its own abandon window, and none is the six-hour default', () => {
+    for (const feature of ['findings.judge', 'findings.brief', 'findings.sweep']) {
+      const minutes = featureAbandonMinutes(feature);
+      assert.ok(minutes > 0 && minutes <= 60, `${feature} window ${minutes} min`);
+    }
   });
 
   test('the cap tracks the hotel envelope rather than being typed out', () => {
@@ -724,7 +850,7 @@ interface Harness {
 
 function harness(
   candidates: JudgeCandidate[],
-  opts: { capExhausted?: boolean; knowledge?: string } = {},
+  opts: { capExhausted?: boolean; capUnavailable?: boolean; knowledge?: string } = {},
 ): Harness {
   const h: Harness = {
     persisted: [], reserved: 0, finalized: 0, cancelled: 0, booked: 0,
@@ -735,7 +861,10 @@ function harness(
     loadKnowledge: async () => opts.knowledge ?? '',
     reserve: async () => {
       h.reserved += 1;
-      return opts.capExhausted ? { ok: false } : { ok: true, reservationId: 'res-1' };
+      if (opts.capUnavailable) return { ok: false as const, reason: 'unavailable' as const };
+      return opts.capExhausted
+        ? { ok: false as const, reason: 'property_daily_cap' as const }
+        : { ok: true as const, reservationId: 'res-1' };
     },
     finalize: async () => { h.finalized += 1; },
     cancel: async () => { h.cancelled += 1; },
@@ -746,6 +875,101 @@ function harness(
   };
   return h;
 }
+
+// ─── the visibility floor ───────────────────────────────────────────────────
+//
+// WHAT THESE PROVE: one token from a cheap model cannot delete an expensive or
+// urgent finding from the GM's queue, the nav badge and the VP's portfolio all
+// at once, with the reason recorded nowhere a human will read.
+//
+// MUTATION PROOF for every test below: delete the `clampVerdict` call in
+// `toJudgment` (judge.ts) and each stored disposition comes back as the raw
+// model verdict — 'drop' or 'ask' — on a finding worth $40,000 or marked
+// critical. Delete the clamp in `effectiveDisposition` instead and the ledger
+// stays honest while every SCREEN hides the card, which is the same outage one
+// layer up.
+
+describe('a phrasing pass cannot hide a critical or a big-dollar finding', () => {
+  const bigMoney = {
+    lowCents: 3_000_000,
+    highCents: 6_000_000,
+    currency: 'USD',
+    basis: 'the 3 comparable invoices this hotel has recorded',
+  };
+
+  for (const verdict of ['drop', 'ask'] as const) {
+    test(`a CRITICAL finding judged "${verdict}" is floored at fyi when it is stored`, async () => {
+      const one = candidate({ severity: 'critical' });
+      const model = scriptedModel([reply([
+        { id: one.id, d: verdict, en: 'Not worth mentioning.', es: 'No vale la pena mencionarlo.', why: 'Quiet.' },
+      ])]);
+      const h = harness([one]);
+      await judgeFindingsForProperty({ propertyId: PID_A, deps: h.deps, modelClient: model.client });
+      assert.equal(h.persisted[0]?.disposition, 'fyi');
+    });
+
+    test(`a BIG-DOLLAR finding judged "${verdict}" is floored at fyi when it is stored`, async () => {
+      const one = candidate({ severity: 'attention', price: bigMoney });
+      const model = scriptedModel([reply([
+        { id: one.id, d: verdict, en: 'Not worth mentioning.', es: 'No vale la pena mencionarlo.', why: 'Quiet.' },
+      ])]);
+      const h = harness([one]);
+      await judgeFindingsForProperty({ propertyId: PID_A, deps: h.deps, modelClient: model.client });
+      assert.equal(h.persisted[0]?.disposition, 'fyi');
+    });
+  }
+
+  test('an ordinary finding may still be dropped — the clamp is not a mute button for the judge', async () => {
+    const one = candidate({ severity: 'info', price: null });
+    const model = scriptedModel([reply([
+      { id: one.id, d: 'drop', en: 'Not worth mentioning.', es: 'No vale la pena mencionarlo.', why: 'Quiet.' },
+    ])]);
+    const h = harness([one]);
+    await judgeFindingsForProperty({ propertyId: PID_A, deps: h.deps, modelClient: model.client });
+    assert.equal(h.persisted[0]?.disposition, 'drop');
+  });
+
+  test('quietening a protected finding still works — it just cannot reach zero', async () => {
+    const one = candidate({ severity: 'critical', disposition: 'propose' });
+    const model = scriptedModel([reply([
+      { id: one.id, d: 'recommend', en: 'Worth a look.', es: 'Vale la pena revisarlo.', why: 'Not urgent tonight.' },
+    ])]);
+    const h = harness([one]);
+    await judgeFindingsForProperty({ propertyId: PID_A, deps: h.deps, modelClient: model.client });
+    assert.equal(h.persisted[0]?.disposition, 'recommend', 'the judge keeps every verdict above the floor');
+  });
+
+  test('the floor is the same number the company queue climbs on', () => {
+    // One constant, two rules. A gap between them would be a band of findings
+    // big enough for a VP to want and small enough for a model to delete.
+    assert.equal(BIG_DOLLAR_CENTS, BIG_DOLLAR_CLIMB_CENTS);
+    const justUnder = { ...bigMoney, lowCents: 100, highCents: BIG_DOLLAR_CENTS - 1 };
+    assert.equal(judgeMayHide({ severity: 'info', price: justUnder }), true);
+    assert.equal(
+      judgeMayHide({ severity: 'info', price: { ...justUnder, highCents: BIG_DOLLAR_CENTS } }),
+      false,
+      'the bar is the TOP of the range, matching how a company money rule is applied',
+    );
+  });
+
+  test('the read path floors it too, for rows written before the clamp existed', () => {
+    // A backfill, an older deploy, psql. The ledger is not the only place this
+    // has to hold, because the ledger is not what a manager looks at.
+    assert.equal(
+      effectiveDisposition({
+        disposition: 'propose',
+        judgedDisposition: 'drop',
+        severity: 'critical',
+        price: null,
+      }),
+      'fyi',
+    );
+    assert.equal(
+      effectiveDisposition({ disposition: 'propose', judgedDisposition: 'drop', severity: 'info', price: null }),
+      'drop',
+    );
+  });
+});
 
 describe('the judge, end to end', () => {
   test('zero findings means zero model calls and zero reservations', async () => {
@@ -776,7 +1000,10 @@ describe('the judge, end to end', () => {
     const one = candidate({ id: 'aaaaaaaa-0000-4000-8000-000000000001' });
     const two = candidate({
       id: 'aaaaaaaa-0000-4000-8000-000000000003',
-      severity: 'critical',
+      // NOT critical, deliberately: `ask` on a critical finding is floored at
+      // `fyi` by the visibility clamp, and this test is about the model's
+      // ordering and phrasing surviving intact. The clamp has its own tests.
+      severity: 'attention',
       magnitude: 7,
       summary: 'Nobody has counted linen in 7 days.',
       evidence: { queryId: 'linen', params: {}, values: { days: 7 }, basis: 'no linen count in 7 days' },

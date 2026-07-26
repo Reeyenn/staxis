@@ -437,8 +437,13 @@ export async function phraseBrief(
     estimatedUsd: BRIEF_RESERVATION_USD,
   });
   if (!reservation.ok) {
-    log.warn('[findings] morning brief over the daily background budget; using templates', {
+    // Same distinction the judge and the sweep make: a hotel that spent its
+    // budget and a cap system that did not answer are different mornings, and
+    // the brief has no run row to record it on — so the log line is the only
+    // place the difference can survive.
+    log.warn('[findings] morning brief did not get a spend hold; using templates', {
       propertyId: ctx.propertyId,
+      because: reservation.reason,
     });
     return brief;
   }

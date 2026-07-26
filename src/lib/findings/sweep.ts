@@ -375,7 +375,13 @@ export interface SweepDeps {
   /** Both reads are real queries. The second is deliberately a FRESH one. */
   loadSweepFeeds(propertyId: string, now: Date): Promise<{ feeds: SweepFeeds; businessDate: string } | null>;
   loadOpenFindings(propertyId: string): Promise<Array<{ detectorId: string; open: number }>>;
-  reserve(propertyId: string, estimatedUsd: number): Promise<{ ok: true; reservationId: string } | { ok: false }>;
+  /** `reason` distinguishes "this hotel spent its budget" (the cap working)
+   *  from "the cap system did not answer" (the cap broken). Recording the
+   *  second as the first turns an outage into a spending line. */
+  reserve(propertyId: string, estimatedUsd: number): Promise<
+    { ok: true; reservationId: string }
+    | { ok: false; reason: 'property_daily_cap' | 'unavailable' }
+  >;
   finalize(reservationId: string, usage: UsageReport): Promise<void>;
   cancel(reservationId: string): Promise<void>;
   bookCost(propertyId: string, usage: UsageReport): Promise<void>;
@@ -444,9 +450,16 @@ export async function sweepProperty(opts: SweepOptions): Promise<SweepRunResult>
   // twice. A gate you pass after doing the work is not a gate.
   const reservation = await deps.reserve(propertyId, SWEEP_RESERVATION_USD);
   if (!reservation.ok) {
-    result.mode = 'skipped_cap';
-    log.warn('[findings] sweep over the daily background budget; skipped this week', {
+    // 'skipped_cap' is a BUDGET verdict and reads as one on the admin screens.
+    // A cap system that could not answer is a failure, so it is filed as one
+    // ('fallback_error' — the vocabulary 0362's CHECK allows) with the specific
+    // cause in the log, rather than quietly inflating this hotel's apparent
+    // spend.
+    const unavailable = reservation.reason === 'unavailable';
+    result.mode = unavailable ? 'fallback_error' : 'skipped_cap';
+    log.warn('[findings] sweep did not get a spend hold; skipped this week', {
       propertyId,
+      because: reservation.reason,
     });
     await deps.record(result, now).catch(() => {});
     return result;
@@ -866,7 +879,7 @@ export function defaultSweepDeps(): SweepDeps {
       });
       return reservation.ok
         ? { ok: true, reservationId: reservation.reservationId }
-        : { ok: false };
+        : { ok: false, reason: reservation.reason };
     },
     finalize: (reservationId, usage) =>
       finalizeFindingsSpend({

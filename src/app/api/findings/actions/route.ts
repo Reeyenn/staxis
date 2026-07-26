@@ -43,39 +43,65 @@ import { executeAction, loadAction, undoAction } from '@/lib/findings/actions/st
 import { loadFinding, recordFindingActed } from '@/lib/findings/store';
 import type { FindingAction } from '@/lib/findings/actions/types';
 import { companyForProperty } from '@/lib/company/access';
-import { resolveSignOff } from '@/lib/company/signoff';
+import { resolveSignOffStrict } from '@/lib/company/signoff';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * The refusal sentence when a company rule puts this fix out of reach, or null
- * when nothing does.
+ * What the company's rulebook says about this fix, at the gate.
+ *
+ *   allowed      nothing routes it away from this person
+ *   blocked      a rule sends it to somebody else; `why` is the sentence
+ *   unavailable  WE COULD NOT TELL. Refused, loudly — see below.
  *
  * The price the rule is applied to comes from the FINDING, not from the request
  * — the caller names an action id and nothing else, so there is no number here
  * a caller could shrink to slip under a threshold.
+ *
+ * ═══ WHY "WE COULD NOT TELL" REFUSES HERE AND NOWHERE ELSE ═══
+ * Every read in this function used to fail open. A stale PostgREST schema cache
+ * — the single most common operational fault in this app, and one that follows
+ * every migration — made `company_authority_rules` unreadable, which returned
+ * "no rule governs this", which let a GM tap through a lock their company had
+ * written. The failure is invisible from both ends: the button simply works, and
+ * the money is spent.
+ *
+ * A CARD may still fail open (finding-cards renders the pre-company card, and
+ * `resolveSignOff` keeps that behaviour on purpose) because a card is a
+ * rendering and this is the gate. A gate that guesses is not a gate.
  */
+type SignOffGate =
+  | { state: 'allowed' }
+  | { state: 'blocked'; why: string }
+  | { state: 'unavailable'; because: string };
+
 async function signOffBlocking(
   propertyId: string,
   caller: ManagerCaller,
   action: FindingAction,
-): Promise<string | null> {
+): Promise<SignOffGate> {
   const organizationId = await companyForProperty(propertyId);
-  if (!organizationId) return null;
+  if (!organizationId) return { state: 'allowed' };
 
   // `loadFinding` rather than a status-filtered list scan: the price this rule
   // is applied to is a fact about the card, not about whether the card is still
   // live, and a manager tapping the button on a row that just moved to
   // `known_problem` must still be routed by the same rule. It is also one query
   // against the id instead of two hundred rows filtered in memory.
+  //
+  // It THROWS on a read error, which the caller turns into a 500 — the same
+  // refusal by a different door. A null is the other unknown: the action exists
+  // at this hotel but the problem it answers does not, so there is no price to
+  // apply the rulebook to. That cannot happen through the schema (the finding id
+  // is a cascading foreign key), which is exactly why it is refused rather than
+  // waved through — an impossible state is not a state to spend money in.
   const finding = await loadFinding(propertyId, action.findingId);
-  // No such finding at this hotel: nothing to price the rule against, so
-  // nothing to route. The database's own re-verification inside the execute
-  // transaction is still in front of the write.
-  if (!finding) return null;
+  if (!finding) {
+    return { state: 'unavailable', because: 'the finding behind this action could not be read' };
+  }
 
-  const requirement = await resolveSignOff({
+  const resolution = await resolveSignOffStrict({
     organizationId,
     propertyId,
     actionKind: action.kind,
@@ -83,14 +109,22 @@ async function signOffBlocking(
     callerAccountId: caller.accountId,
     callerHats: caller.hats ?? [],
   });
-  if (!requirement || requirement.callerMayApprove) return null;
+  if (resolution.kind === 'unreadable') {
+    return { state: 'unavailable', because: `the company rulebook could not be read: ${resolution.error}` };
+  }
+  if (resolution.kind === 'none' || resolution.requirement.callerMayApprove) {
+    return { state: 'allowed' };
+  }
 
-  const named = requirement.approvers
+  const named = resolution.requirement.approvers
     .map((a) => a.name)
     .filter((n): n is string => !!n && n.trim().length > 0);
-  return named.length > 0
-    ? `Your company's rules send this one to ${named.join(', ')}.`
-    : "Your company's rules send this one to somebody else to sign off.";
+  return {
+    state: 'blocked',
+    why: named.length > 0
+      ? `Your company's rules send this one to ${named.join(', ')}.`
+      : "Your company's rules send this one to somebody else to sign off.",
+  };
 }
 
 const INTENTS = ['execute', 'undo'] as const;
@@ -171,12 +205,29 @@ export async function POST(req: NextRequest) {
     // holding an action they can no longer undo is worse off than one who was
     // never allowed to run it.
     if (intent === 'execute') {
-      const blocked = await signOffBlocking(propertyId, caller, action);
-      if (blocked) {
-        return err(blocked, {
+      const gate = await signOffBlocking(propertyId, caller, action);
+      if (gate.state === 'blocked') {
+        return err(gate.why, {
           requestId,
           status: 403,
           code: ApiErrorCode.Forbidden,
+        });
+      }
+      if (gate.state === 'unavailable') {
+        // 503, not 403: the manager is not being refused permission, we are
+        // saying we cannot check right now. Retry-able, and it says so — a
+        // permanent-sounding 403 would send a GM to their VP over a thirty-second
+        // schema-cache blip.
+        log.error('[findings:actions:POST] sign-off could not be resolved; refusing to execute', {
+          requestId,
+          propertyId,
+          because: gate.because,
+        });
+        return err('Could not check your company\'s rules just now — try again in a moment', {
+          requestId,
+          status: 503,
+          code: ApiErrorCode.InternalError,
+          headers: { 'Retry-After': '15' },
         });
       }
     }

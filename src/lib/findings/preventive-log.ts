@@ -83,20 +83,56 @@ export async function logPreventiveOutcome(
   }
 
   const db = scopedDb(propertyId);
-  const nowIso = new Date().toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
+
+  // ═══ THE DATE ONLY EVER MOVES FORWARD ═══
+  // The other two writers of `last_completed_at` are monotonic by construction:
+  // closing a Staxis-created ticket guards on `last_completed_at < resolved_at`
+  // (0366 §3), and the trigger that clears `called_at` only fires on an advance.
+  // This path — a manager tapping "Done" on a card — had no such guard, so a tap
+  // that arrived after a later completion had already been recorded (the ticket
+  // was closed first, a queued request, two managers on two phones) would drag
+  // the schedule's last-done BACKWARDS and make a task that is up to date report
+  // as overdue. Read first, then write the date only if it advances.
+  //
+  // NOT a database constraint, deliberately: the Preventive tab lets a manager
+  // BACKFILL a genuine older completion date on purpose, and a table-wide
+  // monotonic trigger would refuse the one edit that is supposed to move the
+  // date back.
+  const current = await db
+    .from('preventive_tasks')
+    .select('id, name, last_completed_at')
+    .eq('id', target.value)
+    .maybeSingle();
+  if (current.error) throw new Error(`preventive task read failed: ${current.error.message}`);
+  const existing = current.data as
+    | { id: string; name: string | null; last_completed_at: string | null }
+    | null;
+  if (!existing) return { ok: false, because: 'no_such_task' };
+
+  const recordedAt = existing.last_completed_at ? Date.parse(existing.last_completed_at) : null;
+  const alreadyLater = recordedAt !== null && Number.isFinite(recordedAt) && recordedAt >= now.getTime();
 
   // `done` clears the called flag in the same statement. It is also cleared by a
   // database trigger (0366) so that every OTHER writer — the Preventive tab's
   // "Done today", a backfill, psql — inherits the same rule; doing it here as
   // well means this path does not depend on the trigger having been applied yet.
+  const donePatch = alreadyLater
+    // Somebody already recorded this as done at or after the instant this tap
+    // would have written. That completion stands; the only thing left to do is
+    // retire the follow-up flag, which is what this tap also meant.
+    ? { called_at: null, called_by: null }
+    : {
+        last_completed_at: nowIso,
+        last_completed_by: actorName ?? 'Marked done in Staxis',
+        called_at: null,
+        called_by: null,
+      };
+
   const patch =
     outcome === 'done'
-      ? {
-          last_completed_at: nowIso,
-          last_completed_by: actorName ?? 'Marked done in Staxis',
-          called_at: null,
-          called_by: null,
-        }
+      ? donePatch
       : {
           // Deliberately does NOT touch last_completed_at. "Somebody's been
           // called" is the opposite of done, and a system that recorded it as a

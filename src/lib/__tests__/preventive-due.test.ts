@@ -106,19 +106,44 @@ describe('a schedule comes due on its date, and not one day earlier', () => {
 // ─── The honest silence ─────────────────────────────────────────────────────
 
 describe('a schedule nobody has ever done is unstarted, not overdue', () => {
+  const unstarted = { lastDoneDate: null, lastDoneAtIso: null, nextDueDate: null };
+
   test('no last-done means no claim of lateness, however old the row is', () => {
-    const state = scheduleState(
-      task({ lastDoneDate: null, lastDoneAtIso: null, nextDueDate: null }),
-      TODAY,
-    );
+    const state = scheduleState(task(unstarted), TODAY);
     assert.equal(state.kind, 'never_done');
   });
 
-  test('and it produces no card at all', () => {
-    const drafts = detectPreventiveDue(
-      ctx([task({ lastDoneDate: null, lastDoneAtIso: null, nextDueDate: null })]),
-    );
-    assert.deepEqual(drafts, []);
+  // The card exists so a hotel that asked to be reminded about something can
+  // find out Staxis cannot count forward for it. Everything asserted here is
+  // about what the card may NOT claim.
+  //
+  // MUTATION PROOF: make the never-done branch count from today (the tempting
+  // wrong answer — `daysOverdue = 0` and disposition 'propose'), and the
+  // magnitude, disposition, severity and summary assertions all fail at once.
+  test('it produces exactly one card, and that card claims no lateness', () => {
+    const drafts = detectPreventiveDue(ctx([task(unstarted)]));
+    assert.equal(drafts.length, 1);
+    const [draft] = drafts;
+    assert.equal(draft.key, 'task:11111111-1111-4111-8111-111111111111:never_started');
+    assert.equal(draft.magnitude, 0, 'a magnitude here would be a lateness nobody can compute');
+    assert.equal(draft.disposition, 'fyi');
+    assert.equal(draft.severity, 'info');
+    assert.equal(draft.price, null);
+    assert.doesNotMatch(draft.summary, /past due|overdue|late/i);
+    assert.match(draft.summary, /never been marked done/);
+    assert.equal(draft.evidence.values.days_overdue, null);
+    assert.equal(draft.evidence.values.due_on, null);
+  });
+
+  test('the never-started card carries no offer — Staxis cannot raise a ticket for a job with no history', () => {
+    const [draft] = detectPreventiveDue(ctx([task(unstarted)]));
+    assert.equal(preventiveActionFor(draft), null);
+  });
+
+  test('its key is NOT the overdue card’s key, so silencing one cannot silence the other', () => {
+    const [unstartedDraft] = detectPreventiveDue(ctx([task(unstarted)]));
+    const [dueDraft] = detectPreventiveDue(ctx([task({ nextDueDate: daysAgo(3) })]));
+    assert.notEqual(unstartedDraft.key, dueDraft.key);
   });
 
   test('an unparseable stored date is "we cannot say", never "it is fine to shout"', () => {

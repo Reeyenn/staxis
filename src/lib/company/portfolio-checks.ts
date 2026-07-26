@@ -63,6 +63,7 @@ import {
   excessBand,
   formatCents,
   formatCentsBand,
+  formatCentsBandEs,
   plural,
   priceFromBand,
   sampleBand,
@@ -513,7 +514,7 @@ function supplySpendSpanish(evidence: {
     const low = num(band as Values, 'low');
     const high = num(band as Values, 'high');
     if (low !== null && high !== null) {
-      priceBasis = `tus otros hoteles gastaron ${formatCentsBand({ low, high })} esa semana`;
+      priceBasis = `tus otros hoteles gastaron ${formatCentsBandEs({ low, high })} esa semana`;
     }
   }
 

@@ -49,10 +49,93 @@ export function findingsPropertyDailyCapUsd(): number {
 }
 
 /**
+ * Every background caller that draws on this budget, and how much of it each
+ * one may exhaust.
+ *
+ * ═══ WHY ONE POOL NEEDED PRIORITIES ═══
+ * The cap is per HOTEL PER DAY and the pool is shared, so the first feature to
+ * ask can spend the whole thing. Three callers draw on it — the nightly judge,
+ * the morning brief, the weekly sweep — and they are not equally important: the
+ * judge is what turns tonight's findings into sentences a manager can read, and
+ * the brief is a pleasant rewrite of lines that are already correct without it.
+ * A brief that retried through a bad morning could take ten holds and leave the
+ * judge on templates that night, which is precisely the wrong thing to lose.
+ *
+ * So each feature gets a SHARE of the cap as its own ceiling. This is not a
+ * separate budget — the sum compared against is still the hotel's whole findings
+ * spend for the day — it is a bar the lesser features stop at, leaving the rest
+ * for the one that matters. The judge's share is 1: it may use the pool right up
+ * to the cap, and nothing may starve it.
+ */
+export const FEATURE_CAP_SHARE: Readonly<Record<string, number>> = Object.freeze({
+  'findings.judge': 1,
+  'findings.sweep': 0.6,
+  'findings.brief': 0.4,
+});
+
+/** An unlisted feature gets the brief's share rather than the judge's: a caller
+ *  nobody has thought about is by definition not the one to prioritise. */
+const DEFAULT_CAP_SHARE = 0.4;
+
+export function featureCapUsd(feature: string): number {
+  const share = FEATURE_CAP_SHARE[feature] ?? DEFAULT_CAP_SHARE;
+  return Math.round(findingsPropertyDailyCapUsd() * share * 100) / 100;
+}
+
+/**
+ * How long a hold from each feature may sit unreconciled before it stops
+ * counting against the cap.
+ *
+ * ═══ WHY NOT THE RPC'S 360-MINUTE DEFAULT ═══
+ * Nothing was passing the parameter, so every caller inherited six hours. That
+ * is a sensible worst case for a job that could genuinely take hours and a bad
+ * one for these three, all of which finish in seconds: a judge run that dies
+ * mid-call held $0.54 of a $2.50 daily budget until lunchtime, for a call that
+ * had already stopped existing. Each window below is generously longer than its
+ * caller's own deadline and nothing more.
+ *
+ * The window is a SAFETY NET, not a cleanup: a hold that is finalized or
+ * cancelled stops counting immediately, and this only decides how long a crashed
+ * run's hold lingers. `/api/admin/doctor` counts holds that outlive it, so a
+ * caller that has started leaking them is visible rather than merely absorbed.
+ */
+export const FEATURE_ABANDON_MINUTES: Readonly<Record<string, number>> = Object.freeze({
+  // A nightly one-shot with a deadline in the tens of seconds.
+  'findings.judge': 30,
+  // Weekly, samples a few hotels, still one call each.
+  'findings.sweep': 60,
+  // A manager is waiting on a screen; its own deadline is nine seconds.
+  'findings.brief': 10,
+});
+
+const DEFAULT_ABANDON_MINUTES = 60;
+
+export function featureAbandonMinutes(feature: string): number {
+  return FEATURE_ABANDON_MINUTES[feature] ?? DEFAULT_ABANDON_MINUTES;
+}
+
+/**
+ * How many PROVIDER CALLS one reserved unit of work can turn into.
+ *
+ * `runAgent` retries a failed or malformed primary against the configured
+ * fallback model exactly once, and books the spend of BOTH — a fallback is
+ * resilience, not an eraser (llm.ts). One hold covering one call therefore
+ * under-reserved by up to half whenever a fallback fired, and the AI Control
+ * Center makes that reachable in the worst configuration: an admin who points
+ * the judge at Opus with an Opus fallback gets two of the most expensive calls
+ * in the product against a hold priced for one.
+ *
+ * Two, and not "however many the loop might make": these background callers pass
+ * no tools, so there are no tool iterations — one primary, at most one fallback,
+ * and that is the whole tree.
+ */
+export const MAX_PROVIDER_ATTEMPTS = 2;
+
+/**
  * Worst-case size of one judge call, used as the hold.
  *
- * The hold has to be bigger than any actual cost or the gate is decoration. Two
- * things could make it too small, and both are designed out:
+ * The hold has to be bigger than any actual cost or the gate is decoration.
+ * Three things could make it too small, and all three are designed out:
  *
  *   • A bigger prompt. The judge's input is bounded by the caller
  *     (MAX_JUDGED_FINDINGS × per-finding payload + the knowledge block), and
@@ -61,17 +144,19 @@ export function findingsPropertyDailyCapUsd(): number {
  *     judge at any configured model, so the hold is priced at the most
  *     expensive verified Anthropic tier, not at the cheap default. An admin who
  *     switches the judge to Opus does not get a free pass through the cap.
+ *   • A fallback. One reservation covers every attempt the runtime may make on
+ *     its own — see MAX_PROVIDER_ATTEMPTS.
  */
 export function deriveJudgeReservationUsd(opts: {
   maxInputTokens: number;
   maxOutputTokens: number;
 }): number {
   const rates = anthropicTierTokenRates('opus');
-  const usd =
+  const perCall =
     (opts.maxInputTokens / 1_000_000) * rates.inputUsdPerMillionTokens +
     (opts.maxOutputTokens / 1_000_000) * rates.outputUsdPerMillionTokens;
   // Round UP to the cent: a hold that rounds down is a hold that is too small.
-  return Math.ceil(usd * 100) / 100;
+  return Math.ceil(perCall * MAX_PROVIDER_ATTEMPTS * 100) / 100;
 }
 
 export type FindingsSpendReservation =
@@ -91,12 +176,19 @@ export async function reserveFindingsSpend(opts: {
   estimatedUsd: number;
   capUsd?: number;
 }): Promise<FindingsSpendReservation> {
-  const capUsd = opts.capUsd ?? findingsPropertyDailyCapUsd();
+  const feature = opts.feature ?? 'findings.judge';
+  // The feature's own ceiling, not the whole pool — so the lesser callers stop
+  // short and leave the judge its room. See FEATURE_CAP_SHARE.
+  const capUsd = opts.capUsd ?? featureCapUsd(feature);
   const { data, error } = await supabaseAdmin.rpc('staxis_reserve_findings_spend', {
     p_property_id: opts.propertyId,
-    p_feature: opts.feature ?? 'findings.judge',
+    p_feature: feature,
     p_estimated_usd: opts.estimatedUsd,
     p_cap_usd: capUsd,
+    // Passed EXPLICITLY. The RPC's own default is six hours, which nothing was
+    // overriding, so one crashed nightly run held a fifth of a hotel's daily
+    // findings budget until the following afternoon.
+    p_abandon_after_minutes: featureAbandonMinutes(feature),
   });
 
   if (error) {

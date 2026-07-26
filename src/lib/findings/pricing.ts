@@ -28,6 +28,24 @@
 // that explains it, which the detector puts in the evidence so "no dollar
 // figure" is a finding a human can audit rather than a blank.
 //
+// ─── AND YES, THAT SOMETIMES PRINTS "$0–$3,999" ───────────────────────────
+// Compounding two wide bands produces a wide band, and a hotel with three
+// invoices at $10, $600 and $1,300 against a count that itself ranges will
+// genuinely support something like $0–$3,999. That reads as useless, and it is
+// KEPT ON PURPOSE — twice reviewed, twice left alone:
+//
+//   • It is TRUE. The alternative is narrowing to a figure the hotel's own
+//     records do not support, which is the $340 bug with extra arithmetic.
+//   • It is SELF-CORRECTING. A range that wide is a visible statement that this
+//     hotel has not recorded enough for Staxis to say more, and it narrows on
+//     its own as they record more invoices. A confident wrong number never
+//     narrows and never announces itself.
+//
+// The card's ORDERING is the only place this costs anything (the midpoint of a
+// silly range sorts as a silly number), and that is a ranking artefact rather
+// than a claim on a screen. If it ever needs fixing, fix the ranking — do not
+// invent a tighter range.
+//
 // The database is the backstop: `findings_price_is_a_range` (migration 0360)
 // refuses a zero-width or inverted range outright. Nothing here can smuggle a
 // point estimate past it — but everything here tries to fail earlier and say
@@ -256,9 +274,45 @@ export function formatCents(cents: number): string {
   return `$${dollars.toLocaleString('en-US')}`;
 }
 
-/** "$820–$1,140" — same dash as every other range on the screen. */
+/**
+ * "$820–$1,140" — same dash as every other range on the screen.
+ *
+ * ═══ A RANGE WHOSE ENDS ROUND TO THE SAME DOLLAR IS NOT A RANGE ═══
+ * `formatCents` rounds to whole dollars, so a band of $1,203.40–$1,203.90 came
+ * out as "$1,203–$1,203" — a point estimate wearing a dash, printed in a basis
+ * line right next to the promise that Staxis never quotes a single figure. A
+ * reader who notices that stops believing the honest ones, which is the whole
+ * thing this module exists to protect.
+ *
+ * So when the two ends collapse, the band says ABOUT rather than pretending to a
+ * spread it does not have. "about $1,203" is true, is visibly not a range, and
+ * is the sentence a manager would say out loud. Widening to a fake bucket was
+ * the alternative and is worse: it would manufacture spread the hotel's numbers
+ * do not support, which is the same lie in the other direction.
+ *
+ * Only the PROSE form does this. Stored prices (`toPriceRange`) still refuse a
+ * zero-width band outright — a card's price chip is never approximate, because
+ * a chip that could be approximate would need its own hedge and nobody reads a
+ * hedged chip.
+ */
 export function formatCentsBand(band: Band): string {
-  return `${formatCents(band.low)}${MONEY_RANGE_DASH}${formatCents(band.high)}`;
+  const low = formatCents(band.low);
+  const high = formatCents(band.high);
+  if (low === high) return `about ${low}`;
+  return `${low}${MONEY_RANGE_DASH}${high}`;
+}
+
+/**
+ * The same band in Spanish. Separate function rather than a `lang` argument
+ * because exactly one caller needs it — the portfolio checks, whose cards are
+ * born on a screen a Spanish-reading VP opens (portfolio-checks.ts) — and
+ * because "about" is the only word in the string.
+ */
+export function formatCentsBandEs(band: Band): string {
+  const low = formatCents(band.low);
+  const high = formatCents(band.high);
+  if (low === high) return `unos ${low}`;
+  return `${low}${MONEY_RANGE_DASH}${high}`;
 }
 
 /** "3 plumber invoices" / "1 plumber invoice". */
