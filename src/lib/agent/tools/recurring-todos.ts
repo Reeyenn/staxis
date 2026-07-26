@@ -29,7 +29,11 @@ import {
 import { resolveStaffByName } from './_helpers';
 
 const PRIORITIES = ['normal', 'high', 'urgent'] as const;
-const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+/** Exported because list_scheduled_items (tools/reminders.ts) renders recurring
+ *  rows alongside reminders and must spell the weekday the same way this file
+ *  does — two copies of this array is exactly how they drift. */
+export const RECURRING_WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const WEEKDAY_NAMES = RECURRING_WEEKDAY_NAMES;
 
 /** Parse a weekday from a name or a number (0=Sun … 6=Sat). null if unreadable. */
 function parseWeekday(input: unknown): number | null {
@@ -55,11 +59,11 @@ interface CreateRecurringTodoArgs {
 registerTool<CreateRecurringTodoArgs>({
   name: 'create_recurring_todo',
   description:
-    'Create a recurring to-do — a checklist item that reappears on the shared to-do list on a schedule. ' +
-    'Use for "every morning, check the pool chemicals", "every Monday deep-clean the lobby", "cada día, revisar el desayuno". ' +
-    'title = what the task says. cadence is "daily", "weekdays" (Mon–Fri), or "weekly"; for weekly, give weekday (a day name like "Monday" or 0–6 with 0=Sunday). ' +
-    'Optionally assign it to a person (assignee, by name) or a department (front_desk/housekeeping/maintenance/general), and set priority (normal/high/urgent). ' +
-    'A fresh to-do is spawned each day it\'s due; the manager checks it off like any other task.',
+    'Set up a repeating checklist item — a to-do that comes back on the shared list every time it is due. ' +
+    'Use when: the user describes a routine, not a one-off — "every morning check the pool chemicals", "every Monday deep-clean the lobby", "cada día revisar el desayuno". A single task is create_todo; a message at one future time is create_reminder. ' +
+    'Args: title — what the task says, capped at 200 characters. cadence — "daily", "weekdays" (Mon–Fri) or "weekly". weekday — required for weekly; a day name like "Monday" or 0–6 with 0 = Sunday. assignee — optional person by name. department — optional. priority — normal (default), high or urgent. ' +
+    'Returns: the template id, its title, cadence and target. A proposal until the manager approves the card. ' +
+    'Refuses: an empty title, a cadence it does not recognise, a weekly item with no weekday, and an assignee matching several people. Two things to be straight about: this creates the RULE, not today\'s task — nothing appears until the next time it is due — and it notifies nobody when it spawns. Stopping it later needs stop_recurring_todo; to-dos already spawned stay on the list.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -152,8 +156,11 @@ interface StopRecurringTodoArgs {
 registerTool<StopRecurringTodoArgs>({
   name: 'stop_recurring_todo',
   description:
-    'Stop a recurring to-do so it no longer reappears. Use after list_recurring_todos when the user says "stop the pool-check one" or "cancel the Monday lobby task". ' +
-    'templateId is the id from list_recurring_todos. To-dos already spawned stay on the list; only future days stop.',
+    'Stop a repeating checklist item so it stops coming back. ' +
+    'Use when: the user says "stop the pool-check one", "cancel the Monday lobby task", "ya no repitas eso". Always call list_scheduled_items first to get the id. To cancel a one-shot reminder use cancel_reminder instead — its ids are not valid here. ' +
+    'Args: templateId — the id of a "recurring" row from list_scheduled_items. ' +
+    'Returns: the id and confirmation it was stopped. A proposal until the manager approves the card. ' +
+    'Refuses: a missing id, and any template already stopped or not at this hotel. Say clearly what stopping does: only FUTURE spawns stop. Every to-do this rule has already put on the list stays there and still has to be checked off or removed by hand — do not tell the manager the task is gone.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -184,38 +191,7 @@ registerTool<StopRecurringTodoArgs>({
   },
 });
 
-// ─── list_recurring_todos ──────────────────────────────────────────────────
-
-registerTool<Record<string, never>>({
-  name: 'list_recurring_todos',
-  description:
-    'List the active recurring to-dos (checklists that reappear) for this property. Use for "what recurring tasks are set?", "what repeats every week?", "qué tareas se repiten?". ' +
-    'Returns each one\'s id, title, how often it repeats, and who it\'s for. Call this before stop_recurring_todo so you have the id.',
-  inputSchema: { type: 'object', properties: {} },
-  allowedRoles: ['admin', 'owner', 'general_manager'],
-  // Chat-only (default) — the whole new ability set is scoped to the chat surface.
-  handler: async (_args, ctx: ToolHandlerContext): Promise<ToolResult> => {
-    try {
-      const templates = await listActiveTemplates(ctx.propertyId);
-      const staffIds = Array.from(new Set(templates.map((t) => t.assignedStaffId).filter((x): x is string => !!x)));
-      const nameById = new Map<string, string>();
-      if (staffIds.length) {
-        const { data } = await ctx.db.from('staff').select('id, name').in('id', staffIds);
-        for (const s of data ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
-      }
-      const rows = templates.map((t) => ({
-        id: t.id,
-        title: t.title,
-        cadence: t.cadence,
-        weekday: t.weekday !== null ? WEEKDAY_NAMES[t.weekday] : null,
-        priority: t.priority,
-        assignedTo: t.assignedStaffId
-          ? (nameById.get(t.assignedStaffId) ?? 'a staff member')
-          : (t.assignedDepartment ? `${t.assignedDepartment} (department)` : null),
-      }));
-      return { ok: true, data: { count: rows.length, recurringTodos: rows } };
-    } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : 'Failed to load recurring to-dos.' };
-    }
-  },
-});
+// list_recurring_todos lived here until 2026-07-27. It merged into
+// list_scheduled_items (tools/reminders.ts) alongside list_reminders, because
+// "what's scheduled?" is one question and two list tools made the model pick a
+// kind before it had seen either. The wire-name still resolves via TOOL_ALIASES.

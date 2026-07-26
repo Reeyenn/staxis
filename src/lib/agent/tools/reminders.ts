@@ -24,7 +24,9 @@ import {
   REMINDER_DEPARTMENTS,
   type ReminderDepartment,
 } from '@/lib/reminders/store';
+import { listActiveTemplates } from '@/lib/recurring-tasks/store';
 import { resolveStaffByName } from './_helpers';
+import { RECURRING_WEEKDAY_NAMES } from './recurring-todos';
 
 // ─── create_reminder ─────────────────────────────────────────────────────────
 
@@ -38,10 +40,11 @@ interface CreateReminderArgs {
 registerTool<CreateReminderArgs>({
   name: 'create_reminder',
   description:
-    'Schedule a reminder to fire LATER — a message that goes out at a set time to one person or a whole department. ' +
-    'Use for "remind the morning shift about the pool at 8am", "remind Maria to check the gym at 2pm", "recuérdale a mantenimiento revisar la piscina a las 9". ' +
-    'body = the reminder text. fireAt = when to send it, as a full ISO-8601 timestamp (e.g. "2026-07-06T08:00:00-05:00"); work out the exact date/time from the user\'s words in the hotel\'s timezone and it must be in the future. ' +
-    'Target EITHER one person (recipient, by name) OR one department (front_desk/housekeeping/maintenance/general) — not both. A person gets a direct message from you; a department gets a post in its channel.',
+    'Schedule a message to be delivered at a specific future time, to one person or one department. ' +
+    'Use when: the user wants something said LATER at a known moment — "remind the morning shift about the pool at 8am", "remind Maria to check the gym at 2pm", "recuérdale a mantenimiento revisar la piscina a las 9". For something that repeats use create_recurring_todo; for a job with no particular time use create_todo. ' +
+    'Args: body — what the reminder should say, capped at 1000 characters. fireAt — a full ISO-8601 timestamp WITH the timezone offset (e.g. "2026-07-06T08:00:00-05:00"); work the exact instant out from the user\'s words in the hotel\'s timezone rather than passing their phrase through. recipient — one staff member by name, OR department — one of front_desk / housekeeping / maintenance / general. Exactly one of the two. ' +
+    'Returns: the reminder id, its text, when it fires and who it is for. A proposal until the user approves the card. ' +
+    'Refuses: an empty body, a time it cannot read, any time in the PAST, both a person and a department at once, neither of them, and a recipient name matching several people. It delivers in-app only — a direct message from the user, or a post in the department channel — so it will not text, email or call anyone at that hour.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -130,8 +133,11 @@ interface CancelReminderArgs {
 registerTool<CancelReminderArgs>({
   name: 'cancel_reminder',
   description:
-    'Cancel a scheduled reminder before it fires. Use after list_reminders when the user says "cancel that pool reminder" or "never mind the 8am one". ' +
-    'reminderId is the id from list_reminders.',
+    'Call off a one-shot reminder before it fires. ' +
+    'Use when: the user says "cancel that pool reminder", "never mind the 8am one", "cancela el recordatorio". Always call list_scheduled_items first to get the id. To stop a REPEATING checklist use stop_recurring_todo instead — its ids are not valid here. ' +
+    'Args: reminderId — the id of a "reminder" row from list_scheduled_items. ' +
+    'Returns: the id and confirmation it was cancelled. A proposal until the user approves. ' +
+    'Refuses: a missing id, and any reminder that has already fired, was already cancelled, or does not exist at this hotel — it says so plainly rather than reporting a cancellation that did not happen. Never invent or guess an id; a wrong one silently cancels the wrong reminder or nothing at all. A reminder that has already gone out cannot be recalled.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -162,37 +168,98 @@ registerTool<CancelReminderArgs>({
   },
 });
 
-// ─── list_reminders ────────────────────────────────────────────────────────
+// ─── list_scheduled_items ──────────────────────────────────────────────────
+// Everything this hotel has queued to happen later, in one list.
+//
+// Absorbed list_reminders and list_recurring_todos (2026-07-27). "What's
+// scheduled?" is one question, and splitting it across two tools forced the
+// model to decide whether the user meant a one-shot reminder or a repeating
+// checklist BEFORE it had seen either list — a guess it cannot make from the
+// question and would then answer half of, confidently.
+//
+// Each row carries `kind`, because the two are cancelled by different tools
+// (cancel_reminder vs stop_recurring_todo) whose ids are not interchangeable.
+// The tools stay separate deliberately: they act on different objects with
+// different approval tiers, and once the model has a row it knows which is
+// which — the ambiguity was only ever in the listing.
 
-registerTool<Record<string, never>>({
-  name: 'list_reminders',
+const SCHEDULED_KINDS = ['reminder', 'recurring', 'all'] as const;
+type ScheduledKind = (typeof SCHEDULED_KINDS)[number];
+
+registerTool<{ kind?: ScheduledKind }>({
+  name: 'list_scheduled_items',
   description:
-    'List the reminders scheduled for this property that haven\'t fired yet. Use for "what reminders are set?", "what\'s scheduled?", "qué recordatorios hay?". ' +
-    'Returns each reminder\'s id, text, when it fires, and who it\'s for. Call this before cancel_reminder so you have the id.',
-  inputSchema: { type: 'object', properties: {} },
+    'List everything queued to happen later at this hotel — one-shot reminders that have not fired yet, and recurring to-dos that keep reappearing. ' +
+    'Use when: the user asks "what\'s scheduled", "what reminders are set", "what repeats every week", "qué hay programado", or wants to cancel something and you need its id first. ' +
+    'Args: kind — "reminder" for one-shot reminders only, "recurring" for repeating checklists only, "all" (default) for both. ' +
+    'Returns: { count, items[] } where each item carries kind ("reminder" or "recurring"), its id, what it says, when it happens (fireAt for a reminder, cadence + weekday for a recurring one) and who it is for. ' +
+    'Refuses: nothing, but the ids are NOT interchangeable — cancel a "reminder" item with cancel_reminder and a "recurring" item with stop_recurring_todo, using the id from this list. Never pass one to the other, and never invent an id.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...SCHEDULED_KINDS],
+        description: 'Which kind to list: one-shot reminders, recurring to-dos, or all (default).',
+      },
+    },
+  },
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   // Chat-only (default) — the whole new ability set is scoped to the chat surface.
-  handler: async (_args, ctx: ToolHandlerContext): Promise<ToolResult> => {
+  handler: async ({ kind }, ctx: ToolHandlerContext): Promise<ToolResult> => {
+    const which: ScheduledKind = (SCHEDULED_KINDS as readonly string[]).includes(kind as string)
+      ? (kind as ScheduledKind)
+      : 'all';
+    const wantReminders = which === 'all' || which === 'reminder';
+    // Recurring templates are manager-tier to CREATE; listing them is a read the
+    // whole allowed set already has via the to-do pane, so no extra gate here.
+    const wantRecurring = which === 'all' || which === 'recurring';
+
     try {
-      const rows = await listPendingReminders(ctx.propertyId);
-      // Resolve target staff names in one batched read.
-      const staffIds = Array.from(new Set(rows.map((r) => r.targetStaffId).filter((x): x is string => !!x)));
+      const [reminders, templates] = await Promise.all([
+        wantReminders ? listPendingReminders(ctx.propertyId) : Promise.resolve([]),
+        wantRecurring ? listActiveTemplates(ctx.propertyId) : Promise.resolve([]),
+      ]);
+
+      // One batched name lookup across BOTH sources.
+      const staffIds = Array.from(new Set([
+        ...reminders.map((r) => r.targetStaffId),
+        ...templates.map((t) => t.assignedStaffId),
+      ].filter((x): x is string => !!x)));
       const nameById = new Map<string, string>();
       if (staffIds.length) {
         const { data } = await ctx.db.from('staff').select('id, name').in('id', staffIds);
         for (const s of data ?? []) nameById.set(s.id as string, (s.name as string) ?? 'Unknown');
       }
-      const reminders = rows.map((r) => ({
-        id: r.id,
-        body: r.body,
-        fireAt: r.fireAt,
-        target: r.targetStaffId
-          ? (nameById.get(r.targetStaffId) ?? 'a staff member')
-          : `${r.targetDepartment} (department)`,
-      }));
-      return { ok: true, data: { count: reminders.length, reminders } };
+
+      const items = [
+        ...reminders.map((r) => ({
+          kind: 'reminder' as const,
+          id: r.id,
+          text: r.body,
+          fireAt: r.fireAt,
+          cadence: null,
+          weekday: null,
+          target: r.targetStaffId
+            ? (nameById.get(r.targetStaffId) ?? 'a staff member')
+            : `${r.targetDepartment} (department)`,
+        })),
+        ...templates.map((t) => ({
+          kind: 'recurring' as const,
+          id: t.id,
+          text: t.title,
+          fireAt: null,
+          cadence: t.cadence,
+          weekday: t.weekday !== null ? RECURRING_WEEKDAY_NAMES[t.weekday] : null,
+          target: t.assignedStaffId
+            ? (nameById.get(t.assignedStaffId) ?? 'a staff member')
+            : (t.assignedDepartment ? `${t.assignedDepartment} (department)` : 'nobody in particular'),
+        })),
+      ];
+
+      return { ok: true, data: { kind: which, count: items.length, items } };
     } catch (err) {
-      return { ok: false, error: err instanceof Error ? err.message : 'Failed to load reminders.' };
+      return { ok: false, error: err instanceof Error ? err.message : 'Failed to load what is scheduled.' };
     }
   },
 });

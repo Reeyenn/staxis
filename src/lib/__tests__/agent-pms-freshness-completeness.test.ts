@@ -46,20 +46,32 @@ const PMS_BACKED_TOOL_NAMES = [
   'get_outstanding_balances',
   'get_payments_summary',
   'get_future_bookings',
-  'get_recent_no_shows',
-  'get_recent_cancellations',
-  // reports.ts
-  'get_occupancy',
+  'get_lost_reservations',   // absorbed get_recent_no_shows + get_recent_cancellations
   // queries.ts — indirect readers (merge / counts RPC)
   'get_hotel_state',
-  'get_today_summary',
+  'get_today_summary',       // absorbed get_occupancy (reports.ts, deleted)
   'query_room_status',
-  'list_my_rooms',
-  'get_my_next_room',
+  'get_my_rooms',            // absorbed list_my_rooms + get_my_next_room
   'get_deep_clean_queue',
   // management.ts — indirect readers
-  'generate_schedule',
+  'get_room_assignments',    // renamed from generate_schedule
   'get_pms_status',
+] as const;
+
+/**
+ * The names the 2026-07-27 catalog rebuild retired. Every one described PMS
+ * data, so every one must still resolve to a tool that declares the flag —
+ * otherwise a replayed history row or a pinned eval case would run a PMS answer
+ * with the as-of stamp silently stripped off, which is the exact failure this
+ * whole file exists to prevent.
+ */
+const RETIRED_PMS_TOOL_NAMES = [
+  'get_recent_no_shows',
+  'get_recent_cancellations',
+  'get_occupancy',
+  'list_my_rooms',
+  'get_my_next_room',
+  'generate_schedule',
 ] as const;
 
 const TOOLS_DIR = join(process.cwd(), 'src/lib/agent/tools');
@@ -82,16 +94,28 @@ describe('pmsFreshness completeness', () => {
     assert.deepEqual(missing, []);
   });
 
+  it('every retired PMS name still resolves to a tool that declares a scope', () => {
+    const broken: string[] = [];
+    for (const name of RETIRED_PMS_TOOL_NAMES) {
+      const tool = getTool(name);
+      if (!tool) {
+        broken.push(`${name} — the alias no longer resolves`);
+        continue;
+      }
+      if (!tool.pmsFreshness) broken.push(`${name} → ${tool.name} — no pmsFreshness declared`);
+    }
+    assert.deepEqual(broken, []);
+  });
+
   it('the direct PMS feed readers are stamped, not declared independent', () => {
-    // These five ARE the money/booking feeds — declaring one 'independent'
+    // These ARE the money/booking/room feeds — declaring one 'independent'
     // would silently strip the as-of time off a balance or a booking answer.
     for (const name of [
       'get_outstanding_balances',
       'get_payments_summary',
       'get_future_bookings',
-      'get_recent_no_shows',
-      'get_recent_cancellations',
-      'get_occupancy',
+      'get_lost_reservations',
+      'get_today_summary',
       'get_hotel_state',
       'query_room_status',
     ]) {
@@ -141,7 +165,12 @@ describe('pmsFreshness completeness', () => {
       scanned.length >= 4,
       `expected the PMS-reading tool files to be found, scanned: ${scanned.join(', ')}`,
     );
-    for (const expected of ['pms-feeds.ts', 'queries.ts', 'reports.ts', 'management.ts']) {
+    // reports.ts was one of the four until the 2026-07-27 catalog rebuild
+    // deleted it (get_occupancy folded into get_today_summary in queries.ts).
+    // _helpers.ts takes its place in the list: it registers no tools, so it adds
+    // nothing to the scan above, but it reaches the same PMS bridges — which
+    // makes it the honest canary that the marker regex still matches at all.
+    for (const expected of ['pms-feeds.ts', 'queries.ts', 'management.ts', '_helpers.ts']) {
       assert.ok(scanned.includes(expected), `${expected} must be scanned`);
     }
   });

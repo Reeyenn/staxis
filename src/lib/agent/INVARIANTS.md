@@ -184,7 +184,7 @@ Each invariant has:
 ### INV-23: The agent's "total rooms" answer comes from `properties.room_inventory`, never from `count(rooms WHERE date=today)`
 
 - **Enforced by:**
-  - Code: [`buildHotelSnapshot`](src/lib/agent/context.ts), [`get_occupancy`](src/lib/agent/tools/reports.ts), [`get_today_summary`](src/lib/agent/tools/queries.ts) all read `room_inventory.length` for `rooms.total` (falling back to seeded count only when inventory is empty).
+  - Code: [`buildHotelSnapshot`](src/lib/agent/context.ts) and [`get_today_summary`](src/lib/agent/tools/queries.ts) both read `room_inventory.length` for `rooms.total` (falling back to seeded count only when inventory is empty). `get_occupancy` used to be the third reader; the 2026-07-27 catalog rebuild folded it into `get_today_summary`, which inherited its never-shrink `computeRoomTotal` call — the invariant now has one fewer place to drift.
   - Cron: `/api/cron/seed-rooms-daily` runs hourly, calling `seedRoomsForDate()` ([src/lib/rooms/seed.ts](src/lib/rooms/seed.ts)) to phantom-seed every inventory room as vacant/clean whenever today's row count is short.
   - Doctor: `rooms_today_seeded` check ([doctor route](src/app/api/admin/doctor/route.ts)) alerts SMS when any property's gap is ≥ 4 rooms or > 10% of inventory.
 - **Assumed by:** Every AI surface that reports "X total rooms" or computes an occupancy percentage. The CSV from Choice Advantage omits vacant-clean rooms entirely (see migration `0025_property_room_inventory.sql`), so `count(rooms today)` is structurally a partial picture; reading it as truth produced the 2026-05-14 incident.

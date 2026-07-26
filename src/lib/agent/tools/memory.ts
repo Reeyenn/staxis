@@ -59,10 +59,11 @@ function coerceConfidence(c: string | undefined): MemoryConfidence {
 registerTool<{ scope: string; topic: string; content: string; confidence?: string }>({
   name: 'remember',
   description:
-    'Save a durable fact so you recall it in future conversations (it is automatically loaded into your context every turn). Use this ONLY for stable, reusable knowledge — NOT transient state, one-off requests, or anything that changes daily. ' +
-    'scope="hotel" is a fact about THIS property that every staff member benefits from (e.g. "room 305\'s AC fails often", "the breakfast area is called the bistro", "deep-clean the suites every Sunday") — only managers/owners may save these. ' +
-    'scope="me" is a personal preference for the CURRENT user (e.g. "prefers replies in Spanish", "wants terse answers"). ' +
-    'To CORRECT something you already saved, call remember again with the SAME topic. Never store guest personal data (names tied to contact info, phone numbers, emails, card or ID numbers).',
+    'Save a durable fact so you still know it in future conversations — saved memories are loaded into your context automatically every turn. ' +
+    'Use when: you learn something STABLE and reusable — "room 305\'s AC fails often", "the breakfast area is called the bistro", "this user prefers Spanish". Never for anything that changes daily, a one-off request, today\'s numbers, or a task; those belong in create_todo or nowhere. If in doubt, do not save it: a wrong memory is repeated to everyone, every turn, until someone notices. ' +
+    'Args: scope — "hotel" for a fact the whole team benefits from (managers and owners only), or "me" for the current user\'s own preference. topic — a short stable slug naming the subject ("room_305_ac", "reply_language"); reusing the SAME topic is how you correct a fact later. content — one concise sentence, max 500 characters. confidence — low, normal (default) or high. ' +
+    'Returns: what was saved, and contactInfoRemoved if any contact details were stripped. A proposal until the user approves. ' +
+    'Refuses: a hotel-wide memory from anyone below manager — offer to save it as their personal note instead. Also refuses empty or over-long content, and caps how many memories one exchange can add. Never store guest personal data — names tied to contact details, phone numbers, emails, card or ID numbers — and note that contact details are redacted on the way in regardless.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -142,7 +143,11 @@ registerTool<{ scope: string; topic: string; content: string; confidence?: strin
 registerTool<{ scope: string; topic: string }>({
   name: 'forget',
   description:
-    'Stop remembering a previously-saved memory, identified by its topic. Use when the user asks you to forget something or says a saved note is no longer true with no replacement. To UPDATE a fact instead, use remember with the same topic. Forgetting a hotel-wide ("hotel") memory requires a manager/owner.',
+    'Stop remembering a saved fact, identified by its topic. ' +
+    'Use when: the user asks you to forget something, or says a saved note is simply no longer true and gives no replacement. If they are CORRECTING it, call remember with the same topic instead — that updates in place and keeps the fact useful. ' +
+    'Args: scope — "hotel" (shared) or "me" (the user\'s own). topic — the topic slug shown on the saved note, e.g. "room_305_ac". ' +
+    'Returns: whether anything was actually forgotten, and a plain message when no memory existed under that topic. ' +
+    'Refuses: forgetting a hotel-wide memory from anyone below manager. It matches on topic only — it cannot forget "everything about room 305" or search by content — so if you do not know the exact topic, say so rather than guessing a slug and reporting a deletion that did not happen.',
   inputSchema: {
     type: 'object',
     properties: {

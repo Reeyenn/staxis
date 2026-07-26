@@ -417,8 +417,8 @@ describe('version label', () => {
     const hk = await buildSystemPrompt('housekeeping', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW);
     assert.match(hk.versionLabel, /data-freshness-v1/);
     // The pre-existing inventory routing version is not displaced by it.
-    assert.match(gm.versionLabel, /inventory-accounting-v1/);
-    assert.equal(/inventory-accounting-v1/.test(hk.versionLabel), false);
+    assert.match(gm.versionLabel, /inventory-accounting-v2/);
+    assert.equal(/inventory-accounting-v2/.test(hk.versionLabel), false);
   });
 
   it('records the company tier only when a company block was actually rendered', async () => {

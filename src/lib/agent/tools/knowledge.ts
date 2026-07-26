@@ -19,7 +19,11 @@ const KNOWLEDGE_ROLES = ['admin', 'owner', 'general_manager', 'front_desk', 'hou
 registerTool<{ query: string }>({
   name: 'search_knowledge',
   description:
-    'Search THIS hotel\'s own Knowledge hub — staff SOPs / how-to guides, uploaded documents (the full text content of PDFs and Word files, not just titles), the vendor / emergency / brand / local contact directory (each contact may carry a phone, email, street address, and hours), and the team calendar. Hybrid semantic + keyword search: ask in plain language (English or Spanish) OR use exact terms (part numbers, names). Read-only and scoped to this property and your role. ALWAYS call this BEFORE answering when the user asks how to do something operational ("how do I set up the breakfast bar?"), asks for a vendor or contact or their phone/email/address/hours ("what\'s the plumber\'s number?", "what\'s the nearest pharmacy and their hours?", "what\'s the address of the closest hospital?"), references an SOP / policy / checklist / procedure, asks about an uploaded document/manual/contract, or asks about an upcoming event / training day. The `passages` array holds the most relevant excerpts with their source document/SOP title and section — quote the source title (and section) in your reply. If `passages` and the other arrays are empty, tell the user it isn\'t documented yet — don\'t invent an answer.',
+    'Search THIS hotel\'s own Knowledge hub: staff SOPs and how-to guides, the full text of uploaded PDFs and Word files, the vendor / emergency / brand / local contact directory with phone, email, address and hours, and the team calendar. Hybrid semantic + keyword search — plain language in English or Spanish, or exact terms like part numbers. ' +
+    'Use when: ALWAYS call this before answering anything the hotel would have written down — how to do something operational ("how do I set up the breakfast bar"), any vendor or contact or their number/address/hours ("what\'s the plumber\'s number", "nearest pharmacy and their hours"), any SOP, policy, checklist or procedure, anything in an uploaded manual or contract, and upcoming events or training days. Reach for it before answering from general knowledge, because the hotel\'s own way of doing a thing beats the industry-standard one every time. ' +
+    'Args: query — what to look for, phrased the way the user asked it. ' +
+    'Returns: { passages, articles, documents, contacts, events }. `passages` holds the most relevant excerpts with the document or SOP title and section they came from — quote that source in your reply so the user can check it. ' +
+    'Refuses: nothing, but it is scoped to this hotel AND the asker\'s role, so a manager-only document simply will not appear for floor staff — never hint that something exists but is hidden. When everything comes back empty, say plainly that it is not documented here yet and, if they manage the team, that they can add it in Communications → Knowledge. Do not fill the gap with a plausible generic answer.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -60,7 +64,11 @@ registerTool<{ query: string }>({
 registerTool<{ sourceType: 'document' | 'article'; sourceId: string; offset?: number }>({
   name: 'fetch_document_section',
   description:
-    'Pull MORE of a specific Knowledge document or SOP when one excerpt from search_knowledge isn\'t enough to answer fully. Pass the `sourceType` ("document" or "article") and `sourceId` from a search_knowledge passage. Returns a larger window of that source\'s text (use `offset` to page further if `hasMore` is true). Read-only; respects your role — a manager-only source returns "not found" for floor staff. Only call this AFTER search_knowledge has pointed you at a specific source.',
+    'Read MORE of one Knowledge document or SOP when a search_knowledge excerpt was not enough to answer fully. ' +
+    'Use when: you have a passage that is clearly the right source but is cut off mid-procedure, or the user asks what comes next in a checklist. Only ever AFTER search_knowledge has pointed you at a specific source — this tool cannot find anything on its own. ' +
+    'Args: sourceType — "document" (an uploaded file) or "article" (an SOP). sourceId — the sourceId from a search_knowledge passage, never invented. offset — character offset to start from, default 0; page on by the previous window length while hasMore is true. ' +
+    'Returns: a larger window of that source\'s text plus hasMore, telling you whether more remains. ' +
+    'Refuses: an unrecognised sourceType or a missing sourceId, and it returns a plain "not found" for any source the asker\'s role may not read — a manager-only document is indistinguishable from a nonexistent one, which is deliberate, so do not speculate that something is being withheld.',
   inputSchema: {
     type: 'object',
     properties: {

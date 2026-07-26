@@ -23,14 +23,11 @@ interface WalkUserThroughArgs {
 registerTool<WalkUserThroughArgs>({
   name: 'walk_user_through',
   description:
-    'Demonstrate how to do a task in the Staxis web app by animating a cursor through the UI and narrating each step. ' +
-    'FIRE this tool when the user asks HOW to do something in the app — phrases like ' +
-    '"how do I add a housekeeper", "show me how to mark a room", "walk me through assigning rooms", ' +
-    '"teach me how to set up the PMS", "guide me through inspections", "tutorial on …", "demo …". ' +
-    'DO NOT fire for factual questions ("what\'s my occupancy", "when did room 302 get cleaned") — answer with text or a query tool instead. ' +
-    'DO NOT fire for action requests ("mark room 302 clean", "assign room 410 to Carlos") — call the action tool directly. ' +
-    'The task arg should be a short imperative phrase describing what the user wants to learn (e.g. "add a housekeeper", "mark all rooms inspected"). ' +
-    'After this tool fires, the cursor takes over the page — your final reply to the user should be a one-liner like "Watch the cursor — I\'ll walk you through it."',
+    'Show the user how to do something in the Staxis app by driving a cursor through the real screens and narrating each step. ' +
+    'Use when: they are asking HOW to work the app, not what is true or what to change — "how do I add a housekeeper", "show me how to mark a room", "walk me through assigning rooms", "teach me to set up the PMS", "tutorial on …". Do NOT fire it for a factual question ("what\'s my occupancy", "when was 302 cleaned") — answer with a query tool. Do NOT fire it for a request to actually DO something ("mark 302 clean") — call that action tool instead; showing someone the buttons is not doing their work for them. ' +
+    'Args: task — a short imperative phrase for what they want to learn, derived from their question ("add a housekeeper", "mark all rooms inspected"). ' +
+    'Returns: an acknowledgement only. The walkthrough itself then runs in the user\'s browser, because only the browser can see which page they are on. ' +
+    'Refuses: an empty task. Once it fires the cursor takes over the screen, so keep your reply to a single line like "Watch the cursor — I\'ll walk you through it" and do not also narrate the steps in text. It teaches the UI; it cannot change any setting or complete the task for them.',
   inputSchema: {
     type: 'object',
     properties: {

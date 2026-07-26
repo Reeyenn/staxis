@@ -481,7 +481,7 @@ describe('the stamp can be read back', () => {
     assert.equal(parsed.base, '2026.06.03-v7');
     assert.equal(parsed.role, '2026.05.13-v2');
     assert.deepEqual(parsed.family, { pmsFamily: 'choice_advantage', version: '2026.07.24-v1' });
-    assert.ok(parsed.codeRules.includes('inventory-accounting-v1'));
+    assert.ok(parsed.codeRules.includes('inventory-accounting-v2'));
     assert.ok(parsed.codeRules.includes('data-freshness-v1'));
     assert.deepEqual(parsed.memory, { count: 0, digest: null });
 
@@ -498,7 +498,7 @@ describe('the stamp can be read back', () => {
       (await buildSystemPrompt('housekeeping', snapshot(null), 'c1')).versionLabel,
     );
     assert.equal(hk.family, null);
-    assert.equal(hk.codeRules.includes('inventory-accounting-v1'), false);
+    assert.equal(hk.codeRules.includes('inventory-accounting-v2'), false);
   });
 
   it('tolerates the stamps already sitting in the table', () => {
@@ -511,10 +511,10 @@ describe('the stamp can be read back', () => {
     assert.equal(legacyCollapsed.memory, null);
     assert.equal(legacyCollapsed.family, null);
 
-    const legacySplit = parsePromptStamp('base:2026.06.03-v7+role:2026.05.13-v2+inventory-accounting-v1');
+    const legacySplit = parsePromptStamp('base:2026.06.03-v7+role:2026.05.13-v2+inventory-accounting-v2');
     assert.equal(legacySplit.base, '2026.06.03-v7');
     assert.equal(legacySplit.role, '2026.05.13-v2');
-    assert.deepEqual(legacySplit.codeRules, ['inventory-accounting-v1']);
+    assert.deepEqual(legacySplit.codeRules, ['inventory-accounting-v2']);
     assert.equal(legacySplit.memory, null);
   });
 });

@@ -25,10 +25,11 @@ interface LogComplaintArgs {
 registerTool<LogComplaintArgs>({
   name: 'log_complaint',
   description:
-    'Log a guest complaint / service issue so it can be tracked and resolved. Use for things like ' +
-    '"log a complaint — room 214, AC not cooling, guest upset", "registrar una queja", "guest in 312 says the room is dirty", ' +
-    '"front desk: noise complaint from 405". Pass the guest\'s issue in `description`. Category and severity are auto-detected ' +
-    'if you do not pass them. Maintenance and cleanliness complaints automatically open a linked work order.',
+    'Log a GUEST complaint so it is tracked through to resolution. ' +
+    'Use when: a guest is unhappy about something — "room 214, AC not cooling, guest upset", "guest in 312 says the room is dirty", "noise complaint from 405", "registrar una queja". This is the right tool whenever a guest is involved: flag_issue only writes a note on the room and nobody is accountable for it. ' +
+    'Args: description — the guest\'s issue in their terms, capped at 2000 characters. roomNumber and guestName when mentioned. category and severity — only pass these when the user states them explicitly; left off, both are classified automatically, which is usually better than your guess. ' +
+    'Returns: the complaint id, its resolved category, severity and status, whether a work order was opened, and repeatIssue / priorSimilarCount when this room has had the same trouble before — mention a repeat, because it changes what the manager should do. A proposal until the user approves the card. ' +
+    'Refuses: an empty description. Two things to state accurately: maintenance and cleanliness complaints DO automatically open a linked work order, so say so; and everything else does not, so do not tell the guest someone is on the way when only a record was created. Logging a complaint never contacts the guest or issues any compensation.',
   inputSchema: {
     type: 'object',
     properties: {

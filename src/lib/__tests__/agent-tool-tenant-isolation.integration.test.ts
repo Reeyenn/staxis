@@ -147,9 +147,9 @@ const ROW_KEYED_FOLLOWUPS = new Map<string, { keys: string[]; why: string }>([
  * that records zero statements and is NOT here fails the suite.
  */
 const NO_DB_TOOLS = new Map<string, string>([
-  ['compare_properties', 'honest "multi-property comparison is not enabled" stub'],
-  ['get_revenue', 'stub until the revenue source is wired up'],
-  ['get_financial_report', 'stub until the report source is wired up'],
+  // The three "not yet integrated" stubs that used to sit here were deleted by
+  // the 2026-07-27 catalog rebuild. See the sibling unit test for why a dead
+  // entry is worth removing rather than leaving.
   ['walk_user_through', 'returns UI walkthrough steps from an in-memory registry'],
 ]);
 

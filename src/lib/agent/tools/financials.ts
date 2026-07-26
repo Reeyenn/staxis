@@ -17,7 +17,7 @@ import {
   DEPARTMENTS,
   type Department,
 } from '@/lib/financials/shared';
-import { getFinanceSummary, budgetVsActual, sumExpensesByDepartment } from '@/lib/financials/db';
+import { getFinanceSummary, budgetVsActual } from '@/lib/financials/db';
 import { canForProperty } from '@/lib/capabilities/server';
 import { inventoryMonthKeyInZone } from '@/lib/inventory-month-close';
 
@@ -67,138 +67,100 @@ async function resolveMonth(ctx: ToolHandlerContext, period?: Period): Promise<{
 }
 
 // ─── get_finance_summary ───────────────────────────────────────────────────
-registerTool<{ period?: Period }>({
+// ONE month-of-money tool. Absorbed check_budget_status and get_department_spend
+// (2026-07-27), which were three tools over two queries:
+//
+//   • budgetVsActual() already returns actualCents per department, so
+//     get_department_spend's sumExpensesByDepartment() was re-deriving a strict
+//     subset of what check_budget_status had already read;
+//   • all three carried the same roles, the same view_financials capability and
+//     the same section, so the split bought no access control — only a choice
+//     the model had to get right before it had seen any of the numbers.
+//
+// The old descriptions had grown into cross-references ("never use for X, use Y
+// instead"), which is what a catalog does instead of merging. One tool answers
+// "how did the month go", "are we over anywhere" and "what did maintenance
+// spend" from one pair of reads.
+registerTool<{ period?: Period; department?: string }>({
   name: 'get_finance_summary',
   section: 'financials',
   description:
-    'Get the CHECKBOOK finance summary for a month: revenue (from the PMS), total expenses, profit, cost per occupied room, and expenses as a % of revenue. Use for overall financial performance. If the question specifically mentions inventory, supplies, shelf value, deliveries, or inventory usage, use get_inventory_monthly_accounting instead. Period defaults to this month.',
+    'The hotel\'s CHECKBOOK month: revenue, expenses, profit, cost per occupied room, and every department\'s spend against its budget. ' +
+    'Use when: the user asks how the month went, what profit is, what a department spent, whether anyone is over budget, or how much is left — "how are we doing on money", "are we over budget anywhere", "what did maintenance spend last month", "cuánto gastamos". ' +
+    'Args: period — "this_month" (default) or "last_month", resolved in the hotel\'s own timezone. department — narrow to one department (front_desk, housekeeping, maintenance, …); omit for the whole hotel plus a per-department breakdown. ' +
+    'Returns: revenue / expenses / profit / costPerOccupiedRoom / expensesPctOfRevenue as formatted dollar strings, and byDepartment[] with each department\'s spend, budget, percent used and over/under status. The percentages and remainders are computed here — quote them, do not recompute. ' +
+    'Refuses: callers without financial access at this hotel, including a manager an admin has switched off for Financials. This is the CHECKBOOK only — it does not know about inventory usage, deliveries, or shelf value, so send any supplies/linen/towels/inventory-budget question to get_inventory_monthly_accounting instead of answering it from here. Revenue reads "not available yet" until the hotel\'s PMS exposes it; never substitute a guess or call it zero.',
   inputSchema: {
     type: 'object',
     properties: {
-      period: { type: 'string', enum: ['this_month', 'last_month'], description: 'Which month.' },
+      period: { type: 'string', enum: ['this_month', 'last_month'], description: 'Which month. Defaults to this month.' },
+      department: {
+        type: 'string',
+        enum: [...DEPARTMENTS],
+        description: 'Narrow the department breakdown to one department. Omit for all of them.',
+      },
     },
   },
   allowedRoles: FINANCE_ROLES,
   requiresCapability: 'view_financials',
-  handler: async ({ period }, ctx): Promise<ToolResult> => {
+  handler: async ({ period, department }, ctx): Promise<ToolResult> => {
     const denied = await financeGuard(ctx);
     if (denied) return denied;
     const { month, label } = await resolveMonth(ctx, period);
-    const s = await getFinanceSummary(ctx.propertyId, month);
+
+    // budgetVsActual carries actualCents per department, so the old
+    // sumExpensesByDepartment() second read is gone — one query, not two.
+    const [s, rows] = await Promise.all([
+      getFinanceSummary(ctx.propertyId, month),
+      budgetVsActual(ctx.propertyId, month),
+    ]);
+
+    const wanted = department && isDepartment(department) ? (department as Department) : null;
+    const scoped = wanted ? rows.filter((r) => r.department === wanted) : rows;
+
+    const byDepartment = scoped
+      // A department with neither spend nor a budget is noise in the answer.
+      .filter((r) => r.actualCents > 0 || r.budgetCents > 0)
+      .map((r) => ({
+        department: departmentLabel(r.department),
+        spend: formatCents(r.actualCents),
+        budget: r.budgetCents > 0 ? formatCents(r.budgetCents) : null,
+        pctUsed: r.pctUsed != null ? `${Math.round(r.pctUsed)}%` : null,
+        // 'over' | 'warn' | 'ok' straight from the finance layer — the model
+        // must not decide what "over budget" means from two dollar strings.
+        status: r.budgetCents > 0 ? r.status : null,
+        remaining: r.budgetCents > 0 ? formatCents(r.remainingCents) : null,
+      }));
+
+    const budgeted = scoped.filter((r) => r.budgetCents > 0);
+    const over = budgeted.filter((r) => r.status === 'over');
+
     return {
       ok: true,
       data: {
         month,
         period: label,
-        revenue: s.revenueCents != null ? formatCents(s.revenueCents) : 'not available yet (PMS does not expose revenue for this property)',
+        department: wanted ? departmentLabel(wanted) : null,
+        revenue: s.revenueCents != null
+          ? formatCents(s.revenueCents)
+          : 'not available yet (PMS does not expose revenue for this property)',
         expenses: formatCents(s.expensesCents),
         profit: s.profitCents != null ? formatCents(s.profitCents) : 'unknown (revenue not available yet)',
         costPerOccupiedRoom: s.costPerOccupiedRoomCents != null ? formatCents(s.costPerOccupiedRoomCents) : null,
         expensesPctOfRevenue: s.expensesPctOfRevenue != null ? `${s.expensesPctOfRevenue.toFixed(1)}%` : null,
         occupiedRoomNights: s.occupiedRoomNights,
-        note:
-          s.revenueCents == null
-            ? 'Revenue auto-flows from the PMS once it exposes financials; expenses and budgets are live now.'
-            : undefined,
-      },
-    };
-  },
-});
-
-// ─── check_budget_status ───────────────────────────────────────────────────
-registerTool<{ period?: Period }>({
-  name: 'check_budget_status',
-  section: 'financials',
-  description:
-    'Check CHECKBOOK EXPENSE budgets by department and whether recorded expenses are over them. Use for general operating-expense questions such as payroll/checkbook housekeeping expenses. Never use for an inventory/supplies/linen budget or "housekeeping inventory budget"; use get_inventory_monthly_accounting because inventory budgets compare closed usage, not expenses or shelf value. Period defaults to this month.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      period: { type: 'string', enum: ['this_month', 'last_month'], description: 'Which month.' },
-    },
-  },
-  allowedRoles: FINANCE_ROLES,
-  requiresCapability: 'view_financials',
-  handler: async ({ period }, ctx): Promise<ToolResult> => {
-    const denied = await financeGuard(ctx);
-    if (denied) return denied;
-    const { month, label } = await resolveMonth(ctx, period);
-    const rows = await budgetVsActual(ctx.propertyId, month);
-    const budgeted = rows.filter((r) => r.budgetCents > 0);
-    const over = budgeted.filter((r) => r.status === 'over');
-    const warn = budgeted.filter((r) => r.status === 'warn');
-    return {
-      ok: true,
-      data: {
-        month,
-        period: label,
         anyBudgetsSet: budgeted.length > 0,
-        overBudget: over.map((r) => ({
-          department: departmentLabel(r.department),
-          budget: formatCents(r.budgetCents),
-          actual: formatCents(r.actualCents),
-          over: formatCents(Math.abs(r.remainingCents)),
-          pctUsed: r.pctUsed != null ? `${Math.round(r.pctUsed)}%` : null,
-        })),
-        approachingBudget: warn.map((r) => ({
-          department: departmentLabel(r.department),
-          budget: formatCents(r.budgetCents),
-          actual: formatCents(r.actualCents),
-          pctUsed: r.pctUsed != null ? `${Math.round(r.pctUsed)}%` : null,
-        })),
-        summary:
+        byDepartment,
+        budgetSummary:
           budgeted.length === 0
             ? 'No department budgets are set for this month yet.'
             : over.length === 0
               ? 'Every department with a budget is within it.'
               : `${over.length} department(s) over budget.`,
-      },
-    };
-  },
-});
-
-// ─── get_department_spend ──────────────────────────────────────────────────
-registerTool<{ department?: string; period?: Period }>({
-  name: 'get_department_spend',
-  section: 'financials',
-  description:
-    'Get CHECKBOOK EXPENSES recorded in a department for a month (e.g. a maintenance invoice entered in Financials). If the question mentions inventory, supplies, deliveries, shelf value, or usage, use get_inventory_monthly_accounting instead. If no department is given, returns the checkbook breakdown across all departments. Period defaults to this month.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      department: {
-        type: 'string',
-        enum: [...DEPARTMENTS],
-        description: 'Department to report on. Omit for a full breakdown.',
-      },
-      period: { type: 'string', enum: ['this_month', 'last_month'], description: 'Which month.' },
-    },
-  },
-  allowedRoles: FINANCE_ROLES,
-  requiresCapability: 'view_financials',
-  handler: async ({ department, period }, ctx): Promise<ToolResult> => {
-    const denied = await financeGuard(ctx);
-    if (denied) return denied;
-    const { month, label } = await resolveMonth(ctx, period);
-    const byDept = await sumExpensesByDepartment(ctx.propertyId, month);
-    if (department && isDepartment(department)) {
-      const dept = department as Department;
-      return {
-        ok: true,
-        data: { month, period: label, department: departmentLabel(dept), spend: formatCents(byDept[dept] ?? 0) },
-      };
-    }
-    const total = Object.values(byDept).reduce((a, b) => a + b, 0);
-    return {
-      ok: true,
-      data: {
-        month,
-        period: label,
-        total: formatCents(total),
-        byDepartment: DEPARTMENTS.filter((d) => (byDept[d] ?? 0) > 0).map((d) => ({
-          department: departmentLabel(d),
-          spend: formatCents(byDept[d] ?? 0),
-        })),
+        note:
+          s.revenueCents == null
+            ? 'Revenue auto-flows from the PMS once it exposes financials; expenses and budgets are live now.'
+            : undefined,
       },
     };
   },

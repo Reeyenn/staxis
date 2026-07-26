@@ -24,7 +24,7 @@ process.env.ANTHROPIC_API_KEY ??= 'sk-ant-placeholder';
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { listAllTools, approvalTierFor, getToolsForRole } from '@/lib/agent/tools';
+import { listAllTools, approvalTierFor, getToolsForRole, getTool, isMutationTool } from '@/lib/agent/tools';
 import type { AppRole } from '@/lib/roles';
 import '@/lib/agent/tools/index'; // register everything
 import { buildActionSummary } from '@/lib/agent/approval';
@@ -163,13 +163,32 @@ describe('approval tier completeness', () => {
     }
   });
 
+  // `list_reminders` and `list_recurring_todos` merged into list_scheduled_items
+  // in the 2026-07-27 catalog rebuild. The assertion they carried — a listing
+  // tool must never acquire an approval tier — moves to the surviving tool
+  // rather than being dropped.
   test('the new READ tools are registered and carry NO approval tier', () => {
     const byName = new Map(listAllTools().map((t) => [t.name, t]));
-    for (const name of ['get_schedule', 'get_low_stock', 'list_reminders', 'list_recurring_todos', 'search_lost_found']) {
+    for (const name of ['get_schedule', 'get_low_stock', 'list_scheduled_items', 'search_lost_found']) {
       const tool = byName.get(name);
       assert.ok(tool, `${name} is not registered`);
       assert.notEqual(tool!.mutates, true, `${name} should be read-only`);
       assert.equal(approvalTierFor(name), null, `${name} should have no approval tier`);
+    }
+  });
+
+  // A retired name resolving to a MUTATION would be the dangerous alias bug:
+  // a replayed history row calling `list_reminders` must still land on a read,
+  // and approvalTierFor must answer for whatever it now resolves to rather than
+  // returning null because the old name is absent from the registry.
+  test('retired listing names still resolve, and still resolve to a read', () => {
+    for (const retired of ['list_reminders', 'list_recurring_todos']) {
+      const tool = getTool(retired);
+      assert.ok(tool, `${retired} no longer resolves — replayed history would break`);
+      assert.equal(tool!.name, 'list_scheduled_items');
+      assert.notEqual(tool!.mutates, true, `${retired} must not resolve to a mutation`);
+      assert.equal(approvalTierFor(retired), null);
+      assert.equal(isMutationTool(retired), false);
     }
   });
 
