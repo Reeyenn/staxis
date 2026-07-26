@@ -27,7 +27,12 @@ import 'server-only';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import { formatAsOfClock, freshnessTier } from '@/lib/pms/feed-status';
 
-import { forEachHotel, type PortfolioHotel } from './hotels';
+import {
+  forEachHotel,
+  mapWithConcurrency,
+  PORTFOLIO_READ_CONCURRENCY,
+  type PortfolioHotel,
+} from './hotels';
 import { safePortfolioName } from './identity';
 
 /** How many open findings a hotel's line will summarise. */
@@ -122,33 +127,47 @@ async function buildPortfolioSnapshotUncached(
     },
   );
 
-  const pulses: PortfolioHotelPulse[] = [];
-  for (const { propertyId, value } of results) {
-    const hotel = byId.get(propertyId);
-    let pmsCapturedAt: string | null = null;
-    let pmsSource: string | null = null;
-    try {
-      const status = await getPropertyFeedStatus(propertyId);
-      if (status.mode === 'live') {
-        pmsSource = status.freshness?.source ?? 'none';
-        pmsCapturedAt = status.freshness?.capturedAt ?? null;
+  // FEED STATUS, IN LANES RATHER THAN IN A QUEUE.
+  //
+  // This used to be a plain `for … await`, which at seventeen hotels is
+  // seventeen round trips END TO END before the prompt could be assembled — and
+  // it happens on EVERY portfolio turn, ahead of the model call, so it was pure
+  // latency a VP watched. `mapWithConcurrency` runs the same reads through the
+  // same per-hotel path, just several at a time, capped by the same rule the
+  // per-hotel data reads follow: never more than the hotel-facing app can spare.
+  const statuses = await mapWithConcurrency(
+    results,
+    PORTFOLIO_READ_CONCURRENCY,
+    async ({ propertyId }) => {
+      try {
+        const status = await getPropertyFeedStatus(propertyId);
+        if (status.mode !== 'live') return { pmsCapturedAt: null, pmsSource: null };
+        return {
+          pmsSource: status.freshness?.source ?? 'none',
+          pmsCapturedAt: status.freshness?.capturedAt ?? null,
+        };
+      } catch {
+        // A hotel whose feed status we cannot read is rendered without an as-of
+        // line, which reads as "manual hotel". That is the conservative direction
+        // here: it removes a freshness CLAIM rather than inventing one.
+        return { pmsCapturedAt: null, pmsSource: null };
       }
-    } catch {
-      // A hotel whose feed status we cannot read is rendered without an as-of
-      // line, which reads as "manual hotel". That is the conservative direction
-      // here: it removes a freshness CLAIM rather than inventing one.
-    }
-    pulses.push({
+    },
+  );
+
+  const pulses: PortfolioHotelPulse[] = results.map(({ propertyId, value }, i) => {
+    const hotel = byId.get(propertyId);
+    return {
       propertyId,
       name: hotel?.name ?? null,
       totalRooms: hotel?.totalRooms ?? null,
       timezone: hotel?.timezone ?? null,
       openFindings: value?.openFindings ?? null,
       needsDecision: value?.needsDecision ?? null,
-      pmsCapturedAt,
-      pmsSource,
-    });
-  }
+      pmsCapturedAt: statuses[i].pmsCapturedAt,
+      pmsSource: statuses[i].pmsSource,
+    };
+  });
 
   return { organizationId, hotels: pulses, omittedHotelCount, failedHotelCount };
 }

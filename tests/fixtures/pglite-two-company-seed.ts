@@ -451,3 +451,242 @@ export async function seedPortfolioData(pg: PGlite): Promise<void> {
   // a stored no; this proves it honors the absence of a yes, which is the state
   // every company in the product is actually in.
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A COMPANY THE SIZE OF A REAL CUSTOMER
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Two hotels prove the wall. They do not prove the PRODUCT, because the founder's
+// stated case is a VP with seventeen to twenty of them, and every portfolio tool
+// fans out one read set per hotel. At N=2 a per-hotel loop is invisible; at N=17
+// it is the answer's latency, the turn's database load, and most of the tokens
+// the model is billed for.
+//
+// So this seeds a THIRD company, `Coastal Bend Management`, with as many hotels
+// as a caller asks for and deliberately UNEVEN data — every hotel a different
+// size, a different number of tickets, a different spend — so that:
+//
+//   • a ranking has one unambiguous right answer that a test can recompute from
+//     SQL rather than restate from the fixture, and
+//   • an answer that silently drops hotels is visibly wrong rather than merely
+//     smaller.
+//
+// It is a SEPARATE company on purpose. `seedPortfolioData` is untouched, so the
+// leak suite's two-company arithmetic still reads 2 hotels, 7 work orders and
+// $900 exactly as it did before this existed.
+
+export const ORG_C = 'cccc0000-0000-4000-8000-00000000000c';
+export const ACCOUNT_CARL = 'cccc1111-0000-4000-8000-000000000001';
+export const UID_CARL = 'cccc2222-0000-4000-8000-000000000001';
+
+/** Hotel `n` of the big company, 1-based. Deterministic, so a test can name one. */
+export function largeCompanyPropertyId(n: number): string {
+  return `c1c1c1c1-0000-4000-8000-${String(n).padStart(12, '0')}`;
+}
+
+/** What one hotel of the big company was seeded with. The test's brute force. */
+export interface LargeCompanyHotelPlan {
+  propertyId: string;
+  name: string;
+  rooms: number;
+  /** Work orders created inside the last 30 days. */
+  workOrders: number;
+  /** Of those, the ones left un-resolved. */
+  workOrdersStillOpen: number;
+  repairCostEach: number;
+  /** Findings at status open/updated — what "open items" counts. */
+  openFindings: number;
+  /** Findings at status known_problem — counted separately, never as open. */
+  knownProblems: number;
+  supplySpendDollars: number;
+  inventoryItems: number;
+  criticalItems: number;
+}
+
+/**
+ * The shape of hotel `n`, decided by arithmetic rather than by a table, so the
+ * fixture is the same at N=17 and N=50 and a test can plan for any size.
+ *
+ * The multipliers are coprime-ish with the modulus so the sequences do not fall
+ * into step with each other — the hotel with the most work orders must not also
+ * be the hotel with the most findings, or a ranking bug that sorts on the wrong
+ * column would still name the right hotel.
+ */
+export function largeCompanyPlan(n: number): LargeCompanyHotelPlan {
+  const workOrders = ((n * 7) % 23) + 2;
+  return {
+    propertyId: largeCompanyPropertyId(n),
+    name: `Coastal Bend Hotel ${String(n).padStart(2, '0')}`,
+    rooms: 40 + ((n * 17) % 9) * 20,
+    workOrders,
+    // Every third ticket is resolved (i % 3 === 0 below), matching the small
+    // fixture's rhythm.
+    workOrdersStillOpen: workOrders - Math.ceil(workOrders / 3),
+    repairCostEach: 50 + ((n * 13) % 9) * 25,
+    openFindings: ((n * 11) % 19) + 1,
+    knownProblems: n % 4,
+    supplySpendDollars: 250 + ((n * 37) % 17) * 90,
+    inventoryItems: 8 + (n % 5),
+    criticalItems: 1 + (n % 4),
+  };
+}
+
+const DEFAULT_LARGE_COMPANY_SIZE = 17;
+
+/**
+ * Seed the big company, its hotels, its data, and one VP who oversees all of it.
+ *
+ * @param hotelCount how many hotels. Defaults to 17 — the low end of the size
+ *                   the founder describes, and the number the scale suite times.
+ * @returns the plan for every hotel, in hotel order.
+ */
+export async function seedLargeCompany(
+  pg: PGlite,
+  hotelCount: number = DEFAULT_LARGE_COMPANY_SIZE,
+): Promise<LargeCompanyHotelPlan[]> {
+  const plans = Array.from({ length: hotelCount }, (_, i) => largeCompanyPlan(i + 1));
+
+  await pg.query(
+    `insert into auth.users (id, email) values ($1, 'carl@example.test')
+     on conflict (id) do nothing`,
+    [UID_CARL],
+  );
+  await pg.query(
+    `insert into accounts (id, username, password_hash, display_name, role, property_access, data_user_id)
+     values ($1, 'carl', 'x', 'Carl', 'general_manager', '{}', $2)
+     on conflict (id) do nothing`,
+    [ACCOUNT_CARL, UID_CARL],
+  );
+  await pg.query(
+    `insert into organizations (id, name, organization_type, status)
+     values ($1, 'Coastal Bend Management', 'management_company', 'active')
+     on conflict (id) do nothing`,
+    [ORG_C],
+  );
+
+  for (const plan of plans) {
+    await pg.query(
+      `insert into properties (id, name, owner_id, total_rooms, timezone)
+       values ($1, $2, $3, $4, 'America/Chicago') on conflict (id) do nothing`,
+      [plan.propertyId, plan.name, UID_ADMIN, plan.rooms],
+    );
+    await attachProperty(pg, ORG_C, plan.propertyId);
+  }
+
+  // The hat, through the same RPC production uses. Company scope with a null
+  // property list means "every hotel this company operates", which is what makes
+  // adding hotel 18 a seeding detail rather than a permissions change.
+  const hat = await pg.query<{ staxis_set_membership_hat: string }>(
+    `select public.staxis_set_membership_hat($1, $2, $3, 'company', 'vp', null, 'VP of Operations')
+       as staxis_set_membership_hat`,
+    [ACCOUNT_ADMIN, ORG_C, ACCOUNT_CARL],
+  );
+  if (!hat.rows[0]?.staxis_set_membership_hat) {
+    throw new Error('seed: the big company VP hat was refused');
+  }
+
+  for (const plan of plans) await seedLargeCompanyHotel(pg, plan);
+
+  await pg.query(
+    `insert into company_knowledge
+       (organization_id, topic, content, category, source, review_state, is_active)
+     values ($1, 'linen_standard', 'Every Coastal Bend hotel keeps 3 par of linen.', 'standards', 'explicit_user', 'confirmed', true)`,
+    [ORG_C],
+  );
+
+  await setCrossHotelChat(pg, ORG_C, true);
+  return plans;
+}
+
+/** One hotel's operating data, in four batched statements rather than ~40. */
+async function seedLargeCompanyHotel(pg: PGlite, plan: LargeCompanyHotelPlan): Promise<void> {
+  const { propertyId, name } = plan;
+
+  if (plan.workOrders > 0) {
+    const values: unknown[] = [];
+    const tuples: string[] = [];
+    for (let i = 0; i < plan.workOrders; i += 1) {
+      const base = values.length;
+      tuples.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`);
+      values.push(
+        propertyId,
+        `${100 + i}`,
+        `${name} ticket ${i + 1}`,
+        i % 4 === 0 ? 'urgent' : 'MAJOR',
+        i % 3 === 0 ? 'resolved' : 'submitted',
+        plan.repairCostEach,
+        // Inside 30 days, so the default window covers every seeded ticket and a
+        // days=7 question genuinely narrows.
+        new Date(Date.now() - ((i % 25) + 1) * DAY_MS).toISOString(),
+      );
+    }
+    await pg.query(
+      `insert into work_orders
+         (property_id, room_number, description, severity, status, repair_cost, created_at)
+       values ${tuples.join(',')}`,
+      values,
+    );
+  }
+
+  // Inventory: a mix of Good and Critical against par, so the 70/30 buckets and
+  // the "worst items" list both have something real to sort.
+  const itemIds: string[] = [];
+  for (let i = 0; i < plan.inventoryItems; i += 1) {
+    const critical = i < plan.criticalItems;
+    const row = await pg.query<{ id: string }>(
+      `insert into inventory (property_id, name, category, current_stock, par_level, unit)
+       values ($1, $2, 'housekeeping', $3, 100, 'units') returning id`,
+      [propertyId, `${name} item ${i + 1}`, critical ? 5 + i : 85 + i],
+    );
+    itemIds.push(row.rows[0].id);
+  }
+
+  for (const share of [0.4, 0.6]) {
+    await pg.query(
+      `insert into inventory_orders
+         (property_id, item_id, item_name, quantity, unit_cost, total_cost, received_at)
+       values ($1, $2, $3, 10, $4, $5, $6)`,
+      [
+        propertyId,
+        itemIds[0],
+        `${name} item 1`,
+        (plan.supplySpendDollars * share) / 10,
+        plan.supplySpendDollars * share,
+        new Date(Date.now() - 3 * DAY_MS).toISOString(),
+      ],
+    );
+  }
+
+  const total = plan.openFindings + plan.knownProblems;
+  if (total > 0) {
+    const values: unknown[] = [];
+    const tuples: string[] = [];
+    for (let i = 0; i < total; i += 1) {
+      const known = i >= plan.openFindings;
+      const base = values.length;
+      tuples.push(
+        `($${base + 1}, 'seeded_probe', $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, `
+        + `$${base + 6}, 'seeded_receipt', $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10})`,
+      );
+      values.push(
+        propertyId,
+        `seeded_probe:${propertyId}:${i}`,
+        `${name} problem ${i + 1}`,
+        i === 0 ? 'critical' : 'attention',
+        i % 2 === 0 ? 'propose' : 'recommend',
+        known ? 'known_problem' : (i % 5 === 0 ? 'updated' : 'open'),
+        i + 1,
+        10_000 * (i + 1),
+        20_000 * (i + 1),
+        `${name} basis`,
+      );
+    }
+    await pg.query(
+      `insert into findings
+         (property_id, detector_id, dedupe_key, summary, severity, disposition, status,
+          receipt_query_id, magnitude, price_low_cents, price_high_cents, price_basis)
+       values ${tuples.join(',')}`,
+      values,
+    );
+  }
+}
