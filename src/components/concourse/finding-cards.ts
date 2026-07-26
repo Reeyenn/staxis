@@ -19,10 +19,11 @@
 //     has never been a run, there is no line at all.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import type {
-  FindingDisposition,
-  FindingSeverity,
-  FindingStatus,
+import {
+  hasDomainClosure,
+  type FindingDisposition,
+  type FindingSeverity,
+  type FindingStatus,
 } from '@/lib/findings/types';
 
 export type Lang = 'en' | 'es';
@@ -153,6 +154,18 @@ export function declinedExplanation(action: CardAction, lang: Lang): string {
       return es
         ? `Staxis no lo hizo: ${subject} ya no está en la lista de inventario de este hotel.`
         : `Staxis did not do it: ${subject} is no longer on this hotel's inventory list.`;
+    // The preventive pair. Deliberately no dates in either sentence: `was` and
+    // `now` here are raw timestamps, and rendering one would put a UTC instant
+    // in front of a manager who thinks in local days. WHAT happened is the
+    // useful part, and it is the part we can state exactly.
+    case 'preventive_last_done':
+      return es
+        ? `Staxis no lo hizo: alguien ya marcó "${subject}" como hecho. No hace falta una orden de trabajo.`
+        : `Staxis did not do it: somebody has already marked "${subject}" done. No work order is needed.`;
+    case 'preventive_task':
+      return es
+        ? `Staxis no lo hizo: "${subject}" ya no está en el calendario de mantenimiento de este hotel.`
+        : `Staxis did not do it: "${subject}" is no longer on this hotel's upkeep schedule.`;
     default:
       return es
         ? `Staxis no lo hizo: los datos cambiaron desde que lo propuso (era ${was}, ahora ${now}).`
@@ -252,7 +265,15 @@ export function effectiveDisposition(f: {
  * The route feeds this the EFFECTIVE disposition (above), and the adapter that
  * turns an `ask` finding into a drip question is src/lib/findings/ask-drip.ts.
  */
-export function isCardRenderable(f: Pick<QueueFinding, 'disposition'>): boolean {
+export function isCardRenderable(
+  f: Pick<QueueFinding, 'disposition'> & { detectorId?: string },
+): boolean {
+  // A card that is the only place a stored fact can be updated stays a card,
+  // whatever the judge decided. See DETECTORS_WITH_DOMAIN_CLOSURE for the
+  // incident that motivated this — the drip-question surface cannot render
+  // "Yes, it got done", so routing a preventive follow-up there produces a
+  // question whose answer goes nowhere.
+  if (hasDomainClosure(f.detectorId)) return true;
   return f.disposition !== 'ask' && f.disposition !== 'drop';
 }
 
@@ -498,7 +519,27 @@ export function cardEyebrowLabel(
 // magnitude the silence was armed at and leaves the outcome alone (store.ts
 // setFindingStatus). Nothing here may map a "Seen" tap onto `resolved`.
 
-export type ClosureVerdict = 'resolved' | 'known_problem' | 'muted';
+/**
+ * `pm_done` and `pm_called` are the preventive-maintenance pair, and they are
+ * verdicts rather than actions for a precise reason: the physical work — the
+ * flush, the filter swap — is the one thing no software can do. Staxis cannot
+ * offer to perform it, so there is no frozen plan and no re-verification; there
+ * is only a manager telling it what happened out in the building.
+ *
+ * They differ from the other three in having a SIDE EFFECT beyond the card:
+ * `pm_done` moves the schedule's last-done date, which restarts its clock, and
+ * `pm_called` sets the resting flag that the detector reads. Both then close the
+ * card, because a card whose underlying state has changed and which stayed on
+ * screen would be the same lie as one that never closed at all. Where that
+ * happens is POST /api/findings — see the route header for why the schedule id
+ * is resolved from the finding rather than named by the browser.
+ */
+export type ClosureVerdict =
+  | 'resolved'
+  | 'known_problem'
+  | 'muted'
+  | 'pm_done'
+  | 'pm_called';
 
 /** The second tap, for the verdict that cannot be taken back. */
 export interface ClosureConfirm {
@@ -544,6 +585,28 @@ const KNOWN_HINT: Bi = {
 const HANDLED_HINT: Bi = {
   en: 'Staxis closes this out. If it happens again it comes back as a new card.',
   es: 'Staxis lo da por cerrado. Si vuelve a pasar, volverá como una tarjeta nueva.',
+};
+
+/**
+ * What "Done" costs on a dated job: the clock restarts from today, so the next
+ * card is one full cadence away. Said out loud because it is the one verdict
+ * here that changes a stored date rather than just closing a card.
+ */
+const PM_DONE_HINT: Bi = {
+  en: 'Staxis marks it done today and starts counting to the next one.',
+  es: 'Staxis lo marca como hecho hoy y empieza a contar hasta el próximo.',
+};
+
+/**
+ * The honest description of the rest. It names the week, because a manager who
+ * expects silence forever and gets a card in seven days will read it as a nag —
+ * and a manager who knows it is coming reads the same card as the reminder they
+ * asked for. Same sentence, opposite feeling, and the difference is entirely
+ * whether we said so.
+ */
+const PM_CALLED_HINT: Bi = {
+  en: 'Staxis goes quiet for a week, then asks once whether it happened.',
+  es: 'Staxis se calla una semana y luego pregunta una vez si se hizo.',
 };
 
 /** Unconditional, so it asks first. The one verdict with no escape hatch. */
@@ -602,12 +665,81 @@ const CLOSURE_SETS: Record<FindingDisposition, readonly ClosureSpec[]> = {
   drop: [],
 };
 
-/** The closure buttons this card offers, in render order, in one language. */
+// ─── Closure, when the card is about a job in the building ──────────────────
+//
+// WHY ONE DETECTOR GETS ITS OWN SET, AND WHY THAT IS NOT A SLIPPERY SLOPE
+//
+// The three verdicts above are the right ones for a card about a PATTERN: I
+// dealt with it, I know already, stop watching. A preventive card is not about a
+// pattern — it is about a specific physical job with a date on it — and the
+// honest answers to "the water heater flush is due" are different in kind:
+//
+//   Done                     the flush happened. Restart the clock. This is a
+//                            FACT ABOUT THE BUILDING, not a verdict about a
+//                            card, which is why it writes to the schedule and
+//                            not just to the finding.
+//   Somebody's been called   arranged, not finished. Go quiet, then ask again.
+//                            There is no existing verdict that means this: it is
+//                            neither "handled" (nothing has happened yet) nor
+//                            "known problem" (they do not want it to go quiet
+//                            forever — they want to be reminded).
+//
+// "Known problem" is deliberately ABSENT from both sets. On a dated job it would
+// mean "yes, I know it is overdue, stop mentioning it", which is the one thing
+// this feature exists to refuse: the entire promise the hotel bought is that
+// Staxis remembers upkeep after everyone else has stopped. Muting is still
+// there, because a manager who genuinely does not want a schedule watched should
+// be able to say so — but it asks first, and it is the loud version.
+//
+// This table is keyed on DETECTOR ID, and it should stay a table with one entry
+// for a long time. A detector needs an entry here only when its card is about a
+// different KIND of thing, not when somebody wants nicer words.
+const DETECTOR_CLOSURE_SETS: Readonly<Record<string, Readonly<Partial<Record<FindingDisposition, readonly ClosureSpec[]>>>>> = {
+  preventive_due: {
+    // The due card: Staxis is offering to raise the ticket (that button is
+    // rendered separately, by offersApproval), and these are what a manager
+    // says instead when the answer is about the building rather than the board.
+    propose: [
+      { verdict: 'pm_done', tone: 'primary', label: { en: 'Done', es: 'Hecho' }, hint: PM_DONE_HINT, confirm: null },
+      { verdict: 'pm_called', tone: 'plain', label: { en: "Somebody's been called", es: 'Ya llamamos a alguien' }, hint: PM_CALLED_HINT, confirm: null },
+      {
+        verdict: 'muted',
+        tone: 'danger',
+        label: { en: 'Stop tracking this', es: 'Dejar de seguir esto' },
+        hint: null,
+        confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', es: 'Sí, deja de vigilarlo' } },
+      },
+    ],
+    // The follow-up card, a week after somebody was called. Same two facts, and
+    // "still waiting" re-arms another quiet week rather than nagging daily.
+    recommend: [
+      { verdict: 'pm_done', tone: 'primary', label: { en: 'Yes, it got done', es: 'Sí, ya se hizo' }, hint: PM_DONE_HINT, confirm: null },
+      { verdict: 'pm_called', tone: 'plain', label: { en: 'Still waiting', es: 'Todavía esperando' }, hint: PM_CALLED_HINT, confirm: null },
+      {
+        verdict: 'muted',
+        tone: 'danger',
+        label: { en: 'Stop tracking this', es: 'Dejar de seguir esto' },
+        hint: null,
+        confirm: { prompt: STOP_WATCHING, yes: { en: 'Yes, stop watching', es: 'Sí, deja de vigilarlo' } },
+      },
+    ],
+  },
+};
+
+/**
+ * The closure buttons this card offers, in render order, in one language.
+ *
+ * `detectorId` is optional so every existing caller keeps working unchanged and
+ * gets exactly the buttons it got before. A detector with no entry in the table
+ * above falls through to the per-disposition set, which is the whole point:
+ * adding a detector must not require touching this file.
+ */
 export function closureButtons(
-  f: Pick<QueueFinding, 'disposition'>,
+  f: Pick<QueueFinding, 'disposition'> & { detectorId?: string },
   lang: Lang,
 ): ClosureButton[] {
-  return (CLOSURE_SETS[f.disposition] ?? []).map((spec) => ({
+  const override = f.detectorId ? DETECTOR_CLOSURE_SETS[f.detectorId]?.[f.disposition] : undefined;
+  return (override ?? CLOSURE_SETS[f.disposition] ?? []).map((spec) => ({
     verdict: spec.verdict,
     label: pick(spec.label, lang),
     hint: spec.hint ? pick(spec.hint, lang) : null,

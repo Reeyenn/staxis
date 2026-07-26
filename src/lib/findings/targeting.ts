@@ -47,9 +47,20 @@ const LEGACY_PARAM_KEYS: Readonly<Record<FindingTargetKind, readonly string[]>> 
   room: Object.freeze(['room_number', 'room']),
   // `item_id` — inventory_usage_baseline.
   inventory_item: Object.freeze(['item_id']),
+  // EMPTY, PERMANENTLY. `preventive_due` shipped after `evidence.target`
+  // existed, so there is no era of rows to be compatible with — every finding
+  // it has ever written names its schedule structurally. An entry here would be
+  // a fallback that can only ever fire on a malformed row, and firing on one
+  // would mean writing a completion against a schedule id recovered by
+  // guesswork (see logPreventiveOutcome).
+  preventive_task: Object.freeze([]),
 });
 
-const KINDS: readonly FindingTargetKind[] = Object.freeze(['room', 'inventory_item']);
+const KINDS: readonly FindingTargetKind[] = Object.freeze([
+  'room',
+  'inventory_item',
+  'preventive_task',
+]);
 
 /**
  * Stand-ins a detector wrote where a real identity was missing. Normalized form.

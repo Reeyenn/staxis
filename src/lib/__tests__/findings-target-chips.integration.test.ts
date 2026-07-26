@@ -460,6 +460,12 @@ describe('the chip appears on things and nowhere else', () => {
     ['src/app/maintenance/_components/WorkOrdersTab.tsx', 1],
     // Inventory → one item's own edit sheet.
     ['src/app/inventory/_components/overlays/AddItemSheet.tsx', 1],
+    // Maintenance → Preventive → one upkeep schedule's own detail modal. The
+    // chip is inside `TaskModal`, NOT on the three-band board that file also
+    // renders: the board is a list, and a chip per card would be the tab strip
+    // by another name. That distinction is the reason this map counts per file
+    // rather than merely checking membership.
+    ['src/app/maintenance/_components/PreventiveTab.tsx', 1],
   ]);
 
   test('only the per-thing views mount a PatternChip, once each', () => {

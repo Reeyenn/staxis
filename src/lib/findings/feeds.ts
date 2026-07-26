@@ -30,7 +30,7 @@ import { gatherOperationalSignals } from '@/lib/agent/operational-signals';
 import { checkOperationalAlerts } from '@/lib/agent/nudges';
 import { runRulesEngineForProperty, type PropertyRunResult } from '@/lib/rules-engine';
 import { isSectionEnabled, type EnabledSections } from '@/lib/sections/registry';
-import { propertyLocalToday } from '@/lib/schedule/local-date';
+import { addDaysInTz, propertyLocalToday } from '@/lib/schedule/local-date';
 
 import {
   collapseByDate,
@@ -40,6 +40,7 @@ import {
   type DailySeriesPoint,
   type InventoryItemUsage,
   type LocationWorkOrders,
+  type PreventiveScheduleEntry,
   type UsageInterval,
 } from './history';
 import type { FeedId, FeedOutcome, FeedResult } from './types';
@@ -626,6 +627,84 @@ const loadOperatingRhythm: FeedLoader<'operating_rhythm'> = async (env) => {
   };
 };
 
+/**
+ * The upkeep schedules this hotel typed into Maintenance → Preventive.
+ *
+ * THE ONLY FEED THAT IS CONFIGURATION RATHER THAN HISTORY, and the reason the
+ * preventive detector can speak on a hotel with three weeks of data when every
+ * baseline detector has to stay quiet: nothing here is inferred. The cadence and
+ * the last-done date are both things a human at this hotel asserted, so counting
+ * forward off them invents nothing. There is no window and no coverage floor —
+ * a schedule typed in yesterday is complete information about itself.
+ *
+ * SECTION-GATED, like the cleaning plan. A hotel with Maintenance switched off
+ * has said it does not use this part of Staxis, and counting its upkeep
+ * schedules forward behind its back would be the same overreach as evaluating
+ * its housekeeping rules.
+ *
+ * `recordCount` is the number of schedules that can be reasoned about AT ALL —
+ * a positive frequency and a usable id. A hotel with no schedules loads a real,
+ * empty feed with `recordCount: 0`, and the detector's declared minimum then
+ * skips it with a reason, which is what makes "nobody has set any up" a counted
+ * silence instead of an indistinguishable blank.
+ */
+const loadPreventiveSchedule: FeedLoader<'preventive_schedule'> = async (env) => {
+  if (!isSectionEnabled(env.enabledSections, 'maintenance')) {
+    return {
+      value: { tasks: [], asOfDate: env.businessDate },
+      recordCount: 0,
+      asOf: env.now,
+      weakestInputAgeDays: 0,
+    };
+  }
+
+  const result = (await scopedDb(env.propertyId)
+    .from('preventive_tasks')
+    .select('id, name, area, frequency_days, last_completed_at, called_at, called_by')
+    .order('name', { ascending: true })
+    .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+
+  const tasks: PreventiveScheduleEntry[] = [];
+  for (const row of rowsOf(result, 'preventive_tasks')) {
+    const id = typeof row.id === 'string' ? row.id : '';
+    const name = typeof row.name === 'string' ? row.name.trim() : '';
+    const frequencyDays = Math.round(numberOf(row.frequency_days) ?? 0);
+    // A schedule with no id, no name or a non-positive cadence cannot produce a
+    // due date that means anything. Dropped rather than guessed at.
+    if (!id || !name || frequencyDays < 1) continue;
+
+    const lastDoneDate = localDateOf(row.last_completed_at, env.timezone);
+    const area = typeof row.area === 'string' && row.area.trim() ? row.area.trim() : null;
+    const calledDate = localDateOf(row.called_at, env.timezone);
+
+    tasks.push({
+      id,
+      name,
+      area,
+      frequencyDays,
+      lastDoneDate,
+      lastDoneAtIso: typeof row.last_completed_at === 'string' ? row.last_completed_at : null,
+      // Null exactly when the hotel has never recorded a completion. The
+      // detector, not this loader, decides what that silence means.
+      nextDueDate: lastDoneDate ? addDaysInTz(lastDoneDate, frequencyDays) : null,
+      calledDate,
+      calledBy:
+        calledDate && typeof row.called_by === 'string' && row.called_by.trim()
+          ? row.called_by.trim()
+          : null,
+    });
+  }
+
+  return {
+    value: { tasks, asOfDate: env.businessDate },
+    recordCount: tasks.length,
+    // A schedule is true as of now: it is what the hotel currently says its
+    // rhythms are, not a measurement taken at some earlier moment.
+    asOf: env.now,
+    weakestInputAgeDays: 0,
+  };
+};
+
 export const FEED_LOADERS: { [K in FeedId]: FeedLoader<K> } = {
   operational_signals: loadOperationalSignals,
   nudge_drafts: loadNudgeDrafts,
@@ -635,6 +714,7 @@ export const FEED_LOADERS: { [K in FeedId]: FeedLoader<K> } = {
   room_work_order_history: loadRoomWorkOrderHistory,
   inventory_usage_history: loadInventoryUsageHistory,
   operating_rhythm: loadOperatingRhythm,
+  preventive_schedule: loadPreventiveSchedule,
 };
 
 /**

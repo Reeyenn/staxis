@@ -39,6 +39,7 @@ import { scopedDb } from '@/lib/agent/scoped-db';
 import { redactMemoryContent } from '@/lib/agent/memory-redact';
 import { log } from '@/lib/log';
 import type { QuestionCandidate } from '@/lib/agent/drip-questions';
+import { DETECTORS_WITH_DOMAIN_CLOSURE } from './types';
 
 /**
  * A stable, bounded topic for a finding.
@@ -101,6 +102,17 @@ export async function findingAskCandidates(propertyId: string): Promise<Question
 
     const out: QuestionCandidate[] = [];
     for (const row of (data ?? []) as unknown as AskRow[]) {
+      // The other half of the rule in DETECTORS_WITH_DOMAIN_CLOSURE. These
+      // findings stay CARDS however the judge sorted them, because their
+      // buttons are the only thing that writes their outcome and a drip
+      // question cannot render those buttons. Declined here as well as kept
+      // there, so the two surfaces can never both claim the same row.
+      //
+      // In JS rather than as a `not.in` filter on the query: the exclusion set
+      // is two entries against a 20-row read, and expressing it as SQL bought
+      // nothing except a dependency on a PostgREST operator. The only cost is
+      // that an excluded row still spends one of those 20 slots.
+      if (DETECTORS_WITH_DOMAIN_CLOSURE.includes(row.detector_id)) continue;
       const candidate = toQuestionCandidate(row);
       if (candidate) out.push(candidate);
     }

@@ -621,6 +621,8 @@ export function fromPreventiveRow(r: Record<string, unknown>): PreventiveTask {
     completionPhotoPath: parseStringField(r.completion_photo_path),
     equipmentId: typeof r.equipment_id === 'string' ? r.equipment_id : null,
     createdAt: toDate(r.created_at),
+    calledAt: toDate(r.called_at),
+    calledBy: typeof r.called_by === 'string' ? r.called_by : null,
   };
 }
 
@@ -635,6 +637,11 @@ export function toPreventiveRow(t: Partial<PreventiveTask>): Record<string, unkn
     notes: t.notes,
     completion_photo_path: t.completionPhotoPath,
     equipment_id: t.equipmentId,   // equipment registry (0249); undefined omitted
+    // 0366. `dropUndefined` keeps an explicit null — which is how "nobody has
+    // been called any more" is written — while omitting the column entirely on
+    // every patch that is not about the called state.
+    called_at: t.calledAt === undefined ? undefined : toISO(t.calledAt),
+    called_by: t.calledBy,
   });
 }
 

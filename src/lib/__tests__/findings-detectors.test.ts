@@ -405,6 +405,10 @@ describe('every shipped detector does what it says it does', () => {
         // attached. Reads the hotel's OWN maintenance board rather than the PMS
         // mirror `operational_pattern` uses, which is empty fleet-wide.
         'repeat_room_work_orders',
+        // Preventive maintenance: the only detector that reads what the hotel
+        // SAID rather than what it did, and so the only one that can speak on a
+        // hotel too new to have a baseline.
+        'preventive_due',
       ].sort(),
       'every detection system in the app runs under the one runner',
     );

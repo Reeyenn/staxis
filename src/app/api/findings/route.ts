@@ -68,6 +68,7 @@ import {
   recordFindingsShown,
   setFindingStatus,
 } from '@/lib/findings/store';
+import { logPreventiveOutcome } from '@/lib/findings/preventive-log';
 import type { Finding, FindingStatus } from '@/lib/findings/types';
 import { loadActionsForFindings } from '@/lib/findings/actions/store';
 import { getAction } from '@/lib/findings/actions/registry';
@@ -91,6 +92,33 @@ const MANAGER_VERDICTS = ['known_problem', 'muted', 'resolved'] as const;
 type ManagerVerdict = typeof MANAGER_VERDICTS[number];
 
 /**
+ * The preventive pair — verdicts that also record a FACT ABOUT THE BUILDING.
+ *
+ * The three above change only how a card is filed. These two additionally move a
+ * date on the hotel's upkeep schedule, because the thing they describe (the
+ * flush happened / somebody has been called) is not an opinion about a card, it
+ * is what occurred in the boiler room. Both then close the card as `resolved`,
+ * for the same reason "Handled it" does: the state it was reporting has changed,
+ * and a card still sitting there afterwards would be reporting the past.
+ *
+ * WHY THEY LIVE HERE AND NOT ON A NEW /api/maintenance/... ROUTE
+ * A second route would have needed its own copy of every gate this one already
+ * has — session, loadManagerCaller, managerManagesHotel, the rate limiter, the
+ * envelope — and the only thing it would not have shared is the four lines that
+ * dispatch. Four lines of dispatch is a smaller surface to secure and understand
+ * than a whole second door into the same data (CLAUDE.md, extend before you
+ * add). The domain work itself is NOT here: it is in
+ * src/lib/findings/preventive-log.ts, which is also where the reasoning about
+ * resolving the schedule server-side rather than trusting the browser lives.
+ */
+const PREVENTIVE_VERDICTS = ['pm_done', 'pm_called'] as const;
+type PreventiveVerdict = typeof PREVENTIVE_VERDICTS[number];
+
+function isPreventiveVerdict(action: PostAction): action is PreventiveVerdict {
+  return (PREVENTIVE_VERDICTS as readonly string[]).includes(action);
+}
+
+/**
  * Not a verdict — a record that the manager engaged with the card without
  * deciding anything. Opening the receipt is someone reading, and a detector
  * somebody reads has earned its place on the screen whether or not they pressed
@@ -99,7 +127,7 @@ type ManagerVerdict = typeof MANAGER_VERDICTS[number];
 const ENGAGEMENTS = ['receipt_opened'] as const;
 type Engagement = typeof ENGAGEMENTS[number];
 
-const POST_ACTIONS = [...MANAGER_VERDICTS, ...ENGAGEMENTS] as const;
+const POST_ACTIONS = [...MANAGER_VERDICTS, ...PREVENTIVE_VERDICTS, ...ENGAGEMENTS] as const;
 type PostAction = typeof POST_ACTIONS[number];
 
 function isEngagement(action: PostAction): action is Engagement {
@@ -216,7 +244,14 @@ export async function GET(req: NextRequest) {
     // both verdicts are ones only the judge ever reaches — filtering on the
     // detector's default would render every ask finding as a card as well as a
     // question.
-    const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f) }));
+    // `detectorId` matters here: a check whose card is the ONLY place its
+    // outcome can be recorded stays a card even when the judge sorted it to
+    // `ask`, because the question surface has no buttons that write to a
+    // schedule (DETECTORS_WITH_DOMAIN_CLOSURE). The drip pipeline declines the
+    // same rows from the other side, so nothing is rendered twice.
+    const showable = rows.filter((f) =>
+      isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }),
+    );
 
     const ids = showable.map((f) => f.id);
     const phrasing = await judgedPhrasing(propertyId, ids);
@@ -319,6 +354,47 @@ export async function POST(req: NextRequest) {
         return err('No such finding', { requestId, status: 404, code: ApiErrorCode.NotFound });
       }
       return ok({ status: 'unchanged' }, { requestId });
+    }
+
+    // ── the preventive pair ────────────────────────────────────────────────
+    // The schedule write happens FIRST. If it fails, the card stays exactly
+    // where it is and the manager can try again — whereas closing the card
+    // first and then failing to move the date would leave them believing they
+    // had recorded a flush that Staxis has no record of, and the schedule would
+    // go on reporting overdue with no card left to say so.
+    if (isPreventiveVerdict(actionV.value!)) {
+      const logged = await logPreventiveOutcome(
+        propertyId,
+        idV.value!,
+        actionV.value! === 'pm_done' ? 'done' : 'called',
+        caller.displayName,
+      );
+
+      if (!logged.ok) {
+        if (logged.because === 'not_a_preventive_finding') {
+          return err('That card is not about an upkeep schedule', {
+            requestId,
+            status: 400,
+            code: ApiErrorCode.ValidationFailed,
+          });
+        }
+        // Both remaining cases — no such finding at this hotel, and a schedule
+        // that has been deleted since the card was written — are "there is
+        // nothing here to record that against".
+        return err('No such finding', { requestId, status: 404, code: ApiErrorCode.NotFound });
+      }
+
+      await recordFindingActed(propertyId, idV.value!);
+      const closed = await setFindingStatus(
+        propertyId,
+        idV.value!,
+        'resolved',
+        caller.accountId,
+      );
+      return ok(
+        { status: closed?.status ?? 'resolved', preventive: logged.result },
+        { requestId },
+      );
     }
 
     const verdict = actionV.value! as ManagerVerdict;

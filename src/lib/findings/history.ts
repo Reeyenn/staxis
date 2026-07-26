@@ -163,6 +163,64 @@ export interface OperatingRhythmHistory extends HistoryCoverage {
   streams: ActivityStream[];
 }
 
+// ─── Preventive schedules ────────────────────────────────────────────────────
+
+/**
+ * One upkeep schedule, as the hotel typed it into Maintenance → Preventive.
+ *
+ * DELIBERATELY NOT A `HistoryCoverage` FEED. Everything else in this file is
+ * the hotel's trailing RECORD, and every claim made on one is bounded by how
+ * far back the loader looked. This is the hotel's stated INTENTION — "we flush
+ * the water heater every six months, and we last did it in March" — and there
+ * is no window to be short of. A schedule typed in yesterday is complete
+ * information about itself, so a coverage floor here would refuse to speak
+ * about a fact that is fully known.
+ *
+ * Every date is a hotel-local calendar date (YYYY-MM-DD), converted once by the
+ * loader, for the same reason as the rest of this file: "due today" has to mean
+ * today where the hotel is.
+ */
+export interface PreventiveScheduleEntry {
+  /** preventive_tasks.id — also the finding's target value. */
+  id: string;
+  /** "Water heater flush". Goes straight into the sentence. */
+  name: string;
+  /** "Building", "Pool". Free text the hotel typed; null when they left it blank. */
+  area: string | null;
+  /** The cadence in days, as stored. Always >= 1. */
+  frequencyDays: number;
+  /**
+   * When it was last done, or null when this hotel has never recorded a
+   * completion. Null is a REAL answer and the detector treats it as one — see
+   * preventive-due.ts on why a never-done schedule is not overdue.
+   */
+  lastDoneDate: string | null;
+  /**
+   * The same completion as a raw instant, exactly as the database returned it.
+   *
+   * Carried ALONGSIDE the local date because the two answer different
+   * questions. The date is what the card says and what due-ness is computed
+   * from. This is what the action FREEZES and what the execute transaction
+   * re-compares — and "has anybody marked this done since Staxis offered?"
+   * has to be exact. Comparing local dates there would miss a completion
+   * recorded later the same day, which is precisely the window in which a
+   * manager marks something done and then taps a card they had already opened.
+   */
+  lastDoneAtIso: string | null;
+  /** lastDoneDate + frequencyDays. Null exactly when lastDoneDate is. */
+  nextDueDate: string | null;
+  /** When somebody was called about it, or null. Drives the resting state. */
+  calledDate: string | null;
+  /** Who said so. Only ever set alongside calledDate. */
+  calledBy: string | null;
+}
+
+export interface PreventiveScheduleFeed {
+  tasks: PreventiveScheduleEntry[];
+  /** The hotel-local day this was resolved against. Every claim is relative to it. */
+  asOfDate: string;
+}
+
 // ─── Shared pure helpers ─────────────────────────────────────────────────────
 
 /** Dollars (as the numeric columns store them) to whole cents. */
@@ -189,4 +247,25 @@ export function earliestDate(dates: readonly string[]): string | null {
   let earliest: string | null = null;
   for (const date of dates) if (!earliest || date < earliest) earliest = date;
   return earliest;
+}
+
+/**
+ * Whole days from one hotel-local calendar date to another. Positive when
+ * `to` is later.
+ *
+ * Anchored at NOON UTC rather than midnight. Two YYYY-MM-DD strings parsed as
+ * midnight-UTC and subtracted are exact — but the same arithmetic done anywhere
+ * near a DST boundary with local-midnight anchors lands 23 or 25 hours apart and
+ * rounds to the wrong day. Noon puts twelve hours of slack on either side of
+ * every shift, which is the same fix `addDaysLocal` applies on the client
+ * (PreventiveTab's fall-back bug: backfilled dates banded one day early).
+ *
+ * Returns null for anything that is not a calendar date, so a malformed stored
+ * value produces "we cannot say" rather than a confident NaN.
+ */
+export function daysBetweenDates(from: string, to: string): number | null {
+  const a = Date.parse(`${from}T12:00:00Z`);
+  const b = Date.parse(`${to}T12:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return null;
+  return Math.round((b - a) / 86_400_000);
 }
