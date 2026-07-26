@@ -445,8 +445,17 @@ describe('search_lost_found', () => {
     assert.equal((res.data as { totalMatches: number }).totalMatches, 0);
   });
 
-  test('a housekeeper can look up lost & found (guest-facing, no approval)', async () => {
-    const res = await executeTool('search_lost_found', { query: 'iphone' }, ctx({ user: { ...ctx().user, role: 'housekeeping' } }));
+  test('the front desk can look up lost & found (guest-facing, no approval)', async () => {
+    // This used to assert a HOUSEKEEPER could. Housekeeping now has no chat at
+    // all (WHO LENSES, 2026-07-27) — a standing product rule that Staxis never
+    // adds a step to a housekeeper's job — so the hat that actually fields
+    // "did anyone turn in my jacket" is the desk, and that is what this pins.
+    const res = await executeTool('search_lost_found', { query: 'iphone' }, ctx({ user: { ...ctx().user, role: 'front_desk' } }));
     assert.equal(res.ok, true);
+  });
+
+  test('a housekeeper cannot reach it at all — there is no chat on that hat', async () => {
+    const res = await executeTool('search_lost_found', { query: 'iphone' }, ctx({ user: { ...ctx().user, role: 'housekeeping' } }));
+    assert.equal(res.ok, false);
   });
 });

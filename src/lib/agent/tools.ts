@@ -16,6 +16,7 @@ import type { AppRole } from '@/lib/roles';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
 import { canForProperty } from '@/lib/capabilities/server';
 import { scopedDb, type ScopedDb } from './scoped-db';
+import { lensFor, lensAllowsTool } from './lenses';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import { freshnessAgeMinutes, freshnessTier } from '@/lib/pms/feed-status';
 import {
@@ -445,7 +446,14 @@ export function getToolsForRole(
   voiceMode?: VoiceMode,
   enabledSections?: EnabledSections,
 ): ToolDefinition[] {
+  // WHO LENSES (2026-07-27). A hat with a lens gets the lens's list INTERSECTED
+  // with everything below — never a union, so a name a lens mentions that the
+  // tool itself refuses stays refused. A hat whose lens is `mounted: false`
+  // (housekeeping) gets nothing at all: the chat is not part of their job.
+  const lens = lensFor(role, surface);
+  if (lens && !lens.mounted) return [];
   return Array.from(registry.values()).filter(t => {
+    if (lens && !lens.tools.includes(t.name)) return false;
     if (!t.allowedRoles.includes(role)) return false;
     const allowedSurfaces = t.surfaces ?? ['chat'];
     if (!allowedSurfaces.includes(surface)) return false;
@@ -536,6 +544,17 @@ export async function executeTool(
     return {
       ok: false,
       error: `Your role (${ctx.user.role}) is not allowed to use ${name}. Explain to the user that this action requires a different role.`,
+    };
+  }
+  // WHO LENSES — the executor's half of the mount, enforced the way every other
+  // gate in this file is: twice. `getToolsForRole` already left this tool out of
+  // the catalog the model was handed, so reaching here means a stale tool list,
+  // a replayed conversation from before the lens existed, or a hallucinated
+  // name. The refusal is worded for the model to relay, not to argue with.
+  if (!lensAllowsTool(ctx.user.role, ctx.surface, tool.name)) {
+    return {
+      ok: false,
+      error: `${name} is not part of what you can do in this conversation. Tell the user plainly that this one is a manager question and offer to help with something you can actually answer — do not try to get the same information another way.`,
     };
   }
   // Defense-in-depth on the cached propertyAccess. Admins bypass via

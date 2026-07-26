@@ -29,14 +29,17 @@
 //     helper that does — the one-hotel wall (INV-25/INV-29). No tool here takes
 //     a property id from its arguments.
 //
-//  5. Role-gated to manager tier, mirroring the surfaces they reflect: the
-//     findings routes all gate on `loadManagerCaller` + `managerManagesHotel`,
-//     and effectiveRole (not a global role) is what put the caller in this
-//     conversation. Preventive + equipment additionally carry
-//     `section: 'maintenance'`, matching their own feed loaders, which are
-//     section-gated the same way; the rest carry `section: 'staxis'` so a hotel
-//     that has turned the Staxis tab off does not get its findings through a
-//     side door.
+//  5. Role-gated, and effectiveRole (not a global role) is what put the caller
+//     in this conversation. Five of the six are open to the MAINTENANCE hat as
+//     well as the manager tier (2026-07-27) — the wrench could not previously
+//     ask what Staxis had noticed about the room it was standing in. That hat's
+//     view carries no money and only findings attached to a room, a schedule or
+//     a machine; see STAXIS_WRENCH_ROLES. `staxis_pending_decisions` stays
+//     manager-only: an approval queue is not floor work. Preventive + equipment
+//     additionally carry `section: 'maintenance'`, matching their own feed
+//     loaders, which are section-gated the same way; the rest carry
+//     `section: 'staxis'` so a hotel that has turned the Staxis tab off does not
+//     get its findings through a side door.
 
 import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import {
@@ -62,11 +65,58 @@ import {
   skippedNote,
   RUN_FRESH_HOURS,
 } from '@/components/concourse/finding-cards';
+import { moneyVisibleToRole } from '../lenses';
+import type { AppRole } from '@/lib/roles';
 import type { Finding, FindingTargetKind } from '@/lib/findings/types';
 
 const STAXIS_ROLES = ['admin', 'owner', 'general_manager'] as const;
 
+/**
+ * The manager tier PLUS the maintenance hat (2026-07-27, WHO LENSES).
+ *
+ * Every piece of maintenance intelligence Staxis has — what it noticed about a
+ * room, what is due, which units keep failing, whether the checks even ran —
+ * was gated to managers, so the person actually holding the wrench could not
+ * ask any of it. That was never a decision; it was `STAXIS_ROLES` being the
+ * only constant in the file when these six were written.
+ *
+ * `staxis_pending_decisions` deliberately keeps the narrow list: an approval
+ * queue is the manager's, and reading it is how a floor conversation turns into
+ * "why hasn't anyone signed this off".
+ *
+ * The maintenance hat's version of these answers carries NO MONEY — see
+ * `moneyVisibleToRole`. The price ranges are stripped from the payload rather
+ * than hidden behind a prompt rule, because replacing a batch of PTACs is the
+ * manager's decision and a number the model never receives is a number it
+ * cannot quote.
+ */
+const STAXIS_WRENCH_ROLES = ['admin', 'owner', 'general_manager', 'maintenance'] as const;
+
 const TARGET_KINDS = ['room', 'inventory_item', 'preventive_task', 'equipment'] as const;
+
+/**
+ * The kinds of thing a maintenance tech can walk up to and touch.
+ *
+ * A finding about supply spend or an inventory item is a manager's finding: it
+ * is about the money and the ordering, and there is nothing the wrench can do
+ * with it. Restricting the maintenance lens to findings ATTACHED to a room, a
+ * schedule or a machine is the same "on the thing, not the tab" rule the
+ * pattern chip encodes — a finding you can go and stand in front of.
+ */
+const WRENCH_TARGET_KINDS: readonly FindingTargetKind[] = ['room', 'preventive_task', 'equipment'];
+
+/**
+ * Findings this hat is allowed to be shown. Managers see everything; the
+ * maintenance hat sees only what is attached to a room, a schedule or a machine,
+ * and an untargeted finding (a hotel-wide spend baseline) is not shown at all.
+ */
+function findingsVisibleToRole(rows: Finding[], role: AppRole): Finding[] {
+  if (moneyVisibleToRole(role)) return rows;
+  return rows.filter((f) => {
+    const target = resolveFindingTarget(f.evidence);
+    return !!target && WRENCH_TARGET_KINDS.includes(target.kind);
+  });
+}
 
 /** Range-or-nothing. A finding with no usable price says so in words. */
 function priceOf(f: Finding): { range: string | null; basis: string | null } {
@@ -96,8 +146,8 @@ function repairCostOf(raw: unknown): number | null {
 }
 
 /** The shared row shape for any list of findings we hand the model. */
-function summarize(f: Finding) {
-  const price = priceOf(f);
+function summarize(f: Finding, showMoney = true) {
+  const price = showMoney ? priceOf(f) : { range: null, basis: null };
   const target = resolveFindingTarget(f.evidence);
   return {
     id: f.id,
@@ -131,7 +181,7 @@ registerTool<{ targetKind?: string; targetValue?: string; limit?: number }>({
     'Use when: the user asks what Staxis has found, spotted, noticed or flagged, "anything I should know", "what\'s wrong here", "qué ha encontrado Staxis", or asks what is going on with one specific room or piece of equipment. This is the tool behind the product\'s core promise — reach for it whenever the question is about problems the hotel has not already told you about. To understand WHY one of them was raised, follow up with staxis_explain_finding. ' +
     'Args: targetKind + targetValue — optional pair to narrow to one thing: kind is "room", "equipment", "preventive_task" or "inventory_item", and value is that thing\'s number or id (room "214", or an equipment id from staxis_equipment). Pass both or neither. limit — how many to return, default 20, newest activity first. ' +
     'Returns: { count, findings[] } — each with its summary, how serious it is, whether it needs a decision, its dollar RANGE and the basis for that range, when it was first and last seen, how many times, and what it is about. Counts and money are computed here; quote the range exactly and never reduce it to a single number. ' +
-    'Refuses: an unknown target kind. Two honesty rules: an empty list means nothing is OPEN, not that the hotel is fine — a problem someone marked "known" or muted is still there but deliberately quiet, so do not report all-clear. And every price is an ESTIMATED RANGE, never a quote or a bill; say "roughly" and never present it as money already lost or saved.',
+    'Refuses: an unknown target kind. Two honesty rules: an empty list means nothing is OPEN, not that the hotel is fine — a problem someone marked "known" or muted is still there but deliberately quiet, so do not report all-clear. And every price is an ESTIMATED RANGE, never a quote or a bill; say "roughly" and never present it as money already lost or saved. Some roles are not shown money at all: when a finding comes back with no `price`, that is either an unpriced finding or a figure outside your view, so say the dollar side is the manager\'s rather than that there is none.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -147,12 +197,13 @@ registerTool<{ targetKind?: string; targetValue?: string; limit?: number }>({
       limit: { type: 'number', description: 'Max findings to return (default 20, max 100).' },
     },
   },
-  allowedRoles: STAXIS_ROLES,
+  allowedRoles: STAXIS_WRENCH_ROLES,
   handler: async ({ targetKind, targetValue, limit }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     if (targetKind && !isFindingTargetKind(targetKind)) {
       return { ok: false, error: `"${targetKind}" is not something Staxis tracks findings about. Use room, equipment, preventive_task or inventory_item.` };
     }
     const max = Math.min(Math.max(1, Number.isFinite(limit) ? Number(limit) : 20), 100);
+    const showMoney = moneyVisibleToRole(ctx.user.role);
 
     let rows: Finding[];
     try {
@@ -167,15 +218,16 @@ registerTool<{ targetKind?: string; targetValue?: string; limit?: number }>({
     // Narrowing to a target reuses the SAME pure matcher the on-the-thing chips
     // use, so the chat and the chip on room 214's own record can never disagree
     // about what is attached to it.
+    const visible = findingsVisibleToRole(rows, ctx.user.role);
     const scoped = targetKind && targetValue
       ? findingsForTarget(
-          rows.map((f) => ({ ...f, judgedDisposition: f.judgedDisposition })),
+          visible.map((f) => ({ ...f, judgedDisposition: f.judgedDisposition })),
           targetKind as FindingTargetKind,
           targetValue,
         )
-      : rows;
+      : visible;
 
-    const findings = scoped.slice(0, max).map(summarize);
+    const findings = scoped.slice(0, max).map((f) => summarize(f, showMoney));
 
     return {
       ok: true,
@@ -203,7 +255,7 @@ registerTool<{ findingId: string }>({
     'Use when: the user challenges or wants to understand something Staxis raised — "why is it telling me this", "where did that number come from", "how do you know", "por qué dice eso", "is that right?". Answer from this rather than from the summary sentence: the summary is a claim, and this is the evidence for it. Get the id from staxis_findings or staxis_pending_decisions first. ' +
     'Args: findingId — the id of a finding from staxis_findings. ' +
     'Returns: { summary, evidence, price, timeline, dataAge }. evidence carries the query id Staxis ran, the parameters it ran with (the window, the room, the item), the raw values it got back, and a plain-English basis line. price carries the range and the basis for it. dataAge says how old the oldest input was. ' +
-    'Refuses: an id that is not a finding at this hotel. Read the receipt honestly: if `values` does not contain a number, do NOT state that number, and if `priceBasis` says the finding is unpriced, say Staxis could not price it rather than estimating one yourself. When `dataAge` is several days old, say the finding may already be stale. The evidence is what Staxis counted — it is not proof the conclusion is right, and if the numbers do not support the summary, say so.',
+    'Refuses: an id that is not a finding at this hotel. Read the receipt honestly: if `values` does not contain a number, do NOT state that number, and if `priceBasis` says the finding is unpriced, say Staxis could not price it rather than estimating one yourself. When `dataAge` is several days old, say the finding may already be stale. The evidence is what Staxis counted — it is not proof the conclusion is right, and if the numbers do not support the summary, say so. When `price` carries a `withheldReason` instead of a range, the money is outside your view rather than missing — relay that reason and never say Staxis could not price it.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -211,10 +263,12 @@ registerTool<{ findingId: string }>({
     },
     required: ['findingId'],
   },
-  allowedRoles: STAXIS_ROLES,
+  allowedRoles: STAXIS_WRENCH_ROLES,
   handler: async ({ findingId }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const id = String(findingId ?? '').trim();
     if (!id) return { ok: false, error: 'Which finding? I need its id, from staxis_findings.' };
+
+    const showMoney = moneyVisibleToRole(ctx.user.role);
 
     let f: Finding | null;
     try {
@@ -225,8 +279,13 @@ registerTool<{ findingId: string }>({
     if (!f) {
       return { ok: false, error: 'No finding with that id at this hotel. Get the id from staxis_findings rather than guessing it.' };
     }
+    // A hat that cannot list a finding must not be able to read its receipt by
+    // pasting the id. Same wall, one layer down — the id is not the permission.
+    if (findingsVisibleToRole([f], ctx.user.role).length === 0) {
+      return { ok: false, error: 'No finding with that id at this hotel. Get the id from staxis_findings rather than guessing it.' };
+    }
 
-    const price = priceOf(f);
+    const price = showMoney ? priceOf(f) : { range: null, basis: null };
     const target = resolveFindingTarget(f.evidence);
 
     return {
@@ -252,13 +311,23 @@ registerTool<{ findingId: string }>({
           values: f.evidence?.values ?? {},
           basis: f.evidence?.basis ?? null,
         },
-        price: {
-          range: price.range,
-          basis: price.basis,
-          unpricedReason: price.range === null
-            ? 'Staxis could not put a range on this one. Say that plainly — do not estimate a figure of your own.'
-            : null,
-        },
+        price: showMoney
+          ? {
+              range: price.range,
+              basis: price.basis,
+              unpricedReason: price.range === null
+                ? 'Staxis could not put a range on this one. Say that plainly — do not estimate a figure of your own.'
+                : null,
+            }
+          // NOT `unpricedReason: 'could not price it'` — that would be a lie in
+          // the one field whose whole job is honesty about money. "You are not
+          // shown this" and "there is no figure" are different sentences, and
+          // the model must be able to tell the user which one is true.
+          : {
+              range: null,
+              basis: null,
+              withheldReason: 'The money on this finding is not part of what you can see. Say the dollar side is the manager\'s — do NOT say Staxis could not price it, and never estimate a figure yourself.',
+            },
         timeline: {
           firstSeen: f.firstSeenAt,
           lastSeen: f.lastSeenAt,
@@ -455,7 +524,7 @@ registerTool<{ includeNotDue?: boolean }>({
       },
     },
   },
-  allowedRoles: STAXIS_ROLES,
+  allowedRoles: STAXIS_WRENCH_ROLES,
   handler: async ({ includeNotDue }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const { data, error } = await ctx.db
       .from('preventive_tasks')
@@ -563,7 +632,7 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
     'Use when: the user asks about a piece of kit — "how\'s the boiler been", "which units keep breaking", "what have we spent on that PTAC", "should we replace it", "cómo va el aire de la 214". For today\'s broken thing use staxis_findings; this is the history behind it. ' +
     'Args: equipmentId — one asset\'s id for its full ticket history; omit for the whole register. includeRetired — true to include assets marked replaced or decommissioned, which are excluded by default. ' +
     'Returns: without an id, { count, equipment[] } — each asset with its category, location, status, open and total work orders, and whether Staxis has an open finding about it. With an id, the same plus that asset\'s work-order history and its total recorded repair spend. Counts and totals are computed here — quote them, do not add up tickets yourself. ' +
-    'Refuses: an id that is not an asset at this hotel. The register is only what staff have entered: a hotel with an empty register still has equipment, and repair spend is only what someone typed into a ticket, so a low total may mean poor record-keeping rather than a reliable machine. Never recommend replacing something on cost alone — say what the record shows and let the manager decide.',
+    'Refuses: an id that is not an asset at this hotel. The register is only what staff have entered: a hotel with an empty register still has equipment, and repair spend is only what someone typed into a ticket, so a low total may mean poor record-keeping rather than a reliable machine. Never recommend replacing something on cost alone — say what the record shows and let the manager decide. Some roles get no cost fields at all; when spend is absent from the payload, say the money side is the manager\'s rather than reporting a machine as cheap to run.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -571,9 +640,10 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
       includeRetired: { type: 'boolean', description: 'True to include replaced / decommissioned assets. Default false.' },
     },
   },
-  allowedRoles: STAXIS_ROLES,
+  allowedRoles: STAXIS_WRENCH_ROLES,
   handler: async ({ equipmentId, includeRetired }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const wanted = String(equipmentId ?? '').trim() || null;
+    const showMoney = moneyVisibleToRole(ctx.user.role);
 
     let q = ctx.db
       .from('equipment')
@@ -636,12 +706,19 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
         warrantyExpires: (a.warranty_expires_at as string | null) ?? null,
         workOrders: mine.length,
         openWorkOrders: open.length,
-        recordedRepairSpend: spendDollars > 0
-          ? spendDollars.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
-          : null,
-        // How much of the history actually carries a cost. Without this the
-        // model reads "$0" as "never cost anything".
-        ticketsWithRecordedCost: withCost,
+        // Money is absent — not zeroed — for a hat that cannot see it. A `null`
+        // here would read as "never cost anything", which is the exact
+        // misreading `ticketsWithRecordedCost` exists to prevent.
+        ...(showMoney
+          ? {
+              recordedRepairSpend: spendDollars > 0
+                ? spendDollars.toLocaleString('en-US', { style: 'currency', currency: 'USD' })
+                : null,
+              // How much of the history actually carries a cost. Without this the
+              // model reads "$0" as "never cost anything".
+              ticketsWithRecordedCost: withCost,
+            }
+          : {}),
         ticketsTotal: mine.length,
         staxisFindings: attached.map((f) => ({ id: f.id, summary: f.judgedSummaryEn ?? f.summary })),
         // History only when the caller asked about this one asset — the whole
@@ -655,7 +732,9 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
                 room: (o.room_number as string | null) ?? null,
                 description: (o.description as string | null) ?? null,
                 status: String(o.status ?? 'submitted') !== 'resolved' ? 'open' : 'done',
-                repairCost: repairCostOf(o.repair_cost)?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) ?? null,
+                ...(showMoney
+                  ? { repairCost: repairCostOf(o.repair_cost)?.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) ?? null }
+                  : {}),
                 loggedAt: (o.created_at as string | null) ?? null,
                 resolvedAt: (o.resolved_at as string | null) ?? null,
               }))
@@ -672,7 +751,7 @@ registerTool<{ equipmentId?: string; includeRetired?: boolean }>({
         equipment,
         note: equipment.length === 0
           ? 'Nobody at this hotel has put any equipment on the register yet. That does not mean the hotel has none — Staxis simply cannot track what it has not been told about, so say that rather than reporting no equipment.'
-          : undefined,
+          : (showMoney ? undefined : 'Repair costs and spend totals are not part of what you can see here. If asked what a machine has cost or whether to replace it, say the money side is the manager\'s — do not estimate.'),
       },
     };
   },
@@ -691,7 +770,7 @@ registerTool<Record<string, never>>({
     'Returns: { ranAt, checksRun, lookedNormal, couldNotRun, fresh, liveness } — the counts are computed here and `liveness` is the exact sentence the Staxis tab shows, so quoting it keeps the chat and the screen telling the same story. ' +
     'Refuses: nothing, but `neverChecked: true` means Staxis has NEVER run here, and the honest answer is then that it cannot tell them anything about this hotel yet — do not soften that into "nothing found". When `fresh` is false the run is more than two days old, so say when it last ran instead of implying the picture is current. "Could not run" checks are usually a hotel too new to have enough history, not a fault.',
   inputSchema: { type: 'object', properties: {} },
-  allowedRoles: STAXIS_ROLES,
+  allowedRoles: STAXIS_WRENCH_ROLES,
   handler: async (_args, ctx: ToolHandlerContext): Promise<ToolResult> => {
     let run: Awaited<ReturnType<typeof latestRunFacts>>;
     try {

@@ -1,8 +1,13 @@
 // Verifies the moat wiring: importing the agent tool catalog self-registers
 // `search_knowledge`, it is read-only, and it is reachable on the chat surface
-// by every role that uses the bottom-right assistant (incl. housekeepers — the
-// headline "how do I set up the breakfast bar?" acceptance path). Needs no DB
-// or auth; it exercises the in-memory registry only.
+// by every hat that HAS a chat.
+//
+// That list changed on 2026-07-27 (WHO LENSES): housekeeping has no Ask Staxis
+// at all now — the standing rule is that Staxis never adds a step to a
+// housekeeper's job, and their surface is the room card on the phone they
+// already carry. The headline "how do I set up the breakfast bar?" path is a
+// front-desk and maintenance path, and both keep it. Needs no DB or auth; it
+// exercises the in-memory registry only.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,8 +27,8 @@ test('search_knowledge is registered as a read-only tool requiring a query', () 
   );
 });
 
-test('search_knowledge is reachable on the chat surface for floor + manager roles', () => {
-  const roles = ['housekeeping', 'maintenance', 'front_desk', 'general_manager', 'owner', 'admin'] as const;
+test('search_knowledge is reachable on the chat surface for every hat that has a chat', () => {
+  const roles = ['maintenance', 'front_desk', 'general_manager', 'owner', 'admin'] as const;
   for (const role of roles) {
     const names = getToolsForRole(role, 'chat').map((t) => t.name);
     assert.ok(
@@ -39,9 +44,13 @@ test('fetch_document_section is registered read-only and reachable for all assis
   assert.notEqual(tool!.mutates, true, 'fetch_document_section must be read-only');
   assert.ok(tool!.inputSchema.required?.includes('sourceType'), 'requires sourceType');
   assert.ok(tool!.inputSchema.required?.includes('sourceId'), 'requires sourceId');
-  const roles = ['housekeeping', 'maintenance', 'front_desk', 'general_manager', 'owner', 'admin'] as const;
+  const roles = ['maintenance', 'front_desk', 'general_manager', 'owner', 'admin'] as const;
   for (const role of roles) {
     const names = getToolsForRole(role, 'chat').map((t) => t.name);
     assert.ok(names.includes('fetch_document_section'), `role "${role}" should see fetch_document_section`);
   }
+});
+
+test('housekeeping sees NOTHING on the chat surface — not an empty answer, an empty mount', () => {
+  assert.deepEqual(getToolsForRole('housekeeping', 'chat').map((t) => t.name), []);
 });

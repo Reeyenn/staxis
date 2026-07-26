@@ -62,6 +62,7 @@ import {
   type ToolContext,
   type ToolDefinition,
 } from '@/lib/agent/tools';
+import { lensAllowsTool } from '@/lib/agent/lenses';
 import '@/lib/agent/tools/index';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { supabase as supabaseAnon } from '@/lib/supabase';
@@ -283,8 +284,16 @@ const originalAnonRpc = supabaseAnon.rpc.bind(supabaseAnon);
 const originalFetch = globalThis.fetch;
 
 function contextFor(tool: ToolDefinition): ToolContext {
-  const role = tool.allowedRoles.includes('admin') ? 'admin' : tool.allowedRoles[0];
   const surface: AgentSurface = (tool.surfaces ?? ['chat'])[0];
+  // WHO LENSES (2026-07-27): the first allowed role is no longer necessarily a
+  // role that can REACH the tool. `get_my_rooms` lists housekeeping first, and
+  // housekeeping has no chat mount at all, so picking it silently turned this
+  // sweep's proof into a refusal — the tool would reach no database and its
+  // hotel scoping would go untested. Pick a role whose lens actually admits the
+  // tool, so the sweep keeps exercising the handler rather than the gate.
+  const role = tool.allowedRoles.includes('admin')
+    ? 'admin'
+    : (tool.allowedRoles.find(r => lensAllowsTool(r, surface, tool.name)) ?? tool.allowedRoles[0]);
   return {
     user: {
       uid: seed.ids.get('auth.users:A') ?? PID_A,

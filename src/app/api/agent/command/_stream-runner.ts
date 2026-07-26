@@ -29,6 +29,7 @@ import {
   cancelCostReservation,
 } from '@/lib/agent/cost-controls';
 import { handleToolCallFinished } from './_tool-result-handler';
+import { effectiveRole } from '@/lib/company/access';
 import type { AppRole } from '@/lib/roles';
 
 // ─── Shared user-context loader ────────────────────────────────────────────
@@ -43,6 +44,18 @@ export interface AgentUserCtx {
   accountId: string;
   username: string;
   displayName: string;
+  /**
+   * The caller's role AT THIS HOTEL — the spine's `effectiveRole`, not the
+   * global `accounts.role`.
+   *
+   * These are different words for a dual-hat person, and the difference is the
+   * whole point of the company spine: Maria can be the GM at Beaumont and wear
+   * a maintenance hat at Lufkin. Reading `accounts.role` here handed her the
+   * GM's prompt and the GM's tool catalog at BOTH, which is the same
+   * capacity-vs-reach hole `managerManagesHotel` was rewritten to close — the
+   * door was already spine-aware (`userHasPropertyAccess` falls through to
+   * hats), but the job on the other side of it was not.
+   */
   role: AppRole;
   propertyAccess: string[];
   dept: string | null;
@@ -53,11 +66,10 @@ export type LoadUserCtxResult =
   | { ok: false; reason: 'account_not_found' };
 
 /**
- * Load the caller's account (role, property access) + their staff.id and
- * department on the given property. staffId is resolved for EVERY role (the
- * comms tools post as the caller), matching the prior inline logic in both
- * routes. Returns account_not_found when there's no accounts row for the auth
- * user — the caller maps that to a 404.
+ * Load the caller's account + the hat they wear at this hotel + their staff.id
+ * and department there. staffId is resolved for EVERY role (the comms tools
+ * post as the caller). Returns account_not_found when there's no accounts row
+ * for the auth user — the caller maps that to a 404.
  */
 export async function loadAgentUserCtx(
   authUserId: string,
@@ -70,13 +82,38 @@ export async function loadAgentUserCtx(
     .maybeSingle();
   if (accountErr || !account) return { ok: false, reason: 'account_not_found' };
 
+  const accountId = account.id as string;
+  const legacyRole = (account.role as AppRole) ?? 'staff';
+  const legacyAccess = (account.property_access as string[]) ?? [];
+
+  // The hat at THIS hotel. Falls back to the legacy role when the spine has
+  // nothing to say (an independent hotel, or a person with no membership) —
+  // `resolveEffectiveRole` already returns the legacy role in that case, so a
+  // null here means the spine actively found no standing at this property.
+  // Never widens: the route's `userHasPropertyAccess` gate ran first.
+  let roleHere: AppRole = legacyRole;
+  try {
+    const hat = await effectiveRole(accountId, propertyId);
+    if (hat.role) roleHere = hat.role;
+  } catch {
+    // A spine hiccup must not take the chat down. The legacy role is what this
+    // route used for its whole life, so falling back to it is the pre-lens
+    // behaviour rather than a new failure mode.
+  }
+
   const userCtx: AgentUserCtx = {
     uid: account.data_user_id as string,
-    accountId: account.id as string,
+    accountId,
     username: account.username as string,
     displayName: (account.display_name as string) ?? (account.username as string),
-    role: (account.role as AppRole) ?? 'staff',
-    propertyAccess: (account.property_access as string[]) ?? [],
+    role: roleHere,
+    // `executeTool` re-checks this array as defense-in-depth against a tool
+    // that forgets its own hotel filter. A hat-only company person has an EMPTY
+    // legacy array — they reach the hotel through a membership — so without
+    // this union every tool would refuse them even though the route let them
+    // in. Union, never replace: the array still names only hotels they reach,
+    // so the check keeps refusing every OTHER property.
+    propertyAccess: legacyAccess.includes(propertyId) ? legacyAccess : [...legacyAccess, propertyId],
     dept: null,
   };
 

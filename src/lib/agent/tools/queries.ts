@@ -37,7 +37,24 @@ import { mergePmsRoomsForDate } from '@/lib/pms-rooms-server';
 import { fetchTodayPropertyCounts } from '@/lib/db/today-room-work';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
 import { countsTrusted, isDataPending } from '@/lib/pms/feed-status';
+import { moneyVisibleToRole } from '../lenses';
+import { roomNumberFromLocation } from '@/components/concourse/target-chip';
 import type { Room } from '@/types';
+
+/**
+ * A ticket's repair cost in DOLLARS (the column is dollars, not cents), or null
+ * when nobody entered one.
+ *
+ * `Number(null)` is 0 and `Number('')` is 0, so a naive finite-check reads every
+ * cost-less ticket as a free repair and prints "$0.00". That tells a manager a
+ * job cost nothing when the truth is that nobody wrote the number down. Same
+ * helper, same reasoning, as `repairCostOf` in staxis-findings.ts.
+ */
+function repairCostDollars(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
 
 // ─── getPropertyToday ───────────────────────────────────────────────────────
 // Property-local "today" as YYYY-MM-DD. Mirrors the doctor's approach
@@ -455,6 +472,179 @@ registerTool<Record<string, never>>({
           stayoverDay: r.stayoverDay,
           lastCompleted: r.completedAt ? r.completedAt.toISOString() : null,
         })),
+      },
+    };
+  },
+});
+
+// ─── get_work_order_history ───────────────────────────────────────────────
+//
+// "What's the history on 214's AC?" — the maintenance tech's first question at
+// every door, and until now the chat could not answer it at all. The catalog
+// could read every room in the hotel and not one work order: the only tool that
+// touched the table was `staxis_equipment`, keyed on `equipment_id`, which most
+// tickets do not carry. So the person holding the wrench had no way to find out
+// whether somebody had already been here.
+//
+// Why a new tool rather than an extension. `staxis_equipment` answers "how is
+// this ASSET doing" and needs a UUID the tech does not have standing in a
+// doorway; `query_room_status` answers "what is this room's state right now"
+// from the PMS feed and has no history at all. Neither can be widened into a
+// room-and-item ticket search without becoming two tools sharing a name.
+//
+// ROOM MATCHING is the hard part and it is done in code, not in SQL.
+// `work_orders.room_number` is free text somebody typed — "214", "Room 214",
+// "Habitación 214", "Lobby", "Pool pump" — so an `ilike '%214%'` would also
+// return room 1214 and "Ice machine 214". `roomNumberFromLocation` is the same
+// deliberately strict normalizer the on-the-thing pattern chip uses, so a
+// ticket the chip attaches to room 214 is a ticket this tool attaches to room
+// 214. One rule, two surfaces, no drift.
+
+registerTool<{ room?: string; item?: string; equipmentId?: string; windowDays?: number; limit?: number }>({
+  name: 'get_work_order_history',
+  section: 'maintenance',
+  pmsFreshness: 'independent',
+  description:
+    'Every maintenance ticket ever logged for one room (or one piece of equipment, or the whole hotel) — what broke, when, who closed it and what they wrote down about the fix. ' +
+    'Use when: someone asks what has gone wrong somewhere before — "what\'s the history on 214\'s AC", "has anyone been in 118", "how many times have we fixed this", "qué le han hecho al aire de la 214", "is this a repeat?". This is the record BEHIND today\'s problem; for what is broken right now use query_room_status or staxis_findings, and for one asset\'s whole life use staxis_equipment. ' +
+    'Args: room — the room number as printed on the door ("214"), or a place like "Lobby". item — words to match inside the ticket text ("AC", "PTAC", "toilet"), for narrowing a busy room to one thing. equipmentId — an asset id from staxis_equipment, when you want that machine\'s tickets specifically. windowDays — look back only this many days; omit for the full history, which is usually what "has this happened before" means. limit — how many tickets to return, default 20, newest first. ' +
+    'Returns: { count, matched, tickets[] } — each ticket with the room, what was reported, how urgent it was called, whether it is open or done, when it was logged and closed, how many days it stayed open, what the person who closed it wrote, and whether a contractor was called. `matched` is how many tickets fit the filter in total, so you can say "3 of 11" honestly. ' +
+    'Refuses: nothing, but the record is only what somebody typed. An empty result means nobody logged a ticket, NOT that nothing ever broke there — say which one you can actually tell. Never state that a repair was made unless a ticket says so, and do not diagnose a fault from the history; report what the record shows and leave the diagnosis to the person standing in front of the thing.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      room: {
+        type: 'string',
+        description: 'Room number as printed on the door ("214"), or a place name like "Lobby". Omit for the whole hotel.',
+      },
+      item: {
+        type: 'string',
+        description: 'Words to match inside the ticket text — "AC", "PTAC", "toilet", "door lock". Narrows a busy room to one thing.',
+      },
+      equipmentId: {
+        type: 'string',
+        description: 'An equipment id from staxis_equipment, to get that asset\'s tickets specifically.',
+      },
+      windowDays: {
+        type: 'number',
+        description: 'Look back only this many days. Omit for the full history (usually what "has this happened before" means).',
+      },
+      limit: { type: 'number', description: 'Max tickets to return (default 20, max 100), newest first.' },
+    },
+  },
+  allowedRoles: ['admin', 'owner', 'general_manager', 'maintenance'],
+  handler: async ({ room, item, equipmentId, windowDays, limit }, ctx): Promise<ToolResult> => {
+    const max = Math.min(Math.max(1, Number.isFinite(limit) ? Number(limit) : 20), 100);
+    const wantRoom = String(room ?? '').trim();
+    const wantItem = String(item ?? '').trim().toLowerCase();
+    const wantEquipment = String(equipmentId ?? '').trim();
+
+    // ONE string literal on purpose: supabase-js infers the row type from the
+    // literal, and splitting it across a `+` concatenation collapses that
+    // inference to GenericStringError[]. Long line, deliberately.
+    let q = ctx.db
+      .from('work_orders')
+      .select('id, room_number, description, notes, severity, status, created_at, resolved_at, repair_cost, equipment_id, completion_note, completed_by_name, submitted_by_name, submitter_role, needs_pro, pro_trade, pro_company');
+    if (wantEquipment) q = q.eq('equipment_id', wantEquipment);
+    if (Number.isFinite(windowDays) && Number(windowDays) > 0) {
+      const since = new Date(Date.now() - Number(windowDays) * 86_400_000).toISOString();
+      q = q.gte('created_at', since);
+    }
+    const { data, error } = await q;
+    if (error) return { ok: false, error: 'Could not read this hotel\'s maintenance tickets.' };
+
+    const rows = (data ?? []) as Record<string, unknown>[];
+    const totalRead = rows.length;
+
+    // The room filter, in code. `roomNumberFromLocation` returns the door number
+    // for "214" / "Room 214" / "Habitación 214" and null for "Ice machine 3", so
+    // a numeric request matches on the NUMBER and never on a substring. A
+    // non-numeric request ("Lobby") falls back to a contains match, because
+    // there is no canonical form for a place name.
+    const wantRoomNumber = roomNumberFromLocation(wantRoom);
+    const matchesRoom = (raw: unknown): boolean => {
+      if (!wantRoom) return true;
+      const loc = typeof raw === 'string' ? raw : '';
+      if (wantRoomNumber) return roomNumberFromLocation(loc) === wantRoomNumber;
+      return loc.toLowerCase().includes(wantRoom.toLowerCase());
+    };
+    // Item text is matched across every free-text field a person could have
+    // written "AC" into — the reported fault, the running notes, and what the
+    // closer wrote. There is no category column on work_orders to match instead.
+    const matchesItem = (r: Record<string, unknown>): boolean => {
+      if (!wantItem) return true;
+      const hay = [r.description, r.notes, r.completion_note, r.pro_trade]
+        .map((v) => (typeof v === 'string' ? v.toLowerCase() : ''))
+        .join(' ');
+      return hay.includes(wantItem);
+    };
+
+    const filtered = rows
+      .filter((r) => matchesRoom(r.room_number) && matchesItem(r))
+      .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')));
+
+    // The maintenance lens sees no dollars anywhere — see moneyVisibleToRole.
+    // Stripped from the SHAPE rather than discouraged in prose: a field the
+    // model never receives is a field it cannot quote.
+    const showMoney = moneyVisibleToRole(ctx.user.role);
+
+    const tickets = filtered.slice(0, max).map((r) => {
+      const openedAt = typeof r.created_at === 'string' ? r.created_at : null;
+      const closedAt = typeof r.resolved_at === 'string' ? r.resolved_at : null;
+      const done = String(r.status ?? 'submitted') === 'resolved';
+      // Days-open is computed here, in code, for the same reason every other
+      // number in this catalog is: a model subtracting two ISO timestamps in
+      // prose is right until the month rolls over.
+      const daysOpen = openedAt
+        ? Math.max(0, Math.round(
+            ((closedAt ? Date.parse(closedAt) : Date.now()) - Date.parse(openedAt)) / 86_400_000,
+          ))
+        : null;
+      const cost = repairCostDollars(r.repair_cost);
+      return {
+        id: String(r.id),
+        room: (r.room_number as string | null) ?? null,
+        reported: (r.description as string | null) ?? null,
+        notes: (r.notes as string | null) ?? null,
+        severity: (r.severity as string | null) ?? null,
+        state: done ? 'done' : 'open',
+        loggedAt: openedAt,
+        loggedBy: (r.submitted_by_name as string | null) ?? null,
+        closedAt,
+        closedBy: (r.completed_by_name as string | null) ?? null,
+        whatWasDone: (r.completion_note as string | null) ?? null,
+        daysOpen,
+        contractorCalled: r.needs_pro === true
+          ? { trade: (r.pro_trade as string | null) ?? null, company: (r.pro_company as string | null) ?? null }
+          : null,
+        equipmentId: (r.equipment_id as string | null) ?? null,
+        ...(showMoney
+          ? { repairCost: cost === null ? null : cost.toLocaleString('en-US', { style: 'currency', currency: 'USD' }) }
+          : {}),
+      };
+    });
+
+    const stillOpen = filtered.filter((r) => String(r.status ?? 'submitted') !== 'resolved').length;
+
+    return {
+      ok: true,
+      data: {
+        count: tickets.length,
+        matched: filtered.length,
+        stillOpen,
+        filter: {
+          room: wantRoom || null,
+          roomMatchedAs: wantRoom ? (wantRoomNumber ?? `text contains "${wantRoom}"`) : null,
+          item: wantItem || null,
+          equipmentId: wantEquipment || null,
+          windowDays: Number.isFinite(windowDays) && Number(windowDays) > 0 ? Number(windowDays) : null,
+        },
+        tickets,
+        note: filtered.length === 0
+          ? (totalRead === 0
+            ? 'This hotel has no maintenance tickets on record at all. That means nobody has logged one — it does not mean nothing has broken. Say exactly that.'
+            : 'No ticket matches that. The record only holds what somebody typed, so this means nobody logged one here, not that nothing ever went wrong. Do not describe the room or the machine as trouble-free.')
+          : (showMoney ? undefined : 'Repair costs are not part of what you can see; if asked what something cost, say the money side is the manager\'s.'),
       },
     };
   },
