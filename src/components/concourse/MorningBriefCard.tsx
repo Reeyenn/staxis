@@ -65,8 +65,18 @@ const MB_CSS = `
   margin-top:9px;letter-spacing:.01em;}
 `;
 
+/**
+ * Only the two fields this card draws.
+ *
+ * Structural rather than `MorningBrief`, because the PORTFOLIO brief
+ * (src/lib/company/vp-brief.ts) is a different assembly with a different scope
+ * key and the identical line shape — and a company-scope reader should see the
+ * same pinned card their GMs do, not a second one that looks almost like it.
+ */
+export type RenderableBrief = Pick<MorningBrief, 'kind' | 'lines'>;
+
 export interface MorningBriefViewProps {
-  brief: MorningBrief | null;
+  brief: RenderableBrief | null;
   lang: Lang;
   /** True when the read failed. Renders nothing — an error is not a quiet night. */
   readFailed?: boolean;

@@ -744,9 +744,22 @@ export async function recordFindingActed(propertyId: string, findingId: string):
 }
 
 /**
- * A manager's verdict. Moving to `known_problem` ALWAYS records the magnitude
- * they consented to — escalation is measured from there, and a silence with no
- * recorded consent point can never break out of itself (see silencer.ts).
+ * A manager's verdict. Moving to EITHER silence — `known_problem` or `muted` —
+ * always records the magnitude they consented to.
+ *
+ * For `known_problem` that number is what escalation is measured from, and a
+ * silence with no recorded consent point can never break out of itself (see
+ * silencer.ts).
+ *
+ * `muted` was added to that rule for the portfolio queue and changes NOTHING
+ * about how the hotel behaves: `decideAction` still suppresses a muted problem
+ * unconditionally, forever, and mute still means gone as far as the hotel's own
+ * screen is concerned. What the number buys is the founder's one judgement call
+ * about the boss's view (src/lib/company/vp-queue.ts): a muted problem that has
+ * since grown far past the size it was muted at still climbs to the company
+ * queue. Without a recorded consent point that sentence is not computable, and
+ * the alternative — climbing every muted card — would make "not doing this"
+ * mean nothing one level up.
  */
 export async function setFindingStatus(
   propertyId: string,
@@ -763,7 +776,7 @@ export async function setFindingStatus(
     resolved_at: status === 'resolved' ? iso : null,
   };
 
-  if (status === 'known_problem') {
+  if (status === 'known_problem' || status === 'muted') {
     const current = await scopedDb(propertyId)
       .from('findings')
       .select('magnitude')
