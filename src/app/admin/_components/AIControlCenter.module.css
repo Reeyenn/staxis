@@ -1149,3 +1149,12 @@
   .trigger:hover { transform: none; }
   .spinner { animation: none; }
 }
+
+/* Why a feature's model picker lists only one provider. */
+.providerNote {
+  grid-column: 1 / -1;
+  margin: -2px 0 0 2px;
+  color: rgba(255, 255, 255, .56);
+  font-size: 11px;
+  line-height: 1.45;
+}

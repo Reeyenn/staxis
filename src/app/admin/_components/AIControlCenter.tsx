@@ -1397,6 +1397,14 @@ function FeatureEditor({
     () => models.filter((model) => isRuntimeCompatibleAiModel(feature, model)),
     [feature, models],
   );
+  // Say WHY only one provider's models are listed, so a narrowed picker reads
+  // as a deliberate limit rather than a missing catalog. Only shown when the
+  // feature really is restricted AND could otherwise have been broader — a
+  // feature that can run on everything says nothing.
+  const singleProviderNote = feature.modelSwitchable && feature.runtimeProviders.length === 1
+    && feature.requiredCapabilities.length > 0
+    ? `Only ${providerLabel(feature.runtimeProviders[0])} models can run this feature — it needs ${feature.requiredCapabilities.map(capabilityLabel).join(' + ')}.`
+    : null;
   const busyLabel = action === 'creating'
     ? 'Saving…'
     : action === 'validating'
@@ -1470,6 +1478,9 @@ function FeatureEditor({
               onChange={(value) => onDraft({ fallbackKey: value })}
             />
           </label>
+          {singleProviderNote && (
+            <p className={styles.providerNote}>{singleProviderNote}</p>
+          )}
           <div className={styles.featureActions}>
             {dirty && <button type="button" className={styles.textButton} disabled={Boolean(action) || mutationBlocked} onClick={onReset}>Reset</button>}
             <button
