@@ -56,12 +56,16 @@ import {
   setFindingStatus,
 } from '@/lib/findings/store';
 import type { Finding, FindingStatus } from '@/lib/findings/types';
+import { loadActionsForFindings } from '@/lib/findings/actions/store';
+import { getAction } from '@/lib/findings/actions/registry';
+import type { FindingAction } from '@/lib/findings/actions/types';
 import {
   DAILY_CARD_CAP,
   effectiveDisposition,
   isCardRenderable,
   rankFindings,
   splitByCap,
+  type CardAction,
   type QueueFinding,
 } from '@/components/concourse/finding-cards';
 
@@ -100,8 +104,57 @@ function verdictIsEngagement(action: ManagerVerdict): boolean {
   return action === 'known_problem' || action === 'resolved';
 }
 
+/**
+ * The attached fix, in the shape the card renders.
+ *
+ * EVERY SENTENCE IS DERIVED HERE, ON THE SERVER, FROM THE FROZEN PARAMS through
+ * the catalog entry that also defines what the button does. The client never
+ * composes its own description of the plan, so the offer a manager reads and
+ * the plan the database executes cannot drift apart.
+ *
+ * Returns null — the card renders as a plain finding — when the catalog has no
+ * entry for the kind, or when the frozen params no longer satisfy the entry's
+ * own validation. Both mean the code that would execute this has changed since
+ * the plan was frozen, and a button whose effect we cannot vouch for is worse
+ * than no button.
+ */
+function toCardAction(action: FindingAction): CardAction | null {
+  const definition = getAction(action.kind);
+  if (!definition) return null;
+  if (definition.validate(action.params)) return null;
+
+  const offer = definition.offer(action.params);
+  const label = definition.label(action.params);
+  const receipt = action.receipt ? definition.receiptLine(action.receipt, action.params) : null;
+
+  return {
+    id: action.id,
+    kind: action.kind,
+    state: action.state,
+    offerEn: offer.en,
+    offerEs: offer.es,
+    labelEn: label.en,
+    labelEs: label.es,
+    receiptEn: receipt?.en ?? null,
+    receiptEs: receipt?.es ?? null,
+    changed: action.changedFacts
+      ? {
+          field: action.changedFacts.field,
+          was: action.changedFacts.was,
+          now: action.changedFacts.now,
+          subject: action.changedFacts.subject ?? null,
+        }
+      : null,
+    failureReason: action.failureReason,
+  };
+}
+
 /** Stored row → wire shape. Everything the card renders, nothing it does not. */
-function toQueueFinding(f: Finding, phrased: { en: string | null; es: string | null } | undefined): QueueFinding {
+function toQueueFinding(
+  f: Finding,
+  phrased: { en: string | null; es: string | null } | undefined,
+  action: FindingAction | undefined,
+): QueueFinding {
   return {
     id: f.id,
     detectorId: f.detectorId,
@@ -128,6 +181,7 @@ function toQueueFinding(f: Finding, phrased: { en: string | null; es: string | n
     firstSeenAt: f.firstSeenAt,
     lastSeenAt: f.lastSeenAt,
     occurrenceCount: f.occurrenceCount,
+    action: action ? toCardAction(action) : null,
   };
 }
 
@@ -162,8 +216,13 @@ export async function GET(req: NextRequest) {
     // question.
     const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f) }));
 
-    const phrasing = await judgedPhrasing(propertyId, showable.map((f) => f.id));
-    const findings = showable.map((f) => toQueueFinding(f, phrasing.get(f.id)));
+    const ids = showable.map((f) => f.id);
+    const phrasing = await judgedPhrasing(propertyId, ids);
+    // Never throws: a card whose attached fix could not be read renders as the
+    // plain finding it was before the hands existed, which is a degradation
+    // rather than a lie.
+    const actions = await loadActionsForFindings(propertyId, ids);
+    const findings = showable.map((f) => toQueueFinding(f, phrasing.get(f.id), actions.get(f.id)));
 
     const run = await latestRunFacts(propertyId);
 

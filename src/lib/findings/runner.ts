@@ -38,6 +38,7 @@ import {
   demoteDisposition,
   type DetectorState,
 } from './demotion';
+import { proposeAction } from './actions/store';
 import { allDetectors, requiredFeeds } from './registry';
 import { loadFeeds, resolveLoadEnv } from './feeds';
 import {
@@ -148,6 +149,7 @@ export async function runFindingsForProperty(
     findingsSuppressed: 0,
     findingsEscalated: 0,
     findingsExpired: 0,
+    actionsProposed: 0,
     durationMs: 0,
     errors: [],
     skipped: [],
@@ -294,6 +296,33 @@ export async function runFindingsForProperty(
             summary.findingsEscalated += 1;
             break;
         }
+
+        // ── THE HANDS ──────────────────────────────────────────────────────
+        // A card that Staxis can act on arrives with the fix attached. Three
+        // gates, all of them here rather than in the detector, so a detector
+        // cannot skip one:
+        //
+        //   • the DECLARATION offers a template at all
+        //   • the disposition AFTER demotion is still 'propose' — a check this
+        //     hotel has ignored down to a recommendation keeps its card and
+        //     loses its button, which is what being ignored should cost
+        //   • the finding is not SILENCED — 'suppress' is a manager's "stop
+        //     bringing this up", and answering it with a new button would be
+        //     the loudest possible way to ignore them
+        if (
+          declaration.actionTemplate &&
+          args.disposition === 'propose' &&
+          action.kind !== 'suppress'
+        ) {
+          const plan = declaration.actionTemplate(args.draft);
+          if (plan) {
+            const findingId = await findingIdFor(propertyId, dedupeKey, current?.id ?? null);
+            if (findingId) {
+              const outcome = await proposeAction(propertyId, findingId, plan);
+              if (outcome === 'proposed') summary.actionsProposed += 1;
+            }
+          }
+        }
       } catch (e) {
         summary.errors.push({
           detectorId: declaration.id,
@@ -357,6 +386,24 @@ export async function runFindingsForProperty(
   }
 
   return summary;
+}
+
+/**
+ * The id of the finding this draft just landed on.
+ *
+ * Known already on an update or an escalation. On a fresh open it is not —
+ * `openFinding` returns what happened, not which row — so one scoped read
+ * resolves it. Only runs for action-bearing detectors, which are the rare ones,
+ * so this is not a per-finding cost.
+ */
+async function findingIdFor(
+  propertyId: string,
+  dedupeKey: string,
+  known: string | null,
+): Promise<string | null> {
+  if (known) return known;
+  const rows = await loadActiveFindings(propertyId, [dedupeKey]);
+  return rows.get(dedupeKey)?.id ?? null;
 }
 
 /**
@@ -444,6 +491,7 @@ export async function runFindingsForAllProperties(
           findingsSuppressed: 0,
           findingsEscalated: 0,
           findingsExpired: 0,
+          actionsProposed: 0,
           durationMs: 0,
           errors: [
             {

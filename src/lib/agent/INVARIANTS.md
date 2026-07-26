@@ -1017,3 +1017,164 @@ an invariant rather than a comment.
   `effectiveDisposition` return the detector's value and by disconnecting the
   answer from the finding — each turns a case red.
 - **History:** Findings-engine Phase 3, 2026-07-26.
+
+## The hands (migration 0363)
+
+The layer that turns a card into a fix. A finding Staxis can act on arrives with
+the action attached, and one tap runs it. Four invariants, because each one is
+the difference between "the AI helped" and "the AI did something I did not ask
+for".
+
+- **INV-HAND-1 — what runs is what was shown.** The exact action and its exact
+  parameters are written when the card is created, by CODE, from the finding's
+  own evidence. There is no model call at execution time and no improvisation:
+  `finding_actions.params` IS the decision. It cannot be edited afterwards, so
+  the button a manager reads and the plan the database runs are the same object
+  rather than two things that agree today.
+- **Enforced by:** trigger `staxis_finding_actions_frozen` (migration 0363),
+  which REJECTS any UPDATE that changes `params`, `verify`, `action_kind`,
+  `finding_id`, `property_id`, `params_fingerprint`, `idempotency_key` or
+  `proposed_at` — modelled on `staxis_agent_decisions_immutable` (0350). The
+  same trigger COMPUTES `params_fingerprint` on insert (sha256 of the canonical
+  jsonb text), so the app cannot supply a fingerprint that disagrees with the
+  plan it fingerprints, and "was this the plan the manager approved?" is a diff.
+  Belt to those braces: `staxis_execute_finding_action` recomputes the
+  fingerprint and returns `tampered` on a mismatch, so a dropped trigger still
+  cannot execute an edited plan. **DB-ENFORCED.**
+- **Assumed by:** the card's Approve button, whose sentence and label are
+  rendered on the SERVER from the frozen params through the same catalog entry
+  that defines what the button does (`/api/findings` `toCardAction`), so the
+  client is given no way to compose its own description of the plan.
+- **Tested by:** `findings-actions.integration.test.ts` — "the frozen plan
+  CANNOT be edited after the card was written", "neither can the facts it will
+  be re-checked against", "a tampered fingerprint refuses to execute even with
+  the trigger out of the way", "the database computes the fingerprint — the app
+  never supplies one"; plus the pure mirror in `findings-actions.test.ts` ("the
+  work-order plan is identical whether the location has 4 faults or 40" — the
+  measurement must not reach `params`, or a re-find would churn a new proposal
+  nightly). Verified by relaxing the trigger's params check and by removing the
+  fingerprint comparison; each turns exactly its case red.
+- **History:** The hands, 2026-07-26.
+
+- **INV-HAND-2 — the receipt is re-derived inside the executing transaction.**
+  Age is a proxy; changed-ness is the thing. Before any write,
+  `staxis_execute_finding_action` re-queries the live rows the finding rests on
+  and compares them to the frozen `verify` payload. If the facts moved — work
+  orders closed, a reorder point already changed by a human, an item archived —
+  the action DECLINES, records what moved in `changed_facts`, and writes
+  nothing. "The AI declined and explained" is the good outcome; "the AI did
+  something wrong" is the one this exists to make impossible.
+- **Enforced by:** the function being plpgsql. The verification read and the
+  write are in ONE transaction, so there is no window between them. Doing this
+  from the app was not an option: PostgREST has no transactions, and
+  verify-then-write over two round trips is exactly the gap this closes.
+- **Also enforced by:** the write sitting inside a plpgsql exception block — a
+  SUBTRANSACTION. A failed write rolls back completely while the `state='failed'`
+  row, written by the handler in the OUTER transaction, survives. Failure is
+  therefore always recorded and never partial.
+- **NOT expressible as a CHECK:** the constraint is a relationship between a
+  frozen payload and rows in three other tables at a moment in time.
+- **Tested by:** `findings-actions.integration.test.ts` — "THE DECLINE: the work
+  orders were closed between the offer and the tap" (the change is planted
+  between proposal and tap), "a reorder point somebody already changed declines,
+  and does not overwrite them", "an item that left the list declines rather than
+  erroring", "more work orders than when it was offered still executes — it got
+  worse, not better", "a decline is final", and "the state is failed, the reason
+  is kept, and NOTHING was half-written". Verified by making the verification
+  never fire, and by recording a failed write as executed; each turns exactly
+  its case red.
+- **History:** The hands, 2026-07-26.
+
+- **INV-HAND-3 — every action in the catalog has a real undo, and Staxis never
+  undoes a human.** An action kind may not exist without a stated reversal, and
+  the reversal refuses when somebody has touched the result.
+  `create_work_order` removes the row Staxis created — and only while it is
+  still exactly as created (status still 'submitted', unassigned, unpriced, no
+  completion note, photo or name). `raise_inventory_reorder_point` writes back
+  the previous value frozen in the plan — and only while the current value is
+  still the one it set. Either way the `finding_actions` receipt survives, so
+  nothing is lost from the audit trail.
+- **Why removal rather than a 'cancelled' status:** the maintenance board has
+  exactly two states (`src/types/index.ts`: open ↔ 'submitted', done ↔
+  'resolved'). Marking an undone suggestion 'resolved' would put a job NOBODY
+  DID into the hotel's completed-maintenance history, where it would go on to
+  skew the repair-cost samples this very layer prices findings from. A worse lie
+  than the card ever told.
+- **Enforced by:** `validateActionDefinition` (`actions/registry.ts`) refusing an
+  entry with an empty `undoDescription` or `outcomeCheckDays < 1` at module
+  load, plus `staxis_undo_finding_action`'s touched-checks. Code-level for the
+  first (a catalog is a TypeScript map), DB-level for the second.
+- **Tested by:** `findings-actions.integration.test.ts` — "undo removes the work
+  order Staxis created, and records it", "undo restores the exact previous
+  reorder point", "undo REFUSES once somebody has started on the work order",
+  "undo REFUSES once somebody has changed the reorder point themselves",
+  "undoing twice is not an error", "an action that never ran cannot be undone";
+  plus "an entry with no undo is refused" in `findings-actions.test.ts`.
+  Verified by dropping the touched-check; the refusal cases go red.
+- **History:** The hands, 2026-07-26.
+
+- **INV-HAND-4 — a double tap is exactly one action.** Two requests carrying the
+  same approval produce one work order, not two, and the second one is answered
+  with the FIRST one's receipt rather than an error.
+- **Enforced by:** two DB guarantees, neither of them politeness. (1) UNIQUE
+  index `finding_actions_idempotency_uq` on `idempotency_key`, which the trigger
+  derives as `<finding_id>:<params_fingerprint>` — one proposal per problem per
+  exact plan, so a nightly re-find and a retried write are both one row.
+  (2) `staxis_execute_finding_action` takes `FOR UPDATE` on the row and refuses
+  to leave `'proposed'` twice; concurrent taps serialise on the lock and the
+  loser reads the state the winner already moved it to. Partial unique index
+  `finding_actions_one_open_per_finding_uq` additionally allows at most one live
+  offer per finding, because the card has one button and two rows would make it
+  ambiguous. **DB-ENFORCED.**
+- **Assumed by:** the API route, which therefore does not have to be careful
+  about retries, and the card, which does not disable itself defensively.
+- **Tested by:** `findings-actions.integration.test.ts` — "two taps arriving
+  together produce exactly ONE work order" (concurrent, through the real route),
+  "the replay is answered with the FIRST tap receipt, not an error", "the
+  idempotency key is UNIQUE — two identical proposals cannot both land", "a
+  re-run with the same plan does not stack a second offer", "a re-run with a
+  DIFFERENT plan supersedes the old offer rather than duplicating it".
+  Verified by removing the state guard, which turns the concurrency case red.
+- **History:** The hands, 2026-07-26.
+
+- **INV-HAND-5 — the judge can quieten a fix, never author one.** The AI judge
+  may re-sort a card down (`propose` → `recommend`/`fyi`/`drop`), and doing so
+  takes the button with it. It can never add, remove, retarget or reparameterise
+  an action.
+- **Enforced by:** three independent mechanisms. (1) The judge's output contract
+  is a CLOSED key set (`ITEM_KEYS` = id/d/en/es/why); an item carrying `action`
+  or `params` refuses the WHOLE reply. (2) `persistJudgments` writes only
+  `judged_*` columns on `findings`; `finding_actions` is a table the judge module
+  does not import. (3) A plan is frozen and immutable (INV-HAND-1), so even a
+  hypothetical write would be refused by Postgres. The downgrade half is
+  `offersApproval` in `finding-cards.ts`, which requires the EFFECTIVE
+  disposition to be `propose`.
+- **Tested by:** `findings-actions.test.ts` — "a reply naming an action refuses
+  the WHOLE reply", "a reply carrying action parameters refuses the whole reply
+  too", "the judge module has no handle on the actions table at all", "a card
+  the judge sorted down to an FYI loses the button", "undo survives a downgrade";
+  and `findings-actions.integration.test.ts` — "a judging pass leaves the action
+  row byte-identical", "a judging pass cannot CREATE an action for a finding
+  that has none". Verified by making `offersApproval` ignore the disposition.
+- **History:** The hands, 2026-07-26.
+
+- **INV-HAND-6 — only the runner turns a plan into a button, and only for a live
+  proposal.** A detector returns a plan; the runner decides whether it becomes an
+  offer, and refuses on three counts: no `actionTemplate` on the declaration, a
+  post-demotion disposition that is not `propose`, or a finding the manager has
+  silenced. A detector cannot bypass any of them, because a detector never
+  writes.
+- **Enforced by:** structure — `DetectorDeclaration.actionTemplate` is a PURE
+  function of a draft with no database handle, and `registerDetector` refuses an
+  action template on any detector whose `defaultDisposition` is not `propose`
+  (an offer rendered as an FYI is a button on a card that says it needs no
+  decision). NOT DB-enforceable: the registry is an in-process map.
+- **Tested by:** `findings-actions.integration.test.ts` — "a proposal gets its
+  fix frozen on the night the card is written", "the RUNNER refuses to button a
+  recommendation, even when the template offers one" (driven through a probe
+  whose template never declines, so the runner's gate is what is measured), "a
+  problem the manager silenced is never answered with a button", "a decision the
+  manager already made is never re-offered"; plus "an action template on a
+  recommend-by-default detector is refused at registration" in
+  `findings-actions.test.ts`. Verified by removing each runner gate in turn.
+- **History:** The hands, 2026-07-26.

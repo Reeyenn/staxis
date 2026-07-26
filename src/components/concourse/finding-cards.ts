@@ -45,6 +45,121 @@ export interface CardEvidence {
   basis: string;
 }
 
+// ─── The hands ──────────────────────────────────────────────────────────────
+
+/** Mirrors finding_actions.state (migration 0363). */
+export type CardActionState =
+  | 'proposed'
+  | 'superseded'
+  | 'executed'
+  | 'declined_changed'
+  | 'undone'
+  | 'failed';
+
+/**
+ * The fix attached to a card, as /api/findings hands it over.
+ *
+ * EVERY SENTENCE ARRIVES IN BOTH LANGUAGES, ALREADY DERIVED. The route renders
+ * them from the FROZEN params through the catalog entry, so what the button
+ * says and what the button does come from one source. The client is given no
+ * way to compose its own description of the plan — that is how "what runs is
+ * what was shown" survives contact with a UI.
+ */
+export interface CardAction {
+  id: string;
+  kind: string;
+  state: CardActionState;
+  /** "Create a work order for a full inspection of Room 214?" */
+  offerEn: string;
+  offerEs: string;
+  /** The button. "Create the work order". */
+  labelEn: string;
+  labelEs: string;
+  /** After it ran. Null until then. */
+  receiptEn: string | null;
+  receiptEs: string | null;
+  /** What moved, when the action declined because the facts changed. */
+  changed: {
+    field: string;
+    was: unknown;
+    now: unknown;
+    subject?: string | null;
+  } | null;
+  /** Set when the write itself failed. */
+  failureReason: string | null;
+}
+
+/**
+ * True when this card should show a one-tap approve.
+ *
+ * THREE CONDITIONS, AND THE DISPOSITION IS THE ONE THAT MATTERS.
+ *
+ * The disposition here is the EFFECTIVE one — the judge's verdict when it has
+ * reached one, the detector's default otherwise. So this is also where the
+ * judge's reach over the hands ends and is defined: it may re-sort a card down
+ * to a recommendation or an FYI, and doing so takes the BUTTON away with it,
+ * because a card that says it needs no decision must not carry one. What the
+ * judge can never do in the other direction is make a button appear — the
+ * action row only exists if the runner wrote one, the runner writes one only
+ * for a proposal, and the judge's output contract has no field through which an
+ * action could be named at all (judge.ts ITEM_KEYS).
+ *
+ * A superseded offer is history — a later run replaced it — and rendering its
+ * button would run a plan that is no longer the one on the card.
+ */
+export function offersApproval(
+  f: Pick<QueueFinding, 'disposition' | 'action'>,
+): boolean {
+  return f.disposition === 'propose' && f.action?.state === 'proposed';
+}
+
+/**
+ * True when the action ran and can still be taken back.
+ *
+ * Deliberately NOT gated on the disposition. Once something has actually
+ * happened at the hotel, the manager's ability to reverse it cannot depend on
+ * how a later judging pass decided to sort the card it came from.
+ */
+export function offersUndo(f: Pick<QueueFinding, 'action'>): boolean {
+  return f.action?.state === 'executed';
+}
+
+/**
+ * Why Staxis declined, in the manager's language.
+ *
+ * The database writes an English `why` alongside the numbers (0363). That
+ * sentence is the record; THIS is the rendering, and it is keyed on the
+ * structured `field` rather than on the English text so a Spanish speaker gets
+ * Spanish rather than a translation of a string that might change. An
+ * unrecognised field falls back to a shape that is still true and still names
+ * both numbers — an honest generic beats a blank.
+ */
+export function declinedExplanation(action: CardAction, lang: Lang): string {
+  const es = lang === 'es';
+  const subject = action.changed?.subject ?? '';
+  const was = String(action.changed?.was ?? '');
+  const now = String(action.changed?.now ?? '');
+
+  switch (action.changed?.field) {
+    case 'open_work_orders':
+      return es
+        ? `Staxis no lo hizo: ${subject} tenía ${was} órdenes de trabajo abiertas cuando lo propuso y ahora tiene ${now}. Alguien ya se está ocupando.`
+        : `Staxis did not do it: ${subject} had ${was} open work orders when this was offered and now has ${now}. Somebody is already on it.`;
+    case 'reorder_at':
+      return es
+        ? `Staxis no lo hizo: el punto de pedido de ${subject} era ${was} cuando lo propuso y ahora es ${now}. Alguien ya lo cambió.`
+        : `Staxis did not do it: the reorder point for ${subject} was ${was} when this was offered and is now ${now}. Somebody has already changed it.`;
+    case 'item':
+      return es
+        ? `Staxis no lo hizo: ${subject} ya no está en la lista de inventario de este hotel.`
+        : `Staxis did not do it: ${subject} is no longer on this hotel's inventory list.`;
+    default:
+      return es
+        ? `Staxis no lo hizo: los datos cambiaron desde que lo propuso (era ${was}, ahora ${now}).`
+        : `Staxis did not do it: the facts changed since it was offered (was ${was}, now ${now}).`;
+  }
+}
+
 /**
  * One finding, as /api/findings hands it to the screen.
  *
@@ -72,6 +187,13 @@ export interface QueueFinding {
   firstSeenAt: string;
   lastSeenAt: string;
   occurrenceCount: number;
+  /**
+   * The fix, when Staxis has one it may perform. Absent on every card that is
+   * only a recommendation, which is most of them — and absent, deliberately, on
+   * a deploy where the hands have not shipped, so a card renders exactly as it
+   * did before rather than blank.
+   */
+  action?: CardAction | null;
 }
 
 /** The liveness artifact: proof the watcher ran, and what it saw. */

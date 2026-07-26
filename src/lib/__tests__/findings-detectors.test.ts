@@ -401,6 +401,10 @@ describe('every shipped detector does what it says it does', () => {
         'inventory_usage_baseline',
         'supply_spend_baseline',
         'work_order_rate_baseline',
+        // The hands: the first detector whose cards arrive with the fix
+        // attached. Reads the hotel's OWN maintenance board rather than the PMS
+        // mirror `operational_pattern` uses, which is empty fleet-wide.
+        'repeat_room_work_orders',
       ].sort(),
       'every detection system in the app runs under the one runner',
     );

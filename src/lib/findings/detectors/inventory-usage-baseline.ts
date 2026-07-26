@@ -26,6 +26,8 @@
 
 import { addDaysInTz } from '@/lib/schedule/local-date';
 
+import { raiseReorderPointParams } from '../actions/catalog/raise-reorder-point';
+import type { FindingActionDraft } from '../actions/types';
 import { registerDetector } from '../registry';
 import {
   excessBand,
@@ -97,9 +99,24 @@ function draftForItem(item: InventoryItemUsage): FindingDraft | null {
         'latest stretch was the extra',
   );
 
+  const rate = round1(currentRate);
+  // A card only becomes an OFFER when there is something Staxis may do about
+  // it. When the hotel has no lead time on file, no reorder point set, or the
+  // covering level is not meaningfully higher than the one already there, the
+  // finding is still true and still worth reading — it just has no button.
+  const fix = raiseReorderPointParams({
+    itemId: item.itemId,
+    itemName: item.itemName,
+    unit: item.unit,
+    currentReorderAt: item.reorderAt,
+    leadDays: item.reorderLeadDays,
+    ratePerDay: rate,
+  });
+
   return {
     // Identity is the ITEM, never the size of the overage.
     key: `item_usage:${item.itemId}`,
+    disposition: fix ? 'propose' : 'fyi',
     summary:
       `${item.itemName} is going out at about ${round1(currentRate)} ${item.unit} a day — ` +
       `this item's own usual rate here is about ${round1(baseline.median)}.`,
@@ -111,6 +128,11 @@ function draftForItem(item: InventoryItemUsage): FindingDraft | null {
         item_id: item.itemId,
         interval_end: latest.endDate,
         interval_days: Math.round(latest.days * 100) / 100,
+        // The hotel's own reorder settings, carried into the receipt so the
+        // action template — which is pure, and sees only the draft — can freeze
+        // a plan from exactly the numbers the card was written from.
+        reorder_at: item.reorderAt,
+        reorder_lead_days: item.reorderLeadDays,
       },
       values: {
         item_name: item.itemName,
@@ -152,6 +174,46 @@ export function detectInventoryUsageBaseline(ctx: DetectorContext): FindingDraft
   return drafts;
 }
 
+/**
+ * The fix, frozen from what the card says.
+ *
+ * PURE, and reading only the draft. Everything it needs is already in the
+ * receipt: the measured rate the card shows, and the two settings the hotel
+ * typed in, which the detector copied into `evidence.params` for exactly this
+ * reason. Returns null whenever the arithmetic has no honest answer — see
+ * raiseReorderPointParams.
+ */
+export function reorderPointActionFor(draft: FindingDraft): FindingActionDraft | null {
+  const params = draft.evidence.params;
+  const values = draft.evidence.values;
+  const itemId = params.item_id;
+  const itemName = values.item_name;
+  if (typeof itemId !== 'string' || typeof itemName !== 'string') return null;
+
+  const plan = raiseReorderPointParams({
+    itemId,
+    itemName,
+    unit: typeof values.unit === 'string' ? values.unit : 'units',
+    currentReorderAt: typeof params.reorder_at === 'number' ? params.reorder_at : null,
+    leadDays: typeof params.reorder_lead_days === 'number' ? params.reorder_lead_days : null,
+    ratePerDay: typeof values.current_rate_per_day === 'number' ? values.current_rate_per_day : 0,
+  });
+  if (!plan) return null;
+
+  return {
+    kind: 'raise_inventory_reorder_point',
+    params: plan,
+    // What must STILL be true at the tap: this item exists, is not archived,
+    // and its reorder point is untouched since the offer. Overwriting a number
+    // somebody deliberately changed would be the opposite of helping.
+    verify: {
+      item_id: itemId,
+      item_name: itemName,
+      reorder_at: plan.from_reorder_at,
+    },
+  };
+}
+
 // ─── Eval fixtures ───────────────────────────────────────────────────────────
 
 /**
@@ -161,7 +223,14 @@ export function detectInventoryUsageBaseline(ctx: DetectorContext): FindingDraft
 export function usageFixture(
   itemId: string,
   ratesPerDay: readonly number[],
-  opts: { unit?: string; itemName?: string; days?: number; unitCostCentsSamples?: number[] } = {},
+  opts: {
+    unit?: string;
+    itemName?: string;
+    days?: number;
+    unitCostCentsSamples?: number[];
+    reorderAt?: number | null;
+    reorderLeadDays?: number | null;
+  } = {},
 ): InventoryUsageHistory {
   const days = opts.days ?? 3;
   const firstCount = '2025-10-04';
@@ -170,6 +239,8 @@ export function usageFixture(
     itemName: opts.itemName ?? 'Bath towels',
     unit: opts.unit ?? 'each',
     unitCostCentsSamples: opts.unitCostCentsSamples ?? [450, 480, 520],
+    reorderAt: opts.reorderAt ?? null,
+    reorderLeadDays: opts.reorderLeadDays ?? null,
     intervals: ratesPerDay.map((rate, index) => ({
       endDate: addDaysInTz(firstCount, index * days),
       days,
@@ -196,13 +267,19 @@ export const inventoryUsageBaselineDetector: Detector<DetectorParams> = {
       },
     ],
     receiptQueryId: RECEIPT,
-    defaultDisposition: 'fyi',
+    // Every draft states its own disposition (see draftForItem): 'propose' when
+    // there is a reorder point Staxis can correct, 'fyi' when there is not. The
+    // default has to be 'propose' because the registry refuses an action
+    // template on anything quieter — an offer rendered as an FYI would be a
+    // button on a card that says it needs no decision.
+    defaultDisposition: 'propose',
     defaultSeverity: 'attention',
     escalation: { factor: 2, minDelta: 5 },
     // A handful of items at most; a night where every item looks strange is a
     // counting problem, not fifty separate findings.
     maxPerRun: 5,
     staleAfterDays: 21,
+    actionTemplate: reorderPointActionFor,
     evalCases: [
       {
         name: 'a rate that jumps clear of the item own history is one finding, keyed on the item',

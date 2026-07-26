@@ -125,6 +125,12 @@ function feeds(over: FeedOverrides = {}): SweepFeeds {
             unitsUsed: rate * 7,
           })),
           unitCostCentsSamples: [400, 420],
+          // The sweep never reads these — they exist for the reorder-point
+          // action, which the sweep has no path to. Null keeps this fixture
+          // saying "this hotel has not configured reordering", which is the
+          // shape that proves the sweep does not depend on it.
+          reorderAt: null,
+          reorderLeadDays: null,
         },
       ],
       coverageStartDate: datesBack(120)[0] ?? null,

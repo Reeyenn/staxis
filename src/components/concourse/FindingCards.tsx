@@ -47,6 +47,7 @@ import {
   DAILY_CARD_CAP,
   cardPhrasing,
   dataAgeNote,
+  declinedExplanation,
   distinctDetectors,
   focusedSplit,
   formatPriceRange,
@@ -55,7 +56,9 @@ import {
   isQuiet,
   livenessLine,
   occurrenceLine,
+  offersApproval,
   offersResolve,
+  offersUndo,
   rankFindings,
   severityChipClass,
   severityLabel,
@@ -108,6 +111,21 @@ const S = {
     en: 'Staxis could not check just now. Do not read this as "nothing is wrong".',
     es: 'Staxis no pudo revisar ahora. No lo tomes como "no pasa nada".',
   },
+
+  // ── the hands ──
+  doIt: { en: 'Yes, do it', es: 'Sí, hazlo' },
+  notNow: { en: 'Not now', es: 'Ahora no' },
+  working: { en: 'Doing it…', es: 'Haciéndolo…' },
+  undo: { en: 'Undo', es: 'Deshacer' },
+  undoing: { en: 'Undoing…', es: 'Deshaciendo…' },
+  undone: {
+    en: 'Undone. Nothing was left behind.',
+    es: 'Deshecho. No quedó nada.',
+  },
+  actionFailed: {
+    en: 'That did not go through, and nothing was changed. Try again in a moment.',
+    es: 'No se completó y no se cambió nada. Inténtalo de nuevo en un momento.',
+  },
 } as const;
 
 // ─── Scoped styles ──────────────────────────────────────────────────────────
@@ -153,6 +171,15 @@ const FD_CSS = `
 .fd-err{margin-top:10px;border-radius:12px;padding:9px 12px;font-size:12.5px;line-height:1.5;
   background:rgba(184,92,61,.10);color:#8E432B;}
 .fd-focused{border-color:rgba(62,92,72,.55);box-shadow:0 0 0 3px rgba(158,183,166,.28);}
+
+/* ── the hands ── */
+.fd-offer{margin-top:11px;border-radius:12px;border:1px solid rgba(62,92,72,.22);
+  background:rgba(158,183,166,.12);padding:11px 13px;font-size:13px;line-height:1.5;color:#1F231C;}
+.fd-settled{margin-top:11px;border-radius:12px;padding:10px 13px;font-size:12.5px;line-height:1.5;}
+.fd-settled.fd-done{background:rgba(92,122,96,.12);color:#3E5C48;}
+.fd-settled.fd-declined{background:rgba(201,150,68,.14);color:#7A5518;}
+.fd-settled.fd-broke{background:rgba(184,92,61,.10);color:#8E432B;}
+.fd-settled .fd-act{margin-top:8px;}
 `;
 
 // ─── Receipt rendering ──────────────────────────────────────────────────────
@@ -203,6 +230,95 @@ function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }) {
   );
 }
 
+// ─── The attached fix ───────────────────────────────────────────────────────
+
+/**
+ * The one-tap fix, and everything that can become of it.
+ *
+ * ONE TAP, NOT TWO. The offer sentence sits directly above the button, so the
+ * tap is already informed — the confirmation IS the card, inline, rather than a
+ * dialog stacked on top of it. That is the opposite of the Mute button below,
+ * which asks first, and the difference is deliberate: mute is permanent and
+ * this is not. Everything here is undoable, and the Undo appears on this same
+ * card the moment it runs.
+ *
+ * The sentence and the button label come from the SERVER, derived from the
+ * frozen plan through the same catalog entry that defines what the button does.
+ * Nothing here composes its own description of the action, which is how "what
+ * runs is what was shown" survives contact with a UI.
+ */
+function ActionRow({
+  finding,
+  lang,
+  busy,
+  onAction,
+}: {
+  finding: QueueFinding;
+  lang: Lang;
+  busy: boolean;
+  onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
+}) {
+  const es = lang === 'es';
+  const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
+  const action = finding.action;
+  if (!action) return null;
+
+  if (offersApproval(finding)) {
+    return (
+      <>
+        <div className="fd-offer">{es ? action.offerEs : action.offerEn}</div>
+        <div className="fd-acts">
+          <button
+            type="button"
+            className="fd-act fd-yes"
+            disabled={busy}
+            onClick={() => onAction?.(action.id, 'execute')}
+          >
+            {busy ? L('working') : es ? action.labelEs : action.labelEn}
+          </button>
+        </div>
+      </>
+    );
+  }
+
+  if (offersUndo(finding)) {
+    return (
+      <div className="fd-settled fd-done">
+        <div>{(es ? action.receiptEs : action.receiptEn) ?? ''}</div>
+        <button
+          type="button"
+          className="fd-act"
+          disabled={busy}
+          onClick={() => onAction?.(action.id, 'undo')}
+        >
+          {busy ? L('undoing') : L('undo')}
+        </button>
+      </div>
+    );
+  }
+
+  if (action.state === 'undone') {
+    return <div className="fd-settled fd-done">{L('undone')}</div>;
+  }
+
+  // The whole point of re-verifying inside the transaction: Staxis declined,
+  // and says what moved. A manager reading this learns that the system checked
+  // — which is worth more than the action would have been.
+  if (action.state === 'declined_changed') {
+    return <div className="fd-settled fd-declined">{declinedExplanation(action, lang)}</div>;
+  }
+
+  if (action.state === 'failed') {
+    // Deliberately the generic sentence, not `failureReason`: that column holds
+    // a Postgres error, which is a fact for an operator and noise for a
+    // manager. What matters to them is the part that is always true here —
+    // nothing was half-done.
+    return <div className="fd-settled fd-broke">{L('actionFailed')}</div>;
+  }
+
+  return null;
+}
+
 // ─── One card ───────────────────────────────────────────────────────────────
 
 interface CardProps {
@@ -215,9 +331,19 @@ interface CardProps {
   /** Fired the first time this card's numbers are opened. Optional so the view
    *  can be rendered in a test without a network. */
   onEngage?: (findingId: string) => void;
+  /** Approve or undo the attached fix. Optional for the same reason. */
+  onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
 }
 
-function FindingCard({ finding, lang, busy, focused = false, onVerdict, onEngage }: CardProps) {
+function FindingCard({
+  finding,
+  lang,
+  busy,
+  focused = false,
+  onVerdict,
+  onEngage,
+  onAction,
+}: CardProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
 
@@ -314,6 +440,8 @@ function FindingCard({ finding, lang, busy, focused = false, onVerdict, onEngage
         )}
 
         {showReceipt && <Receipt finding={finding} lang={lang} />}
+
+        <ActionRow finding={finding} lang={lang} busy={busy} onAction={onAction} />
 
         <div className="fd-acts">
           {confirmingMute ? (
@@ -425,6 +553,8 @@ export interface FindingCardsViewProps {
   /** Told when a manager opens a card's numbers. Counted as engagement, which
    *  is what keeps a check somebody reads from demoting itself (0362). */
   onEngage?: (findingId: string) => void;
+  /** Approve or undo the fix attached to a card. */
+  onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
 }
 
 /**
@@ -444,6 +574,7 @@ export function FindingCardsView({
   hideLiveness = false,
   onVerdict,
   onEngage,
+  onAction,
 }: FindingCardsViewProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
@@ -494,6 +625,7 @@ export function FindingCardsView({
           focused={focusId === f.id}
           onVerdict={onVerdict}
           onEngage={onEngage}
+          onAction={onAction}
         />
       ))}
 
@@ -567,6 +699,46 @@ export function FindingCards({
   );
 
   /**
+   * Approve or undo the fix attached to a card.
+   *
+   * The RESULT is whatever the database decided — executed, declined because
+   * the facts moved, or failed — and the card re-renders from the reloaded row
+   * rather than from an optimistic guess. There is deliberately NO optimistic
+   * hide here (unlike a verdict): the whole promise of this layer is that the
+   * tap may honestly come back "I did not do that, and here is why", and a UI
+   * that had already congratulated itself would be unable to say so.
+   */
+  const onAction = React.useCallback(
+    (actionId: string, intent: 'execute' | 'undo') => {
+      if (!activePropertyId) return;
+      const findingId =
+        (data?.findings ?? []).find((f) => f.action?.id === actionId)?.id ?? actionId;
+      void (async () => {
+        setBusyId(findingId);
+        setSaveFailed(false);
+        try {
+          const res = await fetchWithAuth('/api/findings/actions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ propertyId: activePropertyId, actionId, intent }),
+          });
+          const body = await readEnvelope<{ state: string }>(res);
+          if (body.error !== undefined) setSaveFailed(true);
+          // Reload either way. On a decline or a failure the row moved to a
+          // state the card must show, and on success the receipt is on it.
+          await reload();
+        } catch (e) {
+          if (e instanceof SessionEndedError) throw e;
+          setSaveFailed(true);
+        } finally {
+          setBusyId(null);
+        }
+      })();
+    },
+    [activePropertyId, data, reload],
+  );
+
+  /**
    * A manager opened the numbers. Nothing about the card changes, so this is
    * deliberately fire-and-forget: no busy state, no reload, and a failure is
    * swallowed. The worst case is that a check earns its rest slightly sooner
@@ -604,6 +776,7 @@ export function FindingCards({
       hideLiveness={hideLiveness}
       onVerdict={onVerdict}
       onEngage={onEngage}
+      onAction={onAction}
     />
   );
 }

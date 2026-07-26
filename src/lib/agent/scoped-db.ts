@@ -103,6 +103,11 @@ export const PROPERTY_SCOPED_RPCS: ReadonlySet<string> = new Set([
   'staxis_record_inventory_order_intent',
   'staxis_save_inventory_count_for_actor',
   'staxis_lock_load_and_record_user_turn',
+  // The hands (0363). Both take the hotel as an argument and refuse to touch a
+  // finding_actions row belonging to any other one, so the accessor's assertion
+  // and the function's own WHERE clause say the same thing twice.
+  'staxis_execute_finding_action',
+  'staxis_undo_finding_action',
 ]);
 
 /** The hotel-argument name every PROPERTY_SCOPED_RPCS member uses. */

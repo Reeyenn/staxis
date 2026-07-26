@@ -18,12 +18,14 @@
 // outside one cron tick: an identity separate from its measurement, a receipt,
 // an as-of, a declared minimum data requirement, and an escalation policy.
 
+import type { ActionTemplate } from './actions/types';
 import type { OperationalSignal } from '@/lib/agent/operational-signals';
 import type { checkOperationalAlerts } from '@/lib/agent/nudges';
 import type { PropertyRunResult } from '@/lib/rules-engine';
 import type {
   InventoryUsageHistory,
   OperatingRhythmHistory,
+  RoomWorkOrderHistory,
   SupplySpendHistory,
   WorkOrderHistory,
 } from './history';
@@ -178,6 +180,10 @@ export type FeedId =
   // "unusual for THIS hotel" and "this stopped" detectors. Shapes in history.ts.
   | 'supply_spend_history'
   | 'work_order_history'
+  // Which PLACES keep breaking, as opposed to how fast the hotel as a whole is
+  // logging maintenance. A different question, a different unit, and the only
+  // one of the two that has a fix Staxis can offer.
+  | 'room_work_order_history'
   | 'inventory_usage_history'
   | 'operating_rhythm';
 
@@ -192,6 +198,7 @@ export interface FeedShapes {
   cleaning_plan: PropertyRunResult;
   supply_spend_history: SupplySpendHistory;
   work_order_history: WorkOrderHistory;
+  room_work_order_history: RoomWorkOrderHistory;
   inventory_usage_history: InventoryUsageHistory;
   operating_rhythm: OperatingRhythmHistory;
 }
@@ -356,6 +363,25 @@ export interface DetectorDeclaration<P extends DetectorParams = DetectorParams> 
    */
   readonly staleAfterDays: number;
   readonly params?: P;
+  /**
+   * The fix, if Staxis is allowed to perform one.
+   *
+   * A pure function from a draft to the action that would address it, or null
+   * when this particular draft has no fix Staxis may do itself — which is the
+   * common case, and is why most findings stay recommendations.
+   *
+   * WHY IT LIVES ON THE DECLARATION RATHER THAN INSIDE `detect`
+   * Same reason dedupe, caps and staleness do: the runner is the only thing
+   * that writes, so a detector cannot attach an action that skips the catalog's
+   * validation, cannot attach one to a finding the manager has silenced, and
+   * cannot attach one to a card that is not a proposal. It returns a plan; the
+   * runner decides whether a plan is allowed to become a button.
+   *
+   * Declaring one requires `defaultDisposition: 'propose'` (enforced at
+   * registration). An action IS an offer, and an offer that renders as an FYI
+   * is a button on a card that says it needs no decision.
+   */
+  readonly actionTemplate?: ActionTemplate;
   readonly evalCases: readonly DetectorEvalCase<P>[];
 }
 
@@ -464,6 +490,14 @@ export interface FindingRunSummary {
   findingsSuppressed: number;
   findingsEscalated: number;
   findingsExpired: number;
+  /**
+   * Fixes offered on tonight's cards. Not persisted — `finding_actions` is the
+   * durable record, and a count on the run row would be a second copy of a
+   * number the actions themselves already answer. Returned for the cron
+   * response, where "we found 4 things and offered to fix 1" is the sentence an
+   * operator actually wants.
+   */
+  actionsProposed: number;
   durationMs: number;
   errors: Array<{ detectorId: string; error: string }>;
   /** Per-detector detail. Not persisted — returned for the cron response. */

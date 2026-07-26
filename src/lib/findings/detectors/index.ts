@@ -25,3 +25,12 @@ export { supplySpendBaselineDetector } from './supply-spend-baseline';
 export { workOrderRateBaselineDetector } from './work-order-rate-baseline';
 export { inventoryUsageBaselineDetector } from './inventory-usage-baseline';
 export { expectedActivityDetector } from './expected-activity';
+
+// The hands, 2026-07-26. The first detector whose cards arrive with the fix
+// attached: one place that keeps producing work orders, and an offer to put a
+// full inspection on the board. `inventory_usage_baseline` grew the same
+// capability at the same time (raise the reorder point to cover its own lead
+// time) without a new detector — which is the shape the action layer was built
+// for. Both actions are frozen at proposal time, re-verified inside the
+// transaction that executes them, and undoable; see src/lib/findings/actions.
+export { repeatRoomWorkOrdersDetector } from './repeat-room-work-orders';

@@ -120,6 +120,14 @@ export function validateDeclaration(detector: AnyDetector, known: ReadonlySet<st
       );
     }
   }
+  if (d.actionTemplate && d.defaultDisposition !== 'propose') {
+    throw new DetectorDeclarationError(
+      `Detector "${d.id}" declares an action template but its defaultDisposition is ` +
+      `"${d.defaultDisposition}". An action is an OFFER, and an offer rendered as a ` +
+      'recommendation or an FYI is a button on a card that says it needs no decision. Set ' +
+      "defaultDisposition to 'propose' and override the drafts that carry no action.",
+    );
+  }
   if (d.evalCases.length === 0) {
     throw new DetectorDeclarationError(
       `Detector "${d.id}" ships no eval cases. Every detector must carry at least one frozen ` +

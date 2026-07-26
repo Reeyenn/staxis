@@ -29,6 +29,21 @@
 //                          updated rows only. A muted or known_problem row is
 //                          not in the input, so an id referring to it refuses
 //                          the reply, and nothing here ever writes `status`.
+//   • touch an attached ACTION → three ways at once, and none of them is this
+//                          file being careful. (1) The output contract has no
+//                          field for an action: `ITEM_KEYS` is a closed set and
+//                          an item carrying `action`, `params`, `do` or
+//                          anything else refuses the WHOLE reply. (2) Every
+//                          write below names a `judged_*` column on `findings`;
+//                          `finding_actions` is a different table this module
+//                          does not import and has no handle on. (3) A plan is
+//                          frozen at PROPOSAL time and immutable in Postgres
+//                          (staxis_finding_actions_frozen, 0363), so even a
+//                          hypothetical write would be refused by the database.
+//                          The judge may still re-sort a card DOWN, which takes
+//                          the button away with it (finding-cards.ts
+//                          offersApproval) — it can quieten a proposal, never
+//                          author one.
 //
 // Note the asymmetry in those enforcements. A structural violation (unknown id,
 // unknown key, bad disposition) refuses the ENTIRE reply — a model that broke
@@ -236,8 +251,18 @@ export interface JudgeItem {
   why: string;
 }
 
-/** Exactly the keys an item may carry. A number cannot be smuggled through a
- *  field that does not exist, and an item carrying one is a refused reply. */
+/**
+ * Exactly the keys an item may carry. A number cannot be smuggled through a
+ * field that does not exist, and an item carrying one is a refused reply. The
+ * same closure is what makes it impossible for the judge to name, alter or
+ * invent an ACTION: there is no `action` key, no `params` key, and no key at
+ * all outside this set.
+ *
+ * ADDING TO THIS SET IS A DESIGN DECISION, NOT A CONVENIENCE. Every member is a
+ * thing the model is allowed to author. `en`, `es` and `why` are prose, which
+ * the prose guard then checks for invented numerals; `d` is a five-value enum;
+ * `id` must be one it was given. Anything else is a channel.
+ */
 const ITEM_KEYS: ReadonlySet<string> = new Set(['id', 'd', 'en', 'es', 'why']);
 
 export class JudgeContractError extends Error {

@@ -65,6 +65,43 @@ export interface WorkOrderHistory extends HistoryCoverage {
   repairCostCentsSamples: number[];
 }
 
+// ─── Work orders, per location ───────────────────────────────────────────────
+
+/**
+ * One place in the hotel and the maintenance it has generated lately.
+ *
+ * WHY THIS IS A SECOND WORK-ORDER FEED AND NOT A FIELD ON THE FIRST
+ * `WorkOrderHistory` answers "is this hotel logging maintenance faster than it
+ * usually does" — one number a day, hotel-wide. This answers "does one PLACE
+ * keep breaking", which is a different question with a different unit and a
+ * different remedy: the first one is a heads-up, this one has a fix attached.
+ * Folding them together would mean every detector that wants the rate pays to
+ * load the per-location breakdown.
+ *
+ * `location` is `work_orders.room_number`, which since migration 0131 stores
+ * free text — "Room 214", "Lobby", "Hall 2F". It is carried through VERBATIM,
+ * never parsed into a room number: the action that acts on this writes the same
+ * string straight back onto the board, so any normalisation here would be a
+ * place for the card and the ticket to disagree about where the problem is.
+ */
+export interface LocationWorkOrders {
+  /** Exactly as the board stores it. Never normalised, never parsed. */
+  location: string;
+  /** Work orders opened at this location inside the window. */
+  total: number;
+  /** Of those, how many are still not resolved. */
+  stillOpen: number;
+  /** Hotel-local date of the most recent one. */
+  lastDate: string;
+}
+
+export interface RoomWorkOrderHistory extends HistoryCoverage {
+  locations: LocationWorkOrders[];
+  /** What this hotel has actually paid to fix things, in cents. Empty means
+   *  the finding carries no dollar figure at all. */
+  repairCostCentsSamples: number[];
+}
+
 // ─── Inventory usage ─────────────────────────────────────────────────────────
 
 /** Consumption of one item between two consecutive counts of that item. */
@@ -84,6 +121,14 @@ export interface InventoryItemUsage {
   intervals: UsageInterval[];
   /** Unit costs this hotel actually PAID for this item, in cents. */
   unitCostCentsSamples: number[];
+  /**
+   * The stock level at which this hotel says it reorders, and how long its own
+   * orders take to arrive. Both are things the hotel typed in, and both are
+   * null when it never did — which is a real answer, and the reason the reorder
+   * action declines to exist rather than inventing a number.
+   */
+  reorderAt: number | null;
+  reorderLeadDays: number | null;
 }
 
 export interface InventoryUsageHistory extends HistoryCoverage {

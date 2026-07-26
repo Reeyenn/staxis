@@ -309,6 +309,15 @@ export type RateLimitEndpoint =
   // wrong reason). NOT billing-impacting (no model call, no message send) →
   // fails OPEN, so a Supabase blip never swallows a real decision.
   | 'findings-verdict'
+  // ── The hands: executing / undoing a fix Staxis offered ───────────────────
+  // Each tap can create a real work order or change a real reorder point. Not
+  // billing-impacting (no model call at execution — the plan was frozen the
+  // night before), so it fails OPEN: the database already guarantees a double
+  // tap is one action (finding_actions_idempotency_uq + the FOR UPDATE state
+  // guard in 0363), so a Supabase blip on the limiter cannot produce duplicate
+  // work, and swallowing a manager's approval would be the worse failure.
+  // Keyed on the RAW property id (api_limits.property_id FKs properties(id)).
+  | 'findings-action'
   // ── Morning brief (Staxis tab, pinned card) ───────────────────────────────
   // A GET, and on the FIRST load of a hotel's local day it can make one cheap
   // model call to smooth the wording. Every load after that is served from the
@@ -549,6 +558,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // 200/hr per property is far above that and still bounds a scripted sweep
   // that tries to mute everything.
   'findings-verdict':           200,
+  // Approving or undoing a fix. The runner offers a handful of these a night at
+  // most, so a manager working through everything Staxis found is tens of taps;
+  // 60/hr per property is well clear of that and still bounds a scripted sweep.
+  'findings-action':             60,
   // Morning brief. Sized for the CACHE READS, not for the model call: the
   // atomic daily claim already makes at most one of these a generation, so 120
   // requests buys a manager (and their colleagues) all the tab-switching they

@@ -39,6 +39,7 @@ import {
   type ActivityStream,
   type DailySeriesPoint,
   type InventoryItemUsage,
+  type LocationWorkOrders,
   type UsageInterval,
 } from './history';
 import type { FeedId, FeedOutcome, FeedResult } from './types';
@@ -274,6 +275,78 @@ const loadWorkOrderHistory: FeedLoader<'work_order_history'> = async (env) => {
   };
 };
 
+/**
+ * Which places in the hotel keep producing work orders.
+ *
+ * READS `work_orders`, THE HOTEL'S OWN BOARD — not `pms_work_orders_v2`.
+ * The operational-signal layer's maintenance aggregator reads the PMS mirror,
+ * which is empty fleet-wide since the robot was decommissioned, so its
+ * "repeated maintenance in room X" pattern has nothing to fire on. The board
+ * staff actually type into is `work_orders`, and that is what this loads. Both
+ * feeds exist and neither one changed; they answer the same question about
+ * different sources, and only one of them currently has data.
+ *
+ * The location string is carried through VERBATIM (see LocationWorkOrders).
+ * Grouping is exact-match on the stored text, so "Room 214" and "room 214" are
+ * two places — deliberately. Normalising them would make Staxis write a ticket
+ * onto a location spelled differently from the one the card named, and a
+ * manager cannot audit a grouping they cannot see.
+ */
+const loadRoomWorkOrderHistory: FeedLoader<'room_work_order_history'> = async (env) => {
+  const result = (await scopedDb(env.propertyId)
+    .from('work_orders')
+    .select('room_number, status, repair_cost, created_at')
+    .gte('created_at', windowStartIso(env.now))
+    .order('created_at', { ascending: true })
+    .limit(MAX_ROWS)) as unknown as QueryResult<Record<string, unknown>>;
+
+  const byLocation = new Map<string, LocationWorkOrders>();
+  const repairCostCentsSamples: number[] = [];
+  const allDates: string[] = [];
+  let counted = 0;
+
+  for (const row of rowsOf(result, 'work_orders')) {
+    const cents = dollarsToCents(numberOf(row.repair_cost));
+    if (cents !== null && cents > 0) repairCostCentsSamples.push(cents);
+
+    const location = typeof row.room_number === 'string' ? row.room_number.trim() : '';
+    const date = localDateOf(row.created_at, env.timezone);
+    if (!location || !date) continue;
+    allDates.push(date);
+    counted += 1;
+
+    const current = byLocation.get(location) ?? {
+      location,
+      total: 0,
+      stillOpen: 0,
+      lastDate: date,
+    };
+    current.total += 1;
+    // 'submitted' / 'assigned' / 'in_progress' all read as open on the board
+    // (db-mappers.ts STATUS_FROM_DB); only 'resolved' is done. An absent status
+    // is an open ticket, matching the mapper's own fallback.
+    if (String(row.status ?? 'submitted') !== 'resolved') current.stillOpen += 1;
+    if (date > current.lastDate) current.lastDate = date;
+    byLocation.set(location, current);
+  }
+
+  const locations = [...byLocation.values()].sort((a, b) =>
+    a.location < b.location ? -1 : a.location > b.location ? 1 : 0,
+  );
+
+  return {
+    value: {
+      locations,
+      repairCostCentsSamples,
+      coverageStartDate: earliestDate(allDates),
+      windowDays: HISTORY_WINDOW_DAYS,
+    },
+    recordCount: counted,
+    asOf: env.now,
+    weakestInputAgeDays: 0,
+  };
+};
+
 interface CountRow {
   item_id: string;
   item_name: string | null;
@@ -313,9 +386,13 @@ const loadInventoryUsageHistory: FeedLoader<'inventory_usage_history'> = async (
       .select('item_id, quantity, discarded_at')
       .gte('discarded_at', sinceIso)
       .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
-    db.from('inventory').select('id, name, unit').limit(MAX_ROWS) as unknown as Promise<
-      QueryResult<Record<string, unknown>>
-    >,
+    // `reorder_at` and `reorder_lead_days` are the two numbers the reorder-point
+    // action needs, and they are read HERE rather than at execution time so the
+    // plan is frozen against the same picture the card was written from.
+    db
+      .from('inventory')
+      .select('id, name, unit, reorder_at, reorder_lead_days')
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
   ]);
 
   const counts = rowsOf(countsResult, 'inventory_counts');
@@ -325,11 +402,17 @@ const loadInventoryUsageHistory: FeedLoader<'inventory_usage_history'> = async (
 
   const unitById = new Map<string, string>();
   const nameById = new Map<string, string>();
+  const reorderAtById = new Map<string, number>();
+  const leadDaysById = new Map<string, number>();
   for (const item of items) {
     const id = typeof item.id === 'string' ? item.id : null;
     if (!id) continue;
     if (typeof item.unit === 'string') unitById.set(id, item.unit);
     if (typeof item.name === 'string') nameById.set(id, item.name);
+    const reorderAt = numberOf(item.reorder_at);
+    if (reorderAt !== null) reorderAtById.set(id, reorderAt);
+    const leadDays = numberOf(item.reorder_lead_days);
+    if (leadDays !== null) leadDaysById.set(id, leadDays);
   }
 
   /** Movements per item, as (instant, quantity) so a window sum is a filter. */
@@ -422,6 +505,8 @@ const loadInventoryUsageHistory: FeedLoader<'inventory_usage_history'> = async (
       unit: unitById.get(itemId) ?? 'units',
       intervals,
       unitCostCentsSamples: unitCostByItem.get(itemId) ?? [],
+      reorderAt: reorderAtById.get(itemId) ?? null,
+      reorderLeadDays: leadDaysById.get(itemId) ?? null,
     });
   }
 
@@ -547,6 +632,7 @@ export const FEED_LOADERS: { [K in FeedId]: FeedLoader<K> } = {
   cleaning_plan: loadCleaningPlan,
   supply_spend_history: loadSupplySpendHistory,
   work_order_history: loadWorkOrderHistory,
+  room_work_order_history: loadRoomWorkOrderHistory,
   inventory_usage_history: loadInventoryUsageHistory,
   operating_rhythm: loadOperatingRhythm,
 };
