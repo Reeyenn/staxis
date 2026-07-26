@@ -112,15 +112,225 @@ const ACTION_PATTERNS: ReadonlyArray<readonly [AuthorityActionKind, RegExp]> = [
   ['contract', /\b(contracts?|agreements?|leases?)\b/i],
 ];
 
+/**
+ * ⚠ ORDER IN THIS LIST DECIDES NOTHING. It used to, and that was a live bug.
+ *
+ * "Any capital project over $5,000 requires owner approval, not VP approval."
+ * was stored — and rendered back to the person confirming it — as "needs
+ * approval from the VP", because the matcher walked this list and `vp` came
+ * before `owner`. The sentence was on a real company's screen saying the
+ * opposite of what the company wrote. The worst version of the same bug is not
+ * cosmetic: a role named in a NEGATIVE clause could unlock a card its author
+ * meant to lock.
+ *
+ * `readApproverCandidates` below matches by POSITION IN THE SENTENCE, skips
+ * anything a negation excluded, and refuses to pick when two roles genuinely
+ * survive. This array is now only a vocabulary — the patterns, not a priority.
+ */
 const APPROVER_PATTERNS: ReadonlyArray<readonly [AuthorityApproverRole, RegExp]> = [
-  ['general_manager', /\b(general managers?|gms?)\b/i],
-  ['vp', /\b(vps?|v\.p\.|vice presidents?|regional (?:managers?|directors?)?|regionals?)\b/i],
-  ['finance', /\b(finance|controllers?|accounting|cfos?)\b/i],
-  ['owner', /\b(owners?|ownership|principals?)\b/i],
+  ['general_manager', /\b(general managers?|gms?)\b/gi],
+  ['vp', /\b(vps?|v\.p\.|vice presidents?|regional (?:managers?|directors?)?|regionals?)\b/gi],
+  ['finance', /\b(finance|controllers?|accounting|cfos?)\b/gi],
+  ['owner', /\b(owners?|ownership|principals?)\b/gi],
 ];
 
 /** The verb that makes a sentence an AUTHORITY rule rather than a description. */
 const APPROVAL_VERB = /\b(approv\w*|sign[-\s]?offs?|signs? off|signatures?|authoriz\w*|permission)\b/i;
+
+/** Same vocabulary, scanning form — used to find every approval word's position. */
+const APPROVAL_VERB_ALL = /\b(approv\w*|sign[-\s]?offs?|signs? off|signatures?|authoriz\w*|permission)\b/gi;
+
+// ─── Who approves: position, negation, and the refusal to guess ─────────────
+
+/**
+ * A clause boundary. Negation does not reach across one.
+ *
+ * The comma matters and is the whole reason this exists: "requires owner
+ * approval, not VP approval" is two clauses, and the "not" belongs to the
+ * second one only. Without the boundary the negation would either swallow both
+ * roles or neither.
+ */
+const CLAUSE_BOUNDARY = /[.;,:—–()]|\bbut\b|\bwhile\b|\bwhereas\b|\balthough\b/gi;
+
+/**
+ * Words that EXCLUDE the role that follows them.
+ *
+ * Tight on purpose — same doctrine as everything else in this file: a cue that
+ * fires on honest phrasing is worse than a cue that misses, because a miss
+ * lands on the ambiguity path (which asks a human) and a false fire silently
+ * drops the real approver.
+ *
+ * `without` is deliberately ABSENT and it is the sharpest edge here: "no new
+ * housekeeper may be hired without the regional office meeting the candidate"
+ * REQUIRES the regional office. "Without X" means X is mandatory, not excluded,
+ * and treating it as a negation would invert every sentence written that way.
+ */
+const NEGATION_CUE = new RegExp(
+  String.raw`\b(?:not|never|no|n't|instead\s+of|rather\s+than|no\s+longer|other\s+than|excluding|except(?:\s+for)?)\s+`
+  + String.raw`(?:the\s+|a\s+|an\s+|any\s+)?`
+  + String.raw`(?:required?\s+|requires?\s+|need(?:s|ed)?\s+|necessary\s+|just\s+|only\s+)?$`,
+  'i',
+);
+
+/**
+ * The other half of negation: it can follow the role instead of preceding it.
+ *
+ * "…needs owner approval; the VP never approves these" names the VP right next
+ * to an approval word, so without this the sentence reads as two roles bound to
+ * approval and lands on the ambiguity path — asking a human about a sentence
+ * that is perfectly clear.
+ */
+const NEGATION_CUE_AFTER = new RegExp(
+  String.raw`^\s*(?:does\s+not|do\s+not|doesn't|don't|never|is\s+not|are\s+not|isn't|aren't|need\s+not|cannot|can't)\b`,
+  'i',
+);
+
+/**
+ * How close a role has to sit to an approval word to count as BOUND to it.
+ *
+ * 24 characters is "approval from the ___" with room to spare, and comfortably
+ * short of a different clause. It is the difference between a role the sentence
+ * puts the signature on and a role the sentence merely mentions: "The GM handles
+ * routine orders. Any order over $500 needs owner approval." names two roles and
+ * binds one.
+ */
+const APPROVAL_BINDING_CHARS = 24;
+
+interface ApproverHit {
+  role: AuthorityApproverRole;
+  /** Where the role word starts. Sentence order, not list order. */
+  index: number;
+  /** Distance to the nearest approval word. Infinity when there is none. */
+  distanceToApproval: number;
+  negated: boolean;
+}
+
+/** End of the clause containing `index`. */
+function clauseEnd(text: string, index: number): number {
+  CLAUSE_BOUNDARY.lastIndex = 0;
+  for (let m = CLAUSE_BOUNDARY.exec(text); m; m = CLAUSE_BOUNDARY.exec(text)) {
+    if (m.index > index) return m.index;
+  }
+  return text.length;
+}
+
+/** Start of the clause containing `index`. */
+function clauseStart(text: string, index: number): number {
+  let start = 0;
+  CLAUSE_BOUNDARY.lastIndex = 0;
+  for (let m = CLAUSE_BOUNDARY.exec(text); m; m = CLAUSE_BOUNDARY.exec(text)) {
+    if (m.index >= index) break;
+    start = m.index + m[0].length;
+  }
+  return start;
+}
+
+function approvalWordPositions(text: string): number[] {
+  const out: number[] = [];
+  APPROVAL_VERB_ALL.lastIndex = 0;
+  for (let m = APPROVAL_VERB_ALL.exec(text); m; m = APPROVAL_VERB_ALL.exec(text)) {
+    out.push(m.index);
+  }
+  return out;
+}
+
+export interface ApproverCandidates {
+  /** The role to store, or null when there is none or more than one survives. */
+  picked: AuthorityApproverRole | null;
+  /** Every role the sentence names and does not exclude, in sentence order. */
+  surviving: AuthorityApproverRole[];
+  /** True when two or more roles survived and the sentence does not choose. */
+  ambiguous: boolean;
+}
+
+/**
+ * Which role this sentence puts the signature on.
+ *
+ * THREE rules, in this order, and each one exists because of a sentence a real
+ * company wrote:
+ *
+ *   1. NEGATION EXCLUDES. "…requires owner approval, not VP approval" names two
+ *      roles and means one. A role sitting behind `not` / `instead of` /
+ *      `rather than` in its own clause is dropped before anything is compared.
+ *   2. NEAREST TO THE APPROVAL WORD WINS. Not first-in-a-hardcoded-list, and
+ *      not first-in-the-sentence either: "the GM handles ordering; anything over
+ *      $500 needs owner approval" names the GM first and binds the signature to
+ *      the owner. Ties break toward the earlier position, which is the reading
+ *      order a person uses.
+ *   3. WHEN TWO SURVIVE AT THE SAME DISTANCE, REFUSE. `picked` is null and
+ *      `ambiguous` is true, and the confirm step shows both candidates and
+ *      stores no rule until a human names one. An unstored rule gates nothing
+ *      and is safe; a wrong rule gates money.
+ */
+export function readApproverCandidates(content: string): ApproverCandidates {
+  const text = String(content ?? '');
+  const approvals = approvalWordPositions(text);
+
+  const hits: ApproverHit[] = [];
+  for (const [role, pattern] of APPROVER_PATTERNS) {
+    pattern.lastIndex = 0;
+    for (let m = pattern.exec(text); m; m = pattern.exec(text)) {
+      const index = m.index;
+      const before = text.slice(clauseStart(text, index), index);
+      const after = text.slice(index + m[0].length, clauseEnd(text, index + m[0].length));
+      const distances = approvals.map((at) => Math.abs(at - index));
+      hits.push({
+        role,
+        index,
+        distanceToApproval: distances.length > 0 ? Math.min(...distances) : Infinity,
+        negated: NEGATION_CUE.test(before) || NEGATION_CUE_AFTER.test(after),
+      });
+      // Zero-width guard: every pattern above consumes at least one character,
+      // but a future edit that adds an optional-only alternative would spin here.
+      if (m[0].length === 0) pattern.lastIndex += 1;
+    }
+  }
+
+  // A role is excluded when EVERY mention of it is negated. One clean mention is
+  // enough to keep it: "the owner approves it; the VP does not" names the owner
+  // positively and the VP only negatively.
+  const byRole = new Map<AuthorityApproverRole, ApproverHit[]>();
+  for (const hit of hits) {
+    const list = byRole.get(hit.role) ?? [];
+    list.push(hit);
+    byRole.set(hit.role, list);
+  }
+
+  const best: ApproverHit[] = [];
+  for (const [, list] of byRole) {
+    const clean = list.filter((h) => !h.negated);
+    if (clean.length === 0) continue;
+    best.push(clean.reduce((a, b) => (
+      b.distanceToApproval < a.distanceToApproval
+      || (b.distanceToApproval === a.distanceToApproval && b.index < a.index)
+        ? b
+        : a
+    )));
+  }
+
+  best.sort((a, b) => a.index - b.index);
+  const surviving = best.map((h) => h.role);
+  if (surviving.length === 0) return { picked: null, surviving: [], ambiguous: false };
+  if (surviving.length === 1) return { picked: surviving[0], surviving, ambiguous: false };
+
+  // Which of them the sentence actually puts the signature ON.
+  const bound = best.filter((h) => h.distanceToApproval <= APPROVAL_BINDING_CHARS);
+  if (bound.length === 1) return { picked: bound[0].role, surviving, ambiguous: false };
+  if (bound.length === 0) {
+    // Several roles, none of them next to an approval word. Nearest wins — this
+    // is the weakest reading in the file, and it only ever runs on a sentence
+    // that mentions two roles and binds neither, which is prose.
+    const nearest = best.reduce((a, b) => (b.distanceToApproval < a.distanceToApproval ? b : a));
+    const tied = best.filter((h) => h.distanceToApproval === nearest.distanceToApproval);
+    return tied.length === 1
+      ? { picked: nearest.role, surviving, ambiguous: false }
+      : { picked: null, surviving, ambiguous: true };
+  }
+  // Two or more roles, each bound to an approval word: "…needs owner approval or
+  // VP approval". Picking by a few characters of proximity would be a coin flip
+  // wearing an algorithm, and the thing being decided is who signs for money.
+  return { picked: null, surviving, ambiguous: true };
+}
 
 /**
  * `over $500` / `above $2,500` / `more than $5k` — exclusive.
@@ -144,17 +354,42 @@ function amountToCents(raw: string, multiplier: string | undefined): number | nu
 }
 
 /**
- * Read an approval requirement out of a confirmed company fact.
+ * What a sentence turns out to be.
  *
- * Returns null unless ALL FOUR are present and unambiguous: an approval verb, a
- * money boundary, an action kind, and an approver. Three-quarters of a rule is
- * not a rule — a sentence like "orders over $500 are unusual for us" must never
- * become a gate on somebody's purchase order.
+ *   rule       everything present and one approver. Storable.
+ *   ambiguous  everything present EXCEPT that two roles both survive. The
+ *              confirm step shows both and stores no rule.
+ *   none       not an authority sentence at all. The common outcome, and a
+ *              completely normal one — it files as prose.
  */
-export function readAuthorityRule(content: string): AuthorityReading | null {
+export type AuthorityRead =
+  | { kind: 'rule'; rule: AuthorityReading }
+  | {
+    kind: 'ambiguous';
+    /** Both (or all) roles the sentence names without excluding. */
+    candidates: AuthorityApproverRole[];
+    actionKind: AuthorityActionKind;
+    thresholdCents: number;
+    thresholdInclusive: boolean;
+  }
+  | { kind: 'none' };
+
+/**
+ * Read an approval requirement out of a company fact — the full answer.
+ *
+ * Returns `none` unless ALL FOUR are present: an approval verb, a money
+ * boundary, an action kind, and an approver. Three-quarters of a rule is not a
+ * rule — "orders over $500 are unusual for us" must never become a gate on
+ * somebody's purchase order.
+ *
+ * Returns `ambiguous` when the sentence names two roles and does not choose
+ * between them. That is a REFUSAL, not a failure: the confirm step puts both in
+ * front of the human and nothing is frozen until they name one.
+ */
+export function readAuthority(content: string): AuthorityRead {
   const text = String(content ?? '');
-  if (!text.trim()) return null;
-  if (!APPROVAL_VERB.test(text)) return null;
+  if (!text.trim()) return { kind: 'none' };
+  if (!APPROVAL_VERB.test(text)) return { kind: 'none' };
 
   let thresholdCents: number | null = null;
   let thresholdInclusive = false;
@@ -172,21 +407,45 @@ export function readAuthorityRule(content: string): AuthorityReading | null {
     thresholdCents = amountToCents(digits, multiplier);
     thresholdInclusive = true;
   }
-  if (thresholdCents === null) return null;
+  if (thresholdCents === null) return { kind: 'none' };
 
   let actionKind: AuthorityActionKind | null = null;
   for (const [kind, pattern] of ACTION_PATTERNS) {
     if (pattern.test(text)) { actionKind = kind; break; }
   }
-  if (!actionKind) return null;
+  if (!actionKind) return { kind: 'none' };
 
-  let approverRole: AuthorityApproverRole | null = null;
-  for (const [role, pattern] of APPROVER_PATTERNS) {
-    if (pattern.test(text)) { approverRole = role; break; }
+  const approver = readApproverCandidates(text);
+  if (approver.picked) {
+    return {
+      kind: 'rule',
+      rule: { actionKind, thresholdCents, thresholdInclusive, approverRole: approver.picked },
+    };
   }
-  if (!approverRole) return null;
+  if (approver.ambiguous) {
+    return {
+      kind: 'ambiguous',
+      candidates: approver.surviving,
+      actionKind,
+      thresholdCents,
+      thresholdInclusive,
+    };
+  }
+  return { kind: 'none' };
+}
 
-  return { actionKind, thresholdCents, thresholdInclusive, approverRole };
+/**
+ * The storable reading, or null.
+ *
+ * An AMBIGUOUS sentence reads as null here on purpose, and that is the safety
+ * property: `applyStructuredReading` (rulebook.ts) freezes a rule when this
+ * returns one and RETIRES any existing rule when it returns null, so a sentence
+ * naming two roles ends up gating nothing at all rather than gating on a guess.
+ * Callers that need to explain the refusal to a human use `readAuthority`.
+ */
+export function readAuthorityRule(content: string): AuthorityReading | null {
+  const read = readAuthority(content);
+  return read.kind === 'rule' ? read.rule : null;
 }
 
 const ACTION_LABELS: Record<AuthorityActionKind, Bilingual> = {
@@ -234,6 +493,40 @@ export function describeAuthorityRule(rule: AuthorityReading, lang: 'en' | 'es')
   }
   const boundary = rule.thresholdInclusive ? `of ${amount} or more` : `over ${amount}`;
   return `Any ${action} ${boundary} needs approval from ${approver}.`;
+}
+
+/** "the owner or the VP" / "el propietario o el supervisor regional". */
+function listApprovers(roles: readonly AuthorityApproverRole[], lang: 'en' | 'es'): string {
+  const words = roles.map((role) => APPROVER_LABELS[role][lang].toLowerCase());
+  if (words.length <= 1) return words[0] ?? '';
+  const joiner = lang === 'es' ? ' o ' : ' or ';
+  return `${words.slice(0, -1).join(', ')}${joiner}${words[words.length - 1]}`;
+}
+
+/**
+ * What the confirmer is shown when the sentence names two approvers.
+ *
+ * It says three things, and all three are load-bearing: which roles it saw,
+ * that NOTHING is being enforced, and what to do about it. The alternative — a
+ * silent null, which is what the old code produced for these sentences — left a
+ * company believing it had written a rule it had not, which is the same failure
+ * as a wrong rule with a longer fuse.
+ */
+export function describeAmbiguousAuthority(
+  read: Extract<AuthorityRead, { kind: 'ambiguous' }>,
+  lang: 'en' | 'es',
+): string {
+  const action = ACTION_LABELS[read.actionKind][lang];
+  const amount = formatCents(read.thresholdCents);
+  const who = listApprovers(read.candidates, lang);
+  if (lang === 'es') {
+    const boundary = read.thresholdInclusive ? `de ${amount} o más` : `de más de ${amount}`;
+    return `Esta línea nombra a ${who}. Staxis no puede saber quién debe aprobar un ${action} `
+      + `${boundary}, así que no aplicará ninguna regla de aprobación. Edita la línea para nombrar a uno.`;
+  }
+  const boundary = read.thresholdInclusive ? `of ${amount} or more` : `over ${amount}`;
+  return `This line names ${who}. Staxis cannot tell which of them has to approve an ${action} `
+    + `${boundary}, so it will not enforce an approval rule. Edit the line to name one.`;
 }
 
 // ─── Comparable settings ───────────────────────────────────────────────────
@@ -349,6 +642,139 @@ export function describePolicyValue(reading: PolicyReading, lang: 'en' | 'es'): 
   return lang === 'es'
     ? `La empresa fija ${label} en ${reading.value}.`
     : `The company sets the ${label} to ${reading.value}.`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEAR-DUPLICATES — the same rule, said again in different words.
+//
+// The topic slug is the dedupe key, and it works: restate a policy and the
+// extraction lands on the same slug, the RPC sees a CONFIRMED fact already owns
+// it, and the write is skipped. That is the hotel Knows behaviour and the
+// company book inherits it.
+//
+// What it does NOT catch is a restatement the model slugged differently. Live,
+// on the demo company, with both lines in the book at once:
+//
+//   chemical_vendor    (confirmed)  "All our hotels use Ecolab for chemicals."
+//   chemical_supplier  (unreviewed) "All Gulf Coast properties exclusively use
+//                                    Ecolab chemicals."
+//
+// One policy, two rows, and a VP with no way to tell which one the copilot
+// follows. So the confirm step compares the CONTENT as well as the slug, and
+// when a confirmed fact already covers the same ground it offers to UPDATE that
+// line rather than add a second one.
+//
+// ─── WHY IT OFFERS AND DOES NOT BLOCK ─────────────────────────────────────
+// This is a heuristic over English, and a heuristic that silently swallows a
+// genuinely new rule is far worse than one that asks. So a match produces a
+// CHOICE — update the line you have, or keep both — and the cost of a false
+// positive is one extra tap. `Keep both` is a real answer, not a trap door.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Words that carry no subject. Both languages, because the book is bilingual. */
+const CONTENT_STOPWORDS = new Set([
+  'a', 'an', 'the', 'all', 'any', 'every', 'our', 'your', 'their', 'this', 'that', 'these',
+  'those', 'is', 'are', 'be', 'been', 'must', 'may', 'can', 'will', 'shall', 'should',
+  'and', 'or', 'but', 'for', 'of', 'in', 'on', 'at', 'to', 'from', 'with', 'without',
+  'we', 'it', 'its', 'no', 'not', 'only', 'always', 'never', 'each', 'per',
+  'hotel', 'hotels', 'property', 'properties', 'company',
+  'el', 'la', 'los', 'las', 'un', 'una', 'de', 'del', 'y', 'o', 'en', 'con', 'sin',
+  'es', 'son', 'debe', 'deben', 'puede', 'pueden', 'todo', 'todos', 'toda', 'todas',
+  'cada', 'nuestro', 'nuestros', 'su', 'sus', 'hotel', 'hoteles', 'propiedad', 'propiedades',
+]);
+
+/** Content words, folded. Accents dropped so "químicos" matches "quimicos". */
+export function contentTokens(text: string): Set<string> {
+  const folded = String(text ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+  const out = new Set<string>();
+  for (const token of folded.split(/[^a-z0-9]+/)) {
+    if (!token || token.length < 3) continue;
+    if (CONTENT_STOPWORDS.has(token)) continue;
+    out.add(token);
+  }
+  return out;
+}
+
+/** Dice coefficient — 1.0 identical, 0 nothing in common. */
+export function tokenSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let shared = 0;
+  for (const token of a) if (b.has(token)) shared += 1;
+  return (2 * shared) / (a.size + b.size);
+}
+
+/**
+ * How alike two lines must read before Staxis will ask. 0.5 is "half the
+ * subject words are the same", which the Ecolab pair clears (0.55) and which
+ * "housekeeping starts at 7am" vs "checkout rooms take 30 minutes" does not
+ * come close to (0.17) despite both being housekeeping standards.
+ */
+export const NEAR_DUPLICATE_SIMILARITY = 0.5;
+
+/**
+ * …AND at least this many substantial words in common. The similarity score
+ * alone can be flattered by two very short lines; a shared "ecolab" and
+ * "chemicals" is what makes the match a real observation rather than arithmetic.
+ */
+export const NEAR_DUPLICATE_SHARED_WORDS = 2;
+const SUBSTANTIAL_WORD_CHARS = 4;
+
+export interface RulebookLine {
+  id: string;
+  topic: string;
+  content: string;
+}
+
+export interface NearDuplicate {
+  /** The CONFIRMED fact that already covers this ground. */
+  existing: RulebookLine;
+  similarity: number;
+  /** The words the two lines share, for the sentence the screen shows. */
+  sharedWords: string[];
+}
+
+/**
+ * The confirmed fact this line restates, or null.
+ *
+ * `confirmed` is only ever the CONFIRMED half of the book: an unreviewed line
+ * matching another unreviewed line is two drafts, and asking a human to
+ * reconcile two things neither of which is policy yet is noise. The confirmed
+ * fact wins, which is the same precedence the topic-slug path already has.
+ */
+export function findNearDuplicate(
+  candidate: Pick<RulebookLine, 'id' | 'content'>,
+  confirmed: readonly RulebookLine[],
+): NearDuplicate | null {
+  const mine = contentTokens(candidate.content);
+  if (mine.size === 0) return null;
+
+  let best: NearDuplicate | null = null;
+  for (const other of confirmed) {
+    if (other.id === candidate.id) continue;
+    const theirs = contentTokens(other.content);
+    const similarity = tokenSimilarity(mine, theirs);
+    if (similarity < NEAR_DUPLICATE_SIMILARITY) continue;
+
+    const shared = [...mine]
+      .filter((t) => theirs.has(t) && t.length >= SUBSTANTIAL_WORD_CHARS)
+      .sort();
+    if (shared.length < NEAR_DUPLICATE_SHARED_WORDS) continue;
+
+    if (!best || similarity > best.similarity) {
+      best = { existing: other, similarity, sharedWords: shared };
+    }
+  }
+  return best;
+}
+
+/** The sentence over the two buttons. Names the line it found, verbatim. */
+export function describeNearDuplicate(match: NearDuplicate, lang: 'en' | 'es'): string {
+  return lang === 'es'
+    ? `Tu libro ya dice: «${match.existing.content}» ¿Actualizar esa línea con estas palabras, o conservar las dos?`
+    : `Your book already says: “${match.existing.content}” Update that line with these words, or keep both?`;
 }
 
 // ─── Contradictions ────────────────────────────────────────────────────────

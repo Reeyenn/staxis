@@ -196,16 +196,69 @@ export function priceFromBand(
 }
 
 // ─── Formatting ──────────────────────────────────────────────────────────────
+//
+// ONE FORMATTER FOR MONEY, and it lives here because this is the module that
+// already owns what a price IS.
+//
+// Why it is worth a comment: a card used to print the same range twice in two
+// different hands — "$750-$1750" inside the sentence (a local helper in
+// judge.ts with no thousands separator and a hyphen) and "$750–$1,750" in the
+// price chip a centimetre below it. Both were the same two numbers. A reader
+// who notices that stops trusting the numbers, which is the one thing this
+// whole layer is for. So the separator, the thousands separator and the
+// currency prefix are decided in exactly one place, and every surface —
+// detector prose, the card chip, the deterministic judge floor — calls it.
 
-/** "$1,160" — whole dollars, because cents in a range is false precision. */
+/** An EN DASH, never a hyphen: "$200-400" reads as a phone number at a glance. */
+export const MONEY_RANGE_DASH = '–';
+
+/** Currency symbols we actually serve. Anything else prints its ISO code. */
+export const CURRENCY_PREFIX: Readonly<Record<string, string>> = Object.freeze({
+  USD: '$',
+  CAD: 'CA$',
+  MXN: 'MX$',
+  EUR: '€',
+});
+
+export function currencyPrefix(currency: string | null | undefined): string {
+  const code = (currency ?? 'USD').toUpperCase();
+  return CURRENCY_PREFIX[code] ?? `${code} `;
+}
+
+/**
+ * "$1,750" / "$1,750.50" — thousands separated, cents only when there are any.
+ *
+ * Cent precision is kept here (unlike `formatCents` below) because this one
+ * renders a STORED price, and a stored price came off a real invoice.
+ */
+export function formatMoney(cents: number, currency: string = 'USD'): string {
+  const value = cents / 100;
+  const digits = Number.isInteger(value)
+    ? value.toLocaleString('en-US')
+    : value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `${currencyPrefix(currency)}${digits}`;
+}
+
+/** "$750–$1,750". The one range string in the product. */
+export function formatMoneyRange(
+  lowCents: number,
+  highCents: number,
+  currency: string = 'USD',
+): string {
+  return `${formatMoney(lowCents, currency)}${MONEY_RANGE_DASH}${formatMoney(highCents, currency)}`;
+}
+
+/** "$1,160" — whole dollars, because cents in a STATISTICAL band is false
+ *  precision: the band came from arithmetic over a hotel's own weeks, not off
+ *  an invoice, and quoting it to the cent would dress a spread as a receipt. */
 export function formatCents(cents: number): string {
   const dollars = Math.round(cents / 100);
   return `$${dollars.toLocaleString('en-US')}`;
 }
 
-/** "$820-$1,140". */
+/** "$820–$1,140" — same dash as every other range on the screen. */
 export function formatCentsBand(band: Band): string {
-  return `${formatCents(band.low)}-${formatCents(band.high)}`;
+  return `${formatCents(band.low)}${MONEY_RANGE_DASH}${formatCents(band.high)}`;
 }
 
 /** "3 plumber invoices" / "1 plumber invoice". */

@@ -88,6 +88,8 @@ import {
   checkBilingualProse,
   type ProseViolation,
 } from './prose-guard';
+import { formatMoney as formatMoneyDollars } from './pricing';
+import { spanishTemplateSentence, templatePriceSentence } from './template-phrasing';
 import {
   cancelFindingsSpend,
   deriveJudgeReservationUsd,
@@ -369,26 +371,14 @@ export function parseJudgeReplyStrict(
 
 // ─── Deterministic phrasing ──────────────────────────────────────────────────
 
-const SEVERITY_ES: Record<FindingSeverity, string> = {
-  critical: 'Crítico',
-  attention: 'Atención',
-  info: 'Información',
-};
-
-function formatNumber(value: number): string {
-  if (!Number.isFinite(value)) return '0';
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
-}
-
+/**
+ * Money is formatted by ONE function in the product — `formatMoney` in
+ * pricing.ts. This file used to carry its own, and the two disagreed in front of
+ * the reader: the sentence said "$750-$1750" while the price chip a centimetre
+ * below it said "$750–$1,750" about the same two numbers.
+ */
 function formatMoney(cents: number): string {
-  const dollars = cents / 100;
-  return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
-}
-
-function priceSentence(price: PriceRange | null, lang: 'en' | 'es'): string {
-  if (!price) return '';
-  const range = `${formatMoney(price.lowCents)}-${formatMoney(price.highCents)}`;
-  return lang === 'en' ? ` Estimated cost: ${range}.` : ` Costo estimado: ${range}.`;
+  return formatMoneyDollars(cents);
 }
 
 /**
@@ -405,16 +395,26 @@ function priceSentence(price: PriceRange | null, lang: 'en' | 'es'): string {
  * Every numeral here comes from the row, so this text passes the prose guard by
  * construction — `findings-judge.test.ts` holds that as a standing assertion
  * rather than a comment.
+ *
+ * ─── WHAT THE SPANISH FLOOR STOPPED SAYING, AND WHY ───────────────────────
+ * It used to read "Atención: Staxis detectó un problema abierto en este hotel
+ * (magnitud 4)." for a finding whose English twin said "Room 231 has had 4 work
+ * orders in the last 30 days — 3 still open." Two things were wrong with that
+ * and both were visible on the live screen: "magnitud" is a word no hotel
+ * manager has ever used, and a bare count with no unit is not a fact — 4 WHAT.
+ * The subject the English named (Room 231) was missing entirely. The floor now
+ * comes from `spanishTemplateSentence`, which the CARD also falls back to, so
+ * there is one Spanish floor rather than two that can drift.
  */
 export function templateJudgment(candidate: JudgeCandidate): Omit<JudgeItem, 'id'> {
-  const magnitude = formatNumber(candidate.magnitude);
   return {
     disposition: candidate.disposition,
-    en: `${candidate.summary}${priceSentence(candidate.price, 'en')}`.trim().slice(0, 400),
-    es: (
-      `${SEVERITY_ES[candidate.severity]}: Staxis detectó un problema abierto en este hotel ` +
-      `(magnitud ${magnitude}).${priceSentence(candidate.price, 'es')}`
-    ).trim().slice(0, 400),
+    en: `${candidate.summary}${templatePriceSentence(candidate.price, 'en')}`.trim().slice(0, 400),
+    es: spanishTemplateSentence({
+      severity: candidate.severity,
+      evidence: candidate.evidence,
+      price: candidate.price,
+    }).slice(0, 400),
     why: 'Deterministic phrasing — no model judgement was applied.',
   };
 }

@@ -18,8 +18,12 @@
  *   until somebody says yes.
  *
  * POST { propertyId, action, … }
- *   'confirm' | 'edit' | 'remove'  — the three rulebook actions. COMPANY-SCOPE
+ *   'confirm' | 'edit' | 'remove' | 'merge'
+ *                                  — the four rulebook actions. COMPANY-SCOPE
  *                                    ONLY; a GM is refused (403) on every one.
+ *                                    'merge' takes { id, intoId }: fold a
+ *                                    restatement into the confirmed line it
+ *                                    restates (see findNearDuplicate).
  *   'settings'                     — the setup choices.
  *
  * Auth: requireSession + loadManagerCaller + a HAT at the company that operates
@@ -45,6 +49,7 @@ import {
   confirmCompanyFact,
   editCompanyFact,
   listCompanyFacts,
+  mergeCompanyFact,
   removeCompanyFact,
   structuredReadingFor,
   type CompanyFact,
@@ -59,8 +64,11 @@ import {
 import { listAuthorityRules } from '@/lib/company/authority';
 import { clearCompanyRulebookCache } from '@/lib/agent/company-tier';
 import {
+  describeAmbiguousAuthority,
   describeAuthorityRule,
+  describeNearDuplicate,
   describePolicyValue,
+  findNearDuplicate,
   findSettingContradictions,
   isCompanyCategory,
 } from '@/lib/company/rulebook-policy';
@@ -138,8 +146,14 @@ async function gate(
   return { ok: true, caller, propertyId, organizationId, standing };
 }
 
-function factPayload(fact: CompanyFact) {
+function factPayload(fact: CompanyFact, confirmed: readonly CompanyFact[] = []) {
   const reading = structuredReadingFor(fact.content);
+  // Only ever asked of an UNREVIEWED line: a confirmed fact is already the
+  // company's word on its subject, and second-guessing it after the fact would
+  // be Staxis relitigating a decision a human made.
+  const duplicate = fact.reviewState === 'unreviewed'
+    ? findNearDuplicate(fact, confirmed)
+    : null;
   return {
     id: fact.id,
     topic: fact.topic,
@@ -164,6 +178,21 @@ function factPayload(fact: CompanyFact) {
           },
         }
         : null,
+      // The sentence named two approvers. Both travel to the screen, along with
+      // the sentence that says nothing is being enforced — a rule that cannot
+      // be read is never guessed at. See readApproverCandidates.
+      ambiguousAuthority: reading.ambiguousAuthority
+        ? {
+          candidates: reading.ambiguousAuthority.candidates,
+          actionKind: reading.ambiguousAuthority.actionKind,
+          thresholdCents: reading.ambiguousAuthority.thresholdCents,
+          thresholdInclusive: reading.ambiguousAuthority.thresholdInclusive,
+          line: {
+            en: describeAmbiguousAuthority(reading.ambiguousAuthority, 'en'),
+            es: describeAmbiguousAuthority(reading.ambiguousAuthority, 'es'),
+          },
+        }
+        : null,
       policy: reading.policy
         ? {
           ...reading.policy,
@@ -174,6 +203,20 @@ function factPayload(fact: CompanyFact) {
         }
         : null,
     },
+    // A confirmed line that already covers this ground. The screen offers to
+    // update it instead of adding a second row — see findNearDuplicate for the
+    // live pair (chemical_vendor / chemical_supplier) this closes.
+    nearDuplicateOf: duplicate
+      ? {
+        id: duplicate.existing.id,
+        topic: duplicate.existing.topic,
+        content: duplicate.existing.content,
+        line: {
+          en: describeNearDuplicate(duplicate, 'en'),
+          es: describeNearDuplicate(duplicate, 'es'),
+        },
+      }
+      : null,
   };
 }
 
@@ -221,8 +264,8 @@ export async function GET(req: NextRequest) {
       },
       // Unreviewed first: the whole point of the screen is that they need you.
       facts: [
-        ...visible.filter((f) => f.reviewState === 'unreviewed').map(factPayload),
-        ...visible.filter((f) => f.reviewState === 'confirmed').map(factPayload),
+        ...visible.filter((f) => f.reviewState === 'unreviewed').map((f) => factPayload(f, confirmed)),
+        ...visible.filter((f) => f.reviewState === 'confirmed').map((f) => factPayload(f)),
       ],
       rules: rules.map((r) => ({
         id: r.id,
@@ -242,6 +285,7 @@ interface PostBody {
   propertyId?: unknown;
   action?: unknown;
   id?: unknown;
+  intoId?: unknown;
   content?: unknown;
   category?: unknown;
   settings?: unknown;
@@ -267,7 +311,10 @@ export async function POST(req: NextRequest) {
   }
 
   const action = body.action;
-  if (action !== 'confirm' && action !== 'edit' && action !== 'remove' && action !== 'settings') {
+  if (
+    action !== 'confirm' && action !== 'edit' && action !== 'remove'
+    && action !== 'merge' && action !== 'settings'
+  ) {
     return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
@@ -315,6 +362,25 @@ export async function POST(req: NextRequest) {
     // confirmed a policy should not have to wonder whether the copilot has it.
     clearCompanyRulebookCache();
     return ok({ action, id: idV.value }, { requestId });
+  }
+
+  if (action === 'merge') {
+    // `id` is the restatement being folded away; `intoId` is the confirmed line
+    // that keeps its slug and takes the new words.
+    const intoV = validateUuid(body.intoId, 'intoId');
+    if (intoV.error) {
+      return err(intoV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+    }
+    const res = await mergeCompanyFact(g.organizationId, intoV.value!, idV.value!, actor);
+    if (!res.ok) {
+      log.error('[company/rulebook:POST] merge failed', { requestId, err: res.error });
+      return err('Could not combine those', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    }
+    if (!res.merged) {
+      return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+    clearCompanyRulebookCache();
+    return ok({ action, id: idV.value, intoId: intoV.value }, { requestId });
   }
 
   if (action === 'remove') {

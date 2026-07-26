@@ -45,12 +45,14 @@ import { toQueueFinding } from '@/lib/findings/queue-projection';
 import type { Finding } from '@/lib/findings/types';
 
 import { listCompanyFindings, type CompanyFinding } from './company-findings';
+import { portfolioSpanish } from './portfolio-checks';
 import { loadApproverDirectory, resolveSignOff, type ApproverDirectory } from './signoff';
 import { holdPortfolioDay, companyLocalToday, runPortfolioChecks } from './portfolio-runner';
 import {
   chipForHotel,
   climbReasonFor,
   daysOpen,
+  hotelHasLiveWork,
   rankPortfolio,
   type ClimbCandidate,
   type HotelChip,
@@ -296,8 +298,6 @@ export async function hotelHealthChips(
       }));
 
       let climbedCount = 0;
-      let waitingCount = 0;
-      let criticalCount = 0;
       for (const finding of showable) {
         const candidate: ClimbCandidate = {
           status: finding.status,
@@ -308,14 +308,8 @@ export async function hotelHealthChips(
           awaitingMySignOff: false,
         };
         if (climbReasonFor(candidate, now)) climbedCount += 1;
-        // "Waiting" and "critical" are about the hotel's OWN live feed, so the
-        // two silences are excluded here even though the climb rules see them.
-        // A GM who pressed "Seen" has not left a decision waiting for anyone.
-        const live = finding.status === 'open' || finding.status === 'updated';
-        if (!live) continue;
-        if (effectiveDisposition(finding) === 'propose') waitingCount += 1;
-        if (finding.severity === 'critical') criticalCount += 1;
       }
+      const { waitingCount, criticalCount } = liveFeedCounts(showable);
 
       const hoursSinceRun = run
         ? (now.getTime() - new Date(run.runAt).getTime()) / 3_600_000
@@ -345,6 +339,31 @@ export async function hotelHealthChips(
   return out;
 }
 
+/**
+ * The hotel's OWN live feed, counted — the numbers behind both the picker chip
+ * and the brief's "quiet" claim.
+ *
+ * ONE function on purpose. These two lines were written twice, in two files, and
+ * the copies were identical right up until one screen said "2 WAITING" and the
+ * other called the same hotel quiet. The two silences are excluded here even
+ * though the CLIMBING rules deliberately see them: a manager who pressed "Seen"
+ * has not left a decision waiting for anyone, which is a different question from
+ * whether their boss should hear about it.
+ */
+function liveFeedCounts(
+  showable: readonly Finding[],
+): { waitingCount: number; criticalCount: number } {
+  let waitingCount = 0;
+  let criticalCount = 0;
+  for (const finding of showable) {
+    const live = finding.status === 'open' || finding.status === 'updated';
+    if (!live) continue;
+    if (effectiveDisposition(finding) === 'propose') waitingCount += 1;
+    if (finding.severity === 'critical') criticalCount += 1;
+  }
+  return { waitingCount, criticalCount };
+}
+
 // ─── Feed 1: the company's own cards ────────────────────────────────────────
 
 /**
@@ -363,22 +382,46 @@ async function companyCards(scope: CompanyScope, now: Date): Promise<PortfolioCa
   });
   return rows
     .filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }))
-    .map((f: CompanyFinding) => ({
-      ...toQueueFinding(f, { hotel: null, signOff: null }),
-      hotel: null,
-      climbReason: 'portfolio' as const,
-      daysOpen: daysOpen(f.firstSeenAt, now),
-    }));
+    .map((f: CompanyFinding) => {
+      // Spanish, rebuilt from this row's own receipt. `company_findings` has no
+      // judged_* columns, so without this a company card is English on every
+      // screen — including a Spanish-reading VP's, which is the only screen it
+      // ever appears on. See portfolioSpanish for why it is derived rather than
+      // stored.
+      const es = portfolioSpanish(f.detectorId, f.evidence);
+      return {
+        ...toQueueFinding(f, {
+          hotel: null,
+          signOff: null,
+          phrased: es ? { en: null, es: es.summary } : null,
+          basisEs: es ? { price: es.priceBasis, evidence: es.basis } : null,
+        }),
+        hotel: null,
+        climbReason: 'portfolio' as const,
+        daysOpen: daysOpen(f.firstSeenAt, now),
+      };
+    });
 }
 
 // ─── Feed 2: what climbed from the hotels ───────────────────────────────────
+
+interface HotelClimb {
+  cards: PortfolioCard[];
+  /**
+   * True when this hotel has live work of its own — the SAME predicate the
+   * command centre's chip uses. Carried out of here rather than recomputed
+   * because the findings were already read; see `hotelHasLiveWork` for the
+   * live disagreement this closes ("2 WAITING" vs "quiet", same hotel).
+   */
+  hasLiveWork: boolean;
+}
 
 async function climbedCards(
   scope: CompanyScope,
   caller: ManagerCaller,
   directory: ApproverDirectory,
   now: Date,
-): Promise<PortfolioCard[]> {
+): Promise<{ cards: PortfolioCard[]; busyHotelIds: string[] }> {
   const perHotel = await Promise.all(scope.propertyIds.map(async (propertyId) => {
     try {
       return await climbedAtHotel(propertyId, scope, caller, directory, now);
@@ -391,10 +434,15 @@ async function climbedCards(
         propertyId,
         err: e instanceof Error ? e.message : String(e),
       });
-      return [] as PortfolioCard[];
+      // NOT quiet. A hotel we could not read has not earned that word, so it is
+      // reported as busy and simply drops out of the "N hotels quiet" count.
+      return { cards: [] as PortfolioCard[], hasLiveWork: true };
     }
   }));
-  return perHotel.flat();
+  return {
+    cards: perHotel.flatMap((h) => h.cards),
+    busyHotelIds: scope.propertyIds.filter((_, i) => perHotel[i].hasLiveWork),
+  };
 }
 
 async function climbedAtHotel(
@@ -403,13 +451,13 @@ async function climbedAtHotel(
   caller: ManagerCaller,
   directory: ApproverDirectory,
   now: Date,
-): Promise<PortfolioCard[]> {
+): Promise<HotelClimb> {
   const rows = await listFindings(propertyId, {
     statuses: [...CLIMB_VISIBLE_STATUSES],
     limit: MAX_FINDINGS_PER_HOTEL,
   });
   const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }));
-  if (showable.length === 0) return [];
+  if (showable.length === 0) return { cards: [], hasLiveWork: false };
 
   // Only a proposal can carry a live offer, and only a live offer can be
   // waiting on a signature. Filtering first keeps the action read proportional
@@ -448,6 +496,9 @@ async function climbedAtHotel(
     if (requirement.callerMayApprove) awaitingMe.add(finding.id);
   }
 
+  // Counted over the same rows, by the same function the picker chip uses.
+  const { waitingCount, criticalCount } = liveFeedCounts(showable);
+
   const climbed: Array<{ finding: Finding; reason: NonNullable<ReturnType<typeof climbReasonFor>> }> = [];
   for (const finding of showable) {
     const candidate: ClimbCandidate = {
@@ -461,7 +512,12 @@ async function climbedAtHotel(
     const reason = climbReasonFor(candidate, now);
     if (reason) climbed.push({ finding, reason });
   }
-  if (climbed.length === 0) return [];
+  const hasLiveWork = hotelHasLiveWork({
+    climbedCount: climbed.length,
+    waitingCount,
+    criticalCount,
+  });
+  if (climbed.length === 0) return { cards: [], hasLiveWork };
 
   // Phrasing is read only for the survivors — the judge's wording matters on a
   // card somebody will read, and a `select('*')` per hotel over a whole ledger
@@ -470,17 +526,20 @@ async function climbedAtHotel(
   const phrasing = await judgedPhrasing(propertyId, climbed.map((c) => c.finding.id));
   const hotel = { propertyId, name: scope.propertyNames.get(propertyId) ?? 'this hotel' };
 
-  return climbed.map(({ finding, reason }) => ({
-    ...toQueueFinding(finding, {
-      phrased: phrasing.get(finding.id) ?? null,
-      action: actions.get(finding.id) ?? null,
-      signOff: signOffs.get(finding.id) ?? null,
+  return {
+    cards: climbed.map(({ finding, reason }) => ({
+      ...toQueueFinding(finding, {
+        phrased: phrasing.get(finding.id) ?? null,
+        action: actions.get(finding.id) ?? null,
+        signOff: signOffs.get(finding.id) ?? null,
+        hotel,
+      }),
       hotel,
-    }),
-    hotel,
-    climbReason: reason,
-    daysOpen: daysOpen(finding.firstSeenAt, now),
-  }));
+      climbReason: reason,
+      daysOpen: daysOpen(finding.firstSeenAt, now),
+    })),
+    hasLiveWork,
+  };
 }
 
 // ─── The whole screen ───────────────────────────────────────────────────────
@@ -493,6 +552,12 @@ export interface PortfolioQueue {
   cards: PortfolioCard[];
   run: PortfolioRun | null;
   cap: number;
+  /**
+   * Hotels the chip rule considers busy. Handed to the brief so its "N hotels
+   * quiet" line cannot call a hotel quiet while the command centre's chip for
+   * the same hotel says "2 waiting". See `hotelHasLiveWork`.
+   */
+  busyHotelIds: string[];
 }
 
 /**
@@ -532,9 +597,10 @@ export async function buildPortfolioQueue(
     organizationName: scope.organizationName,
     companyRole: scope.companyRole,
     hotelCount: scope.propertyIds.length,
-    cards: rankPortfolio([...company, ...climbed]),
+    cards: rankPortfolio([...company, ...climbed.cards]),
     run,
     cap: DAILY_CARD_CAP,
+    busyHotelIds: climbed.busyHotelIds,
   };
 }
 

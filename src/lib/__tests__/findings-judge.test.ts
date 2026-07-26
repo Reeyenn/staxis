@@ -185,10 +185,31 @@ describe('the deterministic template is the floor, so it must clear the guard', 
     });
   }
 
-  test('the Spanish template is real Spanish, not the English sentence', () => {
+  // Mutation: fall back to `candidate.summary` for Spanish (what the card used
+  // to do), or print "(magnitud 4)" (what this template used to do). The first
+  // puts English prose under a Spanish heading; the second prints a bare count
+  // with no unit — 4 WHAT — and names no subject at all while the English twin
+  // says "Room 214". Both were live on the VP queue.
+  test('the Spanish template is real Spanish, names the subject, and says no "magnitud"', () => {
     const template = templateJudgment(candidate());
     assert.notEqual(template.es, template.en);
-    assert.match(template.es, /Staxis detectó/);
+    assert.ok(
+      !template.es.includes(candidate().summary),
+      'Spanish must not be the English sentence wearing a Spanish label',
+    );
+    assert.doesNotMatch(template.es, /magnitud/i, '"magnitud" is not a word a hotel manager uses');
+    assert.match(template.es, /Habitación 214/, 'the subject the English names must be named here too');
+    assert.match(template.es, /Ver los números/, 'the floor points at the receipt it cannot restate');
+  });
+
+  // Mutation: print the magnitude anyway. The guard would still pass (4 is in
+  // the payload) — this asserts the PRODUCT decision, not the guard.
+  test('a finding with no nameable subject still gets a whole Spanish sentence', () => {
+    const bare = candidate({ evidence: { queryId: 'q', params: {}, values: {}, basis: 'b' } });
+    const template = templateJudgment(bare);
+    assert.match(template.es, /^Atención: /);
+    assert.match(template.es, /en este hotel/);
+    assert.doesNotMatch(template.es, /magnitud/i);
   });
 
   test('the template keeps the detector\'s verdict', () => {

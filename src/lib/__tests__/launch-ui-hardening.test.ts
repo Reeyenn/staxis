@@ -122,10 +122,32 @@ test('financial and settings reads wait for a matching authorized property conte
   }
 });
 
-test('the unwired Staxis queue is explicit and never claims all-clear', () => {
+/**
+ * The Staxis queue never claims all-clear — AND never claims it is unwired.
+ *
+ * This test used to REQUIRE the two pilot-era sentences ("Live approvals are not
+ * connected for this pilot yet", "Approvals unavailable — do not use this screen
+ * as an all-clear"). Both were true when they were written and both were false
+ * by the time a manager read them: the cards are live findings and the ones
+ * Staxis can fix carry a real approve button. Worse, the second one rendered
+ * while the read was still in flight, so every load flashed "Approvals
+ * unavailable" over a queue that was about to appear.
+ *
+ * A test that pins false copy in place is worse than no test, so it now guards
+ * the invariant that actually matters in BOTH directions: no claim that
+ * everything is fine, and no claim that nothing is connected.
+ */
+test('the Staxis queue claims neither all-clear nor "not connected"', () => {
   const queue = source('src', 'components', 'concourse', 'QueueView.tsx');
-  assert.match(queue, /Approvals unavailable/);
-  assert.match(queue, /Do not use this screen as an all-clear/);
+  // Never an all-clear. This is the older and more important half.
   assert.doesNotMatch(queue, /All caught up/);
+  assert.doesNotMatch(queue, /all[- ]clear/i);
   assert.doesNotMatch(queue, /broadcastQueueCount\(0\)/);
+  // Never the stale pilot claim, in either language.
+  assert.doesNotMatch(queue, /not connected for this pilot/i);
+  assert.doesNotMatch(queue, /todavía no están conectadas/i);
+  assert.doesNotMatch(queue, /Approvals unavailable/);
+  // A neutral wait, shown only while the read is genuinely in flight.
+  assert.match(queue, /readState === 'loading'/);
+  assert.match(queue, /One moment…/);
 });

@@ -157,6 +157,13 @@ export function PortfolioQueueBody({
         busyId={busyId}
         focusId={focusId}
         hideLiveness
+        // The founder's rule at the top of vp-queue.ts: a GM tap must not add
+        // to, hide from, or DRESS UP the VP's view. "Seen 6 times since Jul 9"
+        // was on this screen; the climb-reason line above already answers the
+        // persistence question in words that cannot be read as "six people
+        // looked at this and shrugged".
+        hideOccurrence
+        bottomHeadroom
         heading={es ? S.heading.es : S.heading.en}
         noteFor={noteFor}
         hrefFor={hrefFor}

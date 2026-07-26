@@ -59,6 +59,19 @@ export interface PortfolioBriefInput {
   cards: readonly PortfolioCard[];
   run: PortfolioRun | null;
   now: Date;
+  /**
+   * Hotels the CHIP rule considers busy — `hotelHasLiveWork` in vp-queue.ts.
+   *
+   * Without this the brief and the command centre disagreed out loud about the
+   * same building on the same morning: the chip said "2 WAITING" and the brief,
+   * one tap away, counted that hotel among the "N hotels quiet". Both were
+   * computing something defensible; only one of them is checkable against the
+   * hotel, so the chip wins and this list is how its answer gets here.
+   *
+   * Optional so a caller with no chip information degrades to the old, narrower
+   * count rather than to a wrong one — and every production caller passes it.
+   */
+  busyHotelIds?: readonly string[];
 }
 
 // ─── Which cards are actually asking for something ──────────────────────────
@@ -97,10 +110,18 @@ function hotelsNeedingYou(cards: readonly PortfolioCard[]): Set<string> {
  * counted in either sentence, which is why those two numbers do not have to add
  * up to the whole company — and why neither of them can be a lie.
  */
-function quietHotelCount(cards: readonly PortfolioCard[], hotelCount: number): number {
+function quietHotelCount(
+  cards: readonly PortfolioCard[],
+  hotelCount: number,
+  busyHotelIds: readonly string[] = [],
+): number {
   const withAnything = new Set(
     cards.filter((c) => c.hotel).map((c) => c.hotel!.propertyId),
   );
+  // The chip's answer, folded in. A hotel with two live proposals that have not
+  // cleared the climbing bar has no card HERE and is emphatically not quiet
+  // THERE, and the reader is looking at both.
+  for (const id of busyHotelIds) withAnything.add(id);
   return Math.max(0, hotelCount - withAnything.size);
 }
 
@@ -126,7 +147,7 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
   const needing = hotelsNeedingYou(cards);
   const companyDecisions = cards.filter((c) => !c.hotel && needsADecision(c)).length;
   const decisionCount = needing.size + companyDecisions;
-  const quiet = quietHotelCount(cards, input.hotelCount);
+  const quiet = quietHotelCount(cards, input.hotelCount, input.busyHotelIds ?? []);
 
   // "At your hotel" rather than "Across your 1 hotel". A one-hotel company is a
   // real customer (an owner who has bought their second and not opened it yet),
@@ -139,12 +160,16 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
 
   const liveness = companyLivenessLine(run, input.now);
 
+  const busy = input.busyHotelIds ?? [];
+
   // ── the quiet morning ──
-  // One line, and only when there is genuinely nothing on the screen. A brief
-  // that said "nothing needs you" over four standing cards would be the single
-  // most damaging sentence this surface could print, so the card count is part
-  // of the condition and not just the decision count.
-  if (cards.length === 0) {
+  // One line, and only when there is genuinely nothing on the screen AND nothing
+  // waiting in any of the hotels' own queues. A brief that said "nothing needs
+  // you" over four standing cards would be the single most damaging sentence this
+  // surface could print — and so, only slightly less so, is one that says it
+  // while the picker one tap away shows "2 WAITING" on a building. So the card
+  // count and the chips are both part of the condition.
+  if (cards.length === 0 && busy.length === 0) {
     const lines = [line(
       `${across.en}: nothing needs a decision this morning.`,
       `${across.es}: nada requiere una decisión esta mañana.`,
@@ -155,15 +180,25 @@ export function buildPortfolioBrief(input: PortfolioBriefInput): PortfolioBrief 
 
   const lines: BriefLine[] = [];
 
-  lines.push(decisionCount > 0
-    ? line(
-      `${across.en}: ${decisionCount} ${plural(decisionCount, 'needs', 'need')} you.`,
-      `${across.es}: ${decisionCount} ${plural(decisionCount, 'necesita', 'necesitan')} tu atención.`,
-    )
-    : line(
-      `${across.en}: nothing needs a decision, but ${cards.length} ${plural(cards.length, 'thing is', 'things are')} worth a look.`,
-      `${across.es}: nada requiere una decisión, pero ${plural(cards.length, 'hay 1 cosa', `hay ${cards.length} cosas`)} que vale la pena mirar.`,
+  // Nothing CLIMBED, but hotels are working. The honest sentence names both
+  // facts, because "nothing needs a decision" on its own is what made the chip
+  // look like a contradiction.
+  if (cards.length === 0) {
+    lines.push(line(
+      `${across.en}: nothing has reached you, but ${busy.length} ${plural(busy.length, 'hotel has', 'hotels have')} something waiting in ${plural(busy.length, 'its', 'their')} own queue.`,
+      `${across.es}: nada llegó hasta ti, pero ${busy.length} ${plural(busy.length, 'hotel tiene', 'hoteles tienen')} algo esperando en su propia cola.`,
     ));
+  } else {
+    lines.push(decisionCount > 0
+      ? line(
+        `${across.en}: ${decisionCount} ${plural(decisionCount, 'needs', 'need')} you.`,
+        `${across.es}: ${decisionCount} ${plural(decisionCount, 'necesita', 'necesitan')} tu atención.`,
+      )
+      : line(
+        `${across.en}: nothing needs a decision, but ${cards.length} ${plural(cards.length, 'thing is', 'things are')} worth a look.`,
+        `${across.es}: nada requiere una decisión, pero ${plural(cards.length, 'hay 1 cosa', `hay ${cards.length} cosas`)} que vale la pena mirar.`,
+      ));
+  }
 
   // ── the two or three worth the attention ──
   for (const card of cards.slice(0, MAX_BRIEF_HIGHLIGHTS)) {

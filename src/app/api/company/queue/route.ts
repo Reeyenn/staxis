@@ -119,6 +119,10 @@ export async function GET(req: NextRequest) {
         cards: queue.cards,
         run: queue.run,
         now: new Date(),
+        // The chip rule's own answer. Without it the brief's "N hotels quiet"
+        // and the command centre's "2 WAITING" contradicted each other about the
+        // same hotel on the same morning — see hotelHasLiveWork.
+        busyHotelIds: queue.busyHotelIds,
       },
     });
 

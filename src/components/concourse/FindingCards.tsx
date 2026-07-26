@@ -50,6 +50,7 @@ import { readEnvelope } from '@/lib/api-envelope';
 import { CxIcon } from './icons';
 import {
   DAILY_CARD_CAP,
+  basisInLang,
   cardEyebrowLabel,
   cardPhrasing,
   closureButtons,
@@ -168,6 +169,11 @@ const FD_CSS = `
 .fd-rfoot{font-size:10.5px;color:#A6ABA6;margin-top:8px;
   font-family:var(--font-geist-mono),ui-monospace,monospace;}
 .fd-fold{margin-top:14px;}
+/* Clearance for the fixed ask-composer. 132px = the dock's own height with its
+   chip row, plus its 22px offset, plus a thumb's worth of margin — measured, not
+   guessed. The safe-area inset is added because the dock uses it too, so on a
+   notched phone the spacer grows exactly as much as the dock does. */
+.fd-headroom{height:calc(132px + env(safe-area-inset-bottom, 0px));}
 .fd-err{margin-top:10px;border-radius:12px;padding:9px 12px;font-size:12.5px;line-height:1.5;
   background:rgba(184,92,61,.10);color:#8E432B;}
 .fd-focused{border-color:rgba(62,92,72,.55);box-shadow:0 0 0 3px rgba(158,183,166,.28);}
@@ -381,6 +387,20 @@ interface CardProps {
   href?: string | null;
   /** "Open in this hotel", already in the reader's language. */
   hrefLabel?: string;
+  /**
+   * Suppress the "Seen N times since Jul 9" line.
+   *
+   * Set by the PORTFOLIO queue, and the reason is the founder's rule at the top
+   * of src/lib/company/vp-queue.ts: "Seen silences the FEED, never the boss. A
+   * GM tap must not add to, hide from, or DRESS UP the VP's view." The count
+   * underneath that line is the detector's own re-sighting count rather than a
+   * GM's taps — but the word on the screen is "Seen", and a boss reading "Seen 6
+   * times" reads six people looking at it and doing nothing. The portfolio card
+   * already answers the persistence question in its own words ("Still unresolved
+   * 12 days after Staxis first saw it"), so nothing is lost by not saying it
+   * twice in a sentence that invites the wrong reading.
+   */
+  hideOccurrence?: boolean;
 }
 
 function FindingCard({
@@ -394,6 +414,7 @@ function FindingCard({
   note = null,
   href = null,
   hrefLabel,
+  hideOccurrence = false,
 }: CardProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
@@ -410,7 +431,9 @@ function FindingCard({
   const engaged = React.useRef(false);
 
   const price = formatPriceRange(finding.price);
-  const seen = occurrenceLine(finding, lang);
+  const seen = hideOccurrence ? null : occurrenceLine(finding, lang);
+  const priceBasis = basisInLang(finding.price?.basis, finding.price?.basisEs, lang);
+  const evidenceBasis = basisInLang(finding.evidence.basis, finding.evidence.basisEs, lang);
   const age = dataAgeNote(finding, lang);
   const closures = closureButtons(finding, lang);
   const pending = closures.find((b) => b.verdict === confirming) ?? null;
@@ -481,18 +504,18 @@ function FindingCard({
         {price && (
           <div className="fd-price">
             <span className="fd-pricev">{price}</span>
-            {finding.price?.basis ? (
+            {priceBasis ? (
               <span className="fd-priceb">
-                {L('basedOn')} {finding.price.basis}
+                {L('basedOn')} {priceBasis}
               </span>
             ) : null}
           </div>
         )}
 
         {/* The evidence summary — what the claim actually rests on. */}
-        {finding.evidence.basis && (
+        {evidenceBasis && (
           <div className="cx-dec-s">
-            {finding.evidence.basis} <span style={{ color: '#A6ABA6' }}>{L('tapToSee')}</span>
+            {evidenceBasis} <span style={{ color: '#A6ABA6' }}>{L('tapToSee')}</span>
           </div>
         )}
 
@@ -626,6 +649,13 @@ export interface FindingCardsViewProps {
   hrefLabel?: string;
   /** Replaces "What Staxis noticed" on a screen that is not about one hotel. */
   heading?: string;
+  /** True on the portfolio queue — see `hideOccurrence` on the card. */
+  hideOccurrence?: boolean;
+  /**
+   * Extra room under the last card so the floating ask-composer cannot sit on
+   * its buttons. See the note in QueueView.
+   */
+  bottomHeadroom?: boolean;
 }
 
 /**
@@ -650,6 +680,8 @@ export function FindingCardsView({
   hrefFor,
   hrefLabel,
   heading,
+  hideOccurrence = false,
+  bottomHeadroom = false,
 }: FindingCardsViewProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
@@ -704,6 +736,7 @@ export function FindingCardsView({
           note={noteFor ? noteFor(f) : null}
           href={hrefFor ? hrefFor(f) : null}
           hrefLabel={hrefLabel}
+          hideOccurrence={hideOccurrence}
         />
       ))}
 
@@ -714,29 +747,74 @@ export function FindingCardsView({
           </button>
         </div>
       )}
+
+      {/* Room for the floating ask-composer to sit over nothing.
+          The dock is `position: fixed` at the bottom of the viewport and it does
+          not scroll; `.cx-page`'s 130px of bottom padding was not enough once
+          the dock grew its suggestion chips, so the LAST card's verdict buttons
+          were underneath it and unclickable at the bottom of the scroll. A
+          spacer here rather than more global page padding: the overlap is a
+          property of a list whose last row is interactive, and every other
+          section page ends in something you do not have to press. */}
+      {bottomHeadroom && visible.length > 0 && <div className="fd-headroom" aria-hidden />}
     </>
   );
 }
+
+/** What the queue read is doing, for a caller that has to say something honest
+ *  about it. 'loading' is the only state a page may describe as "one moment"; the
+ *  other two are already described by this component itself. */
+export type QueueReadState = 'idle' | 'loading' | 'ready' | 'failed';
 
 export function FindingCards({
   lang,
   focusId = null,
   hideLiveness = false,
+  propertyId,
+  bottomHeadroom = false,
+  onReadState,
 }: {
   lang: Lang;
   focusId?: string | null;
   hideLiveness?: boolean;
+  /**
+   * Which hotel to show, when it is NOT the one the app is standing in.
+   *
+   * Set by a company-scope reader drilling into one of their hotels from the
+   * portfolio queue (`/feed?pid=…&focus=…`). Explicit rather than relying on the
+   * property switcher because a company account's `properties` list is built
+   * from `accounts.property_access` — a snapshot that is legitimately EMPTY for
+   * a VP whose access comes entirely from a company hat — so switching the
+   * context alone would render a queue for no hotel at all. The server gates the
+   * read either way: /api/findings refuses a hotel the caller cannot reach.
+   */
+  propertyId?: string | null;
+  bottomHeadroom?: boolean;
+  onReadState?: (state: QueueReadState) => void;
 }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const hotelId = propertyId ?? activePropertyId;
   // Gate at the FETCH, not the render: a housekeeper who opens this tab never
   // asks for findings at all, so a 403 in the logs always means something real.
   const canSee = !!user && canManageTeam(user.role);
 
   const { data, error, reload } = useApiResource<QueuePayload>(
-    `/api/findings?propertyId=${activePropertyId}`,
-    { enabled: canSee && !!activePropertyId, keepDataOnError: true },
+    `/api/findings?propertyId=${hotelId}`,
+    { enabled: canSee && !!hotelId, keepDataOnError: true },
   );
+
+  // Reported rather than rendered here: the honest sentence for "we have not
+  // finished reading yet" belongs to whichever page owns the surrounding copy,
+  // and this component's own empty state is deliberately silent.
+  const readState: QueueReadState = !canSee || !hotelId
+    ? 'idle'
+    : error
+      ? 'failed'
+      : data
+        ? 'ready'
+        : 'loading';
+  React.useEffect(() => { onReadState?.(readState); }, [readState, onReadState]);
 
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [saveFailed, setSaveFailed] = React.useState(false);
@@ -746,7 +824,7 @@ export function FindingCards({
 
   const onVerdict = React.useCallback(
     (findingId: string, verdict: Verdict) => {
-      if (!activePropertyId) return;
+      if (!hotelId) return;
       void (async () => {
         setBusyId(findingId);
         setSaveFailed(false);
@@ -754,7 +832,7 @@ export function FindingCards({
           const res = await fetchWithAuth('/api/findings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ propertyId: activePropertyId, findingId, action: verdict }),
+            body: JSON.stringify({ propertyId: hotelId, findingId, action: verdict }),
           });
           const body = await readEnvelope<{ status: string }>(res);
           if (body.error !== undefined) {
@@ -773,7 +851,7 @@ export function FindingCards({
         }
       })();
     },
-    [activePropertyId, reload],
+    [hotelId, reload],
   );
 
   /**
@@ -788,7 +866,7 @@ export function FindingCards({
    */
   const onAction = React.useCallback(
     (actionId: string, intent: 'execute' | 'undo') => {
-      if (!activePropertyId) return;
+      if (!hotelId) return;
       const findingId =
         (data?.findings ?? []).find((f) => f.action?.id === actionId)?.id ?? actionId;
       void (async () => {
@@ -798,7 +876,7 @@ export function FindingCards({
           const res = await fetchWithAuth('/api/findings/actions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ propertyId: activePropertyId, actionId, intent }),
+            body: JSON.stringify({ propertyId: hotelId, actionId, intent }),
           });
           const body = await readEnvelope<{ state: string }>(res);
           if (body.error !== undefined) setSaveFailed(true);
@@ -813,7 +891,7 @@ export function FindingCards({
         }
       })();
     },
-    [activePropertyId, data, reload],
+    [hotelId, data, reload],
   );
 
   /**
@@ -825,18 +903,18 @@ export function FindingCards({
    */
   const onEngage = React.useCallback(
     (findingId: string) => {
-      if (!activePropertyId) return;
+      if (!hotelId) return;
       void fetchWithAuth('/api/findings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          propertyId: activePropertyId,
+          propertyId: hotelId,
           findingId,
           action: 'receipt_opened',
         }),
       }).catch(() => {});
     },
-    [activePropertyId],
+    [hotelId],
   );
 
   if (!canSee) return null;
@@ -852,6 +930,7 @@ export function FindingCards({
       busyId={busyId}
       focusId={focusId}
       hideLiveness={hideLiveness}
+      bottomHeadroom={bottomHeadroom}
       onVerdict={onVerdict}
       onEngage={onEngage}
       onAction={onAction}

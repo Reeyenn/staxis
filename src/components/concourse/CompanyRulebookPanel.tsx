@@ -56,8 +56,16 @@ interface RulebookFact {
   policyValue: string | null;
   createdByName: string | null;
   updatedAt: string;
+  nearDuplicateOf?: { id: string; topic: string; content: string; line: Bilingual } | null;
   reading: {
     authority: { line: Bilingual } | null;
+    /**
+     * Set when the line names TWO approvers and Staxis will not choose between
+     * them. Rendered as its own block rather than as a `reading`, because it is
+     * the opposite claim: a reading says "this is in force", this says "nothing
+     * is, and here is why".
+     */
+    ambiguousAuthority?: { candidates: string[]; line: Bilingual } | null;
     policy: { line: Bilingual } | null;
   };
 }
@@ -150,6 +158,10 @@ const S = {
   },
   readingEyebrow: { en: 'Staxis reads this as', es: 'Staxis entiende esto como' },
   readingAsk: { en: 'Right?', es: '¿Correcto?' },
+  readingUnsure: { en: 'Staxis cannot read this one', es: 'Staxis no puede leer esta' },
+  dupeEyebrow: { en: 'You may already have this', es: 'Puede que ya tengas esto' },
+  dupeUpdate: { en: 'Update that line', es: 'Actualizar esa línea' },
+  dupeKeepBoth: { en: 'Keep both', es: 'Conservar las dos' },
   ruleFrozen: { en: 'Approval rule in force', es: 'Regla de aprobación activa' },
   confirm: { en: 'Confirm', es: 'Confirmar' },
   edit: { en: 'Edit', es: 'Editar' },
@@ -272,6 +284,10 @@ const CR_CSS = `
 .cr-read{margin-top:9px;border-left:2px solid rgba(92,122,96,.5);padding:2px 0 2px 10px;}
 .cr-reade{font-size:10px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6F8A72;}
 .cr-readl{font-size:12.5px;color:#2F3A30;line-height:1.5;margin-top:2px;}
+/* "Staxis cannot read this one" — caramel, not sage. A reading and a refusal to
+   read must not look like the same kind of statement. */
+.cr-unsure{border-left-color:rgba(201,150,68,.7);}
+.cr-unsure .cr-reade{color:#8C6A33;}
 .cr-acts{display:flex;gap:7px;margin-top:10px;flex-wrap:wrap;}
 .cr-act{height:30px;padding:0 12px;border-radius:999px;cursor:pointer;font-size:12px;font-weight:500;
   border:1px solid rgba(31,35,28,.14);background:transparent;color:#5C625C;white-space:nowrap;
@@ -404,6 +420,22 @@ export function CompanyRulebookPanel({
       const res = await post('/api/company/rulebook', { propertyId: activePropertyId, action, id });
       if (res.error !== undefined) setBanner({ kind: 'bad', text: res.error });
       else setConfirmingRemove(null);
+      await reload();
+    } finally {
+      setRowBusy(null);
+    }
+  };
+
+  /** "That's the same rule" — put these words on the line already in the book
+   *  and drop this restatement. See findNearDuplicate for why this exists. */
+  const mergeInto = async (id: string, intoId: string) => {
+    if (!activePropertyId) return;
+    setRowBusy(id);
+    try {
+      const res = await post('/api/company/rulebook', {
+        propertyId: activePropertyId, action: 'merge', id, intoId,
+      });
+      if (res.error !== undefined) setBanner({ kind: 'bad', text: res.error });
       await reload();
     } finally {
       setRowBusy(null);
@@ -575,6 +607,8 @@ export function CompanyRulebookPanel({
                 const isEditing = editing === f.id;
                 const disabled = rowBusy === f.id;
                 const reading = f.reading.authority ?? f.reading.policy;
+                const ambiguous = f.reading.ambiguousAuthority ?? null;
+                const dupe = unreviewed ? (f.nearDuplicateOf ?? null) : null;
                 return (
                   <div className={`cr-row${justAdded.has(f.id) ? ' cr-new' : ''}`} key={f.id}>
                     <div className="cr-top">
@@ -629,6 +663,24 @@ export function CompanyRulebookPanel({
                       </div>
                     )}
 
+                    {/* Two approvers named, no rule stored. Shown whether the
+                        line is confirmed or not: a confirmed sentence that
+                        SOUNDS like a money rule and enforces nothing is exactly
+                        the thing a VP must not have to guess about. */}
+                    {!isEditing && ambiguous && (
+                      <div className="cr-read cr-unsure">
+                        <div className="cr-reade">{L('readingUnsure')}</div>
+                        <div className="cr-readl">{ambiguous.line[es ? 'es' : 'en']}</div>
+                      </div>
+                    )}
+
+                    {!isEditing && dupe && (
+                      <div className="cr-read cr-unsure">
+                        <div className="cr-reade">{L('dupeEyebrow')}</div>
+                        <div className="cr-readl">{dupe.line[es ? 'es' : 'en']}</div>
+                      </div>
+                    )}
+
                     {canEdit && (
                       <div className="cr-acts">
                         {isEditing ? (
@@ -660,12 +712,26 @@ export function CompanyRulebookPanel({
                           </>
                         ) : (
                           <>
+                            {/* A restatement gets a CHOICE rather than a
+                                Confirm: fold it into the line already in the
+                                book, or keep both. "Keep both" is a real
+                                answer — the match is a heuristic over English
+                                and must never swallow a genuinely new rule. */}
+                            {unreviewed && dupe && (
+                              <button
+                                type="button" className="cr-act cr-yes" disabled={disabled}
+                                onClick={() => mergeInto(f.id, dupe.id)}
+                              >
+                                {L('dupeUpdate')}
+                              </button>
+                            )}
                             {unreviewed && (
                               <button
                                 type="button" className="cr-act cr-yes" disabled={disabled}
                                 onClick={() => act(f.id, 'confirm')}
+                                style={dupe ? { background: 'transparent', borderColor: 'rgba(31,35,28,.14)', color: '#5C625C' } : undefined}
                               >
-                                {L('confirm')}
+                                {dupe ? L('dupeKeepBoth') : L('confirm')}
                               </button>
                             )}
                             <button

@@ -234,9 +234,23 @@ function detectSupplySpendGap(ctx: PortfolioContext): FindingDraft[] {
     : `Supplies, same week, side by side: ${sideBySide}.`;
 
   return [{
-    // Identity is WHICH HOTEL is high, never how high. Next week's bigger gap
-    // updates this row instead of stacking a second card beside it.
-    key: `supply_spend:${top.hotel.propertyId}`,
+    // ═══ IDENTITY IS THE PROBLEM, NOT THE HOTEL THAT CURRENTLY TOPS IT ═══
+    //
+    // This key used to be `supply_spend:${top.hotel.propertyId}`. The comment
+    // above it said the right thing — "next week's bigger gap updates this row
+    // instead of stacking a second card" — and the code did the opposite,
+    // because the top spender is a MEASUREMENT and this is an IDENTITY. The week
+    // Port Arthur overtook Testing Hotel, a second card opened and the first one
+    // sat there until its 10-day staleness ran out: two cards, on one screen,
+    // naming two different hotels as the company's high spender. Both were
+    // written by the same check. That was live.
+    //
+    // The problem is "one hotel in this company is spending far more on supplies
+    // than its sisters", of which there is exactly one per company, and WHICH
+    // hotel it is belongs in the sentence and the evidence — where it is
+    // re-stated every run, so a change of leader updates this row (evidenceMoved
+    // sees the new summary and flips it to `updated`) instead of forking it.
+    key: 'supply_spend',
     summary: summary.slice(0, 500),
     severity: 'attention',
     magnitude: top.cents - bottom.cents,
@@ -259,6 +273,11 @@ function detectSupplySpendGap(ctx: PortfolioContext): FindingDraft[] {
         hotels_compared: ranked.length,
         outlier_wording_used: outlier,
         price_basis: pricing.note,
+        // The comparators' band as NUMBERS, not only inside the English basis
+        // sentence. `portfolioSpanish` rebuilds the same claim in Spanish from
+        // these, so a Spanish reader gets the figure rather than an English
+        // sentence with a Spanish label bolted on the front of it.
+        others_band_cents: othersBand ? { low: othersBand.low, high: othersBand.high } : null,
       },
       basis:
         `${plural(ranked.length, 'hotel')} in this company with delivery records covering ` +
@@ -400,3 +419,172 @@ export const PORTFOLIO_DETECTORS: readonly PortfolioDetector[] = Object.freeze([
   supplySpendGapDetector,
   portfolioActivityStoppedDetector,
 ]);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE SPANISH RENDERING, REBUILT FROM THE EVIDENCE
+//
+// ─── WHY IT IS NOT SIMPLY A SECOND `summary` FIELD ────────────────────────
+// `company_findings` stores ONE summary, ONE price_basis and ONE evidence
+// basis, and it has no judged_* columns at all — so unlike a hotel finding,
+// nothing downstream ever writes a Spanish version of a company card. A
+// Spanish-reading VP therefore got English prose on the only cards that are
+// BORN on their screen: "según your other hotels spent $700–$2,100 that week"
+// under a Spanish heading. That was live.
+//
+// Rather than a migration for three more text columns, the sentences are
+// REBUILT from `evidence.values`, which already carries every number and name
+// the English says. That has a property a second column would not: the two
+// languages cannot drift, because both are derived from the same receipt. If
+// one of them is wrong, the receipt is wrong, and the receipt is the thing a VP
+// can check.
+//
+// Every numeral below comes from the evidence, so this text is backed by the
+// same payload the English is.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** The three activity streams a hotel has (see feeds.ts), in Spanish. */
+const STREAM_LABEL_ES: Readonly<Record<string, string>> = Object.freeze({
+  inventory_counts: 'contar el inventario',
+  daily_log_closings: 'registrar los números diarios',
+  work_order_flow: 'registrar el mantenimiento',
+});
+
+export interface PortfolioSpanish {
+  summary: string;
+  /** Replaces the money basis under the price chip. Null when unpriced. */
+  priceBasis: string | null;
+  /** Replaces the evidence basis line. */
+  basis: string | null;
+}
+
+type Values = Readonly<Record<string, unknown>>;
+
+function num(values: Values | undefined, key: string): number | null {
+  const raw = values?.[key];
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : null;
+}
+
+function str(values: Values | undefined, key: string): string | null {
+  const raw = values?.[key];
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null;
+}
+
+/** "Beaumont, Lufkin y Tyler" — the Spanish twin of `listHotelNames`. */
+export function listHotelNamesEs(names: readonly string[]): string {
+  if (names.length === 0) return '';
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(', ')} y ${names[names.length - 1]}`;
+}
+
+const pluralEs = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+function supplySpendSpanish(evidence: {
+  params?: Values;
+  values?: Values;
+}): PortfolioSpanish | null {
+  const values = evidence.values;
+  const params = evidence.params;
+  const spend = values?.spend_cents;
+  if (!spend || typeof spend !== 'object' || Array.isArray(spend)) return null;
+
+  const ranked = Object.entries(spend as Record<string, unknown>)
+    .filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+    .sort((a, b) => b[1] - a[1]);
+  if (ranked.length === 0) return null;
+
+  const sideBySide = ranked
+    .slice(0, 3)
+    .map(([name, cents]) => `${name} ${formatCents(cents)}`)
+    .join(', ');
+
+  const top = str(values, 'top_hotel') ?? ranked[0][0];
+  const mid = num(values, 'median_cents');
+  const compared = num(values, 'hotels_compared') ?? ranked.length;
+  const outlier = values?.outlier_wording_used === true;
+
+  const summary = outlier && mid !== null
+    ? `${top} es el que más gasta en suministros: ${sideBySide} en semanas comparables, `
+      + `frente a un punto medio de ${formatCents(mid)} entre tus ${compared} hoteles.`
+    : `Suministros, la misma semana, lado a lado: ${sideBySide}.`;
+
+  const band = values?.others_band_cents;
+  let priceBasis: string | null = null;
+  if (band && typeof band === 'object' && !Array.isArray(band)) {
+    const low = num(band as Values, 'low');
+    const high = num(band as Values, 'high');
+    if (low !== null && high !== null) {
+      priceBasis = `tus otros hoteles gastaron ${formatCentsBand({ low, high })} esa semana`;
+    }
+  }
+
+  const start = str(params, 'week_start');
+  const end = str(params, 'week_end');
+  const basis = start && end
+    ? `${pluralEs(compared, 'hotel', 'hoteles')} de esta empresa con registros de entregas `
+      + `del ${start} al ${end}`
+    : null;
+
+  return { summary: summary.slice(0, 500), priceBasis, basis };
+}
+
+function activityStoppedSpanish(evidence: {
+  params?: Values;
+  values?: Values;
+}): PortfolioSpanish | null {
+  const values = evidence.values;
+  const streamId = str(evidence.params, 'stream');
+  const perHotel = values?.per_hotel;
+  if (!streamId || !perHotel || typeof perHotel !== 'object' || Array.isArray(perHotel)) return null;
+
+  // A stream we have no Spanish word for is left alone entirely rather than
+  // half-translated: an English activity name inside a Spanish sentence is the
+  // exact defect this function exists to remove.
+  const label = STREAM_LABEL_ES[streamId];
+  if (!label) return null;
+
+  const entries = Object.entries(perHotel as Record<string, unknown>);
+  const names = entries.map(([name]) => name).sort();
+  let worstName: string | null = null;
+  let worstDays = -1;
+  for (const [name, detail] of entries) {
+    const days = detail && typeof detail === 'object' && !Array.isArray(detail)
+      ? num(detail as Values, 'days_silent')
+      : null;
+    if (days !== null && days > worstDays) { worstDays = days; worstName = name; }
+  }
+
+  const stopped = num(values, 'hotels_stopped') ?? entries.length;
+  const checked = num(values, 'hotels_checked');
+
+  let summary = `${stopped} de tus hoteles dejaron de ${label}: ${listHotelNamesEs(names)}.`;
+  if (worstName && worstDays >= 0) {
+    summary += ` El silencio más largo es de ${pluralEs(worstDays, 'día', 'días')}, en ${worstName}.`;
+  }
+
+  const basis = checked !== null
+    ? `${pluralEs(stopped, 'hotel', 'hoteles')} de ${checked} con un ritmo registrado para esto `
+      + 'y sin actividad más allá de su propia espera habitual'
+    : null;
+
+  return { summary: summary.slice(0, 500), priceBasis: null, basis };
+}
+
+/**
+ * The Spanish rendering of one company card, or null when this detector has
+ * none — in which case the card keeps its English text, because a card with no
+ * sentence is worse than a card in the wrong language.
+ */
+export function portfolioSpanish(
+  detectorId: string,
+  evidence: { params?: Values; values?: Values } | null | undefined,
+): PortfolioSpanish | null {
+  if (!evidence) return null;
+  try {
+    if (detectorId === supplySpendGapDetector.id) return supplySpendSpanish(evidence);
+    if (detectorId === portfolioActivityStoppedDetector.id) return activityStoppedSpanish(evidence);
+    return null;
+  } catch {
+    // A malformed receipt costs the translation, never the card.
+    return null;
+  }
+}

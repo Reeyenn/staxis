@@ -23,6 +23,15 @@ import type { Finding } from './types';
 export interface ProjectionExtras {
   /** The judge's wording, when it has any. */
   phrased?: { en: string | null; es: string | null } | null;
+  /**
+   * A Spanish rendering of the two BASIS lines, when the producer can write one.
+   *
+   * Only the portfolio checks supply this today, and for a structural reason:
+   * `company_findings` has no judged_* columns, so nothing downstream ever
+   * translates a company card, and its basis lines were English on a screen a
+   * Spanish-reading VP opens. See `portfolioSpanish` in company/portfolio-checks.
+   */
+  basisEs?: { price: string | null; evidence: string | null } | null;
   /** The attached fix, when the runner froze one. */
   action?: FindingAction | null;
   /** The company signature standing on that fix, when a rule reaches it. */
@@ -95,12 +104,15 @@ export function toQueueFinding(
     disposition: effectiveDisposition(f),
     status: f.status,
     magnitude: f.magnitude,
-    price: f.price,
+    price: f.price
+      ? { ...f.price, basisEs: extras.basisEs?.price ?? null }
+      : null,
     evidence: {
       queryId: f.evidence?.queryId ?? '',
       params: (f.evidence?.params ?? {}) as Record<string, unknown>,
       values: (f.evidence?.values ?? {}) as Record<string, unknown>,
       basis: f.evidence?.basis ?? '',
+      basisEs: extras.basisEs?.evidence ?? null,
     },
     asOf: f.asOf,
     weakestInputAgeDays: f.weakestInputAgeDays,

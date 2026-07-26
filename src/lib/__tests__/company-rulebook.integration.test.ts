@@ -58,11 +58,14 @@ import { clearHotelIdentityCache } from '@/lib/agent/hotel-identity';
 import { clearCompanyRulebookCache } from '@/lib/agent/company-tier';
 import {
   confirmCompanyFact,
+  editCompanyFact,
   getConfirmedCompanyFacts,
   listCompanyFacts,
+  mergeCompanyFact,
   removeCompanyFact,
   storeCompanyFact,
 } from '@/lib/company/rulebook';
+import { findNearDuplicate } from '@/lib/company/rulebook-policy';
 import { authorityRuleFor, listAuthorityRules } from '@/lib/company/authority';
 import {
   companyAccessSetting,
@@ -865,5 +868,186 @@ describe('the spine follow-up — a hotel\'s team list stops hiding company peop
     // Wall A, inside the company: Lufkin's list does not name Beaumont's
     // front-desk person, whose hat covers Beaumont only.
     assert.equal(ids.includes(ACCOUNT_WANDA), false);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TONIGHT'S TOUR, against a real database.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('the approver a sentence names is the approver that gates money', () => {
+  // THE LIVE ROW. `company_authority_rules` on the demo company held
+  // approver_role='vp' for the sentence "Any capital project over $5,000
+  // requires owner approval, not VP approval." Mutation: revert the negation
+  // handling in readApproverCandidates and this test stores 'vp' again — and
+  // then `authorityRuleFor` hands a $6,000 renovation to the wrong signature.
+  test('"requires owner approval, not VP approval" freezes as the OWNER', async () => {
+    const factId = await writeConfirmedFact(
+      ORG_A,
+      'capital_project_approval_threshold',
+      'Any capital project over $5,000 requires owner approval, not VP approval.',
+      'money',
+    );
+
+    const rules = await listAuthorityRules(ORG_A);
+    const capital = rules.find((r) => r.sourceFactId === factId);
+    assert.ok(capital, 'the sentence must produce a rule');
+    assert.equal(capital.actionKind, 'capital_project');
+    assert.equal(capital.thresholdCents, 500_000);
+    assert.equal(capital.approverRole, 'owner');
+
+    // …and the routing lookup the cards actually use agrees.
+    const routed = await authorityRuleFor(ORG_A, 'capital_project', 600_000);
+    assert.ok(routed);
+    assert.equal(routed.approverRole, 'owner');
+  });
+
+  // Mutation: store SOMETHING for an ambiguous sentence. The company would be
+  // gated on a coin flip and would have no way to find out which way it landed.
+  test('a sentence naming two approvers freezes NO rule at all', async () => {
+    const factId = await writeConfirmedFact(
+      ORG_A,
+      'two_approvers',
+      'Any invoice over $900 needs owner approval or VP approval.',
+      'money',
+    );
+    const rules = await listAuthorityRules(ORG_A);
+    assert.equal(
+      rules.some((r) => r.sourceFactId === factId), false,
+      'an unstored rule gates nothing and is safe; a guessed one gates money',
+    );
+    assert.equal(await authorityRuleFor(ORG_A, 'invoice', 1_000_00), null);
+  });
+
+  // Mutation: leave the old rule in force when the words change. The book would
+  // say one thing and the gate would do another — which is worse than either.
+  test('editing an ambiguous sentence into a clear one turns the gate on, and back off', async () => {
+    const facts = await listCompanyFacts(ORG_A);
+    const two = facts.find((f) => f.topic === 'two_approvers')!;
+
+    const clarified = await editCompanyFact(
+      ORG_A, two.id,
+      { content: 'Any invoice over $900 needs owner approval.', category: 'money' },
+      ACTOR,
+    );
+    assert.equal(clarified.updated, true);
+    const now = await authorityRuleFor(ORG_A, 'invoice', 1_000_00);
+    assert.ok(now, 'the clarified sentence must gate');
+    assert.equal(now.approverRole, 'owner');
+
+    // Back to ambiguous → the frozen rule is RETIRED, not left standing.
+    const muddied = await editCompanyFact(
+      ORG_A, two.id,
+      { content: 'Any invoice over $900 needs owner approval or VP approval.', category: 'money' },
+      ACTOR,
+    );
+    assert.equal(muddied.updated, true);
+    assert.equal(await authorityRuleFor(ORG_A, 'invoice', 1_000_00), null);
+  });
+});
+
+describe('a restated rule updates the line the book already has', () => {
+  // THE LIVE PAIR: chemical_vendor (confirmed) and chemical_supplier
+  // (unreviewed) were both in the book, one policy, two rows, and a VP with no
+  // way to tell which one the copilot follows.
+  test('the confirmed line takes the new words and the duplicate goes', async () => {
+    const keepId = await writeConfirmedFact(
+      ORG_A, 'chemicals_vendor_merge', 'All our hotels use Ecolab for chemicals.', 'vendors',
+    );
+    const draft = await storeCompanyFact({
+      organizationId: ORG_A,
+      topic: 'chemicals_supplier_merge',
+      content: 'All Gulf Coast properties exclusively use Ecolab chemicals.',
+      category: 'vendors',
+      source: 'inferred',
+    });
+    assert.ok(draft.ok && draft.factId);
+
+    // The screen would have offered this pairing — same check, same inputs.
+    const before = await listCompanyFacts(ORG_A);
+    const confirmedLines = before
+      .filter((f) => f.reviewState === 'confirmed')
+      .map((f) => ({ id: f.id, topic: f.topic, content: f.content }));
+    const match = findNearDuplicate(
+      { id: draft.factId, content: 'All Gulf Coast properties exclusively use Ecolab chemicals.' },
+      confirmedLines,
+    );
+    assert.ok(match, 'the restatement must be spotted before it can be offered');
+    assert.equal(match.existing.id, keepId);
+
+    const merged = await mergeCompanyFact(ORG_A, keepId, draft.factId, ACTOR);
+    assert.equal(merged.merged, true);
+
+    const after = await listCompanyFacts(ORG_A);
+    const kept = after.find((f) => f.id === keepId);
+    assert.ok(kept, 'the established line must survive');
+    assert.equal(kept.content, 'All Gulf Coast properties exclusively use Ecolab chemicals.');
+    assert.equal(kept.reviewState, 'confirmed');
+    assert.equal(kept.topic, 'chemicals_vendor_merge', 'the slug every copilot reads does not move');
+    assert.equal(after.some((f) => f.id === draft.factId), false, 'the duplicate is gone');
+  });
+
+  // Mutation: allow the arguments in either order. Merging INTO a draft would
+  // hand the company's confirmed slug to a row nobody approved.
+  test('a merge INTO an unconfirmed line is refused', async () => {
+    const draftA = await storeCompanyFact({
+      organizationId: ORG_A, topic: 'merge_guard_a', content: 'Draft one about towels.',
+      category: 'standards', source: 'inferred',
+    });
+    const draftB = await storeCompanyFact({
+      organizationId: ORG_A, topic: 'merge_guard_b', content: 'Draft two about towels.',
+      category: 'standards', source: 'inferred',
+    });
+    const res = await mergeCompanyFact(ORG_A, draftA.factId!, draftB.factId!, ACTOR);
+    assert.equal(res.merged, false);
+    assert.equal(res.ok, false);
+    const facts = await listCompanyFacts(ORG_A);
+    assert.ok(facts.some((f) => f.id === draftB.factId), 'nothing may be removed by a refused merge');
+  });
+
+  // WALL B, at the merge. Mutation: look the rows up by id alone "because ids
+  // are unguessable" — the exact reasoning that would let one management company
+  // rewrite another's rulebook.
+  test('a merge cannot reach across companies', async () => {
+    const mine = await writeConfirmedFact(
+      ORG_A, 'wall_b_keep', 'Our towels are changed on request.', 'standards',
+    );
+    const theirs = await storeCompanyFact({
+      organizationId: ORG_B, topic: 'wall_b_drop', content: 'Their towels are changed daily.',
+      category: 'standards', source: 'inferred',
+    });
+    assert.ok(theirs.ok && theirs.factId);
+
+    // Company A's owner, naming company B's row. Both directions refused.
+    assert.equal((await mergeCompanyFact(ORG_A, mine, theirs.factId!, ACTOR)).merged, false);
+    assert.equal((await mergeCompanyFact(ORG_B, theirs.factId!, mine, ACTOR)).merged, false);
+
+    const aFacts = await listCompanyFacts(ORG_A);
+    const bFacts = await listCompanyFacts(ORG_B);
+    assert.equal(
+      aFacts.find((f) => f.id === mine)?.content, 'Our towels are changed on request.',
+      'company A\'s line was rewritten by a cross-company merge',
+    );
+    assert.ok(bFacts.some((f) => f.id === theirs.factId), 'company B\'s draft was removed from outside');
+  });
+
+  // Mutation: findNearDuplicate over the WHOLE book rather than the confirmed
+  // half. Two drafts would be offered against each other and a human would be
+  // asked to reconcile two things neither of which is policy yet.
+  test('the offer is only ever made against a CONFIRMED line', async () => {
+    const facts = await listCompanyFacts(ORG_A);
+    const confirmedOnly = facts
+      .filter((f) => f.reviewState === 'confirmed')
+      .map((f) => ({ id: f.id, topic: f.topic, content: f.content }));
+    const draftsOnly = facts.filter((f) => f.reviewState === 'unreviewed');
+    for (const draft of draftsOnly) {
+      const match = findNearDuplicate({ id: draft.id, content: draft.content }, confirmedOnly);
+      if (match) {
+        assert.equal(
+          facts.find((f) => f.id === match.existing.id)?.reviewState, 'confirmed',
+          'a draft was offered as the thing to update',
+        );
+      }
+    }
   });
 });

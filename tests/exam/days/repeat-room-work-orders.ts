@@ -56,7 +56,7 @@ export const repeatRoomWorkOrderDays: ExamDay[] = [
           // Four tickets at the $210-$390 this hotel has actually paid to fix things.
           lowCents: [80_000, 80_000],
           highCents: [160_000, 160_000],
-          basisMatches: /4 work orders at \$210-\$390 each — the range of the 3 repair costs this hotel has recorded/,
+          basisMatches: /4 work orders at \$210–\$390 each — the range of the 3 repair costs this hotel has recorded/,
         },
         summaryMatches: /Room 214 has had 4 work orders in the last 30 days — 2 still open\./,
       },
