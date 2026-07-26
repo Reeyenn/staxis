@@ -35,8 +35,12 @@ describe('AI Control Center feature registry', () => {
   // (23→24 controllable, 31→32 keys). Haiku for the same reason: it picks from
   // a closed list of checks and everything it suggests is re-tested by a
   // deterministic query before it can reach anyone.
-  test('covers 24 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 32);
+  // 2026-07-26: the morning brief's wording pass added findings.brief (24→25
+  // controllable, 32→33 keys). Haiku, and deliberately not load-bearing: the
+  // brief is assembled from stored numbers before this feature is consulted,
+  // and the prose guard throws the rewrite away whole if it invents a figure.
+  test('covers 25 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 33);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 

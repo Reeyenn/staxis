@@ -308,7 +308,17 @@ export type RateLimitEndpoint =
   // composite would FK-violate → the RPC errors → this would fail for the
   // wrong reason). NOT billing-impacting (no model call, no message send) →
   // fails OPEN, so a Supabase blip never swallows a real decision.
-  | 'findings-verdict';
+  | 'findings-verdict'
+  // ── Morning brief (Staxis tab, pinned card) ───────────────────────────────
+  // A GET, and on the FIRST load of a hotel's local day it can make one cheap
+  // model call to smooth the wording. Every load after that is served from the
+  // day's cached copy, so the realistic ceiling is one call per hotel per day —
+  // but the cache is what makes that true, and a cap must not depend on another
+  // mechanism working. Keyed on the RAW property id (api_limits.property_id
+  // FKs properties(id)). Billing-impacting → fails CLOSED: a Supabase blip
+  // costs a manager the summary, which is a paragraph above cards that are
+  // still all there, and that is a far better trade than uncapped spend.
+  | 'findings-brief';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -539,6 +549,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // 200/hr per property is far above that and still bounds a scripted sweep
   // that tries to mute everything.
   'findings-verdict':           200,
+  // Morning brief. Sized for the CACHE READS, not for the model call: the
+  // atomic daily claim already makes at most one of these a generation, so 120
+  // requests buys a manager (and their colleagues) all the tab-switching they
+  // like without ever buying a second model call. A scripted loop still hits
+  // the wall in under a minute.
+  'findings-brief':             120,
 };
 
 /**
@@ -653,6 +669,9 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // Claude Vision calls.
   'scan-invoice',
   'photo-count',
+  // The morning brief's wording pass — one Haiku call on the first load of a
+  // hotel's local day. Cheap, but uncapped-cheap is still uncapped.
+  'findings-brief',
   // First-time Housekeeping setup board photo — Claude Vision. Fail CLOSED so a
   // Supabase blip can't uncap Anthropic spend. The route treats a denied read as
   // "we couldn't read the photo", which is already a supported outcome there.

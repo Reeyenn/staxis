@@ -48,6 +48,7 @@ import {
   cardPhrasing,
   dataAgeNote,
   distinctDetectors,
+  focusedSplit,
   formatPriceRange,
   formatShortDate,
   isCardRenderable,
@@ -59,7 +60,6 @@ import {
   severityChipClass,
   severityLabel,
   skippedNote,
-  splitByCap,
   type Lang,
   type QueueFinding,
   type QueueRun,
@@ -152,6 +152,7 @@ const FD_CSS = `
 .fd-fold{margin-top:14px;}
 .fd-err{margin-top:10px;border-radius:12px;padding:9px 12px;font-size:12.5px;line-height:1.5;
   background:rgba(184,92,61,.10);color:#8E432B;}
+.fd-focused{border-color:rgba(62,92,72,.55);box-shadow:0 0 0 3px rgba(158,183,166,.28);}
 `;
 
 // ─── Receipt rendering ──────────────────────────────────────────────────────
@@ -208,13 +209,15 @@ interface CardProps {
   finding: QueueFinding;
   lang: Lang;
   busy: boolean;
+  /** True when a `?focus=` link (or a morning-brief line) named this card. */
+  focused?: boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Fired the first time this card's numbers are opened. Optional so the view
    *  can be rendered in a test without a network. */
   onEngage?: (findingId: string) => void;
 }
 
-function FindingCard({ finding, lang, busy, onVerdict, onEngage }: CardProps) {
+function FindingCard({ finding, lang, busy, focused = false, onVerdict, onEngage }: CardProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
 
@@ -230,8 +233,49 @@ function FindingCard({ finding, lang, busy, onVerdict, onEngage }: CardProps) {
   const age = dataAgeNote(finding, lang);
   const quiet = isQuiet(finding);
 
+  // Bring the linked card into view when it becomes the focused one.
+  //
+  // TWICE, and the second one on a TIMER. Two different arrivals, two different
+  // failure modes:
+  //
+  //   • tapped a brief line — the page is laid out and settled. The immediate
+  //     scroll is the right one and anything deferred is just latency.
+  //   • followed a ?focus= link — this card mounts while the list is still
+  //     growing (the fold has just been forced open, the cards below have not
+  //     laid out). A scroll computed against a document that is still getting
+  //     taller lands hundreds of pixels short: measured 110px against the 774px
+  //     the card actually needed.
+  //
+  // The retry is a timer rather than requestAnimationFrame on purpose — rAF
+  // does not fire in a tab that is not painting, so an rAF-only version
+  // silently does nothing there. `nearest` means the retry is a no-op when the
+  // first attempt already worked.
+  //
+  // `behavior: 'auto'` rather than 'smooth' for the same reason: smooth
+  // scrolling is animation-driven and is a NO-OP wherever frames are not being
+  // produced — verified, not assumed (a smooth version moved the page zero
+  // pixels; the same call with 'auto' moved it 774). A jump-to-card is a
+  // navigation anyway, and an instant one that always happens beats a graceful
+  // one that sometimes does not.
+  //
+  // `nearest` rather than `center` for the same reason the rest of this app
+  // uses it: on iOS Safari a centering scroll inside an already-scrolled shell
+  // fights the shell's own scroll and lands nowhere.
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  React.useEffect(() => {
+    if (!focused) return;
+    const bring = () => ref.current?.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+    bring();
+    const retry = setTimeout(bring, 150);
+    return () => clearTimeout(retry);
+  }, [focused]);
+
   return (
-    <div className="cx-dec">
+    <div
+      ref={ref}
+      data-finding-id={finding.id}
+      className={focused ? 'cx-dec fd-focused' : 'cx-dec'}
+    >
       <div className={`cx-dchip ${severityChipClass(finding.severity)}`}>
         <CxIcon name="staxis" size={17} />
       </div>
@@ -360,6 +404,23 @@ export interface FindingCardsViewProps {
   /** True when the last verdict did not save. */
   saveFailed?: boolean;
   busyId?: string | null;
+  /**
+   * The card a `?focus=` link (or a morning-brief line) points at. It is
+   * outlined, scrolled to, and — critically — the fold OPENS for it: a link
+   * that lands on a card hidden behind "show all" is a link that appears to do
+   * nothing, which is worse than not offering it.
+   */
+  focusId?: string | null;
+  /**
+   * Suppress the "checked N things" line because something above already said
+   * it — the morning brief ends with the same sentence, built by the same
+   * function over the same run row. Two copies drift apart the moment a manager
+   * silences a card (the brief is this morning's snapshot, this one is live)
+   * and a manager reading two nearly identical lines with different numbers
+   * reads a bug, not a nuance. The "checks couldn't run yet" note is NOT
+   * suppressed: nothing else says it, and it is a different claim.
+   */
+  hideLiveness?: boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Told when a manager opens a card's numbers. Counted as engagement, which
    *  is what keeps a check somebody reads from demoting itself (0362). */
@@ -379,6 +440,8 @@ export function FindingCardsView({
   readFailed = false,
   saveFailed = false,
   busyId = null,
+  focusId = null,
+  hideLiveness = false,
   onVerdict,
   onEngage,
 }: FindingCardsViewProps) {
@@ -388,8 +451,7 @@ export function FindingCardsView({
 
   const all = findings.filter(isCardRenderable);
   const ranked = rankFindings(all);
-  const { prominent, folded } = splitByCap(ranked, cap);
-  const visible = showAll ? ranked : prominent;
+  const { visible, showFoldToggle } = focusedSplit(ranked, cap, focusId, showAll);
 
   const liveness = livenessLine(run, distinctDetectors(all), lang);
   const skipped = skippedNote(run, lang);
@@ -407,15 +469,13 @@ export function FindingCardsView({
 
       {readFailed && <div className="fd-err">{L('loadFailed')}</div>}
 
-      {liveness.text && (
-        <>
-          <div className={`fd-live${liveness.kind === 'stale' ? ' fd-stale' : ''}`}>
-            <span className="fd-livedot" />
-            <span>{liveness.text}</span>
-          </div>
-          {skipped && <div className="fd-skipped">{skipped}</div>}
-        </>
+      {liveness.text && !hideLiveness && (
+        <div className={`fd-live${liveness.kind === 'stale' ? ' fd-stale' : ''}`}>
+          <span className="fd-livedot" />
+          <span>{liveness.text}</span>
+        </div>
       )}
+      {liveness.text && skipped && <div className="fd-skipped">{skipped}</div>}
 
       {visible.length > 0 && (
         <div className="fd-head">
@@ -431,12 +491,13 @@ export function FindingCardsView({
           finding={f}
           lang={lang}
           busy={busyId === f.id}
+          focused={focusId === f.id}
           onVerdict={onVerdict}
           onEngage={onEngage}
         />
       ))}
 
-      {folded.length > 0 && (
+      {showFoldToggle && (
         <div className="fd-fold">
           <button type="button" className="fd-act" onClick={() => setShowAll((v) => !v)}>
             {showAll ? L('showFewer') : `${L('showAll')} (${ranked.length})`}
@@ -447,7 +508,15 @@ export function FindingCardsView({
   );
 }
 
-export function FindingCards({ lang }: { lang: Lang }) {
+export function FindingCards({
+  lang,
+  focusId = null,
+  hideLiveness = false,
+}: {
+  lang: Lang;
+  focusId?: string | null;
+  hideLiveness?: boolean;
+}) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   // Gate at the FETCH, not the render: a housekeeper who opens this tab never
@@ -531,6 +600,8 @@ export function FindingCards({ lang }: { lang: Lang }) {
       readFailed={!!error}
       saveFailed={saveFailed}
       busyId={busyId}
+      focusId={focusId}
+      hideLiveness={hideLiveness}
       onVerdict={onVerdict}
       onEngage={onEngage}
     />

@@ -204,6 +204,71 @@ export function splitByCap<T>(ranked: readonly T[], cap: number = DAILY_CARD_CAP
   return { prominent: ranked.slice(0, limit), folded: ranked.slice(limit) };
 }
 
+// ─── Deep links: ?focus=<findingId> ─────────────────────────────────────────
+
+/**
+ * The finding id in a query string, or null.
+ *
+ * Shape-checked, not validated against anything: whatever comes back is looked
+ * up in the cards THIS hotel already loaded, so a wrong or hostile value
+ * matches nothing and the screen behaves as if no link had been followed. The
+ * shape check exists to keep junk out of a className and a DOM attribute, not
+ * as an authorization step — there is no authorization to do here, because
+ * naming an id grants nothing.
+ */
+export function parseFocusParam(search: string): string | null {
+  let raw: string | null = null;
+  try {
+    raw = new URLSearchParams(search).get('focus');
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  return /^[0-9a-fA-F-]{16,64}$/.test(raw) ? raw : null;
+}
+
+export interface FocusView<T> {
+  /** What to render, in order. */
+  visible: T[];
+  /** What is behind the fold — empty when the fold is open. */
+  folded: T[];
+  /** True when the linked card was below the cap and the fold had to open. */
+  focusIsFolded: boolean;
+  /** Whether to draw the "show all" control at all. */
+  showFoldToggle: boolean;
+}
+
+/**
+ * The card list, with a deep link honoured.
+ *
+ * THE RULE THAT MATTERS: a `?focus=` link whose card sits below the attention
+ * cap OPENS the fold. A link that lands on a card hidden behind "show all"
+ * appears to do nothing — the manager taps a link from another screen, the page
+ * changes, and the thing they were sent to look at is not on it. That is worse
+ * than not offering the link, so the fold is not optional here.
+ *
+ * A focus id that matches nothing (stale link, another hotel's finding, junk in
+ * the URL) changes nothing at all: same cards, same fold, same order.
+ */
+export function focusedSplit<T extends { id: string }>(
+  ranked: readonly T[],
+  cap: number,
+  focusId: string | null | undefined,
+  showAll: boolean,
+): FocusView<T> {
+  const { prominent, folded } = splitByCap(ranked, cap);
+  const focusIsFolded = !!focusId && folded.some((f) => f.id === focusId);
+  const open = showAll || focusIsFolded;
+  return {
+    visible: open ? [...ranked] : prominent,
+    folded: open ? [] : folded,
+    focusIsFolded,
+    // Once the fold has been forced open for a link, the toggle would offer to
+    // re-hide the very card the manager was sent to see.
+    showFoldToggle: folded.length > 0 && !focusIsFolded,
+  };
+}
+
 // ─── Money ──────────────────────────────────────────────────────────────────
 
 /** Whole dollars when the cents are zero; two decimals when they are not. */
