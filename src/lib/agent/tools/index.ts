@@ -32,6 +32,12 @@ import './recurring-todos';
 // behind it, what is waiting on a decision, preventive schedules, the equipment
 // register, and whether the nightly check actually ran. All read-only.
 import './staxis-findings';
+// The DO wires (2026-07-27): setting the hotel up by talking to it, and
+// answering Staxis in the conversation. Every tool in these two files declares
+// `confirmInChat` — it proposes, reads back, and writes only after the ROUTE has
+// recorded a message from the human since that read-back. See chat-confirm.ts.
+import './staxis-setup';
+import './staxis-decisions';
 // Cross-hotel chat. Every tool in here declares `surfaces: ['portfolio']`, so
 // importing it does NOT widen the chat/voice/walkthrough catalogs — the surface
 // filter in getToolsForRole keeps the two sets disjoint by construction.

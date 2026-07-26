@@ -671,7 +671,14 @@ export function createPglitePostgrest(pg: PGlite, catalog: Catalog): PglitePostg
     if (meta?.isArray) {
       return Array.isArray(value) ? arrayLiteral(value) : value;
     }
-    if (meta && (meta.udt === 'json' || meta.udt === 'jsonb') && typeof value === 'object') {
+    // A json/jsonb column takes a JSON DOCUMENT, and a bare string, number or
+    // boolean is one. supabase-js serialises the whole request body, so
+    // PostgREST receives `"some text"` — a valid json scalar — and stores it.
+    // Binding the raw JS string here instead produced `invalid input syntax for
+    // type json` for exactly the rows that carry a scalar: a tool_result that is
+    // an error message, a setting stored as a bare value. That is a fixture
+    // failure masquerading as a product one.
+    if (meta && (meta.udt === 'json' || meta.udt === 'jsonb')) {
       return JSON.stringify(value);
     }
     if (value instanceof Date) return value.toISOString();

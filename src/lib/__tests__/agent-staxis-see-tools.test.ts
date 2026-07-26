@@ -355,14 +355,19 @@ describe('staxis_pending_decisions', () => {
     assert.deepEqual(rows.map((r) => r.findingId), ['f-propose']);
   });
 
-  it('never offers to act — the answer says the user must tap it in the Staxis tab', async () => {
-    // The tool is deliberately half of the pair: a later sibling owns execution.
-    // If this sentence ever disappears the model will start saying "done".
+  it('never acts itself — it hands the decision to the tool that asks first', async () => {
+    // The tool is deliberately half of the pair. It used to say "you cannot act
+    // from this conversation", which stopped being true when the DO wires
+    // landed; what must never change is that LISTING is not DECIDING, so the
+    // sentence has to send the model somewhere else to act.
     tables.findings = [findingRow({ disposition: 'propose' })];
     tables.finding_actions = [];
     const d = dataOf(await run('staxis_pending_decisions'));
-    assert.match(String(d.howToAct), /read-only/i);
-    assert.match(String(d.howToAct), /cannot approve|cannot .*run/i);
+    assert.match(String(d.howToAct), /only lists/i);
+    assert.match(String(d.howToAct), /staxis_decide_pending_action/);
+    // The tool itself still writes nothing.
+    const tool = listAllTools().find((t) => t.name === 'staxis_pending_decisions')!;
+    assert.notEqual(tool.mutates, true);
   });
 
   it('a finding with no live offer is reported as needing hands, not as pending', async () => {

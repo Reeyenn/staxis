@@ -16,6 +16,7 @@ import {
   toAnthropicTools,
   isMutationTool,
   approvalTierFor,
+  confirmsInChat,
   type ToolContext,
   type ToolDefinition,
 } from './tools';
@@ -693,7 +694,7 @@ async function executeAgentToolCall(
     ...opts.toolContext,
     dryRun: opts.dryRun,
   });
-  noteToolRan(trace, call.name, result.ok);
+  noteToolRan(trace, call.name, result.ok, result.data);
   return { result, isError: !result.ok };
 }
 
@@ -949,6 +950,18 @@ export function partitionGatedCalls(
       inline.push(c); // read-only — never held
       continue;
     }
+    // ── confirms in the conversation instead of on a card ──
+    // NOT an ungated mutation. These tools are two calls: the first writes
+    // nothing and returns a read-back, the second writes only once the route
+    // has recorded a message FROM THE HUMAN after that read-back
+    // (chat-confirm.ts). Holding them would put a card in the middle of a
+    // sentence — and, worse, the card's "Do it" would approve the PROPOSE call,
+    // which does nothing, leaving the real write with no gate in front of it at
+    // all. The gate is inside the tool; the tool has to run to reach it.
+    if (confirmsInChat(c.name)) {
+      inline.push(c);
+      continue;
+    }
     if (mode === 'chat') {
       held.push(c); // chat holds every mutation
       continue;
@@ -979,10 +992,27 @@ interface TurnToolTrace {
   mutatingToolRan: boolean;
 }
 
-function noteToolRan(trace: TurnToolTrace, name: string, ok: boolean): void {
+/**
+ * A PROPOSE call from a `confirmInChat` tool succeeded, but changed nothing.
+ *
+ * Without this the guard would be disarmed by the half of the exchange that
+ * exists precisely to write nothing: the model proposes a maintenance schedule,
+ * the propose call returns ok, and "Done — I've set that up" would then read as
+ * a backed claim on a turn where the hotel's data is untouched. The payload says
+ * so itself (`awaitingConfirmation`), which is the same flag the model is told
+ * to read as "nothing has happened yet".
+ */
+export function isAwaitingConfirmation(data: unknown): boolean {
+  return !!data
+    && typeof data === 'object'
+    && !Array.isArray(data)
+    && (data as { awaitingConfirmation?: unknown }).awaitingConfirmation === true;
+}
+
+function noteToolRan(trace: TurnToolTrace, name: string, ok: boolean, data?: unknown): void {
   if (!ok) return;
   trace.anyToolRan = true;
-  if (isMutationTool(name)) trace.mutatingToolRan = true;
+  if (isMutationTool(name) && !isAwaitingConfirmation(data)) trace.mutatingToolRan = true;
 }
 
 /**

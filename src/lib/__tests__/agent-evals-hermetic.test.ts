@@ -188,11 +188,23 @@ describe('tool registry — invariants that auto-cover new tools', () => {
     );
   });
 
-  test('every mutating tool declares an approval tier', () => {
+  test('every mutating tool declares how a human approves it', () => {
+    // Two shapes, and every mutation must be one of them:
+    //   a card    `approval` tier — the gate holds the call, a person taps it;
+    //   in chat   `confirmInChat` — the tool proposes, reads back, and writes
+    //             only after the route records a message from the person since
+    //             (src/lib/agent/chat-confirm.ts).
+    // A mutation that is NEITHER would execute the moment the model asks for it.
     const missing = listAllTools()
-      .filter(t => t.mutates === true && !t.approval)
+      .filter(t => t.mutates === true && !t.approval && t.confirmInChat !== true)
       .map(t => t.name);
-    assert.deepEqual(missing, [], `mutating tool(s) with no approval tier: ${missing.join(', ')}`);
+    assert.deepEqual(missing, [], `mutating tool(s) a human never has to approve: ${missing.join(', ')}`);
+    // And the two are mutually exclusive — a tier on a chat-confirming tool
+    // describes a card that is never drawn.
+    const both = listAllTools()
+      .filter(t => t.confirmInChat === true && !!t.approval)
+      .map(t => t.name);
+    assert.deepEqual(both, [], `these claim both gates: ${both.join(', ')}`);
   });
 });
 

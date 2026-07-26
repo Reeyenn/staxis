@@ -292,7 +292,7 @@ registerTool<{ limit?: number }>({
     'Use when: the user asks what needs their decision, "what\'s waiting on me", "anything to approve", "what does Staxis want to do", "qué está esperando". Also reach for it when someone asks why a proposal has not happened yet — the answer is usually a sign-off they did not know about. ' +
     'Args: limit — how many to return, default 20. ' +
     'Returns: { count, decisions[] } — each with the finding, its dollar range, the offer in the words the hotel will see, and signOff: who it is waiting on by name, what threshold triggered it, and whether the person asking can approve it themselves. ' +
-    'Refuses: EVERYTHING that changes anything — this tool only reports. You cannot approve, decline, or execute a proposal from chat, so never say you have done one or offer to; tell the user to tap it in the Staxis tab. Do not read a sign-off requirement as disapproval: it means the rulebook routes a decision this size to someone else. Sign-off has THREE states and they are not interchangeable: `signOff: null` means nothing governs this one, a signOff object means somebody must sign it, and `signOffUnknown: true` means Staxis could not read the rules — say you cannot tell, never that it is clear to approve. When `approvers` is empty the card is still locked, and the honest answer is that nobody at this company currently holds that authority — not that it is approved.',
+    'Refuses: EVERYTHING that changes anything — this tool only reports. It never approves, declines or runs a proposal, so never say you have done one on the strength of having listed it. When the user then decides on one, pass its id to staxis_decide_pending_action, which reads the offer back and waits for their yes before doing anything. Do not read a sign-off requirement as disapproval: it means the rulebook routes a decision this size to someone else. Sign-off has THREE states and they are not interchangeable: `signOff: null` means nothing governs this one, a signOff object means somebody must sign it, and `signOffUnknown: true` means Staxis could not read the rules — say you cannot tell, never that it is clear to approve. When `approvers` is empty the card is still locked, and the honest answer is that nobody at this company currently holds that authority — not that it is approved.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -425,7 +425,7 @@ registerTool<{ limit?: number }>({
         count: decisions.length,
         decisions,
         companyNote,
-        howToAct: 'Read-only. To act on any of these the user taps it in the Staxis tab — you cannot approve, decline or run one from this conversation.',
+        howToAct: 'This tool only lists. When the user says what they want done with one, pass its findingId to staxis_decide_pending_action — it reads the offer back and does nothing until they answer. They can also still tap it in the Staxis tab.',
         note: decisions.length === 0
           ? 'Nothing is waiting on a decision right now.'
           : undefined,

@@ -12,6 +12,15 @@
  *   2. every `mutates: true` tool has a NON-generic summary in EN + ES
  *   3. no read-only tool has an `approval` tier
  *   4. approvalTierFor() reads the tier straight off the registry definition
+ *
+ * ONE CLASS OF MUTATION IS OUTSIDE ALL OF THAT, and it is asserted rather than
+ * assumed: a tool declaring `confirmInChat` does not go to a card at all. It
+ * proposes, reads back, and writes only once the route has recorded a message
+ * from the human since that read-back (src/lib/agent/chat-confirm.ts). A tier
+ * on one of those would be dead configuration describing a card nobody draws —
+ * and, worse, the card's "Do it" would approve the PROPOSE call, which writes
+ * nothing, leaving the real write ungated. So they must carry NO tier, and the
+ * set that skips the tier rule must be exactly the set that confirms in chat.
  */
 
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://placeholder.supabase.co';
@@ -24,10 +33,18 @@ process.env.ANTHROPIC_API_KEY ??= 'sk-ant-placeholder';
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { listAllTools, approvalTierFor, getToolsForRole, getTool, isMutationTool } from '@/lib/agent/tools';
+import {
+  listAllTools,
+  approvalTierFor,
+  confirmsInChat,
+  getToolsForRole,
+  getTool,
+  isMutationTool,
+} from '@/lib/agent/tools';
 import type { AppRole } from '@/lib/roles';
 import '@/lib/agent/tools/index'; // register everything
 import { buildActionSummary } from '@/lib/agent/approval';
+import { partitionGatedCalls } from '@/lib/agent/llm';
 
 describe('approval tier completeness', () => {
   test('adjust_stock order-intent approval copy disclaims delivery and purchase logging', () => {
@@ -36,11 +53,49 @@ describe('approval tier completeness', () => {
     assert.match(buildActionSummary('adjust_stock', args, 'es'), /intención.*no registra entrega ni compra/i);
   });
 
-  test('every mutation tool has an approval tier (via the registry)', () => {
+  test('every card-gated mutation tool has an approval tier (via the registry)', () => {
     const missing = listAllTools()
-      .filter((t) => t.mutates === true && (t.approval !== 'quick' && t.approval !== 'card'))
+      .filter((t) => t.mutates === true && t.confirmInChat !== true)
+      .filter((t) => t.approval !== 'quick' && t.approval !== 'card')
       .map((t) => t.name);
     assert.deepEqual(missing, [], `mutation tools missing an approval tier: ${missing.join(', ')}`);
+  });
+
+  test('a chat-confirming mutation carries no tier, and confirmsInChat() agrees', () => {
+    const inChat = listAllTools().filter((t) => t.confirmInChat === true);
+    assert.ok(inChat.length > 0, 'the chat-confirm catalog vanished — is it still registered?');
+    for (const t of inChat) {
+      assert.equal(t.mutates, true, `${t.name} confirms in chat but is not declared a mutation`);
+      assert.equal(
+        t.approval,
+        undefined,
+        `${t.name} carries an approval tier it will never use — the card gate does not hold it`,
+      );
+      assert.equal(approvalTierFor(t.name), null);
+      assert.equal(confirmsInChat(t.name), true);
+    }
+    // And nothing else claims the exemption.
+    for (const t of listAllTools()) {
+      if (t.confirmInChat === true) continue;
+      assert.equal(confirmsInChat(t.name), false, `${t.name} is exempt from the card gate without declaring it`);
+    }
+  });
+
+  test('the chat gate holds ordinary mutations and lets the chat-confirming ones run', () => {
+    // The gate decision itself, not just the registry flags. Getting this
+    // backwards has two failure modes and both are bad: holding a
+    // `confirmInChat` tool would put a card in front of its PROPOSE call — which
+    // writes nothing — and the human's tap would then approve the wrong half,
+    // leaving the real write with no gate at all. Inlining an ordinary mutation
+    // would run it with no gate whatsoever.
+    const inChat = listAllTools().find((t) => t.confirmInChat === true)!;
+    const carded = listAllTools().find((t) => t.mutates === true && t.confirmInChat !== true)!;
+    const readOnly = listAllTools().find((t) => t.mutates !== true)!;
+
+    const calls = [inChat, carded, readOnly].map((t, i) => ({ id: `c${i}`, name: t.name, args: {} }));
+    const { held, inline } = partitionGatedCalls(calls, 'chat');
+    assert.deepEqual(held.map((c) => c.name), [carded.name]);
+    assert.deepEqual(inline.map((c) => c.name).sort(), [inChat.name, readOnly.name].sort());
   });
 
   test('no read-only tool carries an approval tier', () => {
@@ -52,7 +107,7 @@ describe('approval tier completeness', () => {
 
   test('approvalTierFor() returns the registry tier for every mutation tool', () => {
     for (const t of listAllTools()) {
-      if (t.mutates !== true) continue;
+      if (t.mutates !== true || t.confirmInChat === true) continue;
       // The registry `approval:` field IS the single source of truth; the
       // lookup helper must return exactly it (and never null for a mutation).
       assert.equal(
@@ -64,9 +119,13 @@ describe('approval tier completeness', () => {
     }
   });
 
-  test('every mutation tool has a bespoke bilingual summary', () => {
+  test('every card-gated mutation tool has a bespoke bilingual summary', () => {
     for (const t of listAllTools()) {
-      if (t.mutates !== true) continue;
+      // A chat-confirming tool never renders a card, so it has no card copy to
+      // write. Its read-back sentence is built by the handler, in both
+      // languages, from the values it froze — and is asserted where that
+      // happens (agent-chat-do-wires.integration.test.ts).
+      if (t.mutates !== true || t.confirmInChat === true) continue;
       // Pass representative args so builders that interpolate don't blow up.
       const args = {
         roomNumber: '101', room_number: '101', on: true, note: 'x', metric: 'pH', value: 7,

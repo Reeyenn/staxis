@@ -236,6 +236,28 @@ export interface ToolDefinition<TArgs = unknown> {
    */
   approval?: 'quick' | 'card';
   /**
+   * This tool runs its OWN confirmation inside the conversation, so the
+   * approval-card gate must not hold it (`partitionGatedCalls`).
+   *
+   * It is not an exemption from confirming — it is a different confirm. A
+   * `confirmInChat` tool is two calls: the first validates, writes nothing, and
+   * returns a structured read-back plus a server-minted token; the second
+   * writes, and only when `takeConfirmation` (src/lib/agent/chat-confirm.ts)
+   * finds a `role='user'` message recorded AFTER the read-back. The human's own
+   * message is the trigger in both designs; here it is typed rather than
+   * tapped, which is the point — "set up the water heater flush every six
+   * months" and "yes, that's right" is a conversation, and a card in the middle
+   * of it is a different product.
+   *
+   * The tools still declare `mutates: true`, because they do mutate: the eval
+   * refusal bank derives its destructive-tool set from that flag, and a DO tool
+   * missing from it would be untested exactly where it matters.
+   *
+   * Do NOT set this on a tool that writes on its first call. The card gate is
+   * the default for a reason, and this flag turns it off.
+   */
+  confirmInChat?: true;
+  /**
    * Per-hotel capability this tool requires (e.g. 'view_financials',
    * 'run_reports', 'view_wages'). When set, executeTool() enforces the SAME
    * Access-tab capability gate the HTTP layer uses (canForProperty), honoring
@@ -383,6 +405,16 @@ export function isMutationTool(name: string): boolean {
 /** The approval tier a mutation tool carries ('quick' | 'card'), or null. */
 export function approvalTierFor(name: string): 'quick' | 'card' | null {
   return registry.get(resolveToolName(name))?.approval ?? null;
+}
+
+/**
+ * True when this tool confirms in the conversation rather than on a card — so
+ * the approval gate must let it run and its own two-phase confirm is what
+ * stands between the model and the hotel's data. See `confirmInChat` on
+ * ToolDefinition.
+ */
+export function confirmsInChat(name: string): boolean {
+  return registry.get(resolveToolName(name))?.confirmInChat === true;
 }
 
 /** Tools the given role is allowed to invoke on a given surface. This is
