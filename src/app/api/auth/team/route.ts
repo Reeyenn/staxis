@@ -35,7 +35,7 @@ import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { isAssignableRole, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { validateUuid } from '@/lib/api-validate';
-import { companyForProperty, loadHatsForAccounts } from '@/lib/company/access';
+import { accountsCoveringProperty, companyForProperty, loadHatsForAccounts } from '@/lib/company/access';
 import { HAT_ROLE_LABELS } from '@/lib/company/roles';
 
 export const runtime = 'nodejs';
@@ -171,6 +171,22 @@ export async function GET(req: NextRequest) {
     return err('Failed to load team', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
+  // COMPANY SPINE follow-up (0364/0365). Membership is the OTHER way a person
+  // reaches a hotel, and every company person the spine creates has an EMPTY
+  // `property_access` — their access is entirely a hat. Filtering on the legacy
+  // array alone therefore left the VP who oversees this hotel, and the GM whose
+  // hat names it, off this hotel's own team list.
+  //
+  // Additive: this only ever ADDS ids to the set the legacy filter already
+  // found. A hotel with no company gets an empty set back and the filter below
+  // behaves exactly as it always has.
+  let membershipCoveredIds = new Set<string>();
+  try {
+    membershipCoveredIds = new Set(await accountsCoveringProperty(hotelId));
+  } catch (coverErr) {
+    log.warn('[team:GET] membership coverage unavailable', { requestId, msg: errToString(coverErr) });
+  }
+
   // Hide admins from non-admin viewers. Staxis (us) is the platform
   // operator — customers shouldn't see our staff in their hotel's team
   // list. Admin-on-admin debug view: admins still see every row including
@@ -178,6 +194,7 @@ export async function GET(req: NextRequest) {
   // access" check.
   const teamRows = (rows ?? []).filter(r => {
     if (r.role === 'admin') return caller.isAdmin;
+    if (membershipCoveredIds.has(r.id)) return true;
     return Array.isArray(r.property_access) && r.property_access.includes(hotelId);
   });
 
@@ -263,6 +280,13 @@ export async function GET(req: NextRequest) {
   const teamWithDecisions = await Promise.all(teamRows.map(async (r) => {
     const targetRole = r.role as AppRole;
     const isSelf = r.id === caller.accountId;
+    // A person who is here because of a COMPANY JOB has an empty legacy array,
+    // so every `actions.*` flag below computes to false and their row renders
+    // read-only. That is the correct answer, not a gap to close: every mutation
+    // on this panel edits `property_access` (detach literally removes the hotel
+    // from it), which for a hat-based person would silently do nothing while
+    // reporting success. Jobs are changed on the hats surface
+    // (/api/auth/team/hats), which is where the authority checks for them live.
     const targetAccess = targetRole === 'admin' ? ['*'] : normalizedHotelAccess(r.property_access);
     const hasOtherHotelAccess = targetAccess.includes('*') || targetAccess.some((id) => id !== hotelId);
     const hotelAccessCount = targetAccess.includes('*') ? null : targetAccess.length;

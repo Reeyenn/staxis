@@ -46,6 +46,7 @@ import {
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import { seedPromptsCache } from '@/lib/agent/prompts-store';
 import { seedHotelIdentityCache } from '@/lib/agent/hotel-identity';
+import { seedCompanyRulebookCache } from '@/lib/agent/company-tier';
 import { formatMemoryForPrompt } from '@/lib/agent/memory-context';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import type { MemoryRow } from '@/lib/db/agent-memory';
@@ -210,6 +211,10 @@ export async function runHermetic(input: HermeticCaseInput): Promise<HermeticRes
   // every prompt build would fire a real request at the placeholder Supabase
   // URL and fail softly, which is offline by accident rather than by design.
   seedHotelIdentityCache(HERMETIC_PROPERTY_ID, null);
+  // Same promise for the company tier (0365): the hermetic hotel belongs to no
+  // management company, seeded explicitly rather than discovered by a DB call
+  // that happens to fail.
+  seedCompanyRulebookCache(HERMETIC_PROPERTY_ID, null);
 
   const snapshot = hermeticSnapshot(input.fixture?.snapshot ?? {});
   const memoryBlock = input.fixture?.memory?.length

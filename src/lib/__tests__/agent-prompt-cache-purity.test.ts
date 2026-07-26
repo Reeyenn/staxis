@@ -22,6 +22,13 @@
  * "last updated" stamp), so the stub below now serves real property rows and
  * every assertion here runs WITH the section present. Asserting on a prompt
  * whose derived section silently failed to render would prove nothing.
+ *
+ * 2026-07-26: and a SECOND derived section — the company rulebook (0365),
+ * which renders a management company's own rules into every one of its hotels'
+ * prompts. It is the same hazard again and a worse one: the block is shared by
+ * every hotel in the company, so a per-turn value in it multiplies the bill
+ * across the whole portfolio at once. Seeded explicitly below through the cache
+ * seam, so this suite policies a prompt that genuinely contains it.
  */
 
 process.env.NEXT_PUBLIC_SUPABASE_URL ??= 'https://placeholder.supabase.co';
@@ -37,6 +44,7 @@ import assert from 'node:assert/strict';
 import { buildSystemPrompt } from '@/lib/agent/prompts';
 import type { HotelSnapshot } from '@/lib/agent/context';
 import { clearHotelIdentityCache } from '@/lib/agent/hotel-identity';
+import { clearCompanyRulebookCache, seedCompanyRulebookCache } from '@/lib/agent/company-tier';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 const PROPERTY_ID = '00000000-0000-0000-0000-0000000000e1';
@@ -137,10 +145,34 @@ before(() => {
     return chain;
   };
   clearHotelIdentityCache();
+  // The company tier is seeded rather than discovered: the `from` stub above
+  // has no `.in()`, so a real derivation would fail softly and quietly render
+  // nothing — and every assertion below would then be policing a prompt without
+  // the section it exists to police.
+  seedCompanyRulebookCache(PROPERTY_ID, {
+    organizationId: '00000000-0000-0000-0000-0000000000c1',
+    facts: [
+      {
+        id: 'f1', organizationId: '00000000-0000-0000-0000-0000000000c1',
+        topic: 'chemical_vendor', content: 'All our hotels use Ecolab for chemicals.',
+        category: 'vendors', source: 'explicit_user', reviewState: 'confirmed',
+        policyKey: null, policyValue: null, createdByName: 'Ana',
+        updatedAt: '2026-07-20T00:00:00.000Z',
+      },
+      {
+        id: 'f2', organizationId: '00000000-0000-0000-0000-0000000000c1',
+        topic: 'po_threshold', content: 'Orders over $500 need VP sign-off.',
+        category: 'money', source: 'explicit_user', reviewState: 'confirmed',
+        policyKey: null, policyValue: null, createdByName: 'Ana',
+        updatedAt: '2026-07-21T00:00:00.000Z',
+      },
+    ],
+  });
 });
 after(() => {
   supabaseAdmin.from = originalFrom;
   clearHotelIdentityCache();
+  clearCompanyRulebookCache();
 });
 
 describe('prompt cache purity', () => {
@@ -154,6 +186,45 @@ describe('prompt cache purity', () => {
     assert.match(stable, /About this hotel/);
     assert.match(stable, /Housekeeping runs at Level 1/);
     assert.match(stable, /Roster: 2 active staff members/);
+  });
+
+  it('the derived COMPANY section really is in the block being policed too', async () => {
+    const { stable } = await buildSystemPrompt(
+      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
+    );
+    assert.match(stable, /Company rulebook/);
+    assert.match(stable, /All our hotels use Ecolab for chemicals\./);
+    assert.match(stable, /Orders over \$500 need VP sign-off\./);
+  });
+
+  it('the company block carries no clock, no age, no count and no "updated"', async () => {
+    // The worst version of the cache bug: this block is shared by every hotel
+    // the company operates, so one moving value in it misses the cache on every
+    // turn of every conversation across the whole portfolio at once.
+    const { stable } = await buildSystemPrompt(
+      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
+    );
+    const block = stable.slice(
+      stable.indexOf('Company rulebook'),
+      stable.indexOf('</staxis-company-rulebook>'),
+    );
+    assert.ok(block.length > 0, 'the company section is present');
+    assert.equal(/\b(min|hr|days?) ago\b/i.test(block), false);
+    assert.equal(/\b(last updated|as of|edited)\b/i.test(block), false);
+    // No fact count, and no timestamp from the seeded rows.
+    assert.equal(/2026-07-2\d/.test(block), false);
+    assert.equal(/\b2 (rules?|facts?|lines?)\b/i.test(block), false);
+  });
+
+  it('the company tier sits between the shared PMS notes and the hotel itself', async () => {
+    // Assembly order IS the conflict rule (later text wins). Reordering these
+    // three silently changes which fact the model believes, and nothing else in
+    // the suite would notice.
+    const { stable } = await buildSystemPrompt(
+      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
+    );
+    assert.ok(stable.indexOf('How old the numbers are') < stable.indexOf('Company rulebook'));
+    assert.ok(stable.indexOf('Company rulebook') < stable.indexOf('About this hotel'));
   });
 
   it('two snapshots 40 minutes apart produce byte-identical stable blocks', async () => {
@@ -236,5 +307,21 @@ describe('version label', () => {
     // The pre-existing inventory routing version is not displaced by it.
     assert.match(gm.versionLabel, /inventory-accounting-v1/);
     assert.equal(/inventory-accounting-v1/.test(hk.versionLabel), false);
+  });
+
+  it('records the company tier only when a company block was actually rendered', async () => {
+    const withCompany = await buildSystemPrompt(
+      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
+    );
+    assert.match(withCompany.stableStamp, /company-rulebook-v1/);
+
+    // An independent hotel gets no section, so its stamp must not claim one —
+    // otherwise "which rules was this turn run under" is answered with a lie.
+    seedCompanyRulebookCache(PROPERTY_ID, null);
+    const independent = await buildSystemPrompt(
+      'general_manager', snapshot(agedBy(5)), 'conv-1', undefined, undefined, NOW,
+    );
+    assert.equal(/company-rulebook-v1/.test(independent.stableStamp), false);
+    assert.equal(/Company rulebook/.test(independent.stable), false);
   });
 });

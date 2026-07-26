@@ -22,6 +22,11 @@ import {
   formatHotelIdentityForPrompt,
   HOTEL_IDENTITY_VERSION,
 } from './hotel-identity';
+import {
+  COMPANY_RULEBOOK_VERSION,
+  deriveCompanyRulebook,
+  formatCompanyRulebookForPrompt,
+} from './company-tier';
 import { familyContentIsSafe } from './prompt-tiers';
 import { resolvePrompts, type ResolvedFamilyPrompt } from './prompts-store';
 import type { VoiceMode } from './tools';
@@ -362,6 +367,7 @@ type StableTier =
   | 'inventory_routing'
   | 'data_freshness'
   | 'pms_family'
+  | 'company'
   | 'hotel_identity'
   | 'version_line';
 
@@ -371,11 +377,13 @@ type DynamicTier = 'hotel_snapshot' | 'hotel_memory' | 'room_hint';
 /**
  * FIXED ASSEMBLY ORDER. This IS the conflict rule for facts: later text wins,
  * so the family addendum sits after the global prompts (family fact beats
- * global fact), and the hotel's own durable identity sits after the family
- * addendum (hotel fact beats family fact). Live hotel STATE is still not in the
- * stable block at all — it arrives via search_knowledge and the
- * <staxis-memory> / snapshot blocks in the DYNAMIC half, which the model reads
- * after the entire stable block.
+ * global fact), the COMPANY rulebook sits after the family addendum (a
+ * management company's own standard beats a shared PMS note), and the hotel's
+ * own durable identity sits after the company (this hotel beats its company —
+ * the company standard is the default everywhere, the hotel in front of you is
+ * the exception). Live hotel STATE is still not in the stable block at all — it
+ * arrives via search_knowledge and the <staxis-memory> / snapshot blocks in the
+ * DYNAMIC half, which the model reads after the entire stable block.
  */
 const STABLE_TIER_ORDER: readonly StableTier[] = [
   'global_base',
@@ -385,6 +393,7 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'inventory_routing',
   'data_freshness',
   'pms_family',
+  'company',
   'hotel_identity',
   'version_line',
 ];
@@ -547,6 +556,18 @@ export async function buildSystemPrompt(
     await deriveHotelIdentity(snapshot.property.id),
   );
 
+  // 0365 — the rulebook of the management company that operates this hotel, if
+  // there is one. STABLE tier: the facts are confirmed company policy, ordered
+  // by (category, topic) at the database, so the block is byte-identical turn
+  // to turn and only a real edit to the rulebook moves it.
+  //
+  // `deriveCompanyRulebook` goes through `companyForProperty`, the single place
+  // a hotel becomes a company, and never throws — an independent hotel and an
+  // unreachable store both render no section at all.
+  const companyBlock = formatCompanyRulebookForPrompt(
+    await deriveCompanyRulebook(snapshot.property.id),
+  );
+
   if (family && !familyToRender) {
     captureException(
       new Error('[prompts] family prompt row rejected: forged marker or over length cap'),
@@ -577,7 +598,9 @@ export async function buildSystemPrompt(
     stampParts.push(FAMILY_TRUST_BOUNDARY_VERSION);
   }
   // Only when a block was actually rendered: a day-zero hotel gets no section,
-  // and stamping one would claim the model saw something it didn't.
+  // and stamping one would claim the model saw something it didn't. Same rule
+  // for the company tier — an independent hotel's stamp must not claim one.
+  if (companyBlock) stampParts.push(COMPANY_RULEBOOK_VERSION);
   if (identityBlock) stampParts.push(HOTEL_IDENTITY_VERSION);
   const stableStamp = stampParts.join('+');
 
@@ -636,6 +659,13 @@ export async function buildSystemPrompt(
         FAMILY_TRUST_MARKER_CLOSE,
       ],
     });
+  }
+  if (companyBlock) {
+    // The header, the ceiling and BOTH marker tags are supplied by
+    // company-tier.ts, never by a row — the same envelope discipline the family
+    // tier gets, and for the same reason: a rulebook line can only ever appear
+    // on the INSIDE of the envelope.
+    stable.push({ tier: 'company', lines: ['', companyBlock] });
   }
   if (identityBlock) {
     stable.push({ tier: 'hotel_identity', lines: ['', identityBlock] });

@@ -80,6 +80,18 @@ export type Catalog = {
   fks: ForeignKey[];
   /** Function name → returns a set (so the RPC result is an array). */
   setReturning: Map<string, boolean>;
+  /**
+   * Function name → the set of parameter names whose declared type is a
+   * Postgres ARRAY (`uuid[]`, `text[]`, …).
+   *
+   * Real PostgREST reads the function signature and turns a JSON array in the
+   * request body into a Postgres array for those parameters, and into a JSON
+   * document for a `json`/`jsonb` parameter. Without the signature this shim
+   * had to guess, and it guessed JSON for everything — so any handler calling
+   * an RPC with a `uuid[]` argument failed with "malformed array literal" and
+   * the route under test returned a 503 that has no production counterpart.
+   */
+  arrayParams: Map<string, Set<string>>;
 };
 
 type CatalogColumnRow = {
@@ -165,8 +177,22 @@ export async function loadCatalog(pg: PGlite): Promise<Catalog> {
       and src.relnamespace = 'public'::regnamespace
   `);
 
-  const fns = await pg.query<{ proname: string; proretset: boolean }>(`
-    select p.proname, p.proretset
+  // `proargtypes` covers IN parameters; `proallargtypes` is only populated when
+  // the function has OUT/INOUT/TABLE parameters, and then it covers ALL of them
+  // in declaration order — so the IN args are still its leading entries, which
+  // is what lines up with `proargnames`.
+  const fns = await pg.query<{
+    proname: string; proretset: boolean; argnames: string[] | null; argisarray: boolean[] | null;
+  }>(`
+    select
+      p.proname,
+      p.proretset,
+      p.proargnames as argnames,
+      (
+        select array_agg(t.typcategory = 'A' order by ordinality)
+        from unnest(coalesce(p.proallargtypes, p.proargtypes::oid[])) with ordinality as a(oid, ordinality)
+        join pg_type t on t.oid = a.oid
+      ) as argisarray
     from pg_proc p join pg_namespace n on n.oid = p.pronamespace
     where n.nspname = 'public'
   `);
@@ -211,6 +237,15 @@ export async function loadCatalog(pg: PGlite): Promise<Catalog> {
       refColumns: r.tgt_cols,
     })),
     setReturning: new Map(fns.rows.map((r) => [r.proname, r.proretset])),
+    arrayParams: new Map(fns.rows.map((r) => {
+      const names = r.argnames ?? [];
+      const flags = r.argisarray ?? [];
+      const arrays = new Set<string>();
+      for (let i = 0; i < names.length; i += 1) {
+        if (flags[i] === true && names[i]) arrays.add(names[i]);
+      }
+      return [r.proname, arrays] as const;
+    })),
   };
 }
 
@@ -894,11 +929,22 @@ export function createPglitePostgrest(pg: PGlite, catalog: Catalog): PglitePostg
     };
     statements.push(record);
     const c: Compiler = { params: [] };
+    // Encode each argument the way PostgREST would, from the function's own
+    // signature: a JS array bound for an ARRAY parameter becomes a Postgres
+    // array literal, anything else object-shaped becomes JSON (which is what a
+    // json/jsonb parameter wants). Guessing JSON for arrays is what made a
+    // `uuid[]` argument fail with "malformed array literal".
+    const arrayArgs = catalog.arrayParams.get(fn) ?? new Set<string>();
     const named = Object.entries(args ?? {})
       .map(([key, value]) => {
-        const bound = typeof value === 'object' && value !== null
-          ? bind(c, JSON.stringify(value))
-          : bind(c, value);
+        let bound: string;
+        if (Array.isArray(value) && arrayArgs.has(key)) {
+          bound = bind(c, arrayLiteral(value));
+        } else if (typeof value === 'object' && value !== null) {
+          bound = bind(c, JSON.stringify(value));
+        } else {
+          bound = bind(c, value);
+        }
         return `${ident(key)} => ${bound}`;
       })
       .join(', ');

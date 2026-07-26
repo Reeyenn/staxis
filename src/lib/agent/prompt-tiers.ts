@@ -39,6 +39,36 @@ export function familyContentIsSafe(content: string): boolean {
   return true;
 }
 
+/**
+ * Hard ceiling on the whole COMPANY rulebook block (0365). Same order as the
+ * family cap and for the same reason: this is cached prompt paid on every
+ * conversation of every hotel the company operates, so a company that pastes a
+ * 200-page brand manual into its rulebook must not be able to bill itself for
+ * that on every turn. Facts past the budget are dropped, never truncated
+ * mid-sentence — half a policy is worse than no policy.
+ */
+export const COMPANY_BLOCK_MAX_CHARS = 4000;
+
+/**
+ * Is this rulebook line safe to splice into the cached prompt?
+ *
+ * The DB already rejects violating rows (company_knowledge_no_markers_ck). This
+ * re-check means a relaxed constraint, a hand-edited row, or a future non-DB
+ * source still cannot fabricate a `<staxis-snapshot trust="system">` block or
+ * open a fake `─── … ───` section from inside the company tier — which sits
+ * ABOVE the family tier and is therefore the highest-authority text a customer
+ * can put in front of the model.
+ *
+ * Deliberately the same predicate as `familyContentIsSafe`, applied per fact
+ * rather than per row: the block-level budget is enforced by the renderer.
+ */
+export function companyFactIsSafe(content: string): boolean {
+  if (content.length > COMPANY_BLOCK_MAX_CHARS) return false;
+  if (FAMILY_FORBIDDEN_MARKER.test(content)) return false;
+  if (content.includes(SECTION_RULE)) return false;
+  return true;
+}
+
 /** One agent_prompts row, as the tier-health evaluator needs it. */
 export interface PromptTierRow {
   role: string;
