@@ -1262,7 +1262,23 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
 }) {
   const realOrganizations = data.organizations.filter((organization) => organization.type !== 'single_hotel');
   const groupedOrganizationIds = new Set(realOrganizations.map((organization) => organization.id));
-  const independent = data.properties.filter((property) => !property.organizationId || !groupedOrganizationIds.has(property.organizationId));
+  const ungroupedProperties = data.properties.filter((property) => (
+    !property.organizationId || !groupedOrganizationIds.has(property.organizationId)
+  ));
+  // A hotel the caller only reaches through the hidden single-hotel anchor is
+  // NOT an independent hotel just because the caller has no company job. The
+  // server now names the operator when there is one, and these two buckets are
+  // the two different true sentences: "your hotel is run by Gulf Coast Hotels,
+  // and this page shows you your hotel" vs "your hotel is run by nobody else".
+  // They used to be one bucket, and it told the first group the second thing.
+  const operated = ungroupedProperties.filter((property) => !!property.operatingCompanyName);
+  const independent = ungroupedProperties.filter((property) => !property.operatingCompanyName);
+  const operatedByCompany = [...new Map(operated.map((property) => (
+    [property.operatingCompanyName as string, [] as CompanyProperty[]]
+  ))).entries()].map(([name]) => ({
+    name,
+    properties: operated.filter((property) => property.operatingCompanyName === name),
+  }));
   const organizationRows = typeof limit === 'number' ? realOrganizations.slice(0, limit) : realOrganizations;
 
   if (data.properties.length === 0) {
@@ -1293,6 +1309,30 @@ function OrganizationHierarchy({ data, lang, limit, visiblePropertyIds }: {
           />
         );
       })}
+
+      {operatedByCompany.map((group) => (
+        <section key={group.name} className={styles.independentGroup}>
+          <div className={styles.groupHeader}>
+            <span className={styles.groupIcon}><Building2 size={18} aria-hidden="true" /></span>
+            <div>
+              <strong>{group.name}</strong>
+              <span>
+                {localized(
+                  lang,
+                  'Runs your hotel. You see your own hotel here.',
+                  'Administra tu hotel. Aquí ves tu propio hotel.',
+                )}
+              </span>
+            </div>
+            <span className={styles.countBadge}>{group.properties.length}</span>
+          </div>
+          <div className={styles.propertyList}>
+            {group.properties.map((property) => (
+              <PropertyRow key={property.nodeId} property={property} lang={lang} />
+            ))}
+          </div>
+        </section>
+      ))}
 
       {independent.length > 0 ? (
         <section className={styles.independentGroup}>

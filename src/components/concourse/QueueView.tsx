@@ -102,13 +102,22 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
     undefined,
   );
   // Gate at the FETCH, not the render: a housekeeper who opens this tab never
-  // asks for a brief at all, so a 403 in the logs always means something real.
-  const canSee = !!user && canManageTeam(user.role);
+  // asks for a HOTEL brief at all, so a 403 in the logs always means something
+  // real.
+  //
+  // ⚠️ This is deliberately NOT the gate on the portfolio probe below. It reads
+  // `accounts.role`, and the company vocabulary degrades least-privilege into
+  // that column — a `finance` hat carries a legacy role of `front_desk`. Gating
+  // the probe on it meant a company's finance lead mounted neither view and got
+  // a BLANK Staxis tab: the picker let her in, this screen showed her nothing,
+  // and nothing on it said why. The probe now runs for everybody and answers
+  // from the person's hats; only the hotel brief stays manager-gated.
+  const canSeeHotelBrief = !!user && canManageTeam(user.role);
 
   // Not fetched until the probe has said this is a hotel person. A VP would
   // otherwise pull one arbitrary hotel's morning brief on every load — a wasted
   // read, and one that can make a model call.
-  const isHotelPerson = canSee && companyScope === null;
+  const isHotelPerson = canSeeHotelBrief && companyScope === null;
 
   const { data, error } = useApiResource<BriefPayload>(
     `/api/findings/brief?propertyId=${activePropertyId}`,
@@ -116,14 +125,14 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   );
   const brief = isHotelPerson ? data?.brief ?? null : null;
 
-  // The portfolio view mounts for everyone who can manage a team, reports what
-  // it found, and renders itself ONLY when there is a company behind the
-  // person — so for the whole product as it stands today it is one probe that
-  // returns null and draws nothing. One endpoint, and no way for the two
-  // screens to both be on the page.
+  // The portfolio view mounts for every signed-in person, reports what it
+  // found, and renders itself ONLY when there is a company behind them — so for
+  // the whole product as it stands today it is one cheap probe (two indexed
+  // reads, no cards, no model call) that returns null and draws nothing. One
+  // endpoint, and no way for the two screens to both be on the page.
   return (
     <>
-      {canSee && <PortfolioQueueView lang={lang} onScope={setCompanyScope} />}
+      {!!user && <PortfolioQueueView lang={lang} onScope={setCompanyScope} />}
       {isHotelPerson && (
         <HotelQueue
           lang={lang}

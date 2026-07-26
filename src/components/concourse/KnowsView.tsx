@@ -342,11 +342,31 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   const groups = useMemo(() => groupFactsByCategory(data?.facts ?? []), [data]);
   const hasAnything = (data?.facts.length ?? 0) > 0;
 
+  // ── The company's own book, one level up ──
+  // Renders NOTHING for an independent hotel (the route 404s and the panel
+  // returns null), so nothing about a single-hotel customer's screen changes.
+  // For a management company it sits ABOVE the hotel's facts — the same order
+  // the copilot reads them in, where the hotel wins.
+  //
+  // ⚠️ IT IS OUTSIDE THE MANAGER GATE ON PURPOSE, and this is the whole reason
+  // it is a variable instead of one line of JSX. `canSee` reads
+  // `accounts.role`, and the company vocabulary degrades least-privilege into
+  // that column — a `finance` hat carries a legacy role of `front_desk`, and a
+  // `vp` hat only lands on a manager word by convention. So the people the
+  // company's own `rulebook_editors` setting NAMES were bounced to
+  // "managers only" and never saw the book they are the only ones allowed to
+  // write. The panel is self-gating: /api/company/rulebook resolves standing
+  // from the caller's hats at that company and the panel renders null on a
+  // refusal, so nobody who could not see it before can see it now. What stays
+  // manager-only is the HOTEL's own knowledge base below.
+  const companyBook = <CompanyRulebookPanel lang={lang} />;
+
   if (!canSee) {
     return (
       <div className="cx-page cx-swap">
         <CxStyle />
         <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
+        {companyBook}
         <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
         <div className="cx-psub">{L('managerOnly')}</div>
       </div>
@@ -358,12 +378,7 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
 
-      {/* ── The company's own book, one level up ──
-          Renders NOTHING for an independent hotel (the route 404s and the panel
-          returns null), so nothing about a single-hotel customer's screen
-          changes. For a management company it sits ABOVE the hotel's facts —
-          the same order the copilot reads them in, where the hotel wins. */}
-      <CompanyRulebookPanel lang={lang} />
+      {companyBook}
 
       <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
       <div className="cx-psub">{L('sub')}</div>

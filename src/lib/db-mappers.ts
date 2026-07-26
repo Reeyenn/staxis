@@ -207,6 +207,28 @@ export function toPropertyRow(p: Partial<Property>): Record<string, unknown> {
   });
 }
 
+/**
+ * The columns `fromPropertyRow` below reads, as a PostgREST select list.
+ *
+ * It lives HERE, next to the mapper it is in lock-step with, rather than beside
+ * the query that used to be the only caller: the app-shell property read moved
+ * to `GET /api/properties` (service-role, scoped by the company spine) and that
+ * route must not import the browser data layer to learn which columns to ask
+ * for. Add a column to one of these two and you add it to the other.
+ *
+ * Replaces `.select('*')` per cost-hotpaths audit recommendation #5/#13 — the
+ * previous wide select returned every property column (including ML internals
+ * like dashboard_stale_minutes and scraper_window_* that the front-end never
+ * consumes) on every property fetch.
+ */
+export const PROPERTY_COLS =
+  'id, name, total_rooms, avg_occupancy, hourly_wage, checkout_minutes, ' +
+  'stayover_minutes, stayover_day1_minutes, stayover_day2_minutes, ' +
+  'prep_minutes_per_activity, shift_minutes, total_staff_on_roster, ' +
+  'weekly_budget, morning_briefing_time, evening_forecast_time, ' +
+  'pms_type, pms_url, pms_connected, last_synced_at, alert_phone, timezone, ' +
+  'room_inventory, onboarding_completed_at, onboarding_state, onboarding_prompt_shown_at, enabled_sections, inventory_budget_mode, inventory_tab_layout, housekeeping_setup, is_test, created_at';
+
 export function fromPropertyRow(r: Record<string, unknown>): Property {
   return {
     id: String(r.id),

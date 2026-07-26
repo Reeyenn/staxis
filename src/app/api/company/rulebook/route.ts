@@ -22,7 +22,7 @@
  *                                    ONLY; a GM is refused (403) on every one.
  *   'settings'                     — the setup choices.
  *
- * Auth: requireSession + loadManagerCaller + a HAT at the company that operates
+ * Auth: requireSession + loadSessionAccount + a HAT at the company that operates
  * `propertyId`. company_knowledge is deny-all RLS and every read/write goes
  * through supabaseAdmin, so the organization filter in
  * src/lib/company/rulebook.ts is the tenant boundary — not defence in depth,
@@ -35,7 +35,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { loadManagerCaller, managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
+import { loadSessionAccount, managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { companyForProperty } from '@/lib/company/access';
 import { redactMemoryContent } from '@/lib/agent/memory-redact';
@@ -79,9 +79,24 @@ interface Gate {
  * requireSession → the manager behind it → the company that runs the hotel on
  * screen → what that person's JOB at that company lets them do.
  *
- * `loadManagerCaller` is the one account loader in this codebase; hand-rolling
+ * `loadSessionAccount` is the shared, schema-pinned account loader; hand-rolling
  * another is how `accounts.name` (a column that does not exist) silently turned
  * a whole feature off for every user, three separate times.
+ *
+ * ─── WHY loadSessionAccount AND NOT loadManagerCaller ─────────────────────
+ * The manager gate reads `accounts.role`, and the company vocabulary degrades
+ * least-privilege into it: a `vp` hat becomes `general_manager`, a `finance`
+ * hat becomes `front_desk` (src/lib/company/roles.ts). So the manager gate
+ * refused a company's finance lead outright, and would refuse a VP whose
+ * legacy role was never a manager word — the exact people
+ * `rulebookStandingFor` and the company's own `rulebook_editors` choice are
+ * written to answer about. The gate ran before the hats were ever consulted,
+ * and the panel renders null on a refusal, so they got a silent blank where
+ * their own company's book should be.
+ *
+ * Nothing widened: `rulebookStandingFor` below requires a hat AT THIS COMPANY,
+ * and a legacy account with no hat still resolves to `denied` → 403. It is the
+ * authority for view and for edit, which is what it was written to be.
  */
 async function gate(
   req: NextRequest,
@@ -91,7 +106,7 @@ async function gate(
   const session = await requireSession(req, { requestId });
   if (!session.ok) return { ok: false, response: session.response };
 
-  const caller = await loadManagerCaller(session.userId);
+  const caller = await loadSessionAccount(session.userId);
   if (!caller) {
     return {
       ok: false,

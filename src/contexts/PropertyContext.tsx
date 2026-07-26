@@ -187,12 +187,17 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('storage', handler);
   }, [activePropertyId]);
 
-  // Load properties list.
-  // After sign-in there may be a brief delay before the RLS context
-  // (auth.uid() in Postgres) catches up with the Supabase client's JWT —
-  // typically a few hundred ms. If the first attempt fails with a permission
-  // error, retry with a short backoff so the user isn't greeted by a
-  // spurious "No properties found" screen during that window.
+  // Load properties list — from /api/properties, which resolves coverage
+  // through the company spine with service-role. Never from the browser
+  // Supabase client: `properties` RLS answers from the legacy
+  // `accounts.property_access` array only, so every company person read back
+  // zero rows with a 200 and no error and was locked out of the whole product.
+  // See the header of src/lib/db/properties.ts.
+  //
+  // Right after sign-in there is still a short window where the session gate
+  // can refuse (device-trust settling after an OTP verify). If the first
+  // attempt fails that way, retry with a short backoff so the user isn't
+  // greeted by a spurious "No properties found" screen.
   //
   // ⚠️ The dependency below is INTENTIONALLY narrow (uid + role + access)
   // rather than the full `user` object. Reason: AuthContext's
@@ -227,13 +232,21 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
     const loadProps = async (retries = 3): Promise<void> => {
       try {
-        const allProps = await getProperties(user.uid);
+        // THE WALL IS THE SERVER'S, NOT THIS FILTER'S.
+        //
+        // There used to be a second narrowing here: the list came back from the
+        // browser Supabase client and was then filtered through
+        // `user.propertyAccess` — the legacy `accounts.property_access` array,
+        // which is empty for every company person, because their hotels come
+        // from a company hat (0364) instead. So a dual-hat GM+VP was filtered to
+        // zero hotels and could not open her own building. Both narrowings were
+        // blind to hats, and fixing only one would have changed nothing.
+        //
+        // `/api/properties` now resolves coverage once, with service-role, as
+        // the legacy array UNION every live hat. Re-filtering the result here
+        // would only be able to take hotels back away.
+        const props = await getProperties(user.uid);
         if (cancelled) return;
-        // Admin role or wildcard access sees all properties
-        const access = user.propertyAccess ?? [];
-        const props = user.role === 'admin' || access.includes('*')
-          ? allProps
-          : allProps.filter(p => access.includes(p.id));
         setProperties(props);
 
         const stored = localStorage.getItem('hotelops-active-property');
@@ -252,18 +265,32 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         // Firestore-era strings ('permission', 'unauthorized',
         // 'unauthenticated') kept as a safety net but will rarely match
         // Supabase responses.
-        const e = err as { code?: string; message?: string } | undefined;
+        //
+        // The read goes through /api/properties now, so the shape a race
+        // arrives in changed: instead of a PostgREST error object it is an
+        // `/api/properties <status>: <body>` message. The 401/403 window is
+        // real and short (the account row lookup, or device-trust settling
+        // right after an OTP verify) and blanking the shell for it would look
+        // exactly like "you have no hotels" — the failure this whole change
+        // exists to stop. A 5xx gets the same benefit of the doubt.
+        //
+        // NOT retried: SessionEndedError. fetchWithAuth has already signed the
+        // user out and started the redirect; retrying would fight a navigation.
+        const e = err as { code?: string; message?: string; name?: string } | undefined;
         const code = String(e?.code ?? '').toUpperCase();
         const errStr = String(e?.message ?? err).toLowerCase();
         const isPermErr =
-          code === 'PGRST301' ||
-          code === 'PGRST116' ||
-          code === '42501' ||
-          errStr.includes('policy') ||
-          errStr.includes('jwt') ||
-          errStr.includes('permission') ||
-          errStr.includes('unauthorized') ||
-          errStr.includes('unauthenticated');
+          e?.name !== 'SessionEndedError' && (
+            code === 'PGRST301' ||
+            code === 'PGRST116' ||
+            code === '42501' ||
+            /\/api\/properties (401|403|5\d\d)\b/.test(errStr) ||
+            errStr.includes('policy') ||
+            errStr.includes('jwt') ||
+            errStr.includes('permission') ||
+            errStr.includes('unauthorized') ||
+            errStr.includes('unauthenticated')
+          );
         // Retry with short backoff: 200ms, 500ms, 1s.
         if (retries > 0 && isPermErr) {
           const delay = retries === 3 ? 200 : retries === 2 ? 500 : 1000;

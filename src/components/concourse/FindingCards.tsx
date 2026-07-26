@@ -126,6 +126,14 @@ const S = {
     en: 'That did not go through, and nothing was changed. Try again in a moment.',
     es: 'No se completó y no se cambió nada. Inténtalo de nuevo en un momento.',
   },
+
+  // ── reading, not deciding ──
+  // Shown in place of the controls to somebody whose job opens this screen to
+  // READ. The sentence says whose call it is, so nothing looks broken.
+  readOnly: {
+    en: 'Yours to read. Closing this out is the operator\u2019s call.',
+    es: 'Para que lo leas. Cerrarlo es decisión del operador.',
+  },
 } as const;
 
 // ─── Scoped styles ──────────────────────────────────────────────────────────
@@ -263,11 +271,14 @@ function ActionRow({
   finding,
   lang,
   busy,
+  readOnly = false,
   onAction,
 }: {
   finding: QueueFinding;
   lang: Lang;
   busy: boolean;
+  /** The reader may not act. Same sentences, no buttons — see FindingCard. */
+  readOnly?: boolean;
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
 }) {
   const es = lang === 'es';
@@ -298,16 +309,26 @@ function ActionRow({
     return (
       <>
         <div className="fd-offer">{es ? action.offerEs : action.offerEn}</div>
-        <div className="fd-acts">
-          <button
-            type="button"
-            className="fd-act fd-yes"
-            disabled={busy}
-            onClick={() => onAction?.(action.id, 'execute')}
-          >
-            {busy ? L('working') : es ? action.labelEs : action.labelEn}
-          </button>
-        </div>
+        {/* Same shape as the sign-off lock above, and for the same reason: the
+            offer sentence still renders in full so the reader sees exactly what
+            Staxis would do, and the button is REPLACED rather than removed. */}
+        {readOnly ? (
+          <div className="fd-locked">
+            <CxIcon name="staxis" size={14} />
+            <span>{L('readOnly')}</span>
+          </div>
+        ) : (
+          <div className="fd-acts">
+            <button
+              type="button"
+              className="fd-act fd-yes"
+              disabled={busy}
+              onClick={() => onAction?.(action.id, 'execute')}
+            >
+              {busy ? L('working') : es ? action.labelEs : action.labelEn}
+            </button>
+          </div>
+        )}
       </>
     );
   }
@@ -316,14 +337,16 @@ function ActionRow({
     return (
       <div className="fd-settled fd-done">
         <div>{(es ? action.receiptEs : action.receiptEn) ?? ''}</div>
-        <button
-          type="button"
-          className="fd-act"
-          disabled={busy}
-          onClick={() => onAction?.(action.id, 'undo')}
-        >
-          {busy ? L('undoing') : L('undo')}
-        </button>
+        {!readOnly && (
+          <button
+            type="button"
+            className="fd-act"
+            disabled={busy}
+            onClick={() => onAction?.(action.id, 'undo')}
+          >
+            {busy ? L('undoing') : L('undo')}
+          </button>
+        )}
       </div>
     );
   }
@@ -365,6 +388,15 @@ interface CardProps {
   busy: boolean;
   /** True when a `?focus=` link (or a morning-brief line) named this card. */
   focused?: boolean;
+  /**
+   * The reader may READ this card and not decide it. Everything factual stays —
+   * headline, evidence, price, the numbers, the offer sentence — and every
+   * control that would change something is replaced by one line naming whose
+   * call it is. A finance hat on the portfolio queue is the case this exists
+   * for: `/api/company/queue` refuses her verdicts, so drawing the buttons
+   * would be drawing three things that 403.
+   */
+  readOnly?: boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Fired the first time this card's numbers are opened. Optional so the view
    *  can be rendered in a test without a network. */
@@ -388,6 +420,7 @@ function FindingCard({
   lang,
   busy,
   focused = false,
+  readOnly = false,
   onVerdict,
   onEngage,
   onAction,
@@ -505,7 +538,7 @@ function FindingCard({
 
         {showReceipt && <Receipt finding={finding} lang={lang} />}
 
-        <ActionRow finding={finding} lang={lang} busy={busy} onAction={onAction} />
+        <ActionRow finding={finding} lang={lang} busy={busy} readOnly={readOnly} onAction={onAction} />
 
         <div className="fd-acts">
           {pending ? (
@@ -527,8 +560,10 @@ function FindingCard({
             <>
               {/* Which buttons, in which order, with which words: all of it
                   comes from closureButtons(). Nothing about the card kind is
-                  decided here. */}
-              {closures.map((b) => (
+                  decided here — except whether the reader may decide at all.
+                  "See the numbers" below always stays: reading is the whole
+                  point of a read-only card. */}
+              {!readOnly && closures.map((b) => (
                 <button
                   key={b.verdict}
                   type="button"
@@ -606,6 +641,8 @@ export interface FindingCardsViewProps {
    * suppressed: nothing else says it, and it is a different claim.
    */
   hideLiveness?: boolean;
+  /** Draw every card as readable-but-not-decidable. See FindingCard.readOnly. */
+  readOnly?: boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Told when a manager opens a card's numbers. Counted as engagement, which
    *  is what keeps a check somebody reads from demoting itself (0362). */
@@ -643,6 +680,7 @@ export function FindingCardsView({
   busyId = null,
   focusId = null,
   hideLiveness = false,
+  readOnly = false,
   onVerdict,
   onEngage,
   onAction,
@@ -698,6 +736,7 @@ export function FindingCardsView({
           lang={lang}
           busy={busyId === f.id}
           focused={focusId === f.id}
+          readOnly={readOnly}
           onVerdict={onVerdict}
           onEngage={onEngage}
           onAction={onAction}

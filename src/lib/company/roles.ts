@@ -82,6 +82,53 @@ export function legacyRoleForHat(role: HatRole): AppRole {
 }
 
 /**
+ * Degrade a hat to the 0325 ACCESS-PROFILE vocabulary — the second and last
+ * older vocabulary a hat has to speak.
+ *
+ * The Company Hub (`/api/company-access`, `/company`) was built on
+ * `organization_access_grants`, a row minted only by invitation acceptance and
+ * by the legacy reconciler. `staxis_set_membership_hat` mints no grant, so a
+ * company person had NO access profile at all: the hub read zero capabilities,
+ * showed "Hotels in scope 0", "Active people 0", "No active access grant", and
+ * told a front-desk person their hotel was not grouped under a management
+ * company when it plainly was. The hub now asks the hats too, and this is the
+ * translation it asks through.
+ *
+ * LEAST PRIVILEGE, and the walls stay where they are: a profile decides only
+ * WHAT KIND of thing you may see. WHICH hotels is always the hat's own
+ * resolved coverage, so a property-scope hat still sees exactly its own
+ * buildings and a front-desk person at hotel #7 still cannot learn hotel #12
+ * exists.
+ *
+ *   owner   -> organization_owner   their company, entirely. Same as an
+ *                                   accepted owner invitation would mint.
+ *   vp      -> portfolio_manager    view + manage people, access and
+ *                                   portfolios. NOT organization_admin:
+ *                                   `canGrantHat` already refuses a VP a peer
+ *                                   VP or an owner, and organization_admin
+ *                                   could hand out both.
+ *   finance -> contributor          the company's name and its hotels, and
+ *                                   nothing about its people or its access.
+ *                                   Money is a different surface; this is the
+ *                                   structure page.
+ *   gm      -> property_manager     their hotels, fully — the job they already
+ *                                   do, which is what the profile describes.
+ *   line    -> viewer               front desk / housekeeping / maintenance.
+ *                                   Enough to be told the truth about who runs
+ *                                   the building they work in, and no more:
+ *                                   no people list, no access list.
+ */
+export function accessProfileForHat(scope: MembershipScope, role: HatRole):
+  'organization_owner' | 'portfolio_manager' | 'property_manager' | 'contributor' | 'viewer' {
+  if (scope === 'company') {
+    if (role === 'owner') return 'organization_owner';
+    if (role === 'vp') return 'portfolio_manager';
+    return 'contributor';
+  }
+  return role === 'general_manager' ? 'property_manager' : 'viewer';
+}
+
+/**
  * The money question, asked of the hat rather than the degraded role.
  * `canViewFinancials(legacyRoleForHat('finance'))` is false — deliberately, so
  * the degradation stays least-privilege — and this is the one place that adds

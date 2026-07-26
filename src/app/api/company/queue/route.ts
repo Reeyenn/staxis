@@ -36,7 +36,33 @@
  * detectors at hotels they will never open. A boss reading over your shoulder
  * is not you reading.
  *
- * loadManagerCaller is the shared, schema-pinned account lookup. Do not
+ * ─── WHO GETS IN, AND WHAT FINANCE SEES ──────────────────────────────────
+ * GET uses `loadSessionAccount`; the gate is `companyScopeFor`, which reads
+ * nothing but the caller's own COMPANY-scope hats. It used to use
+ * `loadManagerCaller`, and that was wrong in a way no test noticed: the manager
+ * gate reads `accounts.role`, and the company vocabulary degrades
+ * least-privilege into it — a `finance` hat becomes `front_desk`
+ * (src/lib/company/roles.ts). So the picker deliberately admitted a company's
+ * finance lead (see the bootstrap route's own note) and then this route answered
+ * 403. She was shown the door to a room she was refused at.
+ *
+ * THE RULE, one line: a company-scope hat opens the company's queue, and what
+ * it opens is decided by the hat, not by a degraded legacy word.
+ *
+ *   owner / vp   read the queue AND cast verdicts.
+ *   finance      READ-ONLY. She sees the same cards, the same brief, the same
+ *                money — the whole reason her job exists — and no verdict
+ *                buttons. `canAct: false` in the payload is what tells the
+ *                screen to draw it that way, so she never taps a control that
+ *                403s. Silencing a hotel's problem is an operating decision;
+ *                `hatCanManageTeam` and `canGrantHat` already say finance makes
+ *                none, and this is the same answer on this surface.
+ *
+ * POST therefore still requires a manager AND a company scope — unchanged, and
+ * now the honest mirror of what the GET renders rather than an accident of role
+ * degradation.
+ *
+ * loadSessionAccount is the shared, schema-pinned account lookup. Do not
  * hand-roll another one: the last three times a route did, it selected a column
  * that does not exist (`accounts.name` most recently), PostgREST errored, the
  * route read the error as "no such account", and the feature was silently dead
@@ -49,8 +75,13 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
-import { loadManagerCaller } from '@/lib/team-auth';
-import { buildPortfolioQueue, companyLocalToday, companyScopeFor } from '@/lib/company/vp-queue-server';
+import { loadSessionAccount } from '@/lib/team-auth';
+import {
+  buildPortfolioQueue,
+  companyLocalToday,
+  companyScopeFor,
+  type CompanyRole,
+} from '@/lib/company/vp-queue-server';
 import { getPortfolioBrief } from '@/lib/company/vp-brief-server';
 import { setCompanyFindingStatus } from '@/lib/company/company-findings';
 import type { FindingStatus } from '@/lib/findings/types';
@@ -62,23 +93,44 @@ export const dynamic = 'force-dynamic';
 const VERDICTS = ['known_problem', 'muted', 'resolved'] as const;
 type Verdict = typeof VERDICTS[number];
 
+/**
+ * MAY THIS COMPANY JOB CAST A VERDICT? The ONE predicate both halves of this
+ * route use, so what the GET draws and what the POST accepts cannot drift.
+ *
+ * Asked of the HAT and of nothing else. Reading it off the degraded
+ * `accounts.role` instead is what made this route 403 a company's finance lead
+ * whom the picker had just admitted; it would equally have refused a VP whose
+ * legacy word happened not to be a manager one, which is the same bug wearing
+ * the other shoe.
+ *
+ * Finance is excluded because silencing a hotel's problem is an OPERATING
+ * decision and finance makes none — the same answer `hatCanManageTeam` and
+ * `canGrantHat` already give. She reads everything, including the money, which
+ * is the entire reason her job exists.
+ */
+function verdictsAllowed(companyRole: CompanyRole): boolean {
+  return companyRole === 'owner' || companyRole === 'vp';
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const session = await requireSession(req, { requestId });
   if (!session.ok) return session.response;
 
-  const caller = await loadManagerCaller(session.userId);
+  // NOT loadManagerCaller — see the header. The gate is companyScopeFor below.
+  const caller = await loadSessionAccount(session.userId);
   if (!caller) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
-
   try {
     // Scope FIRST, and the limiter before the work — a cap you clear after
     // reading a dozen hotels' ledgers is a cap on the response, not on the
     // load. Wall A lives here too: no company job, no portfolio, and not an
     // error — the client renders their hotel's own queue.
     const scope = await companyScopeFor(caller);
-    if (!scope) return ok({ scope: null, cards: [], brief: null, run: null }, { requestId });
+    if (!scope) {
+      return ok({ scope: null, cards: [], brief: null, run: null, canAct: false }, { requestId });
+    }
 
     // Keyed on a REAL property id — one of the company's OWN hotels, because
     // api_limits.property_id FKs properties(id) and a company id there would
@@ -107,7 +159,9 @@ export async function GET(req: NextRequest) {
     }
 
     const queue = await buildPortfolioQueue(caller);
-    if (!queue) return ok({ scope: null, cards: [], brief: null, run: null }, { requestId });
+    if (!queue) {
+      return ok({ scope: null, cards: [], brief: null, run: null, canAct: false }, { requestId });
+    }
 
     const { localDate } = await companyLocalToday(queue.organizationId, new Date());
     const { brief } = await getPortfolioBrief({
@@ -134,6 +188,10 @@ export async function GET(req: NextRequest) {
         brief,
         run: queue.run,
         cap: queue.cap,
+        // What the screen draws its controls from. False for finance: the same
+        // cards, the same numbers, no verdict buttons. A button that 403s is a
+        // worse answer than a button that is not there.
+        canAct: verdictsAllowed(queue.companyRole),
       },
       { requestId },
     );
@@ -177,12 +235,18 @@ export async function POST(req: NextRequest) {
     return err(actionV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const caller = await loadManagerCaller(session.userId);
+  // The same loader and the same predicate the GET renders from, so a verdict
+  // button that appears is a verdict this route will take, and one that does not
+  // appear is one it refuses. Previously the two sides disagreed: the manager
+  // gate here refused whoever `accounts.role` said was not a manager, which is
+  // not the question — the question is what job this person holds at this
+  // company.
+  const caller = await loadSessionAccount(session.userId);
   if (!caller) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
   const scope = await companyScopeFor(caller);
-  if (!scope) {
+  if (!scope || !verdictsAllowed(scope.companyRole)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

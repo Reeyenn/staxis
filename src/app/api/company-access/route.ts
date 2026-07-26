@@ -19,6 +19,7 @@ import {
   type AccessFacts,
   type AccessGrantFact,
   type AccessProfile,
+  type AccessScopeType,
   type OrganizationCapability,
 } from '@/lib/organization-access';
 import {
@@ -51,6 +52,14 @@ import {
   type EffectiveAccessReceipt,
 } from '@/lib/company-access/dto';
 import type { AppRole } from '@/lib/roles';
+import { resolveHatCoverage } from '@/lib/company/access';
+import {
+  accessProfileForHat,
+  isHatRole,
+  isMembershipScope,
+  type HatRole,
+  type MembershipScope,
+} from '@/lib/company/roles';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -115,6 +124,67 @@ interface MembershipRow {
   status: string;
   starts_at: string;
   ended_at: string | null;
+  // ── the 0364 company spine ──
+  // Selected so this projection can see a HAT, not only a 0325 employment
+  // record. They are NULL on every pre-0364 row (the DB CHECK
+  // `organization_memberships_hat_shape_check` guarantees all-three-or-none),
+  // which is what makes reading them purely additive.
+  membership_scope: string | null;
+  staxis_role: string | null;
+  covered_property_ids: string[] | null;
+}
+
+/** One membership row read as a hat, with its coverage already resolved. */
+interface MembershipHatFact {
+  membershipId: string;
+  accountId: string;
+  scope: MembershipScope;
+  role: HatRole;
+  jobTitle: string | null;
+  propertyIds: string[];
+  accessProfile: AccessProfile;
+}
+
+const MEMBERSHIP_COLUMNS =
+  'id, organization_id, account_id, job_category, job_title, status, starts_at, ended_at, '
+  + 'membership_scope, staxis_role, covered_property_ids';
+
+/**
+ * Read the hat rows out of one company's memberships, resolving each one's
+ * coverage against the hotels that company operates RIGHT NOW.
+ *
+ * Zero extra queries: both inputs are rows this projection has already loaded.
+ * The coverage rule itself is `resolveHatCoverage` from the spine, so the hub
+ * and every gate in the product answer "which hotels does this hat reach" with
+ * the same function.
+ */
+function hatFactsFor(
+  memberships: readonly MembershipRow[],
+  operatedPropertyIds: ReadonlySet<string>,
+  nowMs: number,
+): MembershipHatFact[] {
+  const out: MembershipHatFact[] = [];
+  for (const row of memberships) {
+    if (!isMembershipScope(row.membership_scope) || !isHatRole(row.staxis_role)) continue;
+    if (row.status !== 'active' || row.ended_at !== null) continue;
+    if (row.starts_at && new Date(row.starts_at).getTime() > nowMs) continue;
+    const scope = row.membership_scope;
+    const role = row.staxis_role;
+    out.push({
+      membershipId: row.id,
+      accountId: row.account_id,
+      scope,
+      role,
+      jobTitle: row.job_title ?? null,
+      propertyIds: resolveHatCoverage(
+        scope,
+        Array.isArray(row.covered_property_ids) ? row.covered_property_ids : [],
+        operatedPropertyIds,
+      ),
+      accessProfile: accessProfileForHat(scope, role),
+    });
+  }
+  return out;
 }
 
 interface GrantRow {
@@ -193,6 +263,11 @@ interface NormalizedOrganizationData {
   actorGrants: AccessGrantFact[];
   actorPropertyIds: Set<string>;
   actorCapabilities: Set<OrganizationCapability>;
+  /** Every hat at this company, coverage resolved — the caller's and everyone
+   *  else's. The people panel needs the others to know who works here. */
+  hatFacts: MembershipHatFact[];
+  /** Just the caller's, for the receipts and the people-scope union. */
+  actorHats: MembershipHatFact[];
 }
 
 function activeWindow(startsAt: string, endsAt: string | null | undefined, nowMs: number): boolean {
@@ -357,6 +432,73 @@ function eventSummary(eventType: string): string {
   return labels[eventType] ?? 'Company access was updated';
 }
 
+/**
+ * WHO ACTUALLY RUNS THESE HOTELS — property id → management company NAME.
+ *
+ * Asked only about hotels the caller sees WITHOUT a real company behind them:
+ * through the hidden single-hotel anchor from migration 0325, or through the
+ * legacy `accounts.property_access` array. Every one of those was filed under
+ * "Hotels not grouped under a management company", and for a front-desk person
+ * at a hotel run by a real operator that is false in the most confusing
+ * possible direction — they were told nobody runs their hotel.
+ *
+ * WHAT THIS RETURNS IS A NAME, and that is the whole wall. No hotel, person,
+ * portfolio, grant or capability of that company enters the payload, and none
+ * is derived from it: the caller holds no membership there and gains none. It
+ * mirrors `companyForProperty` in the spine — an anchor is never an answer, only
+ * a live non-anchor organization is.
+ *
+ * Never throws. A store that cannot say who runs a hotel says nothing, and the
+ * caller falls back to the wording the product has always had.
+ */
+async function operatingCompanyNames(
+  propertyIds: readonly string[],
+  nowMs: number,
+  ignoreOrganizationIds: ReadonlySet<string> = new Set(),
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const ids = [...new Set(propertyIds)];
+  if (ids.length === 0) return out;
+  try {
+    const relationshipRows = await readCompleteCompanyIdChunks<{
+      organization_id: string; property_id: string; starts_at: string; ends_at: string | null;
+    }>(
+      ids,
+      (chunk, from, to) => supabaseAdmin.from('organization_property_relationships')
+        .select('organization_id, property_id, starts_at, ends_at', { count: 'exact' })
+        .in('property_id', [...chunk])
+        .order('organization_id')
+        .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<{
+          organization_id: string; property_id: string; starts_at: string; ends_at: string | null;
+        }>>,
+    );
+    const openRows = relationshipRows.filter((row) => activeWindow(row.starts_at, row.ends_at, nowMs));
+    const organizationIds = [...new Set(openRows.map((row) => row.organization_id))]
+      .filter((id) => !ignoreOrganizationIds.has(id));
+    if (organizationIds.length === 0) return out;
+    const organizationRows = await readCompleteCompanyIdChunks<OrganizationRow>(
+      organizationIds,
+      (chunk, from, to) => supabaseAdmin.from('organizations')
+        .select('id, name, organization_type, status, legacy_property_id', { count: 'exact' })
+        .in('id', [...chunk])
+        .order('id')
+        .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<OrganizationRow>>,
+    );
+    const real = new Map(organizationRows
+      .filter((organization) => (
+        organization.status === 'active' && organization.organization_type !== 'single_hotel'
+      ))
+      .map((organization) => [organization.id, organization.name]));
+    for (const row of openRows) {
+      const name = real.get(row.organization_id);
+      if (name && !out.has(row.property_id)) out.set(row.property_id, name);
+    }
+    return out;
+  } catch {
+    return out;
+  }
+}
+
 async function legacyProjection(account: AccountRow): Promise<CompanyAccessData> {
   const access = account.property_access ?? [];
   if (account.role !== 'admin' && !access.includes('*')) {
@@ -390,6 +532,13 @@ async function legacyProjection(account: AccountRow): Promise<CompanyAccessData>
     relationshipType: 'independent hotel',
     legacyPropertyId: property.id,
   }));
+  // Same correction as the normalized path: a hotel under a real operator is
+  // not "not grouped under a management company", whatever this projection's
+  // synthetic `legacy-<id>` organizations look like.
+  const legacyOperators = await operatingCompanyNames(
+    properties.map((property) => property.id),
+    Date.now(),
+  );
   const companyProperties: CompanyProperty[] = properties.map((property) => ({
     nodeId: `legacy-${property.id}:${property.id}`,
     id: property.id,
@@ -398,6 +547,7 @@ async function legacyProjection(account: AccountRow): Promise<CompanyAccessData>
     portfolioIds: [],
     relationshipType: 'property access',
     status: 'active',
+    operatingCompanyName: legacyOperators.get(property.id) ?? null,
   }));
   const profile = legacyAccessProfile(account.role);
   return {
@@ -461,7 +611,7 @@ function legacyPermissions(role: AppRole): CompanyAccessPermissions {
 async function normalizedProjection(actorAccountId: string): Promise<CompanyAccessData | null> {
   const ownMembershipRows = await readCompleteCompanyPages<MembershipRow>((from, to) => (
     supabaseAdmin.from('organization_memberships')
-      .select('id, organization_id, account_id, job_category, job_title, status, starts_at, ended_at', { count: 'exact' })
+      .select(MEMBERSHIP_COLUMNS, { count: 'exact' })
       .eq('account_id', actorAccountId)
       .order('id')
       .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<MembershipRow>>
@@ -480,7 +630,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     )),
     readCompleteCompanyIdChunks<MembershipRow>(organizationIds, (chunk, from, to) => (
       supabaseAdmin.from('organization_memberships')
-        .select('id, organization_id, account_id, job_category, job_title, status, starts_at, ended_at', { count: 'exact' })
+        .select(MEMBERSHIP_COLUMNS, { count: 'exact' })
         .in('organization_id', [...chunk])
         .order('id')
         .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<MembershipRow>>
@@ -597,6 +747,36 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     const actorCapabilities = new Set<OrganizationCapability>(
       actorGrants.flatMap((grant) => ACCESS_PROFILE_CAPABILITIES[grant.accessProfile]),
     );
+
+    // ─── THE COMPANY SPINE, FOLDED IN ───────────────────────────────────────
+    // Everything below this line used to come from `organization_access_grants`
+    // alone, and `staxis_set_membership_hat` mints no grant. So a company
+    // person — whose access is ENTIRELY a hat — read zero capabilities here and
+    // the whole hub went blank on them: 0 hotels, 0 people, "No active access
+    // grant", and a front-desk person told their hotel was not grouped under a
+    // management company when it was.
+    //
+    // ADDITIVE, in one direction only: both sets are UNIONED into, never
+    // replaced or filtered. An account with no hats — every single-hotel
+    // account in the product today — computes an empty list here and reads
+    // exactly the projection it read before.
+    //
+    // The walls do not move. WHICH hotels is always `resolveHatCoverage` on the
+    // hat's own row against THIS company's own relationships, so a property hat
+    // still sees only its own buildings; the profile decides only what KIND of
+    // thing a person may see (`accessProfileForHat`).
+    const operatedPropertyIds = new Set(relationships
+      .filter((relationship) => activeWindow(relationship.starts_at, relationship.ends_at, projectionAtMs))
+      .map((relationship) => relationship.property_id));
+    const hatFacts = hatFactsFor(memberships, operatedPropertyIds, projectionAtMs);
+    const actorHats = hatFacts.filter((hat) => hat.accountId === actorAccountId);
+    for (const hat of actorHats) {
+      for (const propertyId of hat.propertyIds) actorPropertyIds.add(propertyId);
+      for (const capability of ACCESS_PROFILE_CAPABILITIES[hat.accessProfile]) {
+        actorCapabilities.add(capability);
+      }
+    }
+
     return {
       facts,
       organization,
@@ -608,6 +788,8 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       actorGrants,
       actorPropertyIds,
       actorCapabilities,
+      hatFacts,
+      actorHats,
     };
   });
   const membershipOrganizationsData = normalized.filter((item): item is NormalizedOrganizationData => item !== null);
@@ -694,6 +876,22 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     };
   });
 
+  // Hotels the caller reaches ONLY through the hidden single-hotel anchor — a
+  // bookkeeping row from 0325, not a company. Nothing to ask for a company
+  // person, whose hotels already come through a real company. See
+  // `operatingCompanyNames`.
+  const anchorOnlyPropertyIds = [...new Set(displayRelationshipRows
+    .filter((relationship) => (
+      organizationsData.find((candidate) => candidate.organization.id === relationship.organization_id)
+        ?.organization.organization_type === 'single_hotel'
+    ))
+    .map((relationship) => relationship.property_id))];
+  const operatingCompanyByProperty = await operatingCompanyNames(
+    anchorOnlyPropertyIds,
+    nowMs,
+    new Set(organizationById.keys()),
+  );
+
   const companyProperties: CompanyProperty[] = displayRelationshipRows.map((relationship) => {
     const property = propertyRows.find((candidate) => candidate.id === relationship.property_id);
     const organizationId = relationship.organization_id;
@@ -708,6 +906,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       relationshipType: relationship.relationship_type,
       relationshipId: relationship.id,
       status: 'active',
+      operatingCompanyName: operatingCompanyByProperty.get(relationship.property_id) ?? null,
     };
   });
 
@@ -731,10 +930,22 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
     const viewPeopleGrants = item.actorGrants.filter((grant) => (
       ACCESS_PROFILE_CAPABILITIES[grant.accessProfile].includes('view_people')
     ));
-    const viewPeoplePropertyIds = new Set(viewPeopleGrants.flatMap((grant) => (
-      grantPropertyIds(grant, item.facts, nowMs)
-    )));
-    const actorHasOrganizationPeopleScope = viewPeopleGrants.some((grant) => grant.scopeType === 'organization');
+    // A hat that carries view_people carries it over the hotels the hat covers,
+    // the same way a grant carries it over the hotels the grant covers. Only
+    // the caller's own hats, and only unioned in — a hat can widen who this
+    // person may see, never narrow it.
+    const viewPeopleHats = item.actorHats.filter((hat) => (
+      ACCESS_PROFILE_CAPABILITIES[hat.accessProfile].includes('view_people')
+    ));
+    const viewPeoplePropertyIds = new Set([
+      ...viewPeopleGrants.flatMap((grant) => grantPropertyIds(grant, item.facts, nowMs)),
+      ...viewPeopleHats.flatMap((hat) => hat.propertyIds),
+    ]);
+    const actorHasOrganizationPeopleScope = viewPeopleGrants.some((grant) => grant.scopeType === 'organization')
+      // A COMPANY-scope hat is the hat vocabulary's word for organization scope.
+      // A GM with view_people over three hotels is NOT this: they still see only
+      // the people whose own coverage overlaps those three hotels.
+      || viewPeopleHats.some((hat) => hat.scope === 'company');
     for (const membership of item.memberships) {
       const isSelf = membership.account_id === actorAccountId;
       const membershipGrantFacts = item.facts.grants.filter((grant) => (
@@ -742,7 +953,16 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
         && grant.status === 'active'
         && activeWindow(String(grant.startsAt), grant.expiresAt ? String(grant.expiresAt) : null, nowMs)
       ));
-      const targetPropertyIds = [...new Set(membershipGrantFacts.flatMap((grant) => grantPropertyIds(grant, item.facts, nowMs)))];
+      // The TARGET's hotels, from their grant AND from their own hat. Without
+      // the second half a company colleague had no hotels at all here, so no
+      // overlap could ever be found and the company's own people were invisible
+      // on its own people panel — the same gap `accountsCoveringProperty` closes
+      // for a hotel's team list.
+      const membershipHat = item.hatFacts.find((hat) => hat.membershipId === membership.id) ?? null;
+      const targetPropertyIds = [...new Set([
+        ...membershipGrantFacts.flatMap((grant) => grantPropertyIds(grant, item.facts, nowMs)),
+        ...(membershipHat?.propertyIds ?? []),
+      ])];
       const overlapsScope = targetPropertyIds.some((propertyId) => viewPeoplePropertyIds.has(propertyId));
       if (isSelf || actorHasOrganizationPeopleScope || overlapsScope) {
         visibleMembershipRows.push(membership);
@@ -797,6 +1017,7 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       && memberAccountActive
       && (isSelf || capabilityScopeContainsGrant(viewAccessGrants, grant, item.facts, nowMs))
     ));
+    const membershipHatFact = item.hatFacts.find((hat) => hat.membershipId === membership.id) ?? null;
     const profiles = visibleGrantFacts
       .map((grant) => grant.accessProfile)
       .sort((a, b) => profileRank(a) - profileRank(b));
@@ -843,7 +1064,9 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       displayName: accountNames.get(membership.account_id) ?? 'User',
       jobCategory: membership.job_category,
       jobTitle: membership.job_title,
-      accessProfile: profiles[0] ?? null,
+      // Grants rank first when a person has both; a hat-only colleague showed a
+      // BLANK profile before, which reads as "no access" for somebody who has it.
+      accessProfile: profiles[0] ?? membershipHatFact?.accessProfile ?? null,
       status: membership.status === 'revoked'
         ? 'revoked'
         : !memberAccountActive || membership.status === 'suspended' ? 'suspended' : 'active',
@@ -880,6 +1103,35 @@ async function normalizedProjection(actorAccountId: string): Promise<CompanyAcce
       status: expiresSoon ? 'expiring' : 'active',
     };
   }));
+
+  // ─── AND ONE RECEIPT PER HAT ───────────────────────────────────────────────
+  // "Why you can see this workspace" was the screen that told a dual-hat GM+VP
+  // she had "No active access grant" — literally true of
+  // `organization_access_grants` and completely false about her access. A hat is
+  // the reason she is here, so it is the receipt.
+  //
+  // Never expires (a hat has no expiry column), and its scope is the hat's own
+  // resolved coverage — for a company hat that is the whole company, which is
+  // the honest thing to show and also why it is labelled at organization scope.
+  receipts.push(...organizationsData.flatMap((item) => item.actorHats.map((hat) => ({
+    id: `hat:${hat.membershipId}`,
+    organizationId: item.organization.id,
+    accessProfile: hat.accessProfile,
+    scopeType: (hat.scope === 'company' ? 'organization' : 'property') as AccessScopeType,
+    scopeId: hat.scope === 'company' ? item.organization.id : (hat.propertyIds[0] ?? null),
+    scopeLabel: hat.scope === 'company'
+      ? organizationNames.get(item.organization.id) ?? 'Company'
+      : hat.propertyIds.map((id) => propertyNames.get(id) ?? 'Hotel').join(', ') || 'No hotels',
+    propertyIds: hat.propertyIds,
+    source: 'company_membership',
+    grantedBy: null,
+    expiresAt: null,
+    reason: hat.scope === 'company'
+      ? 'Inherited from your company job'
+      : 'Granted by your job at this hotel',
+    jobTitle: hat.jobTitle,
+    status: 'active' as const,
+  }))));
 
   // Delegation authority is deliberately projected per organization. A
   // global union alone would let an owner grant from Org A while viewing

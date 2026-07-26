@@ -134,6 +134,35 @@ const HAT_STRENGTH: Record<HatRole, number> = {
   housekeeping: 0,
 };
 
+/**
+ * WHICH HOTELS DOES ONE HAT REACH — the coverage rule, in one function.
+ *
+ * A company hat reaches every hotel its company operates right now, including
+ * one bought after the hat was written. A property hat reaches only the hotels
+ * listed on its own row, and only while the company still operates them (Wall A
+ * for a property hat, and the reason `operatedPropertyIds` is an intersection
+ * rather than a fallback).
+ *
+ * Pure, and exported, because a second reader now needs it: the Company Hub's
+ * projection resolves coverage for every membership in a company from rows it
+ * has already read, so calling `loadHats` per person would be dozens of extra
+ * round trips on a page load. Two implementations of this rule is exactly how
+ * one of them ends up wrong, so there is one and this is it.
+ */
+export function resolveHatCoverage(
+  scope: MembershipScope,
+  coveredPropertyIds: readonly string[],
+  operatedPropertyIds: Iterable<string>,
+): string[] {
+  const operated = operatedPropertyIds instanceof Set
+    ? operatedPropertyIds as Set<string>
+    : new Set(operatedPropertyIds);
+  const covered = scope === 'company'
+    ? [...operated]
+    : coveredPropertyIds.filter((id) => operated.has(id));
+  return [...new Set(covered)].sort();
+}
+
 function toStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0);
@@ -239,13 +268,6 @@ async function readHats(accountId: string): Promise<MembershipHat[]> {
     const scope = row.membership_scope as MembershipScope;
     const role = row.staxis_role as HatRole;
 
-    // A company hat reaches the whole company, including hotels bought after
-    // the hat was written. A property hat reaches only its listed hotels — and
-    // only while the company still operates them.
-    const covered = scope === 'company'
-      ? [...operated]
-      : toStringArray(row.covered_property_ids).filter((id) => operated.has(id));
-
     hats.push({
       membershipId: row.id,
       organizationId: row.organization_id,
@@ -253,7 +275,11 @@ async function readHats(accountId: string): Promise<MembershipHat[]> {
       scope,
       role,
       jobTitle: row.job_title ?? null,
-      coveredPropertyIds: [...new Set(covered)].sort(),
+      coveredPropertyIds: resolveHatCoverage(
+        scope,
+        toStringArray(row.covered_property_ids),
+        operated,
+      ),
     });
   }
   return hats;

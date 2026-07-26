@@ -52,6 +52,17 @@ export interface PortfolioPayload {
   brief: PortfolioBrief | null;
   run: PortfolioRun | null;
   cap?: number;
+  /**
+   * May this reader cast a verdict? Comes from the ROUTE, which asks the
+   * caller's company hat — owner and VP act, finance reads. Absent on an older
+   * server bundle, and absent means "act", which is what every payload meant
+   * before this field existed.
+   *
+   * It is a RENDERING of the rule, not the rule: /api/company/queue refuses a
+   * finance verdict again on the POST. What this field buys is that she is never
+   * shown three buttons that 403.
+   */
+  canAct?: boolean;
 }
 
 const S = {
@@ -89,6 +100,7 @@ export function PortfolioQueueBody({
   run,
   cap = DAILY_CARD_CAP,
   lang,
+  canAct = true,
   readFailed = false,
   saveFailed = false,
   busyId = null,
@@ -102,6 +114,8 @@ export function PortfolioQueueBody({
   run: PortfolioRun | null;
   cap?: number;
   lang: Lang;
+  /** False for a finance hat: every card, every number, no verdict controls. */
+  canAct?: boolean;
   readFailed?: boolean;
   saveFailed?: boolean;
   busyId?: string | null;
@@ -156,6 +170,7 @@ export function PortfolioQueueBody({
         saveFailed={saveFailed}
         busyId={busyId}
         focusId={focusId}
+        readOnly={!canAct}
         hideLiveness
         heading={es ? S.heading.es : S.heading.en}
         noteFor={noteFor}
@@ -314,6 +329,7 @@ export function PortfolioQueueView({
       run={data?.run ?? null}
       cap={data?.cap ?? DAILY_CARD_CAP}
       lang={lang}
+      canAct={data?.canAct ?? true}
       readFailed={!!error}
       saveFailed={saveFailed}
       busyId={busyId}

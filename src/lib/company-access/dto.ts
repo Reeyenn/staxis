@@ -40,6 +40,19 @@ export interface CompanyProperty {
   relationshipType?: string | null;
   relationshipId?: string | null;
   status: CompanyItemStatus;
+  /**
+   * The real management company that operates this hotel, when the caller's own
+   * view of it comes only through the hidden single-hotel compatibility anchor.
+   *
+   * It exists so the hub stops lying to a hotel employee. The Hub filed every
+   * anchor-visible hotel under "Hotels not grouped under a management company" —
+   * which for a front-desk person at a hotel run by a real operator is simply
+   * false, and it is false in the most confusing possible direction: they were
+   * told nobody runs their hotel. The company's NAME is all this carries. Its
+   * other hotels, its people and its access are not here and are not reachable
+   * from here — the caller has no membership at that company and gains none.
+   */
+  operatingCompanyName?: string | null;
 }
 
 /** One active grant the signed-in manager is allowed to inspect for a visible
