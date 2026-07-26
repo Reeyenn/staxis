@@ -273,6 +273,16 @@ export type RateLimitEndpoint =
   // Confirm / Edit / Remove on the same screen. No model, no email — a person
   // tapping buttons. Per-property, fails OPEN.
   | 'knows-write'
+  // ── Company rulebook (0365) ───────────────────────────────────────────────
+  // The same two shapes one level up. Keyed on the RAW property id of the hotel
+  // the person was standing in — api_limits.property_id FKs properties(id), and
+  // an organization id would FK-violate. That means a company with twenty
+  // hotels gets twenty buckets, which is deliberately generous: the cap exists
+  // to bound a runaway tab or a stolen session, and the person pasting the
+  // group SOP is doing it from one hotel's screen.
+  | 'company-rulebook-intake'
+  // Confirm / Edit / Remove / setup choices. A person tapping buttons.
+  | 'company-rulebook-write'
   // ── PMS auth-code inbox (Okta 2FA email reader; migration 0274) ────────────
   // Cloudflare Email Worker → /api/pms-inbox/inbound. Keyed on the RESOLVED RAW
   // property id (api_limits.property_id has an FK to properties(id), so a hashed
@@ -544,6 +554,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // Confirm / Edit / Remove taps. A first pass through a freshly-extracted
   // vendor list is realistically 30-40 taps; 400/hr is far above that.
   'knows-write':                400,
+  // Company rulebook intake — one Sonnet call per submission. A VP writes the
+  // group's book once and then edits it occasionally; 20/hr matches the hotel
+  // equivalent and still leaves room for a document-by-document session.
+  'company-rulebook-intake':     20,
+  // Confirm / Edit / Remove / setup taps on the rulebook screen.
+  'company-rulebook-write':     400,
   // PMS auth-code inbox — per-property (raw pid). Real Okta sends are a few a
   // day; 60/hr bounds a forged flood to a known inbox without ever dropping a
   // legitimate burst of re-login codes.
@@ -726,6 +742,9 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   // text or extracted PDF. Fail CLOSED so a Supabase blip can't uncap spend;
   // the UI degrades to "couldn't read that just now, try again".
   'knows-intake',
+  // Company rulebook intake — the same Sonnet call over the same amount of
+  // pasted text, one level up. Same reasoning, same fail-closed posture.
+  'company-rulebook-intake',
   // Packages — scan-label (Claude Vision). Fail CLOSED so a DB blip can't
   // uncap Anthropic spend.
 ]);

@@ -480,6 +480,67 @@ async function readCompanyForProperty(propertyId: string): Promise<string | null
 }
 
 /**
+ * Everybody whose COMPANY JOB reaches this hotel.
+ *
+ * The gap this closes: a hotel's team list is built from
+ * `accounts.property_access`, and every company person seeded by the spine has
+ * an EMPTY legacy array — their access comes entirely from a hat. So the VP who
+ * oversees Lufkin, and the GM whose hat names it, were both invisible on
+ * Lufkin's own team list. Not a permissions bug (they could reach the hotel
+ * fine); a "who works here" bug, which is worse in its own way — the list
+ * quietly under-reported who has access.
+ *
+ * ADDITIVE by construction: it returns account ids to ADD to a list, and the
+ * caller unions them in. Nobody who appeared before disappears.
+ *
+ * Wall B: coverage is read through `loadHats`, which only ever draws from the
+ * hat's own organization. A hotel in company B cannot surface company A's
+ * people, whatever this is called with.
+ */
+export async function accountsCoveringProperty(propertyId: string): Promise<string[]> {
+  if (!propertyId) return [];
+  try {
+    return await readAccountsCoveringProperty(propertyId);
+  } catch {
+    // A store that cannot answer "who else works here" answers NOBODY. The
+    // caller's own list is unaffected, which is exactly the pre-spine behaviour.
+    return [];
+  }
+}
+
+async function readAccountsCoveringProperty(propertyId: string): Promise<string[]> {
+  const organizationId = await companyForProperty(propertyId);
+  if (!organizationId) return [];
+
+  const { data, error } = await supabaseAdmin
+    .from('organization_memberships')
+    .select('account_id')
+    .eq('organization_id', organizationId)
+    .not('staxis_role', 'is', null)
+    .is('ended_at', null)
+    .eq('status', 'active');
+  if (error || !Array.isArray(data)) return [];
+
+  const candidates = [...new Set(
+    (data as Array<{ account_id: string }>).map((row) => row.account_id),
+  )];
+  if (candidates.length === 0) return [];
+
+  // Coverage is resolved per person through the SAME reader every other gate
+  // uses, rather than by reading `covered_property_ids` here. A property hat
+  // lists its hotels; a company hat lists none and covers all of them; both
+  // answers, and the org/relationship filtering behind them, live in exactly
+  // one place and this is not it.
+  const resolved = await Promise.all(candidates.map(async (accountId) => {
+    const hats = await loadHats(accountId);
+    return hats.some((hat) => (
+      hat.organizationId === organizationId && hat.coveredPropertyIds.includes(propertyId)
+    )) ? accountId : null;
+  }));
+  return resolved.filter((id): id is string => id !== null).sort();
+}
+
+/**
  * The hats a person may hand out from, at a given hotel or company-wide.
  * Used by the invite flow to decide whether to ask the third question.
  */

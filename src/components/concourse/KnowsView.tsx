@@ -37,6 +37,7 @@ import {
 } from '@/lib/agent/memory-facets';
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
+import { CompanyRulebookPanel } from './CompanyRulebookPanel';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -356,6 +357,13 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
     <div className="cx-page cx-swap">
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
+
+      {/* ── The company's own book, one level up ──
+          Renders NOTHING for an independent hotel (the route 404s and the panel
+          returns null), so nothing about a single-hotel customer's screen
+          changes. For a management company it sits ABOVE the hotel's facts —
+          the same order the copilot reads them in, where the hotel wins. */}
+      <CompanyRulebookPanel lang={lang} />
 
       <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
       <div className="cx-psub">{L('sub')}</div>
