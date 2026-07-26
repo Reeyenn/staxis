@@ -268,12 +268,6 @@ export function offersResolve(f: Pick<QueueFinding, 'disposition'>): boolean {
 
 // ─── Ordering ───────────────────────────────────────────────────────────────
 
-const SEVERITY_RANK: Record<FindingSeverity, number> = {
-  critical: 0,
-  attention: 1,
-  info: 2,
-};
-
 /**
  * The sort key for a priced finding: the middle of its range, in cents.
  *
@@ -287,15 +281,32 @@ export function sortValueCents(f: Pick<QueueFinding, 'price'>): number | null {
 }
 
 /**
- * Biggest dollars first. Then, because plenty of real findings have no price
- * the hotel's own numbers can support:
+ * When Staxis first saw this finding, as milliseconds — the queue's arrival
+ * clock. A timestamp we cannot read sorts LAST among its tie group rather than
+ * jumping to the front: "we don't know when this showed up" is not a claim to
+ * having waited longest than everything else on the screen.
+ */
+function arrivalMs(f: Pick<QueueFinding, 'firstSeenAt'>): number {
+  const t = new Date(f.firstSeenAt).getTime();
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+}
+
+/**
+ * Biggest dollars first, and then FIRST COME, FIRST SERVED. Because plenty of
+ * real findings have no price the hotel's own numbers can support:
  *
  *   1. anything with a price outranks anything without one
  *   2. among priced findings, the larger range midpoint first
- *   3. severity breaks ties (critical before attention before info)
- *   4. then magnitude, then dedupe key — so the order is STABLE. A list that
- *      reshuffles between two identical loads teaches a manager that position
- *      means nothing, which defeats the whole point of ranking.
+ *   3. everything still tied — equal money, or no money at all — goes in
+ *      ARRIVAL ORDER: oldest `firstSeenAt` on top. This deliberately replaces
+ *      a severity tiebreak. Severity is a label Staxis chose; the day it first
+ *      turned up is a fact about the hotel, and a card that has been sitting
+ *      there for three days should not sink under one that arrived this
+ *      morning wearing a louder chip. First found, first shown.
+ *   4. then magnitude, then dedupe key — so the order is STABLE for the cards
+ *      that landed in the same instant. A list that reshuffles between two
+ *      identical loads teaches a manager that position means nothing, which
+ *      defeats the whole point of ranking.
  */
 export function rankFindings<T extends QueueFinding>(findings: readonly T[]): T[] {
   return [...findings].sort((a, b) => {
@@ -305,8 +316,10 @@ export function rankFindings<T extends QueueFinding>(findings: readonly T[]): T[
     if (av === null && bv !== null) return 1;
     if (av !== null && bv !== null && av !== bv) return bv - av;
 
-    const sev = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
-    if (sev !== 0) return sev;
+    // Subtraction would give NaN for two undateable cards (∞ − ∞).
+    const aSeen = arrivalMs(a);
+    const bSeen = arrivalMs(b);
+    if (aSeen !== bSeen) return aSeen < bSeen ? -1 : 1;
 
     if (a.magnitude !== b.magnitude) return b.magnitude - a.magnitude;
     return a.dedupeKey < b.dedupeKey ? -1 : a.dedupeKey > b.dedupeKey ? 1 : 0;
@@ -438,14 +451,38 @@ export function cardPhrasing(f: QueueFinding, lang: Lang): string {
 type Bi = { en: string; es: string };
 const pick = (b: Bi, lang: Lang) => (lang === 'es' ? b.es : b.en);
 
+/**
+ * The one label the nav badge is counting. Reserved for `propose`.
+ *
+ * The badge on the Staxis pill counts findings whose EFFECTIVE disposition is
+ * `propose` — "3 decisions waiting" (api/findings/badge). So the eyebrow that
+ * says "NEEDS A DECISION" has to mean the same thing, or the manager taps a
+ * badge of 3 and counts five cards claiming to want a decision. A severity is
+ * how loud something is; a disposition is whether Staxis is actually asking
+ * for an answer, and only the second one is a decision.
+ */
+const DECISION_LABEL: Bi = { en: 'NEEDS A DECISION', es: 'REQUIERE UNA DECISIÓN' };
+
 const SEVERITY_LABEL: Record<FindingSeverity, Bi> = {
-  critical: { en: 'NEEDS A DECISION', es: 'REQUIERE UNA DECISIÓN' },
+  // Loud, but there is nothing to answer: it is news, not a question.
+  critical: { en: 'URGENT', es: 'URGENTE' },
   attention: { en: 'WORTH A LOOK', es: 'VALE LA PENA REVISARLO' },
   info: { en: 'FOR YOUR INFORMATION', es: 'PARA TU INFORMACIÓN' },
 };
 
-export function severityLabel(severity: FindingSeverity, lang: Lang): string {
-  return pick(SEVERITY_LABEL[severity], lang);
+/**
+ * The eyebrow above a card: what kind of thing this is, in one line.
+ *
+ * `disposition` here is already the EFFECTIVE one — /api/findings resolves the
+ * judge's verdict over the detector's default before the card ever reaches a
+ * screen — so a finding the judge demoted to `recommend` loses the decision
+ * wording along with the button, and both for the same reason.
+ */
+export function cardEyebrowLabel(
+  f: Pick<QueueFinding, 'severity' | 'disposition'>,
+  lang: Lang,
+): string {
+  return pick(f.disposition === 'propose' ? DECISION_LABEL : SEVERITY_LABEL[f.severity], lang);
 }
 
 /** Chip colour class from concourse-css. Rust reads as "act", sage as "calm". */

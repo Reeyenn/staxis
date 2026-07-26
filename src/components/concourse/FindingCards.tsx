@@ -45,6 +45,7 @@ import { readEnvelope } from '@/lib/api-envelope';
 import { CxIcon } from './icons';
 import {
   DAILY_CARD_CAP,
+  cardEyebrowLabel,
   cardPhrasing,
   dataAgeNote,
   declinedExplanation,
@@ -61,7 +62,6 @@ import {
   offersUndo,
   rankFindings,
   severityChipClass,
-  severityLabel,
   skippedNote,
   type Lang,
   type QueueFinding,
@@ -407,7 +407,7 @@ function FindingCard({
       </div>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="cx-dec-eyebrow">
-          {severityLabel(finding.severity, lang)}
+          {cardEyebrowLabel(finding, lang)}
           {finding.status === 'updated' ? ` · ${L('updated')}` : ''}
         </div>
 

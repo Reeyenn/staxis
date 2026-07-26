@@ -21,6 +21,7 @@ import { describe, test } from 'node:test';
 import {
   DAILY_CARD_CAP,
   RUN_FRESH_HOURS,
+  cardEyebrowLabel,
   cardPhrasing,
   dataAgeNote,
   distinctDetectors,
@@ -70,7 +71,7 @@ function usd(lowDollars: number, highDollars: number, basis = 'your last 3 plumb
 
 // ─── Ordering ───────────────────────────────────────────────────────────────
 
-describe('ranking: biggest dollars first, and stable when they tie', () => {
+describe('ranking: biggest dollars first, then first come first served', () => {
   test('a bigger range midpoint outranks a smaller one regardless of input order', () => {
     const small = finding({ id: 'small', price: usd(40, 60) });
     const big = finding({ id: 'big', price: usd(3000, 5000) });
@@ -98,24 +99,65 @@ describe('ranking: biggest dollars first, and stable when they tie', () => {
     );
   });
 
-  test('severity breaks a tie between two unpriced findings', () => {
-    const info = finding({ id: 'i', severity: 'info' });
-    const critical = finding({ id: 'c', severity: 'critical' });
-    const attention = finding({ id: 'a', severity: 'attention' });
+  test('unpriced findings go in arrival order — oldest first, severity gets no vote', () => {
+    // FIRST COME, FIRST SERVED. Severity is stacked deliberately AGAINST the
+    // expected answer: the newest card is the critical one and the oldest is
+    // the info one, so restoring a severity tiebreak reverses this list.
+    const oldest = finding({ id: 'waited', severity: 'info', firstSeenAt: '2026-07-10T06:00:00.000Z' });
+    const middle = finding({ id: 'wednesday', severity: 'attention', firstSeenAt: '2026-07-18T06:00:00.000Z' });
+    const newest = finding({ id: 'fresh', severity: 'critical', firstSeenAt: '2026-07-25T06:00:00.000Z' });
     assert.deepEqual(
-      rankFindings([info, attention, critical]).map((f) => f.id),
-      ['c', 'a', 'i'],
+      rankFindings([newest, middle, oldest]).map((f) => f.id),
+      ['waited', 'wednesday', 'fresh'],
+    );
+    assert.deepEqual(
+      rankFindings([oldest, newest, middle]).map((f) => f.id),
+      ['waited', 'wednesday', 'fresh'],
     );
   });
 
-  test('magnitude breaks a tie between two equal-severity unpriced findings', () => {
-    // The dedupe keys are deliberately ordered AGAINST the expected result, so
-    // the alphabetical last-resort tiebreak cannot produce this answer on its
-    // own — only magnitude can.
-    const smallMag = finding({ id: 'sm', magnitude: 2, dedupeKey: 'det_a:aaa' });
-    const bigMag = finding({ id: 'bg', magnitude: 9, dedupeKey: 'det_a:zzz' });
+  test('two cards worth the same money go in arrival order, not by severity', () => {
+    // $200–400 and $100–500 have the SAME midpoint, so the money says nothing
+    // and the queue falls back to who got here first. The louder card is the
+    // later one on purpose.
+    const waited = finding({
+      id: 'waited', severity: 'info', price: usd(200, 400),
+      firstSeenAt: '2026-07-11T06:00:00.000Z',
+    });
+    const justIn = finding({
+      id: 'justin', severity: 'critical', price: usd(100, 500),
+      firstSeenAt: '2026-07-24T06:00:00.000Z',
+    });
+    assert.deepEqual(rankFindings([justIn, waited]).map((f) => f.id), ['waited', 'justin']);
+    assert.deepEqual(rankFindings([waited, justIn]).map((f) => f.id), ['waited', 'justin']);
+  });
+
+  test('a card that arrived first still loses to one with more money on it', () => {
+    // Arrival order is the TIEBREAK, not the rule. Dollars still lead.
+    const oldCheap = finding({ id: 'old', price: usd(40, 60), firstSeenAt: '2026-07-01T06:00:00.000Z' });
+    const newRich = finding({ id: 'new', price: usd(3000, 5000), firstSeenAt: '2026-07-25T06:00:00.000Z' });
+    assert.deepEqual(rankFindings([oldCheap, newRich]).map((f) => f.id), ['new', 'old']);
+  });
+
+  test('magnitude breaks a tie between two findings that landed in the same instant', () => {
+    // Same price (none) and the same first-seen timestamp, so arrival order
+    // cannot separate them. The dedupe keys are deliberately ordered AGAINST
+    // the expected result, so the alphabetical last-resort tiebreak cannot
+    // produce this answer on its own — only magnitude can.
+    const sameInstant = '2026-07-12T06:00:00.000Z';
+    const smallMag = finding({ id: 'sm', magnitude: 2, dedupeKey: 'det_a:aaa', firstSeenAt: sameInstant });
+    const bigMag = finding({ id: 'bg', magnitude: 9, dedupeKey: 'det_a:zzz', firstSeenAt: sameInstant });
     assert.deepEqual(rankFindings([smallMag, bigMag]).map((f) => f.id), ['bg', 'sm']);
     assert.deepEqual(rankFindings([bigMag, smallMag]).map((f) => f.id), ['bg', 'sm']);
+  });
+
+  test('a card with no readable arrival time sorts last, never first', () => {
+    // "We don't know when this showed up" must not be read as "it has been
+    // waiting longest", and it must not produce a random order either.
+    const dated = finding({ id: 'dated', firstSeenAt: '2026-07-20T06:00:00.000Z' });
+    const undated = finding({ id: 'undated', firstSeenAt: 'not-a-date' });
+    assert.deepEqual(rankFindings([undated, dated]).map((f) => f.id), ['dated', 'undated']);
+    assert.deepEqual(rankFindings([dated, undated]).map((f) => f.id), ['dated', 'undated']);
   });
 
   test('a fully-tied pair comes back in the same order every time', () => {
@@ -261,6 +303,56 @@ describe('a question is not a card', () => {
       (['critical', 'attention', 'info'] as const).map(severityChipClass),
     );
     assert.equal(chips.size, 3);
+  });
+});
+
+// ─── The eyebrow ────────────────────────────────────────────────────────────
+
+describe('"needs a decision" means the badge is counting it', () => {
+  test('a critical card with nothing to answer says URGENT, not NEEDS A DECISION', () => {
+    // The mutation this guards: keying the eyebrow on severity again. The nav
+    // badge counts `propose` findings and calls them decisions; a recommendation
+    // that shouts "NEEDS A DECISION" makes a badge of 1 sit above three cards
+    // all claiming to want an answer.
+    const loudButNoQuestion = finding({ id: 'u', severity: 'critical', disposition: 'recommend' });
+    assert.equal(cardEyebrowLabel(loudButNoQuestion, 'en'), 'URGENT');
+    assert.equal(cardEyebrowLabel(loudButNoQuestion, 'es'), 'URGENTE');
+  });
+
+  test('a propose card says NEEDS A DECISION whatever its severity', () => {
+    // The mutation this guards in the other direction: a card Staxis is
+    // actually asking about losing the words that say so.
+    for (const severity of ['critical', 'attention', 'info'] as const) {
+      const asking = finding({ id: `p_${severity}`, severity, disposition: 'propose' });
+      assert.equal(cardEyebrowLabel(asking, 'en'), 'NEEDS A DECISION', severity);
+      assert.equal(cardEyebrowLabel(asking, 'es'), 'REQUIERE UNA DECISIÓN', severity);
+    }
+  });
+
+  test('the quieter tiers still read the way they always did', () => {
+    assert.equal(
+      cardEyebrowLabel(finding({ id: 'a', severity: 'attention', disposition: 'recommend' }), 'en'),
+      'WORTH A LOOK',
+    );
+    assert.equal(
+      cardEyebrowLabel(finding({ id: 'i', severity: 'info', disposition: 'fyi' }), 'en'),
+      'FOR YOUR INFORMATION',
+    );
+    assert.equal(
+      cardEyebrowLabel(finding({ id: 'i2', severity: 'info', disposition: 'fyi' }), 'es'),
+      'PARA TU INFORMACIÓN',
+    );
+  });
+
+  test('a judge demoting a proposal takes the decision wording with it', () => {
+    // /api/findings puts the EFFECTIVE disposition on the card, so the eyebrow
+    // and the approve button are governed by the same verdict: the judge can
+    // take both away, and it takes them away together.
+    const demoted = effectiveDisposition({ disposition: 'propose', judgedDisposition: 'recommend' });
+    assert.equal(
+      cardEyebrowLabel(finding({ id: 'd', severity: 'critical', disposition: demoted }), 'en'),
+      'URGENT',
+    );
   });
 });
 
