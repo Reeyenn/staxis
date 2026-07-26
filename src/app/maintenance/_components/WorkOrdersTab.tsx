@@ -28,6 +28,8 @@ import {
   CX_SPRING, CX_CARD_SHADOW, CX_CARD_SHADOW_HOVER, CX_CARD_BORDER_HOVER,
 } from './_mt-snow';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
+import { PatternChip } from '@/components/concourse/PatternChip';
+import { roomNumberFromLocation } from '@/components/concourse/target-chip';
 import { EquipmentPicker } from './EquipmentPicker';
 
 // ── placement: the 4-way choice (3 priorities + "professional") ────────────
@@ -416,6 +418,7 @@ function DetailModal({
   onSaveContractor: (id: string, args: { trade: string; company: string; phone: string }) => Promise<void>;
 }) {
   const { lang } = useLang();
+  const { activePropertyId } = useProperty();
   const es = lang === 'es';
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
@@ -423,6 +426,10 @@ function DetailModal({
 
   useEffect(() => { if (!open) { setNote(''); setBusy(false); setAttaching(false); } }, [open]);
   if (!w) return null;
+
+  // The room this order is about, when it is about a room at all. A "Lobby" or
+  // "Pool pump" order has no room and gets no chip — see roomNumberFromLocation.
+  const roomNumber = roomNumberFromLocation(w.location);
 
   const placement = placementOf(w);
   const done = async () => {
@@ -450,6 +457,10 @@ function DetailModal({
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
         <Caps size={11} tracking="0.06em">{es ? 'Abierta · enviada' : 'Open · submitted'} {fmtSubmittedAt(w.createdAt, es)}</Caps>
+
+        {/* On the THING, not the tab: this modal is one room's broken thing, so
+            the signpost belongs here and nowhere on the board behind it. */}
+        <PatternChip propertyId={activePropertyId} kind="room" value={roomNumber} lang={lang} />
 
         <Field label={es ? 'Prioridad' : 'Priority'}>
           <PlacementChips value={placement} onChange={(v) => onSetPlacement(w, v)} es={es} />
