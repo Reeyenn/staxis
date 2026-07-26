@@ -187,7 +187,15 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
     { enabled: !!user && !!requestedPid },
   );
 
-  const drill = resolveDrillDown(requestedPid, coverage?.hotels, !!coverageError);
+  // Two independent questions, asked in one place: does this reader COVER the
+  // hotel (the bootstrap list), and is a hotel's own feed a screen they work on
+  // (the manager gate). A finance lead answers yes and no.
+  const drill = resolveDrillDown(
+    requestedPid,
+    coverage?.hotels,
+    !!coverageError,
+    canSeeHotelBrief,
+  );
 
   // Follow the link with the whole app where we can. The context switch is
   // best-effort ON PURPOSE: a company account's `properties` list is built from
@@ -269,31 +277,28 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
     );
   }
 
-  if (drill.state === 'open') {
-    // The reader COVERS this hotel and still cannot open its feed: a company's
-    // finance lead reaches every hotel her company operates, and `/api/findings`
-    // is manager-gated, so `FindingCards` would fetch nothing and draw nothing.
-    // That is the blank-Staxis-tab failure this file already carries a warning
-    // about, one link further in — so it gets a sentence instead, and the way
-    // back. Not a permission decision: the server has always been the one
-    // refusing, and this only stops the refusal being silent.
-    if (!canSeeHotelBrief) {
-      return (
-        <div className="cx-page cx-swap">
-          <CxStyle />
-          <style dangerouslySetInnerHTML={{ __html: QV_CSS }} />
-          <div className="qv-stop">
-            <div className="qv-stopt">{drill.hotelName}</div>
-            <div className="qv-stops">{L('readerOnlyBody')}</div>
-          </div>
-          <div style={{ marginTop: 14 }}>
-            <a className="qv-back" href="/feed">
-              ← {hotelBrand ? `${L('backTo')} ${hotelBrand}` : L('backToPortfolio')}
-            </a>
-          </div>
+  // The reader COVERS this hotel and still cannot open its feed — see
+  // `resolveDrillDown`. A sentence and the way back, rather than the blank page
+  // /api/findings' manager gate would otherwise produce.
+  if (drill.state === 'not_your_screen') {
+    return (
+      <div className="cx-page cx-swap">
+        <CxStyle />
+        <style dangerouslySetInnerHTML={{ __html: QV_CSS }} />
+        <div className="qv-stop">
+          <div className="qv-stopt">{drill.hotelName}</div>
+          <div className="qv-stops">{L('readerOnlyBody')}</div>
         </div>
-      );
-    }
+        <div style={{ marginTop: 14 }}>
+          <a className="qv-back" href="/feed">
+            ← {hotelBrand ? `${L('backTo')} ${hotelBrand}` : L('backToPortfolio')}
+          </a>
+        </div>
+      </div>
+    );
+  }
+
+  if (drill.state === 'open') {
     return (
       <HotelQueue
         lang={lang}

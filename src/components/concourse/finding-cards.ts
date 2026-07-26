@@ -511,46 +511,65 @@ export function parsePidParam(search: string): string | null {
  * What a `?pid=` link resolves to, once the server has said which hotels this
  * reader may open.
  *
- * FIVE states rather than a boolean, and each one renders differently, because
+ * SIX states rather than a boolean, and each one renders differently, because
  * the failure modes are not interchangeable:
  *
- *   none         no link was followed. The ordinary screen.
- *   checking     we have asked and not heard. Render NOTHING — flashing the
- *                portfolio queue and swapping it out from under a VP who tapped
- *                a card is worse than a moment of blank.
- *   open         the reader covers this hotel. Show its queue.
- *   refused      they do not. Say so. The old behaviour here was the bug: the
- *                page silently re-rendered the portfolio queue, so "Open in this
- *                hotel" looked like a dead button.
- *   unavailable  the coverage read itself failed. NOT the same as refused — we
- *                do not know, and must not imply the reader lacks access.
+ *   none           no link was followed. The ordinary screen.
+ *   checking       we have asked and not heard. Render NOTHING — flashing the
+ *                  portfolio queue and swapping it out from under a VP who
+ *                  tapped a card is worse than a moment of blank.
+ *   open           the reader covers this hotel AND may read a hotel feed.
+ *   not_your_screen
+ *                  they cover it and may not read its feed. A company's finance
+ *                  lead reaches every hotel her company operates and
+ *                  /api/findings is manager-gated, so the hotel queue would
+ *                  fetch nothing and draw nothing — the blank-Staxis-tab
+ *                  failure, one link further in.
+ *   refused        they do not cover it. Say so. The old behaviour here was the
+ *                  bug: the page silently re-rendered the portfolio queue, so
+ *                  "Open in this hotel" looked like a dead button.
+ *   unavailable    the coverage read itself failed. NOT the same as refused — we
+ *                  do not know, and must not imply the reader lacks access.
  */
 export type DrillDown =
   | { state: 'none' }
   | { state: 'checking'; propertyId: string }
   | { state: 'open'; propertyId: string; hotelName: string }
+  | { state: 'not_your_screen'; propertyId: string; hotelName: string }
   | { state: 'refused'; propertyId: string }
   | { state: 'unavailable'; propertyId: string };
 
 /**
  * Resolve a `?pid=` against the hotels the SERVER said this reader may open.
  *
- * The `hotels` list is the only authority here, and it comes from
+ * The `hotels` list is the only authority on COVERAGE, and it comes from
  * /api/property-selector/bootstrap — `accessibleProperties`, which is the legacy
  * access array UNION every live company hat's coverage. So the answer follows a
  * hotel the company bought last week with nothing re-stamped, and a hotel this
  * reader was never given stays refused however the URL is edited.
+ *
+ * `canReadHotelFeed` is a SECOND, independent question and the two must not be
+ * folded together: coverage says which buildings are yours, the manager gate
+ * says whether a hotel's own feed is a screen you work on. Defaults to true so
+ * every existing caller behaves exactly as before.
+ *
+ * NEITHER argument is an authorization decision — the server refuses on its own,
+ * both times. What this function buys is that the refusal is never silent.
  */
 export function resolveDrillDown(
   requestedPid: string | null,
   hotels: ReadonlyArray<{ propertyId: string; name: string }> | null | undefined,
   readFailed: boolean,
+  canReadHotelFeed: boolean = true,
 ): DrillDown {
   if (!requestedPid) return { state: 'none' };
   if (readFailed) return { state: 'unavailable', propertyId: requestedPid };
   if (!hotels) return { state: 'checking', propertyId: requestedPid };
   const found = hotels.find((h) => h.propertyId === requestedPid);
   if (!found) return { state: 'refused', propertyId: requestedPid };
+  if (!canReadHotelFeed) {
+    return { state: 'not_your_screen', propertyId: requestedPid, hotelName: found.name };
+  }
   return { state: 'open', propertyId: requestedPid, hotelName: found.name };
 }
 

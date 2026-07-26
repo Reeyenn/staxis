@@ -1027,6 +1027,32 @@ describe('"Open in this hotel" actually opens the hotel', () => {
     assert.equal(resolveDrillDown(PID_1, null, false).state, 'checking');
   });
 
+  // ─── THE INTEGRATION SEAM (rebase onto 4c7cce62) ───────────────────────
+  // The hat-access sibling landed a read-only company mode: a finance hat covers
+  // every hotel her company operates and CANNOT act. /api/findings is
+  // manager-gated, so a finance lead following "Open in this hotel" would fetch
+  // nothing and render an empty hotel page — the blank-Staxis-tab failure that
+  // sibling had just fixed on the tab itself, reappearing one link further in.
+  //
+  // Mutation: fold the two questions into one (treat "covers it" as "may open
+  // it"), or default `canReadHotelFeed` to false. The first blanks the screen for
+  // her; the second refuses every VP.
+  test('a reader who covers the hotel but cannot open a hotel feed gets a sentence, not a blank page', () => {
+    const drill = resolveDrillDown(PID_2, HOTELS, false, false);
+    assert.equal(drill.state, 'not_your_screen');
+    assert.equal(drill.state === 'not_your_screen' && drill.hotelName, 'Lufkin');
+  });
+
+  test('coverage and the manager gate stay two separate questions', () => {
+    // Not covered AND not a manager → still REFUSED. Coverage is answered first
+    // because it is the one that decides whether the hotel is hers at all.
+    assert.equal(resolveDrillDown('c3c3c3c3-0000-4000-8000-000000000003', HOTELS, false, false).state, 'refused');
+    // A failed coverage read outranks both, for the same reason: we do not know.
+    assert.equal(resolveDrillDown(PID_2, HOTELS, true, false).state, 'unavailable');
+    // And the default is unchanged, so every existing caller behaves as before.
+    assert.equal(resolveDrillDown(PID_2, HOTELS, false).state, 'open');
+  });
+
   test('no link followed means the ordinary screen', () => {
     assert.equal(resolveDrillDown(null, HOTELS, false).state, 'none');
     assert.equal(resolveDrillDown(null, undefined, true).state, 'none');
