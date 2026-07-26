@@ -45,6 +45,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { loadManagerCaller, managerManagesHotel } from '@/lib/team-auth';
 import { countProposeFindings } from '@/lib/findings/store';
+import { countLockedProposals } from '@/lib/company/signoff';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -66,7 +67,20 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    return ok({ count: await countProposeFindings(propertyId) }, { requestId });
+    const waiting = await countProposeFindings(propertyId);
+    // A card the company's rulebook says needs somebody else's signature is not
+    // this person's decision, so it is not on this person's pill. Founder rule:
+    // badges stay honest on BOTH sides — the same card counts on the approver's
+    // portfolio badge instead (/api/company/queue). Costs nothing when the
+    // count is already zero, when the hotel has no company, or when the company
+    // has written no money rules — see countLockedProposals.
+    const locked = await countLockedProposals(
+      propertyId,
+      caller.accountId,
+      caller.hats ?? [],
+      waiting,
+    );
+    return ok({ count: Math.max(0, waiting - locked) }, { requestId });
   } catch (e) {
     // Deliberately an error, not `{ count: 0 }`. Zero is a CLAIM — "there is
     // nothing waiting for you" — and a failed read has not earned the right to

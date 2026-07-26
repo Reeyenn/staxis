@@ -337,7 +337,16 @@ export type RateLimitEndpoint =
   // FKs properties(id)). Billing-impacting → fails CLOSED: a Supabase blip
   // costs a manager the summary, which is a paragraph above cards that are
   // still all there, and that is a far better trade than uncapped spend.
-  | 'findings-brief';
+  | 'findings-brief'
+  // ── The portfolio queue (a company-scope person's whole screen) ───────────
+  // One GET that reads every hotel in the company, and on the first load of the
+  // company's day also runs the portfolio checks. Not billing-impacting (no
+  // model call anywhere in it) → fails OPEN: losing a portfolio screen to a
+  // limiter blip would be the worse failure. Keyed on a REAL property id — one
+  // of the company's own hotels, because api_limits.property_id FKs
+  // properties(id) — with the ORGANIZATION folded into the sub-key, so two
+  // companies can never share a bucket.
+  | 'company-queue';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -584,6 +593,12 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // like without ever buying a second model call. A scripted loop still hits
   // the wall in under a minute.
   'findings-brief':             120,
+  // The portfolio queue. Sized like the brief's cache reads: a VP flicking
+  // between tabs all morning never comes close, and the daily claim already
+  // makes the expensive half (the portfolio checks) happen once. A scripted
+  // loop, which would be reading a dozen hotels' ledgers per request, hits the
+  // wall in about a minute.
+  'company-queue':              120,
 };
 
 /**

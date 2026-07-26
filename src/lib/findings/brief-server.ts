@@ -64,6 +64,7 @@ import {
   reserveFindingsSpend,
 } from './judge-budget';
 import { buildProseReceipt, checkBilingualProse } from './prose-guard';
+import { toQueueFinding as projectFinding } from './queue-projection';
 import {
   BriefPhrasingError,
   applyBriefPhrasing,
@@ -291,37 +292,15 @@ export async function gatherBriefInput(propertyId: string, now: Date): Promise<B
   };
 }
 
-/** Stored row → the shape the brief and the cards both read. Same projection
- *  the queue route uses, so a brief line and the card it points at can never
- *  disagree about what the finding says. */
+/** Stored row → the shape the brief and the cards both read. The SAME
+ *  projection the queue route uses (src/lib/findings/queue-projection.ts), so a
+ *  brief line and the card it points at can never disagree about what the
+ *  finding says. */
 function toQueueFinding(
   f: Finding,
   phrased: { en: string | null; es: string | null } | undefined,
 ): QueueFinding {
-  return {
-    id: f.id,
-    detectorId: f.detectorId,
-    dedupeKey: f.dedupeKey,
-    summary: f.summary,
-    phrasedEn: phrased?.en ?? null,
-    phrasedEs: phrased?.es ?? null,
-    severity: f.severity,
-    disposition: effectiveDisposition(f),
-    status: f.status,
-    magnitude: f.magnitude,
-    price: f.price,
-    evidence: {
-      queryId: f.evidence?.queryId ?? '',
-      params: (f.evidence?.params ?? {}) as Record<string, unknown>,
-      values: (f.evidence?.values ?? {}) as Record<string, unknown>,
-      basis: f.evidence?.basis ?? '',
-    },
-    asOf: f.asOf,
-    weakestInputAgeDays: f.weakestInputAgeDays,
-    firstSeenAt: f.firstSeenAt,
-    lastSeenAt: f.lastSeenAt,
-    occurrenceCount: f.occurrenceCount,
-  };
+  return projectFinding(f, { phrased: phrased ?? null });
 }
 
 // ─── The cache ──────────────────────────────────────────────────────────────

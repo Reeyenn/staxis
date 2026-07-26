@@ -38,12 +38,59 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
-import { loadManagerCaller, managerManagesHotel } from '@/lib/team-auth';
+import { loadManagerCaller, managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
 import { executeAction, loadAction, undoAction } from '@/lib/findings/actions/store';
-import { recordFindingActed } from '@/lib/findings/store';
+import { listFindings, recordFindingActed } from '@/lib/findings/store';
+import type { FindingAction } from '@/lib/findings/actions/types';
+import { companyForProperty } from '@/lib/company/access';
+import { resolveSignOff } from '@/lib/company/signoff';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+/**
+ * The refusal sentence when a company rule puts this fix out of reach, or null
+ * when nothing does.
+ *
+ * The price the rule is applied to comes from the FINDING, not from the request
+ * — the caller names an action id and nothing else, so there is no number here
+ * a caller could shrink to slip under a threshold.
+ */
+async function signOffBlocking(
+  propertyId: string,
+  caller: ManagerCaller,
+  action: FindingAction,
+): Promise<string | null> {
+  const organizationId = await companyForProperty(propertyId);
+  if (!organizationId) return null;
+
+  const findings = await listFindings(propertyId, {
+    statuses: ['open', 'updated', 'known_problem', 'muted'],
+    limit: 200,
+  });
+  const finding = findings.find((f) => f.id === action.findingId);
+  // The finding is gone or silenced past reading: nothing to price the rule
+  // against, so nothing to route. The database's own re-verification inside the
+  // execute transaction is still in front of the write.
+  if (!finding) return null;
+
+  const requirement = await resolveSignOff({
+    organizationId,
+    propertyId,
+    actionKind: action.kind,
+    price: finding.price,
+    callerAccountId: caller.accountId,
+    callerHats: caller.hats ?? [],
+  });
+  if (!requirement || requirement.callerMayApprove) return null;
+
+  const named = requirement.approvers
+    .map((a) => a.name)
+    .filter((n): n is string => !!n && n.trim().length > 0);
+  return named.length > 0
+    ? `Your company's rules send this one to ${named.join(', ')}.`
+    : "Your company's rules send this one to somebody else to sign off.";
+}
 
 const INTENTS = ['execute', 'undo'] as const;
 type Intent = typeof INTENTS[number];
@@ -109,6 +156,28 @@ export async function POST(req: NextRequest) {
     const action = await loadAction(propertyId, actionId);
     if (!action) {
       return err('No such action', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+
+    // ── the company's signature, enforced ────────────────────────────────────
+    // The card renders a lock, but a card is a rendering and this is the gate.
+    // A stale tab, a replayed request or a hand-rolled POST all arrive here, and
+    // all three are refused the same way. Resolved fresh rather than read off
+    // the row, for the reasons in src/lib/company/signoff.ts: a rule written
+    // this morning governs an offer frozen last night.
+    //
+    // UNDO IS DELIBERATELY NOT GATED. If a fix ran, the ability to reverse it
+    // must not depend on the rulebook having changed since — a manager left
+    // holding an action they can no longer undo is worse off than one who was
+    // never allowed to run it.
+    if (intent === 'execute') {
+      const blocked = await signOffBlocking(propertyId, caller, action);
+      if (blocked) {
+        return err(blocked, {
+          requestId,
+          status: 403,
+          code: ApiErrorCode.Forbidden,
+        });
+      }
     }
 
     const result =

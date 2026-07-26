@@ -59,7 +59,7 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
-import { loadManagerCaller, managerManagesHotel } from '@/lib/team-auth';
+import { loadManagerCaller, managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
 import {
   judgedPhrasing,
   latestRunFacts,
@@ -70,16 +70,17 @@ import {
 } from '@/lib/findings/store';
 import type { Finding, FindingStatus } from '@/lib/findings/types';
 import { loadActionsForFindings } from '@/lib/findings/actions/store';
-import { getAction } from '@/lib/findings/actions/registry';
 import type { FindingAction } from '@/lib/findings/actions/types';
+import { toQueueFinding } from '@/lib/findings/queue-projection';
+import { companyForProperty } from '@/lib/company/access';
+import { loadApproverDirectory, resolveSignOff } from '@/lib/company/signoff';
 import {
   DAILY_CARD_CAP,
   effectiveDisposition,
   isCardRenderable,
   rankFindings,
   splitByCap,
-  type CardAction,
-  type QueueFinding,
+  type CardSignOff,
 } from '@/components/concourse/finding-cards';
 
 export const runtime = 'nodejs';
@@ -107,84 +108,53 @@ function isEngagement(action: PostAction): action is Engagement {
 }
 
 /**
- * The attached fix, in the shape the card renders.
+ * The company signature standing on each of these cards, keyed by finding id.
  *
- * EVERY SENTENCE IS DERIVED HERE, ON THE SERVER, FROM THE FROZEN PARAMS through
- * the catalog entry that also defines what the button does. The client never
- * composes its own description of the plan, so the offer a manager reads and
- * the plan the database executes cannot drift apart.
+ * Resolved HERE rather than frozen on the action row, so a rule the company
+ * writes today governs an offer made yesterday and a rule they delete stops
+ * applying immediately — see the header of src/lib/company/signoff.ts. This is
+ * the RENDERING of the lock; the enforcement is in /api/findings/actions, which
+ * resolves the same requirement again before it calls the database.
  *
- * Returns null — the card renders as a plain finding — when the catalog has no
- * entry for the kind, or when the frozen params no longer satisfy the entry's
- * own validation. Both mean the code that would execute this has changed since
- * the plan was frozen, and a button whose effect we cannot vouch for is worse
- * than no button.
+ * Costs nothing at a hotel with no company: `companyForProperty` returns null
+ * and this returns an empty map without touching the rulebook at all.
  */
-function toCardAction(action: FindingAction): CardAction | null {
-  const definition = getAction(action.kind);
-  if (!definition) return null;
-  if (definition.validate(action.params)) return null;
+async function signOffsFor(
+  propertyId: string,
+  caller: ManagerCaller,
+  findings: readonly Finding[],
+  actions: Map<string, FindingAction>,
+): Promise<Map<string, CardSignOff>> {
+  const out = new Map<string, CardSignOff>();
+  const withOffers = findings.filter((f) => actions.get(f.id)?.state === 'proposed');
+  if (withOffers.length === 0) return out;
 
-  const offer = definition.offer(action.params);
-  const label = definition.label(action.params);
-  const receipt = action.receipt ? definition.receiptLine(action.receipt, action.params) : null;
+  const organizationId = await companyForProperty(propertyId);
+  if (!organizationId) return out;
 
-  return {
-    id: action.id,
-    kind: action.kind,
-    state: action.state,
-    offerEn: offer.en,
-    offerEs: offer.es,
-    labelEn: label.en,
-    labelEs: label.es,
-    receiptEn: receipt?.en ?? null,
-    receiptEs: receipt?.es ?? null,
-    changed: action.changedFacts
-      ? {
-          field: action.changedFacts.field,
-          was: action.changedFacts.was,
-          now: action.changedFacts.now,
-          subject: action.changedFacts.subject ?? null,
-        }
-      : null,
-    failureReason: action.failureReason,
-  };
-}
-
-/** Stored row → wire shape. Everything the card renders, nothing it does not. */
-function toQueueFinding(
-  f: Finding,
-  phrased: { en: string | null; es: string | null } | undefined,
-  action: FindingAction | undefined,
-): QueueFinding {
-  return {
-    id: f.id,
-    detectorId: f.detectorId,
-    dedupeKey: f.dedupeKey,
-    summary: f.summary,
-    phrasedEn: phrased?.en ?? null,
-    phrasedEs: phrased?.es ?? null,
-    severity: f.severity,
-    // The judge's verdict when it has one, the detector's default otherwise.
-    // Which buttons a card offers — and whether it is a card at all — follows
-    // the decision made WITH this hotel's numbers in front of it.
-    disposition: effectiveDisposition(f),
-    status: f.status,
-    magnitude: f.magnitude,
-    price: f.price,
-    evidence: {
-      queryId: f.evidence?.queryId ?? '',
-      params: (f.evidence?.params ?? {}) as Record<string, unknown>,
-      values: (f.evidence?.values ?? {}) as Record<string, unknown>,
-      basis: f.evidence?.basis ?? '',
-    },
-    asOf: f.asOf,
-    weakestInputAgeDays: f.weakestInputAgeDays,
-    firstSeenAt: f.firstSeenAt,
-    lastSeenAt: f.lastSeenAt,
-    occurrenceCount: f.occurrenceCount,
-    action: action ? toCardAction(action) : null,
-  };
+  const directory = await loadApproverDirectory(organizationId);
+  for (const f of withOffers) {
+    const action = actions.get(f.id)!;
+    const requirement = await resolveSignOff({
+      organizationId,
+      propertyId,
+      actionKind: action.kind,
+      price: f.price,
+      callerAccountId: caller.accountId,
+      callerHats: caller.hats ?? [],
+      directory,
+    });
+    if (!requirement) continue;
+    out.set(f.id, {
+      approverRole: requirement.approverRole,
+      approverNames: requirement.approvers
+        .map((a) => a.name)
+        .filter((n): n is string => !!n && n.trim().length > 0),
+      thresholdCents: requirement.thresholdCents,
+      callerMayApprove: requirement.callerMayApprove,
+    });
+  }
+  return out;
 }
 
 export async function GET(req: NextRequest) {
@@ -224,7 +194,14 @@ export async function GET(req: NextRequest) {
     // plain finding it was before the hands existed, which is a degradation
     // rather than a lie.
     const actions = await loadActionsForFindings(propertyId, ids);
-    const findings = showable.map((f) => toQueueFinding(f, phrasing.get(f.id), actions.get(f.id)));
+    // Which offers the company's rulebook says are not this person's to make.
+    // A locked card still renders in full — the button is what changes.
+    const signOffs = await signOffsFor(propertyId, caller, showable, actions);
+    const findings = showable.map((f) => toQueueFinding(f, {
+      phrased: phrasing.get(f.id) ?? null,
+      action: actions.get(f.id) ?? null,
+      signOff: signOffs.get(f.id) ?? null,
+    }));
 
     const run = await latestRunFacts(propertyId);
 

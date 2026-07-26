@@ -89,10 +89,83 @@ export interface CardAction {
   failureReason: string | null;
 }
 
+// ─── Sign-off: the company's rulebook standing on the button ────────────────
+
+/**
+ * The signature a company rule demands before this card's fix may run.
+ *
+ * Present on a card ONLY when a rule actually reaches it (see
+ * src/lib/company/signoff.ts). Absent is the normal case, and is also the answer
+ * for an independent hotel, a company with an empty rulebook, and a plan with no
+ * dollar figure for a money rule to be about. Absent NEVER means "approved".
+ */
+export interface CardSignOff {
+  /** 'owner' | 'vp' | 'finance' | 'general_manager' — whose signature. */
+  approverRole: string;
+  /** Names of the people who hold it here. May be empty; the card still locks. */
+  approverNames: string[];
+  /** The boundary the rule was written at, in cents. For the "why" line. */
+  thresholdCents: number;
+  /** True when the person looking at this card may sign it themselves. */
+  callerMayApprove: boolean;
+}
+
+/**
+ * THE LOCK. True when this card's fix is waiting on somebody else's signature.
+ *
+ * The card is still rendered in full — problem, numbers, receipt, plan — because
+ * the founder's ruling is LOCKED, NOT HIDDEN: a GM who cannot see what the
+ * company decided about their hotel learns that Staxis withholds things, which
+ * costs more than the button was worth.
+ */
+export function isSignOffLocked(f: Pick<QueueFinding, 'signOff'>): boolean {
+  return !!f.signOff && !f.signOff.callerMayApprove;
+}
+
+const APPROVER_WORD: Record<string, Bi> = {
+  owner: { en: 'owner', es: 'la propiedad' },
+  vp: { en: 'VP', es: 'el VP' },
+  finance: { en: 'finance', es: 'finanzas' },
+  general_manager: { en: 'GM', es: 'el gerente' },
+};
+
+/**
+ * What the locked button says instead. "Needs VP sign-off — sent to Maria."
+ *
+ * Keyed on the structured role rather than on any English the server produced,
+ * so a Spanish speaker reads Spanish rather than a translation of a string that
+ * might change. With no named approver it stops after the role — a company that
+ * wrote a rule and has nobody holding the job still locks the card, and naming
+ * nobody is more honest than naming the wrong person.
+ */
+export function signOffNotice(signOff: CardSignOff, lang: Lang): string {
+  const role = pick(APPROVER_WORD[signOff.approverRole] ?? APPROVER_WORD.vp, lang);
+  const names = signOff.approverNames.filter((n) => n && n.trim().length > 0);
+  if (lang === 'es') {
+    const head = `Necesita la aprobación de ${role}`;
+    return names.length > 0 ? `${head} — enviado a ${listNames(names, 'es')}` : head;
+  }
+  const head = `Needs ${role} sign-off`;
+  return names.length > 0 ? `${head} — sent to ${listNames(names, 'en')}` : head;
+}
+
+/** "Maria", "Maria and Ana", "Maria, Ana and Bo". */
+function listNames(names: readonly string[], lang: Lang): string {
+  const and = lang === 'es' ? 'y' : 'and';
+  if (names.length === 1) return names[0];
+  return `${names.slice(0, -1).join(', ')} ${and} ${names[names.length - 1]}`;
+}
+
 /**
  * True when this card should show a one-tap approve.
  *
- * THREE CONDITIONS, AND THE DISPOSITION IS THE ONE THAT MATTERS.
+ * FOUR CONDITIONS, AND THE DISPOSITION IS THE ONE THAT MATTERS.
+ *
+ * The fourth is the company rulebook: a plan whose cost clears a threshold the
+ * company wrote a signature rule for shows no button to anyone who does not
+ * hold that signature. This is a RENDERING of the rule and not the enforcement
+ * of it — /api/findings/actions resolves the same requirement again before it
+ * calls the database, so a stale browser cannot tap through a lock.
  *
  * The disposition here is the EFFECTIVE one — the judge's verdict when it has
  * reached one, the detector's default otherwise. So this is also where the
@@ -108,8 +181,9 @@ export interface CardAction {
  * button would run a plan that is no longer the one on the card.
  */
 export function offersApproval(
-  f: Pick<QueueFinding, 'disposition' | 'action'>,
+  f: Pick<QueueFinding, 'disposition' | 'action' | 'signOff'>,
 ): boolean {
+  if (isSignOffLocked(f)) return false;
   return f.disposition === 'propose' && f.action?.state === 'proposed';
 }
 
@@ -194,6 +268,20 @@ export interface QueueFinding {
    * did before rather than blank.
    */
   action?: CardAction | null;
+  /**
+   * The signature a company rule demands before `action` may run. Absent on
+   * every card at an independent hotel, at a company with no rulebook, and on
+   * every plan no money rule reaches — which is most of them. Absent is never
+   * "approved"; see src/lib/company/signoff.ts.
+   */
+  signOff?: CardSignOff | null;
+  /**
+   * Which hotel this card is about, when the screen is showing more than one.
+   * Null on a company-scope card (a cross-hotel comparison belongs to no single
+   * hotel) and absent entirely on the hotel's own queue, where every card is
+   * about the hotel the manager is already standing in.
+   */
+  hotel?: { propertyId: string; name: string } | null;
 }
 
 /** The liveness artifact: proof the watcher ran, and what it saw. */

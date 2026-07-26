@@ -62,6 +62,7 @@ import { CxIcon } from './icons';
 import { DripQuestionCard } from './DripQuestionCard';
 import { FindingCards } from './FindingCards';
 import { MorningBriefView, type BriefPayload } from './MorningBriefCard';
+import { PortfolioQueueView, type PortfolioScope } from './PortfolioQueueView';
 import { parseFocusParam } from './finding-cards';
 
 /** A finding id from `?focus=`, or null. Read from the URL rather than taken as
@@ -86,16 +87,71 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
 
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+
+  // ── company-scope people get a different screen entirely ─────────────────
+  // Not a variant of this one: a portfolio reader's question is "which of my
+  // twelve hotels needs me", and a hotel feed cannot answer it however many
+  // labels you staple on. The probe is one request that returns `scope: null`
+  // for everybody without a COMPANY-scope job — every single-hotel account in
+  // the product today — and those people fall straight through to the hotel
+  // queue below with nothing changed.
+  //
+  // `undefined` means the probe has not answered yet, and it renders NOTHING
+  // rather than flashing the hotel feed and swapping it out from under a VP.
+  const [companyScope, setCompanyScope] = React.useState<PortfolioScope | null | undefined>(
+    undefined,
+  );
   // Gate at the FETCH, not the render: a housekeeper who opens this tab never
   // asks for a brief at all, so a 403 in the logs always means something real.
   const canSee = !!user && canManageTeam(user.role);
 
+  // Not fetched until the probe has said this is a hotel person. A VP would
+  // otherwise pull one arbitrary hotel's morning brief on every load — a wasted
+  // read, and one that can make a model call.
+  const isHotelPerson = canSee && companyScope === null;
+
   const { data, error } = useApiResource<BriefPayload>(
     `/api/findings/brief?propertyId=${activePropertyId}`,
-    { enabled: canSee && !!activePropertyId },
+    { enabled: isHotelPerson && !!activePropertyId },
   );
-  const brief = canSee ? data?.brief ?? null : null;
+  const brief = isHotelPerson ? data?.brief ?? null : null;
 
+  // The portfolio view mounts for everyone who can manage a team, reports what
+  // it found, and renders itself ONLY when there is a company behind the
+  // person — so for the whole product as it stands today it is one probe that
+  // returns null and draws nothing. One endpoint, and no way for the two
+  // screens to both be on the page.
+  return (
+    <>
+      {canSee && <PortfolioQueueView lang={lang} onScope={setCompanyScope} />}
+      {isHotelPerson && (
+        <HotelQueue
+          lang={lang}
+          brief={brief}
+          readFailed={!!error}
+          focusId={focusId}
+          setFocusId={setFocusId}
+        />
+      )}
+    </>
+  );
+}
+
+/** The hotel feed, exactly as it was before companies existed. */
+function HotelQueue({
+  lang,
+  brief,
+  readFailed,
+  focusId,
+  setFocusId,
+}: {
+  lang: 'en' | 'es';
+  brief: BriefPayload['brief'];
+  readFailed: boolean;
+  focusId: string | null;
+  setFocusId: (id: string | null) => void;
+}) {
+  const es = lang === 'es';
   return (
     <div className="cx-page cx-swap">
       <CxStyle />
@@ -110,7 +166,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
       <MorningBriefView
         brief={brief}
         lang={lang}
-        readFailed={!!error}
+        readFailed={readFailed}
         onFocusFinding={setFocusId}
       />
 

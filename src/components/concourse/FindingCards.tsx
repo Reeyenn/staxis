@@ -60,12 +60,14 @@ import {
   formatPriceRange,
   formatShortDate,
   isCardRenderable,
+  isSignOffLocked,
   livenessLine,
   occurrenceLine,
   offersApproval,
   offersUndo,
   rankFindings,
   severityChipClass,
+  signOffNotice,
   skippedNote,
   type ClosureButton,
   type ClosureVerdict,
@@ -178,6 +180,18 @@ const FD_CSS = `
 .fd-settled.fd-declined{background:rgba(201,150,68,.14);color:#7A5518;}
 .fd-settled.fd-broke{background:rgba(184,92,61,.10);color:#8E432B;}
 .fd-settled .fd-act{margin-top:8px;}
+
+/* ── the company's signature standing on the button ── */
+.fd-locked{display:flex;align-items:center;gap:7px;margin-top:9px;padding:8px 12px;border-radius:999px;
+  background:rgba(201,150,68,.14);color:#7A5518;font-size:12.5px;font-weight:500;line-height:1.4;}
+
+/* ── portfolio: which hotel, and why it climbed ── */
+.fd-hotel{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;
+  letter-spacing:.05em;text-transform:uppercase;color:#5C7A60;
+  font-family:var(--font-geist-mono),ui-monospace,monospace;}
+.fd-note{font-size:11.5px;color:#8A9187;margin-top:5px;}
+.fd-drill{font-size:12px;color:#3E5C48;text-decoration:none;border-bottom:1px solid rgba(62,92,72,.3);}
+.fd-drill:hover{border-bottom-color:#3E5C48;}
 `;
 
 // ─── Receipt rendering ──────────────────────────────────────────────────────
@@ -261,6 +275,25 @@ function ActionRow({
   const action = finding.action;
   if (!action) return null;
 
+  // ── locked, not hidden ──
+  // The company's rulebook routed this signature to somebody else. The offer
+  // sentence still renders in full — the manager sees exactly what Staxis would
+  // do and exactly who has to say yes — and the button is replaced rather than
+  // removed. Hiding the card would teach a GM that Staxis withholds things,
+  // which costs more than the button was worth. This is the RENDERING of the
+  // rule; /api/findings/actions enforces it again before anything runs.
+  if (isSignOffLocked(finding) && action.state === 'proposed') {
+    return (
+      <>
+        <div className="fd-offer">{es ? action.offerEs : action.offerEn}</div>
+        <div className="fd-locked">
+          <CxIcon name="staxis" size={14} />
+          <span>{signOffNotice(finding.signOff!, lang)}</span>
+        </div>
+      </>
+    );
+  }
+
   if (offersApproval(finding)) {
     return (
       <>
@@ -338,6 +371,16 @@ interface CardProps {
   onEngage?: (findingId: string) => void;
   /** Approve or undo the attached fix. Optional for the same reason. */
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
+  /**
+   * One quiet line under the headline, for a screen that has to say WHY this
+   * card is in front of you. Only the portfolio queue passes it — a hotel's own
+   * feed has one answer ("it is wrong here") and printing it would be noise.
+   */
+  note?: string | null;
+  /** Where to go to see this card in its own hotel's feed. Portfolio only. */
+  href?: string | null;
+  /** "Open in this hotel", already in the reader's language. */
+  hrefLabel?: string;
 }
 
 function FindingCard({
@@ -348,6 +391,9 @@ function FindingCard({
   onVerdict,
   onEngage,
   onAction,
+  note = null,
+  href = null,
+  hrefLabel,
 }: CardProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
@@ -421,7 +467,15 @@ function FindingCard({
           {finding.status === 'updated' ? ` · ${L('updated')}` : ''}
         </div>
 
+        {/* Which building this is about. Only ever set on a screen showing more
+            than one — on a hotel's own feed every card is about the hotel the
+            manager is already standing in, and labelling them all would be
+            noise. */}
+        {finding.hotel && <div className="fd-hotel">{finding.hotel.name}</div>}
+
         <div className="cx-dec-t">{cardPhrasing(finding, lang)}</div>
+
+        {note && <div className="fd-note">{note}</div>}
 
         {/* A price is a RANGE with its basis attached, or it is not mentioned. */}
         {price && (
@@ -505,6 +559,15 @@ function FindingCard({
               >
                 {showReceipt ? L('hideNumbers') : L('seeNumbers')}
               </button>
+
+              {/* The drill-down. A plain link, because the property switcher
+                  already exists and the hotel's own feed already knows how to
+                  land on one card (?focus=). */}
+              {href && (
+                <a className="fd-drill" href={href}>
+                  {hrefLabel ?? (es ? 'Ver en este hotel' : 'Open in this hotel')}
+                </a>
+              )}
             </>
           )}
         </div>
@@ -549,6 +612,20 @@ export interface FindingCardsViewProps {
   onEngage?: (findingId: string) => void;
   /** Approve or undo the fix attached to a card. */
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
+  /**
+   * Two hooks the PORTFOLIO queue uses and nothing else does: the line that
+   * says why a card climbed, and the link back into its hotel's own feed.
+   *
+   * Render props rather than fields on the card, so `finding-cards.ts` never
+   * has to learn what a climb reason is — that vocabulary belongs to
+   * src/lib/company/vp-queue.ts, which already imports this module and
+   * therefore cannot be imported back.
+   */
+  noteFor?: (f: QueueFinding) => string | null;
+  hrefFor?: (f: QueueFinding) => string | null;
+  hrefLabel?: string;
+  /** Replaces "What Staxis noticed" on a screen that is not about one hotel. */
+  heading?: string;
 }
 
 /**
@@ -569,6 +646,10 @@ export function FindingCardsView({
   onVerdict,
   onEngage,
   onAction,
+  noteFor,
+  hrefFor,
+  hrefLabel,
+  heading,
 }: FindingCardsViewProps) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
@@ -604,7 +685,7 @@ export function FindingCardsView({
 
       {visible.length > 0 && (
         <div className="fd-head">
-          <span className="fd-headt">{L('heading')}</span>
+          <span className="fd-headt">{heading ?? L('heading')}</span>
         </div>
       )}
 
@@ -620,6 +701,9 @@ export function FindingCardsView({
           onVerdict={onVerdict}
           onEngage={onEngage}
           onAction={onAction}
+          note={noteFor ? noteFor(f) : null}
+          href={hrefFor ? hrefFor(f) : null}
+          hrefLabel={hrefLabel}
         />
       ))}
 
