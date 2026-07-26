@@ -595,9 +595,15 @@ export interface FindingRunSummary {
   /** "N checks resting" — which ones, and since when. Not persisted; the state
    *  itself lives in finding_detector_state and outlives any one run. */
   dormant: Array<{ detectorId: string; since: string | null }>;
-  /** Rungs stepped down tonight. The transition log is in the state row; this
-   *  is what the cron response says happened. */
+  /** Rungs stepped down tonight — ignored into silence, or refused often enough
+   *  that saying it loudly had become nagging. The transition log is in the
+   *  state row; this is what the cron response says happened. */
   demotions: Array<{ detectorId: string; from: string; to: string; reason: string }>;
+  /** Rungs climbed BACK tonight, because somebody took the check up again.
+   *  Reported apart from `demotions` for the obvious reason: a check getting
+   *  louder is not a check getting quieter, and one list holding both would
+   *  make the cron's "3 demotions" line untrue. */
+  rearms: Array<{ detectorId: string; from: string; to: string; reason: string }>;
   /**
    * What the judge did. Part of the null result for the same reason the
    * detector counts are: a night with nothing new to judge and a night where

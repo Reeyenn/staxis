@@ -155,6 +155,7 @@ export async function runFindingsForProperty(
     skipped: [],
     dormant: [],
     demotions: [],
+    rearms: [],
     judge: { mode: 'skipped', findings: 0, costUsd: 0, guardRejections: 0 },
   };
 
@@ -171,12 +172,14 @@ export async function runFindingsForProperty(
   if (!dryRun && !opts.skipDemotion) {
     const pass = await applyDemotionPass(propertyId, detectors, now);
     states = pass.states;
-    summary.demotions = pass.transitions.map((t) => ({
+    const asLine = (t: (typeof pass.transitions)[number]) => ({
       detectorId: t.detectorId,
       from: String(t.from),
       to: String(t.to),
       reason: t.reason,
-    }));
+    });
+    summary.demotions = pass.transitions.filter((t) => t.direction === 'down').map(asLine);
+    summary.rearms = pass.transitions.filter((t) => t.direction === 'up').map(asLine);
   }
 
   const awake = detectors.filter((detector) => {
@@ -509,6 +512,7 @@ export async function runFindingsForAllProperties(
           skipped: [],
           dormant: [],
           demotions: [],
+          rearms: [],
           judge: { mode: 'skipped', findings: 0, costUsd: 0, guardRejections: 0 },
         } satisfies FindingRunSummary),
   );

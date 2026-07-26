@@ -145,6 +145,12 @@ export {
  * this hotel is shown and never engages with steps down propose → recommend →
  * fyi and eventually rests. Per hotel, always: one hotel's indifference has no
  * way to reach another's screen.
+ *
+ * Indifference is not the only way down. A check whose cards this hotel keeps
+ * REFUSING — five separate problems muted over a week or more, with nothing
+ * taken up in between — walks the same ladder, because "not doing this" said
+ * often enough is a request for less of something, not more. And a quietened
+ * check that somebody takes up again climbs back a rung on its own.
  */
 export {
   DEMOTION_LADDER,
@@ -152,16 +158,22 @@ export {
   DORMANT,
   applyDemotionPass,
   demoteDisposition,
+  engagementSince,
   evaluateDemotion,
+  evaluateRearm,
   isDormantAt,
   loadDetectorEngagement,
   loadDetectorStates,
+  positiveEngagement,
   rearmDetector,
+  type DeclinedProblem,
   type DemotionThresholds,
   type DemotionTransition,
   type DetectorEngagement,
+  type DetectorLedger,
   type DetectorState,
   type EffectiveDisposition,
+  type RearmVerdict,
 } from './demotion';
 
 export { recordFindingActed, recordFindingsShown } from './store';
