@@ -10,10 +10,14 @@
 // for the client. Never logs the image content.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import Anthropic from '@anthropic-ai/sdk';
-import { env } from '@/lib/env';
-import type { AiFeatureKey, AiModelRef } from '@/lib/ai/types';
+import type Anthropic from '@anthropic-ai/sdk';
+import type { AiFeatureKey, AiModelRef, AiProvider } from '@/lib/ai/types';
+import type { MessagesClient } from '@/lib/agent/loop-core';
 import { executeAiFeature, estimateAiCostUsd } from '@/lib/ai/runtime';
+import {
+  getMessagesClient,
+  MESSAGES_RUNTIME_PROVIDERS,
+} from '@/lib/ai/messages-client';
 import { normalizeAnthropicUsage } from '@/lib/ai/usage';
 import {
   ANTHROPIC_MAX_RETRIES,
@@ -57,24 +61,21 @@ const MODEL = 'claude-sonnet-4-6';
 // Module-level singleton — matches the pattern in `src/lib/agent/llm.ts` and
 // `src/app/api/walkthrough/step/route.ts`. Re-instantiating `new Anthropic()`
 // per call burns a TLS handshake on every invoice scan.
-let _visionClient: Anthropic | null = null;
-
-/** Throws if ANTHROPIC_API_KEY is missing — caller catches and 500s the route. */
-function getClient(): Anthropic {
-  if (_visionClient) return _visionClient;
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) {
-    throw new Error(
-      'ANTHROPIC_API_KEY is not set. Vision features (invoice OCR, photo count) require it. ' +
-      'Set in Vercel → Project Settings → Environment Variables and redeploy.',
-    );
-  }
-  _visionClient = new Anthropic({
-    apiKey: key,
-    timeout: ANTHROPIC_VISION_TIMEOUT_MS,
+/**
+ * Client for the provider serving this attempt. Throws when that provider has
+ * no key — the caller catches and 500s the route, which is right for vision:
+ * unlike a translation, there is no degraded answer to fall back to.
+ *
+ * Photo counting and the financial scans can run on either provider; anything
+ * that declares `pdf_input` (inventory invoice scanning) stays Anthropic-only
+ * because the OpenAI adapter translates no document block. The registry
+ * enforces that, so this function never has to.
+ */
+function visionClientFor(provider: AiProvider) {
+  return getMessagesClient(provider, {
+    timeoutMs: ANTHROPIC_VISION_TIMEOUT_MS,
     maxRetries: ANTHROPIC_MAX_RETRIES,
   });
-  return _visionClient;
 }
 
 export interface VisionImage {
@@ -351,7 +352,7 @@ function estimateVisionCostUsd(usage: ReturnType<typeof normalizeAnthropicUsage>
 }
 
 async function executeVisionAttempt<T>(
-  client: Anthropic,
+  client: MessagesClient,
   mediaBlock: Anthropic.ContentBlockParam,
   prompt: string,
   selectedModel: AiModelRef | null,
@@ -467,7 +468,6 @@ async function runVisionExtraction<T>(
           data: source.data,
         },
       };
-  const client = getClient();
   const attempts: VisionUsageReport[] = [];
   try {
     if (!featureKey) {
@@ -475,8 +475,11 @@ async function runVisionExtraction<T>(
       const signal = opts.abortSignal
         ? AbortSignal.any([opts.abortSignal, timeoutSignal])
         : timeoutSignal;
+      // No feature key means no admin-configured model: this branch bills
+      // against the module's Anthropic default (MODEL), so its client is
+      // Anthropic by construction.
       return await executeVisionAttempt(
-        client,
+        visionClientFor('anthropic'),
         mediaBlock,
         prompt,
         null,
@@ -487,9 +490,9 @@ async function runVisionExtraction<T>(
     }
     const configured = await executeAiFeature(
       featureKey,
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       (model, context) => executeVisionAttempt(
-        client,
+        visionClientFor(model.provider),
         mediaBlock,
         prompt,
         model,

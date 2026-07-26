@@ -9,23 +9,39 @@
 // throws to the caller. Server-only (uses the secret API key).
 // ═══════════════════════════════════════════════════════════════════════════
 
-import Anthropic from '@anthropic-ai/sdk';
-import { env } from '@/lib/env';
+import type Anthropic from '@anthropic-ai/sdk';
 import { log } from '@/lib/log';
 import {
   COMPLAINT_CATEGORIES, COMPLAINT_SEVERITIES,
   type ComplaintCategory, type ComplaintSeverity,
 } from '@/lib/complaints-shared';
 import { executeAiFeature } from '@/lib/ai/runtime';
+import {
+  getMessagesClientIfConfigured,
+  MESSAGES_RUNTIME_PROVIDERS,
+} from '@/lib/ai/messages-client';
 import { captureTokenUsage, type AiCallOptions } from '@/lib/ai/usage';
+import type { AiModelRef } from '@/lib/ai/types';
 
-let cachedClient: Anthropic | null = null;
-function getClient(): Anthropic | null {
-  if (cachedClient) return cachedClient;
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) return null; // no key (e.g. local/test) → callers use fallbacks
-  cachedClient = new Anthropic({ apiKey: key, timeout: 20_000, maxRetries: 1 });
-  return cachedClient;
+const COMPLAINTS_TIMEOUT_MS = 20_000;
+const COMPLAINTS_MAX_RETRIES = 1;
+
+/**
+ * The client for whichever provider the admin put this feature on.
+ *
+ * Resolved per ATTEMPT rather than once per module, because a configured
+ * fallback may live with a different provider than the primary. Throwing when
+ * the provider has no key keeps this file's contract intact: every export here
+ * is best-effort and catches, so the caller still gets its safe default — the
+ * complaint is logged either way.
+ */
+function clientFor(model: AiModelRef) {
+  const client = getMessagesClientIfConfigured(model.provider, {
+    timeoutMs: COMPLAINTS_TIMEOUT_MS,
+    maxRetries: COMPLAINTS_MAX_RETRIES,
+  });
+  if (!client) throw new Error(`${model.provider} is not configured for complaint AI`);
+  return client;
 }
 
 /** Pull the first text block out of an Anthropic response. */
@@ -96,8 +112,7 @@ export async function classifyComplaint(
   const fallback: ComplaintClassification = {
     category: 'other', severity: 'medium', summary: '', aiClassified: false,
   };
-  const client = getClient();
-  if (!client || !description?.trim()) return fallback;
+  if (!description?.trim()) return fallback;
 
   try {
     const userMsg =
@@ -105,9 +120,9 @@ export async function classifyComplaint(
       `<complaint>\n${description.trim()}\n</complaint>`;
     const { value } = await executeAiFeature(
       'complaints.classification',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
-        const res = await client.messages.create({
+        const res = await clientFor(model).messages.create({
           model: model.modelId,
           max_tokens: 200,
           system: CLASSIFY_SYSTEM,
@@ -189,9 +204,6 @@ export async function draftServiceRecovery(input: {
       : 'A sincere apology is likely sufficient.',
     aiDrafted: false,
   };
-  const client = getClient();
-  if (!client) return fallback;
-
   try {
     const userMsg =
       `Category: ${input.category}. Severity: ${input.severity}. ` +
@@ -200,9 +212,9 @@ export async function draftServiceRecovery(input: {
       `\n<complaint>\n${input.description.trim()}\n</complaint>`;
     const { value } = await executeAiFeature(
       'complaints.recovery_draft',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
-        const res = await client.messages.create({
+        const res = await clientFor(model).messages.create({
           model: model.modelId,
           max_tokens: 400,
           system: DRAFT_SYSTEM,

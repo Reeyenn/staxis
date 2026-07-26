@@ -26,6 +26,50 @@ import type { AiModelRef } from '@/lib/ai/types';
 import type { NormalizedAnthropicUsage } from '@/lib/ai/usage';
 import type { LegacyModelTier } from '@/lib/ai/legacy-model-overrides';
 
+// ─── The provider seam ──────────────────────────────────────────────────────
+
+/**
+ * The exact slice of the Messages API the loops in this app call — nothing
+ * more.
+ *
+ * Two operations in the whole runtime: `messages.create` (sync path) and
+ * `messages.stream` (SSE path). Naming that slice as an interface is what lets
+ * an eval hand in a scripted model and still run the REAL loop — real prompt
+ * assembly, real tool dispatch, real approval gate — with no API spend and no
+ * network (see src/lib/agent/evals/hermetic-runner.ts).
+ *
+ * It began life in llm.ts as a test seam, deliberately NOT a provider
+ * abstraction. It is now both, and the promotion cost nothing: because a real
+ * `Anthropic` instance satisfies it structurally, so does anything else that
+ * speaks the same two operations. `createOpenAiMessagesClient`
+ * (src/lib/ai/openai-messages.ts) is one such thing, which is why running a
+ * feature on GPT required no second loop, no second usage ledger, and no
+ * second copy of the guards. Pick the client with `getMessagesClient(provider)`
+ * from src/lib/ai/messages-client.ts.
+ *
+ * The request/response TYPES stay Anthropic-shaped on purpose: they are the
+ * lingua franca every call site already speaks, and one adapter translating at
+ * the edge is cheaper — and far safer — than thirty call sites each learning a
+ * second dialect.
+ */
+export interface AgentMessageStream
+  extends AsyncIterable<Anthropic.Messages.RawMessageStreamEvent> {
+  finalMessage(): Promise<Anthropic.Messages.Message>;
+}
+
+export interface MessagesClient {
+  messages: {
+    create(
+      body: Anthropic.Messages.MessageCreateParamsNonStreaming,
+      options?: { signal?: AbortSignal },
+    ): Promise<Anthropic.Messages.Message>;
+    stream(
+      body: Anthropic.Messages.MessageStreamParams,
+      options?: { signal?: AbortSignal },
+    ): AgentMessageStream;
+  };
+}
+
 // ─── Loop bounds ────────────────────────────────────────────────────────────
 
 // Max output tokens per single Anthropic API call. Sonnet 4.6 supports

@@ -17,15 +17,40 @@ import {
 } from './AIControlCenter.helpers';
 
 test('runtime-compatible model filtering requires provider and capabilities', () => {
-  const feature = { runtimeProvider: 'anthropic', requiredCapabilities: ['text', 'image_input'] };
-  assert.equal(isRuntimeCompatibleAiModel(feature, {
-    provider: 'anthropic', available: true, capabilities: ['text', 'image_input', 'tool_use'],
+  // A feature only Anthropic can run (it needs PDF reading, which the OpenAI
+  // adapter does not translate).
+  const anthropicOnly = { runtimeProviders: ['anthropic'], requiredCapabilities: ['text', 'pdf_input'] };
+  assert.equal(isRuntimeCompatibleAiModel(anthropicOnly, {
+    provider: 'anthropic', available: true, capabilities: ['text', 'pdf_input', 'tool_use'],
   }), true);
-  assert.equal(isRuntimeCompatibleAiModel(feature, {
-    provider: 'openai', available: true, capabilities: ['text', 'image_input'],
+  assert.equal(isRuntimeCompatibleAiModel(anthropicOnly, {
+    provider: 'openai', available: true, capabilities: ['text', 'pdf_input'],
   }), false);
-  assert.equal(isRuntimeCompatibleAiModel(feature, {
+  assert.equal(isRuntimeCompatibleAiModel(anthropicOnly, {
     provider: 'anthropic', available: true, capabilities: ['text'],
+  }), false);
+});
+
+test('a feature both providers can run offers models from either', () => {
+  const eitherProvider = {
+    runtimeProviders: ['anthropic', 'openai'],
+    requiredCapabilities: ['text', 'tool_use'],
+  };
+  assert.equal(isRuntimeCompatibleAiModel(eitherProvider, {
+    provider: 'openai', available: true, capabilities: ['text', 'tool_use', 'image_input'],
+  }), true);
+  assert.equal(isRuntimeCompatibleAiModel(eitherProvider, {
+    provider: 'anthropic', available: true, capabilities: ['text', 'tool_use'],
+  }), true);
+  // Capability gating still applies per model: a discovered OpenAI model with
+  // no curated overlay has no capabilities and must stay unselectable, because
+  // we can neither price it nor vouch for what it can do.
+  assert.equal(isRuntimeCompatibleAiModel(eitherProvider, {
+    provider: 'openai', available: true, capabilities: [],
+  }), false);
+  // An unavailable model is never offered, whatever it can do.
+  assert.equal(isRuntimeCompatibleAiModel(eitherProvider, {
+    provider: 'openai', available: false, capabilities: ['text', 'tool_use'],
   }), false);
 });
 

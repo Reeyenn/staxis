@@ -141,9 +141,26 @@ export interface AiFeatureDefinition {
   label: string;
   description: string;
   group: AiFeatureGroup;
-  /** Provider whose SDK/request shape actually implements this feature.
-   * Catalog capability metadata alone cannot make another provider runtime-compatible. */
+  /** Provider of this feature's DEFAULT model. Retained as the label shown when
+   * a surface needs to name one provider ("implemented by …"), and as the
+   * fallback the picker offers first. It is NOT the permission check — use
+   * `runtimeProviders` for that. */
   runtimeProvider: AiProvider;
+  /**
+   * Every provider whose execution path can really run this feature.
+   *
+   * Derived in feature-registry.ts by intersecting `requiredCapabilities` with
+   * what each provider's ADAPTER implements — not with what the provider's
+   * models can do in the abstract. That distinction is the whole point: a
+   * feature needing `pdf_input` stays Anthropic-only because our OpenAI adapter
+   * translates no PDF part, however capable GPT itself may be.
+   *
+   * Previously this was a single provider derived from the default model, which
+   * meant every text feature was pinned to Anthropic purely because Claude
+   * happened to be its default — a fact about history rather than about
+   * capability.
+   */
+  runtimeProviders: readonly AiProvider[];
   editable: boolean;
   switchable: boolean;
   modelSwitchable: boolean;
@@ -205,7 +222,7 @@ export interface AiConfigProbeResult {
   ok: boolean;
   provider: AiProvider;
   modelId: string;
-  kind: 'anthropic_message' | 'openai_embedding' | 'openai_transcription';
+  kind: 'anthropic_message' | 'openai_message' | 'openai_embedding' | 'openai_transcription';
   latencyMs: number;
   error?: string;
 }

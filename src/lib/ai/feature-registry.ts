@@ -1,5 +1,6 @@
 import {
   AI_FEATURE_KEYS,
+  AI_PROVIDERS,
   type AiCapability,
   type AiFeatureDefinition,
   type AiFeatureGroup,
@@ -138,10 +139,84 @@ export const CONSERVATIVE_ANTHROPIC_PRICING: AiModelPricing = scaleTokenPricing(
   { source: 'conservative-unverified', asOf: ANTHROPIC_LIST_PRICE_AS_OF },
 );
 
+// ─── OpenAI list prices ─────────────────────────────────────────────────────
+//
+// Same rule as the Anthropic block above: written down once, here, and nowhere
+// else. Checked against OpenAI's published price sheet on the asOf date below
+// (https://developers.openai.com/api/docs/pricing — the canonical target of the
+// old platform.openai.com/docs/pricing URL).
+//
+// TWO STRUCTURAL DIFFERENCES from the Anthropic rows, both real rather than
+// missing data:
+//
+//   1. There is no cache-WRITE rate, because OpenAI does not charge one. Its
+//      prompt caching is automatic and free to populate; only cache READS are
+//      priced, at a published 10% of the input rate. The cacheCreation fields
+//      are therefore left undefined rather than set to zero — the adapter never
+//      reports creation tokens (see toAnthropicUsage in openai-messages.ts), so
+//      the estimator's conservative fallback multiple can never fire, and an
+//      absent line item on a price sheet is not the same receipt as a published
+//      zero.
+//   2. The `pro` tiers publish no cached-input rate at all. Leaving it
+//      undefined makes estimateAiCostUsd price their cache reads at the FULL
+//      input rate — an overestimate, which is the safe direction.
+//
+// Models OpenAI still serves but no longer prices publicly (gpt-5, gpt-5.1,
+// gpt-5.2 and their snapshots — 123 ids come back from /v1/models today) are
+// deliberately absent. Discovery gives an unlisted OpenAI model no capabilities
+// and no pricing, so it cannot satisfy any feature's required capabilities and
+// cannot be selected. That is the intended outcome: we will not run a hotel's
+// spend through a model whose price we cannot cite.
+
+/** Date the OpenAI rates below were last checked against the published sheet.
+ * Bump it and the rates together — a stale date is the signal. */
+const OPENAI_LIST_PRICE_AS_OF = '2026-07-26';
+const OPENAI_PRICE_SOURCE = 'https://developers.openai.com/api/docs/pricing';
+
+function openAiPricing(
+  inputUsdPerMillionTokens: number,
+  outputUsdPerMillionTokens: number,
+  cachedInputUsdPerMillionTokens?: number,
+): AiModelPricing {
+  return {
+    inputUsdPerMillionTokens,
+    outputUsdPerMillionTokens,
+    ...(cachedInputUsdPerMillionTokens === undefined
+      ? {}
+      : { cachedInputUsdPerMillionTokens }),
+    source: OPENAI_PRICE_SOURCE,
+    asOf: OPENAI_LIST_PRICE_AS_OF,
+  };
+}
+
+const GPT_FLAGSHIP_PRICING = openAiPricing(5, 30, 0.5);
+const GPT_MID_PRICING = openAiPricing(2.5, 15, 0.25);
+const GPT_LUNA_PRICING = openAiPricing(1, 6, 0.1);
+const GPT_MINI_PRICING = openAiPricing(0.75, 4.5, 0.075);
+const GPT_NANO_PRICING = openAiPricing(0.2, 1.25, 0.02);
+const GPT_PRO_PRICING = openAiPricing(30, 180);
+const GPT_CODEX_PRICING = openAiPricing(1.75, 14, 0.175);
+
 const CLAUDE_CAPABILITIES: AiCapability[] = [
   'text',
   'image_input',
   'pdf_input',
+  'tool_use',
+];
+
+/**
+ * What the OpenAI chat adapter actually implements — not what OpenAI's models
+ * are capable of in general.
+ *
+ * `pdf_input` is absent on purpose. OpenAI does accept PDF parts, but
+ * src/lib/ai/openai-messages.ts translates only text, images and tool calls, so
+ * claiming it here would let an admin move invoice scanning onto a GPT model
+ * and get a silently blank extraction. Capability metadata in this file is a
+ * promise about OUR code path, and it stays one.
+ */
+const OPENAI_CHAT_CAPABILITIES: AiCapability[] = [
+  'text',
+  'image_input',
   'tool_use',
 ];
 
@@ -182,6 +257,129 @@ export const AI_MODEL_OVERLAYS: readonly AiModelOverlay[] = [
     displayName: 'Claude Opus 4.7',
     capabilities: CLAUDE_CAPABILITIES,
     pricing: OPUS_PRICING,
+  },
+  // ── OpenAI chat models ──
+  // Aliases and their dated snapshots both appear because /v1/models returns
+  // both and an admin may pin either; a snapshot always carries its alias's
+  // published price.
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.6-sol',
+    displayName: 'GPT-5.6 Sol',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_FLAGSHIP_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.6-terra',
+    displayName: 'GPT-5.6 Terra',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_MID_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.6-luna',
+    displayName: 'GPT-5.6 Luna',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_LUNA_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.5',
+    displayName: 'GPT-5.5',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_FLAGSHIP_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.5-2026-04-23',
+    displayName: 'GPT-5.5 (2026-04-23)',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_FLAGSHIP_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.5-pro',
+    displayName: 'GPT-5.5 Pro',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_PRO_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.5-pro-2026-04-23',
+    displayName: 'GPT-5.5 Pro (2026-04-23)',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_PRO_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4',
+    displayName: 'GPT-5.4',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_MID_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4-2026-03-05',
+    displayName: 'GPT-5.4 (2026-03-05)',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_MID_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4-mini',
+    displayName: 'GPT-5.4 Mini',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_MINI_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4-mini-2026-03-17',
+    displayName: 'GPT-5.4 Mini (2026-03-17)',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_MINI_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4-nano',
+    displayName: 'GPT-5.4 Nano',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_NANO_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4-nano-2026-03-17',
+    displayName: 'GPT-5.4 Nano (2026-03-17)',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_NANO_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4-pro',
+    displayName: 'GPT-5.4 Pro',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_PRO_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.4-pro-2026-03-05',
+    displayName: 'GPT-5.4 Pro (2026-03-05)',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_PRO_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'gpt-5.3-codex',
+    displayName: 'GPT-5.3 Codex',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_CODEX_PRICING,
+  },
+  {
+    provider: 'openai',
+    modelId: 'chat-latest',
+    displayName: 'ChatGPT (chat-latest)',
+    capabilities: OPENAI_CHAT_CAPABILITIES,
+    pricing: GPT_FLAGSHIP_PRICING,
   },
   {
     provider: 'openai',
@@ -239,6 +437,59 @@ const SONNET = model('anthropic', 'claude-sonnet-4-6');
 const WHISPER = model('openai', 'whisper-1');
 const EMBEDDING = model('openai', 'text-embedding-3-small');
 
+/**
+ * What each provider's EXECUTION PATH in this codebase can do — the honest
+ * input to "may an admin move this feature there".
+ *
+ * Read this as a statement about our adapters, not about the providers. OpenAI
+ * models handle PDFs; our OpenAI adapter does not, so `pdf_input` is absent and
+ * invoice scanning stays on Claude. When the adapter learns a capability, add
+ * it here and the picker opens up on its own — there is no second list to keep
+ * in sync.
+ *
+ * `browser` and `in_house` are not model APIs at all: the first is the client
+ * side Web Speech API, the second our own forecasters. They appear so that the
+ * features they back resolve to exactly themselves.
+ */
+const PROVIDER_RUNTIME_CAPABILITIES: Readonly<Record<AiProvider, readonly AiCapability[]>> = {
+  anthropic: CLAUDE_CAPABILITIES,
+  // Chat capabilities come from the Messages adapter; embeddings and
+  // transcription are separate OpenAI endpoints this app already calls.
+  openai: [...OPENAI_CHAT_CAPABILITIES, 'embeddings', 'audio_transcription'],
+  browser: ['speech_recognition'],
+  in_house: ['forecasting', 'optimization'],
+};
+
+/**
+ * The providers that can satisfy every one of `required`.
+ *
+ * A locked feature short-circuits to its own provider: `modelSwitchable: false`
+ * means nobody can move it regardless, and one such feature
+ * (`ml.daily_report_headcount`, not wired up yet) declares NO required
+ * capabilities — which would otherwise vacuously "match" every provider and
+ * advertise an unwired ML stub as runnable on Claude.
+ */
+function runtimeProvidersFor(
+  required: readonly AiCapability[],
+  primary: AiProvider,
+  modelSwitchable: boolean,
+): readonly AiProvider[] {
+  if (!modelSwitchable) return [primary];
+  const supported = AI_PROVIDERS.filter((provider) =>
+    required.every((capability) => PROVIDER_RUNTIME_CAPABILITIES[provider].includes(capability)),
+  );
+  // A feature whose own default model cannot run it is a registry bug, and a
+  // silent one: the picker would offer a set that excludes the model currently
+  // serving production. Fail at module load instead.
+  if (!supported.includes(primary)) {
+    throw new Error(
+      `AI feature registry: default model provider "${primary}" cannot satisfy required capabilities ` +
+      `[${required.join(', ')}]. Fix the capabilities, the default model, or PROVIDER_RUNTIME_CAPABILITIES.`,
+    );
+  }
+  return supported;
+}
+
 function defineFeature(
   key: AiFeatureKey,
   group: AiFeatureGroup,
@@ -256,15 +507,21 @@ function defineFeature(
     availability?: 'available' | 'unavailable';
   } = {},
 ): AiFeatureDefinition {
+  const modelSwitchable = opts.modelSwitchable ?? true;
   return {
     key,
     group,
     label,
     description,
     runtimeProvider: primary.provider,
+    runtimeProviders: runtimeProvidersFor(
+      requiredCapabilities,
+      primary.provider,
+      modelSwitchable,
+    ),
     editable: opts.editable ?? true,
     switchable: opts.switchable ?? true,
-    modelSwitchable: opts.modelSwitchable ?? true,
+    modelSwitchable,
     fallbackAllowed: opts.fallbackAllowed ?? true,
     ...(opts.modelLockReason ? { modelLockReason: opts.modelLockReason } : {}),
     availability: opts.availability ?? 'available',
@@ -282,7 +539,15 @@ export function isAiFeatureRuntimeProviderCompatible(
   featureKey: AiFeatureKey,
   provider: AiProvider,
 ): boolean {
-  return AI_FEATURE_REGISTRY[featureKey].runtimeProvider === provider;
+  return AI_FEATURE_REGISTRY[featureKey].runtimeProviders.includes(provider);
+}
+
+/** Plain-English list of the providers a feature can run on, for the admin
+ * surfaces that have to explain a rejected selection. */
+export function aiFeatureRuntimeProviderLabel(featureKey: AiFeatureKey): string {
+  const providers = AI_FEATURE_REGISTRY[featureKey].runtimeProviders;
+  if (providers.length === 1) return providers[0];
+  return `${providers.slice(0, -1).join(', ')} or ${providers[providers.length - 1]}`;
 }
 
 export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinition>> = {

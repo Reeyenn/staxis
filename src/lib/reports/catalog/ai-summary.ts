@@ -14,24 +14,28 @@
  *     staff name / note can't hijack the prompt.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { env } from '@/lib/env';
 import { ANTHROPIC_MAX_RETRIES } from '@/lib/external-service-config';
 import { captureException } from '@/lib/sentry';
 import type { ReportDefinition, ReportRunResult } from './types';
 import { executeAiFeature } from '@/lib/ai/runtime';
+import {
+  getMessagesClientIfConfigured,
+  MESSAGES_RUNTIME_PROVIDERS,
+} from '@/lib/ai/messages-client';
 import { captureTokenUsage, type AiCallOptions } from '@/lib/ai/usage';
+import type { AiModelRef } from '@/lib/ai/types';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 const MAX_ROWS_IN_PROMPT = 15;
 
-let _client: Anthropic | null = null;
-function getClient(): Anthropic | null {
-  if (_client) return _client;
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) return null;
-  _client = new Anthropic({ apiKey: key, timeout: REQUEST_TIMEOUT_MS, maxRetries: ANTHROPIC_MAX_RETRIES });
-  return _client;
+/** Client for whichever provider serves this attempt; null when unconfigured,
+ * which this best-effort summary treats as "send the report without a
+ * one-liner". */
+function clientFor(model: AiModelRef) {
+  return getMessagesClientIfConfigured(model.provider, {
+    timeoutMs: REQUEST_TIMEOUT_MS,
+    maxRetries: ANTHROPIC_MAX_RETRIES,
+  });
 }
 
 /** Compact, fenced rendering of the report for the model. */
@@ -55,8 +59,6 @@ export async function generateReportSummary(
   lang: 'en' | 'es' = 'en',
   opts: AiCallOptions = {},
 ): Promise<string | null> {
-  const client = getClient();
-  if (!client) return null;
   if (result.rows.length === 0) return null;
 
   const content = buildPromptContent(def, result, lang);
@@ -65,8 +67,10 @@ export async function generateReportSummary(
   try {
     const configured = await executeAiFeature(
       'reports.run_summary',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
+        const client = clientFor(model);
+        if (!client) throw new Error(`${model.provider} is not configured`);
         const response = await client.messages.create(
           {
             model: model.modelId,

@@ -1,7 +1,8 @@
 import 'server-only';
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { env } from '@/lib/env';
+import { getMessagesClientIfConfigured } from './messages-client';
 import type { AiCapability, AiModelSelection } from './types';
 
 const PROBE_TIMEOUT_MS = 12_000;
@@ -12,7 +13,7 @@ export interface AiModelProbeResult {
   ok: boolean;
   provider: AiModelSelection['provider'];
   modelId: string;
-  kind: 'anthropic_message' | 'openai_embedding' | 'openai_transcription';
+  kind: 'anthropic_message' | 'openai_message' | 'openai_embedding' | 'openai_transcription';
   latencyMs: number;
   error?: string;
 }
@@ -59,20 +60,35 @@ function tinySilentWav(): Buffer {
   return buffer;
 }
 
-async function probeAnthropic(
+/**
+ * One synthetic Messages probe for BOTH chat providers.
+ *
+ * It deliberately goes through `getMessagesClient`, the same seam production
+ * uses, so the probe exercises the real request translation rather than a
+ * parallel imitation of it. That is what makes a green probe mean something for
+ * an OpenAI selection: if the adapter mistranslated tools or images, this fails
+ * here — in the admin's validation step — instead of in a hotel's chat.
+ */
+async function probeMessagesModel(
   selection: AiModelSelection,
   required: AiCapability[],
 ): Promise<AiModelProbeResult> {
   const started = Date.now();
-  const apiKey = env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  const kind: AiModelProbeResult['kind'] = selection.provider === 'openai'
+    ? 'openai_message'
+    : 'anthropic_message';
+  const providerLabel = selection.provider === 'openai' ? 'OpenAI' : 'Anthropic';
+  const client = getMessagesClientIfConfigured(selection.provider, {
+    timeoutMs: PROBE_TIMEOUT_MS,
+    maxRetries: 0,
+  });
+  if (!client) {
     return {
       ok: false, provider: selection.provider, modelId: selection.modelId,
-      kind: 'anthropic_message', latencyMs: 0, error: 'Anthropic is not configured.',
+      kind, latencyMs: 0, error: `${providerLabel} is not configured.`,
     };
   }
   try {
-    const client = new Anthropic({ apiKey, timeout: PROBE_TIMEOUT_MS, maxRetries: 0 });
     const content: Anthropic.ContentBlockParam[] = [];
     if (required.includes('image_input')) {
       content.push({
@@ -95,7 +111,10 @@ async function probeAnthropic(
     const needsTool = required.includes('tool_use');
     const response = await client.messages.create({
       model: selection.modelId,
-      max_tokens: 32,
+      // GPT-5-era reasoning models spend this budget on thinking before any
+      // visible token, and a 32-token ceiling reliably yields an empty answer
+      // that looks like a broken model rather than a tight cap.
+      max_tokens: 512,
       messages: [{ role: 'user', content }],
       ...(needsTool ? {
         tools: [{
@@ -113,18 +132,18 @@ async function probeAnthropic(
       ok: valid,
       provider: selection.provider,
       modelId: selection.modelId,
-      kind: 'anthropic_message',
+      kind,
       latencyMs: Date.now() - started,
-      ...(valid ? {} : { error: 'Anthropic returned an unexpected probe response.' }),
+      ...(valid ? {} : { error: `${providerLabel} returned an unexpected probe response.` }),
     };
   } catch {
     return {
       ok: false,
       provider: selection.provider,
       modelId: selection.modelId,
-      kind: 'anthropic_message',
+      kind,
       latencyMs: Date.now() - started,
-      error: 'Anthropic could not run the synthetic probe.',
+      error: `${providerLabel} could not run the synthetic probe.`,
     };
   }
 }
@@ -215,14 +234,16 @@ export async function probeAiModel(
   selection: AiModelSelection,
   requiredCapabilities: AiCapability[],
 ): Promise<AiModelProbeResult> {
-  if (selection.provider === 'anthropic') {
-    return probeAnthropic(selection, requiredCapabilities);
-  }
+  // Endpoint-specific probes first: embeddings and transcription are separate
+  // OpenAI APIs, not Messages-shaped calls.
   if (selection.provider === 'openai' && requiredCapabilities.includes('embeddings')) {
     return probeOpenAiEmbedding(selection);
   }
   if (selection.provider === 'openai' && requiredCapabilities.includes('audio_transcription')) {
     return probeOpenAiTranscription(selection);
+  }
+  if (selection.provider === 'anthropic' || selection.provider === 'openai') {
+    return probeMessagesModel(selection, requiredCapabilities);
   }
   return {
     ok: false,

@@ -19,8 +19,13 @@
 //   per-step estimate fixes them all in one place.
 
 import type { NextRequest } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import {
+  getMessagesClient,
+  MESSAGES_RUNTIME_PROVIDERS,
+} from '@/lib/ai/messages-client';
+import type { AiProvider } from '@/lib/ai/types';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { escapeTrustMarkerContent, modelTierForModelId, type ModelTier } from '@/lib/agent/llm';
@@ -108,23 +113,17 @@ const PER_STEP_ESTIMATE_USD = 0.03;
 
 // ─── Anthropic client ────────────────────────────────────────────────────
 
-let _client: Anthropic | null = null;
-function client(): Anthropic {
-  if (_client) return _client;
-  const apiKey = env.ANTHROPIC_API_KEY;
-  if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
-  // Per src/lib/external-service-config.ts: explicit timeout < route's
-  // maxDuration (30s), maxRetries=1 so a hiccup doesn't blow past the
-  // function ceiling. Pre-2026-05-17 this was `new Anthropic({ apiKey })`
-  // — no timeout, SDK default 2 retries — which the audit flagged as the
-  // highest-blast-radius finding (every onboarding user hung 60s on a
-  // bad Anthropic regional incident).
-  _client = new Anthropic({
-    apiKey,
-    timeout: ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
+// Per src/lib/external-service-config.ts: explicit timeout < route's
+// maxDuration (30s), maxRetries=1 so a hiccup doesn't blow past the function
+// ceiling. Pre-2026-05-17 this was `new Anthropic({ apiKey })` — no timeout,
+// SDK default 2 retries — which the audit flagged as the highest-blast-radius
+// finding (every onboarding user hung 60s on a bad Anthropic regional
+// incident). Both providers' clients now inherit that same budget.
+function client(provider: AiProvider) {
+  return getMessagesClient(provider, {
+    timeoutMs: ANTHROPIC_WALKTHROUGH_TIMEOUT_MS,
     maxRetries: ANTHROPIC_MAX_RETRIES,
   });
-  return _client;
 }
 
 function buildUserContent(body: StepRequestBody, role: AppRole): string {
@@ -320,7 +319,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   try {
     const resolved = await resolveAiExecutionPlan(
       'walkthrough.step_generation',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       { requirePricing: true },
     );
     walkthroughPlan = applyLegacyModelOverrideToPlan(resolved, 'sonnet');
@@ -481,7 +480,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       const configured = await executeAiPlan(
         walkthroughPlan,
         async (model, context) => {
-          const response = await client().messages.create(
+          const response = await client(model.provider).messages.create(
             {
               model: model.modelId,
               max_tokens: MAX_OUTPUT_TOKENS,

@@ -74,6 +74,11 @@ export function applyLegacyModelOverrideToPlan(
   tier: LegacyModelTier,
 ): AiExecutionPlan {
   if (plan.config.source === 'database') return plan;
+  // MODEL_OVERRIDE names ANTHROPIC snapshots by tier, so applying it to a
+  // default that is not Anthropic would quietly switch providers rather than
+  // pin a build. An admin-selected OpenAI model already returns above (its
+  // source is 'database'); this covers a future code default that isn't Claude.
+  if (plan.primary.provider !== 'anthropic') return plan;
   const primary = effectiveLegacyModelRef(tier, plan.primary);
   if (primary === plan.primary) return plan;
   return {

@@ -24,10 +24,12 @@ import 'server-only';
  * validate probes). Real spend shows on console.anthropic.com.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-import { env } from '@/lib/env';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { executeAiFeature } from '@/lib/ai/runtime';
+import {
+  getMessagesClientIfConfigured,
+  MESSAGES_RUNTIME_PROVIDERS,
+} from '@/lib/ai/messages-client';
 import { captureTokenUsage } from '@/lib/ai/usage';
 import { getAiFeatureDefinition, isAiFeatureKey } from '@/lib/ai/feature-registry';
 import { listAiFeatureSummaries } from '@/lib/ai/model-config-store';
@@ -37,6 +39,7 @@ import { log } from '@/lib/log';
 import type {
   AiFeatureSummary,
   AiModelCatalogEntry,
+  AiModelRef,
   AiRecommendation,
   AiRecommendationReport,
 } from '@/lib/ai/types';
@@ -45,13 +48,16 @@ const MAX_RECOMMENDATIONS = 8;
 const SPEND_WINDOW_DAYS = 30;
 const SPEND_ROW_CAP = 20_000;
 
-let cachedClient: Anthropic | null = null;
-function getClient(): Anthropic | null {
-  if (cachedClient) return cachedClient;
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) return null;
-  cachedClient = new Anthropic({ apiKey: key, timeout: 100_000, maxRetries: 1 });
-  return cachedClient;
+/** Client for the provider serving this attempt. Admin-triggered and explicitly
+ * awaited, so an unconfigured provider throws rather than degrading — the admin
+ * clicked refresh and is owed either advice or a reason. */
+function clientFor(model: AiModelRef) {
+  const client = getMessagesClientIfConfigured(model.provider, {
+    timeoutMs: 100_000,
+    maxRetries: 1,
+  });
+  if (!client) throw new Error(`${model.provider.toUpperCase()} API key is not configured.`);
+  return client;
 }
 
 interface SpendByModel {
@@ -193,9 +199,6 @@ export async function generateAiModelRecommendations(
     actor?: { accountId: string; email: string | null };
   } = {},
 ): Promise<AiRecommendationReport> {
-  const client = getClient();
-  if (!client) throw new Error('ANTHROPIC_API_KEY is not configured.');
-
   const [features, models, spend] = await Promise.all([
     listAiFeatureSummaries().then(applyLegacyModelOverridesToSummaries),
     listAiModels(),
@@ -217,9 +220,9 @@ export async function generateAiModelRecommendations(
 
   const { value, model: usedModel } = await executeAiFeature(
     'admin.model_recommendations',
-    'anthropic',
+    MESSAGES_RUNTIME_PROVIDERS,
     async (model, context) => {
-      const resp = await client.messages.create({
+      const resp = await clientFor(model).messages.create({
         model: model.modelId,
         // max_tokens covers THINKING + answer: newer models (Sonnet 5+) think
         // adaptively by default and the thinking spend counts against this

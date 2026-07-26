@@ -15,7 +15,10 @@
 // prompt injection cannot reach another property's data or invent a pid. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
+// Still needed by transcribeAudioBuffer: Whisper is a different OpenAI endpoint
+// (/v1/audio/transcriptions), not a Messages-shaped call, so it does not go
+// through getMessagesClient.
 import { env } from '@/lib/env';
 import { log } from '@/lib/log';
 import {
@@ -37,6 +40,11 @@ import {
   resolveAiExecutionPlan,
 } from '@/lib/ai/runtime';
 import {
+  getMessagesClientIfConfigured,
+  MESSAGES_RUNTIME_PROVIDERS,
+} from '@/lib/ai/messages-client';
+import type { AiModelRef } from '@/lib/ai/types';
+import {
   capturePricedUsage,
   captureTokenUsage,
   mergeAiUsage,
@@ -44,10 +52,14 @@ import {
   type AiUsageReport,
 } from '@/lib/ai/usage';
 
-function anthropic(): Anthropic | null {
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) return null;
-  return new Anthropic({ apiKey: key, timeout: 30_000, maxRetries: 1 });
+/** Client for whichever provider the AI Control Center put this feature on for
+ * this attempt. Null when that provider has no key — every caller in this file
+ * degrades to a non-AI path rather than failing the chat message. */
+function modelClient(model: AiModelRef) {
+  return getMessagesClientIfConfigured(model.provider, {
+    timeoutMs: 30_000,
+    maxRetries: 1,
+  });
 }
 
 function firstText(resp: Anthropic.Message): string {
@@ -139,9 +151,8 @@ export async function detectAction(
   text: string,
   opts: AiCallOptions = {},
 ): Promise<DetectedAction> {
-  const c = anthropic();
   const trimmed = (text ?? '').trim();
-  if (!c || trimmed.length < 4) return NO_ACTION;
+  if (trimmed.length < 4) return NO_ACTION;
   const system =
     'You analyze ONE hotel staff chat message and decide if it implies an ' +
     'operational action. Respond with ONLY a JSON object: ' +
@@ -156,8 +167,10 @@ export async function detectAction(
   try {
     const { value } = await executeAiFeature(
       'communications.action_detection',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
+        const c = modelClient(model);
+        if (!c) throw new Error(`${model.provider} is not configured`);
         const resp = await c.messages.create({
           model: model.modelId, max_tokens: 400, system,
           messages: [{ role: 'user', content: trimmed.slice(0, 1000) }],
@@ -221,8 +234,7 @@ export async function summarizeUnread(
   lang: CommsLang,
   opts: AiCallOptions = {},
 ): Promise<string> {
-  const c = anthropic();
-  if (!c || items.length === 0) return '';
+  if (items.length === 0) return '';
   const list = items.slice(0, 80).map((m, i) => `${i + 1}. ${m.sender}: ${m.body.replace(/\n/g, ' ').slice(0, 300)}`).join('\n');
   const system =
     `You summarize unread hotel staff messages into a short brief of what the ` +
@@ -232,8 +244,10 @@ export async function summarizeUnread(
   try {
     const { value } = await executeAiFeature(
       'communications.unread_summary',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
+        const c = modelClient(model);
+        if (!c) throw new Error(`${model.provider} is not configured`);
         const resp = await c.messages.create(
           { model: model.modelId, max_tokens: 700, system, messages: [{ role: 'user', content: list }] },
           { signal: context.signal },
@@ -268,9 +282,8 @@ export async function polishAnnouncement(
   lang: CommsLang,
   opts: AiCallOptions = {},
 ): Promise<string> {
-  const c = anthropic();
   const text = (rough ?? '').trim();
-  if (!c || !text) return text;
+  if (!text) return text;
   const system =
     `Rewrite the manager's rough note into a clear, warm, professional staff ` +
     `announcement in ${LANG_NAMES[lang]}. Keep it concise (1–3 short sentences), ` +
@@ -280,8 +293,10 @@ export async function polishAnnouncement(
   try {
     const { value } = await executeAiFeature(
       'communications.announcement_polish',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
+        const c = modelClient(model);
+        if (!c) throw new Error(`${model.provider} is not configured`);
         const resp = await c.messages.create(
           { model: model.modelId, max_tokens: 600, system, messages: [{ role: 'user', content: text.slice(0, 2000) }] },
           { signal: context.signal },
@@ -538,8 +553,7 @@ export async function runStaxisAssistant(args: {
   /** Shared route budget, cancellation, and billable-attempt telemetry. */
   ai?: AiCallOptions;
 }): Promise<AssistantResult> {
-  const c = anthropic();
-  if (!c) return { answer: assistantFallback(args.lang, 'unavailable'), actions: [] };
+
 
   // Fail CLOSED on role (see resolveAssistantRole): a missing/invalid role can
   // never widen access to manager-only Knowledge.
@@ -567,7 +581,7 @@ export async function runStaxisAssistant(args: {
     assertAssistantCanContinue(deadlineAt, args.ai?.abortSignal);
     let executionPlan = await resolveAiExecutionPlan(
       'communications.staxis_assistant',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       { requirePricing: true },
     );
     for (let iter = 0; iter < 6; iter++) {
@@ -575,6 +589,8 @@ export async function runStaxisAssistant(args: {
       const configured = await executeAiPlan(
         executionPlan,
         async (model, context) => {
+          const c = modelClient(model);
+          if (!c) throw new Error(`${model.provider} is not configured`);
           const response = await c.messages.create({
             model: model.modelId, max_tokens: 1024, system, tools: ASSISTANT_TOOLS, messages,
           }, { signal: context.signal });

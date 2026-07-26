@@ -146,6 +146,14 @@ function providerLabel(provider: AiProvider): string {
   return 'Staxis in-house';
 }
 
+/** "Anthropic", or "Anthropic or OpenAI" — the providers a feature can run on,
+ * for the message shown when a selection is rejected. */
+function runtimeProvidersLabel(providers: readonly AiProvider[]): string {
+  const labels = providers.map(providerLabel);
+  if (labels.length <= 1) return labels[0] ?? 'no';
+  return `${labels.slice(0, -1).join(', ')} or ${labels[labels.length - 1]}`;
+}
+
 function capabilityLabel(capability: string): string {
   return capability.replaceAll('_', ' ');
 }
@@ -603,10 +611,10 @@ export function AIControlCenter() {
       setFeatureErrors((current) => ({ ...current, [feature.key]: 'Choose a primary model.' }));
       return;
     }
-    if (primary.provider !== feature.runtimeProvider) {
+    if (!feature.runtimeProviders.includes(primary.provider)) {
       setFeatureErrors((current) => ({
         ...current,
-        [feature.key]: `This feature supports ${providerLabel(feature.runtimeProvider)} models only.`,
+        [feature.key]: `This feature supports ${runtimeProvidersLabel(feature.runtimeProviders)} models only.`,
       }));
       return;
     }
@@ -614,10 +622,11 @@ export function AIControlCenter() {
       setFeatureErrors((current) => ({ ...current, [feature.key]: 'Choose a valid fallback model.' }));
       return;
     }
-    if (fallback && fallback.provider !== feature.runtimeProvider) {
+    const fallbackProvider: AiProvider | null = fallback ? fallback.provider as AiProvider : null;
+    if (fallbackProvider && !feature.runtimeProviders.includes(fallbackProvider)) {
       setFeatureErrors((current) => ({
         ...current,
-        [feature.key]: `The fallback must also use ${providerLabel(feature.runtimeProvider)}.`,
+        [feature.key]: `The fallback must also use ${runtimeProvidersLabel(feature.runtimeProviders)}.`,
       }));
       return;
     }

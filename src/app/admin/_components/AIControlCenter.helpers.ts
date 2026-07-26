@@ -42,7 +42,9 @@ export interface RefreshableAiModel {
 }
 
 export interface RuntimeCompatibleFeature {
-  runtimeProvider: string;
+  /** Every provider this feature can actually run on. A text feature lists both
+   * Claude and GPT; one needing PDF reading lists Anthropic alone. */
+  runtimeProviders: readonly string[];
   requiredCapabilities: readonly string[];
 }
 
@@ -68,7 +70,11 @@ export function isRuntimeCompatibleAiModel(
   model: RuntimeCompatibleModel,
 ): boolean {
   return model.available
-    && model.provider === feature.runtimeProvider
+    && feature.runtimeProviders.includes(model.provider)
+    // Still capability-gated per MODEL, not just per provider: an OpenAI model
+    // with no curated overlay carries no capabilities at all, so it stays out of
+    // the picker rather than appearing as a selectable option whose price and
+    // abilities we cannot vouch for.
     && feature.requiredCapabilities.every((capability) => model.capabilities.includes(capability));
 }
 

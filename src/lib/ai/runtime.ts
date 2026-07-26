@@ -55,16 +55,36 @@ export function shouldRetryAiFallback(opts: {
   return opts.fallbackAvailable && !opts.aborted && !opts.emittedToUser && !isAbortError(opts.error);
 }
 
+/**
+ * The providers a CALLER can execute.
+ *
+ * A caller that speaks one provider's API passes that provider; a caller built
+ * on the shared Messages seam passes MESSAGES_RUNTIME_PROVIDERS and can serve
+ * whichever of them the admin selected. Normalizing to a list here is what let
+ * the switch land without changing a single call signature at the ~15 sites
+ * that still legitimately support exactly one provider.
+ */
+export type AiRuntimeProviders = AiProvider | readonly AiProvider[];
+
+function providerList(provider: AiRuntimeProviders): readonly AiProvider[] {
+  return typeof provider === 'string' ? [provider] : provider;
+}
+
+function describeProviders(providers: readonly AiProvider[]): string {
+  if (providers.length === 1) return `${providers[0]} models only`;
+  return `${providers.join(' or ')} models`;
+}
+
 function assertTarget(
   featureKey: AiFeatureKey,
   target: ResolvedModel,
-  provider: AiProvider,
+  providers: readonly AiProvider[],
   requirePricing: boolean,
 ): void {
-  if (target.provider !== provider) {
+  if (!providers.includes(target.provider)) {
     throw new AiFeatureModelError(
       `AI feature "${featureKey}" selected ${target.provider}/${target.modelId}, ` +
-      `but this runtime supports ${provider} models only`,
+      `but this runtime supports ${describeProviders(providers)}`,
     );
   }
   if (
@@ -86,27 +106,35 @@ function assertTarget(
  */
 export async function resolveAiExecutionPlan(
   featureKey: AiFeatureKey,
-  provider: AiProvider,
+  provider: AiRuntimeProviders,
   opts: { requirePricing?: boolean } = {},
 ): Promise<AiExecutionPlan> {
   const definition = getAiFeatureDefinition(featureKey);
-  if (definition.runtimeProvider !== provider) {
+  const callerProviders = providerList(provider);
+  // The intersection of "what this feature can run on" and "what this caller
+  // can drive". Both halves are required: a caller must not execute a model the
+  // registry says the feature cannot use, and the registry must not hand a
+  // caller a provider whose API that caller does not speak.
+  const usable = callerProviders.filter((candidate) =>
+    definition.runtimeProviders.includes(candidate),
+  );
+  if (usable.length === 0) {
     throw new AiFeatureModelError(
-      `AI feature "${featureKey}" is implemented by ${definition.runtimeProvider}, ` +
-      `but was invoked through the ${provider} runtime`,
+      `AI feature "${featureKey}" runs on ${definition.runtimeProviders.join(' or ')}, ` +
+      `but was invoked through a runtime that supports ${callerProviders.join(' or ')}`,
     );
   }
   const config = await resolveAiFeatureConfig(featureKey);
   if (!config.enabled) throw new AiFeatureDisabledError(featureKey);
 
   const requirePricing = opts.requirePricing === true;
-  assertTarget(featureKey, config.primary, provider, requirePricing);
+  assertTarget(featureKey, config.primary, usable, requirePricing);
 
   const fallback = config.fallback &&
     !(config.fallback.provider === config.primary.provider && config.fallback.modelId === config.primary.modelId)
     ? config.fallback
     : null;
-  if (fallback) assertTarget(featureKey, fallback, provider, requirePricing);
+  if (fallback) assertTarget(featureKey, fallback, usable, requirePricing);
 
   return { config, primary: config.primary, fallback };
 }
@@ -213,7 +241,7 @@ export function createAiAttemptContext(
  */
 export async function executeAiFeature<T>(
   featureKey: AiFeatureKey,
-  provider: AiProvider,
+  provider: AiRuntimeProviders,
   invoke: (model: ResolvedModel, context: AiAttemptContext) => Promise<T>,
   opts: { requirePricing?: boolean } & AiExecutionOptions = {},
 ): Promise<AiExecutionResult<T>> {
@@ -324,7 +352,7 @@ export function estimateAiCostUsd(
  */
 export async function estimateAiReservationUsd(
   featureKey: AiFeatureKey,
-  provider: AiProvider,
+  provider: AiRuntimeProviders,
   baseline: { usd: number; inputUsdPerMillionTokens: number; outputUsdPerMillionTokens: number },
 ): Promise<number> {
   const plan = await resolveAiExecutionPlan(featureKey, provider, { requirePricing: true });

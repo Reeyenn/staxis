@@ -10,7 +10,11 @@
 // Streaming streamAgent() is what the /api/agent/command endpoint uses to
 // pipe Claude's response token-by-token to the client via SSE.
 
-import Anthropic from '@anthropic-ai/sdk';
+// Type-only: since the provider seam moved to ./loop-core and the client
+// factory to @/lib/ai/messages-client, this module no longer constructs an
+// Anthropic client — it only speaks the request/response SHAPES, which both
+// providers' clients accept.
+import type Anthropic from '@anthropic-ai/sdk';
 import {
   executeTool,
   toAnthropicTools,
@@ -38,10 +42,7 @@ import {
   type NumberViolation,
 } from '@/lib/agent/number-guard';
 import { env } from '@/lib/env';
-import {
-  ANTHROPIC_REQUEST_TIMEOUT_MS,
-  ANTHROPIC_MAX_RETRIES,
-} from '@/lib/external-service-config';
+import { getMessagesClient, MESSAGES_RUNTIME_PROVIDERS } from '@/lib/ai/messages-client';
 import type { AiFeatureKey, AiModelRef } from '@/lib/ai/types';
 import { ANTHROPIC_TIER_PRICING } from '@/lib/ai/feature-registry';
 import {
@@ -78,6 +79,7 @@ import {
   tooManyToolCallsRefusal,
   wrapToolResultForModel,
   type AgentToolCall,
+  type MessagesClient,
   type ModelTier,
   type UsageReport,
 } from './loop-core';
@@ -97,8 +99,10 @@ export {
   MAX_TOOLS_PER_ITERATION,
 } from './loop-core';
 export type {
+  AgentMessageStream,
   AgentToolCall,
   AnthropicErrorClass,
+  MessagesClient,
   ModelTier,
   UsageReport,
 } from './loop-core';
@@ -138,17 +142,17 @@ export const MODELS: Record<ModelTier, string> = { ...EFFECTIVE_LEGACY_MODELS };
 // don't. Add or correct the rate in feature-registry.ts instead.
 // Guard: src/lib/__tests__/ai-model-pricing-single-source.test.ts.
 
-// Per-request timeout. Tool loops can fan out — if Claude calls 5 tools
-// each with their own DB round-trips, total wall time matters. Set to 50s
-// so the SDK fails BEFORE Vercel's maxDuration=60s kills the function —
-// gives the route's finally block time to release the cost reservation
-// and synthesize tool_result rows for any dangling tool_use. Codex review
-// fix B5, 2026-05-13.
-// 2026-05-17: value lifted to src/lib/external-service-config.ts so every
-// Anthropic call site shares the same ceiling. See that file's header for
-// the budget math; the comment above stays here because this is the
-// load-bearing call site (every chat turn).
-const REQUEST_TIMEOUT_MS = ANTHROPIC_REQUEST_TIMEOUT_MS;
+// Per-request timeout. Tool loops can fan out — if the model calls 5 tools
+// each with their own DB round-trips, total wall time matters. It is 50s so the
+// request fails BEFORE Vercel's maxDuration=60s kills the function, giving the
+// route's finally block time to release the cost reservation and synthesize
+// tool_result rows for any dangling tool_use. Codex review fix B5, 2026-05-13.
+//
+// 2026-05-17: the value lives in src/lib/external-service-config.ts so every
+// call site shares one ceiling. 2026-07-26: applying it moved to
+// getMessagesClient (@/lib/ai/messages-client), which defaults to exactly this
+// constant — so both providers' clients inherit the same budget and neither can
+// drift past the route ceiling on its own.
 
 /** Route maxDuration is 60s. Start this absolute budget at route entry so
  * provider attempts, fallback, and pre-stream work share one ceiling. */
@@ -165,78 +169,16 @@ export const AGENT_KNOWLEDGE_SEARCH_START_RESERVE_MS = 31_000;
 
 // ─── Client ────────────────────────────────────────────────────────────────
 
-/**
- * The exact slice of the Anthropic SDK this module calls — nothing more.
- *
- * Two call sites in the whole runtime touch the SDK: `messages.create`
- * (runAgent, sync path) and `messages.stream` (streamAgent, SSE path). Naming
- * that slice as an interface is what lets an eval hand in a scripted model and
- * still run the REAL loop — real prompt assembly, real tool dispatch, real
- * approval gate — with no API spend and no network. See
- * `src/lib/agent/evals/hermetic-runner.ts`.
- *
- * Deliberately NOT a general provider abstraction: it is a test seam. A real
- * `Anthropic` instance satisfies it structurally, so production is unchanged.
- */
-export interface AgentMessageStream
-  extends AsyncIterable<Anthropic.Messages.RawMessageStreamEvent> {
-  finalMessage(): Promise<Anthropic.Messages.Message>;
-}
-
-export interface MessagesClient {
-  messages: {
-    create(
-      body: Anthropic.Messages.MessageCreateParamsNonStreaming,
-      options?: { signal?: AbortSignal },
-    ): Promise<Anthropic.Messages.Message>;
-    stream(
-      body: Anthropic.Messages.MessageStreamParams,
-      options?: { signal?: AbortSignal },
-    ): AgentMessageStream;
-  };
-}
-
-let cachedClient: Anthropic | null = null;
-
-function getClient(): Anthropic {
-  if (cachedClient) return cachedClient;
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) {
-    // Round 13 (2026-05-13): captureException so a silent prod outage
-    // can't sit undetected. The 2026-05-13 incident had this code path
-    // throwing a polite user-facing error for an unknown duration with
-    // ZERO operator notification — Reeyen only discovered it by typing
-    // "hi" into the chat himself. Now: the FIRST user to hit this fires
-    // a Sentry event → existing SMS pipeline → phone buzz within ~1
-    // minute. The hourly doctor-check cron is the proactive safety net;
-    // this is the reactive one. See INV-22 in INVARIANTS.md.
-    const err = new Error(
-      'ANTHROPIC_API_KEY is not set. The agent layer requires it. ' +
-      'Set in Vercel → Project Settings → Environment Variables and redeploy.',
-    );
-    captureException(err, {
-      subsystem: 'agent-llm',
-      failure_mode: 'missing_env_var',
-      env_var: 'ANTHROPIC_API_KEY',
-    });
-    throw err;
-  }
-  // maxRetries: SDK-level retry on transient 5xx / 408 / 429 / connection
-  // errors. The Anthropic SDK applies `timeout` PER-ATTEMPT, so total
-  // budget = (maxRetries + 1) × REQUEST_TIMEOUT_MS in the pathological
-  // case (every attempt fully times out). With REQUEST_TIMEOUT_MS=50s
-  // and maxRetries=1, the worst-case attempt budget is ~100s — still
-  // larger than Vercel's 60s function ceiling, but the function will be
-  // killed naturally and the sweeper cron (R2) recovers any stranded
-  // reservation. maxRetries=2 would let us burn 150s, well over.
-  // Codex review fix G5 + round-5 fix MD1, 2026-05-13.
-  cachedClient = new Anthropic({
-    apiKey: key,
-    timeout: REQUEST_TIMEOUT_MS,
-    maxRetries: ANTHROPIC_MAX_RETRIES,
-  });
-  return cachedClient;
-}
+// The MessagesClient / AgentMessageStream seam and the per-provider client
+// factory now live in ./loop-core and @/lib/ai/messages-client respectively, so
+// the comms assistant and the findings servers share one definition and one
+// key-handling posture. Both are re-exported above/below for the existing
+// importers of '@/lib/agent/llm'.
+//
+// `getMessagesClient` is called with the provider of the model actually
+// SELECTED for an attempt, not once per turn: a configured fallback may live
+// with a different provider than the primary, and a turn that fails over from
+// Claude to GPT (or back) has to switch clients mid-loop.
 
 // ─── Model selection ──────────────────────────────────────────────────────
 // Pinned to Sonnet 4.6 — the workhorse model Reeyen approved ("same brain
@@ -295,14 +237,18 @@ async function resolveAgentExecutionPlan(
     return applyLegacyModelOverrideToPlan(opts.executionPlan, tier);
   }
   if (!opts.featureKey) return null;
-  const resolved = await resolveAiExecutionPlan(opts.featureKey, 'anthropic', { requirePricing: true });
+  const resolved = await resolveAiExecutionPlan(
+    opts.featureKey,
+    MESSAGES_RUNTIME_PROVIDERS,
+    { requirePricing: true },
+  );
   return applyLegacyModelOverrideToPlan(resolved, tier);
 }
 
 export async function resolveAskStaxisExecutionPlan(): Promise<AiExecutionPlan> {
   const resolved = await resolveAiExecutionPlan(
     'agent.ask_staxis',
-    'anthropic',
+    MESSAGES_RUNTIME_PROVIDERS,
     { requirePricing: true },
   );
   return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
@@ -316,7 +262,7 @@ export async function resolveAskStaxisExecutionPlan(): Promise<AiExecutionPlan> 
 export async function resolvePortfolioChatExecutionPlan(): Promise<AiExecutionPlan> {
   const resolved = await resolveAiExecutionPlan(
     'agent.portfolio_chat',
-    'anthropic',
+    MESSAGES_RUNTIME_PROVIDERS,
     { requirePricing: true },
   );
   return applyLegacyModelOverrideToPlan(resolved, 'sonnet');
@@ -482,10 +428,15 @@ export interface RunAgentOpts {
    */
   voiceApprovalMode?: boolean;
   /**
-   * Override the Anthropic client for THIS call. Production never passes it;
-   * the hermetic eval harness passes a scripted fake so the full loop runs
-   * with zero API spend and zero network. When absent, `getClient()` is used
-   * exactly as before (and still throws when ANTHROPIC_API_KEY is missing).
+   * Override the model client for THIS call. Production never passes it; the
+   * hermetic eval harness passes a scripted fake so the full loop runs with
+   * zero API spend and zero network. When absent, the client is chosen from
+   * the provider of the model each attempt actually selected — see
+   * `getMessagesClient` — and still throws when that provider's key is missing.
+   *
+   * An override wins for EVERY attempt regardless of provider, which is what
+   * keeps a hermetic eval hermetic even when the feature under test is
+   * configured to a model the test never intends to reach.
    */
   modelClient?: MessagesClient;
 }
@@ -754,7 +705,8 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   // L4 part B (2026-05-13): caller can override the default tier. The
   // summarizer cron passes 'haiku' for cheaper text-only work.
   const model = opts.model ?? pickModel();
-  const client: MessagesClient = opts.modelClient ?? getClient();
+  const clientFor = (selected: AiModelRef): MessagesClient =>
+    opts.modelClient ?? getMessagesClient(selected.provider);
   const tools = toAnthropicTools(opts.tools);
   const configured = await resolveAgentExecutionPlan(opts, model);
   // resolveAgentExecutionPlan applies the legacy override only to code defaults;
@@ -776,7 +728,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
     for (let iter = 0; iter < MAX_TOOL_ITERATIONS; iter++) {
     assertAgentCanContinue(deadlineAt, opts.abortSignal);
     const request = async (selected: AiModelRef, signal: AbortSignal | undefined) => {
-      const response = await client.messages.create({
+      const response = await clientFor(selected).messages.create({
         model: selected.modelId,
         max_tokens: MAX_OUTPUT_TOKENS,
         system: buildSystemBlocks(opts.systemPrompt),
@@ -1241,7 +1193,8 @@ export type AgentEvent =
  */
 export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEvent> {
   const model = opts.model ?? pickModel();
-  const client: MessagesClient = opts.modelClient ?? getClient();
+  const clientFor = (selected: AiModelRef): MessagesClient =>
+    opts.modelClient ?? getMessagesClient(selected.provider);
   const tools = toAnthropicTools(opts.tools);
   let configured;
   try {
@@ -1329,7 +1282,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
               abortSignal: opts.abortSignal,
             },
           );
-          const stream = client.messages.stream({
+          const stream = clientFor(activeModel).messages.stream({
             model: activeModel.modelId,
             max_tokens: MAX_OUTPUT_TOKENS,
             system: requestSystem,

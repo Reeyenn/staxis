@@ -59,6 +59,15 @@ const KNOWN_TOOL_LOOPS = new Set([
  */
 const RAW_TOOL_RESULT_ALLOWED = new Set([
   'src/lib/agent/llm.ts',
+  /**
+   * src/lib/ai/openai-messages.ts — the OpenAI wire adapter. It never CREATES
+   * tool-result content; it reads `tool_result` blocks that llm.ts already
+   * produced through wrapToolResultForModel and re-shapes them into OpenAI's
+   * `role: "tool"` messages. Wrapping again here would escape the escapes and
+   * corrupt the payload. Rule 2's coverage is unaffected: whatever call site
+   * BUILDS the block is still scanned, and still has to wrap.
+   */
+  'src/lib/ai/openai-messages.ts',
 ]);
 
 const SDK_CALL_RX = /\bmessages\s*\.\s*(?:create|stream)\s*\(/;

@@ -12,13 +12,16 @@
 // UI degrades to the source language rather than erroring. NO SMS.
 // ═══════════════════════════════════════════════════════════════════════════
 
-import Anthropic from '@anthropic-ai/sdk';
 import { createHash } from 'crypto';
-import { env } from '@/lib/env';
 import { log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { CommsLang } from './types';
 import { executeAiFeature } from '@/lib/ai/runtime';
+import {
+  getMessagesClientIfConfigured,
+  MESSAGES_RUNTIME_PROVIDERS,
+} from '@/lib/ai/messages-client';
+import type { AiModelRef } from '@/lib/ai/types';
 import {
   captureTokenUsage,
   mergeAiUsage,
@@ -38,13 +41,18 @@ function sha256(s: string): string {
   return createHash('sha256').update(s).digest('hex');
 }
 
-function client(): Anthropic | null {
-  const key = env.ANTHROPIC_API_KEY;
-  if (!key) {
-    log.warn('[comms/translate] ANTHROPIC_API_KEY missing; returning source text');
-    return null;
+/** The client for whichever provider serves this attempt, or null when that
+ * provider has no key — in which case this file returns the source text
+ * untranslated rather than failing the message. */
+function client(model: AiModelRef) {
+  const found = getMessagesClientIfConfigured(model.provider, {
+    timeoutMs: 15_000,
+    maxRetries: 1,
+  });
+  if (!found) {
+    log.warn(`[comms/translate] ${model.provider} key missing; returning source text`);
   }
-  return new Anthropic({ apiKey: key, timeout: 15_000, maxRetries: 1 });
+  return found;
 }
 
 const SYSTEM = (target: string) =>
@@ -61,13 +69,13 @@ async function callOne(
   target: CommsLang,
   opts: AiCallOptions,
 ): Promise<string | null> {
-  const c = client();
-  if (!c) return null;
   try {
     const { value } = await executeAiFeature(
       'communications.message_translation',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
+        const c = client(model);
+        if (!c) throw new Error(`${model.provider} is not configured`);
         const resp = await c.messages.create({
           model: model.modelId,
           max_tokens: 1500,
@@ -106,8 +114,6 @@ async function callBatch(
   target: CommsLang,
   opts: AiCallOptions,
 ): Promise<(string | null)[]> {
-  const c = client();
-  if (!c) return texts.map(() => null);
   // Numbered-list protocol: robust to commas/quotes in the strings.
   const numbered = texts.map((t, i) => `${i + 1}. ${t.replace(/\n/g, ' ')}`).join('\n');
   const sys =
@@ -117,8 +123,10 @@ async function callBatch(
   try {
     const { value } = await executeAiFeature(
       'communications.ui_translation',
-      'anthropic',
+      MESSAGES_RUNTIME_PROVIDERS,
       async (model, context) => {
+        const c = client(model);
+        if (!c) throw new Error(`${model.provider} is not configured`);
         const resp = await c.messages.create({
           model: model.modelId,
           max_tokens: 4000,
