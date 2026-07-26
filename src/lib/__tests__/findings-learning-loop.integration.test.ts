@@ -188,6 +188,48 @@ async function seedEngagement(propertyId: string, shown: number, acted: number):
   );
 }
 
+/**
+ * N DISTINCT problems this hotel said "not doing this" to, the oldest
+ * `spreadDays` ago and the newest today, evenly spaced.
+ *
+ * Written as real muted rows rather than by poking a counter, because that is
+ * the whole claim under test: the refusals demotion reads are the findings'
+ * own `status` + `status_changed_at`, not a fourth column somebody has to
+ * remember to increment. Each carries `acted_count = 1` — the tap that muted
+ * it — exactly as the route leaves them.
+ */
+async function seedRefusals(propertyId: string, count: number, spreadDays: number): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    const daysAgo = count < 2 ? 0 : (spreadDays * (count - 1 - i)) / (count - 1);
+    await pg.query(
+      `insert into public.findings
+         (property_id, detector_id, dedupe_key, summary, severity, disposition, status,
+          receipt_query_id, evidence, magnitude, acted_count, silenced_at_magnitude,
+          status_changed_at)
+       values ($1,'probe_demote',$2,'a problem they refused','attention','propose','muted',
+               'probe_receipt',
+               '{"queryId":"probe_receipt","params":{},"values":{},"basis":"basis"}'::jsonb,
+               4, 1, 4, now() - ($3 || ' days')::interval)`,
+      [propertyId, `probe_demote:refused_${i}`, String(daysAgo)],
+    );
+  }
+}
+
+/** One problem they took UP — "Seen", the positive verdict. */
+async function seedTakenUp(propertyId: string, dedupeKey: string): Promise<void> {
+  await pg.query(
+    `insert into public.findings
+       (property_id, detector_id, dedupe_key, summary, severity, disposition, status,
+        receipt_query_id, evidence, magnitude, acted_count, silenced_at_magnitude,
+        status_changed_at)
+     values ($1,'probe_demote',$2,'a problem they took up','attention','propose','known_problem',
+             'probe_receipt',
+             '{"queryId":"probe_receipt","params":{},"values":{},"basis":"basis"}'::jsonb,
+             4, 1, 4, now())`,
+    [propertyId, dedupeKey],
+  );
+}
+
 /** Age the state row's baseline so the "three weeks" rule can be satisfied. */
 async function ageBaseline(propertyId: string, days: number): Promise<void> {
   await pg.query(
@@ -320,15 +362,17 @@ describe('the findings learning loop, against a real database', () => {
     });
 
     test('every verdict counts as engagement — including "not doing this"', async () => {
-      // REVERSED ON PURPOSE. `muted` used to be excluded here, on the theory
-      // that counting a rejection as approval would keep a detector loud that
-      // the manager plainly dislikes. That had the failure mode backwards:
-      // these counters answer "does anybody at this hotel READ this check", and
-      // a manager who read the card and decided against it read the card.
-      // Excluding mute made a deliberate decision indistinguishable from a
-      // scroll-past, which is the single thing this arithmetic exists to tell
-      // apart. Silence is now the only ambiguous signal, which is what silence
-      // means.
+      // The counter is deliberately kind-BLIND. It answers one question — did
+      // anybody read this, or was it scrolled past — and a manager who refused
+      // the card read the card. Excluding mute here made a deliberate decision
+      // look identical to a scroll-past, which is the single thing this
+      // arithmetic exists to tell apart.
+      //
+      // Which KIND of engagement it was is a different question, and it is
+      // answered off the row's own `status` rather than by a second counter
+      // that could drift from it — see "a check this hotel keeps refusing gets
+      // quieter" below. The founder ruling changed the demotion math, not what
+      // gets written down here.
       const known = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:k' });
       const fixed = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:f' });
       const muted = await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:m' });
@@ -344,6 +388,12 @@ describe('the findings learning loop, against a real database', () => {
         1,
         'a manager who said "not doing this" was read as a manager who never looked',
       );
+
+      // And the refusal is legible as a refusal afterwards — status plus the
+      // moment it changed is the whole record demotion reads.
+      const refused = await counters(muted);
+      assert.equal(refused?.status, 'muted');
+      assert.equal((await counters(known))?.status, 'known_problem', '"Seen" is not a refusal');
     });
 
     test('another hotel\'s finding cannot be engaged with through this route', async () => {
@@ -523,6 +573,225 @@ describe('the findings learning loop, against a real database', () => {
       probeDrafts = [draft()];
       await runFindingsForProperty(PID_A, { ...ONLY_PROBE, skipDemotion: true });
       assert.equal(await state(PID_A), null, 'no state is opened, so nothing can be judged by accident');
+    });
+  });
+
+  // ── refusing is not caring ───────────────────────────────────────────────
+  //
+  // Founder ruling, 2026-07-26. Before it, ANY engagement vetoed demotion — and
+  // "Not doing this" is engagement — so a manager refusing this check's cards
+  // across twenty rooms was, by the arithmetic, its keenest reader. The loudest
+  // available "stop showing me this" was the surest way to keep it loud.
+  //
+  // These run against the real ledger rather than the pure policy, because the
+  // claim is specifically that the refusals are READ OFF the findings rows: no
+  // new column, no new writer, just `status = 'muted'` and the moment it
+  // changed. A migration would have had to be maintained by every future caller
+  // of recordFindingActed; this cannot fall out of step with itself.
+
+  describe('a check this hotel keeps refusing gets quieter', () => {
+    /** Open state, then push the baseline back far enough that the refusals
+     *  land inside the window — but NOT far enough for the three-week silence
+     *  rule, so any demotion has to have come from the refusals themselves. */
+    async function watchedFor(propertyId: string, days: number): Promise<void> {
+      await insertFinding({ propertyId, dedupeKey: 'probe_demote:room_214:hvac' });
+      probeDrafts = [draft()];
+      await runFindingsForProperty(propertyId, ONLY_PROBE);
+      await ageBaseline(propertyId, days);
+    }
+
+    test('twenty separate problems refused across two weeks: down a rung', async () => {
+      await watchedFor(PID_A, 20);
+      await seedRefusals(PID_A, 20, 14);
+
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      assert.equal(summary.demotions.length, 1, 'twenty refusals is a verdict about the check');
+      assert.equal(summary.demotions[0].from, 'propose');
+      assert.equal(summary.demotions[0].to, 'recommend');
+      assert.match(summary.demotions[0].reason, /not doing this/i);
+      assert.equal((await state(PID_A))?.steps_down, 1);
+
+      const row = await pg.query<{ disposition: string }>(
+        `select disposition from public.findings
+          where property_id = $1 and dedupe_key = 'probe_demote:room_214:hvac'`,
+        [PID_A],
+      );
+      assert.equal(row.rows[0]?.disposition, 'recommend', 'tonight\'s card is already quieter');
+    });
+
+    test('ONE refusal changes nothing — muting already silenced that problem', async () => {
+      await watchedFor(PID_A, 20);
+      await seedRefusals(PID_A, 1, 0);
+
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      assert.equal(summary.demotions.length, 0, 'one "no" is about one room, not about the check');
+      assert.equal((await state(PID_A))?.steps_down, 0);
+    });
+
+    test('four refusals spread over a fortnight is still not a verdict', async () => {
+      // Hard-coded four, not "one under the constant": how many refusals it
+      // takes before Staxis talks less is a product decision, and lowering it
+      // has to break a case that says a number out loud.
+      await watchedFor(PID_A, 20);
+      await seedRefusals(PID_A, 4, 14);
+
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      assert.equal(summary.demotions.length, 0);
+      assert.equal((await state(PID_A))?.steps_down, 0);
+    });
+
+    test('a queue cleared in one sitting is a mood, not a verdict', async () => {
+      await watchedFor(PID_A, 20);
+      await seedRefusals(PID_A, 20, 0); // all twenty today
+
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      assert.equal(summary.demotions.length, 0, 'one annoyed morning must not quieten a check');
+    });
+
+    test('one "Seen" among the refusals keeps it loud — positive wins', async () => {
+      await watchedFor(PID_A, 20);
+      await seedRefusals(PID_A, 20, 14);
+      await seedTakenUp(PID_A, 'probe_demote:took_this_one_up');
+
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      assert.equal(
+        summary.demotions.length,
+        0,
+        '"Seen" means "true, I know" — a check somebody confirms is a check that works',
+      );
+      assert.equal((await state(PID_A))?.steps_down, 0);
+    });
+
+    test('one hotel refusing a check does not quieten it at another', async () => {
+      await watchedFor(PID_A, 20);
+      await watchedFor(PID_B, 20);
+      await seedRefusals(PID_A, 20, 14);
+
+      probeDrafts = [draft()];
+      await runFindingsForProperty(PID_A, ONLY_PROBE);
+      probeDrafts = [draft()];
+      await runFindingsForProperty(PID_B, ONLY_PROBE);
+
+      assert.equal((await state(PID_A))?.steps_down, 1, 'hotel A refused it');
+      assert.equal((await state(PID_B))?.steps_down, 0, 'hotel B must be untouched');
+      assert.equal((await state(PID_B))?.dormant, false);
+    });
+
+    test('the refusals that bought a rung are spent, so a demotion cannot cascade', async () => {
+      await watchedFor(PID_A, 20);
+      await seedRefusals(PID_A, 20, 14);
+
+      probeDrafts = [draft()];
+      await runFindingsForProperty(PID_A, ONLY_PROBE);
+      assert.equal((await state(PID_A))?.steps_down, 1);
+
+      // The transition moved the baseline to that moment, and every one of those
+      // refusals happened before it. They are spent: nights two and three find
+      // the same twenty muted rows and must read them as history, not evidence.
+      for (const _ of [1, 2]) {
+        probeDrafts = [draft()];
+        const again = await runFindingsForProperty(PID_A, ONLY_PROBE);
+        assert.equal(again.demotions.length, 0, 'one stretch of refusing buys exactly one rung');
+      }
+      assert.equal((await state(PID_A))?.steps_down, 1);
+    });
+
+    test('the transition says it was refusals, not silence', async () => {
+      await watchedFor(PID_A, 20);
+      await seedRefusals(PID_A, 20, 14);
+      probeDrafts = [draft()];
+      await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      const log = (await state(PID_A))?.transitions as Array<Record<string, unknown>>;
+      assert.equal(log.length, 1);
+      assert.equal(log[0].declined, 20, 'the count is on the record, not just in a sentence');
+      assert.match(String(log[0].reason), /not doing this/i);
+    });
+  });
+
+  // ── and back up again ────────────────────────────────────────────────────
+
+  describe('a check somebody takes up again climbs back a rung on its own', () => {
+    /** Ignore it into rest: three stretches, each its own ten shows over three weeks. */
+    async function restIt(propertyId: string): Promise<void> {
+      await insertFinding({ propertyId, dedupeKey: 'probe_demote:room_214:hvac' });
+      probeDrafts = [draft()];
+      await runFindingsForProperty(propertyId, ONLY_PROBE);
+      for (let rung = 1; rung <= 3; rung += 1) {
+        await seedEngagement(propertyId, 10 * rung, 0);
+        await ageBaseline(propertyId, 21);
+        probeDrafts = [draft()];
+        await runFindingsForProperty(propertyId, ONLY_PROBE);
+      }
+    }
+
+    test('a resting check wakes when somebody presses a button on its last card', async () => {
+      await restIt(PID_A);
+      assert.equal((await state(PID_A))?.dormant, true);
+
+      // A resting detector still has its last cards on screen — nothing expires
+      // findings for a check that no longer runs — so this is a real tap.
+      await pg.query(
+        `update public.findings set acted_count = acted_count + 1
+          where property_id = $1 and detector_id = 'probe_demote'`,
+        [PID_A],
+      );
+
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      const s = await state(PID_A);
+      assert.equal(s?.dormant, false, 'somebody took it up; it is not resting any more');
+      assert.equal(s?.steps_down, 2, 'one rung back, not all the way — the hand re-arm does that');
+      assert.equal(summary.rearms.length, 1);
+      assert.equal(summary.demotions.length, 0, 'and it is NOT reported as a demotion');
+      assert.equal(summary.rearms[0].to, 'fyi');
+      assert.equal(summary.detectorsDormant, 0);
+      assert.equal(summary.detectorsChecked, 1, 'it runs again the same night');
+    });
+
+    test('refusals do not wake it — that is the whole point', async () => {
+      await restIt(PID_A);
+      // Twenty more, all since it went to rest. Every one of them moves
+      // `acted_count`, which is exactly why the arithmetic has to know what kind
+      // of tap it was: read as engagement, these would put the check back on the
+      // screen the manager has been refusing.
+      await seedRefusals(PID_A, 20, 0);
+
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      assert.equal(summary.rearms.length, 0);
+      assert.equal((await state(PID_A))?.dormant, true, 'twenty more "no"s is not a request for it');
+    });
+
+    test('a check still at full volume is never "re-armed", or the clock would never run', async () => {
+      await insertFinding({ propertyId: PID_A, dedupeKey: 'probe_demote:room_214:hvac' });
+      probeDrafts = [draft()];
+      await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      await seedEngagement(PID_A, 5, 3);
+      probeDrafts = [draft()];
+      const summary = await runFindingsForProperty(PID_A, ONLY_PROBE);
+
+      assert.equal(summary.rearms.length, 0, 'nowhere to climb from the top rung');
+      const s = await state(PID_A);
+      assert.equal(s?.steps_down, 0);
+      assert.equal(
+        (s?.transitions as unknown[]).length,
+        0,
+        'and the baseline must not be reset on every receipt, or nothing could ever demote',
+      );
     });
   });
 

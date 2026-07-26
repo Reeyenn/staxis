@@ -735,15 +735,26 @@ export async function expireStaleFindings(
 //           looked once, and counting eleven would let one anxious morning rest
 //           a detector for good. `last_shown_on` (0362) is that guard.
 //   acted   ANY verdict — handled it, seen, not doing this — or the receipt
-//           opened. All four are a manager engaging with the card, and one of
-//           them is enough to keep a detector at full volume. "Not doing this"
-//           counts on purpose: a manager who read the card and decided against
-//           it read the card, and the only thing these counters exist to detect
-//           is a check nobody reads.
+//           opened. All four are a manager engaging with the card rather than
+//           scrolling past it, and this counter's job is only to tell those two
+//           apart. It does NOT say the engagement was approving.
 //   ignored a show on a card nothing has ever been done about. It is kept as
 //           its own column rather than derived, so "shown a lot and read" and
 //           "shown a lot and never once opened" are different rows instead of a
 //           subtraction every reader has to remember to do.
+//
+// WHICH KIND OF ENGAGEMENT IS NOT STORED HERE — IT IS DERIVED
+// Demotion needs more than "did anybody read this": it needs to know whether
+// they took it UP or turned it DOWN, because a manager refusing this check's
+// cards across twenty rooms is asking for less of it, not more (founder ruling,
+// 2026-07-26 — the reasoning is in demotion.ts). A "not doing this" is already
+// written down exactly once, in the place that cannot drift from the truth: the
+// row goes to `status = 'muted'` with `status_changed_at` stamped, keeps the
+// one-active-row-per-problem slot forever, and no code path moves it back out.
+// So `loadDetectorEngagement` reads the refusals off the rows themselves rather
+// than keeping a fourth counter here that would have to be maintained by every
+// future caller of `recordFindingActed` and would be wrong the first time one
+// forgot.
 
 /** The hotel's own calendar day. "Already shown today?" is a calendar question. */
 async function propertyToday(propertyId: string, now: Date): Promise<string> {
@@ -815,6 +826,11 @@ export async function recordFindingsShown(
  * Every call counts, including a second tap on the same card: engagement is
  * evidence that a manager is reading this detector's output, and there is no
  * reason to cap how much of that evidence we will accept.
+ *
+ * Deliberately kind-blind. Whether the tap was approving or refusing is not a
+ * question this counter can answer honestly — the caller knows, but so does the
+ * row's own status a line later, and one fact in two places is one fact that
+ * can disagree with itself. demotion.ts reads the status.
  */
 export async function recordFindingActed(propertyId: string, findingId: string): Promise<boolean> {
   try {

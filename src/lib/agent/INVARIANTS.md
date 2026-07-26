@@ -1036,11 +1036,12 @@ an invariant rather than a comment.
   `(property_id, detector_id)` with a unique index (0362), read and written
   exclusively through `scopedDb(propertyId)`. There is no row that could hold a
   fleet-wide verdict. The re-arm path refuses to run without a named hotel.
-- **NOT ENFORCED at the DB level:** the THRESHOLDS (ten shows, zero engagement,
-  three weeks) and the one-rung-per-stretch rule are code. They fail SAFE — a
-  broken state read leaves every detector at full volume — and `baseline_shown` /
+- **NOT ENFORCED at the DB level:** the THRESHOLDS (ten shows, zero positive
+  engagement, three weeks; or five distinct problems refused across seven days)
+  and the one-rung-per-stretch rule are code. They fail SAFE — a broken state
+  read leaves every detector at full volume — and `baseline_shown` /
   `baseline_acted` / `baseline_at` move forward on every transition so one
-  stretch of being ignored buys exactly one rung, never three.
+  stretch buys exactly one rung, never three.
 - **Assumed by:** the run summary's "N checks resting", which is counted apart
   from `detectorsSkipped` because starved and resting are different problems.
 - **Tested by:** `findings-learning-loop.integration.test.ts` — "one hotel
@@ -1051,7 +1052,58 @@ an invariant rather than a comment.
   not immediately re-rest it"; the policy itself in `findings-demotion.test.ts`.
   Verified by dropping the engagement veto, by not moving the baseline, and by
   counting a resting check as skipped — each turns a case red.
-- **History:** Findings-engine Phase 3, 2026-07-26.
+- **History:** Findings-engine Phase 3, 2026-07-26. Extended 2026-07-26 by
+  INV-FIND-7b.
+
+- **INV-FIND-7b — declining is not the same as caring.** A manager who keeps
+  saying "Not doing this" to one detector's cards is asking for LESS of that
+  check, and the volume math must read it that way. Engagement is split by kind:
+  POSITIVE (Handled it, Seen, receipt expanded, a one-tap fix approved, an
+  upkeep job logged) keeps a detector at full volume and vetoes any demotion;
+  NEGATIVE (muted / "Not doing this") counts toward quieting. Five DISTINCT
+  problems refused, spread over at least seven days, with nothing positive in
+  the same window, steps the same ladder one rung. One refusal quietens nothing
+  — the per-finding mute already silenced that problem, and that behaviour is
+  untouched. Per hotel and per detector, exactly as INV-FIND-7.
+- **Enforced by:** `evaluateDemotion` in `src/lib/findings/demotion.ts`, over an
+  engagement window built by `engagementSince`. The refusals are DERIVED from
+  the findings rows themselves — `status = 'muted'` plus `status_changed_at` at
+  or after `baseline_at`, counted distinct by `dedupe_key` — not from a counter.
+  A mute is terminal in the ledger (silencer.ts suppresses muted
+  unconditionally; only `known_problem` can escalate), so the rows cannot drift
+  from the truth the way a fourth column maintained by every future caller of
+  `recordFindingActed` would. **No migration:** nothing new is stored.
+- **Fails safe in both directions:** an unreadable `baseline_at` yields an empty
+  window (no refusals, no span) rather than an unbounded one, and positive
+  engagement can never go negative. A detector that has been quietened climbs
+  back one rung on a single positive engagement — resting detectors included,
+  since their last cards are still on screen — which is deliberately far cheaper
+  than falling, because too loud costs a scroll and too quiet costs the leak
+  nobody was told about.
+- **Assumed by:** the cron response, which reports `rearms` apart from
+  `demotions` so a check getting louder is never counted as one getting quieter.
+- **Tested by:** `findings-demotion.test.ts` — "twenty separate problems refused
+  over a week: down a rung", "ONE refusal quietens nothing", "a queue cleared in
+  one sitting is a mood, not a verdict", "the same problem refused twenty times
+  is ONE refusal", "one 'Handled it' beats twenty refusals", "opening the
+  numbers and THEN refusing is a refusal, not a reading", "an unreadable
+  baseline demotes nothing rather than everything"; and against a real database
+  in `findings-learning-loop.integration.test.ts` — "twenty separate problems
+  refused across two weeks: down a rung", "one 'Seen' among the refusals keeps
+  it loud", "one hotel refusing a check does not quieten it at another", "the
+  refusals that bought a rung are spent", "a resting check wakes when somebody
+  presses a button on its last card", "refusals do not wake it". Verified by
+  reverting the veto to any-engagement, by dropping the distinct-key dedupe, by
+  removing the decline span floor, by counting refusals as positive, and by
+  removing the baseline filter on refusals — each turns cases red.
+- **NOT this invariant:** the VP climb rules (`src/lib/company/vp-queue.ts`).
+  "Seen" never hides a problem from the boss and a muted problem that outgrows
+  its silence still climbs; that is a different system and demotion does not
+  touch it.
+- **History:** Founder ruling, 2026-07-26 — the red team found that under
+  INV-FIND-7 alone ANY `acted > 0` vetoed demotion, so refusing a detector's
+  cards across twenty rooms guaranteed it stayed at full volume forever. The
+  loudest available "stop showing me this" kept it loudest.
 
 - **INV-FIND-8 — an `ask` finding is asked through the drip pipeline, and only
   there.** A finding the judge sorted as `ask` never renders as a card. It

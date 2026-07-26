@@ -120,6 +120,10 @@ export async function GET(req: NextRequest) {
         // apart from skipped, which means the data was not there.
         detectorsDormant: acc.detectorsDormant + s.detectorsDormant,
         demotions: acc.demotions + s.demotions.length,
+        // Checks that got LOUDER tonight, because somebody took them up again.
+        // Counted apart from demotions — one number holding both directions
+        // would report a quiet night and a busy one identically.
+        rearms: acc.rearms + s.rearms.length,
         findingsOpened: acc.findingsOpened + s.findingsOpened,
         findingsUpdated: acc.findingsUpdated + s.findingsUpdated,
         findingsSuppressed: acc.findingsSuppressed + s.findingsSuppressed,
@@ -134,6 +138,7 @@ export async function GET(req: NextRequest) {
         detectorsFailed: 0,
         detectorsDormant: 0,
         demotions: 0,
+        rearms: 0,
         findingsOpened: 0,
         findingsUpdated: 0,
         findingsSuppressed: 0,

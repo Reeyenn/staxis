@@ -27,16 +27,50 @@ import {
   DEMOTION_THRESHOLDS,
   DORMANT,
   demoteDisposition,
+  engagementSince,
   evaluateDemotion,
+  evaluateRearm,
   isDormantAt,
+  positiveEngagement,
+  type DetectorEngagement,
+  type DetectorLedger,
+  type DetectorState,
 } from '@/lib/findings/demotion';
 import { findingQuestionTopic, toQuestionCandidate } from '@/lib/findings/ask-drip';
 import { selectQuestion, type AskRecord, type QuestionCandidate } from '@/lib/agent/drip-questions';
 
 const T = DEMOTION_THRESHOLDS;
 
-function engagement(over: Partial<{ shown: number; acted: number; spanDays: number }> = {}) {
-  return { shown: T.minShown, acted: 0, spanDays: T.minSpanDays, ...over };
+/** The silence case: shown enough, ignored long enough, nothing refused. */
+function engagement(over: Partial<DetectorEngagement> = {}): DetectorEngagement {
+  return {
+    shown: T.minShown,
+    acted: 0,
+    declineActed: 0,
+    declinedProblems: 0,
+    declineSpanDays: 0,
+    spanDays: T.minSpanDays,
+    ...over,
+  };
+}
+
+/**
+ * N distinct problems refused, spread over `spanDays`, and nothing else. Each
+ * refusal is one tap, so `acted` and `declineActed` move together and the
+ * positive half is zero — which is what "they only ever said no" looks like in
+ * these counters.
+ */
+function refusals(count: number, spanDays = T.minDeclineSpanDays): DetectorEngagement {
+  return engagement({
+    shown: count,
+    acted: count,
+    declineActed: count,
+    declinedProblems: count,
+    declineSpanDays: count < 2 ? 0 : spanDays,
+    // Short of the silence rule on purpose: any demotion these cases produce
+    // has to have come from the refusals, not from being ignored as well.
+    spanDays: Math.min(spanDays, T.minSpanDays - 1),
+  });
 }
 
 // ─── the ladder ─────────────────────────────────────────────────────────────
@@ -78,7 +112,7 @@ describe('has this check earned its rest?', () => {
   test('exactly at the threshold, it demotes', () => {
     const verdict = evaluateDemotion(engagement());
     assert.equal(verdict.demote, true);
-    assert.match(verdict.reason, /nothing ever acted on/);
+    assert.match(verdict.reason, /nothing ever taken up/);
   });
 
   test('one show short, it does not', () => {
@@ -93,7 +127,7 @@ describe('has this check earned its rest?', () => {
     assert.match(verdict.reason, /days/);
   });
 
-  test('a single engagement vetoes any amount of ignoring', () => {
+  test('a single POSITIVE engagement vetoes any amount of ignoring', () => {
     const verdict = evaluateDemotion(engagement({ shown: 500, spanDays: 365, acted: 1 }));
     assert.equal(verdict.demote, false);
     assert.match(verdict.reason, /still useful here/);
@@ -102,7 +136,7 @@ describe('has this check earned its rest?', () => {
   test('the veto is checked FIRST, so the reason a check survived is the true one', () => {
     // A check shown twice and acted on once is kept for the right reason —
     // somebody read it — not for the incidental one that it was shown rarely.
-    const verdict = evaluateDemotion({ shown: 2, acted: 1, spanDays: 2 });
+    const verdict = evaluateDemotion(engagement({ shown: 2, acted: 1, spanDays: 2 }));
     assert.equal(verdict.demote, false);
     assert.match(verdict.reason, /still useful/);
   });
@@ -111,8 +145,10 @@ describe('has this check earned its rest?', () => {
     // Pinned deliberately: loosening these is a product decision about how
     // easily Staxis stops watching something, not a tuning detail.
     assert.ok(T.minShown >= 10, 'fewer than ten shows is not evidence about a check');
-    assert.equal(T.maxActed, 0, 'any engagement at all must keep a check at full volume');
+    assert.equal(T.maxPositiveActed, 0, 'anyone taking it up must keep a check at full volume');
     assert.ok(T.minSpanDays >= 21, 'three weeks is the floor for calling something ignored');
+    assert.ok(T.minDeclinedProblems >= 5, 'four refusals is a run of bad luck, not a verdict');
+    assert.ok(T.minDeclineSpanDays >= 7, 'one annoyed morning must not quieten anything');
   });
 
   test('every rejection says why in words a person could read back', () => {
@@ -120,11 +156,265 @@ describe('has this check earned its rest?', () => {
       engagement({ acted: 3 }),
       engagement({ shown: 0 }),
       engagement({ spanDays: 0 }),
+      refusals(1),
     ]) {
       const verdict = evaluateDemotion(e);
       assert.equal(verdict.demote, false);
       assert.ok(verdict.reason.length > 10, `a bare "no" is not auditable: ${verdict.reason}`);
     }
+  });
+});
+
+// ─── declining is not the same as caring ────────────────────────────────────
+//
+// Founder ruling, 2026-07-26. The rule these cases replace was "ANY engagement
+// vetoes demotion", and because "Not doing this" counts as engagement, the
+// loudest way a manager could say STOP was also the surest way to keep a check
+// at full volume forever. Every case below exists to keep that from coming back.
+
+describe('a check this hotel keeps refusing gets quieter, not louder', () => {
+  test('twenty separate problems refused over a week: down a rung', () => {
+    const verdict = evaluateDemotion(refusals(20));
+    assert.equal(verdict.demote, true);
+    assert.match(verdict.reason, /not doing this/i);
+    assert.match(verdict.reason, /20 separate problems/);
+  });
+
+  test('ONE refusal quietens nothing — muting already silenced that problem', () => {
+    const verdict = evaluateDemotion(refusals(1));
+    assert.equal(verdict.demote, false, 'one "no" is about one problem, not about the check');
+  });
+
+  test('one short of the threshold, still nothing', () => {
+    const verdict = evaluateDemotion(refusals(T.minDeclinedProblems - 1));
+    assert.equal(verdict.demote, false);
+  });
+
+  // The two above move with the constant. These do not, on purpose: the count
+  // is a product decision about how fast Staxis stops talking, and lowering it
+  // must break something that says a number out loud.
+  test('FOUR refusals, spread over a fortnight, is still not a verdict', () => {
+    assert.equal(evaluateDemotion(refusals(4, 14)).demote, false);
+  });
+
+  test('TWO refusals a month apart is not a verdict either', () => {
+    assert.equal(evaluateDemotion(refusals(2, 30)).demote, false);
+  });
+
+  test('exactly at the threshold, and exactly at the span, it demotes', () => {
+    const verdict = evaluateDemotion(refusals(T.minDeclinedProblems, T.minDeclineSpanDays));
+    assert.equal(verdict.demote, true);
+  });
+
+  test('a queue cleared in one sitting is a mood, not a verdict', () => {
+    // Fifty refusals, all of them today. The manager was annoyed on Tuesday;
+    // that is not the same as the check being wrong for this hotel, and the
+    // span rule is what tells the two apart.
+    const verdict = evaluateDemotion(
+      engagement({
+        shown: 50,
+        acted: 50,
+        declineActed: 50,
+        declinedProblems: 50,
+        declineSpanDays: T.minDeclineSpanDays - 1,
+        spanDays: 3,
+      }),
+    );
+    assert.equal(verdict.demote, false);
+  });
+
+  test('the same problem refused twenty times is ONE refusal', () => {
+    // Counted per problem by construction — `declinedProblems` is a distinct
+    // count, so twenty taps on one card cannot reach the threshold. Proven for
+    // real against dedupe keys in engagementSince below.
+    const verdict = evaluateDemotion(
+      engagement({
+        shown: 20,
+        acted: 20,
+        declineActed: 20,
+        declinedProblems: 1,
+        declineSpanDays: 30,
+        spanDays: T.minSpanDays - 1, // short of the silence rule, so only refusals could demote
+      }),
+    );
+    assert.equal(verdict.demote, false);
+  });
+
+  test('one "Handled it" beats twenty refusals — positive wins outright', () => {
+    const mixed = refusals(20);
+    const verdict = evaluateDemotion({ ...mixed, acted: mixed.acted + 1 });
+    assert.equal(verdict.demote, false);
+    assert.match(verdict.reason, /still useful here/);
+    assert.equal(positiveEngagement({ ...mixed, acted: mixed.acted + 1 }), 1);
+  });
+
+  test('opening the numbers and THEN refusing is a refusal, not a reading', () => {
+    // Two taps on one card that ended in "not doing this". Counting the first
+    // as approval would let a single moment of curiosity keep a check loud
+    // through twenty refusals — the terminal verdict is what the card meant.
+    const verdict = evaluateDemotion(
+      engagement({
+        shown: 20,
+        acted: 40, // twenty cards, receipt opened on each, then refused
+        declineActed: 40,
+        declinedProblems: 20,
+        declineSpanDays: 14,
+        spanDays: 14,
+      }),
+    );
+    assert.equal(verdict.demote, true);
+    assert.match(verdict.reason, /not doing this/i);
+  });
+
+  test('the positive half can never go negative and swing the other way', () => {
+    assert.equal(positiveEngagement(engagement({ acted: 2, declineActed: 9 })), 0);
+  });
+
+  test('a refusal below the threshold no longer props up a check nobody reads', () => {
+    // The old rule let one "no" veto three weeks of silence. Under the ruling a
+    // refusal points the same way silence does, so the silence path still runs.
+    const verdict = evaluateDemotion(
+      engagement({ shown: T.minShown, acted: 1, declineActed: 1, declinedProblems: 1 }),
+    );
+    assert.equal(verdict.demote, true);
+    assert.match(verdict.reason, /nothing ever taken up/);
+  });
+});
+
+// ─── and back up again ──────────────────────────────────────────────────────
+
+describe('a check somebody takes up again climbs back', () => {
+  test('one positive engagement is enough', () => {
+    const verdict = evaluateRearm(engagement({ acted: 1 }));
+    assert.equal(verdict.rearm, true);
+    assert.match(verdict.reason, /taken up/);
+  });
+
+  test('refusals do not count as taking it up', () => {
+    assert.equal(evaluateRearm(refusals(20)).rearm, false);
+  });
+
+  test('nothing at all does not either', () => {
+    const verdict = evaluateRearm(engagement({ shown: 90, acted: 0 }));
+    assert.equal(verdict.rearm, false);
+    assert.ok(verdict.reason.length > 10, `a bare "no" is not auditable: ${verdict.reason}`);
+  });
+
+  test('climbing back is deliberately easier than falling — the asymmetry is the point', () => {
+    // Too loud costs a scroll. Too quiet costs the leak nobody was told about.
+    assert.ok(
+      T.minRearmPositiveActed <= T.minDeclinedProblems,
+      'earning volume back must never be harder than losing it',
+    );
+    assert.equal(T.minRearmPositiveActed, 1);
+  });
+});
+
+// ─── the window the decision is made over ───────────────────────────────────
+
+describe('what counts as having happened SINCE the baseline', () => {
+  const NOW = new Date('2026-07-26T12:00:00Z');
+  const day = (n: number) => new Date(NOW.getTime() - n * 86_400_000).toISOString();
+
+  const state = (over: Partial<DetectorState> = {}): DetectorState => ({
+    propertyId: 'p1',
+    detectorId: 'd1',
+    stepsDown: 0,
+    dormant: false,
+    dormantSince: null,
+    baselineShown: 0,
+    baselineActed: 0,
+    baselineAt: day(30),
+    rearmedAt: null,
+    ...over,
+  });
+
+  const ledger = (over: Partial<DetectorLedger> = {}): DetectorLedger => ({
+    shown: 0,
+    acted: 0,
+    declines: [],
+    ...over,
+  });
+
+  test('refusals from before the baseline are spent and cannot demote twice', () => {
+    const e = engagementSince(
+      ledger({
+        acted: 9,
+        declines: [
+          { dedupeKey: 'a', at: day(40), acted: 1 },
+          { dedupeKey: 'b', at: day(35), acted: 1 },
+          { dedupeKey: 'c', at: day(5), acted: 1 },
+        ],
+      }),
+      state({ baselineAt: day(30) }),
+      NOW,
+    );
+    assert.equal(e.declinedProblems, 1, 'only the one after the baseline is still evidence');
+  });
+
+  test('one problem refused twice counts once, and the span keeps the earlier one', () => {
+    const e = engagementSince(
+      ledger({
+        declines: [
+          { dedupeKey: 'a', at: day(20), acted: 1 },
+          { dedupeKey: 'a', at: day(2), acted: 1 },
+          { dedupeKey: 'b', at: day(1), acted: 1 },
+        ],
+      }),
+      state(),
+      NOW,
+    );
+    assert.equal(e.declinedProblems, 2);
+    assert.equal(Math.round(e.declineSpanDays), 19, 'from the first sighting of the first refusal');
+  });
+
+  test('a single refusal has no span, and a span of one day is not a week', () => {
+    assert.equal(
+      engagementSince(ledger({ declines: [{ dedupeKey: 'a', at: day(3), acted: 1 }] }), state(), NOW)
+        .declineSpanDays,
+      0,
+    );
+    const sameDay = engagementSince(
+      ledger({
+        declines: [
+          { dedupeKey: 'a', at: day(3), acted: 1 },
+          { dedupeKey: 'b', at: day(3), acted: 1 },
+        ],
+      }),
+      state(),
+      NOW,
+    );
+    assert.equal(sameDay.declineSpanDays, 0);
+  });
+
+  test('an unreadable baseline demotes nothing rather than everything', () => {
+    const e = engagementSince(
+      ledger({
+        shown: 900,
+        acted: 0,
+        declines: Array.from({ length: 20 }, (_, i) => ({
+          dedupeKey: `k${i}`,
+          at: day(i),
+          acted: 1,
+        })),
+      }),
+      state({ baselineAt: 'not a date' }),
+      NOW,
+    );
+    assert.equal(e.declinedProblems, 0);
+    assert.equal(e.spanDays, 0);
+    assert.equal(evaluateDemotion(e).demote, false, 'a broken state row must not rest a check');
+  });
+
+  test('the counters are measured from the baseline, not from the beginning of time', () => {
+    const e = engagementSince(
+      ledger({ shown: 40, acted: 6 }),
+      state({ baselineShown: 30, baselineActed: 4 }),
+      NOW,
+    );
+    assert.equal(e.shown, 10);
+    assert.equal(e.acted, 2);
+    assert.equal(Math.round(e.spanDays), 30);
   });
 });
 

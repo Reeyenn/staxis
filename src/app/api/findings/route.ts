@@ -25,7 +25,16 @@
  *
  * ALL FOUR COUNT AS ENGAGEMENT. Every tap is a manager reading this check and
  * deciding something, and the only signal left that means "nobody here reads
- * this" is silence — which is what silence should mean. See demotion.ts.
+ * this" is silence — which is what silence should mean.
+ *
+ * BUT THE KINDS ARE NOT THE SAME, AND DEMOTION KNOWS THE DIFFERENCE. Handled
+ * it, Seen and the receipt are somebody taking the check UP; "Not doing this"
+ * is somebody turning it DOWN. The counter here does not distinguish them —
+ * `status` a line later already does, and one fact in two columns is one fact
+ * that can disagree with itself. What demotion.ts does with that: five distinct
+ * problems refused over a week or more, with nothing taken up in the same
+ * stretch, quietens the check by one rung, exactly as three ignored weeks
+ * would. One refusal quietens nothing beyond the problem it was about.
  *
  * SEEN IS NOT HANDLED, IN THE DATA AS WELL AS ON THE SCREEN. `known_problem`
  * never writes resolved_at and never stands in for an outcome anywhere: the
@@ -396,6 +405,12 @@ export async function POST(req: NextRequest) {
     // card. Excluding mute made a deliberate decision look identical to a
     // scroll-past, which is the one thing these counters exist to tell apart.
     // Silence is now the only ambiguous signal, which is what silence is.
+    //
+    // The half of that worry which was RIGHT — that repeated rejection should
+    // not keep a check loud — is answered where it belongs, in demotion.ts,
+    // which reads `status = 'muted'` off the rows and treats a run of refusals
+    // as a reason to step the check down. It is not answered by refusing to
+    // write a number down.
     await recordFindingActed(propertyId, idV.value!);
 
     const updated = await setFindingStatus(
