@@ -660,7 +660,21 @@ describe('approving what Staxis proposed, in the conversation', () => {
     assert.equal(proposed.ok, true, proposed.error ?? '');
     // The sentence is the catalog's, built from the frozen params — not the
     // model's reading of the finding.
-    assert.match(readBack(proposed).en, /Room 214/);
+    const offered = readBack(proposed);
+    assert.match(offered.en, /Room 214/);
+    assert.match(offered.es, /Room 214/);
+    // The catalog writes the offer in BOTH languages, and the Spanish read-back
+    // has to quote the Spanish one. A wrapper that differs only in its own
+    // prefix ("Adelante con: Create a work order…") reads as Spanish and is not.
+    assert.match(offered.en, /work order/i);
+    assert.match(offered.es, /orden de trabajo/i);
+    assert.doesNotMatch(offered.es, /work order/i, 'the Spanish read-back quoted the English offer');
+    // The catalog's offer is itself a question, and dropping it whole into a
+    // sentence that asks its own produced "…Room 214?. Right?" in the first live
+    // conversation. One question mark per sentence.
+    for (const sentence of [offered.en, offered.es]) {
+      assert.doesNotMatch(sentence, /\?\s*\./, `double punctuation in: ${sentence}`);
+    }
     assert.equal(
       await count('select count(*)::text as n from work_orders where property_id = $1', [PID_A1]),
       0,
@@ -812,6 +826,12 @@ describe('approving what Staxis proposed, in the conversation', () => {
       { name: 'staxis_decide_pending_action', args: { findingId, decision: 'undo' } },
     ]);
     assert.equal(undoProposed.ok, true, undoProposed.error ?? '');
+    // This finding carries no price, so the quoted offer sits directly against
+    // the read-back's own question — which is where "…Room 402?. Right?" showed
+    // up in the first live conversation.
+    for (const sentence of [readBack(undoProposed).en, readBack(undoProposed).es]) {
+      assert.doesNotMatch(sentence, /\?\s*\./, `double punctuation in: ${sentence}`);
+    }
     const [undone] = await turn(ctx, 'yes please', [
       { name: 'staxis_decide_pending_action', args: { confirmToken: tokenOf(undoProposed)! } },
     ]);

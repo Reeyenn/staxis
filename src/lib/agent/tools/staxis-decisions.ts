@@ -70,8 +70,23 @@ interface DecisionParams {
   decision: Decision;
   /** The action row the approval/undo will run. Null for the verdicts. */
   actionId: string | null;
-  /** What the person was told they were agreeing to, frozen. */
-  offer: string | null;
+  /** What the person was told they were agreeing to, frozen — in both
+   *  languages, because the catalog writes both and reading the English one out
+   *  in a Spanish sentence is the bug this field exists to not have. */
+  offer: { en: string; es: string } | null;
+}
+
+/**
+ * The catalog's offer, as a CLAUSE.
+ *
+ * Every offer sentence is already a question ("Create a work order for the
+ * lint ducts?", "¿Crear una orden…?"), and dropping one whole into a sentence
+ * that asks its own question produced "…lint ducts?. Right?" on the first live
+ * conversation. The punctuation belongs to whichever sentence is doing the
+ * asking, so it is stripped from the part that is being quoted.
+ */
+function asClause(sentence: string): string {
+  return sentence.trim().replace(/^¿+/, '').replace(/[?¿.\s]+$/, '').trim();
 }
 
 /** The sign-off gate, in the same three states and with the same refusals the
@@ -297,7 +312,7 @@ registerTool<{ findingId?: string; decision?: string; confirmToken?: string }>({
       : null;
 
     let actionId: string | null = null;
-    let offer: string | null = null;
+    let offer: { en: string; es: string } | null = null;
     if (decision === 'approve' || decision === 'undo') {
       const action = (await loadActionsForFindings(ctx.propertyId, [findingId])).get(findingId);
       if (!action) {
@@ -322,7 +337,7 @@ registerTool<{ findingId?: string; decision?: string; confirmToken?: string }>({
       if (!definition || definition.validate(action.params)) {
         return { ok: false, error: 'I cannot describe that fix accurately, so I will not offer to run it. Tell them to open it in the Staxis tab.' };
       }
-      offer = definition.offer(action.params).en;
+      offer = definition.offer(action.params);
 
       if (decision === 'approve') {
         const gate = await signOffGate(ctx, finding, action.kind);
@@ -338,12 +353,12 @@ registerTool<{ findingId?: string; decision?: string; confirmToken?: string }>({
 
     const sentence: Record<Decision, { en: string; es: string }> = {
       approve: {
-        en: `Go ahead with: ${offer}${price ? ` (Staxis puts it at roughly ${price})` : ''}. Right?`,
-        es: `Adelante con: ${offer}${price ? ` (Staxis lo estima en unos ${price})` : ''}. ¿Correcto?`,
+        en: `Go ahead with: ${asClause(offer?.en ?? '')}${price ? ` (Staxis puts it at roughly ${price})` : ''}. Right?`,
+        es: `Adelante con: ${asClause(offer?.es ?? '')}${price ? ` (Staxis lo estima en unos ${price})` : ''}. ¿Correcto?`,
       },
       undo: {
-        en: `Undo what Staxis did for "${summary}" — ${offer}. Right?`,
-        es: `Deshacer lo que Staxis hizo por "${summary}" — ${offer}. ¿Correcto?`,
+        en: `Undo what Staxis already did: ${asClause(offer?.en ?? '')}. Right?`,
+        es: `Deshacer lo que Staxis ya hizo: ${asClause(offer?.es ?? '')}. ¿Correcto?`,
       },
       not_doing_it: {
         en: `Not doing anything about "${summary}" — Staxis will stop raising it. Right?`,
@@ -375,7 +390,7 @@ registerTool<{ findingId?: string; decision?: string; confirmToken?: string }>({
           summary,
           price,
           disposition: effectiveDisposition(finding),
-          offer,
+          offer: offer?.en ?? null,
         },
       },
     };
