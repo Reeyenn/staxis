@@ -163,6 +163,36 @@ export interface ExamPlanter {
   item(spec: { slot?: number; name?: string; unit?: string; reorderAt?: number | null; reorderLeadDays?: number | null }): Promise<string>;
   supplyDelivery(spec: { date: string; cents?: number; itemSlot?: number; quantity?: number; unitCostCents?: number }): Promise<void>;
   workOrder(spec: { date: string; location?: string; status?: string; repairCostCents?: number | null }): Promise<void>;
+  /**
+   * An upkeep schedule the hotel typed into Maintenance → Preventive.
+   *
+   * The only planter that seeds an ASSERTION rather than a record of something
+   * that happened — which is exactly why `preventive_due` can speak on a hotel
+   * with no history at all. Dates are hotel-local calendar days, like every
+   * other helper here; `lastDoneDaysAgo: null` plants a schedule nobody has ever
+   * recorded doing, which the detector deliberately refuses to call overdue.
+   * Returns the row id so a day can pin the finding's target.
+   */
+  preventiveTask(spec: {
+    /**
+     * The row's id, supplied by the day rather than derived here.
+     *
+     * Unlike an inventory item — which the grader can name through its
+     * `{item0}` substitution — a preventive finding's KEY and TARGET are both
+     * the schedule's uuid, so a label cannot refer to one it does not already
+     * know. Passing it in keeps the id in the same file as the `expect` entry
+     * that quotes it, which is the corpus's own rule about labels living beside
+     * their seed. Each day gets its own hotel, but ids are a primary key across
+     * all of them, so every day uses its own constants.
+     */
+    id: string;
+    name: string;
+    frequencyDays: number;
+    lastDoneDaysAgo: number | null;
+    area?: string | null;
+    calledDaysAgo?: number | null;
+    calledBy?: string | null;
+  }): Promise<string>;
   count(spec: { date: string; itemSlot?: number; stock: number; varianceValueCents?: number | null }): Promise<void>;
   discard(spec: { date: string; itemSlot?: number; quantity: number }): Promise<void>;
   dailyLog(date: string): Promise<void>;

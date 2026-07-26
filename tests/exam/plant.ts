@@ -221,6 +221,40 @@ class Planter implements ExamPlanter {
     );
   }
 
+  async preventiveTask(spec: {
+    id: string;
+    name: string;
+    frequencyDays: number;
+    lastDoneDaysAgo: number | null;
+    area?: string | null;
+    calledDaysAgo?: number | null;
+    calledBy?: string | null;
+  }): Promise<string> {
+    const id = spec.id;
+    await this.pg.query(
+      `insert into preventive_tasks (id, property_id, name, area, frequency_days,
+                                     last_completed_at, called_at, called_by)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        id,
+        this.propertyId,
+        spec.name,
+        spec.area === undefined ? 'Building' : spec.area,
+        spec.frequencyDays,
+        // Midday UTC on the hotel-local day, like every other timestamp here, so
+        // the row's instant and its calendar date never disagree.
+        spec.lastDoneDaysAgo === null ? null : this.atNoon(this.ago(spec.lastDoneDaysAgo)),
+        spec.calledDaysAgo === undefined || spec.calledDaysAgo === null
+          ? null
+          : this.atNoon(this.ago(spec.calledDaysAgo)),
+        spec.calledDaysAgo === undefined || spec.calledDaysAgo === null
+          ? null
+          : spec.calledBy ?? 'Dana',
+      ],
+    );
+    return id;
+  }
+
   async dailyLog(date: string): Promise<void> {
     await this.pg.query(
       `insert into daily_logs (property_id, date, rooms_completed) values ($1, $2, 20)`,
