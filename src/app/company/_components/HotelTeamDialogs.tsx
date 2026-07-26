@@ -81,6 +81,23 @@ interface InvitePostData {
   deliveryStatus?: 'sent' | 'link_only';
 }
 
+/**
+ * What the invite form should ask (company spine). For an independent hotel
+ * this arrives empty and the form asks the two questions it always has: who,
+ * and what job. For somebody who runs a management company it also carries the
+ * hotels their THIRD question is chosen from.
+ */
+interface InviteOptions {
+  choosesHotels: boolean;
+  organizationId: string | null;
+  jobs: Array<{ value: string; scope: 'company' | 'property'; label: { en: string; es: string } }>;
+  hotels: Array<{ id: string; name: string }>;
+}
+
+const NO_INVITE_OPTIONS: InviteOptions = {
+  choosesHotels: false, organizationId: null, jobs: [], hotels: [],
+};
+
 function copy(lang: HotelTeamLang, en: string, es: string): string {
   return lang === 'es' ? es : en;
 }
@@ -1282,6 +1299,10 @@ export function HotelInviteDialog({
   const [invitesLoading, setInvitesLoading] = React.useState(canInviteManager);
   const [invitesError, setInvitesError] = React.useState('');
   const [inviteEmail, setInviteEmail] = React.useState('');
+  const [inviteOptions, setInviteOptions] = React.useState<InviteOptions>(NO_INVITE_OPTIONS);
+  const [inviteJob, setInviteJob] = React.useState('general_manager');
+  const [inviteHotelIds, setInviteHotelIds] = React.useState<string[]>([]);
+  const [inviteAllHotels, setInviteAllHotels] = React.useState(true);
   const [inviteBusy, setInviteBusy] = React.useState(false);
   const [inviteError, setInviteError] = React.useState('');
   const [lastInvite, setLastInvite] = React.useState<{
@@ -1344,12 +1365,15 @@ export function HotelInviteDialog({
       const response = await fetchWithAuth(`/api/auth/invites?hotelId=${encodeURIComponent(hotelId)}`, {
         signal: controller.signal,
       });
-      const body = await response.json().catch(() => ({})) as Envelope<{ invites?: ManagerInvite[] }>;
+      const body = await response.json().catch(() => ({})) as Envelope<{
+        invites?: ManagerInvite[]; options?: InviteOptions;
+      }>;
       if (!response.ok || !body.ok) {
         throw new Error(responseError(body, copy(lang, "Couldn't load manager invitations.", 'No se pudieron cargar las invitaciones de gerentes.')));
       }
       if (controller.signal.aborted || sequence !== invitesSequenceRef.current) return;
       setInvites(body.data?.invites ?? []);
+      setInviteOptions(body.data?.options ?? NO_INVITE_OPTIONS);
     } catch (loadError) {
       if (controller.signal.aborted || sequence !== invitesSequenceRef.current) return;
       console.error('[HotelInviteDialog] invite load failed', loadError);
@@ -1456,6 +1480,29 @@ export function HotelInviteDialog({
       setInviteError(copy(lang, 'Enter a valid email address.', 'Ingresa un correo electrónico válido.'));
       return;
     }
+    // The third question, when it was asked. A company job covers the whole
+    // company; a hotel job covers the boxes that are ticked — and when nothing
+    // was asked at all, the body is byte-identical to the one this form has
+    // always sent.
+    const selectedJob = inviteOptions.jobs.find((job) => job.value === inviteJob) ?? null;
+    let scoped: { role: string; scope?: string; propertyIds?: string[] } = { role: 'general_manager' };
+    if (selectedJob) {
+      if (!inviteOptions.choosesHotels) {
+        scoped = { role: selectedJob.value };
+      } else if (selectedJob.scope === 'company') {
+        scoped = { role: selectedJob.value, scope: 'company' };
+      } else {
+        const chosen = inviteAllHotels
+          ? inviteOptions.hotels.map((hotel) => hotel.id)
+          : inviteHotelIds;
+        if (chosen.length === 0) {
+          setInviteError(copy(lang, 'Choose at least one hotel.', 'Elige al menos un hotel.'));
+          return;
+        }
+        scoped = { role: selectedJob.value, scope: 'property', propertyIds: chosen };
+      }
+    }
+
     setInviteBusy(true);
     setInviteError('');
     setLastInvite(null);
@@ -1463,7 +1510,7 @@ export function HotelInviteDialog({
       const response = await fetchWithAuth('/api/auth/invites', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hotelId, email, role: 'general_manager' }),
+        body: JSON.stringify({ hotelId, email, ...scoped }),
         signal: mutationSignal(),
       });
       const body = await response.json().catch(() => ({})) as Envelope<InvitePostData>;
@@ -1475,6 +1522,7 @@ export function HotelInviteDialog({
       const emailSent = data.emailSent === true || data.deliveryStatus === 'sent';
       setLastInvite({ email, link: data.inviteLink ?? null, emailSent });
       setInviteEmail('');
+      setInviteHotelIds([]);
       await loadInvites();
       await onChanged?.();
     } catch (sendError) {
@@ -1639,6 +1687,66 @@ export function HotelInviteDialog({
                 disabled={inviteBusy}
               />
             </label>
+
+            {/* Question two: what job. Absent for an independent hotel, where
+                this form has only ever created a General Manager. */}
+            {inviteOptions.jobs.length > 0 ? (
+              <label className={styles.field}>
+                <span>{copy(lang, 'What job', 'Qué puesto')}</span>
+                <select
+                  value={inviteJob}
+                  onChange={(event) => {
+                    setInviteJob(event.target.value);
+                    setInviteError('');
+                    setLastInvite(null);
+                  }}
+                  disabled={inviteBusy}
+                >
+                  {inviteOptions.jobs.map((job) => (
+                    <option key={job.value} value={job.value}>
+                      {lang === 'es' ? job.label.es : job.label.en}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+
+            {/* Question three: which hotels. Only somebody who runs a company is
+                ever asked — a General Manager's hotel is implied. */}
+            {inviteOptions.choosesHotels
+              && inviteOptions.hotels.length > 0
+              && (inviteOptions.jobs.find((job) => job.value === inviteJob)?.scope ?? 'property') === 'property'
+              ? (
+                <fieldset className={styles.hotelChoices} disabled={inviteBusy}>
+                  <legend>{copy(lang, 'Which hotels', 'Qué hoteles')}</legend>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={inviteAllHotels}
+                      onChange={(event) => { setInviteAllHotels(event.target.checked); setInviteError(''); }}
+                    />
+                    {copy(lang, 'All hotels', 'Todos los hoteles')}
+                  </label>
+                  {inviteAllHotels ? null : inviteOptions.hotels.map((hotel) => (
+                    <label key={hotel.id}>
+                      <input
+                        type="checkbox"
+                        checked={inviteHotelIds.includes(hotel.id)}
+                        onChange={(event) => {
+                          setInviteError('');
+                          setInviteHotelIds((current) => (
+                            event.target.checked
+                              ? [...new Set([...current, hotel.id])]
+                              : current.filter((id) => id !== hotel.id)
+                          ));
+                        }}
+                      />
+                      {hotel.name}
+                    </label>
+                  ))}
+                </fieldset>
+              ) : null}
+
             <button type="submit" className={styles.primaryButton} disabled={!inviteEmail.trim() || inviteBusy}>
               {inviteBusy
                 ? <BusyLabel lang={lang} en="Creating…" es="Creando…" />

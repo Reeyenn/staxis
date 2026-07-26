@@ -1178,3 +1178,107 @@ for".
   recommend-by-default detector is refused at registration" in
   `findings-actions.test.ts`. Verified by removing each runner gate in turn.
 - **History:** The hands, 2026-07-26.
+
+- **INV-COMPANY-1 — a hotel a person was never given is a hotel they cannot
+  reach.** Two walls, one statement. WALL A, inside one company: a
+  property-scope job covers exactly the hotels named on its own row, so the
+  front-desk person at hotel #7 cannot list, read, or write hotel #12, and a GM
+  sees their own hotels fully and nothing sideways. WALL B, across companies:
+  coverage is only ever drawn from `organization_property_relationships` rows
+  belonging to the job's OWN organization, so company A's VP can never reach
+  company B's data — whatever ids they send.
+- **Enforced by:** structure plus the database. (1) There is exactly ONE
+  function that turns a person into hotels — `loadHats` in
+  `src/lib/company/access.ts` — and every query inside it is filtered by the
+  hat's own `organization_id`. No union, no wildcard, no caller-supplied
+  organization. (2) `covered_property_ids` is validated on INSERT and UPDATE by
+  trigger `trg_organization_memberships_validate_hat` (migration 0364), which
+  refuses any hotel the company does not currently operate — so a hat naming
+  another company's hotel cannot exist even if a route were wrong.
+  (3) `organization_memberships` grants service_role SELECT only (0325, restated
+  in 0364), so the ONLY writer is `staxis_set_membership_hat`, which re-checks
+  authority under the same per-organization advisory lock the rest of the
+  Company Hub uses. **DB-ENFORCED.**
+- **Assumed by:** `userHasPropertyAccess` (`src/lib/api-auth.ts`) — the gate
+  every hotel-scoped route already calls; `canManageHotel` /
+  `callerControlsEveryTargetHotel` (`src/lib/team-auth.ts`);
+  `resolveInviteScope` (`src/lib/company/invite-scope.ts`).
+- **Tested by:** `company-spine.integration.test.ts` — "the front-desk person at
+  Beaumont cannot learn Lufkin exists" and "a GM sees his own hotel fully and
+  nothing sideways" (both through the REAL `/api/home/summary` handler, with the
+  allowed hotel asserted NOT 403 so the suite cannot pass on a route that
+  refuses everything); "Piney Woods' VP is refused every Gulf Coast hotel
+  through the real read route"; "a VP's invitation is REFUSED a hotel outside
+  their company" plus "and nothing was written"; "a hat cannot name a hotel its
+  company does not operate"; "a company owner cannot reach into the other
+  company"; "a manager at one company cannot touch a person's job at another".
+  Verified by mutation: widening `loadHats` to ignore `covered_property_ids`
+  turns 8 cases red; making `canManageHotel` blind to hats turns 8 red; deleting
+  the cross-company hotel check in `resolveInviteScope` turns 1 red; skipping the
+  authority check inside `staxis_set_membership_hat` turns 3 red.
+
+  Wall B specifically needs BOTH of its mechanisms broken before anything leaks —
+  removing the organization filter on the relationship read alone changes nothing,
+  because coverage is then still looked up by the hat's own `organization_id` in
+  the map; removing the map key alone changes nothing, because the read never
+  fetched another company's rows. Breaking both together turns 7 cases red. That
+  belt-and-braces property is deliberate, and it is why neither half may be
+  "simplified away" as redundant.
+- **History:** The company spine, 2026-07-26.
+
+- **INV-COMPANY-2 — an account with no company job resolves exactly as it did
+  before the company spine existed.** `effectiveRole` returns `accounts.role`
+  with `source: 'legacy'`, and `accessibleProperties` returns
+  `accounts.property_access` verbatim. A hat is only ever ADDITIVE: it can add a
+  hotel the legacy array never mentioned and it can name a different job at a
+  hotel the array did mention, but it can never take a hotel away.
+- **Enforced by:** the shape of the code plus one CHECK. Every new gate is
+  written as `legacy answer first, then ALSO ask about hats` — the legacy branch
+  returns before the hat branch is reached, so a hat failure cannot turn a
+  legacy `true` into a `false`. `organization_memberships_hat_shape_check`
+  (0364) requires `membership_scope`, `staxis_role` and `covered_property_ids`
+  to be absent TOGETHER, so a pre-0364 employment row can never be read as a
+  half-written job. Trigger `_staxis_validate_membership_hat` additionally
+  refuses any hat inside a `single_hotel` compatibility anchor, which is what
+  makes every legacy reconcile path in 0325 provably unable to see one.
+  **DB-ENFORCED.**
+- **Assumed by:** every one of the ~5,100 tests that existed before this
+  migration, all of which describe an account with no hat.
+- **Tested by:** `company-spine.integration.test.ts` — the whole "the control
+  group" suite: "a legacy owner is still the owner of the hotel in her
+  property_access, and nothing else", "a legacy housekeeper resolves to
+  housekeeping, and reaches exactly her one hotel" (asserting the answer IS the
+  array, verbatim), "loadManagerCaller returns the same manager it always did,
+  plus empty company fields", "an invitation at the independent hotel stays
+  exactly the invitation it always was", "an invitation at the independent hotel
+  still creates the plain old account". Verified by making the legacy fallback in
+  `effectiveRole` unreachable, which turns 2 control-group cases red while every
+  company test stays green.
+- **History:** The company spine, 2026-07-26.
+
+- **INV-COMPANY-3 — the pre-0364 one-membership-per-company rule still holds for
+  employment records, and the reconciler still fires.** Multi-hat means several
+  open `organization_memberships` rows for one person in one company. The 0325
+  invariant "at most one open membership per (organization, account)" is still
+  true — of EMPLOYMENT records, the rows with `staxis_role IS NULL`.
+- **Enforced by:** `organization_memberships_one_current_idx` re-created in 0364
+  with the predicate `where ended_at is null and staxis_role is null`, plus
+  `organization_memberships_one_open_hat_idx` for the hats. Because that index
+  is also the ON CONFLICT arbiter inside
+  `_staxis_reconcile_legacy_organization_access`, 0364 re-creates that function
+  with the matching predicate — without it, Postgres cannot infer the index and
+  EVERY property and account INSERT in the product fails with SQLSTATE 42P10.
+  For the same reason 0364 re-creates `staxis_accept_organization_invitation`,
+  whose bare `SELECT ... INTO` would otherwise silently adopt a hat row as
+  somebody's employment record. **DB-ENFORCED.**
+- **Assumed by:** `_staxis_reconcile_property_trigger` and
+  `_staxis_reconcile_account_trigger` (0325), which run on every property and
+  account write in the product.
+- **Tested by:** `company-spine.integration.test.ts` — "the legacy
+  one-membership-per-company rule still holds for employment records", "the same
+  job at the same scope is one hat with a wider list, never two rows"; and,
+  less obviously but more importantly, every test in the file, because the
+  fixture inserts four properties and eleven accounts and would fail in `before`
+  if the reconciler's ON CONFLICT no longer matched. That is exactly how this
+  invariant was discovered.
+- **History:** The company spine, 2026-07-26.

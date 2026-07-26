@@ -745,18 +745,37 @@ export async function requireSession(
  *
  * Returns true if the caller has access, false otherwise. The caller
  * decides whether to 403 or silently no-op.
+ *
+ * COMPANY SPINE (0364): the legacy `property_access` array is still the first
+ * and fastest answer, and it is never narrowed. When it says no, a second
+ * question is asked — does this person hold a job at a company that operates
+ * this hotel? That is how a VP who oversees twelve hotels reaches them without
+ * twelve rows being stamped into an array, and how a hotel bought next month is
+ * reachable the moment it is attached to the company.
+ *
+ * Both walls live here. Wall A: a property-scope hat covers only the hotels
+ * named on its own row, so a front-desk person at hotel #7 is refused #12.
+ * Wall B: coverage is only ever drawn from the hat's OWN organization, so no
+ * company's people can be handed another company's hotel.
  */
 export async function userHasPropertyAccess(userId: string, pid: string): Promise<boolean> {
   try {
     const { data, error } = await supabaseAdmin
       .from('accounts')
-      .select('role, property_access')
+      .select('id, role, property_access')
       .eq('data_user_id', userId)
       .maybeSingle();
     if (error || !data) return false;
     if (data.role === 'admin') return true;  // admins access every property
     const access = (data.property_access ?? []) as string[];
-    return access.includes(pid) || access.includes('*');
+    if (access.includes(pid) || access.includes('*')) return true;
+
+    const accountId = (data as { id?: string }).id;
+    if (!accountId) return false;
+    // Additive only. A failure here can never turn a legacy `true` into a
+    // `false` — that branch already returned above.
+    const { accountReachesProperty } = await import('@/lib/company/access');
+    return await accountReachesProperty(accountId, pid);
   } catch {
     return false;
   }

@@ -206,6 +206,20 @@ function waitForLifecycleReconciliation(delayMs: number, signal: AbortSignal): P
   });
 }
 
+/**
+ * One line on a person's card. A management company means the same person can
+ * hold several — "GM — Beaumont" and "Oversees — Lufkin, Tyler" — and each one
+ * is a separate row in the database, editable and removable on its own.
+ */
+interface CompanyJobLine {
+  membershipId: string;
+  scope: 'company' | 'property';
+  role: string;
+  label: { en: string; es: string };
+  propertyIds: string[];
+  propertyNames: string[];
+}
+
 function roleLabel(role: AppRole, lang: HotelTeamLang): string {
   const labels: Record<AppRole, [string, string]> = {
     admin: ['Staxis administrator', 'Administrador de Staxis'],
@@ -515,6 +529,7 @@ export function HotelTeamPanel({
   onLinkageChange,
 }: HotelTeamPanelProps) {
   const [team, setTeam] = React.useState<HotelTeamMember[]>([]);
+  const [jobsByAccountId, setJobsByAccountId] = React.useState<Record<string, CompanyJobLine[]>>({});
   const [teamLoading, setTeamLoading] = React.useState(false);
   const [teamError, setTeamError] = React.useState('');
   const [requests, setRequests] = React.useState<HotelJoinRequest[]>([]);
@@ -570,7 +585,10 @@ export function HotelTeamPanel({
       const response = await fetchWithAuth(`/api/auth/team?hotelId=${encodeURIComponent(hotelId)}`, {
         signal: controller.signal,
       });
-      const body = await response.json().catch(() => ({})) as Envelope<{ team?: HotelTeamMember[] }>;
+      const body = await response.json().catch(() => ({})) as Envelope<{
+        team?: HotelTeamMember[];
+        hatsByAccountId?: Record<string, CompanyJobLine[]>;
+      }>;
       if (!response.ok || !body.ok) {
         throw new Error(responseError(
           body,
@@ -583,6 +601,7 @@ export function HotelTeamPanel({
         ? responseTeam.filter((member) => !member.isPlatformAdmin && member.role !== 'admin')
         : responseTeam;
       setTeam(nextTeam);
+      setJobsByAccountId(body.data?.hatsByAccountId ?? {});
       linkageRef.current?.({
         status: 'ready',
         staffIds: nextTeam.flatMap((member) => member.staffId ? [member.staffId] : []),
@@ -881,6 +900,9 @@ export function HotelTeamPanel({
                 roleLabel(member.role, lang),
                 staffProfile ? departmentLabel(staffProfile.department ?? 'other', lang) : null,
               ].filter(Boolean).join(' · ');
+              // Company spine: one line per job. Absent at an independent
+              // hotel, where the single role above is the whole story.
+              const jobLines = jobsByAccountId[member.accountId] ?? [];
               return (
                 <div key={member.accountId} className={`${styles.teamRow}${self ? ` ${styles.selfRow}` : ''}`} role="listitem">
                   <span className={styles.avatar} aria-hidden="true">{initials(member.displayName)}</span>
@@ -890,6 +912,19 @@ export function HotelTeamPanel({
                       {self ? <small>{copy(lang, 'You', 'Tú')}</small> : null}
                     </strong>
                     <span>{memberDetails}</span>
+                    {jobLines.length > 0 ? (
+                      <span className={styles.companyJobLines}>
+                        {jobLines.map((job) => (
+                          <em key={job.membershipId}>
+                            {`${lang === 'es' ? job.label.es : job.label.en} — ${
+                              job.scope === 'company'
+                                ? copy(lang, 'every hotel', 'todos los hoteles')
+                                : job.propertyNames.join(', ')
+                            }`}
+                          </em>
+                        ))}
+                      </span>
+                    ) : null}
                     <span>{member.email || copy(lang, 'Email unavailable', 'Correo no disponible')}</span>
                     <span className={styles.signInMetadata}>{lastSignInLabel(member.lastSignInKnown, member.lastSignInAt, lang)}</span>
                     {lifecycleIsPending ? (

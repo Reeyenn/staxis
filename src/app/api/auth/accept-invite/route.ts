@@ -25,6 +25,9 @@ import {
   type AppRole,
 } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
+import { isHatRole, isMembershipScope, legacyRoleForHat } from '@/lib/company/roles';
+import { hatCoversProperty, propertiesOfOrganization } from '@/lib/company/access';
+import { grantInvitedHat } from '@/lib/company/invite-scope';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -63,7 +66,9 @@ export async function POST(req: NextRequest) {
   const tokenHash = hashToken(token);
   const { data: invite, error: invErr } = await supabaseAdmin
     .from('account_invites')
-    .select('id, hotel_id, email, role, expires_at, accepted_at, invited_by')
+    .select(
+      'id, hotel_id, email, role, expires_at, accepted_at, invited_by, organization_id, membership_scope, covered_property_ids',
+    )
     .eq('token_hash', tokenHash)
     .maybeSingle();
   if (invErr || !invite) {
@@ -94,10 +99,21 @@ export async function POST(req: NextRequest) {
   // Non-admin scope is deliberately exact. The '*' convention belongs to the
   // platform-admin role and must not let a stale/non-admin account authorize a
   // hotel that is absent from its explicit property_access list.
+  //
+  // COMPANY SPINE (0364): a company person's hotels come from their job, not
+  // from that array, so a hat covering the hotel counts here too. Still exact —
+  // a hat is a specific list of hotels, never a wildcard.
   const inviterRole = inviter.role as AppRole;
   const inviterAccess = (inviter.property_access ?? []) as string[];
   if (inviterRole !== 'admin' && !inviterAccess.includes(invite.hotel_id)) {
-    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+    // `hatCoversProperty`, not `accountReachesProperty`: the legacy `'*'`
+    // wildcard belongs to the platform-admin role and has never authorized a
+    // non-admin inviter here. A company JOB is the only thing that may widen
+    // this check.
+    const reachesByHat = await hatCoversProperty(invite.invited_by, invite.hotel_id);
+    if (!reachesByHat) {
+      return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+    }
   }
   const capabilityDecision = await capabilityDecisionForProperty(
     { role: inviterRole },
@@ -108,8 +124,41 @@ export async function POST(req: NextRequest) {
   if (capabilityDecision === 'denied') {
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
-  if (!isAssignableRole(invite.role) || !canGrantHotelRole(inviterRole, invite.role)) {
+
+  // ── What job did this invitation actually promise? ──────────────────────
+  // A plain hotel invitation promises a hotel role and nothing else: the
+  // hierarchy check below is the one that has always run. A company invitation
+  // promises a hat, and the login it creates carries the DEGRADED word (a VP's
+  // account row says general_manager) so every legacy check keeps working while
+  // the true job lives on the hat.
+  const invitedScope = (invite as { membership_scope?: string | null }).membership_scope ?? null;
+  const invitedOrganizationId = (invite as { organization_id?: string | null }).organization_id ?? null;
+  const invitedCoverage = ((invite as { covered_property_ids?: unknown }).covered_property_ids ?? null) as
+    string[] | null;
+
+  let accountRole: AppRole;
+  if (invitedScope && invitedOrganizationId && isHatRole(invite.role) && isMembershipScope(invitedScope)) {
+    accountRole = legacyRoleForHat(invite.role);
+  } else if (invitedScope || invitedOrganizationId) {
+    // A half-written company invitation is not a hotel invitation. Refuse
+    // rather than quietly downgrade someone into a role nobody granted.
     return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  } else {
+    if (!isAssignableRole(invite.role) || !canGrantHotelRole(inviterRole, invite.role)) {
+      return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+    }
+    accountRole = invite.role;
+  }
+
+  // The hotels the new login lands on. A company hat's real coverage is
+  // resolved from the company on every server read (including hotels bought
+  // after today), so this array is a starting snapshot, not the authority.
+  let landingAccess: string[] = [invite.hotel_id];
+  if (invitedScope === 'company' && invitedOrganizationId) {
+    const operated = await propertiesOfOrganization(invitedOrganizationId);
+    if (operated.length > 0) landingAccess = operated;
+  } else if (invitedScope === 'property' && Array.isArray(invitedCoverage) && invitedCoverage.length > 0) {
+    landingAccess = [...new Set(invitedCoverage)];
   }
 
   // Atomically CLAIM the invite BEFORE any side effect. Two concurrent accept
@@ -174,8 +223,8 @@ export async function POST(req: NextRequest) {
     const { error } = await supabaseAdmin.from('accounts').insert({
       username,
       display_name: displayName,
-      role: invite.role,
-      property_access: [invite.hotel_id],
+      role: accountRole,
+      property_access: landingAccess,
       data_user_id: authUser.id,
     });
     if (!error) { insErr = null; break; }
@@ -212,6 +261,37 @@ export async function POST(req: NextRequest) {
   // Invite was already claimed atomically up front (compare-and-swap), so no
   // separate "mark consumed" write is needed here.
 
+  // ── Put the hat on ───────────────────────────────────────────────────────
+  // The person already has a working login on the hotel their invitation named,
+  // so a hat that fails to write is a capability to repair, not a reason to
+  // strand a new employee at the door. Logged loudly instead.
+  let hatMembershipId: string | null = null;
+  if (invitedScope && invitedOrganizationId && isHatRole(invite.role) && isMembershipScope(invitedScope)) {
+    const { data: newAccount } = await supabaseAdmin
+      .from('accounts')
+      .select('id')
+      .eq('data_user_id', authUser.id)
+      .maybeSingle();
+    const newAccountId = (newAccount as { id?: string } | null)?.id ?? null;
+    if (newAccountId) {
+      hatMembershipId = await grantInvitedHat({
+        actorAccountId: invite.invited_by,
+        organizationId: invitedOrganizationId,
+        accountId: newAccountId,
+        scope: invitedScope,
+        role: invite.role,
+        propertyIds: invitedScope === 'property' ? landingAccess : null,
+      });
+    }
+    if (!hatMembershipId) {
+      log.error('[accept-invite] account created but the company job was not recorded', {
+        requestId,
+        inviteId: invite.id,
+        organizationId: invitedOrganizationId,
+      });
+    }
+  }
+
   await writeAudit({
     action: 'invite.accept',
     actorUserId: authUser.id,
@@ -219,7 +299,11 @@ export async function POST(req: NextRequest) {
     targetType: 'invite',
     targetId: invite.id,
     hotelId: invite.hotel_id,
-    metadata: { role: invite.role, username },
+    metadata: {
+      role: invite.role,
+      username,
+      ...(invitedScope ? { scope: invitedScope, membershipId: hatMembershipId } : {}),
+    },
   });
 
   return ok({ email: invite.email }, { requestId });
