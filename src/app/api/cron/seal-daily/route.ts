@@ -64,8 +64,10 @@ import {
   localDatesForProjection,
   OCCUPANCY_BACKFILL_LOOKBACK_DAYS,
   preserveSealedOccupancy,
+  sealCleaningMinutes,
   sealTargetBusinessDate,
   type PmsSnapshotEvidence,
+  type SealPropertyCleanTimes,
   type SealedOccupancyFields,
 } from '@/lib/seal-daily';
 
@@ -82,7 +84,7 @@ type PropertyRow = {
   name: string;
   timezone: string | null;
   business_date_cutoff_hour: number | null;
-};
+} & SealPropertyCleanTimes;
 
 interface SealOutcome {
   property_id: string;
@@ -127,10 +129,20 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   }
 
   // Pull every property with its timezone AND its night-audit hour — together
-  // they define which 24h window we're sealing (migration 0343).
+  // they define which 24h window we're sealing (migration 0343) — plus the four
+  // clean-time columns the recommended-staff arithmetic needs. Fetched in this
+  // one query rather than per property: the seal used to re-read `properties`
+  // inside the per-property path, which was an extra round trip an hour per
+  // hotel for four numbers this query is already at the right row for.
+  //
+  // Every `.select()` in this file is a plain string literal on purpose:
+  // `cron-seal-daily-schema.integration.test.ts` reads them out of this source
+  // and checks each column against the real migrated schema, and a select built
+  // from a constant would slip past that check — which is exactly how
+  // `properties.config` survived for months.
   const { data: properties, error: propErr } = await supabaseAdmin
     .from('properties')
-    .select('id, name, timezone, business_date_cutoff_hour');
+    .select('id, name, timezone, business_date_cutoff_hour, checkout_minutes, stayover_day1_minutes, stayover_day2_minutes, shift_minutes');
   if (propErr) {
     log.error('seal-daily: properties query failed', { requestId, err: propErr });
     return NextResponse.json({ ok: false, error: errToString(propErr), requestId }, { status: 500 });
@@ -421,26 +433,33 @@ async function sealOne(
       : Math.max(0, (planRow.total_rooms || 0) - (planRow.vacant_clean || 0) - (planRow.vacant_dirty || 0) - (planRow.ooo || 0))
     : null;
 
-  // Cleaning minutes per category: read from properties.config.cleaningMinutes
-  // (same source plan-snapshots.ts uses to compute recommendedHKs).
-  const { data: propRow } = await supabaseAdmin
-    .from('properties').select('config').eq('id', p.id).maybeSingle();
-  const cm = ((propRow?.config as Record<string, unknown>)?.cleaningMinutes ?? {}) as Record<string, unknown>;
-  const num = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
-  const checkoutMin = num(cm.checkout, 30);
-  const stayDay1Min = num(cm.stayoverDay1, 15);
-  const stayDay2Min = num(cm.stayoverDay2, 20);
-  const vacantDirtyMin = num(cm.vacantDirty, 30);
-  const shiftMin = num(cm.shift, 420);
+  // Cleaning minutes per category, from the hotel's OWN columns on `properties`
+  // — the four `/api/housekeeping/forecast` and `plan-snapshots.ts` read.
+  //
+  // This used to read `properties.config.cleaningMinutes`. THAT COLUMN HAS NEVER
+  // EXISTED — not in any migration, not in production. PostgREST answered
+  // `42703 column properties.config does not exist`, the error went into a
+  // `{ data: propRow }` destructure that never looked at `error`, `propRow`
+  // stayed null, and every hotel's sealed `recommended_staff` came from the
+  // hard-coded fallbacks no matter what its manager set in Settings → Clean
+  // Times. Nothing was ever wrong-LOOKING; it was quietly wrong, forever, in the
+  // ML training labels. `plan-snapshots.ts` carried the identical bug.
+  //
+  // Reading the real columns has one visible consequence, the same one the
+  // plan-snapshots fix had: `shift_minutes` is NOT NULL defaulting to 480, so
+  // `recommendedHKs` now divides by the hotel's actual shift length instead of
+  // the 420 fallback — the divisor the Forecast screen and the crew board have
+  // always used.
+  const cm = sealCleaningMinutes(p);
   const totalCleaningMinutes = planRow
-    ? (planRow.checkouts * checkoutMin)
-      + (planRow.stayovers * stayDay1Min)  // day1 used as average across stayover bucket
-      + (planRow.vacant_dirty * vacantDirtyMin)
+    ? (planRow.checkouts * cm.checkout)
+      // today_property_counts_v1 returns ONE stayover total, not the day-1 /
+      // day-2 split plan-snapshots gets from today_room_work_v1. Day 1 is the
+      // average across the bucket, which is what this line has always assumed.
+      + (planRow.stayovers * cm.stayoverDay1)
+      + (planRow.vacant_dirty * cm.vacantDirty)
     : 0;
-  // Silence the unused-warning on stayDay2 — it's reserved for the
-  // per-day split when ScheduleTab feeds us back richer data.
-  void stayDay2Min;
-  const recommendedHKs = shiftMin > 0 ? Math.max(0, Math.ceil(totalCleaningMinutes / shiftMin)) : 0;
+  const recommendedHKs = Math.max(0, Math.ceil(totalCleaningMinutes / cm.shift));
 
   // The in-house snapshot is LIVE point-in-time data: it describes NOW, and
   // "now" only approximates the sealed day when we're sealing yesterday on

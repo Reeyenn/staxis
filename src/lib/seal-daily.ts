@@ -1,5 +1,11 @@
 import { businessDate, type BusinessDateProperty } from '@/lib/business-date';
 import { addDaysInTz } from '@/lib/schedule/local-date';
+import {
+  DEFAULT_CHECKOUT_MINUTES,
+  DEFAULT_STAYOVER_DAY1_MINUTES,
+  DEFAULT_STAYOVER_DAY2_MINUTES,
+  DEFAULT_SHIFT_MINUTES,
+} from '@/lib/forecast';
 
 const PMS_EVIDENCE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -51,6 +57,59 @@ export function sealTargetBusinessDate(
   if (Number.isNaN(localHour) || localHour < cutoff + SEAL_AFTER_HOUR_LOCAL) return null;
 
   return addDaysInTz(businessDate(property, now), -1);
+}
+
+// ─── The hotel's own clean times ────────────────────────────────────────────
+
+/** A property row as the seal reads it, clean times included. */
+export type SealPropertyCleanTimes = {
+  checkout_minutes: number | null;
+  stayover_day1_minutes: number | null;
+  stayover_day2_minutes: number | null;
+  shift_minutes: number | null;
+};
+
+export type SealCleaningMinutes = {
+  checkout: number;
+  stayoverDay1: number;
+  stayoverDay2: number;
+  /** No column of its own: a vacant-dirty room is a full clean, so it costs
+   *  what a checkout costs. Same reasoning as `plan-snapshots.ts` — a second
+   *  column holding the same number is a second place to keep right. */
+  vacantDirty: number;
+  shift: number;
+};
+
+/**
+ * The hotel's clean times, with the shared fallbacks from `src/lib/forecast`
+ * when a column is null. Pure, so the arithmetic is testable without a database.
+ *
+ * The seal used to get these from `properties.config.cleaningMinutes`. THAT
+ * COLUMN HAS NEVER EXISTED — not in any migration, not in production. PostgREST
+ * answered `42703 column properties.config does not exist`, the error landed in
+ * a destructure that ignored it, the row came back null, and every hotel's
+ * sealed `recommended_staff` used the hard-coded fallbacks no matter what its
+ * manager had set. `plan-snapshots.ts` had the identical bug. A wrong number
+ * that never throws is the expensive kind, and this one was being frozen into
+ * ML training labels.
+ */
+export function sealCleaningMinutes(
+  prop: Partial<SealPropertyCleanTimes> | null | undefined,
+): SealCleaningMinutes {
+  const checkout = positiveOr(prop?.checkout_minutes, DEFAULT_CHECKOUT_MINUTES);
+  return {
+    checkout,
+    stayoverDay1: positiveOr(prop?.stayover_day1_minutes, DEFAULT_STAYOVER_DAY1_MINUTES),
+    stayoverDay2: positiveOr(prop?.stayover_day2_minutes, DEFAULT_STAYOVER_DAY2_MINUTES),
+    vacantDirty: checkout,
+    shift: positiveOr(prop?.shift_minutes, DEFAULT_SHIFT_MINUTES),
+  };
+}
+
+/** A stored 0 or a negative is a broken setting, not "this takes no time" —
+ *  honouring it would divide by zero or seal a nonsense recommendation. */
+function positiveOr(value: number | null | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
 export type PmsSnapshotEvidence = {
