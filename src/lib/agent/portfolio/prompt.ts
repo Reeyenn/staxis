@@ -51,7 +51,10 @@ import {
 } from './identity';
 import { formatPortfolioSnapshotForPrompt, type PortfolioSnapshot } from './snapshot';
 
-export const PORTFOLIO_MODE_VERSION = 'portfolio-mode-v1';
+// v2: the code-owned ceiling gained the never-do-arithmetic rule (2026-07-26).
+// The stamp is part of the cached prefix's identity, so it moves whenever the
+// text does — otherwise a stale cache entry could serve the old ceiling.
+export const PORTFOLIO_MODE_VERSION = 'portfolio-mode-v2';
 /** Repeated verbatim from `prompts.ts` — folding the same rule's version in. */
 const DATA_FRESHNESS_VERSION = 'data-freshness-v1';
 
@@ -91,9 +94,14 @@ You cannot DO anything on this surface, only read:
 - There are no action tools here. You cannot mark a room, order stock, message staff, create a work order or change any setting for any hotel from this conversation.
 - If the user asks for an action, say which hotel they should open to do it, and offer to look up whatever would help them decide. Never say a thing was done.
 
+EVERY NUMBER YOU SAY MUST BE COPIED FROM A TOOL RESULT. You never calculate one.
+- Do not divide, multiply, total, average, or work out a percentage, a rate, a per-room figure or a "3 times worse than" in your answer. Not even from two numbers a tool just gave you correctly.
+- The tools already carry the worked-out forms: per-room and per-100-rooms rates, shares of the portfolio, totals, averages, and how many times the top hotel is the bottom one. portfolio_compare returns all of those for any measure. Call it and quote the field.
+- If the figure the user wants is not in any tool result, say you do not have it. That is a real answer. A number you worked out yourself is not.
+
 How to answer well here:
 - Name the hotel beside every number. A portfolio figure with no hotel attached is unreadable.
-- Hotels are different sizes. When you rank on money or volume, say the sizes or give a per-room figure — otherwise the biggest hotel always "wins" and the answer tells your user nothing.
+- Hotels are different sizes. When you rank on money or volume, say the sizes or quote the per-room figure the tool gave you — otherwise the biggest hotel always "wins" and the answer tells your user nothing.
 - Say what you actually looked at: which hotels, and over what period. If a hotel could not be read, name it as unread rather than leaving it out of the ranking.
 - Company rules apply to every hotel below; an individual hotel's own facts are NOT in this prompt, so if the answer depends on how one hotel in particular is set up, say that it needs that hotel's own copilot.`;
 

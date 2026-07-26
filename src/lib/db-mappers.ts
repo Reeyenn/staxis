@@ -561,6 +561,52 @@ const SEVERITY_TO_PRIORITY = (sev: unknown): WorkOrderPriority => {
   return 'normal'; // 'medium' or anything unexpected coerces to normal
 };
 
+/**
+ * `work_orders.severity` HOLDS TWO VOCABULARIES. THIS IS THE ONE PLACE THAT
+ * KNOWS BOTH.
+ *
+ * The column was created with `check (severity in ('low','medium','urgent'))`
+ * in 0001 and RE-CREATED WITHOUT THE CHECK in 0205, after which the
+ * housekeeper's structured issue reporter's own words — `MINOR`/`MAJOR`/
+ * `URGENT`, the vocabulary 0218 and 0226 use — started landing in it too. Live
+ * on 2026-07-26: 5 `MAJOR` submitted, 4 `MINOR` resolved, alongside `medium`,
+ * `low` and `urgent`. Nothing is corrupt; two writers simply speak differently.
+ *
+ * WHY THIS IS NOT A MIGRATION. A rewrite would have to guess what a `MAJOR`
+ * ticket typed by a housekeeper means in a vocabulary that has no word for it,
+ * and would still leave every reader needing to handle whatever arrives next.
+ * Readers normalising is the cheaper and more honest fix, and it works on rows
+ * written before and after.
+ *
+ * The buckets are 0227's own mapping (`major` → `high`, `urgent` → `urgent`,
+ * else medium), so the app does not learn a third vocabulary while fixing two.
+ * `unspecified` exists because a row with no severity is a row nobody graded —
+ * folding it into `normal` would be inventing a grade.
+ */
+export type WorkOrderSeverityBucket = 'urgent' | 'high' | 'normal' | 'low' | 'unspecified';
+
+const SEVERITY_BUCKETS: Readonly<Record<string, WorkOrderSeverityBucket>> = Object.freeze({
+  urgent: 'urgent',
+  critical: 'urgent',
+  major: 'high',
+  high: 'high',
+  medium: 'normal',
+  normal: 'normal',
+  moderate: 'normal',
+  low: 'low',
+  minor: 'low',
+});
+
+export function normalizeWorkOrderSeverity(raw: unknown): WorkOrderSeverityBucket {
+  if (typeof raw !== 'string') return 'unspecified';
+  const key = raw.trim().toLowerCase();
+  if (!key) return 'unspecified';
+  // An unrecognised word is 'unspecified', never 'normal': a reader that
+  // silently graded an unknown vocabulary as middling is how "0 urgent" got
+  // reported over five open MAJOR tickets in the first place.
+  return SEVERITY_BUCKETS[key] ?? 'unspecified';
+}
+
 const STATUS_TO_DB: Record<WorkOrderStatus, string> = {
   open: 'submitted',
   done: 'resolved',

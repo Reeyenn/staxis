@@ -34,6 +34,10 @@
 
 import { registerTool, type ToolResult, type ToolHandlerContext } from '../tools';
 import {
+  normalizeWorkOrderSeverity,
+  type WorkOrderSeverityBucket,
+} from '@/lib/db-mappers';
+import {
   PORTFOLIO_REFUSAL_TEXT,
   resolvePortfolioAccess,
 } from '@/lib/company/portfolio';
@@ -207,6 +211,51 @@ function dollars(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
+/** A ratio or a rate, to two places. Same rounding as `dollars`, different
+ *  meaning — a per-100-rooms figure is not money and should not read as if it
+ *  were the next time somebody greps for where a number came from. */
+function rate(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+// ─── Every derived number, computed HERE ─────────────────────────────────────
+//
+// AI MAY NEVER AUTHOR A NUMBER, AND A DIVISION IS AUTHORING A NUMBER.
+//
+// On 2026-07-26 a live portfolio answer took two correct tool numbers — 11 open
+// items at a 50-room hotel — and reported "32.0 per 100 rooms" (it is 22.0),
+// then concluded one hotel was "6x" another when the true multiple was about 8.
+// Neither figure came from a tool. Both came from the model doing arithmetic in
+// prose, which is the one operation it is worst at and the one nothing checks.
+//
+// The fix is not a better instruction, it is removing the need: every rate, per
+// room figure, ratio and total a portfolio question reduces to is computed in
+// this file and shipped in the payload, so the model QUOTES instead of dividing.
+// The prompt's "never do arithmetic yourself" rule (portfolio/prompt.ts) is the
+// second half of the same fix — it only holds up because these fields exist.
+//
+// ADDING A NEW AGGREGATE TOOL? Ship its derived forms with it. A tool that
+// returns only raw counts is a tool that invites the model to divide.
+
+// Both are exported so they can be proved hermetically. They are the two
+// divisions the model got wrong live, and a division nothing tests is a
+// division back in the model's hands.
+
+/** Rate per 100 rooms. Null when there is no room count — a hotel whose size is
+ *  unknown gets no rate rather than the portfolio's average. */
+export function per100Rooms(value: number | null, rooms: number | null): number | null {
+  if (value === null || rooms === null || rooms <= 0) return null;
+  return rate((value / rooms) * 100);
+}
+
+/** How many times `value` is `reference`. Null when the reference is zero — "x
+ *  times zero" is not a comparison, and Infinity in a payload becomes `null` in
+ *  JSON anyway, so it is better to be deliberate about it. */
+export function timesAsMuch(value: number | null, reference: number | null): number | null {
+  if (value === null || reference === null || reference <= 0) return null;
+  return rate(value / reference);
+}
+
 interface QueryResult<T> {
   data: T[] | null;
   error: { message: string } | null;
@@ -317,14 +366,21 @@ registerTool<OpenItemsArgs>({
       const ranked = [...live].sort((a, b) => (
         (numberOf(b.price_high_cents) ?? 0) - (numberOf(a.price_high_cents) ?? 0)
       ));
+      const rooms = reach.roomsOf(propertyId);
+      const critical = live.filter((r) => r.severity === 'critical').length;
       return {
         hotelId: propertyId,
         hotel: reach.nameOf(propertyId),
         read: true as const,
-        rooms: reach.roomsOf(propertyId),
+        rooms,
         openItems: live.length,
         needingADecision: live.filter((r) => r.disposition === 'propose').length,
-        critical: live.filter((r) => r.severity === 'critical').length,
+        critical,
+        // Computed here, never in prose. A 50-room hotel with 11 open items is
+        // 22.0 per 100 rooms; the model's own division of those same two numbers
+        // printed 32.0 on a live answer.
+        openItemsPer100Rooms: per100Rooms(live.length, rooms),
+        criticalPer100Rooms: per100Rooms(critical, rooms),
         alreadyKnownProblems: value.filter((r) => r.status === 'known_problem').length,
         // Only from items that CARRY a range — a hotel whose problems have no
         // price contributes nothing here rather than a zero that reads as "cheap".
@@ -348,7 +404,8 @@ registerTool<OpenItemsArgs>({
       ok: true,
       data: envelope(reach, {
         basis: 'Staxis\'s own open findings, read live. Dollar figures are RANGES and only exist '
-          + 'for items where this hotel\'s own history supported one.',
+          + 'for items where this hotel\'s own history supported one. Per-100-rooms figures are '
+          + 'already worked out here — quote them, never divide.',
         hotels,
         ...unreadNote(failedHotelCount),
       }),
@@ -407,7 +464,15 @@ registerTool<WorkOrderArgs>({
       // 'submitted' | 'assigned' | 'in_progress' all read as open on the board;
       // only 'resolved' is done, and an absent status is an open ticket
       // (db-mappers.ts STATUS_FROM_DB's own fallback).
-      const stillOpen = value.filter((r) => String(r.status ?? 'submitted') !== 'resolved').length;
+      const openRows = value.filter((r) => String(r.status ?? 'submitted') !== 'resolved');
+      const stillOpen = openRows.length;
+      // ONE vocabulary, whichever the writer used. `work_orders.severity` holds
+      // both `MAJOR`/`MINOR` and `low`/`medium`/`urgent` (see
+      // normalizeWorkOrderSeverity); reading only for the literal string
+      // 'urgent' is why a live answer said "0 urgent" with five MAJOR tickets
+      // sitting open.
+      const buckets = openRows.map((r) => normalizeWorkOrderSeverity(r.severity));
+      const countOf = (b: WorkOrderSeverityBucket) => buckets.filter((x) => x === b).length;
       return {
         hotelId: propertyId,
         hotel: reach.nameOf(propertyId),
@@ -415,8 +480,16 @@ registerTool<WorkOrderArgs>({
         rooms,
         opened,
         stillOpen,
-        urgent: value.filter((r) => String(r.severity ?? '').toLowerCase() === 'urgent').length,
-        openedPer100Rooms: rooms && rooms > 0 ? dollars((opened / rooms) * 100) : null,
+        /** How the STILL-OPEN tickets grade, in one vocabulary. */
+        stillOpenBySeverity: {
+          urgent: countOf('urgent'),
+          high: countOf('high'),
+          normal: countOf('normal'),
+          low: countOf('low'),
+          ungraded: countOf('unspecified'),
+        },
+        openedPer100Rooms: per100Rooms(opened, rooms),
+        stillOpenPer100Rooms: per100Rooms(stillOpen, rooms),
         // Only from tickets where somebody typed a cost in. A hotel that never
         // fills that in reports null, not $0 — $0 would read as "free".
         recordedRepairSpendDollars: costs.length > 0 ? dollars(costs.reduce((a, b) => a + b, 0)) : null,
@@ -428,7 +501,12 @@ registerTool<WorkOrderArgs>({
       ok: true,
       data: envelope(reach, {
         windowDays: days,
-        basis: `work orders created in the last ${days} days on each hotel's own maintenance board`,
+        basis: `work orders created in the last ${days} days on each hotel's own maintenance board. `
+          + 'Severity is normalised: this column holds two vocabularies (MAJOR/MINOR from the '
+          + 'housekeeper app, low/medium/urgent from the maintenance board), and '
+          + 'stillOpenBySeverity folds both into urgent / high / normal / low / ungraded. '
+          + '"ungraded" means nobody graded it, not that it is minor. '
+          + 'Per-100-rooms figures are already worked out here — quote them, never divide.',
         hotels,
         ...unreadNote(failedHotelCount),
       }),
@@ -502,6 +580,7 @@ registerTool<SpendArgs>({
         deliveriesWithACost: priced,
         spendDollars: priced > 0 ? dollars(total) : null,
         spendPerRoomDollars: priced > 0 && rooms && rooms > 0 ? dollars(total / rooms) : null,
+        spendPer100RoomsDollars: priced > 0 ? per100Rooms(dollars(total), rooms) : null,
       };
     });
 
@@ -599,7 +678,10 @@ registerTool<CompareArgs>({
   description:
     'Rank every hotel in the company on one measure, worst first: supply_spend, work_orders, '
     + 'open_items or rooms. Set perRoom to compare hotels of different sizes fairly. '
-    + 'Use this when the user asks "which hotel is worst/best at X".',
+    + 'Use this when the user asks "which hotel is worst/best at X" — and ALSO whenever you need '
+    + 'a per-room figure, a per-100-rooms rate, a share of the portfolio, a total, an average, or '
+    + '"how many times worse than" one hotel is than another. It returns all of those already '
+    + 'worked out, so you never have to calculate one yourself.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -665,11 +747,12 @@ registerTool<CompareArgs>({
       }
     });
 
-    const ranked = results
+    const scored = results
       .filter((r) => r.value !== null)
       .map(({ propertyId, value }) => {
         const rooms = reach.roomsOf(propertyId);
         const raw = value as number;
+        const usableRooms = rooms && rooms > 0 ? rooms : null;
         return {
           hotelId: propertyId,
           hotel: reach.nameOf(propertyId),
@@ -677,15 +760,49 @@ registerTool<CompareArgs>({
           value: raw,
           // A per-room figure needs a room count. A hotel without one reports
           // null rather than borrowing the portfolio's average.
-          perRoomValue: perRoom && rooms && rooms > 0 ? dollars(raw / rooms) : null,
+          perRoomValue: perRoom && usableRooms ? rate(raw / usableRooms) : null,
+          // Always present, whichever way the caller asked to rank: "per 100
+          // rooms" is how a VP says it out loud, and a model that has to turn
+          // 0.22 into 22 has been handed a division to get wrong.
+          per100RoomsValue: per100Rooms(raw, rooms),
+          // NOT published. Every ratio below divides THIS, never the rounded
+          // field beside it. Rounding first is how "3 open items at 74 rooms"
+          // (0.0405 per room) becomes 0.04, and the multiple against a hotel at
+          // 0.4 comes out as a clean 10x when the truth is 9.87x — a number
+          // authored by rounding rather than by measurement.
+          _exactPerRoom: usableRooms ? raw / usableRooms : null,
         };
       })
       .sort((a, b) => {
-        const av = perRoom ? (a.perRoomValue ?? -1) : a.value;
-        const bv = perRoom ? (b.perRoomValue ?? -1) : b.value;
+        const av = perRoom ? (a._exactPerRoom ?? -1) : a.value;
+        const bv = perRoom ? (b._exactPerRoom ?? -1) : b.value;
         if (bv !== av) return bv - av;
         return a.hotel < b.hotel ? -1 : a.hotel > b.hotel ? 1 : 0;
       });
+
+    // The comparison itself, done in code. "Which hotel is worst" is always
+    // followed by "by how much", and that answer is a division the model must
+    // not perform: a live answer said "6x" where the truth was about 8x.
+    const exactly = (r: (typeof scored)[number]): number | null =>
+      perRoom ? r._exactPerRoom : r.value;
+    /** What the ranking column SHOWS, which is the rounded form. */
+    const shown = (r: (typeof scored)[number]): number | null =>
+      perRoom ? r.perRoomValue : r.value;
+    const comparable = scored.filter((r) => exactly(r) !== null);
+    const top = comparable[0] ?? null;
+    const bottom = comparable[comparable.length - 1] ?? null;
+    const total = scored.reduce((sum, r) => sum + r.value, 0);
+
+    const ranked = scored.map(({ _exactPerRoom, ...r }) => ({
+      ...r,
+      /** How many times this hotel is the lowest-ranked hotel, on the SAME
+       *  measure the ranking used. Null when the lowest is zero. */
+      timesTheLowest: timesAsMuch(
+        perRoom ? _exactPerRoom : r.value,
+        bottom ? exactly(bottom) : null,
+      ),
+      shareOfPortfolioPct: total > 0 ? rate((r.value / total) * 100) : null,
+    }));
 
     return {
       ok: true,
@@ -698,9 +815,33 @@ registerTool<CompareArgs>({
           ? 'each hotel\'s configured room count'
           : `${metric.replace(/_/g, ' ')} over the last ${days} days`,
         ranking: ranked,
+        // Every figure a "who is worst, and by how much" answer needs, so none
+        // of them has to be worked out in a sentence.
+        comparison: {
+          rankedOn: perRoom ? 'per room' : 'total',
+          hotelsCompared: comparable.length,
+          highest: top ? { hotel: top.hotel, value: shown(top) } : null,
+          lowest: bottom ? { hotel: bottom.hotel, value: shown(bottom) } : null,
+          // Divided from the exact values, then rounded once — so this can
+          // legitimately not equal `highest.value / lowest.value` as printed.
+          // That is the correct direction to be wrong in: the ratio is right and
+          // the displayed operands are rounded, rather than a tidy ratio derived
+          // from tidied numbers.
+          highestIsTimesTheLowest: timesAsMuch(
+            top ? exactly(top) : null,
+            bottom ? exactly(bottom) : null,
+          ),
+          portfolioTotal: metric === 'supply_spend' ? dollars(total) : total,
+          portfolioAverage: scored.length > 0
+            ? rate(total / scored.length)
+            : null,
+        },
         ...unreadNote(failedHotelCount),
         ...(perRoom && ranked.some((r) => r.perRoomValue === null)
           ? { perRoomGap: 'Some hotels have no room count recorded and could not be ranked per room.' }
+          : {}),
+        ...(ranked.some((r) => r.per100RoomsValue === null)
+          ? { per100RoomsGap: 'Some hotels have no room count recorded, so they have no rate.' }
           : {}),
       }),
     };
