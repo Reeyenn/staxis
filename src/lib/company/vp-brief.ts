@@ -236,8 +236,8 @@ export function companyLivenessLine(run: PortfolioRun, now: Date): BriefLine | n
       : { en: `all ${total} of your hotels`, es: `los ${total} hoteles` })
     : { en: `${checked} of your ${total} hotels`, es: `${checked} de tus ${total} hoteles` };
   return line(
-    `Checked ${things} things overnight across ${where.en}.`,
-    `Se revisaron ${things} cosas anoche en ${where.es}.`,
+    `Checked ${things} ${plural(things, 'thing', 'things')} overnight across ${where.en}.`,
+    `Se ${plural(things, 'revisó', 'revisaron')} ${things} ${plural(things, 'cosa', 'cosas')} anoche en ${where.es}.`,
   );
 }
 

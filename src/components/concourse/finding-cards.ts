@@ -122,11 +122,22 @@ export function isSignOffLocked(f: Pick<QueueFinding, 'signOff'>): boolean {
   return !!f.signOff && !f.signOff.callerMayApprove;
 }
 
+/**
+ * The approver, ready to drop into each language's sentence.
+ *
+ * The Spanish side carries its OWN preposition, and that is not tidiness — it
+ * is the contraction. "la aprobación de " + "el VP" produces "de el VP", which
+ * Spanish writes "del VP". Building the contraction at the join site means
+ * getting it right for four roles across two genders every time somebody edits
+ * the sentence; carrying it here means the fragment is correct by construction.
+ * `describeAuthorityRule` in rulebook-policy.ts hit the same trap and sidesteps
+ * it the same way.
+ */
 const APPROVER_WORD: Record<string, Bi> = {
-  owner: { en: 'owner', es: 'la propiedad' },
-  vp: { en: 'VP', es: 'el VP' },
-  finance: { en: 'finance', es: 'finanzas' },
-  general_manager: { en: 'GM', es: 'el gerente' },
+  owner: { en: 'owner', es: 'de la propiedad' },
+  vp: { en: 'VP', es: 'del VP' },
+  finance: { en: 'finance', es: 'de finanzas' },
+  general_manager: { en: 'GM', es: 'del gerente' },
 };
 
 /**
@@ -142,7 +153,7 @@ export function signOffNotice(signOff: CardSignOff, lang: Lang): string {
   const role = pick(APPROVER_WORD[signOff.approverRole] ?? APPROVER_WORD.vp, lang);
   const names = signOff.approverNames.filter((n) => n && n.trim().length > 0);
   if (lang === 'es') {
-    const head = `Necesita la aprobación de ${role}`;
+    const head = `Necesita la aprobación ${role}`;
     return names.length > 0 ? `${head} — enviado a ${listNames(names, 'es')}` : head;
   }
   const head = `Needs ${role} sign-off`;
@@ -816,12 +827,16 @@ export function livenessLine(
 
   const checked = Math.max(0, Math.round(run.detectorsChecked));
   const normal = Math.max(0, checked - Math.max(0, Math.round(withFindings)));
+  // "Checked 1 things last night" is the sentence that tells a manager nobody
+  // read this screen before they did. A hotel on its first night, or one where
+  // every check but one is skipping for want of data, hits it immediately.
+  const one = checked === 1;
   return {
     kind: 'fresh',
     text:
       lang === 'es'
-        ? `Se revisaron ${checked} cosas anoche — ${normal} se ven normales.`
-        : `Checked ${checked} things last night — ${normal} look normal.`,
+        ? `Se ${one ? 'revisó' : 'revisaron'} ${checked} ${one ? 'cosa' : 'cosas'} anoche — ${normal} se ${normal === 1 ? 've normal' : 'ven normales'}.`
+        : `Checked ${checked} ${one ? 'thing' : 'things'} last night — ${normal} look normal.`,
   };
 }
 
