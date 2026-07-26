@@ -164,7 +164,7 @@ export async function GET(req: NextRequest) {
     }
 
     const { localDate } = await companyLocalToday(queue.organizationId, new Date());
-    const { brief } = await getPortfolioBrief({
+    const { brief, stopped: briefStopped } = await getPortfolioBrief({
       accountId: caller.accountId,
       input: {
         organizationId: queue.organizationId,
@@ -190,6 +190,10 @@ export async function GET(req: NextRequest) {
         },
         cards: queue.cards,
         brief,
+        // No brief because the Morning Briefer is switched off (admin AI Staff
+        // page), as opposed to no brief because nothing has been checked yet.
+        // The queue below is unaffected either way.
+        briefStopped: briefStopped === true,
         run: queue.run,
         cap: queue.cap,
         // What the screen draws its controls from. False for finance: the same

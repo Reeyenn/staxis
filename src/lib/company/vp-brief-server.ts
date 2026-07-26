@@ -29,6 +29,8 @@ import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
+import { MORNING_BRIEFER_ID } from '@/lib/ai/employee-ids';
+import { isEmployeeSwitchedOff } from '@/lib/ai/employee-switches';
 
 import { buildPortfolioBrief, type PortfolioBrief, type PortfolioBriefInput } from './vp-brief';
 
@@ -62,6 +64,10 @@ export function portfolioBriefCacheKey(
 export interface PortfolioBriefResult {
   brief: PortfolioBrief | null;
   cached: boolean;
+  /** True when the Morning Briefer is switched off and this call did no work.
+   *  Same reason the hotel brief carries it: a null brief already means
+   *  "nothing has been checked", and a stopped employee is a different fact. */
+  stopped?: boolean;
 }
 
 export interface GetPortfolioBriefOptions {
@@ -81,6 +87,14 @@ export async function getPortfolioBrief(
   opts: GetPortfolioBriefOptions,
 ): Promise<PortfolioBriefResult> {
   const { input, accountId } = opts;
+
+  // The Morning Briefer writes BOTH morning summaries — the manager's and this
+  // one — so one switch stops both. Checked before the cache read: an employee
+  // that is off does not serve this morning's stored copy either.
+  if (await isEmployeeSwitchedOff(MORNING_BRIEFER_ID)) {
+    return { brief: null, cached: false, stopped: true };
+  }
+
   const key = portfolioBriefCacheKey(input.organizationId, accountId, input.localDate);
 
   if (!opts.noCache) {
