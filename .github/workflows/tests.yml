@@ -24,7 +24,25 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 2026-07-26: was 10, which the job outgrew. The ceiling was set when a
+    # broken type-check step short-circuited the run and SKIPPED the 12 steps
+    # after it, so for 25 commits main only ever paid for lint + type-check.
+    # With type-check fixed the full chain runs again, and the weekend's
+    # +700 tests landed on top of that. Run 30205302397 was cancelled mid
+    # `Test cua-service` at the 10m0s wall.
+    #
+    # Worst observed time per step, summed across runs 30204336858 (passed,
+    # 7m44s) and the two cancelled runs: 10m57s — i.e. the old ceiling had
+    # zero headroom even on a good runner. The slow steps also swing hard
+    # run-to-run on hosted runners: TypeScript unit tests 181s -> 299s,
+    # Lint 79s -> 119s, Type-check 26s -> 43s (+51-65% each) for the same
+    # workload. 25 gives ~2.3x the worst observed sum, which absorbs both
+    # that variance and continued growth of the test suite, while still
+    # killing a genuinely hung test far inside GitHub's 6h default.
+    #
+    # This is a ceiling, not a gate: raise it when the suite honestly grows,
+    # never to paper over a step that has started hanging.
+    timeout-minutes: 25
     steps:
       # fetch-depth: 0 is LOAD-BEARING, not a convenience. The lint chain runs
       # scripts/audit-eval-regressions.mjs (the ratchet: a `fix(` commit to the
