@@ -453,7 +453,13 @@ export function getToolsForRole(
   const lens = lensFor(role, surface);
   if (lens && !lens.mounted) return [];
   return Array.from(registry.values()).filter(t => {
-    if (lens && !lens.tools.includes(t.name)) return false;
+    // Through `lensAllowsTool`, not an inlined `lens.tools.includes(...)`.
+    // lenses.ts claims to be "the ONLY place the intersection is expressed" so
+    // the mount and the executor cannot drift into disagreeing about what a hat
+    // can reach — and until this call existed that claim was false: this line
+    // was a second copy, so editing `lensAllowsTool` changed what `executeTool`
+    // refuses and silently did NOT change what the model is offered.
+    if (!lensAllowsTool(role, surface, t.name)) return false;
     if (!t.allowedRoles.includes(role)) return false;
     const allowedSurfaces = t.surfaces ?? ['chat'];
     if (!allowedSurfaces.includes(surface)) return false;

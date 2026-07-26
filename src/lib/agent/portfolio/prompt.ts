@@ -39,7 +39,12 @@ import { createHash } from 'node:crypto';
 
 import { formatCompanyRulebookForPrompt } from '@/lib/agent/company-tier';
 import { deriveCompanyRulebookByOrganization } from '@/lib/agent/company-tier';
-import { DATA_FRESHNESS_PROMPT, type SystemPromptBlocks } from '@/lib/agent/prompts';
+import {
+  DATA_FRESHNESS_PROMPT,
+  NUMBER_HONESTY_PROMPT,
+  NUMBER_HONESTY_VERSION,
+  type SystemPromptBlocks,
+} from '@/lib/agent/prompts';
 import { resolvePrompts } from '@/lib/agent/prompts-store';
 import { COMPANY_RULEBOOK_VERSION } from '@/lib/agent/company-tier';
 import type { CompanyScopeRole } from '@/lib/company/roles';
@@ -111,6 +116,7 @@ type StableTier =
   | 'global_role'
   | 'portfolio_mode'
   | 'data_freshness'
+  | 'number_honesty'
   | 'company'
   | 'portfolio_identity'
   | 'version_line';
@@ -129,12 +135,24 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'global_role',
   'portfolio_mode',
   'data_freshness',
+  'number_honesty',
   'company',
   'portfolio_identity',
   'version_line',
 ];
 
 const DYNAMIC_TIER_ORDER: readonly DynamicTier[] = ['portfolio_snapshot'];
+
+/** Tiers that instruct rather than state a fact about these hotels — excluded
+ *  from `factual`. See the twin list in ../prompts.ts for the full reasoning. */
+const INSTRUCTIONAL_STABLE_TIERS: ReadonlySet<StableTier> = new Set<StableTier>([
+  'global_base',
+  'global_role',
+  'portfolio_mode',
+  'data_freshness',
+  'number_honesty',
+  'version_line',
+]);
 
 interface Segment<T extends string> {
   tier: T;
@@ -194,7 +212,9 @@ export async function buildPortfolioSystemPrompt(
   );
   const identityBlock = formatPortfolioIdentityForPrompt(input.identity);
 
-  const stampParts = [versionLabel, PORTFOLIO_MODE_VERSION, DATA_FRESHNESS_VERSION];
+  const stampParts = [
+    versionLabel, PORTFOLIO_MODE_VERSION, DATA_FRESHNESS_VERSION, NUMBER_HONESTY_VERSION,
+  ];
   if (companyBlock) stampParts.push(COMPANY_RULEBOOK_VERSION);
   if (identityBlock) stampParts.push(PORTFOLIO_IDENTITY_VERSION);
   const stableStamp = stampParts.join('+');
@@ -225,6 +245,7 @@ export async function buildPortfolioSystemPrompt(
       ],
     },
     { tier: 'data_freshness', lines: ['', DATA_FRESHNESS_PROMPT] },
+    { tier: 'number_honesty', lines: ['', NUMBER_HONESTY_PROMPT] },
   ];
   if (companyBlock) stable.push({ tier: 'company', lines: ['', companyBlock] });
   if (identityBlock) stable.push({ tier: 'portfolio_identity', lines: ['', identityBlock] });
@@ -243,6 +264,16 @@ export async function buildPortfolioSystemPrompt(
   return {
     stable: assembleBlock(stable, STABLE_TIER_ORDER, 'stable'),
     dynamic: assembleBlock(dynamic, DYNAMIC_TIER_ORDER, 'dynamic'),
+    // Same contract as the hotel surface: the instruction tiers are dropped so
+    // the number guard's receipt is what the runtime said about these HOTELS,
+    // not the role prompts' worked examples. Built by subtraction — a tier
+    // added later is kept, i.e. the guard fails permissive. See
+    // src/lib/agent/number-guard.ts.
+    factual: assembleBlock(
+      stable.filter((s) => !INSTRUCTIONAL_STABLE_TIERS.has(s.tier)),
+      STABLE_TIER_ORDER,
+      'factual',
+    ),
     versionLabel: persistedVersionLabel,
     stableStamp,
   };

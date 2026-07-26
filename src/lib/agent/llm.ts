@@ -28,6 +28,15 @@ import {
   type FakeSuccessRule,
   type UnbackedClaim,
 } from '@/lib/agent/fake-success-guard';
+import {
+  buildAnswerReceipt,
+  checkAnswerNumbers,
+  detectAnswerLanguage,
+  numberGuardCorrection,
+  violationTokens,
+  type NumberGuardLanguage,
+  type NumberViolation,
+} from '@/lib/agent/number-guard';
 import { env } from '@/lib/env';
 import {
   ANTHROPIC_REQUEST_TIMEOUT_MS,
@@ -383,6 +392,19 @@ export interface SystemPromptBlocks {
   stable: string;
   /** Changes every turn (e.g. live hotel snapshot). NOT cached. */
   dynamic: string;
+  /**
+   * The subset of `stable` that states FACTS about this hotel (its confirmed
+   * identity, its company's rulebook, its PMS notes) rather than instructing
+   * the model. Never sent to the model — `buildSystemBlocks` ignores it — and
+   * read by exactly one consumer: the number-honesty guard, which uses it
+   * instead of `stable` so the role prompts' illustrative numbers ("mark 10+
+   * rooms", "room 302") do not silently back a fabricated count.
+   *
+   * OPTIONAL, and the fallback is deliberate: a caller that hand-rolls its
+   * blocks (the eval runner, the summarizer) omits it, and the guard falls back
+   * to `stable` — more permissive, never louder. See number-guard.ts.
+   */
+  factual?: string;
 }
 
 export interface RunAgentOpts {
@@ -695,6 +717,7 @@ async function executeAgentToolCall(
     dryRun: opts.dryRun,
   });
   noteToolRan(trace, call.name, result.ok, result.data);
+  trace.payloads.push(result.ok ? result.data : result.error);
   return { result, isError: !result.ok };
 }
 
@@ -744,7 +767,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
   const toolCallsExecuted: RunAgentResult['toolCallsExecuted'] = [];
   const assistantMessages: RunAgentResult['assistantMessages'] = [];
   // Same evidence the streaming path collects — see detectFakeSuccess.
-  const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false };
+  const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false, payloads: [] };
 
   const ledger = new AgentUsageLedger(model);
   const buildSyncUsage = (): UsageReport => ledger.report(activeModel.modelId);
@@ -822,6 +845,14 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
       if (claim) {
         reportFakeSuccess(claim, opts);
         finalText = `${finalText}${fakeSuccessCorrection(claim.lang)}`;
+      }
+      // Number-honesty guard. Graded on the text BEFORE either correction is
+      // appended, so the guard reads the model's own answer and not our
+      // retraction — the two corrections would otherwise grade each other.
+      const fabricated = detectNumberFabrication(opts, turnText, toolTrace);
+      if (fabricated) {
+        reportNumberFabrication(fabricated, opts);
+        finalText = `${finalText}${fabricated.correction}`;
       }
       return {
         text: finalText,
@@ -990,6 +1021,15 @@ export function partitionGatedCalls(
 interface TurnToolTrace {
   anyToolRan: boolean;
   mutatingToolRan: boolean;
+  /**
+   * Every payload a tool handed back this turn, successful or not — the
+   * number-honesty guard's half of the evidence.
+   *
+   * Errors are collected too, because the model is SHOWN the error text and may
+   * legitimately quote a number out of it ("room 9999 is not at this hotel").
+   * The guard grades what the model could have read, not what we wish it read.
+   */
+  payloads: unknown[];
 }
 
 /**
@@ -1061,6 +1101,81 @@ function detectFakeSuccess(
  * tell us whether the model is being talked out of the tool layer by a prompt
  * injection or is simply hallucinating success.
  */
+// ─── Number-honesty guard ──────────────────────────────────────────────────
+
+/** A fabrication found in the final answer, with the correction to append. */
+interface NumberFabrication {
+  violations: NumberViolation[];
+  lang: NumberGuardLanguage;
+  correction: string;
+}
+
+/**
+ * Decide whether this turn's final text prints a number nothing backs.
+ *
+ * THE GATE — `opts.tools.length === 0` means no guard, and that one condition
+ * is doing important work. Every background caller in the codebase (the
+ * conversation summarizer, the findings judge, the nightly sweep, the memory
+ * consolidator, the two knowledge-intake routes, the brief writer) runs with
+ * `tools: []`. Several of them exist precisely to RESTATE earlier assistant
+ * text — a summarizer's whole job is to repeat what the assistant said,
+ * including its numbers — and this guard treats assistant text as unbacked by
+ * construction. Grading them would produce a correction on every summary and
+ * nothing else.
+ *
+ * Choosing the gate this way rather than an opt-in flag is deliberate: a new
+ * conversational surface gets the guard automatically the moment it mounts a
+ * tool catalog, which is the direction the mistake should fall. It is the same
+ * shape as the fake-success guard's "no mutating tool offered" gate.
+ */
+function detectNumberFabrication(
+  opts: RunAgentOpts,
+  finalText: string,
+  trace: TurnToolTrace,
+): NumberFabrication | null {
+  if (opts.tools.length === 0) return null;
+  if (!finalText) return null;
+
+  const receipt = buildAnswerReceipt({
+    systemPrompt: opts.systemPrompt,
+    history: opts.history,
+    newUserMessage: opts.newUserMessage,
+    toolPayloads: trace.payloads,
+  });
+  const verdict = checkAnswerNumbers(finalText, receipt);
+  if (verdict.ok) return null;
+
+  const lang = detectAnswerLanguage(finalText);
+  return {
+    violations: verdict.violations,
+    lang,
+    correction: numberGuardCorrection(lang, verdict.violations),
+  };
+}
+
+/**
+ * Make it countable. Same posture as `reportFakeSuccess`: the agent layer has
+ * no synchronous DB handle here, so Sentry is the counter, and the offending
+ * TOKENS are carried because the recurring shapes are the whole point — a
+ * pattern of unbacked percentages says the model is deriving, a pattern of
+ * unbacked dollar figures says it is estimating, and the two want different
+ * fixes.
+ */
+function reportNumberFabrication(found: NumberFabrication, opts: RunAgentOpts): void {
+  captureException(
+    new Error('[llm] assistant printed a number nothing in the turn backs'),
+    {
+      subsystem: 'number-honesty-guard',
+      lang: found.lang,
+      surface: opts.toolContext.surface,
+      role: opts.toolContext.user.role,
+      kinds: [...new Set(found.violations.map(v => v.kind))].join(','),
+      tokens: violationTokens(found.violations).slice(0, 12).join(', '),
+      violationCount: String(found.violations.length),
+    },
+  );
+}
+
 function reportFakeSuccess(claim: UnbackedClaim, opts: RunAgentOpts): void {
   captureException(
     new Error(
@@ -1100,6 +1215,18 @@ export type AgentEvent =
   // user the retraction; the event exists so the incident is countable.
   // See src/lib/agent/fake-success-guard.ts.
   | { type: 'fake_success_blocked'; rule: FakeSuccessRule; lang: FakeSuccessLanguage; matched: string }
+  // The assistant printed a number that nothing in this turn backs. Like the
+  // event above, the correction is ALSO streamed and baked into
+  // `done.finalText`, so a consumer that ignores this event still shows the
+  // user the retraction; the event exists so the miss rate is countable.
+  // See src/lib/agent/number-guard.ts.
+  | {
+      type: 'number_guard_blocked';
+      lang: NumberGuardLanguage;
+      /** The offending tokens, distinct, in the order they appeared. */
+      tokens: string[];
+      violations: NumberViolation[];
+    }
   // Error events carry `usage` whenever the stream consumed any tokens
   // before the error fired (iteration-cap exit, mid-stream exception).
   // The route finalizes the cost reservation against this usage rather
@@ -1133,7 +1260,7 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
   let finalText = '';
   // What actually executed this turn — the evidence the fake-success guard
   // grades the final text against.
-  const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false };
+  const toolTrace: TurnToolTrace = { anyToolRan: false, mutatingToolRan: false, payloads: [] };
 
   // Mid-iter spend accounting (Codex round-6 R5 + round-7 F3, 2026-05-13).
   // streamAgent only commits an iter's usage AFTER stream.finalMessage()
@@ -1301,7 +1428,11 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
         // deliberate: the next turn replays this message to the model, and it
         // must see that its claim was retracted rather than treat "Done" as
         // established fact and build on it.
-        const claim = detectFakeSuccess(opts, finalText, toolTrace);
+        // The model's own words, before either guard appends anything. Both
+        // guards grade THIS, never each other's retraction.
+        const modelText = finalText;
+
+        const claim = detectFakeSuccess(opts, modelText, toolTrace);
         if (claim) {
           reportFakeSuccess(claim, opts);
           const correction = fakeSuccessCorrection(claim.lang);
@@ -1313,6 +1444,26 @@ export async function* streamAgent(opts: RunAgentOpts): AsyncGenerator<AgentEven
             matched: claim.matched,
           };
           finalText = `${finalText}${correction}`;
+        }
+
+        // ── Number-honesty guard ──────────────────────────────────────────
+        // Runs POST-STREAM, for the reason written up in number-guard.ts:
+        // buffering every answer to check it would trade the product's
+        // first-token latency on 100% of turns against a violation rate under
+        // 1%. So the figure is already on screen and we do the same thing the
+        // guard above does — name it, retract it, persist the retraction so the
+        // next turn cannot build on a number that was already withdrawn.
+        const fabricated = detectNumberFabrication(opts, modelText, toolTrace);
+        if (fabricated) {
+          reportNumberFabrication(fabricated, opts);
+          yield { type: 'text_delta', delta: fabricated.correction };
+          yield {
+            type: 'number_guard_blocked',
+            lang: fabricated.lang,
+            tokens: violationTokens(fabricated.violations),
+            violations: fabricated.violations,
+          };
+          finalText = `${finalText}${fabricated.correction}`;
         }
 
         yield {

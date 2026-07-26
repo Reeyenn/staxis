@@ -245,6 +245,34 @@ export const DATA_FRESHNESS_PROMPT = `─── How old the numbers are ──�
 
 const DATA_FRESHNESS_VERSION = 'data-freshness-v1';
 
+// ─── Number honesty (the guard's half of the bargain) ──────────────────────
+// `src/lib/agent/number-guard.ts` CHECKS this. This text is why the check
+// should almost never fire: a model that knows the rule quotes instead of
+// calculating, and a guard that never has to fire is a guard nobody is tempted
+// to switch off.
+//
+// Both halves are needed and neither is sufficient. A prompt rule alone is what
+// we had — the model is asked to be careful and mostly is, until it isn't, and
+// nothing notices. A check alone would retract honest arithmetic the model had
+// no way to know it was not allowed to do.
+//
+// Deliberately does NOT say "a guard will catch you". Telling a model it is
+// being graded on numerals invites it to avoid numerals — and an answer that
+// dodges the figure is a worse answer to a manager who asked for the figure.
+export const NUMBER_HONESTY_PROMPT = `─── Numbers you may say ───
+
+- Every number in your answer must come from somewhere you were SHOWN it: a tool result, the hotel snapshot, this hotel's own confirmed facts, or what the user just typed. Copy it; do not adjust it.
+- Do NOT calculate a new number. No percentages, averages, per-room figures, totals, differences or "on pace to" projections worked out in your head — not even from numbers you were correctly given. Arithmetic done in prose is where wrong figures come from, and a manager cannot tell one of those from a real one.
+- The tools already carry the derived figures people ask for: percent of budget used, what is left, cost per occupied room, share of the month's spend, how far into the month you are, and what an amount someone is thinking of spending would do to their budget. When a question needs one, CALL THE TOOL WITH THE RIGHT ARGUMENT and quote what comes back. Read the tool's arguments before deciding you cannot answer — "what percent of my budget is $600" is a question the tool answers when you hand it the $600.
+- If the number that answers the question is not in front of you, say that plainly and offer to look it up: "I don't have that figure — want me to check?" Never estimate, never round to a comfortable number, never say "roughly" over a figure you made up.
+- Do not lecture the user about any of this. They asked a question; either give them the figure or tell them in one short sentence that you don't have it. Never explain that you are not allowed to do arithmetic, never mention your rules, and never tell a manager to work the number out themselves — that is a worse answer than no answer.
+- Never quote a tool's field names or its notes to you back at the user. They have never seen "pctUsed", "pctElapsed" or "the tool returned"; they see a hotel. Say "61% of the budget used" and "87% through the month" and leave the plumbing out of it.
+- Money is the strictest case. Never invent a price, a total, a fee or a cost, and never turn a range into a single number — "$750–$1,750" is the claim; "$750" and "about $1,200" are not.
+
+En español, la misma regla: los números se copian tal cual del dato que tienes delante. No calcules porcentajes ni promedios ni totales de cabeza. Si no tienes la cifra, dilo — "esa cifra no la tengo" — y ofrécete a buscarla. Nunca inventes un precio.`;
+
+export const NUMBER_HONESTY_VERSION = 'number-honesty-v3';
+
 // ─── PMS-family trust envelope (INV-TIER-8) ────────────────────────────────
 // The family tier is the ONLY channel in the whole prompt where text written
 // somewhere else lands inside the CACHED system block, above the user's own
@@ -367,6 +395,15 @@ export interface SystemPromptBlocks {
   stable: string;
   /** Changes every turn — must NOT be cached. */
   dynamic: string;
+  /**
+   * `stable` minus the INSTRUCTION tiers — what the runtime told the model
+   * about THIS HOTEL, without the role prompts' worked examples.
+   *
+   * Never sent to the model. Read by the number-honesty guard alone, as the
+   * "what was this answer allowed to say" receipt. See
+   * `INSTRUCTIONAL_STABLE_TIERS` above and src/lib/agent/number-guard.ts.
+   */
+  factual: string;
   /** The effective version of the prompts used for this turn. Persisted
    *  to agent_messages.prompt_version so we can correlate behaviour
    *  to a specific prompt rev. May be a composite when base + role
@@ -397,6 +434,7 @@ type StableTier =
   | 'voice_mode'
   | 'inventory_routing'
   | 'data_freshness'
+  | 'number_honesty'
   | 'pms_family'
   | 'company'
   | 'hotel_identity'
@@ -423,6 +461,7 @@ const STABLE_TIER_ORDER: readonly StableTier[] = [
   'voice_mode',
   'inventory_routing',
   'data_freshness',
+  'number_honesty',
   'pms_family',
   'company',
   'hotel_identity',
@@ -434,6 +473,38 @@ const DYNAMIC_TIER_ORDER: readonly DynamicTier[] = [
   'hotel_memory',
   'room_hint',
 ];
+
+/**
+ * Stable tiers that INSTRUCT the model rather than tell it a fact about this
+ * hotel — dropped from the `factual` block the number-honesty guard grades
+ * against (`src/lib/agent/number-guard.ts`).
+ *
+ * WHY THIS LIST EXISTS. The guard's rule is "a number in the answer must have
+ * been put in front of the model". Taken literally that includes the role
+ * prompts, and the role prompts are full of ILLUSTRATIVE numbers — "mark 10+
+ * rooms at once", "never return more than 5 tool calls", "7am–3pm", "40 rolls
+ * of toilet paper", the example rooms 302 / 305 / 207. Measured against the
+ * real base + manager prompt that is 12 stray numbers backing almost every
+ * small count, which is exactly the range a misquoted count lives in. None of
+ * them is a fact about the hotel and none of them should back a sentence.
+ *
+ * WHY BY SUBTRACTION. A tier added later is KEPT by default, so forgetting to
+ * update this list makes the guard more permissive (a missed fabrication)
+ * rather than firing it on an honest answer quoting a new hotel-data section.
+ * That is the direction the mistake has to fall: a guard that fires on honest
+ * answers gets switched off, and then nothing is checked at all.
+ */
+const INSTRUCTIONAL_STABLE_TIERS: ReadonlySet<StableTier> = new Set<StableTier>([
+  'global_base',
+  'global_role',
+  'voice_approval',
+  'voice_mode',
+  'inventory_routing',
+  'data_freshness',
+  'number_honesty',
+  // "Prompt version: 2026.07.05-v9+…" — a build stamp, not a hotel fact.
+  'version_line',
+]);
 
 interface Segment<T extends string> {
   tier: T;
@@ -638,6 +709,7 @@ export async function buildSystemPrompt(
   const stampParts = [versionLabel];
   if (hasInventoryAccountingAccess) stampParts.push(INVENTORY_ACCOUNTING_ROUTING_VERSION);
   stampParts.push(DATA_FRESHNESS_VERSION);
+  stampParts.push(NUMBER_HONESTY_VERSION);
   if (familyToRender) {
     // Sanitized because stableStamp is PRINTED into the stable block; the
     // persisted receipt below keeps the raw key, which is never shown to a model.
@@ -691,6 +763,11 @@ export async function buildSystemPrompt(
   // Unconditional: every role can be handed a PMS-derived number, so every
   // role needs the data-age rule. Constant per deploy ⇒ safe in the cached block.
   stable.push({ tier: 'data_freshness', lines: ['', DATA_FRESHNESS_PROMPT] });
+  // Also unconditional: every role can be handed a figure, and the two floor
+  // lenses (front desk, maintenance) are the ones where an invented number does
+  // the most damage — it is repeated verbatim to a paying guest, or acted on
+  // with a wrench. Constant per deploy ⇒ safe in the cached block.
+  stable.push({ tier: 'number_honesty', lines: ['', NUMBER_HONESTY_PROMPT] });
   if (familyToRender) {
     // The header, the ceiling and BOTH marker tags are supplied HERE, never by
     // the row — which is what the '───' and '<staxis-' forgery CHECKs in
@@ -750,6 +827,15 @@ export async function buildSystemPrompt(
   return {
     stable: assembleBlock(stable, STABLE_TIER_ORDER, 'stable'),
     dynamic: assembleBlock(dynamic, DYNAMIC_TIER_ORDER, 'dynamic'),
+    // The same stable block minus the instruction tiers: what the runtime told
+    // the model about THIS HOTEL, with the illustrative numbers in the role
+    // prompts left out. Only the number-honesty guard reads it; the model is
+    // still sent `stable` unchanged, so this cannot alter a single answer.
+    factual: assembleBlock(
+      stable.filter(s => !INSTRUCTIONAL_STABLE_TIERS.has(s.tier)),
+      STABLE_TIER_ORDER,
+      'factual',
+    ),
     versionLabel: persistedVersionLabel,
     stableStamp,
   };

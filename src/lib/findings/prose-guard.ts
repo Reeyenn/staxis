@@ -136,7 +136,7 @@ export function foldForProseMatch(s: string): string {
 }
 
 /** Round-trip-safe: 4, 4.0 and "4" are the same claim. */
-function normalizeNumber(n: number): number {
+export function normalizeNumber(n: number): number {
   if (!Number.isFinite(n)) return NaN;
   // Two decimal places is the finest granularity anything in this layer
   // asserts (money in cents rendered as dollars). Beyond that, floating point
@@ -144,7 +144,14 @@ function normalizeNumber(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function addNumber(into: Set<number>, value: number): void {
+/**
+ * Record one number as backed, plus the roundings that say the SAME thing.
+ *
+ * Shared with the chat guard so "9.4 days" licenses "9 days" identically in a
+ * card and in a sentence — a tolerance that differed between the two would mean
+ * one of them was wrong, and nobody would know which.
+ */
+export function addNumber(into: Set<number>, value: number): void {
   const n = normalizeNumber(value);
   if (!Number.isFinite(n)) return;
   into.add(n);
@@ -263,18 +270,33 @@ export function buildProseReceipt(input: ProseReceiptInput): ProseReceipt {
 
 // ─── Vocabulary ──────────────────────────────────────────────────────────────
 
-const DAY_NAMES_EN = [
+// ═══ EXPORTED, AND WHY ══════════════════════════════════════════════════════
+// Everything in this section is the SHARED bilingual number vocabulary of the
+// product. `src/lib/agent/number-guard.ts` — the same check applied to free
+// chat prose instead of a card's one sentence — imports these rather than
+// keeping a second copy. Two lists of Spanish number words would drift within a
+// month, and the half that drifted would be the half nobody was reading.
+//
+// The chat guard SUBTRACTS from `NUMBER_WORDS` (a conversational hedge like
+// "a couple of options" is not a claim about hotel data the way it is on a
+// card) and it does so by naming the words it drops, in one place, with
+// reasons. It never adds — a word that names a number here names a number
+// there.
+
+/** Day names, indexed by `Date#getDay()`. */
+export const DAY_NAMES_EN = [
   'sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
 ];
 // Written unaccented to match foldForProseMatch (miercoles, sabado).
-const DAY_NAMES_ES = [
+export const DAY_NAMES_ES = [
   'domingo', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado',
 ];
-const MONTH_NAMES_EN = [
+/** Month names, indexed by `Date#getMonth()`. */
+export const MONTH_NAMES_EN = [
   'january', 'february', 'march', 'april', 'may', 'june',
   'july', 'august', 'september', 'october', 'november', 'december',
 ];
-const MONTH_NAMES_ES = [
+export const MONTH_NAMES_ES = [
   'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
   'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
 ];
@@ -287,7 +309,7 @@ const MONTH_NAMES_ES = [
  *
  * Spanish entries are unaccented to match the fold ("dieciseis", "veintidos").
  */
-const NUMBER_WORDS: Readonly<Record<string, number>> = Object.freeze({
+export const NUMBER_WORDS: Readonly<Record<string, number>> = Object.freeze({
   // English
   two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9,
   ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15,
@@ -342,8 +364,8 @@ const NUMBER_WORDS: Readonly<Record<string, number>> = Object.freeze({
 /** Ordinals are positional, not quantitative — "the 3rd invoice" makes no claim
  *  about how many there are. Bounded so "the 400th" cannot use the exemption to
  *  smuggle a count through. */
-const MAX_EXEMPT_ORDINAL = 31;
-const ORDINAL_SUFFIX_RE = /^(?:st|nd|rd|th|o|a|er|ro|do|mo|vo|no)\b/;
+export const MAX_EXEMPT_ORDINAL = 31;
+export const ORDINAL_SUFFIX_RE = /^(?:st|nd|rd|th|o|a|er|ro|do|mo|vo|no)\b/;
 
 // ─── The check ───────────────────────────────────────────────────────────────
 
@@ -436,7 +458,9 @@ export function checkProse(
   return { ok: violations.length === 0, violations };
 }
 
-function containsWord(haystack: string, word: string): boolean {
+/** Word-boundary substring match on already-folded text. Exported for the chat
+ *  guard, which needs the identical boundary rule. */
+export function containsWord(haystack: string, word: string): boolean {
   const at = haystack.indexOf(word);
   if (at === -1) return false;
   // Cheap manual word-boundary check — avoids building a RegExp per token per
