@@ -102,6 +102,66 @@ export interface RoomWorkOrderHistory extends HistoryCoverage {
   repairCostCentsSamples: number[];
 }
 
+// ─── Work orders, per piece of equipment ─────────────────────────────────────
+
+/**
+ * One asset from the hotel's equipment registry and the maintenance it has
+ * generated lately.
+ *
+ * WHY THIS IS A THIRD WORK-ORDER FEED AND NOT A FIELD ON `LocationWorkOrders`
+ * A location groups by WHERE a ticket was written. An asset groups by WHAT the
+ * person who wrote it said was broken, and the two answer questions that do not
+ * even have the same shape: a batch of PTAC units installed in 2019 covers forty
+ * rooms, so the pattern "that batch is dying" is INVISIBLE to a per-location
+ * count — four tickets across four different rooms look like four unrelated
+ * faults. That is precisely the pattern this feed exists to make countable.
+ *
+ * The reverse is also true, which is why both feeds stay: four tickets on the
+ * one room's own plumbing are a room problem, not an asset problem, and nothing
+ * links them to a registry row.
+ *
+ * WHAT AN ASSET'S REPAIR COSTS ARE FOR
+ * `repairCostCentsSamples` here is scoped to THIS asset's own tickets, which is
+ * a tighter and more honest basis for "what does fixing one of these cost" than
+ * the hotel-wide spread. It is frequently empty even at a hotel that records
+ * costs, so the detector falls back to the hotel-wide samples with a basis line
+ * that says which of the two it used.
+ */
+export interface EquipmentWorkOrders {
+  /** `equipment.id`. The finding's identity and its chip target. */
+  id: string;
+  /** As the hotel typed it: "PTAC units — rooms 201-240". Goes in the sentence. */
+  name: string;
+  /** `equipment.location` — the coverage text, or null when they left it blank. */
+  location: string | null;
+  /** Install YEAR, from `equipment.install_date`. Null when unrecorded. */
+  installYear: number | null;
+  /** Work orders linked to this asset inside the window. */
+  total: number;
+  /** Of those, how many are still not resolved. */
+  stillOpen: number;
+  /** Hotel-local date of the most recent one. */
+  lastDate: string;
+  /** What this hotel has paid to fix THIS asset, in cents. Often empty. */
+  repairCostCentsSamples: number[];
+}
+
+export interface EquipmentWorkOrderHistory extends HistoryCoverage {
+  equipment: EquipmentWorkOrders[];
+  /**
+   * How many assets the hotel has on its registry AT ALL, linked or not.
+   *
+   * Separate from `equipment.length` on purpose: that array only carries assets
+   * with at least one ticket in the window, and the runner's minimum-data check
+   * needs to tell "this hotel does not track equipment" apart from "this hotel
+   * tracks equipment and none of it broke". Only the first is a reason to skip.
+   */
+  registeredCount: number;
+  /** The hotel's own recorded repair costs, whatever the ticket was against.
+   *  The fallback basis when one asset has too few of its own. */
+  hotelRepairCostCentsSamples: number[];
+}
+
 // ─── Inventory usage ─────────────────────────────────────────────────────────
 
 /** Consumption of one item between two consecutive counts of that item. */

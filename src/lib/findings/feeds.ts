@@ -39,6 +39,7 @@ import {
   type ActivityStream,
   type DailySeriesPoint,
   type InventoryItemUsage,
+  type EquipmentWorkOrders,
   type LocationWorkOrders,
   type PreventiveScheduleEntry,
   type UsageInterval,
@@ -379,12 +380,168 @@ const loadRoomWorkOrderHistory: FeedLoader<'room_work_order_history'> = async (e
   };
 };
 
+/**
+ * How far back a "this batch keeps failing" claim reaches.
+ *
+ * SIXTY, WHERE THE PER-LOCATION WINDOW IS THIRTY, AND THAT DIFFERENCE IS THE
+ * POINT. A room that produces three faults in a month is having a bad month
+ * NOW; the remedy is to go and look at it, and a stale window would send
+ * somebody to inspect a room that has been fine for six weeks. A batch of
+ * equipment reaching the end of its life fails on a slower clock — one unit
+ * this month, two the next — and a thirty-day window would see each of those as
+ * an unremarkable pair and never add them up. Sixty days at four tickets is the
+ * founder's own framing of the pattern ("4 tickets on the 2019 PTAC batch in 60
+ * days"), and it is the number the card prints, because it is the number this
+ * loader counts over.
+ *
+ * Repair costs are sampled from the full 98-day read for the same reason the
+ * per-location feed does it: what a repair costs here is a fact about the hotel
+ * and its equipment, not about the last two months, and the price basis claims
+ * no window.
+ */
+const EQUIPMENT_WINDOW_DAYS = 60;
+
 interface CountRow {
   item_id: string;
   item_name: string | null;
   counted_stock: unknown;
   counted_at: string;
 }
+
+/**
+ * Which pieces of the hotel's own equipment registry keep producing work orders.
+ *
+ * SECTION-GATED. The registry lives in Maintenance, and a hotel that switched
+ * that section off has said it does not use this part of Staxis; counting its
+ * assets' failures behind its back would be the same overreach as evaluating its
+ * housekeeping rules. Returns a real, empty feed rather than a failure, so the
+ * detector's declared minimum skips it WITH A REASON instead of the runner
+ * recording a broken source.
+ *
+ * THE REGISTRY IS READ EVEN WHEN NOTHING IS LINKED, and that is deliberate:
+ * `registeredCount` is what lets the runner tell "this hotel does not track
+ * equipment" (skip, with a reason a human can read) apart from "this hotel
+ * tracks equipment and none of it broke" (silence, which is the correct answer
+ * and a good one). Collapsing those two into an empty array would report a
+ * healthy hotel as a starved one every night.
+ */
+const loadEquipmentWorkOrderHistory: FeedLoader<'equipment_work_order_history'> = async (env) => {
+  if (!isSectionEnabled(env.enabledSections, 'maintenance')) {
+    return {
+      value: {
+        equipment: [],
+        registeredCount: 0,
+        hotelRepairCostCentsSamples: [],
+        coverageStartDate: null,
+        windowDays: EQUIPMENT_WINDOW_DAYS,
+      },
+      recordCount: 0,
+      asOf: env.now,
+      weakestInputAgeDays: 0,
+    };
+  }
+
+  const db = scopedDb(env.propertyId);
+  const [assetsResult, ordersResult] = await Promise.all([
+    db
+      .from('equipment')
+      .select('id, name, location, install_date, status')
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
+    db
+      .from('work_orders')
+      .select('equipment_id, status, repair_cost, created_at')
+      .gte('created_at', windowStartIso(env.now))
+      .order('created_at', { ascending: true })
+      .limit(MAX_ROWS) as unknown as Promise<QueryResult<Record<string, unknown>>>,
+  ]);
+
+  const assets = rowsOf(assetsResult, 'equipment');
+  const orders = rowsOf(ordersResult, 'work_orders');
+
+  const byId = new Map<string, EquipmentWorkOrders>();
+  for (const row of assets) {
+    const id = typeof row.id === 'string' ? row.id : null;
+    const name = typeof row.name === 'string' ? row.name.trim() : '';
+    // An asset with no id or no name cannot be named in a sentence or pointed
+    // at by a chip. Dropped rather than described as "this equipment".
+    if (!id || !name) continue;
+    // A unit the hotel has already replaced or decommissioned is not a batch
+    // that "may be dying" — it is one they have already dealt with, and a card
+    // telling them to look at it would be Staxis arriving after the fact.
+    const status = typeof row.status === 'string' ? row.status : 'operational';
+    if (status === 'replaced' || status === 'decommissioned') continue;
+
+    const installDate = typeof row.install_date === 'string' ? row.install_date : '';
+    const year = /^(\d{4})-/.exec(installDate);
+    byId.set(id, {
+      id,
+      name,
+      location: typeof row.location === 'string' && row.location.trim() ? row.location.trim() : null,
+      installYear: year ? Number(year[1]) : null,
+      total: 0,
+      stillOpen: 0,
+      lastDate: '',
+      repairCostCentsSamples: [],
+    });
+  }
+
+  const hotelRepairCostCentsSamples: number[] = [];
+  const countedDates: string[] = [];
+  let counted = 0;
+
+  const windowStart = new Date(
+    env.now.getTime() - EQUIPMENT_WINDOW_DAYS * MS_PER_DAY,
+  ).getTime();
+
+  for (const row of orders) {
+    const cents = dollarsToCents(numberOf(row.repair_cost));
+    if (cents !== null && cents > 0) hotelRepairCostCentsSamples.push(cents);
+
+    const equipmentId = typeof row.equipment_id === 'string' ? row.equipment_id : null;
+    if (!equipmentId) continue;
+    const asset = byId.get(equipmentId);
+    // A link to an asset this feed dropped (deleted between the two reads,
+    // decommissioned, unnamed). The ticket is real; the asset story is not.
+    if (!asset) continue;
+    // The asset's own cost history is a fact about the asset, not about the
+    // last two months, so it is sampled from the full read — before the window
+    // filter below, exactly like the per-location feed does it.
+    if (cents !== null && cents > 0) asset.repairCostCentsSamples.push(cents);
+
+    const date = localDateOf(row.created_at, env.timezone);
+    if (!date) continue;
+    const createdAt = typeof row.created_at === 'string' ? new Date(row.created_at).getTime() : NaN;
+    if (!Number.isFinite(createdAt) || createdAt < windowStart) continue;
+
+    countedDates.push(date);
+    counted += 1;
+    asset.total += 1;
+    // Same reading of the board as the per-location feed: only 'resolved' is
+    // done, and an absent status is an open ticket (db-mappers.ts's own default).
+    if (String(row.status ?? 'submitted') !== 'resolved') asset.stillOpen += 1;
+    if (date > asset.lastDate) asset.lastDate = date;
+  }
+
+  const equipment = [...byId.values()]
+    .filter((asset) => asset.total > 0)
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  return {
+    value: {
+      equipment,
+      registeredCount: byId.size,
+      hotelRepairCostCentsSamples,
+      coverageStartDate: earliestDate(countedDates),
+      windowDays: EQUIPMENT_WINDOW_DAYS,
+    },
+    // The registry's SIZE, not the number of linked tickets. The detector's
+    // minimum asks "does this hotel track equipment at all?", which is the only
+    // question that distinguishes a skip from an honest silence.
+    recordCount: byId.size,
+    asOf: env.now,
+    weakestInputAgeDays: 0,
+  };
+};
 
 /**
  * How fast the hotel is actually going through each item, measured between its
@@ -743,6 +900,7 @@ export const FEED_LOADERS: { [K in FeedId]: FeedLoader<K> } = {
   supply_spend_history: loadSupplySpendHistory,
   work_order_history: loadWorkOrderHistory,
   room_work_order_history: loadRoomWorkOrderHistory,
+  equipment_work_order_history: loadEquipmentWorkOrderHistory,
   inventory_usage_history: loadInventoryUsageHistory,
   operating_rhythm: loadOperatingRhythm,
   preventive_schedule: loadPreventiveSchedule,

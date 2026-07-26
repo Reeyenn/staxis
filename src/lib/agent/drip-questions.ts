@@ -43,6 +43,8 @@ import { redactMemoryContent } from './memory-redact';
 import { storeMemory } from '@/lib/db/agent-memory';
 import { findingAskCandidates } from '@/lib/findings/ask-drip';
 import { setFindingStatus } from '@/lib/findings/store';
+import { equipmentSuggestionQuestions } from '@/lib/equipment/suggest-server';
+import { createEquipmentFromSuggestion } from '@/lib/equipment/store';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
 import { log } from '@/lib/log';
 
@@ -62,11 +64,17 @@ export interface AskRecord {
 }
 
 /**
- * Where a question came from. The five signal categories, plus `finding` for a
- * question the findings judge produced (0362) — which is a different KIND of
- * question, not one of the five wearing the closest available label.
+ * Where a question came from. The five signal categories, plus two later
+ * sources, each a different KIND of question rather than one of the five
+ * wearing the closest available label:
+ *
+ *   finding    the findings judge sorted a card as a question (0362).
+ *   equipment  the same word keeps appearing in this hotel's work orders and
+ *              nothing on its equipment list matches it (0368). Alone among
+ *              these, a "yes" writes a ROW rather than a remembered fact — see
+ *              `answerDripQuestion`.
  */
-export type DripQuestionCategory = OperationalSignal['category'] | 'finding';
+export type DripQuestionCategory = OperationalSignal['category'] | 'finding' | 'equipment';
 
 /** What the manager is shown. Both languages are carried, never translated at
  *  render time — see `phraseSignal`. */
@@ -95,6 +103,15 @@ export interface QuestionCandidate {
   fact: string;
   /** The findings row an answer resolves, when this came from one. */
   findingId?: string | null;
+  /**
+   * For `category: 'equipment'`: the name a "yes" turns into an equipment row.
+   *
+   * Carried on the candidate and stored on the ledger row rather than recovered
+   * from `topic`, because a feature that parses an identifier back out of a key
+   * string breaks silently the first time the key format changes — and this one
+   * would break by creating a piece of equipment under the wrong name.
+   */
+  suggestedEquipmentName?: string | null;
 }
 
 // ─── Sanitising the hotel's own data ─────────────────────────────────────────
@@ -324,15 +341,30 @@ export async function getDripQuestion(
   propertyId: string,
   now: Date = new Date(),
 ): Promise<DripQuestion | null> {
-  const [signals, extra] = await Promise.all([
+  const [signals, findingAsks, equipmentOffers] = await Promise.all([
     gatherOperationalSignals(propertyId),
     // Findings the judge decided were questions rather than instructions. They
     // arrive already phrased and already guard-checked; this module's job is
     // only to apply the same never-be-obnoxious rules to them.
     findingAskCandidates(propertyId),
+    // Words this hotel keeps writing into its work orders with nothing on its
+    // equipment list matching. Deterministic frequency counting, no model.
+    equipmentSuggestionQuestions(propertyId, now),
   ]);
-  // Day zero — a hotel with neither a pattern nor a finding is never asked
-  // anything invented to fill the space.
+
+  // ORDER IS A JUDGEMENT ABOUT WHICH QUESTION IS WORTH THE ONE TAP.
+  //   findings first  — a check already established something is off and the
+  //                     judge concluded the data was too thin to say what to do.
+  //                     Asking is the correct response, not a fallback.
+  //   equipment next  — a concrete, cheap offer whose "yes" leaves the hotel
+  //                     with a thing it owns. It ranks above the speculative
+  //                     signal questions ("we noticed a pattern; is it real?")
+  //                     because the manager is being asked to CONFIRM their own
+  //                     vocabulary rather than to adjudicate a guess.
+  const extra = [...findingAsks, ...equipmentOffers];
+
+  // Day zero — a hotel with no pattern, no finding and nothing it keeps writing
+  // down is never asked anything invented to fill the space.
   if (signals.length === 0 && extra.length === 0) return null;
 
   const db = scopedDb(propertyId);
@@ -386,6 +418,7 @@ export async function getDripQuestion(
           question_es: chosen.es,
           fact_content: chosen.fact,
           finding_id: chosen.findingId ?? null,
+          suggested_equipment_name: chosen.suggestedEquipmentName ?? null,
         })
         .eq('topic', chosen.topic)
         // Guard against a concurrent tab answering between the read and here.
@@ -400,6 +433,7 @@ export async function getDripQuestion(
           question_es: chosen.es,
           fact_content: chosen.fact,
           finding_id: chosen.findingId ?? null,
+          suggested_equipment_name: chosen.suggestedEquipmentName ?? null,
           status: 'asked',
           ask_count: 1,
           first_asked_at: nowIso,
@@ -442,6 +476,8 @@ export interface AnswerDripQuestionResult {
   recorded: boolean;
   /** True when the answer became a human-authored fact. */
   storedFact?: boolean;
+  /** The equipment row a "yes" created, for `category: 'equipment'` only. */
+  createdEquipmentId?: string | null;
   error?: string;
 }
 
@@ -477,9 +513,39 @@ export async function answerDripQuestion(
   if (error) return { ok: false, recorded: false, error: error.message };
 
   const row = data as
-    | { id: string; topic: string; fact_content: string; status: string; finding_id?: string | null }
+    | {
+        id: string;
+        topic: string;
+        category?: string | null;
+        fact_content: string;
+        status: string;
+        finding_id?: string | null;
+        suggested_equipment_name?: string | null;
+      }
     | null;
   if (!row || row.status !== 'asked') return { ok: true, recorded: false };
+
+  // ── an offer to start tracking a piece of equipment ──────────────────────
+  //
+  // The one question whose "yes" writes a ROW rather than a remembered fact,
+  // and it takes the opposite order to every other answer here: CLAIM FIRST,
+  // then act.
+  //
+  // Everything else stores a memory before flipping the ledger, which is safe
+  // because storeMemory upserts on (property, topic) — replaying it changes
+  // nothing. Creating equipment is not like that. Two taps racing (a
+  // double-click, a retried request) would both find status 'asked', and both
+  // would insert, and the hotel would end up with two identical assets and a
+  // pattern card that counts each one's tickets separately. Claiming the row
+  // first means the loser of the race gets `recorded: false` and creates
+  // nothing, which is the correct outcome for a replayed tap.
+  //
+  // The cost of that ordering is a window where the question is answered and the
+  // asset does not exist — so a failed create rolls the status back to 'asked'
+  // and the manager can simply tap again.
+  if (row.category === 'equipment') {
+    return answerEquipmentOffer(db, row, input);
+  }
 
   let memoryId: string | null = null;
   if (input.answer === 'yes') {
@@ -554,4 +620,95 @@ export async function answerDripQuestion(
     recorded,
     storedFact: input.answer === 'yes' && memoryId !== null,
   };
+}
+
+/**
+ * The tap that turns "you keep writing PTAC" into a row on the equipment list.
+ *
+ * WHY NO agent_memory FACT IS STORED HERE, when every other "yes" writes one.
+ * The equipment row IS the record. A memory sentence saying "this hotel tracks
+ * PTAC" alongside an `equipment` row saying the same thing would be two copies
+ * of one fact with two ways to go stale — the manager deletes the asset, and the
+ * memory keeps telling the copilot it exists. The ledger's `fact_content` still
+ * holds that sentence, because it is what the offer MEANT, and `equipment_id`
+ * records what the answer produced. Nothing is lost and nothing can drift.
+ *
+ * A "no" is a plain decline: no row, no fact, and the topic is never offered
+ * again — which is the promise this whole surface is judged on.
+ */
+async function answerEquipmentOffer(
+  db: ReturnType<typeof scopedDb>,
+  row: { topic: string; suggested_equipment_name?: string | null },
+  input: AnswerDripQuestionInput,
+): Promise<AnswerDripQuestionResult> {
+  const name = (row.suggested_equipment_name ?? '').trim();
+  // The database refuses an equipment question with no name
+  // (agent_knowledge_questions_equipment_needs_name_ck), so this can only be a
+  // row written before that constraint existed. Recording the answer without
+  // creating anything is better than inventing a name for the hotel's asset.
+  if (input.answer === 'yes' && !name) {
+    log.warn('[drip-questions] equipment offer had no name to create; recording the answer only', {
+      propertyId: input.propertyId,
+    });
+  }
+
+  // ── claim the question ──
+  const nowIso = new Date().toISOString();
+  const verdict = await db
+    .from('agent_knowledge_questions')
+    .update({
+      status: input.answer === 'yes' ? 'answered_yes' : 'declined',
+      answered_at: nowIso,
+      answered_by_account_id: input.actor.accountId,
+    })
+    .eq('topic', row.topic)
+    // The race guard. Only one tap can move a question out of 'asked', and only
+    // that one goes on to create anything.
+    .eq('status', 'asked')
+    .select('id');
+  if (verdict.error) return { ok: false, recorded: false, error: verdict.error.message };
+  const recorded = (verdict.data ?? []).length > 0;
+  if (!recorded || input.answer !== 'yes' || !name) {
+    return { ok: true, recorded, storedFact: false, createdEquipmentId: null };
+  }
+
+  // ── act on it ──
+  let equipmentId: string;
+  try {
+    const created = await createEquipmentFromSuggestion(input.propertyId, {
+      name,
+      createdByAccountId: input.actor.accountId,
+      createdByName: input.actor.name,
+    });
+    equipmentId = created.id;
+  } catch (e) {
+    // Put the question back so the tap can be repeated. A manager who taps yes
+    // and gets an error must not find the offer gone as well.
+    await db
+      .from('agent_knowledge_questions')
+      .update({ status: 'asked', answered_at: null, answered_by_account_id: null })
+      .eq('topic', row.topic)
+      .eq('status', 'answered_yes');
+    return {
+      ok: false,
+      recorded: false,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+
+  // What the answer produced. Best-effort: the asset exists and the question is
+  // answered, so a failure here costs a link in the ledger, not the manager's
+  // decision.
+  const linked = await db
+    .from('agent_knowledge_questions')
+    .update({ equipment_id: equipmentId })
+    .eq('topic', row.topic);
+  if (linked.error) {
+    log.warn('[drip-questions] equipment created, but the question did not record which row', {
+      propertyId: input.propertyId,
+      err: linked.error.message,
+    });
+  }
+
+  return { ok: true, recorded: true, storedFact: false, createdEquipmentId: equipmentId };
 }

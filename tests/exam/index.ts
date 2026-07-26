@@ -26,6 +26,7 @@ import { expectedActivityDays } from './days/expected-activity';
 import { inventoryUsageDays } from './days/inventory-usage';
 import { operationalPatternDays } from './days/operational-pattern';
 import { preventiveDueDays } from './days/preventive-due';
+import { repeatEquipmentWorkOrderDays } from './days/repeat-equipment-work-orders';
 import { repeatRoomWorkOrderDays } from './days/repeat-room-work-orders';
 import { roomAttentionDays } from './days/room-attention';
 import { supplySpendDays } from './days/supply-spend';
@@ -38,6 +39,7 @@ export const EXAM_DAYS: readonly ExamDay[] = Object.freeze([
   ...inventoryUsageDays,
   ...expectedActivityDays,
   ...repeatRoomWorkOrderDays,
+  ...repeatEquipmentWorkOrderDays,
   ...preventiveDueDays,
   ...operationalPatternDays,
   ...roomAttentionDays,

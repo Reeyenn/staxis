@@ -48,7 +48,12 @@ import type { FindingTargetKind } from '@/lib/findings/types';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const KINDS: readonly FindingTargetKind[] = ['room', 'inventory_item', 'preventive_task'] as const;
+const KINDS: readonly FindingTargetKind[] = [
+  'room',
+  'inventory_item',
+  'preventive_task',
+  'equipment',
+] as const;
 
 /**
  * How many of this hotel's live findings to weigh.

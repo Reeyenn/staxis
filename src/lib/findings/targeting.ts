@@ -54,12 +54,19 @@ const LEGACY_PARAM_KEYS: Readonly<Record<FindingTargetKind, readonly string[]>> 
   // would mean writing a completion against a schedule id recovered by
   // guesswork (see logPreventiveOutcome).
   preventive_task: Object.freeze([]),
+  // EMPTY, PERMANENTLY, for the same reason as preventive_task above:
+  // `repeat_equipment_work_orders` shipped after `evidence.target` existed, so
+  // there is no era of rows to be compatible with. A fallback here could only
+  // ever fire on a malformed row, and firing on one would point an asset's chip
+  // at a card recovered by guesswork.
+  equipment: Object.freeze([]),
 });
 
 const KINDS: readonly FindingTargetKind[] = Object.freeze([
   'room',
   'inventory_item',
   'preventive_task',
+  'equipment',
 ]);
 
 /**

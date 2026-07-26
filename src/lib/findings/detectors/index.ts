@@ -41,3 +41,12 @@ export { repeatRoomWorkOrdersDetector } from './repeat-room-work-orders';
 // three-week-old hotel, because it infers nothing — see the header on why a
 // schedule that has never been done is deliberately not called overdue.
 export { preventiveDueDetector } from './preventive-due';
+
+// The equipment list, 2026-07-26. A batch of forty PTAC units fails one room at
+// a time, so `repeat_room_work_orders` sees four unrelated faults in four
+// different rooms and nothing else can see anything at all — the only thing
+// those tickets share is the asset behind them, and that link exists only
+// because somebody at the hotel described their own equipment and attached the
+// tickets to it. Same philosophy as the knowledge base, showing up as
+// arithmetic: Staxis infers no asset and groups nothing it was not told about.
+export { repeatEquipmentWorkOrdersDetector } from './repeat-equipment-work-orders';

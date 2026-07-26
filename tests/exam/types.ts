@@ -162,7 +162,36 @@ export interface ExamPlanter {
 
   item(spec: { slot?: number; name?: string; unit?: string; reorderAt?: number | null; reorderLeadDays?: number | null }): Promise<string>;
   supplyDelivery(spec: { date: string; cents?: number; itemSlot?: number; quantity?: number; unitCostCents?: number }): Promise<void>;
-  workOrder(spec: { date: string; location?: string; status?: string; repairCostCents?: number | null }): Promise<void>;
+  workOrder(spec: {
+    date: string;
+    location?: string;
+    status?: string;
+    repairCostCents?: number | null;
+    /** The asset this ticket is against, when the hotel attached one. */
+    equipmentId?: string | null;
+    /** The free text somebody typed. Drives the equipment-suggestion path. */
+    description?: string;
+  }): Promise<void>;
+  /**
+   * A piece of equipment the hotel put on its own registry.
+   *
+   * The id comes from the DAY rather than being derived here, for the same
+   * reason `preventiveTask` takes one: an equipment finding's key and target are
+   * both this uuid, so a label cannot quote an id it does not already know.
+   * Passing it in keeps the id in the same file as the `expect` entry that
+   * names it. Each day gets its own hotel, but ids are a primary key across all
+   * of them, so every day uses its own constants.
+   */
+  equipment(spec: {
+    id: string;
+    name: string;
+    /** What it covers: "Rooms 201-240". Null leaves the field blank. */
+    location?: string | null;
+    /** Install YEAR. The card prints it when it is there. */
+    installYear?: number | null;
+    category?: string;
+    status?: string;
+  }): Promise<string>;
   /**
    * An upkeep schedule the hotel typed into Maintenance → Preventive.
    *

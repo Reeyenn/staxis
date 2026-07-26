@@ -171,22 +171,54 @@ class Planter implements ExamPlanter {
     location?: string;
     status?: string;
     repairCostCents?: number | null;
+    equipmentId?: string | null;
+    description?: string;
   }): Promise<void> {
     await this.pg.query(
       `insert into work_orders (id, property_id, room_number, description, severity, status,
-                                repair_cost, created_at)
-       values ($1, $2, $3, 'planted by the detector exam', 'medium', $4, $5, $6)`,
+                                repair_cost, created_at, equipment_id)
+       values ($1, $2, $3, $4, 'medium', $5, $6, $7, $8)`,
       [
         this.roomWorkOrderId(),
         this.propertyId,
         spec.location ?? 'Room 101',
+        spec.description ?? 'planted by the detector exam',
         spec.status ?? 'submitted',
         spec.repairCostCents === undefined || spec.repairCostCents === null
           ? null
           : spec.repairCostCents / 100,
         this.atNoon(spec.date),
+        spec.equipmentId ?? null,
       ],
     );
+  }
+
+  async equipment(spec: {
+    id: string;
+    name: string;
+    location?: string | null;
+    installYear?: number | null;
+    category?: string;
+    status?: string;
+  }): Promise<string> {
+    await this.pg.query(
+      `insert into equipment (id, property_id, name, category, location, status, install_date)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        spec.id,
+        this.propertyId,
+        spec.name,
+        spec.category ?? 'hvac',
+        spec.location === undefined ? null : spec.location,
+        spec.status ?? 'operational',
+        // A June install date: mid-year, so the YEAR the card prints is the same
+        // one in every timezone the exam might run in.
+        spec.installYear === undefined || spec.installYear === null
+          ? null
+          : `${spec.installYear}-06-15`,
+      ],
+    );
+    return spec.id;
   }
 
   async count(spec: {

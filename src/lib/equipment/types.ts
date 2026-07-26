@@ -37,6 +37,17 @@ export interface Equipment {
   notes: string | null;
   createdAt: string | null;            // ISO timestamp
   updatedAt: string | null;            // ISO timestamp
+  /**
+   * How this asset came to exist (0368). 'manual' — somebody typed it into the
+   * registry form. 'suggestion' — Staxis noticed the same word in several work
+   * orders, asked, and a manager tapped yes. There is deliberately no value
+   * meaning "Staxis added this on its own": the hotel puts equipment in, always.
+   */
+  createdFrom: 'manual' | 'suggestion';
+  /** Display name of whoever logged it, captured at creation time so the
+   *  registry can still say who after that person leaves. Null on the rows that
+   *  predate 0368. */
+  createdByName: string | null;
 }
 
 /** Writable fields. name + category required on create; all optional on patch. */
