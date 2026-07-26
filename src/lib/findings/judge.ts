@@ -166,6 +166,28 @@ const DISPOSITIONS: ReadonlySet<string> = new Set<FindingDisposition>([
  * that varies per hotel per night lives in the user message, which is never
  * cached.
  */
+/**
+ * MEASURED: which models actually hold the slot contract below.
+ *
+ * The judge became runnable on OpenAI models on 2026-07-26, so the contract was
+ * checked against real models on the identical prompt — 3 rounds, 2 findings
+ * each, graded by the real prose guard:
+ *
+ *   claude-haiku-4-5 (the default)  6/6 held
+ *   gpt-5.4                         6/6 held
+ *   gpt-5.4-mini                    3/6 held
+ *
+ * gpt-5.4-mini failed the same way every round: handed a `{location}` slot
+ * whose value is "Room 214", it typed the room number instead of the slot name.
+ * The digits are then unbound and the guard rejects the phrasing.
+ *
+ * THIS IS A QUALITY FLOOR, NOT A SAFETY HOLE, and the difference is the whole
+ * reason the contract is shaped this way: a rejected phrasing falls back to the
+ * deterministic template, so the manager reads a plainer sentence and never a
+ * wrong number. The feature is therefore left switchable — but a cheap model
+ * here buys template phrasing most nights rather than the savings it looks like.
+ * Re-measure before changing the default; do not trust this table's dates.
+ */
 export const JUDGE_SYSTEM_PROMPT = `You sort and phrase problems that a hotel operations system has ALREADY detected from the hotel's own records. You are not detecting anything and you are not checking anything.
 
 For each finding, choose one disposition:
