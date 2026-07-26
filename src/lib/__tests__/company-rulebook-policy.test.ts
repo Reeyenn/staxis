@@ -373,12 +373,20 @@ describe('the approver a sentence actually names', () => {
     if (read.kind !== 'ambiguous') return;
     const en = describeAmbiguousAuthority(read, 'en');
     assert.match(en, /the owner/);
-    assert.match(en, /the vp/i);
+    // Mutation: lower-case the labels wholesale. "the vp" was on screen.
+    assert.match(en, /the VP/);
+    assert.doesNotMatch(en, /the vp\b/);
     assert.match(en, /will not enforce/);
     assert.match(en, /Edit the line to name one/);
     const es = describeAmbiguousAuthority(read, 'es');
     assert.match(es, /no aplicará ninguna regla/);
     assert.notEqual(en, es);
+    // Mutation: use an indefinite article. "un factura" and "a order" were both
+    // one label away, and the labels come in two genders.
+    assert.doesNotMatch(es, /\bun (factura|cortesía)\b/);
+    assert.doesNotMatch(es, /nombra a el\b/, 'a + el contracts to al in Spanish');
+    assert.match(es, /cualquier gasto/);
+    assert.match(en, /any expense/);
   });
 
   // Mutation: return `ambiguous` for one clean role plus one negated one. The

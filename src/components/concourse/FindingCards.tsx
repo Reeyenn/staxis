@@ -169,10 +169,16 @@ const FD_CSS = `
 .fd-rfoot{font-size:10.5px;color:#A6ABA6;margin-top:8px;
   font-family:var(--font-geist-mono),ui-monospace,monospace;}
 .fd-fold{margin-top:14px;}
-/* Clearance for the fixed ask-composer. 132px = the dock's own height with its
-   chip row, plus its 22px offset, plus a thumb's worth of margin — measured, not
-   guessed. The safe-area inset is added because the dock uses it too, so on a
-   notched phone the spacer grows exactly as much as the dock does. */
+/* Clearance for the fixed ask-composer, whose top edge the page cannot see.
+   Derived from the dock's own CSS (AskStaxisBar's ASX_CSS), not guessed: the
+   glass bar is 46px, the suggestion-chip row adds 42px and the resume row
+   another 33px once the bar is no longer idle, and the whole thing sits 22px off
+   the bottom — 143px of viewport before a thread is even open. The cx-page rule
+   already contributes 130px of bottom padding, which is 13px SHORT of that, and
+   13px is exactly enough to put a verdict button under a floating pill. This
+   spacer takes the total past 250px, which also clears a one-message thread.
+   The safe-area inset is added because the dock uses it too, so on a notched
+   phone the spacer grows exactly as much as the dock does. */
 .fd-headroom{height:calc(132px + env(safe-area-inset-bottom, 0px));}
 .fd-err{margin-top:10px;border-radius:12px;padding:9px 12px;font-size:12.5px;line-height:1.5;
   background:rgba(184,92,61,.10);color:#8E432B;}
