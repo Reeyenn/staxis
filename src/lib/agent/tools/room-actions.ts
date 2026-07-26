@@ -37,7 +37,11 @@ registerTool<{ roomNumber: string }>({
   name: 'mark_room_clean',
   section: 'housekeeping',
   description:
-    'Mark a room as clean. Use when the user says variations like "302 clean", "marcar 302 limpia", "Im done with 305", "finished cleaning 410". Pass the room number as a string of digits (e.g. "302" not "three oh two").',
+    'Mark a room clean — the housekeeper has finished it. ' +
+    'Use when: someone reports a room done — "302 clean", "I\'m done with 305", "finished cleaning 410", "marcar 302 limpia". To undo a mistaken one use reset_room. ' +
+    'Args: roomNumber — the room as the hotel writes it, in digits/letters ("302", not "three oh two"). ' +
+    'Returns: the room, its previous status and the completion time. A proposal until the user approves the card — nothing changes on the board before that. ' +
+    'Refuses: an unknown room, and — for a housekeeper or maintenance tech — any room that is not assigned to them, so nobody can close out someone else\'s work. Managers and front desk can mark any room. It marks ONE room; if the user says they finished several, call it once per room rather than implying a batch.',
   inputSchema: {
     type: 'object',
     properties: { roomNumber: ROOM_NUMBER_SCHEMA },
@@ -99,7 +103,11 @@ registerTool<{ roomNumber: string }>({
   name: 'reset_room',
   section: 'housekeeping',
   description:
-    'Reset a room back to dirty status. Use when a housekeeper says they marked the wrong room clean, or a manager wants to undo a clean status. Pass room number as digits.',
+    'Put a room back to dirty — the undo for a room marked clean by mistake, or one that needs doing again. ' +
+    'Use when: someone says "I marked the wrong room", "302 isn\'t actually clean", "put 410 back", "la 215 hay que hacerla otra vez". ' +
+    'Args: roomNumber — the room as the hotel writes it. ' +
+    'Returns: the room, its previous status, and the new status (dirty). A proposal until the user approves the card. ' +
+    'Refuses: an unknown room, and — for floor staff — any room not assigned to them. It only changes the room\'s status: it does not delete the cleaning record, undo the labor logged against it, or notify anyone, so do not describe it as erasing what happened.',
   inputSchema: {
     type: 'object',
     properties: { roomNumber: ROOM_NUMBER_SCHEMA },
@@ -146,7 +154,11 @@ registerTool<{ roomNumber: string; on: boolean; note?: string }>({
   name: 'toggle_dnd',
   section: 'housekeeping',
   description:
-    'Mark a room as Do-Not-Disturb (on=true) or remove the DND flag (on=false). Use when guest hangs DND sign, or to clear it when guest leaves.',
+    'Turn a room\'s Do-Not-Disturb flag on or off. ' +
+    'Use when: a guest has hung the sign — "302 has a DND", "skip 410, do not disturb", "no molestar en la 215" — or when it should come off because the guest left or agreed to service. ' +
+    'Args: roomNumber — the room. on — true to set DND, false to clear it; always set this explicitly rather than assuming, because clearing a DND on a guest still in the room is the expensive mistake. note — an optional short reason, kept only when on=true and capped at 500 characters. ' +
+    'Returns: the room, the new DND state, and the stored note. A proposal until the user approves the card. ' +
+    'Refuses: an unknown room, and — for floor staff — any room not assigned to them. Setting DND does not reschedule the room, tell the housekeeper, or move it to another day; it flags the room and nothing more.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -195,7 +207,11 @@ registerTool<{ roomNumber: string; note: string }>({
   name: 'flag_issue',
   section: 'housekeeping',
   description:
-    'Flag an issue or problem with a room (e.g. "broken TV in 302", "missing towels in 410"). Records the note for the manager to see. Use when the user describes a problem they noticed during cleaning or inspection.',
+    'Attach a short problem note to a room so the manager sees it on the board. ' +
+    'Use when: someone reports something wrong with a room in passing — "broken TV in 302", "missing towels in 410", "la 215 tiene la cortina rota". If a GUEST is complaining, use log_complaint instead: that one is tracked to resolution and opens a work order. If they need someone to come now, use request_help. ' +
+    'Args: roomNumber — the room. note — what is wrong, capped at 500 characters. ' +
+    'Returns: the room and the note stored. A proposal until the user approves the card. ' +
+    'Refuses: an unknown room, and — for floor staff — any room not assigned to them. Be clear about how little this does: it writes a note on the room. It does NOT open a work order, notify maintenance, page anyone, or create a task, and each new note REPLACES the room\'s previous one. Never tell the user maintenance has been informed.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -236,7 +252,11 @@ registerTool<{ roomNumber?: string; message?: string }>({
   name: 'request_help',
   section: 'housekeeping',
   description:
-    'Send a help signal to the manager. Use when a housekeeper says "I need help", "help me", "necesito ayuda", or describes a situation needing manager attention. Optionally include a room number and a short message.',
+    'Send a help signal to this hotel\'s managers and owners. ' +
+    'Use when: someone on the floor needs a person, not a record — "I need help", "necesito ayuda", "there\'s a guest issue in 214 I can\'t handle", a room that needs two people, or anything unsafe. Prefer this over a note whenever waiting would make things worse. ' +
+    'Args: roomNumber — optional, the room it is about; the room is flagged as needing help too. message — optional, a short description, capped at 200 characters. ' +
+    'Returns: how many managers were notified, and a deliveryNote. Read `partial` — when some managers could not be reached, say so and suggest finding a supervisor directly rather than reporting it as sent. ' +
+    'Refuses: when no manager or owner is linked to this hotel at all, because nobody would receive it — tell the person to find their supervisor instead of leaving them waiting. Repeat sends of the same message about the same room collapse into the one pending signal rather than paging anyone twice. This is an in-app notification: it does not call, text, or ring anyone, so for an emergency say to phone somebody.',
   inputSchema: {
     type: 'object',
     properties: {

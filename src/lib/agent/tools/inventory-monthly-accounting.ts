@@ -326,7 +326,11 @@ registerTool<InventoryAccountingArgs>({
   section: 'inventory',
   requiresCapability: 'view_financials',
   description:
-    'Get monthly INVENTORY accounting and usage-budget status, clearly separating current shelf value, received purchases, actual usage, and the inventory usage budget. Use for inventory/supply spending, deliveries, month close, "housekeeping inventory budget", towels/linen/supplies budgets, or whether on-hand stock counts against a budget. Do NOT use generic checkbook expense-budget tools for those questions. Actual usage and over/under status come only from immutable closed-month evidence.',
+    'A month of INVENTORY money: what is on the shelves, what was delivered, what was actually used, and how usage stands against the inventory budget. ' +
+    'Use when: the question is about supplies rather than the checkbook — "how much did we spend on linen", "are we over on the housekeeping inventory budget", "what did we get delivered last month", "shelf value", "month close", "cuánto gastamos en toallas". For payroll, invoices, profit or general operating budgets use get_finance_summary instead; the two answer from different books and mixing them produces a wrong number. ' +
+    'Args: period — "this_month" (default) or "last_month". month — a specific YYYY-MM, which wins over period when given. category — all (default), housekeeping, maintenance or breakfast. ' +
+    'Returns: shelf value, purchases received, usage, and budget status kept as four SEPARATE figures — they are not interchangeable, so never present shelf value as spending or deliveries as usage. ' +
+    'Refuses: callers without financial access at this hotel. Actual usage and over/under status exist only for a CLOSED month: an open month reports what has been counted so far and cannot tell you whether the hotel is over budget. Say the month is still open rather than answering as if it were settled.',
   inputSchema: {
     type: 'object',
     properties: {

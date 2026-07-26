@@ -90,7 +90,11 @@ registerTool<Record<string, never>>({
   name: 'get_outstanding_balances',
   section: 'financials',
   description:
-    'List guests with an outstanding folio balance as of the hotel\'s last PMS report (NOT live), highest first. Use for "who owes a balance?", "outstanding balances", "who hasn\'t paid". The result carries asOf — quote it. Read-only.',
+    'List in-house guests who still owe money on their folio, biggest balance first. ' +
+    'Use when: the user asks "who owes a balance", "who hasn\'t paid", "outstanding balances", "quién debe". For money already collected use get_payments_summary instead. ' +
+    'Takes no arguments — it always returns the current open balances, up to the 50 largest. ' +
+    'Returns: { count, totalOutstanding, guests[] } with each guest\'s name, room, balance, deposit and folio status. totalOutstanding is summed here — quote it rather than adding the rows. Carries asOf; quote the as-of time because a guest may have paid since. ' +
+    'Refuses: nothing, but an empty list is ambiguous — it means no balance was captured, which on a hotel whose PMS sends no balances report looks identical to "everyone has paid". Do not tell the user the hotel is settled up unless the feed is actually running.',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: FEED_ROLES,
   mutates: false,
@@ -132,7 +136,11 @@ registerTool<{ date?: string }>({
   name: 'get_payments_summary',
   section: 'financials',
   description:
-    'Get money COLLECTED for a day (cash + card + deposits), defaulting to today, as of the hotel\'s last PMS report — so today\'s total is partial and may lag by up to an hour. Use for "how much did we collect today?", "today\'s payments", "cashier totals". Read-only.',
+    'Money COLLECTED on a given day, split into cash, card and deposits. ' +
+    'Use when: the user asks "how much did we take today", "today\'s payments", "cashier totals", "cuánto cobramos". For money still owed use get_outstanding_balances; for the month\'s profit and expenses use get_finance_summary. ' +
+    'Args: date — YYYY-MM-DD; defaults to today in the hotel\'s own timezone. ' +
+    'Returns: { date, cash, card, deposits, total } as formatted dollar strings, plus asOf. If the requested day has no row it falls back to the most recent day on file and says so in `requestedDate` + `note` — read that before answering, or you will report the wrong day\'s money as today\'s. ' +
+    'Refuses: callers without financial access at this hotel. Today\'s total is always PARTIAL — it is as of the last report, not the close of business — so never present it as a final figure for the day.',
   inputSchema: {
     type: 'object',
     properties: { date: { type: 'string', description: 'YYYY-MM-DD; defaults to today (property-local).' } },
@@ -206,7 +214,11 @@ const ON_THE_BOOKS_STATUSES = ['booked', 'checked_in'] as const;
 registerTool<{ startDate?: string; endDate?: string }>({
   name: 'get_future_bookings',
   description:
-    'List upcoming on-the-books reservations by arrival date, plus how the on-the-books room count for those nights has built up over time (booking pace), as of the hotel\'s last PMS report — not live. Use for "how booked are we next weekend?", "upcoming arrivals", "is next week pacing ahead?". The result carries asOf — quote it. Defaults to the next 14 days. Read-only.',
+    'Upcoming reservations still ON the books, by arrival date, plus how the room count for those nights has built up day by day (booking pace). ' +
+    'Use when: the user asks "how booked are we next weekend", "who\'s arriving Friday", "is next week pacing ahead of last", "cuántas reservas tenemos". For bookings that fell off use get_lost_reservations. ' +
+    'Args: startDate / endDate — YYYY-MM-DD inclusive; default is today through 14 days out. ' +
+    'Returns: { totalBookings, arrivalsByDate, bookings[], onTheBooksByStayDate, paceCurveByStayDate }. Cancelled and no-show rows are already excluded, and the per-date counts are computed here — quote them rather than counting the list. Carries asOf; quote it. ' +
+    'Refuses: nothing, but two honest gaps to state rather than paper over — an empty list may mean the hotel\'s PMS sends no future-reservations report, and when paceCurveByStayDate is absent you can say how many rooms are booked but NOT whether that is ahead of or behind normal. Do not infer a trend from a single snapshot.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -312,100 +324,104 @@ registerTool<{ startDate?: string; endDate?: string }>({
   },
 });
 
-// ─── get_recent_no_shows ─────────────────────────────────────────────────────
+// ─── get_lost_reservations ───────────────────────────────────────────────────
+// Bookings that fell OFF the books: cancelled, or never showed up.
+//
+// Absorbed get_recent_no_shows and get_recent_cancellations (2026-07-27). Since
+// migration 0354 folded pms_no_shows and pms_cancellations into
+// pms_reservations, both tools were the identical query — same table, same
+// lookback shape, differing only in which terminal `status` they filtered on.
+// Keeping them apart made the model choose between two spellings of one
+// question, and made "what did we lose this week?" un-answerable without two
+// calls it then had to add up itself.
 
-registerTool<{ nights?: number }>({
-  name: 'get_recent_no_shows',
+const LOST_KINDS = ['cancelled', 'no_show', 'both'] as const;
+type LostKind = (typeof LOST_KINDS)[number];
+
+registerTool<{ kind?: LostKind; days?: number }>({
+  name: 'get_lost_reservations',
   description:
-    'List recent no-show reservations (guests who never checked in) as of the hotel\'s last PMS report, not live. Defaults to the last night. Use for "any no-shows last night?", "recent no-shows". Read-only.',
+    'List bookings the hotel LOST in a recent window — cancelled reservations, guests who never checked in, or both. ' +
+    'Use when: the user asks "any no-shows last night", "what cancelled this week", "how much did we lose to cancellations", "hubo cancelaciones". For bookings still ON the books use get_future_bookings instead. ' +
+    'Args: kind — "cancelled", "no_show", or "both" (default, when the user just asks what they lost). days — how far back to look, counted from today in the hotel\'s timezone; defaults to 7 for cancellations and 1 for no-shows when you ask for a single kind, and 7 for both. ' +
+    'Returns: { count, totalValue, cancelledCount, noShowCount, reservations[] } — each row carries the guest, room, the date it was due to arrive, when it dropped, its value, any cancellation fee and reason, and the booking channel. totalValue is summed here; quote it rather than adding the rows up. Carries asOf — quote it. ' +
+    'Refuses: nothing, but an empty list means "none recorded in this window", which is NOT the same as "none happened" — a hotel whose PMS does not send a reservations report will always look clean here. Say which of the two you actually know.',
   inputSchema: {
     type: 'object',
-    properties: { nights: { type: 'number', description: 'How many nights back to include (default 1 = last night).' } },
-  },
-  allowedRoles: FEED_ROLES,
-  mutates: false,
-  pmsFreshness: 'stamped',
-  handler: async ({ nights }, ctx): Promise<ToolResult> => {
-    const today = await getPropertyToday(ctx.db);
-    const back = Number.isFinite(nights) && (nights as number) > 0 ? Math.floor(nights as number) : 1;
-    const cutoff = addDays(today, -back);
-    // A no-show is a state of the booking, not a separate object (0354 folded
-    // pms_no_shows into pms_reservations), so this reads the reservation's own
-    // row and the two can no longer disagree about the same guest.
-    const { data, error } = await ctx.db
-      .from('pms_reservations')
-      .select('pms_reservation_id, guest_name, room_number, arrival_date, rate_per_night_cents, total_amount_cents, channel_name, no_show_date, last_synced_at')
-      .eq('status', 'no_show')
-      .gte('arrival_date', cutoff)
-      .order('arrival_date', { ascending: false })
-      .limit(100);
-    if (error) return { ok: false, error: 'Could not load no-shows.' };
-    const rows = data ?? [];
-    return {
-      ok: true,
-      data: {
-        asOf: latestCapturedAt(rows),
-        since: cutoff,
-        count: rows.length,
-        noShows: rows.map((r) => ({
-          guest: r.guest_name ?? null,
-          room: r.room_number ?? null,
-          dueArrival: r.arrival_date ?? null,
-          noShowDate: r.no_show_date ?? null,
-          value: usd(r.total_amount_cents),
-          channel: r.channel_name ?? null,
-        })),
-        note: rows.length === 0 ? 'No no-shows recorded in this window.' : undefined,
+    properties: {
+      kind: {
+        type: 'string',
+        enum: [...LOST_KINDS],
+        description: 'Which losses to include: cancelled bookings, no-shows, or both (default).',
       },
-    };
-  },
-});
-
-// ─── get_recent_cancellations ────────────────────────────────────────────────
-
-registerTool<{ days?: number }>({
-  name: 'get_recent_cancellations',
-  description:
-    'List recently cancelled reservations as of the hotel\'s last PMS report, not live. Defaults to the last 7 days. Use for "recent cancellations", "what cancelled this week?". Read-only.',
-  inputSchema: {
-    type: 'object',
-    properties: { days: { type: 'number', description: 'How many days back to include (default 7).' } },
+      days: { type: 'number', description: 'How many days back to look. Defaults to 7 (or 1 when asking only for no-shows).' },
+    },
   },
   allowedRoles: FEED_ROLES,
   mutates: false,
   pmsFreshness: 'stamped',
-  handler: async ({ days }, ctx): Promise<ToolResult> => {
+  handler: async ({ kind, days }, ctx): Promise<ToolResult> => {
+    const which: LostKind = (LOST_KINDS as readonly string[]).includes(kind as string)
+      ? (kind as LostKind)
+      : 'both';
+    // "Last night" was the old no-show default and is what a manager means by a
+    // bare "any no-shows?"; a week is the natural window for cancellations.
+    const fallback = which === 'no_show' ? 1 : 7;
+    const back = Number.isFinite(days) && (days as number) > 0 ? Math.floor(days as number) : fallback;
+
     const today = await getPropertyToday(ctx.db);
-    const back = Number.isFinite(days) && (days as number) > 0 ? Math.floor(days as number) : 7;
     const cutoff = addDays(today, -back);
-    // Same fold as no-shows: cancelling a booking is something that happened to
-    // that booking, so it lives on its row (0354).
+
+    const statuses = which === 'both' ? ['cancelled', 'no_show'] : [which];
+
+    // One read. The date each state is measured from differs (cancelled_date vs
+    // arrival_date), so the window is applied per row below rather than in SQL —
+    // a `.gte` on either column alone would silently drop the other kind.
+    // The select list is a single literal, not a concatenation: PostgREST's
+    // generated types parse the string at compile time, and a runtime-built
+    // one degrades every column to `GenericStringError`.
     const { data, error } = await ctx.db
       .from('pms_reservations')
-      .select('pms_reservation_id, guest_name, room_number, arrival_date, cancelled_date, cancellation_fee_cents, total_amount_cents, channel_name, cancellation_reason, last_synced_at')
-      .eq('status', 'cancelled')
-      .gte('cancelled_date', cutoff)
-      .order('cancelled_date', { ascending: false })
-      .limit(100);
-    if (error) return { ok: false, error: 'Could not load cancellations.' };
-    const rows = data ?? [];
+      .select('pms_reservation_id, guest_name, room_number, arrival_date, status, cancelled_date, cancellation_fee_cents, cancellation_reason, no_show_date, rate_per_night_cents, total_amount_cents, channel_name, last_synced_at')
+      .in('status', statuses)
+      .gte('arrival_date', addDays(cutoff, -370))
+      .order('arrival_date', { ascending: false })
+      .limit(500);
+    if (error) return { ok: false, error: 'Could not load lost reservations.' };
+
+    const inWindow = (data ?? []).filter((r) => {
+      const dropped = r.status === 'cancelled'
+        ? (r.cancelled_date as string | null)
+        : (r.no_show_date as string | null) ?? (r.arrival_date as string | null);
+      return typeof dropped === 'string' && dropped >= cutoff;
+    });
+
+    const totalCents = inWindow.reduce((acc, r) => acc + (Number(r.total_amount_cents) || 0), 0);
+
     return {
       ok: true,
       data: {
-        asOf: latestCapturedAt(rows),
+        asOf: latestCapturedAt(inWindow),
+        kind: which,
         since: cutoff,
-        count: rows.length,
-        cancellations: rows.map((r) => ({
+        count: inWindow.length,
+        cancelledCount: inWindow.filter((r) => r.status === 'cancelled').length,
+        noShowCount: inWindow.filter((r) => r.status === 'no_show').length,
+        totalValue: usd(totalCents),
+        reservations: inWindow.map((r) => ({
+          kind: r.status === 'cancelled' ? 'cancelled' : 'no_show',
           guest: r.guest_name ?? null,
           room: r.room_number ?? null,
           dueArrival: r.arrival_date ?? null,
-          cancelledOn: r.cancelled_date ?? null,
-          cancellationFee: usd(r.cancellation_fee_cents),
+          droppedOn: r.status === 'cancelled' ? (r.cancelled_date ?? null) : (r.no_show_date ?? null),
           value: usd(r.total_amount_cents),
-          reason: r.cancellation_reason ?? null,
+          cancellationFee: r.status === 'cancelled' ? usd(r.cancellation_fee_cents) : null,
+          reason: r.status === 'cancelled' ? (r.cancellation_reason ?? null) : null,
           channel: r.channel_name ?? null,
         })),
-        note: rows.length === 0 ? 'No cancellations recorded in this window.' : undefined,
+        note: inWindow.length === 0
+          ? 'Nothing recorded in this window. That may mean none happened, or that this hotel\'s PMS does not send a reservations report yet — say which you know.'
+          : undefined,
       },
     };
   },

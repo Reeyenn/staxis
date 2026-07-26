@@ -555,7 +555,13 @@ export const EVAL_CASES: EvalCase[] = [
     mode: 'live',
     origin: 'design',
     input: 'how full are we right now?',
-    expectedTool: 'get_occupancy',
+    // Was `get_occupancy` until the 2026-07-27 catalog rebuild folded it into
+    // get_today_summary (same counts RPC, strict subset of the same answer).
+    // The routing question this case asks is unchanged — "how full are we"
+    // must reach the occupancy read and not the snapshot or a financial tool —
+    // but the runner matches the CALLED name exactly, and the model is no
+    // longer offered the old one, so pinning it there would fail forever.
+    expectedTool: 'get_today_summary',
   },
   {
     name: 'manager_mark_clean',
@@ -664,9 +670,13 @@ export const EVAL_CASES: EvalCase[] = [
     mode: 'live',
     origin: 'design',
     input: 'Are our housekeeping checkbook expenses over the department budget this month?',
-    expectedTool: 'check_budget_status',
+    // Was `check_budget_status`, which merged into get_finance_summary on
+    // 2026-07-27 (budgetVsActual already carried actualCents, so the split was
+    // two tools over one read). The case still tests exactly what it always
+    // did; only the surviving name changed.
+    expectedTool: 'get_finance_summary',
     // What this case is FOR is the routing decision: a checkbook/department
-    // expense question must reach check_budget_status and must NOT reach
+    // expense question must reach the checkbook tool and must NOT reach
     // get_inventory_monthly_accounting (the two ledgers the
     // INVENTORY_ACCOUNTING_ROUTING_PROMPT exists to keep apart). Still fails on
     // the wrong tool, and still fails on `last_month`. `period` is optional and

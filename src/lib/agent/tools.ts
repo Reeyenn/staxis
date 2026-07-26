@@ -289,14 +289,86 @@ export function registerTool<TArgs>(tool: ToolDefinition<TArgs>): void {
   registry.set(tool.name, tool as ToolDefinition<unknown>);
 }
 
-/** All registered tools, regardless of role. Mostly for introspection / monitoring. */
+// ─── Retired names (aliases) ────────────────────────────────────────────────
+// The 2026-07-27 catalog rebuild merged overlapping tools and deleted dead
+// stubs. Those wire-names did not simply vanish: they are recorded in three
+// places that outlive the code — `agent_messages.tool_name` (every past turn),
+// the decision corpus, and pinned eval cases. A name that resolves to nothing
+// turns all of that history into "Tool not found", which is how a merge
+// quietly destroys the record of what the assistant used to do.
+//
+// So a retired name stays CALLABLE, mapped to whichever surviving tool now
+// answers that question. Aliases are deliberately NOT in `registry`, so:
+//   • `listAllTools()` returns only live tools — the tenant-isolation sweep
+//     walks the real catalog, not a doubled one;
+//   • `toAnthropicTools()` never offers a retired name to the model, so the
+//     catalog the model reads keeps shrinking even though history keeps
+//     resolving.
+//
+// Every entry states what it was and why it went. `agent-tool-catalog-audit`
+// fails the build if an alias points at a name that is not registered, or
+// collides with a live tool.
+export const TOOL_ALIASES: ReadonlyMap<string, string> = new Map([
+  // ── Dead stubs: no data source ever existed behind them ──
+  // Both returned a fixed "not yet integrated" note and no figures. The
+  // checkbook summary is the tool that actually reports revenue (from the PMS
+  // when it exposes it) plus expenses, profit and budgets.
+  ['get_revenue', 'get_finance_summary'],
+  ['get_financial_report', 'get_finance_summary'],
+  // Returned "multi-property comparison is not enabled". It IS enabled now —
+  // on the portfolio surface. Pointing here makes a per-hotel call fail with
+  // the portfolio refusal ("ask this from the company view"), which is the
+  // true answer rather than the stale one.
+  ['compare_properties', 'portfolio_compare'],
+
+  // ── Merged: two tools that read the same rows and answered the same question ──
+  // Read `inventory` with `reorder_at` as the threshold; the Inventory tab and
+  // get_low_stock both classify against `par_level`. Same table, one correct.
+  ['get_inventory', 'get_low_stock'],
+  // Both filtered today's merged rooms to the caller's own assignments;
+  // get_my_rooms keeps the code-computed "next" behind `nextOnly`.
+  ['list_my_rooms', 'get_my_rooms'],
+  ['get_my_next_room', 'get_my_rooms'],
+  // get_today_summary already returned occupancy; get_occupancy was the same
+  // counts read with a second never-shrink total. The total logic moved over.
+  ['get_occupancy', 'get_today_summary'],
+  // Both read pms_reservations filtered to one terminal status over a lookback
+  // window — the same query twice. One tool, `kind` selects (or returns both).
+  ['get_recent_no_shows', 'get_lost_reservations'],
+  ['get_recent_cancellations', 'get_lost_reservations'],
+  // "What's scheduled?" had two candidate tools and the model had to guess
+  // which kind the user meant before it had seen either list.
+  ['list_reminders', 'list_scheduled_items'],
+  ['list_recurring_todos', 'list_scheduled_items'],
+  // budgetVsActual already returns actualCents, so get_department_spend was
+  // re-deriving a subset of check_budget_status's own read. Both now fold into
+  // the one month-of-money tool.
+  ['check_budget_status', 'get_finance_summary'],
+  ['get_department_spend', 'get_finance_summary'],
+  // Renamed, not merged: it never generated anything. It reports which
+  // housekeeper holds which rooms today, and the old name invited the model to
+  // promise the manager a schedule it cannot build.
+  ['generate_schedule', 'get_room_assignments'],
+]);
+
+/** Resolve a possibly-retired wire name to the tool that answers it now. */
+export function resolveToolName(name: string): string {
+  return TOOL_ALIASES.get(name) ?? name;
+}
+
+/**
+ * All registered tools, regardless of role. Mostly for introspection /
+ * monitoring — and the spine of the tenant-isolation sweep, which walks this
+ * rather than a hand-written list so a new tool is covered the moment it is
+ * registered. Retired aliases are deliberately absent (see TOOL_ALIASES).
+ */
 export function listAllTools(): ToolDefinition[] {
   return Array.from(registry.values());
 }
 
-/** Look up a registered tool by name (or undefined). */
+/** Look up a registered tool by name, following a retired name (or undefined). */
 export function getTool(name: string): ToolDefinition | undefined {
-  return registry.get(name);
+  return registry.get(resolveToolName(name));
 }
 
 /**
@@ -305,12 +377,12 @@ export function getTool(name: string): ToolDefinition | undefined {
  * are treated as non-mutating (the executor's own not-found guard handles them).
  */
 export function isMutationTool(name: string): boolean {
-  return registry.get(name)?.mutates === true;
+  return registry.get(resolveToolName(name))?.mutates === true;
 }
 
 /** The approval tier a mutation tool carries ('quick' | 'card'), or null. */
 export function approvalTierFor(name: string): 'quick' | 'card' | null {
-  return registry.get(name)?.approval ?? null;
+  return registry.get(resolveToolName(name))?.approval ?? null;
 }
 
 /** Tools the given role is allowed to invoke on a given surface. This is
@@ -379,7 +451,12 @@ export async function executeTool(
   args: unknown,
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  const tool = registry.get(name);
+  // A retired wire-name resolves to whichever tool answers that question now,
+  // so a replayed history row / pinned eval case still executes. Everything
+  // below gates on the SURVIVING tool's own declarations — an alias grants no
+  // role, surface, section or capability its target does not already have.
+  const resolved = resolveToolName(name);
+  const tool = registry.get(resolved);
   if (!tool) {
     return { ok: false, error: `Tool not found: ${name}. Available tools are listed in your system prompt.` };
   }

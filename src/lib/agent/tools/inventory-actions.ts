@@ -95,9 +95,11 @@ registerTool<GetLowStockArgs>({
   name: 'get_low_stock',
   section: 'inventory',
   description:
-    'List inventory items that are running LOW or CRITICAL right now. Use for "what\'s running low?", "what do we need to reorder?", "are we low on towels?", "qué se está acabando?". ' +
-    'By default returns only low + critical items (below par). Set includeAll=true to list every item with its status. Optionally filter by category (housekeeping/maintenance/breakfast). ' +
-    'Status is Critical below half of par, Low below par, Good at or above par.',
+    'What is on the shelves right now, and what is running out. The one inventory-level read. ' +
+    'Use when: the user asks "what\'s running low", "what do we need to order", "are we low on towels", "how many pillowcases do we have", "qué se está acabando". For what inventory COST over a month use get_inventory_monthly_accounting; to change a count use adjust_stock. ' +
+    'Args: category — narrow to housekeeping, maintenance or breakfast; omit for all three. includeAll — set true to list every item with its status, not just the ones below par (use it when the user asks how much of something there is, not what is short). ' +
+    'Returns: { totalItems, criticalCount, lowCount, items[] } with each item\'s name, category, current stock, par level, unit and status, critical first. Status is computed here against par — Critical below half of par, Low below par, Good at or above — so quote it rather than judging from the two numbers. ' +
+    'Refuses: nothing, but an item with no par level set cannot be classified and comes back "good" by default, which is not a claim that it is well stocked. These are the counts as last entered by staff, not a live measurement — if the user is deciding on an order, say when the item was last counted rather than implying the number is current.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -159,9 +161,11 @@ registerTool<AdjustStockArgs>({
   name: 'adjust_stock',
   section: 'inventory',
   description:
-    'Update an inventory item\'s on-hand count and/or mark order intent for it. Use for "we have 40 rolls of toilet paper now", "set towels to 120", or "mark the pillowcases as ordered". ' +
-    'itemName = the item (a partial name is fine if unique). Set newCount to the CURRENT on-hand quantity (not a delta). Set markOrdered=true only to stamp last_ordered_at as an operational reminder. It does not create a purchase order, log a delivery, or add purchase cost. ' +
-    'At least one of newCount or markOrdered is required. Managers and front desk only.',
+    'Correct an inventory item\'s on-hand count, and/or note that someone has ordered more of it. ' +
+    'Use when: the user reports a real count — "we have 40 rolls of toilet paper now", "set towels to 120", "conté 30 sábanas" — or says they have ordered something. ' +
+    'Args: itemName — which item; a partial name is fine when it matches only one. newCount — the CURRENT on-hand quantity as an absolute number, never a change or a delta; "we used 10" is not a count, so ask what is left. markOrdered — true to stamp an order-intent reminder. At least one of the two is required. ' +
+    'Returns: the resolved item, its new count, and explicit deliveryLogged:false / purchaseLogged:false flags. This is a proposal until the user approves the card. ' +
+    'Refuses: a negative count, a name matching nothing, and a name matching several items — it hands back the candidates and will not guess which one, because editing the wrong item silently corrupts the count. Be honest about what markOrdered does: it saves a reminder that someone ordered it and NOTHING else. It does not place an order with a supplier, record a delivery, book a cost, or reduce a budget. Never tell the user you have ordered anything.',
   inputSchema: {
     type: 'object',
     properties: {

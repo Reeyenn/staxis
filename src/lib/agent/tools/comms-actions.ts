@@ -70,10 +70,11 @@ registerTool<SendMessageArgs>({
   name: 'send_message',
   section: 'communications',
   description:
-    'Send a direct message to another staff member AS THE USER (the message is from them, not from Staxis). ' +
-    'Use for "message Maria that the lobby needs a mop", "tell Carlos his 3pm rooms are ready", "dile a Ana que ya llegaron las toallas". ' +
-    'recipient = the person\'s name (first name is enough if unique) or their staff id. ' +
-    'If the name is ambiguous you will get back a candidate list — ask the user which one they mean and call again with the exact name.',
+    'Send a direct message to one colleague, FROM the user — it arrives with their name on it, not Staxis\'s. ' +
+    'Use when: the user wants to tell one specific person something — "message Maria that the lobby needs a mop", "tell Carlos his 3pm rooms are ready", "dile a Ana que ya llegaron las toallas". For everyone at once use post_announcement; for something that needs doing use create_todo. ' +
+    'Args: recipient — the colleague, by name (a first name is enough when unique) or staff id. message — the body in the user\'s own words, capped at 2000 characters. ' +
+    'Returns: the resolved recipient and the message sent. A proposal until the user approves the card, and the card offers to add it to the recipient\'s to-do list as well. ' +
+    'Refuses: an empty message, sending to yourself, a recipient matching nobody active at this hotel, and a name matching several people — it returns the candidates so you can ask which one, and must never pick one itself. It also refuses when the user\'s own account is not linked to a staff record, because the message would have no sender. This is in-app only: it does not text, email or phone anyone.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -177,8 +178,11 @@ registerTool<CreateTodoArgs>({
   name: 'create_todo',
   section: 'communications',
   description:
-    'Add a task to the shared to-do list. Use for "add a to-do: restock the linen closet", "remind maintenance to check the pool heater", "crear una tarea: revisar el gimnasio". ' +
-    'Optionally assign it to a person by name (assignee) or a whole department (front_desk/housekeeping/maintenance/general), set a due date/time (dueAt, ISO-8601), and a priority (normal/high/urgent).',
+    'Add ONE task to the shared to-do list — something that needs doing once. ' +
+    'Use when: the user asks for a job to be recorded — "add a to-do: restock the linen closet", "someone needs to check the pool heater", "crear una tarea: revisar el gimnasio". For something that should repeat on a schedule use create_recurring_todo; for a message at a specific future time use create_reminder; for a note about a room use flag_issue. ' +
+    'Args: title — the task, capped at 200 characters. notes — optional longer detail. assignee — optional person by name. department — optional, one of front_desk / housekeeping / maintenance / general. dueAt — optional ISO-8601 timestamp; work the date out from the user\'s words rather than passing their phrase through. priority — normal (default), high or urgent. ' +
+    'Returns: the created task with its resolved assignee, department, due time and priority. A proposal until the user approves the card. ' +
+    'Refuses: an empty title, an assignee matching nobody, and an assignee matching several people — it hands back the candidates rather than choosing. It also refuses when the user is not linked to a staff record, because a to-do created by nobody is an orphan. Adding a to-do notifies no one and starts nothing: it appears on the list for whoever looks.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -276,8 +280,11 @@ registerTool<AddLogbookEntryArgs>({
   name: 'add_logbook_entry',
   section: 'communications',
   description:
-    'Add an entry to the shift log book (the running record managers read at shift change). Use for "log book: elevator 2 was out of service 2-4pm", "note in the log that we ran low on towels", "anotar en la bitacora que el aire de la 210 sigue fallando". ' +
-    'category is one of front_desk / housekeeping / maintenance / general.',
+    'Write an entry in the shift log book — the running record the next shift reads at handover. ' +
+    'Use when: the user is recording what happened rather than asking for something to be done — "log book: elevator 2 was out 2-4pm", "note that we ran low on towels", "anotar en la bitácora que el aire de la 210 sigue fallando". If it needs doing, use create_todo; if a guest is unhappy, use log_complaint. ' +
+    'Args: title — a short headline, capped at 200 characters. body — optional detail, capped at 4000. category — front_desk, housekeeping, maintenance or general (the default). ' +
+    'Returns: the entry id, title and category, attributed to the user. A proposal until they approve the card. ' +
+    'Refuses: an empty title, and any caller whose account is not linked to a staff record — a log entry has an author or it is not a log entry. Writing here notifies nobody and creates no task; it is a record for whoever reads the book.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -330,9 +337,11 @@ registerTool<PostAnnouncementArgs>({
   name: 'post_announcement',
   section: 'communications',
   description:
-    'Broadcast an announcement to ALL staff at this property (the announcements feed + the housekeeper notice banner). ' +
-    'Use for "announce that breakfast starts at 6am tomorrow", "tell everyone the pool is closed for repairs", "avisar a todos que habra reunion a las 3". ' +
-    'Set requiresAck=true when you need every recipient to explicitly confirm they read it. Managers only.',
+    'Broadcast one announcement to EVERY member of staff at this hotel — the announcements feed and the notice banner housekeepers see. ' +
+    'Use when: the user genuinely means everyone — "announce that breakfast starts at 6am tomorrow", "tell everyone the pool is closed", "avisar a todos que habrá reunión a las 3". For one person use send_message. When it is not clearly hotel-wide, ask before broadcasting: this reaches every phone and cannot be unsent. ' +
+    'Args: message — the announcement text, capped at 2000 characters. requiresAck — true when every recipient must tick that they read it; use it for anything about safety, pay or a rule change, not for routine notices. ' +
+    'Returns: the announcement id, the text posted, and whether acknowledgement was required. A proposal until the user approves the card. ' +
+    'Refuses: an empty message, and any role without announcement permission at this hotel — including a manager an admin has switched off for it. There is no edit and no recall once it is out, so do not promise to fix or delete one afterwards.',
   inputSchema: {
     type: 'object',
     properties: {

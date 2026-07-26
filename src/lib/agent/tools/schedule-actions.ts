@@ -70,9 +70,11 @@ registerTool<GetScheduleArgs>({
   name: 'get_schedule',
   section: 'staff',
   description:
-    'Look up who is scheduled to work on a given date. Use for "who\'s working tomorrow?", "who\'s on Friday?", "quién trabaja mañana?", "is Maria working Saturday?". ' +
-    'date can be "today", "tomorrow", or an ISO date (YYYY-MM-DD); defaults to today. Optionally filter by department (housekeeping/front_desk/maintenance). ' +
-    'Returns each scheduled person with their hours and department, and lists anyone with approved time off that day. Only counts assigned shifts — open (unfilled) slots are reported separately.',
+    'Who is on the clock on a given day, with their hours. ' +
+    'Use when: the user asks "who\'s working tomorrow", "who\'s on Friday", "is Maria working Saturday", "quién trabaja mañana", or is checking coverage. For how the ROOMS are split between housekeepers use get_room_assignments — that is a different question and a different table. ' +
+    'Args: date — "today", "tomorrow", or an ISO YYYY-MM-DD; defaults to today. department — narrow to housekeeping, front_desk or maintenance. ' +
+    'Returns: { date, working[], workingCount, openSlots, timeOff[] }. Anyone whose time off was approved for that day is removed from `working` and listed in `timeOff` instead, so the count is the real one. openSlots are shifts nobody is assigned to — report them as gaps in coverage, not as people. ' +
+    'Refuses: a date it cannot read, rather than guessing a day and answering about the wrong one. Shifts may still be drafts the manager has not published; this shows them either way, so do not tell staff their hours are final.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -160,8 +162,11 @@ registerTool<RemoveFromShiftArgs>({
   name: 'remove_from_shift',
   section: 'staff',
   description:
-    'Give a staff member a day off by removing their assigned shift on a date. Use for "give Maria Friday off", "take Carlos off Saturday", "dale el día libre a Ana el martes". ' +
-    'Identify the person by name and pass the date ("tomorrow" or YYYY-MM-DD). This deletes their assigned shift for that day; it does not touch other days. Managers only.',
+    'Take a staff member off the schedule for ONE day by deleting their assigned shift. ' +
+    'Use when: a manager says "give Maria Friday off", "take Carlos off Saturday", "dale el día libre a Ana el martes". To decide a formal time-off REQUEST use decide_time_off instead — that one records the decision and tells the staff member; this one just clears the shift. ' +
+    'Args: staffName — who, a first name if unique. date — "tomorrow" or an ISO YYYY-MM-DD. Both required. ' +
+    'Returns: the staff name, the date cleared, and how many shift rows were removed. This is a proposal until the manager approves the card. ' +
+    'Refuses: a date it cannot read, a name matching nobody, a name matching several people (it hands back the candidates rather than picking), and a day the person is not actually scheduled — so an approved card can never be a no-op the manager mistakes for success. It clears ONE day only; it will not clear a week, and you should not imply it has.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -231,9 +236,11 @@ registerTool<AssignShiftArgs>({
   name: 'assign_shift',
   section: 'staff',
   description:
-    'Put a staff member on the schedule for a date (add/assign a shift). Use for "put Maria on Friday", "schedule Carlos tomorrow 7am to 3pm", "pon a Ana el sábado". ' +
-    'Identify the person by name and pass the date. Hours are optional — default 08:00–16:00 if not given (startTime/endTime as HH:MM, 24-hour). Department defaults to the staff member\'s own. ' +
-    'If they already have a shift that day, it is updated rather than duplicated. The shift is created as a draft (visible once the manager publishes the week). Managers only.',
+    'Put a staff member on the schedule for ONE day. ' +
+    'Use when: a manager says "put Maria on Friday", "schedule Carlos tomorrow 7am to 3pm", "pon a Ana el sábado". ' +
+    'Args: staffName — who, a first name if unique. date — "tomorrow" or an ISO YYYY-MM-DD. startTime / endTime — optional HH:MM in 24-hour time; they default to 08:00–16:00, and the card shows those defaults so nothing is hidden. department — optional; defaults to the staff member\'s own. ' +
+    'Returns: the person, day, hours and department, plus `updated` telling you whether an existing shift was overwritten rather than a new one added. A proposal until the manager approves the card. ' +
+    'Refuses: an unreadable date, and any name that matches nobody or several people. Two things to state rather than let the manager assume: if they already have a shift that day it is REPLACED, not added alongside; and the shift lands as a DRAFT, so it is not visible to staff until the manager publishes the week. It schedules one day — it cannot fill a week or build a rota.',
   inputSchema: {
     type: 'object',
     properties: {

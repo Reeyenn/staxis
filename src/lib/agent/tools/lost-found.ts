@@ -13,7 +13,11 @@ import { LAF_CATEGORIES } from '@/lib/lost-and-found/types';
 registerTool<{ itemDescription: string; roomOrLocation?: string; category?: string }>({
   name: 'log_found_item',
   description:
-    'Log a FOUND item into the Lost & Found register. Use when someone reports finding lost property — e.g. "found a pair of glasses in 214", "someone left a phone charger in the lobby", "encontré una chaqueta negra en la 305". Capture WHAT was found and WHERE.',
+    'Record an item somebody FOUND, into the Lost & Found register. ' +
+    'Use when: staff report finding property a guest left behind — "found a pair of glasses in 214", "someone left a charger in the lobby", "encontré una chaqueta negra en la 305". To look for something already handed in, use search_lost_found instead — a guest asking about their lost wallet is a search, not a new entry. ' +
+    'Args: itemDescription — what it is, capped at 500 characters; include colour and brand when known, since that is what makes it findable later. roomOrLocation — where it turned up, either a room number or an area like "lobby" or "pool deck". category — the item category when it is obvious. ' +
+    'Returns: the item id, what was logged, the resolved location and who logged it. A proposal until the user approves. ' +
+    'Refuses: an empty description. Note the location handling: a room number that matches this hotel is stored as that room, and anything else is kept as free text rather than dropped. Logging an item does not contact the guest, start a return, or set a disposal date — it puts it in the register, nothing more.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -125,9 +129,11 @@ interface SearchLostFoundArgs {
 registerTool<SearchLostFoundArgs>({
   name: 'search_lost_found',
   description:
-    'Search the Lost & Found register by free text and/or a date range. Use for guest questions about lost belongings — "did anyone turn in a black iPhone?", "was a wallet found last weekend?", "encontraron unos lentes?". ' +
-    'query matches the item description, location/room, and category. from/to are optional ISO dates (YYYY-MM-DD) bounding when the item was logged. type filters found vs lost (default: found items, since guests ask what was TURNED IN). ' +
-    'Returns matching items with what they are, where and when they were found, and their current status.',
+    'Search the Lost & Found register for an item, by description and/or when it was logged. ' +
+    'Use when: someone is looking for lost property — "did anyone turn in a black iPhone", "was a wallet found last weekend", "encontraron unos lentes". This is the tool for a guest chasing something they left; log_found_item is for recording a new find. ' +
+    'Args: query — what to look for; every word must match, so "black iphone" will not return every phone. from / to — optional ISO YYYY-MM-DD bounds on when the item was logged, not when it was lost. type — "found" (default, what guests ask about), "lost", or "all". limit — max results, default 15. ' +
+    'Returns: { totalMatches, returned, items[] } with each item\'s description, category, location, current status and when it was logged. totalMatches may exceed what is returned — say so rather than implying the list is complete. ' +
+    'Refuses: nothing, and that is the trap — no match does NOT mean the item was never handed in. It may have been logged with different words, or not logged at all. Tell the user nothing matching was found and offer to check with the front desk; never tell a guest their property is definitely not here. Searching does not reserve, hold or return anything.',
   inputSchema: {
     type: 'object',
     properties: {

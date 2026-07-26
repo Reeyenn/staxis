@@ -14,7 +14,11 @@ registerTool<{ roomNumber: string; staffName: string }>({
   name: 'assign_room',
   section: 'housekeeping',
   description:
-    'Assign a room to a specific housekeeper by name. Use when manager says "assign 302 to Maria" or "give 410 to Carlos". The name match is case-insensitive and partial.',
+    'Give one room to one housekeeper. ' +
+    'Use when: a manager says "assign 302 to Maria", "give 410 to Carlos", "pon la 215 a Ana". To see the current split first use get_room_assignments. ' +
+    'Args: roomNumber — the room as the hotel writes it. staffName — the housekeeper; a first name is enough when it is unique, matched case-insensitively. ' +
+    'Returns: the room number and the resolved staff member the room was handed to. This is a proposal — the manager approves it on a card before anything changes. ' +
+    'Refuses: an unknown room, and any staff name that does not match an active staff member on this hotel. It moves ONE room at a time and cannot rebalance a whole board — do not promise to redistribute a shift.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -68,7 +72,11 @@ registerTool<{ period?: 'today' | 'week' | 'month' }>({
   // Reads cleaning_events (Staxis's own labor audit trail), not a pms_ table.
   pmsFreshness: 'independent',
   description:
-    'Get per-staff cleaning performance metrics over a period. Returns: name, rooms cleaned, average duration in minutes, flagged events. Period defaults to "today".',
+    'Per-housekeeper cleaning numbers over a period: rooms done, average minutes per room, and how many cleans were flagged. ' +
+    'Use when: a manager asks "how is Maria doing", "who cleaned the most this week", "average time per room", "quién limpió más". For the hotel-wide labor total use get_today_summary. ' +
+    'Args: period — "today" (default), "week" (last 7 days) or "month" (last 30). ' +
+    'Returns: { period, rows[] } sorted by rooms cleaned, each with name, roomsCleaned, avgDurationMinutes and flaggedEvents. The averages are computed here — quote them, never divide totals yourself. ' +
+    'Refuses: nothing, but these are counts of logged cleaning events, not a judgement of anyone. Do not rank staff as better or worse, recommend discipline, or infer effort from duration — a long clean is often a hard room. Discarded events are already excluded; someone missing from the list logged nothing, which is not the same as doing nothing.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -136,17 +144,30 @@ registerTool<{ period?: 'today' | 'week' | 'month' }>({
 // initiated SMS is genuinely needed in the future, gate it on the
 // Pattern F unified cost-cap primitive BEFORE re-introducing the tool.
 
-// ─── generate_schedule ────────────────────────────────────────────────────
-// Stub for v1: explains the current state. Real schedule generation goes
-// through /api/send-shift-confirmations and the existing ML routing.
+// ─── get_room_assignments ─────────────────────────────────────────────────
+// RENAMED from generate_schedule (2026-07-27), not merged — it does something
+// real, but its old name described something it cannot do. It has never
+// generated a schedule; it reads pms_housekeeping_assignments through the merge
+// and groups today's rooms by housekeeper. A tool called "generate_schedule"
+// invites the model to promise a manager a schedule it will then not build,
+// which is the fake-success failure mode INV-41 exists to stop. Real schedule
+// generation goes through /api/send-shift-confirmations and the ML routing.
+//
+// The workload split it reports is also a different question from get_schedule
+// (who is on the clock, out of scheduled_shifts) — under the old name the two
+// looked like rival answers to "what's the schedule?".
 
 registerTool<{ date?: string }>({
-  name: 'generate_schedule',
+  name: 'get_room_assignments',
   section: 'staff',
   // Room assignments come from pms_housekeeping_assignments via the merge.
   pmsFreshness: 'stamped',
   description:
-    'Generate (or look up) the housekeeper schedule for a given date, as of the hotel\'s last PMS report (NOT live). Returns which housekeepers are scheduled and how many rooms each has assigned. Date format: YYYY-MM-DD. Defaults to today.',
+    'Show how a day\'s rooms are split between housekeepers — who is carrying which rooms, and how many each. ' +
+    'Use when: a manager asks "who has which rooms", "how many rooms does Maria have", "is anyone overloaded today", "cómo están repartidos los cuartos". For who is on the clock use get_schedule; to change an assignment use assign_room. ' +
+    'Args: date — ISO YYYY-MM-DD; defaults to today. ' +
+    'Returns: { date, totalAssigned, schedule[] } where each entry is a housekeeper with their room count and their room numbers, sorted heaviest load first. The counts are computed here — quote them rather than counting room lists. Carries asOf; quote it. ' +
+    'Refuses: it cannot BUILD or change a schedule — it only reports the assignments the PMS already holds. If the manager asks you to create, balance or rebalance a schedule, say plainly that you can show the split but the assignments have to be made in the PMS or the Schedule tab. Rooms with no housekeeper resolved are left out of the split entirely, so the room counts may not add up to the hotel\'s board.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -222,7 +243,11 @@ registerTool<Record<string, never>>({
   // The freshness fields ARE the answer to this tool's question.
   pmsFreshness: 'stamped',
   description:
-    'Check whether the hotel\'s PMS (Property Management System) data is arriving and how current it is. Use for "is the PMS connected?", "how old are these numbers?", "are the reports coming through?". Returns one line per report feed with its state (arriving on time / late / not set up), when each last arrived, and how old the hotel\'s numbers are overall (asOf / dataAgeMinutes / dataFreshness).',
+    'Whether this hotel\'s PMS reports are arriving, and how old its numbers are. ' +
+    'Use when: the user asks "is the PMS connected", "how old are these numbers", "are the reports coming through", "why does this look out of date", or doubts a figure you just gave them — this is how you check before defending it. For whether STAXIS itself checked the hotel overnight use staxis_checked_last_night; the two are different questions. ' +
+    'Takes no arguments. ' +
+    'Returns: { configured, feeds[], summary, asOf } — one entry per report feed with its state (arriving on time / late / still being learned / not sent by this hotel), when it last arrived, how many minutes late it is, and any rows stuck in quarantine. ' +
+    'Refuses: nothing. A hotel with `configured: false` is not broken — it simply runs Staxis without a PMS connection and its numbers come from the app itself, so say that rather than reporting a fault.',
   inputSchema: { type: 'object', properties: {} },
   allowedRoles: ['admin', 'owner', 'general_manager'],
   handler: async (_, ctx): Promise<ToolResult> => {
@@ -293,7 +318,11 @@ registerTool<{ status?: 'pending' | 'approved' | 'denied' | 'all' }>({
   pmsFreshness: 'independent', // Staxis's own time-off table — genuinely live
   section: 'staff',
   description:
-    'List staff time-off (PTO) requests for this property. Use when a manager asks things like "any time-off requests?", "who wants time off?", or "show pending PTO". Returns each request\'s staff name, date, reason, and status. Defaults to pending requests only.',
+    'List staff time-off (PTO) requests at this hotel. ' +
+    'Use when: a manager asks "any time-off requests", "who wants time off", "show pending PTO", "quién pidió días". To approve or deny one, read it here first and then use decide_time_off. ' +
+    'Args: status — "pending" (default), "approved", "denied", or "all". ' +
+    'Returns: { filter, count, requests[] } with each request\'s staff name, date, reason and status, oldest date first. ' +
+    'Refuses: nothing, and it changes nothing — reading a request never approves it. Do not tell anyone their time off is granted on the strength of this list.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -353,7 +382,11 @@ registerTool<{ staffName: string; decision: 'approve' | 'deny'; date?: string; d
   name: 'decide_time_off',
   section: 'staff',
   description:
-    'Approve or deny a PENDING staff time-off request. Identify the request by the staff member\'s name; pass the date (YYYY-MM-DD) too when they have more than one pending request. Approving also clears that day\'s scheduled shift. Use only when the manager clearly says to approve or deny someone\'s time off.',
+    'Approve or deny ONE pending staff time-off request. ' +
+    'Use when: a manager clearly decides — "approve Maria\'s Friday", "deny Carlos for Saturday", "dale el permiso a Ana". Never on a hint, a maybe, or a question about someone\'s request; read it with get_time_off_requests instead. ' +
+    'Args: staffName — whose request, a first name if unique. decision — "approve" or "deny". date — YYYY-MM-DD, required in practice whenever the person has more than one request pending. denyReason — a short reason shown to the staff member when denying. ' +
+    'Returns: the staff name, the date decided, the decision, and whether that day\'s scheduled shift was removed. Approving DOES clear the shift — say so, because the manager may not expect it. This is a proposal until they approve the card. ' +
+    'Refuses: a staff name matching more than one active person, a name with no pending request, and any case where several pending requests still match after the date — it will not guess which day to act on, and tells the manager to use the Schedule tab. It also cannot reverse a decision already made.',
   inputSchema: {
     type: 'object',
     properties: {

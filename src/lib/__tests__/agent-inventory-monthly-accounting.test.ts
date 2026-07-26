@@ -72,7 +72,12 @@ describe('get_inventory_monthly_accounting registration and routing', () => {
     assert.notEqual(tool.mutates, true);
     assert.equal(tool.approval, undefined);
     assert.match(tool.description, /housekeeping inventory budget/i);
-    assert.match(tool.description, /immutable closed-month evidence/i);
+    // The load-bearing claim, kept through the 2026-07-27 description rewrite:
+    // the description must still tell the model that over/under only exists for
+    // a CLOSED month, and that an OPEN one cannot answer the question. The exact
+    // wording ("immutable closed-month evidence") changed; the promise did not.
+    assert.match(tool.description, /closed month/i);
+    assert.match(tool.description, /still open|open month/i);
   });
 
   test('central role and property gates refuse access before any accounting read', async () => {
@@ -102,10 +107,23 @@ describe('get_inventory_monthly_accounting registration and routing', () => {
     const checkbookEval = EVAL_CASES.find((entry) => entry.name === 'manager_checkbook_housekeeping_budget');
     assert.equal(inventoryEval?.expectedTool, 'get_inventory_monthly_accounting');
     assert.equal(shelfEval?.expectedTool, 'get_inventory_monthly_accounting');
-    assert.equal(checkbookEval?.expectedTool, 'check_budget_status');
+    // check_budget_status merged into get_finance_summary (2026-07-27). The eval
+    // still proves the same routing decision — a checkbook/department expense
+    // question must NOT reach the inventory ledger — against the surviving name,
+    // which is the only one the model is now offered.
+    assert.equal(checkbookEval?.expectedTool, 'get_finance_summary');
 
-    assert.match(getTool('check_budget_status')?.description ?? '', /CHECKBOOK EXPENSE/i);
-    assert.match(getTool('check_budget_status')?.description ?? '', /get_inventory_monthly_accounting/);
+    // The retired name still resolves, so a replayed history row or a pinned
+    // eval case does not turn into "Tool not found".
+    assert.equal(getTool('check_budget_status')?.name, 'get_finance_summary');
+    assert.equal(getTool('get_department_spend')?.name, 'get_finance_summary');
+
+    // And the surviving description still carries the separation that keeps the
+    // two ledgers apart: it says it is the checkbook, and it names the inventory
+    // tool as the place supplies questions go.
+    const checkbook = getTool('get_finance_summary')?.description ?? '';
+    assert.match(checkbook, /checkbook/i);
+    assert.match(checkbook, /get_inventory_monthly_accounting/);
   });
 });
 

@@ -10,7 +10,11 @@
 import './room-actions';
 import './queries';
 import './management';
-import './reports';
+// './reports' is GONE (2026-07-27 catalog rebuild). All five of its tools were
+// stubs or duplicates: get_revenue / get_financial_report / compare_properties
+// returned fixed "not integrated" notes, get_inventory duplicated get_low_stock
+// against the wrong threshold column, and get_occupancy read the same counts RPC
+// as get_today_summary. Their wire-names live on in TOOL_ALIASES.
 import './walkthrough';
 import './complaints';
 import './lost-found';
@@ -24,6 +28,10 @@ import './inventory-actions';
 import './inventory-monthly-accounting';
 import './reminders';
 import './recurring-todos';
+// The SEE tools (2026-07-27): what Staxis itself has noticed, the receipt
+// behind it, what is waiting on a decision, preventive schedules, the equipment
+// register, and whether the nightly check actually ran. All read-only.
+import './staxis-findings';
 // Cross-hotel chat. Every tool in here declares `surfaces: ['portfolio']`, so
 // importing it does NOT widen the chat/voice/walkthrough catalogs — the surface
 // filter in getToolsForRole keeps the two sets disjoint by construction.

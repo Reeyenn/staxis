@@ -108,9 +108,12 @@ const ROW_KEYED_FOLLOWUPS = new Map<string, { keys: string[]; why: string }>([
  * (a pre-handler refusal is reported as its own, different failure).
  */
 const NO_DB_TOOLS = new Map<string, string>([
-  ['compare_properties', 'honest "multi-property comparison is not enabled" stub — returns a fixed note'],
-  ['get_revenue', 'stub until the revenue source is wired up — returns a "not available" note'],
-  ['get_financial_report', 'stub until the report source is wired up — returns a "not available" note'],
+  // compare_properties / get_revenue / get_financial_report lived here until
+  // the 2026-07-27 catalog rebuild deleted them. They were the ONLY reason this
+  // list needed a "stub" category at all: three tools that answered a manager's
+  // real question with "not yet integrated" and touched nothing. Their absence
+  // is now asserted below rather than assumed — a dead entry here is a slot a
+  // future tool could quietly inherit.
   ['walk_user_through', 'returns UI walkthrough steps from an in-memory registry'],
 ]);
 
@@ -597,7 +600,17 @@ describe('every agent tool is confined to one hotel (INV-29)', () => {
       .map(r => r.tool.name);
     const undeclared = silent.filter(n => !NO_DB_TOOLS.has(n));
     const staleDeclarations = [...NO_DB_TOOLS.keys()].filter(n => runs.has(n) && !silent.includes(n));
+    // A tool that no longer exists cannot be DB-free — it is just a name left
+    // behind. Without this, a deleted tool's exemption sits here waiting for
+    // someone to register that name again and inherit a free pass.
+    const declaredButGone = [...NO_DB_TOOLS.keys()].filter(n => !runs.has(n));
 
+    assert.deepEqual(
+      declaredButGone,
+      [],
+      'these names are declared DB-free but are not registered any more — delete the entry, ' +
+      'or a future tool registered under one of these names inherits an exemption nobody chose.',
+    );
     assert.deepEqual(
       undeclared,
       [],
