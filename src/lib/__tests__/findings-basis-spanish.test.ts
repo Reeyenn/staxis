@@ -224,6 +224,35 @@ describe('preventive due', () => {
     assert.doesNotMatch(es.evidence!, /\bde retraso\b/);
   });
 
+  // The one card in the product whose whole subject is "we cannot count this
+  // yet". Without its own arm it fell through to null and a Spanish reader got
+  // the English receipt under a Spanish headline — the exact split this module
+  // exists to close.
+  test('the unstarted arm says there is no date to count from, and claims no lateness', () => {
+    const es = hotelBasisSpanish(preventiveDueDetector.declaration.id, {
+      params: { preventive_task_id: 't9', task_name: 'Prueba de generador', frequency_days: 90 },
+      values: {
+        last_done: null, last_done_at: null, due_on: null,
+        days_since_last_done: null, days_overdue: null, days_since_called: null,
+      },
+    })!;
+    assert.ok(es, 'the unstarted card fell back to English');
+    assert.match(es.evidence!, /cada 90 días/);
+    assert.match(es.evidence!, /no hay ninguna fecha registrada/);
+    assert.doesNotMatch(es.evidence!, /retraso|vence hoy/, 'nothing here is late');
+    assert.doesNotMatch(es.evidence!, /undefined|null/);
+  });
+
+  test('a receipt with no lateness AND no cadence is still null, not a sentence with holes', () => {
+    assert.equal(
+      hotelBasisSpanish(preventiveDueDetector.declaration.id, {
+        params: { task_name: 'Prueba de generador' },
+        values: { last_done: null, days_overdue: null },
+      }),
+      null,
+    );
+  });
+
   test('an unknown last-completion is said, not invented', () => {
     const es = hotelBasisSpanish(preventiveDueDetector.declaration.id, {
       params: { task_name: 'Prueba de alarma', frequency_days: 30 },

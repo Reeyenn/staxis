@@ -42,7 +42,7 @@ import { loadManagerCaller, managerManagesHotel, type ManagerCaller } from '@/li
 import { executeAction, loadAction, undoAction } from '@/lib/findings/actions/store';
 import { loadFinding, recordFindingActed } from '@/lib/findings/store';
 import type { FindingAction } from '@/lib/findings/actions/types';
-import { companyForProperty } from '@/lib/company/access';
+import { resolveCompanyForProperty } from '@/lib/company/access';
 import { resolveSignOffStrict } from '@/lib/company/signoff';
 
 export const runtime = 'nodejs';
@@ -60,12 +60,17 @@ export const dynamic = 'force-dynamic';
  * a caller could shrink to slip under a threshold.
  *
  * ═══ WHY "WE COULD NOT TELL" REFUSES HERE AND NOWHERE ELSE ═══
- * Every read in this function used to fail open. A stale PostgREST schema cache
- * — the single most common operational fault in this app, and one that follows
- * every migration — made `company_authority_rules` unreadable, which returned
- * "no rule governs this", which let a GM tap through a lock their company had
- * written. The failure is invisible from both ends: the button simply works, and
- * the money is spent.
+ * Every read in this function used to fail open, and there are THREE of them —
+ * which company operates this hotel, which finding this action answers, and
+ * which rule governs the amount. A stale PostgREST schema cache — the single
+ * most common operational fault in this app, and one that follows every
+ * migration — made `company_authority_rules` unreadable, which returned "no rule
+ * governs this", which let a GM tap through a lock their company had written.
+ * The failure is invisible from both ends: the button simply works, and the
+ * money is spent. The company read had the same hole one question earlier, and
+ * one more besides: a hotel two live companies both claim has no answer to
+ * "whose rulebook applies", and answering "nobody's" would be a decision nobody
+ * made.
  *
  * A CARD may still fail open (finding-cards renders the pre-company card, and
  * `resolveSignOff` keeps that behaviour on purpose) because a card is a
@@ -81,8 +86,26 @@ async function signOffBlocking(
   caller: ManagerCaller,
   action: FindingAction,
 ): Promise<SignOffGate> {
-  const organizationId = await companyForProperty(propertyId);
-  if (!organizationId) return { state: 'allowed' };
+  // `companyForProperty` would answer `null` here for THREE different worlds:
+  // an independent hotel, a read that failed, and a hotel two live companies
+  // both claim to run. Only the first is a safe proceed, and collapsing the
+  // other two into it is the same fail-open this gate exists to close — one
+  // question earlier. So the gate asks the four-answer resolver.
+  const company = await resolveCompanyForProperty(propertyId);
+  if (company.status === 'unavailable') {
+    return { state: 'unavailable', because: 'we could not tell which company operates this hotel' };
+  }
+  if (company.status === 'ambiguous') {
+    // Two companies claim to run this building, so there is no answer to "whose
+    // rulebook governs this money". A human has to settle it; until they do,
+    // nothing here spends on either company's behalf.
+    return {
+      state: 'unavailable',
+      because: `two live companies claim this hotel (${company.organizationIds.join(', ')})`,
+    };
+  }
+  if (company.status === 'independent') return { state: 'allowed' };
+  const organizationId = company.organizationId;
 
   // `loadFinding` rather than a status-filtered list scan: the price this rule
   // is applied to is a fact about the card, not about whether the card is still

@@ -891,6 +891,10 @@ describe('the hands, proven against a real database', () => {
   describe('a rulebook we cannot read refuses the button rather than opening it', () => {
     const ORG = 'cccccccc-0000-4000-8000-00000000c001';
 
+    // A hotel is operated by ONE company, and only a primary operator/owner row
+    // counts as governing (access.ts `relationshipIsGoverning`). 0325 backfills a
+    // hidden single-hotel anchor holding that slot, so the test closes it, runs
+    // as a real operated hotel, and puts it back.
     before(async () => {
       await pg.query(
         `insert into public.organizations (id, name, organization_type, status)
@@ -898,13 +902,16 @@ describe('the hands, proven against a real database', () => {
          on conflict (id) do nothing`,
         [ORG],
       );
-      // NOT the primary grouping: 0325 backfills a `single_hotel` organization
-      // per property and holds the one-open-primary index against it. A hotel's
-      // operator sits alongside that, which is also how the real fleet looks.
+      await pg.query(
+        `update public.organization_property_relationships
+            set ends_at = now()
+          where property_id = $1 and ends_at is null`,
+        [PID_A],
+      );
       await pg.query(
         `insert into public.organization_property_relationships
            (organization_id, property_id, relationship_type, is_primary_grouping)
-         values ($1, $2, 'operator', false)`,
+         values ($1, $2, 'operator', true)`,
         [ORG, PID_A],
       );
     });
@@ -912,6 +919,12 @@ describe('the hands, proven against a real database', () => {
     after(async () => {
       await pg.query('delete from public.organization_property_relationships where organization_id=$1', [ORG]);
       await pg.query('delete from public.organizations where id=$1', [ORG]);
+      await pg.query(
+        `update public.organization_property_relationships
+            set ends_at = null
+          where property_id = $1 and ends_at is not null`,
+        [PID_A],
+      );
     });
 
     /** A finding with a dollar figure, so a money rule has something to be about. */
@@ -949,6 +962,63 @@ describe('the hands, proven against a real database', () => {
       const { actionId } = await pricedOffer('Room 802');
       const result = await tap(PID_A, actionId);
       assert.equal(result.body.data?.code, 'executed', 'an empty rulebook governs nothing');
+    });
+
+    // ═══ AND THE SAME REFUSAL ONE QUESTION EARLIER ═══
+    // "Which company operates this hotel" has four answers and only two of them
+    // are safe. `companyForProperty` collapses all four to `string | null`, so a
+    // failed read and a hotel two companies both claim BOTH read as "independent
+    // — go ahead". The gate asks the four-answer resolver instead.
+    //
+    // MUTATION PROOF: swap `resolveCompanyForProperty` back for
+    // `companyForProperty` in the route and both taps below execute.
+    test('a company read that fails refuses the tap rather than calling the hotel independent', async () => {
+      const { actionId } = await pricedOffer('Room 803');
+      await pg.query(
+        'alter table public.organization_property_relationships rename to opr_hidden',
+      );
+      try {
+        const result = await tap(PID_A, actionId);
+        assert.equal(result.status, 503);
+        assert.equal(await workOrderCount(PID_A, 'Room 803'), 2, 'the two originals, and no third');
+      } finally {
+        await pg.query('alter table public.opr_hidden rename to organization_property_relationships');
+      }
+    });
+
+    test('two live companies claiming the hotel refuses the tap — there is no whose-rulebook', async () => {
+      const { actionId } = await pricedOffer('Room 804');
+      const OTHER = 'cccccccc-0000-4000-8000-00000000c002';
+      await pg.query(
+        `insert into public.organizations (id, name, organization_type, status)
+         values ($1, 'Second Operator', 'management_company', 'active')
+         on conflict (id) do nothing`,
+        [OTHER],
+      );
+      // The database's own one-open-primary index makes this state hard to
+      // reach, which is exactly why the code path is defensive — and why the
+      // index comes off for the length of this test rather than the assertion
+      // being skipped.
+      await pg.query('drop index if exists organization_property_one_open_primary_idx');
+      try {
+        await pg.query(
+          `insert into public.organization_property_relationships
+             (organization_id, property_id, relationship_type, is_primary_grouping)
+           values ($1, $2, 'operator', true)`,
+          [OTHER, PID_A],
+        );
+        const result = await tap(PID_A, actionId);
+        assert.equal(result.status, 503, 'a hotel claimed twice is not a hotel claimed by nobody');
+        assert.equal(await workOrderCount(PID_A, 'Room 804'), 2, 'nothing was booked');
+      } finally {
+        await pg.query('delete from public.organization_property_relationships where organization_id=$1', [OTHER]);
+        await pg.query('delete from public.organizations where id=$1', [OTHER]);
+        await pg.query(
+          `create unique index if not exists organization_property_one_open_primary_idx
+             on public.organization_property_relationships (property_id)
+            where is_primary_grouping and ends_at is null`,
+        );
+      }
     });
 
     // The renderer's half of the same fact: a card that cannot resolve the

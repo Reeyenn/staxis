@@ -207,6 +207,24 @@ function expectedActivityStopped(r: Receipt): BasisSpanish | null {
 function preventiveDue(r: Receipt): BasisSpanish | null {
   const name = str(r?.params, 'task_name');
   const overdue = num(r?.values, 'days_overdue');
+
+  // THE UNSTARTED ARM. `days_overdue` is null here because there is no lateness
+  // to state — this card is about a schedule with no recorded completion, so
+  // nothing counts forward from it (see `neverDoneDraft`). It is told apart from
+  // a malformed receipt by what it DOES carry: a name and a cadence. Without
+  // this branch the one card in the product that says "we cannot count this yet"
+  // would say it in English to a Spanish reader.
+  const cadenceDays = num(r?.params, 'frequency_days');
+  if (overdue === null && name && cadenceDays !== null && r?.values && 'last_done' in r.values
+      && r.values.last_done === null) {
+    return {
+      price: null,
+      evidence:
+        `${name} se hace cada ${dias(cadenceDays)} y no hay ninguna fecha registrada, ` +
+        'así que no hay desde cuándo contar',
+    };
+  }
+
   if (!name || overdue === null) return null;
 
   // The follow-up arm is the one the detector writes `days_since_called` for;
