@@ -400,6 +400,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           userId: caller.accountId,
           propertyId: anchorPropertyId,
           requestId,
+          feature: 'agent.portfolio_chat',
         });
         try {
           controller.close();

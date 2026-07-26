@@ -538,6 +538,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           userId: userCtx.accountId,
           propertyId: body.pid,
           requestId,
+          feature: 'agent.ask_staxis',
         });
 
         try { controller.close(); } catch { /* noop */ }

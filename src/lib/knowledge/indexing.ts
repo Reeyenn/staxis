@@ -74,6 +74,7 @@ export async function meterEmbeddingCost(opts: {
   if (costUsd <= 0) return;
   try {
     await recordNonRequestCost({
+      feature: 'knowledge.embeddings',
       userId: opts.accountId,       // agent_costs.user_id → accounts(id)
       propertyId: opts.propertyId,
       conversationId: null,

@@ -901,6 +901,7 @@ export function defaultSweepDeps(): SweepDeps {
         return;
       }
       await recordNonRequestCost({
+        feature: 'findings.sweep',
         userId: accountId,
         propertyId,
         conversationId: null,

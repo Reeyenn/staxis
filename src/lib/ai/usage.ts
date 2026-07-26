@@ -1,4 +1,4 @@
-import type { AiModelRef } from './types';
+import type { AiCostFeature, AiModelRef } from './types';
 import { estimateAiCostUsd } from './runtime';
 
 /** Billable usage from one provider attempt. A failed primary is retained so
@@ -30,8 +30,10 @@ export interface AiLedgerContext {
   propertyId: string;
   kind?: 'background' | 'audio' | 'vision';
   requestId?: string;
-  /** Defaults to the executed plan's feature key. */
-  feature?: string;
+  /** Defaults to the executed plan's feature key — which is the honest answer
+   *  for every caller today, since the plan is what chose the model. Override
+   *  only when the row genuinely belongs to a different named job. */
+  feature?: AiCostFeature;
 }
 
 export interface AiCallOptions {

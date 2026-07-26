@@ -598,6 +598,7 @@ async function settle(
   }).catch(() => {});
   if (!ctx.accountId) return;
   await recordNonRequestCost({
+    feature: 'findings.brief',
     userId: ctx.accountId,
     propertyId: ctx.propertyId,
     conversationId: null,

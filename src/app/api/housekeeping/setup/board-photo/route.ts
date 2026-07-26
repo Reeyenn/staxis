@@ -405,6 +405,7 @@ export const POST = defineRoute({
         const u = usage as VisionUsageReport;
         try {
           await recordNonRequestCost({
+            feature: 'housekeeping.board_photo_read',
             userId: account.id,
             propertyId,
             conversationId: null,

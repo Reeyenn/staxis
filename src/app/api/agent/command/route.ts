@@ -382,6 +382,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           userId: userCtx.accountId,
           propertyId: body.propertyId,
           requestId,
+          feature: 'agent.ask_staxis',
         });
 
         try {

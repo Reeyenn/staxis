@@ -390,6 +390,7 @@ export async function POST(req: NextRequest) {
       const { model, modelId } = usages[0];
       try {
         await recordNonRequestCost({
+          feature: 'inventory.invoice_scan',
           userId: accountId,
           propertyId: pid,
           conversationId: null,

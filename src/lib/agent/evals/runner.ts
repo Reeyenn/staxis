@@ -330,6 +330,7 @@ export async function runOneEval(
   // drift surfaces loudly rather than silently dropping rows.
   try {
     await recordNonRequestCost({
+      feature: 'agent.eval_suite',
       userId: opts.userId,
       propertyId: opts.propertyId,
       conversationId: null,

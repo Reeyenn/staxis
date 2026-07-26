@@ -183,6 +183,7 @@ async function recordSummaryUsageBestEffort(args: {
 }): Promise<void> {
   if (args.usage.costUsd <= 0) return;
   await recordNonRequestCost({
+    feature: 'agent.conversation_summary',
     userId: args.userId,
     propertyId: args.propertyId,
     conversationId: args.conversationId,
