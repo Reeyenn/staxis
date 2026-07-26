@@ -103,6 +103,46 @@ export function isUsablePriceRange(price: PriceRange | null | undefined): price 
 // ─── Evidence: the receipt ───────────────────────────────────────────────────
 
 /**
+ * The kinds of THING a finding can be about, as the rest of the app names them.
+ *
+ * Deliberately short. A kind exists here only when some screen in Staxis shows
+ * that thing on its own — because the only consumer is the chip that says
+ * "Staxis sees a pattern here" on the thing's own record. A kind nothing can
+ * render is a kind that can only rot.
+ */
+export type FindingTargetKind = 'room' | 'inventory_item';
+
+/**
+ * WHICH thing a finding is about, in a shape a screen can match on.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `dedupe_key` AND `params`
+ * The dedupe key is the PROBLEM's identity and its interior is the detector's
+ * business — `room_needs_attention:overdue_room:2026-07-25:214` today, something
+ * else tomorrow. A screen that recovered "214" by splitting that string would be
+ * coupled to every detector's private key format forever, and would break
+ * silently (an empty chip, never an error) the first time one changed.
+ *
+ * `evidence.params` carries the same facts but under whatever name the detector
+ * chose — `room_number` here, `room` there, `item_id` somewhere else. That is
+ * fine for a receipt, which humans read, and useless for a lookup, which code
+ * runs.
+ *
+ * So detectors that are about a specific thing say so, once, in one place.
+ * Optional on purpose: most findings are about the HOTEL (weekly supply spend,
+ * a stream that stopped) and have no target at all. Absent means "not about one
+ * thing", which is a real answer, not a missing one.
+ */
+export interface FindingTarget {
+  readonly kind: FindingTargetKind;
+  /**
+   * The identity the app itself uses: a room NUMBER as printed on the door
+   * ("214"), an inventory item's row id. Compared case-insensitively after
+   * trimming, so it never matters which side of the wire did the padding.
+   */
+  readonly value: string;
+}
+
+/**
  * What a human (or a later verification pass) needs to check the claim without
  * trusting it. A finding whose evidence cannot reproduce it is a rumour.
  */
@@ -115,6 +155,12 @@ export interface FindingEvidence {
   values: Readonly<Record<string, JsonValue>>;
   /** Plain-English basis line: "4 hvac work orders in the last 30 days". */
   basis: string;
+  /**
+   * The one thing this finding is about, when it is about one thing. Added
+   * after the ledger shipped, so rows written before it simply do not have it —
+   * see `resolveFindingTarget` in ./targeting.ts for how those are read.
+   */
+  target?: FindingTarget | null;
 }
 
 // ─── Feeds: everything a detector is allowed to see ──────────────────────────

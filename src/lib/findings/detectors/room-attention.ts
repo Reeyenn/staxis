@@ -71,6 +71,12 @@ export function draftsFromNudges(drafts: NudgeDraftFeed, businessDate: string): 
           staff_name: (payload.staffName as JsonValue) ?? null,
         },
         basis: summary,
+        // WHICH room, in the shape the room's own screen can look up. Omitted
+        // when the nudge did not name one: 'unknown' is this function's
+        // placeholder for a missing room, and claiming a target of "unknown"
+        // would put a chip on nothing — or, worse, on a room a hotel really
+        // did name "unknown".
+        target: room === 'unknown' ? null : { kind: 'room', value: room },
       },
       asOf: asOf && !Number.isNaN(asOf.getTime()) ? asOf : null,
       price: null,

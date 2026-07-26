@@ -129,6 +129,10 @@ function draftForItem(item: InventoryItemUsage): FindingDraft | null {
       basis:
         `stock counted on ${latest.endDate} against the count before it, plus deliveries and ` +
         `discards in between — measured against this item's previous ${baseline.n} counts`,
+      // The item's row id, not its name: two items can share a name and a name
+      // can be renamed, and a chip that followed the name would follow it onto
+      // the wrong shelf.
+      target: { kind: 'inventory_item', value: item.itemId },
     },
     price: pricing.price,
   };

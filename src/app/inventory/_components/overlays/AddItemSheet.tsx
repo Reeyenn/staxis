@@ -41,6 +41,7 @@ import {
 import overlayStyles from './Overlay.module.css';
 import { apiListVendors, apiRecordInventoryOpeningAdjustment } from '../ordering-api';
 import { catLabelFor, setAsideTip, type Lang } from '../inv-i18n';
+import { PatternChip } from '@/components/concourse/PatternChip';
 
 interface AddItemSheetProps {
   lang: Lang;
@@ -830,6 +831,18 @@ export function AddItemSheet({ lang, open, onClose, item, canViewFinancials, def
         </>
       }
     >
+      {/* On the THING, not the tab: this sheet is ONE item, so the signpost
+          belongs here and nowhere on the stock board behind it. An item being
+          created has no history to have a pattern about, hence isEdit. */}
+      {isEdit && item && (
+        <PatternChip
+          propertyId={activePropertyId}
+          kind="inventory_item"
+          value={item.id}
+          lang={lang}
+          style={{ marginBottom: 12 }}
+        />
+      )}
       {createRetryLocked && (
         <div
           role="status"
