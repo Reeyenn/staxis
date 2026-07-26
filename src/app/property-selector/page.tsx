@@ -1,77 +1,132 @@
 'use client';
 
+// ═══════════════════════════════════════════════════════════════════════════
+// The screen everybody lands on after signing in.
+//
+// It draws itself from /api/property-selector/bootstrap and NOT from
+// PropertyContext, and that is the point of the rewrite rather than a detail of
+// it. PropertyContext filters the hotel list by `accounts.property_access` —
+// the array stamped on an account when its invitation was accepted. It is a
+// SNAPSHOT: a hotel the company bought last week is covered by every company
+// hat the moment the relationship row exists, and it was still missing here, so
+// the only way to see it was to re-invite the person. The route resolves
+// coverage through the spine (`accessibleProperties`: the legacy array UNION
+// every live hat) and the new hotel simply appears.
+//
+// PropertyContext is still used for ONE thing — `setActivePropertyId`, which is
+// what the rest of the app reads. It is a localStorage write, not a lookup, so
+// it takes whichever hotel the person actually chose here.
+//
+// See CommandCenter.tsx for the two audiences this one screen serves.
+// ═══════════════════════════════════════════════════════════════════════════
 
 export const dynamic = 'force-dynamic';
-import React, { useEffect, useState } from 'react';
+
+import React, { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { t } from '@/lib/translations';
+import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state';
 import { safeRedirect } from '@/lib/url-redirect';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import type { Property } from '@/types';
-import { Building2, LogOut } from 'lucide-react';
+import type { OnboardingState } from '@/lib/onboarding/state';
+
 import JoinStatusGate from './JoinStatusGate';
+import {
+  CommandCenterFailed,
+  CommandCenterView,
+  type CommandCenterPayload,
+  type PickerHotel,
+} from './CommandCenter';
+
+function Spinner() {
+  return (
+    <div style={{
+      minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: 'radial-gradient(ellipse 900px 460px at 50% 0%,#FFFFFF 0%,#F5F7F4 100%)',
+    }}>
+      <div style={{
+        width: 34, height: 34,
+        border: '2.5px solid rgba(62,92,72,.14)',
+        borderTopColor: '#3E5C48',
+        borderRadius: '50%',
+        animation: 'cc-spin .8s linear infinite',
+      }} />
+      <style>{'@keyframes cc-spin{to{transform:rotate(360deg)}}'}</style>
+    </div>
+  );
+}
 
 export default function PropertySelectorPage() {
   const { user, loading: authLoading, signOut } = useAuth();
-  const { properties, loading: propLoading, setActivePropertyId } = useProperty();
+  const { setActivePropertyId } = useProperty();
   const { lang } = useLang();
   const router = useRouter();
   const [companyRouteChecked, setCompanyRouteChecked] = useState(false);
 
-  // Redirect unauthenticated users to sign-in
+  // Redirect unauthenticated users to sign-in.
   useEffect(() => {
-    if (!authLoading && !user) {
-      router.replace('/signin');
-    }
+    if (!authLoading && !user) router.replace('/signin');
   }, [user, authLoading, router]);
 
-  // Route into the app — UNLESS this property's onboarding isn't finished,
-  // in which case keep the owner in the wizard (a half-onboarded hotel has no
-  // PMS and an empty dashboard). The server resolves the resume code. Full
+  const { data, error, reload } = useApiResource<CommandCenterPayload>(
+    '/api/property-selector/bootstrap',
+    { enabled: !authLoading && !!user },
+  );
+
+  const hotels = data?.hotels ?? [];
+
+  // Route into the app — UNLESS this property's onboarding isn't finished, in
+  // which case keep the owner in the wizard (a half-onboarded hotel has no PMS
+  // and an empty dashboard). The server resolves the resume code. Full
   // navigation (not router.replace) so the API route's 302 is followed.
-  const enter = (p: Property) => {
+  const enter = useCallback((hotel: PickerHotel) => {
     // Mid-onboarding owner/manager → resume the wizard, but only the FIRST time
-    // it's ever opened for this hotel (shouldResumeOnboarding gates on role +
-    // in-progress + never-shown). RESUME_GUARD_KEY is the same-session loop
-    // breaker: a failed resume bounces back here and falls through to Home.
+    // it's ever opened for this hotel. RESUME_GUARD_KEY is the same-session
+    // loop breaker: a failed resume bounces back here and falls through to Home.
     if (
-      shouldResumeOnboarding(user?.role, p.onboardingCompletedAt, p.onboardingState, p.onboardingPromptShownAt) &&
-      typeof window !== 'undefined' &&
-      sessionStorage.getItem(RESUME_GUARD_KEY) !== p.id
+      shouldResumeOnboarding(
+        user?.role,
+        hotel.onboardingCompletedAt,
+        hotel.onboardingState as OnboardingState | null,
+        hotel.onboardingPromptShownAt,
+      )
+      && typeof window !== 'undefined'
+      && sessionStorage.getItem(RESUME_GUARD_KEY) !== hotel.propertyId
     ) {
-      sessionStorage.setItem(RESUME_GUARD_KEY, p.id);
-      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(p.id)}`;
+      sessionStorage.setItem(RESUME_GUARD_KEY, hotel.propertyId);
+      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(hotel.propertyId)}`;
       return;
     }
-    setActivePropertyId(p.id);
+    setActivePropertyId(hotel.propertyId);
     sessionStorage.setItem('hotelops-session-selected', '1');
-    // Ordinary login lands on Home. A protected deep link is honored only
-    // after the user has explicitly selected which hotel it belongs to.
+    // Ordinary login lands on Home. A protected deep link is honored only after
+    // the user has explicitly selected which hotel it belongs to.
     const requestedTarget = typeof window === 'undefined'
       ? '/home'
       : safeRedirect(new URLSearchParams(window.location.search).get('redirect'), '/home');
     router.replace(requestedTarget);
-  };
+  }, [router, setActivePropertyId, user?.role]);
 
-  // Auto-select when exactly 1 property
+  // Exactly one hotel and nothing company-scope to show → skip the screen
+  // entirely. A company person with one hotel keeps the command centre: their
+  // queue and their ask line are the reason they opened Staxis, not the door.
   useEffect(() => {
-    if (authLoading || propLoading || !user) return;
-    if (properties.length === 1) {
-      enter(properties[0]);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, propLoading, user, properties]);
+    if (!data || data.company) return;
+    if (data.hotels.length === 1) enter(data.hotels[0]);
+  }, [data, enter]);
 
   // Organization-only leaders intentionally have no inferred legacy hotel
   // access. On later ordinary sign-ins, distinguish them from pending hotel
-  // staff before showing the zero-property approval gate.
+  // staff before showing the zero-property approval gate. With the spine
+  // resolving coverage above this is now rare — a company that operates no
+  // hotels yet — but it is still the right destination for that person.
   useEffect(() => {
-    if (authLoading || propLoading || !user) return;
-    if (properties.length > 0 || user.role === 'admin') {
+    if (authLoading || !data || !user) return;
+    if (hotels.length > 0 || user.role === 'admin') {
       setCompanyRouteChecked(true);
       return;
     }
@@ -100,186 +155,43 @@ export default function PropertySelectorPage() {
     })();
 
     return () => { cancelled = true; };
-  }, [authLoading, propLoading, properties.length, router, user]);
+  }, [authLoading, data, hotels.length, router, user]);
 
-  const handleSelect = (id: string) => {
-    const p = properties.find(x => x.id === id);
-    if (p) enter(p);
-  };
-
-  const handleSignOut = async () => {
+  const handleSignOut = useCallback(async () => {
     sessionStorage.removeItem('hotelops-session-selected');
     sessionStorage.removeItem(RESUME_GUARD_KEY);
     await signOut();
-  };
+  }, [signOut]);
 
-  const isLoading = authLoading || propLoading || Boolean(
-    user && properties.length === 0 && user.role !== 'admin' && !companyRouteChecked,
-  );
-
-  if (isLoading) {
-    return (
-      <div style={{
-        minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: 'var(--bg)',
-      }}>
-        <div style={{
-          width: '40px', height: '40px',
-          border: '3px solid rgba(37,99,235,0.15)',
-          borderTopColor: 'var(--navy-light)',
-          borderRadius: '50%',
-          animation: 'spin 0.8s linear infinite',
-        }} />
-        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-      </div>
-    );
+  // A failed read is NOT "you have no hotels". It says so and offers a retry —
+  // never a silent empty picker.
+  if (error && !data) {
+    return <CommandCenterFailed lang={lang} onRetry={() => void reload()} onSignOut={handleSignOut} />;
   }
 
-  // Account with ZERO property access → hand off to the join-status gate. For
-  // a pending staff signup it shows the "waiting for approval" screen; for a
-  // genuinely property-less account it falls back to the "No properties found"
-  // message. (Single-property accounts auto-enter above, so we never flash
-  // this for them.)
-  if (user && properties.length === 0) {
+  const settling = authLoading
+    || !user
+    || !data
+    // A single-hotel person is mid-redirect; showing them the door they are
+    // already walking through would be a flash of a screen they never chose.
+    || (!data.company && data.hotels.length === 1)
+    || (hotels.length === 0 && user.role !== 'admin' && !companyRouteChecked);
+
+  if (settling) return <Spinner />;
+
+  // Account with ZERO hotel access → hand off to the join-status gate. For a
+  // pending staff signup it shows the "waiting for approval" screen; for a
+  // genuinely property-less account it falls back to "No properties found".
+  if (hotels.length === 0) {
     return <JoinStatusGate lang={lang} onSignOut={handleSignOut} />;
   }
 
   return (
-    <div style={{
-      minHeight: '100dvh',
-      background: 'var(--bg)',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: '32px 24px',
-    }}>
-      <div style={{ width: '100%', maxWidth: '480px' }}>
-
-        {/* Header */}
-        <div style={{ marginBottom: '40px', textAlign: 'center' }}>
-          <div style={{
-            width: '48px', height: '48px', borderRadius: '12px',
-            background: 'var(--amber)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            margin: '0 auto 16px',
-          }}>
-            <span style={{ fontSize: '22px', fontWeight: 700, color: '#FFFFFF', fontFamily: 'var(--font-mono)' }}>S</span>
-          </div>
-          <h1 style={{
-            fontFamily: 'var(--font-sans)', fontWeight: 700,
-            fontSize: '24px', letterSpacing: '-0.02em',
-            color: 'var(--text-primary)', marginBottom: '8px',
-          }}>
-            {t('selectProperty', lang)}
-          </h1>
-          {user && (
-            <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>
-              {t('signedInAs', lang)} {user.username}
-            </p>
-          )}
-        </div>
-
-        {/* Property list or empty state */}
-        {properties.length === 0 ? (
-          <div style={{
-            background: 'var(--bg-card)',
-            border: '1px solid var(--border)',
-            borderRadius: 'var(--radius-lg)',
-            padding: '40px 24px',
-            textAlign: 'center',
-          }}>
-            <Building2 size={32} color="var(--text-muted)" style={{ margin: '0 auto 16px' }} />
-            <p style={{
-              fontSize: '15px', fontWeight: 600,
-              color: 'var(--text-primary)', marginBottom: '8px',
-              fontFamily: 'var(--font-sans)',
-            }}>
-              {t('noPropertiesFound', lang)}
-            </p>
-            <p style={{ fontSize: '13px', color: 'var(--text-muted)', lineHeight: 1.5 }}>
-              {t('noPropertiesDesc', lang)}
-            </p>
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {properties.map(p => (
-              <button
-                key={p.id}
-                onClick={() => handleSelect(p.id)}
-                style={{
-                  width: '100%',
-                  background: 'var(--bg-card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: 'var(--radius-lg)',
-                  padding: '18px 20px',
-                  cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '16px',
-                  textAlign: 'left',
-                  transition: 'border-color 150ms, background 150ms',
-                }}
-                onMouseEnter={e => {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'rgba(37,99,235,0.25)';
-                  (e.currentTarget as HTMLButtonElement).style.background = 'rgba(37,99,235,0.04)';
-                }}
-                onMouseLeave={e => {
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = 'var(--border)';
-                  (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-card)';
-                }}
-              >
-                <div style={{
-                  width: '40px', height: '40px', borderRadius: '10px',
-                  background: 'rgba(27,58,92,0.06)',
-                  border: '1px solid rgba(27,58,92,0.12)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  flexShrink: 0,
-                }}>
-                  <Building2 size={18} color="var(--navy)" />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{
-                    fontSize: '15px', fontWeight: 600,
-                    color: 'var(--text-primary)',
-                    fontFamily: 'var(--font-sans)',
-                    marginBottom: '2px',
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>
-                    {p.name}
-                  </div>
-                  <div style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                    {p.totalRooms} {t('rooms', lang)}
-                  </div>
-                </div>
-                <div style={{
-                  fontSize: '18px', color: 'var(--text-muted)', fontWeight: 300, flexShrink: 0,
-                }}>
-                  →
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Sign out */}
-        <div style={{ marginTop: '32px', textAlign: 'center' }}>
-          <button
-            onClick={handleSignOut}
-            style={{
-              display: 'inline-flex', alignItems: 'center', gap: '6px',
-              background: 'transparent', border: 'none',
-              color: 'var(--text-muted)', fontSize: '13px',
-              cursor: 'pointer', fontFamily: 'var(--font-sans)',
-              padding: '8px 12px',
-            }}
-          >
-            <LogOut size={13} />
-            {t('signOut', lang)}
-          </button>
-        </div>
-
-      </div>
-    </div>
+    <CommandCenterView
+      payload={data}
+      lang={lang}
+      onOpenHotel={enter}
+      onSignOut={handleSignOut}
+    />
   );
 }

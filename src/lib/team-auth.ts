@@ -327,11 +327,19 @@ export interface ManagerCaller {
 }
 
 /**
- * Load the manager behind an already-validated session (requireSession first).
+ * The person behind an already-validated session, WHATEVER their job is.
  *
- * Returns null when there is no account row, the account is deactivated, or the
- * role cannot manage a team. Deliberately NOT a session check — the caller owns
- * that, so this stays usable from routes that need their own 401 semantics.
+ * Identical to `loadManagerCaller` in every respect but one: it does not
+ * require the role to manage a team. Housekeeping, front desk and maintenance
+ * accounts resolve here and are refused there.
+ *
+ * WHY THIS EXISTS AS ITS OWN FUNCTION. The hotel picker has to answer "which
+ * hotels may this person open" for EVERYBODY who can sign in, and a company's
+ * finance lead — a company-scope job by the spine's own vocabulary — carries a
+ * legacy `accounts.role` of `front_desk`, so the manager gate would have shown
+ * them an empty picker. Splitting the read from the gate means the `accounts`
+ * column list still lives in exactly one place, which is the whole point of
+ * the shared lookup.
  *
  * NOTE for future editors: the display name column is `display_name`. There is
  * no `accounts.name`, and naming a column that does not exist makes PostgREST
@@ -339,7 +347,7 @@ export interface ManagerCaller {
  * the whole feature off for every user. That exact bug shipped once and is
  * pinned by a test against the real schema.
  */
-export async function loadManagerCaller(authUserId: string): Promise<ManagerCaller | null> {
+export async function loadSessionAccount(authUserId: string): Promise<ManagerCaller | null> {
   const { data, error } = await supabaseAdmin
     .from('accounts')
     .select('id, role, display_name, property_access, active')
@@ -357,7 +365,7 @@ export async function loadManagerCaller(authUserId: string): Promise<ManagerCall
   if (row.active === false) return null;
 
   const role = (row.role as AppRole | null) ?? null;
-  if (!role || !canManageTeam(role)) return null;
+  if (!role) return null;
 
   const propertyAccess = Array.isArray(row.property_access) ? (row.property_access as string[]) : [];
   const reachesAllProperties = role === 'admin' || propertyAccess.includes('*');
@@ -387,6 +395,19 @@ export async function loadManagerCaller(authUserId: string): Promise<ManagerCall
       .sort(),
     reachesAllProperties,
   };
+}
+
+/**
+ * Load the manager behind an already-validated session (requireSession first).
+ *
+ * Returns null when there is no account row, the account is deactivated, or the
+ * role cannot manage a team. Deliberately NOT a session check — the caller owns
+ * that, so this stays usable from routes that need their own 401 semantics.
+ */
+export async function loadManagerCaller(authUserId: string): Promise<ManagerCaller | null> {
+  const account = await loadSessionAccount(authUserId);
+  if (!account || !canManageTeam(account.role)) return null;
+  return account;
 }
 
 /**

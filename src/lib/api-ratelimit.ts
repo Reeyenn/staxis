@@ -346,7 +346,16 @@ export type RateLimitEndpoint =
   // of the company's own hotels, because api_limits.property_id FKs
   // properties(id) — with the ORGANIZATION folded into the sub-key, so two
   // companies can never share a bucket.
-  | 'company-queue';
+  | 'company-queue'
+  // The hotel picker / command centre bootstrap. Read-only and model-free, but
+  // for a company-scope caller it reads one findings ledger per covered hotel,
+  // so a scripted loop is a real load. Keyed on a REAL property id — one the
+  // caller actually reaches, because api_limits.property_id FKs properties(id)
+  // — with the account folded into the sub-key so two people at one hotel
+  // never share a bucket. Fails OPEN: nothing here is billable, and locking
+  // somebody out of the screen that lists their hotels would be the worse
+  // failure.
+  | 'property-selector';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */
 const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
@@ -599,6 +608,10 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   // loop, which would be reading a dozen hotels' ledgers per request, hits the
   // wall in about a minute.
   'company-queue':              120,
+  // The picker is hit on sign-in, on every "switch hotel", and on a tab
+  // refocus. A person doing that all morning never approaches 240; a loop
+  // reading a dozen ledgers per request hits the wall inside a minute.
+  'property-selector':          240,
 };
 
 /**

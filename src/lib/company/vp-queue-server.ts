@@ -48,10 +48,12 @@ import { listCompanyFindings, type CompanyFinding } from './company-findings';
 import { loadApproverDirectory, resolveSignOff, type ApproverDirectory } from './signoff';
 import { holdPortfolioDay, companyLocalToday, runPortfolioChecks } from './portfolio-runner';
 import {
+  chipForHotel,
   climbReasonFor,
   daysOpen,
   rankPortfolio,
   type ClimbCandidate,
+  type HotelChip,
   type PortfolioCard,
 } from './vp-queue';
 
@@ -125,7 +127,12 @@ const COMPANY_ROLE_STRENGTH: Record<CompanyRole, number> = { owner: 3, vp: 2, fi
  *     always knows whose it is. Merging the two companies' hotels into one list
  *     is the one thing that must never happen, and it does not.
  */
-export async function companyScopeFor(caller: ManagerCaller): Promise<CompanyScope | null> {
+export async function companyScopeFor(
+  // Only the hats are read. Typed structurally so the hotel picker — which has
+  // to serve people the manager gate refuses, a company's finance lead among
+  // them — can ask this question without pretending to be a ManagerCaller.
+  caller: Pick<ManagerCaller, 'hats'>,
+): Promise<CompanyScope | null> {
   const companyHats = (caller.hats ?? []).filter((hat) => hat.scope === 'company');
   if (companyHats.length === 0) return null;
 
@@ -230,6 +237,112 @@ export async function portfolioRun(propertyIds: readonly string[]): Promise<Port
     hotelsTotal: propertyIds.length,
     lastRunAt,
   };
+}
+
+// ─── The health chip, per hotel ─────────────────────────────────────────────
+
+export interface HotelHealth {
+  propertyId: string;
+  chip: HotelChip | null;
+}
+
+/**
+ * One chip per hotel for the command centre — the picker a company-scope person
+ * lands on every morning.
+ *
+ * ─── WHY THIS IS NOT `buildPortfolioQueue().cards` GROUPED BY HOTEL ────────
+ * It very nearly is, and it deliberately reuses the same three primitives
+ * (`listFindings` at the same statuses, `isCardRenderable` + `effectiveDisposition`
+ * to decide what counts as a card at all, `climbReasonFor` for what reaches the
+ * company, `latestRunFacts` for liveness) so a chip can never disagree with the
+ * queue it links to. What it does NOT do is the expensive half: no portfolio
+ * check run, no approver directory, no per-proposal sign-off resolution, no
+ * judged phrasing, no brief. Those exist to render sentences, and a chip has no
+ * sentence to render — it has three words. The picker is the first screen of
+ * the day and it must open now.
+ *
+ * ─── THE ONE PLACE THIS IS DELIBERATELY COARSER THAN THE QUEUE ────────────
+ * `climbReasonFor` is asked with `awaitingMySignOff: false`, so a card that
+ * climbed ONLY because the company's rulebook routes it to this reader shows up
+ * as "waiting" rather than "needs you". That is not a miss: a proposal awaiting
+ * a signature is by definition also a live `propose` finding, so it is already
+ * counted, and resolving the rulebook for every proposal at every hotel would
+ * put the whole sign-off machinery on the critical path of a sign-in.
+ *
+ * NEVER THROWS. One unreadable hotel yields a null chip — "we cannot say" —
+ * rather than emptying the screen or, far worse, reporting the hotel as quiet.
+ */
+export async function hotelHealthChips(
+  propertyIds: readonly string[],
+  now: Date = new Date(),
+): Promise<Map<string, HotelChip | null>> {
+  const out = new Map<string, HotelChip | null>();
+  if (propertyIds.length === 0) return out;
+
+  const bounded = propertyIds.slice(0, MAX_HOTELS_PER_LOAD);
+  const results = await Promise.all(bounded.map(async (propertyId): Promise<HotelHealth> => {
+    try {
+      const [rows, run] = await Promise.all([
+        listFindings(propertyId, {
+          statuses: [...CLIMB_VISIBLE_STATUSES],
+          limit: MAX_FINDINGS_PER_HOTEL,
+        }),
+        latestRunFacts(propertyId).catch(() => null),
+      ]);
+
+      const showable = rows.filter((f) => isCardRenderable({
+        disposition: effectiveDisposition(f),
+        detectorId: f.detectorId,
+      }));
+
+      let climbedCount = 0;
+      let waitingCount = 0;
+      let criticalCount = 0;
+      for (const finding of showable) {
+        const candidate: ClimbCandidate = {
+          status: finding.status,
+          price: finding.price,
+          firstSeenAt: finding.firstSeenAt,
+          magnitude: finding.magnitude,
+          silencedAtMagnitude: finding.silencedAtMagnitude,
+          awaitingMySignOff: false,
+        };
+        if (climbReasonFor(candidate, now)) climbedCount += 1;
+        // "Waiting" and "critical" are about the hotel's OWN live feed, so the
+        // two silences are excluded here even though the climb rules see them.
+        // A GM who pressed "Seen" has not left a decision waiting for anyone.
+        const live = finding.status === 'open' || finding.status === 'updated';
+        if (!live) continue;
+        if (effectiveDisposition(finding) === 'propose') waitingCount += 1;
+        if (finding.severity === 'critical') criticalCount += 1;
+      }
+
+      const hoursSinceRun = run
+        ? (now.getTime() - new Date(run.runAt).getTime()) / 3_600_000
+        : null;
+
+      return {
+        propertyId,
+        chip: chipForHotel({
+          climbedCount,
+          waitingCount,
+          criticalCount,
+          hoursSinceRun: hoursSinceRun !== null && Number.isFinite(hoursSinceRun)
+            ? Math.max(0, hoursSinceRun)
+            : null,
+        }),
+      };
+    } catch (e) {
+      log.warn('[vp-queue] a hotel could not be read; its chip is silent', {
+        propertyId,
+        err: e instanceof Error ? e.message : String(e),
+      });
+      return { propertyId, chip: null };
+    }
+  }));
+
+  for (const { propertyId, chip } of results) out.set(propertyId, chip);
+  return out;
 }
 
 // ─── Feed 1: the company's own cards ────────────────────────────────────────

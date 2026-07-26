@@ -271,3 +271,137 @@ export function drillDownHref(card: PortfolioCard): string | null {
   if (!card.hotel) return null;
   return `/feed?pid=${encodeURIComponent(card.hotel.propertyId)}&focus=${encodeURIComponent(card.id)}`;
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE HEALTH CHIP — one hotel, three words, on the picker.
+//
+// The command centre shows a company-scope person every hotel they cover as a
+// card, and each card carries at most ONE chip. It is not a dashboard: a chip
+// answers "does this building want me this morning?" and nothing else.
+//
+// ─── THE HONESTY RULE, WHICH IS THE WHOLE DESIGN ──────────────────────────
+// "Quiet" is a CLAIM — it says Staxis looked and found nothing. A hotel that
+// has never been checked, or was last checked days ago, has not earned it, and
+// `chipForHotel` cannot produce it for them however hard a caller tries: the
+// only input that can return 'quiet' is a run that happened inside
+// RUN_FRESH_HOURS. A never-checked hotel gets `null` (no chip at all, because
+// there is nothing true to say), and a stale one says so in as many words.
+//
+// "Needs you" and "N waiting" are the opposite kind of statement — they report
+// findings that EXIST — so they stand on their own whether or not a run row
+// was ever written. A hotel with a real $4,000 problem and a dead watcher must
+// not go quiet just because the liveness read came back empty.
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type HotelChipKind =
+  /** Something climbed, or something is critical. Open this one first. */
+  | 'needs_you'
+  /** N decisions are sitting in this hotel's own queue. */
+  | 'waiting'
+  /** Checked recently, nothing waiting. The only chip that is a claim. */
+  | 'quiet'
+  /** Checked, but not lately. Says so rather than implying all-clear. */
+  | 'stale';
+
+export interface HotelChip {
+  kind: HotelChipKind;
+  /** Only meaningful for 'waiting'. Zero for every other kind. */
+  count: number;
+}
+
+/**
+ * What the chip rule reads. Deliberately tiny and tap-state-free, for the same
+ * reason `ClimbCandidate` is: a future edit cannot quietly start consulting
+ * `shownCount` to decide whether a hotel looks calm, because it is not here.
+ */
+export interface HotelHealthInput {
+  /** Findings at this hotel that climbed — see `climbReasonFor`. */
+  climbedCount: number;
+  /** Renderable, live findings whose effective disposition is `propose`. */
+  waitingCount: number;
+  /** Renderable, live findings marked critical by the detector or the judge. */
+  criticalCount: number;
+  /** Hours since the hotel's last run. Null when it has never run. */
+  hoursSinceRun: number | null;
+}
+
+/** How old a run may be before a hotel stops being allowed to look "quiet". */
+export const HOTEL_CHIP_FRESH_HOURS = 48;
+
+/**
+ * The chip for one hotel, or null for "say nothing".
+ *
+ * Order of the questions matters and mirrors what a VP would ask out loud:
+ * is anything on fire, is anything waiting on a person, and only then, has
+ * anybody even looked.
+ */
+export function chipForHotel(input: HotelHealthInput): HotelChip | null {
+  if (input.climbedCount > 0 || input.criticalCount > 0) {
+    return { kind: 'needs_you', count: 0 };
+  }
+  if (input.waitingCount > 0) {
+    return { kind: 'waiting', count: input.waitingCount };
+  }
+  const hours = input.hoursSinceRun;
+  // Never run → NOTHING. Not "quiet", not "unknown", not a grey pill implying
+  // we had a look. The card shows a hotel name and no claim at all.
+  if (hours === null || !Number.isFinite(hours)) return null;
+  if (hours > HOTEL_CHIP_FRESH_HOURS) return { kind: 'stale', count: 0 };
+  return { kind: 'quiet', count: 0 };
+}
+
+/**
+ * Where a chip sorts. Needs-you first, then waiting, then quiet — the founder's
+ * order, and the order a person reads a list in.
+ *
+ * `stale` and no-chip sit at the BOTTOM rather than near needs-you, which is a
+ * judgement call worth naming: they mean "Staxis has nothing to tell you about
+ * this building", and a screen that pushed silence to the top would put the
+ * hotels with the least information above the ones with a live problem.
+ */
+export const HOTEL_CHIP_RANK: Record<HotelChipKind | 'none', number> = Object.freeze({
+  needs_you: 0,
+  waiting: 1,
+  quiet: 2,
+  stale: 3,
+  none: 4,
+});
+
+export interface RankableHotel {
+  name: string;
+  chip: HotelChip | null;
+}
+
+/**
+ * Ranked by need, then alphabetical inside each band.
+ *
+ * The alphabetical tiebreak is `localeCompare` so "Ángel" files where a Spanish
+ * reader expects it, and it is applied to hotels with the SAME chip only — a
+ * quiet hotel never outranks a waiting one for being called "Abilene".
+ */
+export function rankHotels<T extends RankableHotel>(hotels: readonly T[]): T[] {
+  return [...hotels].sort((a, b) => {
+    const ar = HOTEL_CHIP_RANK[a.chip?.kind ?? 'none'];
+    const br = HOTEL_CHIP_RANK[b.chip?.kind ?? 'none'];
+    if (ar !== br) return ar - br;
+    return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  });
+}
+
+const CHIP_COPY: Record<Exclude<HotelChipKind, 'waiting'>, Bi> = {
+  needs_you: { en: 'Needs you', es: 'Te necesita' },
+  quiet: { en: 'Quiet', es: 'Tranquilo' },
+  stale: { en: 'Not checked lately', es: 'Sin revisar hace días' },
+};
+
+/** The words on the chip. Plural handled in both languages, because "1 waiting"
+ *  and "1 esperando" are the sentences a two-hotel company sees most. */
+export function hotelChipLabel(chip: HotelChip, lang: Lang): string {
+  if (chip.kind === 'waiting') {
+    const n = Math.max(1, Math.round(chip.count));
+    return lang === 'es'
+      ? `${n} ${n === 1 ? 'espera' : 'esperan'}`
+      : `${n} waiting`;
+  }
+  return pick(CHIP_COPY[chip.kind], lang);
+}
