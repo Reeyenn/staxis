@@ -23,14 +23,21 @@ import assert from 'node:assert/strict';
 
 import {
   coerceCompanyCategory,
+  contentTokens,
+  describeAmbiguousAuthority,
   describeAuthorityRule,
+  describeNearDuplicate,
   describePolicyValue,
+  findNearDuplicate,
   findSettingContradictions,
   formatCents,
   isCompanyCategory,
   normalizeClockTime,
+  readApproverCandidates,
+  readAuthority,
   readAuthorityRule,
   readPolicyValue,
+  tokenSimilarity,
 } from '@/lib/company/rulebook-policy';
 
 describe('reading an approval requirement', () => {
@@ -261,5 +268,256 @@ describe('company categories', () => {
     assert.equal(coerceCompanyCategory(42), 'standards');
     assert.equal(isCompanyCategory('rooms'), false);
     assert.equal(isCompanyCategory('vendors'), true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// WHO APPROVES — negation, sentence order, and the refusal to guess.
+//
+// The live bug this closes was on a real company's screen: the capital-project
+// rule read "Any capital project over $5,000 requires owner approval, not VP
+// approval." and was STORED and RENDERED BACK as "needs approval from the VP".
+// The matcher walked a hardcoded list in which `vp` came before `owner`, and it
+// could not see a negation at all.
+//
+// The worst version of the same bug is not cosmetic: a role named only in a
+// negative clause could UNLOCK a card its author meant to lock.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('the approver a sentence actually names', () => {
+  // THE LIVE SENTENCE. Mutation: go back to first-match-wins over
+  // APPROVER_PATTERNS. This flips to 'vp' — the exact wrong answer that was in
+  // the database.
+  it('"requires owner approval, not VP approval" is the OWNER', () => {
+    const rule = readAuthorityRule('Any capital project over $5,000 requires owner approval, not VP approval.');
+    assert.ok(rule, 'the sentence is a complete rule and must produce one');
+    assert.equal(rule.approverRole, 'owner');
+    assert.equal(rule.actionKind, 'capital_project');
+    assert.equal(rule.thresholdCents, 500_000);
+    assert.equal(rule.thresholdInclusive, false);
+  });
+
+  // …and it reads back correctly to the person confirming it, which is the whole
+  // safety story for the structured reading.
+  it('the confirmer is shown the owner, in both languages', () => {
+    const rule = readAuthorityRule('Any capital project over $5,000 requires owner approval, not VP approval.')!;
+    assert.match(describeAuthorityRule(rule, 'en'), /needs approval from the owner/);
+    assert.doesNotMatch(describeAuthorityRule(rule, 'en'), /VP/);
+    assert.match(describeAuthorityRule(rule, 'es'), /El propietario debe aprobar/);
+  });
+
+  // Mutation: let a negation cross a clause boundary. Both roles get excluded
+  // and a complete rule silently becomes prose.
+  const negations: Array<[string, string]> = [
+    ['not', 'Any expense over $500 needs owner approval, not VP approval.'],
+    ['instead of', 'Any expense over $500 needs owner approval instead of VP approval.'],
+    ['rather than', 'Any expense over $500 needs owner approval rather than VP approval.'],
+    ['never', 'Any expense over $500 needs owner approval; the VP never approves these.'],
+    ['no', 'Any expense over $500 needs owner approval. No VP approval is required.'],
+  ];
+  for (const [cue, sentence] of negations) {
+    it(`"${cue}" excludes the role behind it`, () => {
+      const rule = readAuthorityRule(sentence);
+      assert.ok(rule, `"${sentence}" must still be a rule`);
+      assert.equal(rule.approverRole, 'owner', `"${cue}" did not exclude the VP`);
+    });
+  }
+
+  // THE SHARPEST EDGE. Mutation: add `without` to the negation cues. "Without X"
+  // means X is MANDATORY, and treating it as a negation inverts every sentence
+  // written that way — including the one on the demo company's own book.
+  it('"without" is not a negation — it makes the named role REQUIRED', () => {
+    const rule = readAuthorityRule('No purchase over $500 may be made without VP approval.');
+    assert.ok(rule);
+    assert.equal(rule.approverRole, 'vp');
+  });
+
+  // Mutation: pick the FIRST role in the sentence instead of the one bound to
+  // the approval word. "the GM handles ordering" would put the signature on the
+  // GM and open every $600 order.
+  it('the role bound to the approval word wins, not the first one mentioned', () => {
+    const rule = readAuthorityRule(
+      'The GM handles routine orders. Any order over $500 needs owner approval.',
+    );
+    assert.ok(rule, 'the sentence is a complete rule');
+    assert.equal(rule.approverRole, 'owner');
+  });
+
+  it('a role mentioned only negatively never becomes the approver on its own', () => {
+    const read = readAuthority('Any expense over $500 does not need VP approval.');
+    // Nothing survives → not a rule at all. Silence is the safe answer: an
+    // unstored rule gates nothing.
+    assert.equal(read.kind, 'none');
+    assert.equal(readAuthorityRule('Any expense over $500 does not need VP approval.'), null);
+  });
+
+  // Mutation: pick one arbitrarily (whichever the loop reached first). A wrong
+  // approver on a money gate is the one outcome this file exists to prevent.
+  it('two approvers, equally bound, is AMBIGUOUS and stores nothing', () => {
+    const sentence = 'Any expense over $500 needs owner approval or VP approval.';
+    const read = readAuthority(sentence);
+    assert.equal(read.kind, 'ambiguous');
+    if (read.kind !== 'ambiguous') return;
+    assert.deepEqual([...read.candidates].sort(), ['owner', 'vp']);
+    assert.equal(read.actionKind, 'expense');
+    assert.equal(read.thresholdCents, 50_000);
+    // The safety property: nothing is frozen.
+    assert.equal(readAuthorityRule(sentence), null);
+  });
+
+  // Mutation: describe an ambiguous read with the same words a real rule uses.
+  // A VP would read "needs approval from the VP" and believe a gate existed.
+  it('the ambiguous read-back names BOTH roles and says nothing is enforced', () => {
+    const read = readAuthority('Any expense over $500 needs owner approval or VP approval.');
+    assert.equal(read.kind, 'ambiguous');
+    if (read.kind !== 'ambiguous') return;
+    const en = describeAmbiguousAuthority(read, 'en');
+    assert.match(en, /the owner/);
+    assert.match(en, /the vp/i);
+    assert.match(en, /will not enforce/);
+    assert.match(en, /Edit the line to name one/);
+    const es = describeAmbiguousAuthority(read, 'es');
+    assert.match(es, /no aplicará ninguna regla/);
+    assert.notEqual(en, es);
+  });
+
+  // Mutation: return `ambiguous` for one clean role plus one negated one. The
+  // company wrote a perfectly clear rule and would be told Staxis cannot read it.
+  it('a clean role plus a negated role is not ambiguous', () => {
+    const read = readAuthority('Any capital project over $5,000 requires owner approval, not VP approval.');
+    assert.equal(read.kind, 'rule');
+  });
+
+  // The candidate reader on its own, so the three rules are separable.
+  it('the candidate reader reports what survived and whether it chose', () => {
+    const plain = readApproverCandidates('Orders over $500 need VP sign-off.');
+    assert.equal(plain.picked, 'vp');
+    assert.equal(plain.ambiguous, false);
+
+    const negated = readApproverCandidates('requires owner approval, not VP approval');
+    assert.equal(negated.picked, 'owner');
+    assert.deepEqual(negated.surviving, ['owner']);
+
+    const none = readApproverCandidates('Orders over $500 need approval.');
+    assert.equal(none.picked, null);
+    assert.equal(none.ambiguous, false);
+    assert.deepEqual(none.surviving, []);
+  });
+
+  // Regression net: every sentence the file already promised to read must still
+  // read the same way. Mutation: any of the three new rules mis-ordered.
+  it('the sentences that already worked still work', () => {
+    const cases: Array<[string, string]> = [
+      ['Orders over $500 need VP sign-off.', 'vp'],
+      ['Contracts of at least $10,000 require owner approval.', 'owner'],
+      ['Any refund over $200 needs GM approval.', 'general_manager'],
+      ['Invoices over $1,000 need finance approval.', 'finance'],
+      ['Any expense over $500 needs approval from the VP.', 'vp'],
+    ];
+    for (const [sentence, expected] of cases) {
+      const rule = readAuthorityRule(sentence);
+      assert.ok(rule, `"${sentence}" stopped being a rule`);
+      assert.equal(rule.approverRole, expected, `"${sentence}" now reads as ${rule.approverRole}`);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// NEAR-DUPLICATES — the same rule said twice, with two different topic slugs.
+//
+// Live, on the demo company, both in the book at once:
+//   chemical_vendor   (confirmed)  "All our hotels use Ecolab for chemicals."
+//   chemical_supplier (unreviewed) "All Gulf Coast properties exclusively use
+//                                   Ecolab chemicals."
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('spotting a rule the book already has', () => {
+  const confirmed = [
+    { id: 'c1', topic: 'chemical_vendor', content: 'All our hotels use Ecolab for chemicals.' },
+    { id: 'c2', topic: 'housekeeping_start_time', content: 'Housekeeping starts at 7am at every hotel.' },
+    { id: 'c3', topic: 'approvals', content: 'Any expense over $500 needs approval from the VP.' },
+  ];
+
+  // THE LIVE PAIR. Mutation: compare only the topic slug, which is what the
+  // upsert already does and which these two rows sail straight past.
+  it('the Ecolab restatement is matched to the line already in the book', () => {
+    const match = findNearDuplicate(
+      { id: 'u1', content: 'All Gulf Coast properties exclusively use Ecolab chemicals.' },
+      confirmed,
+    );
+    assert.ok(match, 'the restatement was not spotted');
+    assert.equal(match.existing.id, 'c1');
+    assert.ok(match.sharedWords.includes('ecolab'));
+    assert.ok(match.similarity >= 0.5);
+  });
+
+  // Mutation: lower the bar, or drop the shared-substantial-words requirement.
+  // Two different housekeeping standards would be offered as duplicates and a
+  // real rule could be merged away.
+  it('two different rules about the same department are NOT duplicates', () => {
+    assert.equal(
+      findNearDuplicate(
+        { id: 'u2', content: 'Checkout rooms are serviced in 30 minutes at every property.' },
+        confirmed,
+      ),
+      null,
+    );
+    assert.equal(
+      findNearDuplicate(
+        { id: 'u3', content: 'Stayover rooms are serviced in 20 minutes at every property.' },
+        confirmed,
+      ),
+      null,
+    );
+  });
+
+  // Mutation: match on stopwords. "All our hotels …" shares four words with
+  // every other line in the book and would match all of them.
+  it('a line made of nothing but boilerplate matches nothing', () => {
+    assert.equal(
+      findNearDuplicate({ id: 'u4', content: 'All our hotels must do this at every property.' }, confirmed),
+      null,
+    );
+  });
+
+  it('a line never matches itself', () => {
+    assert.equal(findNearDuplicate({ id: 'c1', content: confirmed[0].content }, confirmed), null);
+  });
+
+  it('an empty line matches nothing', () => {
+    assert.equal(findNearDuplicate({ id: 'u5', content: '   ' }, confirmed), null);
+  });
+
+  // Mutation: quietly merge. The match is a heuristic over English, and one that
+  // swallows a genuinely new rule is far worse than one that asks.
+  it('the sentence shown to the human quotes the existing line and offers a choice', () => {
+    const match = findNearDuplicate(
+      { id: 'u1', content: 'All Gulf Coast properties exclusively use Ecolab chemicals.' },
+      confirmed,
+    )!;
+    const en = describeNearDuplicate(match, 'en');
+    assert.match(en, /All our hotels use Ecolab for chemicals\./);
+    assert.match(en, /or keep both\?/);
+    const es = describeNearDuplicate(match, 'es');
+    assert.match(es, /conservar las dos\?/);
+    assert.notEqual(en, es);
+  });
+
+  // Accents must not decide whether two Spanish lines are the same rule.
+  it('Spanish matches with or without accents', () => {
+    const esBook = [{ id: 'e1', topic: 'quimicos', content: 'Todos nuestros hoteles usan Ecolab para los químicos.' }];
+    const match = findNearDuplicate(
+      { id: 'e2', content: 'Todas las propiedades usan Ecolab para quimicos exclusivamente.' },
+      esBook,
+    );
+    assert.ok(match, 'accents should not hide a duplicate');
+  });
+
+  it('similarity is symmetric and bounded', () => {
+    const a = contentTokens('All our hotels use Ecolab for chemicals.');
+    const b = contentTokens('All Gulf Coast properties exclusively use Ecolab chemicals.');
+    assert.equal(tokenSimilarity(a, b), tokenSimilarity(b, a));
+    assert.equal(tokenSimilarity(a, a), 1);
+    assert.equal(tokenSimilarity(a, new Set()), 0);
   });
 });

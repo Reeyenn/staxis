@@ -492,12 +492,36 @@ describe('judged phrasing when it exists, the detector’s own sentence when it 
   test('an absent judge leaves a card that still says something true', () => {
     const f = finding({ id: 'p', summary: 'raw template sentence' });
     assert.equal(cardPhrasing(f, 'en'), 'raw template sentence');
-    assert.equal(cardPhrasing(f, 'es'), 'raw template sentence');
+  });
+
+  // Mutation: `return text.length > 0 ? text : f.summary` for both languages —
+  // which is what it did, and `summary` is written by the DETECTOR, in English,
+  // always. So every card the judge had not phrased showed English prose under a
+  // Spanish heading, including EVERY company-scope card (company_findings has no
+  // judged_* columns at all). This was live on the VP queue.
+  test('Spanish never falls back to the English sentence', () => {
+    const f = finding({
+      id: 'p',
+      summary: 'Room 231 has had 4 work orders in the last 30 days.',
+      evidence: {
+        queryId: 'q',
+        params: { location: 'Room 231' },
+        values: {},
+        basis: 'b',
+      },
+    });
+    const es = cardPhrasing(f, 'es');
+    assert.notEqual(es, f.summary);
+    assert.ok(!es.includes('work orders'), `still English: ${es}`);
+    assert.match(es, /Room 231/, 'the hotel’s own label for the place is carried across');
+    assert.match(es, /Ver los números/);
   });
 
   test('a judge that phrased only English does not leave the Spanish card blank', () => {
     const f = finding({ id: 'p', summary: 'raw template sentence', phrasedEn: 'English wording' });
-    assert.equal(cardPhrasing(f, 'es'), 'raw template sentence');
+    const es = cardPhrasing(f, 'es');
+    assert.ok(es.trim().length > 0);
+    assert.notEqual(es, 'raw template sentence');
   });
 
   test('a blank or whitespace phrasing is treated as absent, not rendered as an empty card', () => {

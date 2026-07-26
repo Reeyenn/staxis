@@ -310,17 +310,46 @@ export interface HotelChip {
 }
 
 /**
- * What the chip rule reads. Deliberately tiny and tap-state-free, for the same
- * reason `ClimbCandidate` is: a future edit cannot quietly start consulting
- * `shownCount` to decide whether a hotel looks calm, because it is not here.
+ * Does this hotel have something LIVE that a person still has to deal with?
+ *
+ * ═══ THE ONE DEFINITION OF "WAITING", AND WHY IT IS ONE FUNCTION ═══
+ * Two surfaces answered this question and they answered it differently, in front
+ * of the same reader on the same morning: the command centre's chip said
+ * "2 WAITING" on a hotel that the portfolio brief, one tap away, counted as one
+ * of the "N hotels quiet".
+ *
+ * Both were computing something defensible. The chip counted live findings whose
+ * EFFECTIVE disposition is `propose` — the same test the nav badge counts, the
+ * thing a GM would call a decision. The brief counted hotels with no card on the
+ * VP's own queue, and a `propose` finding that has not cleared the climbing bar
+ * is exactly that: real work, at a hotel, that has not reached the company. So
+ * "quiet" meant "quiet FOR ME" in one place and "quiet AT ALL" in the other, and
+ * the screen never said which.
+ *
+ * The chip is right, because it is the one a reader checks against the hotel
+ * itself. So the brief now takes this predicate's answer and stops calling those
+ * hotels quiet. There is one function, and a future edit that changes what
+ * "waiting" means changes both surfaces or neither.
  */
-export interface HotelHealthInput {
+export interface HotelLiveWork {
   /** Findings at this hotel that climbed — see `climbReasonFor`. */
   climbedCount: number;
   /** Renderable, live findings whose effective disposition is `propose`. */
   waitingCount: number;
   /** Renderable, live findings marked critical by the detector or the judge. */
   criticalCount: number;
+}
+
+export function hotelHasLiveWork(counts: HotelLiveWork): boolean {
+  return counts.climbedCount > 0 || counts.criticalCount > 0 || counts.waitingCount > 0;
+}
+
+/**
+ * What the chip rule reads. Deliberately tiny and tap-state-free, for the same
+ * reason `ClimbCandidate` is: a future edit cannot quietly start consulting
+ * `shownCount` to decide whether a hotel looks calm, because it is not here.
+ */
+export interface HotelHealthInput extends HotelLiveWork {
   /** Hours since the hotel's last run. Null when it has never run. */
   hoursSinceRun: number | null;
 }

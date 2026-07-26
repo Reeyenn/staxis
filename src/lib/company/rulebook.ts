@@ -21,6 +21,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { propertiesOfOrganization } from '@/lib/company/access';
 import {
   coerceCompanyCategory,
+  readAuthority,
   readAuthorityRule,
   readPolicyValue,
   type CompanyCategory,
@@ -196,8 +197,16 @@ export interface CompanyFactActor {
  * and stored by `applyStructuredReading` when they say yes.
  */
 export function structuredReadingFor(content: string) {
+  const authorityRead = readAuthority(content);
   return {
-    authority: readAuthorityRule(content),
+    authority: authorityRead.kind === 'rule' ? authorityRead.rule : null,
+    /**
+     * Set ONLY when the sentence names two approvers and does not choose. The
+     * panel shows both and offers Edit; nothing is frozen. See
+     * `readApproverCandidates` for the live sentence that motivated this
+     * ("…requires owner approval, not VP approval", stored as the VP).
+     */
+    ambiguousAuthority: authorityRead.kind === 'ambiguous' ? authorityRead : null,
     policy: readPolicyValue(content),
   };
 }
@@ -313,6 +322,54 @@ export async function removeCompanyFact(
   const removed = (data ?? []).length > 0;
   if (removed) await clearAuthorityRuleForFact(organizationId, id);
   return { ok: true, removed };
+}
+
+/**
+ * "That's the same rule — update the line I already have."
+ *
+ * Takes the WORDS off the restatement, writes them onto the confirmed line the
+ * company already approved, and retires the duplicate. Two writes, in the order
+ * that fails safe: the edit first (which re-derives the structured reading from
+ * the new words, so an approval rule frozen from the old sentence cannot outlive
+ * it), then the removal. If the removal fails, the company is left with one
+ * correct confirmed line and one unreviewed draft — the state they were already
+ * in — rather than with the draft gone and the rule un-updated.
+ *
+ * `keepId` is always the CONFIRMED fact. The confirmed line owns the topic slug
+ * every hotel's copilot has been reading, and re-pointing that at a freshly
+ * extracted row would change the key under it for no gain.
+ */
+export async function mergeCompanyFact(
+  organizationId: string,
+  keepId: string,
+  dropId: string,
+  actor: CompanyFactActor,
+): Promise<{ ok: boolean; merged: boolean; error?: string }> {
+  if (!UUID_RX.test(keepId ?? '') || !UUID_RX.test(dropId ?? '') || keepId === dropId) {
+    return { ok: false, merged: false, error: 'bad id' };
+  }
+  const [keep, drop] = await Promise.all([
+    readLiveFact(organizationId, keepId),
+    readLiveFact(organizationId, dropId),
+  ]);
+  if (!keep || !drop) return { ok: true, merged: false };
+  // The one this collapses INTO must be the established line. Refusing rather
+  // than swapping the arguments: a caller confused about which is which is a
+  // caller whose intent we cannot infer.
+  if (keep.reviewState !== 'confirmed') return { ok: false, merged: false, error: 'keep is not confirmed' };
+
+  const edited = await editCompanyFact(
+    organizationId,
+    keepId,
+    { content: drop.content, category: drop.category },
+    actor,
+  );
+  if (!edited.ok) return { ok: false, merged: false, error: edited.error };
+  if (!edited.updated) return { ok: true, merged: false };
+
+  const removed = await removeCompanyFact(organizationId, dropId);
+  if (!removed.ok) return { ok: false, merged: false, error: removed.error };
+  return { ok: true, merged: true };
 }
 
 async function readLiveFact(organizationId: string, id: string): Promise<CompanyFact | null> {

@@ -36,7 +36,7 @@ const BRIEF_CACHE_ROUTE = 'company-brief';
 
 /** Bumped whenever the stored shape changes. A cached brief from an older shape
  *  is ignored rather than rendered half-empty. */
-const BRIEF_CACHE_VERSION = 1;
+const BRIEF_CACHE_VERSION = 2;
 
 interface CachedEnvelope {
   v: number;

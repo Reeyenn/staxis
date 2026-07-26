@@ -331,7 +331,13 @@ describe('/api/findings — the queue read and the manager’s verdict', () => {
       const priced = body.data!.findings.find((f) => f.dedupeKey === 'probe:priced')!;
       const free = body.data!.findings.find((f) => f.dedupeKey === 'probe:free')!;
       assert.deepEqual(priced.price, {
-        lowCents: 20_000, highCents: 40_000, currency: 'USD', basis: 'your last 3 plumber invoices',
+        lowCents: 20_000, highCents: 40_000, currency: 'USD',
+        basis: 'your last 3 plumber invoices',
+        // A hotel detector writes one language. `basisEs` is the seam the
+        // PORTFOLIO checks fill (their cards are born on a VP's screen and had
+        // no Spanish at all); null here is the honest answer, and the card falls
+        // back to the English basis rather than dropping the figure's receipt.
+        basisEs: null,
       });
       assert.equal(free.price, null);
     });
@@ -353,6 +359,7 @@ describe('/api/findings — the queue read and the manager’s verdict', () => {
         params: { room: '214', windowDays: 30 },
         values: { orders: 4 },
         basis: '4 hvac work orders in the last 30 days',
+        basisEs: null,
       });
     });
 

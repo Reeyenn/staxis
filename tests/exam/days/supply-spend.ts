@@ -76,7 +76,7 @@ export const supplySpendDays: ExamDay[] = [
           // knowable to within that width: $1,300-$1,400, never "$1,350".
           lowCents: [130_000, 130_000],
           highCents: [140_000, 140_000],
-          basisMatches: /your last 12 comparable weeks ran \$900-\$1,000/,
+          basisMatches: /your last 12 comparable weeks ran \$900–\$1,000/,
         },
         summaryMatches: /Supply spending ran \$2,300 in the week ending/,
         action: 'none',

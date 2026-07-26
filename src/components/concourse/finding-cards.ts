@@ -25,6 +25,8 @@ import {
   type FindingSeverity,
   type FindingStatus,
 } from '@/lib/findings/types';
+import { formatMoneyRange } from '@/lib/findings/pricing';
+import { spanishTemplateSentence } from '@/lib/findings/template-phrasing';
 
 export type Lang = 'en' | 'es';
 
@@ -36,6 +38,13 @@ export interface CardPrice {
   currency: string;
   /** "based on your last 3 plumber invoices" — never blank in practice. */
   basis: string;
+  /**
+   * The same sentence in Spanish, when whoever produced this price could write
+   * one. Absent for every hotel detector today (they write English only) and
+   * present for the portfolio checks, whose cards are BORN on a screen a
+   * Spanish-reading VP opens and which therefore had to stop being English.
+   */
+  basisEs?: string | null;
 }
 
 export interface CardEvidence {
@@ -44,6 +53,8 @@ export interface CardEvidence {
   values: Record<string, unknown>;
   /** "4 hvac work orders in the last 30 days". */
   basis: string;
+  /** Same rule as `CardPrice.basisEs`: supplied where the producer can. */
+  basisEs?: string | null;
 }
 
 // ─── The hands ──────────────────────────────────────────────────────────────
@@ -472,6 +483,77 @@ export function parseFocusParam(search: string): string | null {
   return /^[0-9a-fA-F-]{16,64}$/.test(raw) ? raw : null;
 }
 
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The hotel id in `?pid=`, or null.
+ *
+ * STRICTLY UUID-shaped, unlike `parseFocusParam`, because this one names a
+ * TENANT. It is still not an authorization step — nothing here decides whether
+ * the reader may open that hotel; the server does, and QueueView will not
+ * render a hotel the bootstrap read does not list. The shape check is what keeps
+ * junk out of a request URL and a DOM attribute.
+ */
+export function parsePidParam(search: string): string | null {
+  let raw: string | null = null;
+  try {
+    raw = new URLSearchParams(search).get('pid');
+  } catch {
+    return null;
+  }
+  if (!raw) return null;
+  return UUID_RX.test(raw) ? raw : null;
+}
+
+// ─── Deep links: ?pid=<hotelId>, the portfolio drill-down ───────────────────
+
+/**
+ * What a `?pid=` link resolves to, once the server has said which hotels this
+ * reader may open.
+ *
+ * FIVE states rather than a boolean, and each one renders differently, because
+ * the failure modes are not interchangeable:
+ *
+ *   none         no link was followed. The ordinary screen.
+ *   checking     we have asked and not heard. Render NOTHING — flashing the
+ *                portfolio queue and swapping it out from under a VP who tapped
+ *                a card is worse than a moment of blank.
+ *   open         the reader covers this hotel. Show its queue.
+ *   refused      they do not. Say so. The old behaviour here was the bug: the
+ *                page silently re-rendered the portfolio queue, so "Open in this
+ *                hotel" looked like a dead button.
+ *   unavailable  the coverage read itself failed. NOT the same as refused — we
+ *                do not know, and must not imply the reader lacks access.
+ */
+export type DrillDown =
+  | { state: 'none' }
+  | { state: 'checking'; propertyId: string }
+  | { state: 'open'; propertyId: string; hotelName: string }
+  | { state: 'refused'; propertyId: string }
+  | { state: 'unavailable'; propertyId: string };
+
+/**
+ * Resolve a `?pid=` against the hotels the SERVER said this reader may open.
+ *
+ * The `hotels` list is the only authority here, and it comes from
+ * /api/property-selector/bootstrap — `accessibleProperties`, which is the legacy
+ * access array UNION every live company hat's coverage. So the answer follows a
+ * hotel the company bought last week with nothing re-stamped, and a hotel this
+ * reader was never given stays refused however the URL is edited.
+ */
+export function resolveDrillDown(
+  requestedPid: string | null,
+  hotels: ReadonlyArray<{ propertyId: string; name: string }> | null | undefined,
+  readFailed: boolean,
+): DrillDown {
+  if (!requestedPid) return { state: 'none' };
+  if (readFailed) return { state: 'unavailable', propertyId: requestedPid };
+  if (!hotels) return { state: 'checking', propertyId: requestedPid };
+  const found = hotels.find((h) => h.propertyId === requestedPid);
+  if (!found) return { state: 'refused', propertyId: requestedPid };
+  return { state: 'open', propertyId: requestedPid, hotelName: found.name };
+}
+
 export interface FocusView<T> {
   /** What to render, in order. */
   visible: T[];
@@ -516,44 +598,76 @@ export function focusedSplit<T extends { id: string }>(
 
 // ─── Money ──────────────────────────────────────────────────────────────────
 
-/** Whole dollars when the cents are zero; two decimals when they are not. */
-function dollars(cents: number): string {
-  const value = cents / 100;
-  return Number.isInteger(value)
-    ? value.toLocaleString('en-US')
-    : value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-const CURRENCY_PREFIX: Record<string, string> = { USD: '$', CAD: 'CA$', MXN: 'MX$', EUR: '€' };
-
 /**
- * "$200–400". An en dash, not a hyphen, because "$200-400" reads as a phone
- * number at a glance. Returns null when there is no usable range, and the
- * caller then says nothing about money at all — an honest blank beats a guess.
+ * "$200–$400", or null when there is no usable range — and the caller then says
+ * nothing about money at all, because an honest blank beats a guess.
+ *
+ * The STRING comes from `formatMoneyRange` in src/lib/findings/pricing.ts, which
+ * is the one money formatter in the product. This function's own job is the
+ * REFUSAL rules above it: a range that is inverted, zero-width or negative is
+ * not a price and must not reach a screen in any format.
  */
 export function formatPriceRange(price: CardPrice | null | undefined): string | null {
   if (!price) return null;
   const { lowCents, highCents } = price;
   if (!Number.isFinite(lowCents) || !Number.isFinite(highCents)) return null;
   if (highCents <= lowCents || lowCents < 0) return null;
-  const prefix = CURRENCY_PREFIX[price.currency] ?? `${price.currency} `;
-  return `${prefix}${dollars(lowCents)}–${prefix}${dollars(highCents)}`;
+  return formatMoneyRange(lowCents, highCents, price.currency);
 }
 
 // ─── Phrasing ───────────────────────────────────────────────────────────────
 
 /**
  * What the card actually says. The judge's wording when it exists in the
- * manager's language, otherwise the detector's own template sentence.
+ * manager's language, otherwise the deterministic floor.
  *
  * The fallback is not a degraded mode — `summary` is generated by code from
  * the hotel's real numbers and is correct with no model in the loop. The judge
  * makes it read better; it is never the difference between a card and no card.
+ *
+ * ─── WHY SPANISH DOES NOT FALL BACK TO `summary` ──────────────────────────
+ * `summary` is written by the detector, in ENGLISH, always. Falling back to it
+ * for a Spanish reader put English prose under a Spanish heading on every card
+ * the judge had not phrased — which is EVERY company-scope card, because
+ * `company_findings` has no judged_* columns at all. So Spanish falls back to
+ * `spanishTemplateSentence`, which names the subject from the row's own
+ * evidence and points at the receipt. See src/lib/findings/template-phrasing.ts.
  */
 export function cardPhrasing(f: QueueFinding, lang: Lang): string {
   const judged = lang === 'es' ? f.phrasedEs : f.phrasedEn;
   const text = (judged ?? '').trim();
-  return text.length > 0 ? text : f.summary;
+  if (text.length > 0) return text;
+  if (lang === 'es') {
+    return spanishTemplateSentence({
+      severity: f.severity,
+      evidence: f.evidence,
+      price: f.price,
+    });
+  }
+  return f.summary;
+}
+
+/**
+ * The basis line in the reader's language, or the one we have.
+ *
+ * A basis is prose a DETECTOR wrote, and detectors write English. Where the
+ * producer can supply a Spanish rendering it travels on the card as `basisEs` /
+ * `priceBasisEs` and is preferred here; where it cannot, the English text still
+ * shows, because "a price is a range WITH ITS BASIS or it is not mentioned" is
+ * the older and more important promise. A basis nobody can read is a smaller
+ * failure than a dollar figure nobody can check.
+ */
+export function basisInLang(
+  primary: string | null | undefined,
+  spanish: string | null | undefined,
+  lang: Lang,
+): string | null {
+  if (lang === 'es') {
+    const es = (spanish ?? '').trim();
+    if (es.length > 0) return es;
+  }
+  const en = (primary ?? '').trim();
+  return en.length > 0 ? en : null;
 }
 
 // ─── Copy ───────────────────────────────────────────────────────────────────

@@ -20,6 +20,8 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, test } from 'node:test';
 
 import {
@@ -39,6 +41,7 @@ import {
   climbStatusAllows,
   daysOpen,
   drillDownHref,
+  hotelHasLiveWork,
   mutedButWorsening,
   rankPortfolio,
   type ClimbCandidate,
@@ -46,9 +49,11 @@ import {
 } from '@/lib/company/vp-queue';
 import {
   MIN_HOTELS_FOR_OUTLIER_WORDING,
+  PORTFOLIO_DETECTORS,
   comparableWeeks,
   hotelsStopped,
   portfolioActivityStoppedDetector,
+  portfolioSpanish,
   supplySpendGapDetector,
   usesOutlierWording,
   type PortfolioHotel,
@@ -56,12 +61,19 @@ import {
 import { buildPortfolioBrief, needsADecision } from '@/lib/company/vp-brief';
 import { MAX_BRIEF_LINES } from '@/lib/findings/brief';
 import {
+  basisInLang,
+  formatPriceRange,
   isSignOffLocked,
+  occurrenceLine,
   offersApproval,
+  parsePidParam,
+  resolveDrillDown,
   signOffNotice,
   type CardSignOff,
   type QueueFinding,
 } from '@/components/concourse/finding-cards';
+import { formatCentsBand, formatMoney, formatMoneyRange } from '@/lib/findings/pricing';
+import { templatePriceSentence } from '@/lib/findings/template-phrasing';
 import type { PriceRange } from '@/lib/findings/types';
 
 // ─── Fixtures ───────────────────────────────────────────────────────────────
@@ -968,5 +980,330 @@ describe('the portfolio morning brief', () => {
       ],
     }))!;
     assert.deepEqual(brief.focusIds, ['big', 'small']);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TONIGHT'S TOUR — every defect a tour agent watched happen on the live screen,
+// with the mutation that reintroduces it named on each block.
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe('"Open in this hotel" actually opens the hotel', () => {
+  const HOTELS = [
+    { propertyId: PID_1, name: 'Beaumont' },
+    { propertyId: PID_2, name: 'Lufkin' },
+  ];
+
+  // THE BUG. The card's href carried `pid` and nothing read it, so the page
+  // re-rendered the portfolio queue — a view that never shows that card — and
+  // the button looked dead. Mutation: return `{ state: 'none' }` whenever a pid
+  // is present, which is exactly what the old code did by omission.
+  test('a covered hotel resolves to OPEN, carrying the name for the header', () => {
+    const drill = resolveDrillDown(PID_2, HOTELS, false);
+    assert.equal(drill.state, 'open');
+    assert.equal(drill.state === 'open' && drill.propertyId, PID_2);
+    assert.equal(drill.state === 'open' && drill.hotelName, 'Lufkin');
+  });
+
+  // Mutation: treat "not in my list" as `none` and fall through to the portfolio
+  // queue. The reader taps a link and the screen silently does nothing, which is
+  // indistinguishable from the bug this whole seam fixes.
+  test('a hotel outside the reader’s coverage is REFUSED, never silently ignored', () => {
+    const drill = resolveDrillDown('c3c3c3c3-0000-4000-8000-000000000003', HOTELS, false);
+    assert.equal(drill.state, 'refused');
+  });
+
+  // Mutation: collapse `unavailable` into `refused`. A coverage read that timed
+  // out would tell a VP they do not have access to their own hotel.
+  test('a failed coverage read is UNAVAILABLE, which is not the same as refused', () => {
+    assert.equal(resolveDrillDown(PID_1, undefined, true).state, 'unavailable');
+    assert.equal(resolveDrillDown(PID_1, HOTELS, true).state, 'unavailable');
+  });
+
+  // Mutation: render the hotel queue (or the portfolio queue) while the coverage
+  // read is in flight. Either one flashes and is swapped out from under the tap.
+  test('an unanswered coverage read is CHECKING, so nothing is rendered yet', () => {
+    assert.equal(resolveDrillDown(PID_1, undefined, false).state, 'checking');
+    assert.equal(resolveDrillDown(PID_1, null, false).state, 'checking');
+  });
+
+  test('no link followed means the ordinary screen', () => {
+    assert.equal(resolveDrillDown(null, HOTELS, false).state, 'none');
+    assert.equal(resolveDrillDown(null, undefined, true).state, 'none');
+  });
+
+  // Mutation: accept any string as a pid. A tenant id belongs in a request URL
+  // only when it is shaped like one.
+  test('only a UUID-shaped pid is read at all', () => {
+    assert.equal(parsePidParam(`?pid=${PID_1}`), PID_1);
+    assert.equal(parsePidParam('?pid=../../etc/passwd'), null);
+    assert.equal(parsePidParam('?pid=1'), null);
+    assert.equal(parsePidParam('?focus=abc'), null);
+  });
+
+  // The two halves of the link have to survive together: the card's own href is
+  // what the resolver is fed.
+  test('the href the card renders resolves to the hotel it names', () => {
+    const href = drillDownHref(card())!;
+    const search = href.slice(href.indexOf('?'));
+    assert.equal(parsePidParam(search), PID_1);
+    assert.equal(resolveDrillDown(parsePidParam(search), HOTELS, false).state, 'open');
+  });
+});
+
+describe('the VP queue does not print GM tap-state', () => {
+  // The founder's rule at the top of vp-queue.ts, as a test rather than a
+  // comment. Mutation: drop `hideOccurrence` from PortfolioQueueBody. "Seen 6
+  // times since Jul 9" reappears on a boss's screen, where it reads as six
+  // people looking at a $3,100 problem and doing nothing.
+  test('the portfolio screen asks the card list to suppress the "Seen N times" line', () => {
+    const view = readFileSync(
+      resolve(process.cwd(), 'src/components/concourse/PortfolioQueueView.tsx'),
+      'utf8',
+    );
+    assert.match(view, /hideOccurrence/);
+  });
+
+  // …and the suppression is a real switch, not a rename: the line still exists
+  // for the HOTEL feed, where a manager's own re-sighting count is theirs.
+  test('the occurrence line is still produced for a hotel’s own feed', () => {
+    const f = queueCard({ occurrenceCount: 6, firstSeenAt: '2026-07-09T00:00:00.000Z' });
+    assert.match(String(occurrenceLine(f, 'en', NOW)), /Seen 6 times/);
+  });
+});
+
+describe('money is printed one way', () => {
+  // THE BUG, on one card, a centimetre apart: "$750-$1750" inside the sentence
+  // and "$750–$1,750" in the price chip. Mutation: give any surface its own
+  // formatter again.
+  test('every surface renders the same range identically', () => {
+    const p = { lowCents: 75_000, highCents: 175_000, currency: 'USD', basis: 'b' };
+    const chip = formatPriceRange(p)!;
+    assert.equal(chip, '$750–$1,750');
+    assert.equal(formatMoneyRange(p.lowCents, p.highCents, p.currency), chip);
+    assert.match(templatePriceSentence(p, 'en'), /Estimated cost: \$750–\$1,750\./);
+    assert.match(templatePriceSentence(p, 'es'), /Costo estimado: \$750–\$1,750\./);
+  });
+
+  // Mutation: use a hyphen anywhere. "$200-400" reads as a phone number, and
+  // two dashes on one screen read as two different systems talking.
+  test('a statistical band uses the same dash as a stored price', () => {
+    assert.equal(formatCentsBand({ low: 70_000, high: 210_000 }), '$700–$2,100');
+    assert.ok(formatCentsBand({ low: 70_000, high: 210_000 }).includes('–'));
+  });
+
+  // Mutation: drop the thousands separator, which is how "$1750" got on screen.
+  test('thousands are separated and cents appear only when there are any', () => {
+    assert.equal(formatMoney(175_000), '$1,750');
+    assert.equal(formatMoney(175_050), '$1,750.50');
+    assert.equal(formatMoney(100_000_00), '$100,000');
+  });
+
+  // Mutation: format a degenerate or inverted range instead of refusing it. The
+  // refusal is the card's rule and must survive the formatter being shared.
+  test('an unusable range is still refused rather than formatted', () => {
+    assert.equal(formatPriceRange({ lowCents: 200, highCents: 200, currency: 'USD', basis: 'b' }), null);
+    assert.equal(formatPriceRange({ lowCents: 400, highCents: 200, currency: 'USD', basis: 'b' }), null);
+    assert.equal(templatePriceSentence({ lowCents: 200, highCents: 200, currency: 'USD' }, 'en'), '');
+  });
+});
+
+/** A hotel with a real, named activity stream that has gone quiet. Uses a
+ *  PRODUCTION stream id (see feeds.ts) so the Spanish label path is genuinely
+ *  exercised rather than skipped. */
+function stoppedHotel(name: string, silentDays: number): PortfolioHotel {
+  const dates: string[] = [];
+  for (let i = 0; i < 8; i += 1) {
+    const at = new Date(Date.UTC(2026, 6, 26) - (silentDays + i) * 86_400_000);
+    dates.push(at.toISOString().slice(0, 10));
+  }
+  return {
+    propertyId: `${name.toLowerCase()}-id`,
+    name,
+    businessDate: '2026-07-26',
+    supplySpend: null,
+    rhythm: {
+      streams: [{
+        id: 'daily_log_closings',
+        label: 'recording the daily numbers',
+        dates: dates.sort(),
+        worthCentsSamples: [],
+        worthBasis: null,
+      }],
+      coverageStartDate: '2026-04-01',
+      windowDays: 98,
+    },
+  };
+}
+
+describe('a Spanish reader gets Spanish', () => {
+  // THE BUG: "según your other hotels spent $700-$2,100 that week" — a Spanish
+  // label bolted onto an English sentence, on the only screen a company card
+  // ever appears on. Mutation: return the English basis in Spanish.
+  test('a basis with a Spanish rendering is preferred in Spanish', () => {
+    assert.equal(
+      basisInLang('your other hotels spent $700–$2,100 that week', 'tus otros hoteles gastaron $700–$2,100 esa semana', 'es'),
+      'tus otros hoteles gastaron $700–$2,100 esa semana',
+    );
+  });
+
+  // Mutation: render nothing when there is no Spanish. "A price is a RANGE with
+  // its basis or it is not mentioned" is the older promise, and a basis nobody
+  // can read is a smaller failure than a dollar figure with no receipt.
+  test('an English-only basis still shows rather than dropping the receipt', () => {
+    assert.equal(basisInLang('your last 3 plumber invoices', null, 'es'), 'your last 3 plumber invoices');
+    assert.equal(basisInLang('', '', 'es'), null);
+  });
+
+  // Mutation: leave `portfolioSpanish` unwired. Every company card is English.
+  test('the supply-spend card has a whole Spanish rendering built from its receipt', () => {
+    const drafts = supplySpendGapDetector.detect({
+      organizationId: ORG_A,
+      hotels: [
+        spendHotel('Beaumont', 70_000),
+        spendHotel('Lufkin', 210_000),
+        spendHotel('Tyler', 90_000),
+      ],
+      now: NOW,
+    });
+    assert.equal(drafts.length, 1);
+    const es = portfolioSpanish(supplySpendGapDetector.id, drafts[0].evidence)!;
+    assert.ok(es, 'no Spanish rendering at all');
+    assert.ok(!/hotels|spent|side by side|outlier/i.test(es.summary), `still English: ${es.summary}`);
+    assert.match(es.summary, /Lufkin/);
+    assert.match(es.summary, /\$2,100/);
+    assert.ok(!/spent/i.test(String(es.priceBasis)), `price basis still English: ${es.priceBasis}`);
+    assert.match(String(es.basis), /de esta empresa con registros de entregas/);
+  });
+
+  // Mutation: translate the activity label with a fallback that leaves the
+  // English word in place ("dejaron de recording the daily numbers").
+  test('the stopped-activity card is Spanish or is left alone entirely', () => {
+    const stopped = portfolioActivityStoppedDetector.detect({
+      organizationId: ORG_A,
+      hotels: [stoppedHotel('Beaumont', 30), stoppedHotel('Lufkin', 30)],
+      now: NOW,
+    });
+    assert.ok(stopped.length > 0, 'the fixture did not trigger the detector');
+    const es = portfolioSpanish(portfolioActivityStoppedDetector.id, stopped[0].evidence)!;
+    assert.ok(es, 'a production stream id must have a Spanish label');
+    assert.ok(!/stopped|recording|logging|counting/i.test(es.summary), `mixed: ${es.summary}`);
+    assert.match(es.summary, /dejaron de registrar los números diarios/);
+    assert.match(es.summary, /Beaumont/);
+    // An unknown stream produces NOTHING rather than a half-translated sentence.
+    assert.equal(
+      portfolioSpanish(portfolioActivityStoppedDetector.id, {
+        params: { stream: 'something_new' },
+        values: { per_hotel: { Beaumont: { days_silent: 4 } } },
+      }),
+      null,
+    );
+  });
+});
+
+describe('one problem, one portfolio card', () => {
+  // THE BUG, live: the key was `supply_spend:<top hotel id>`, so the week the
+  // leader changed a SECOND card opened while the stale one sat there for its
+  // full 10-day staleness — two cards naming two different hotels as the
+  // company's high spender. Mutation: put any measurement back in the key.
+  test('the supply-spend key does not move when the top spender does', () => {
+    const first = supplySpendGapDetector.detect({
+      organizationId: ORG_A,
+      hotels: [spendHotel('Beaumont', 70_000), spendHotel('Lufkin', 210_000)],
+      now: NOW,
+    });
+    const second = supplySpendGapDetector.detect({
+      organizationId: ORG_A,
+      hotels: [spendHotel('Beaumont', 260_000), spendHotel('Lufkin', 70_000)],
+      now: NOW,
+    });
+    assert.equal(first[0].key, second[0].key);
+    // …and WHICH hotel it is still travels, in the sentence and the receipt, so
+    // nothing was lost by taking it out of the identity.
+    assert.match(first[0].summary, /Lufkin/);
+    assert.match(second[0].summary, /Beaumont/);
+    assert.equal(first[0].evidence.values.top_hotel, 'Lufkin');
+    assert.equal(second[0].evidence.values.top_hotel, 'Beaumont');
+    // The summary moving is what flips the row to `updated` (evidenceMoved).
+    assert.notEqual(first[0].summary, second[0].summary);
+  });
+
+  // THE AUDIT, as a standing test. Mutation: a new portfolio check keyed on
+  // "whichever hotel is worst" would pass review and fail here.
+  test('NO portfolio check embeds a hotel id in its dedupe key', () => {
+    const hotels = [
+      spendHotel('Beaumont', 70_000),
+      spendHotel('Lufkin', 210_000),
+      spendHotel('Tyler', 90_000),
+    ].map((h) => ({ ...h, rhythm: stoppedHotel(h.name, 30).rhythm }));
+    const ids = new Set(hotels.map((h) => h.propertyId));
+    for (const detector of PORTFOLIO_DETECTORS) {
+      for (const draft of detector.detect({ organizationId: ORG_A, hotels, now: NOW })) {
+        for (const id of ids) {
+          assert.ok(
+            !draft.key.includes(id),
+            `${detector.id} keyed its card on a hotel id (${draft.key}) — a re-find at a `
+            + 'different hotel opens a SECOND card and the stale one lives on',
+          );
+        }
+      }
+    }
+  });
+});
+
+describe('the brief and the chips agree about "quiet"', () => {
+  const run = {
+    thingsChecked: 384, hotelsChecked: 3, hotelsTotal: 3,
+    lastRunAt: '2026-07-26T06:00:00.000Z',
+  };
+  const briefInput = (over: Partial<Parameters<typeof buildPortfolioBrief>[0]> = {}) => ({
+    organizationId: ORG_A,
+    localDate: '2026-07-26',
+    hotelCount: 3,
+    cards: [] as PortfolioCard[],
+    run,
+    now: NOW,
+    ...over,
+  });
+
+  // THE BUG: the command centre chip said "2 WAITING" on a hotel and the brief,
+  // one tap away, counted it among "3 hotels quiet". Mutation: drop
+  // `busyHotelIds` from quietHotelCount.
+  test('a hotel the chip calls busy is never counted quiet', () => {
+    const brief = buildPortfolioBrief(briefInput({
+      cards: [card({ hotel: { propertyId: PID_1, name: 'Beaumont' } })],
+      busyHotelIds: [PID_2],
+    }))!;
+    const quietLine = brief.lines.find((l) => /quiet/.test(l.en));
+    // 3 hotels, one with a card, one busy by chip → at most one may be quiet.
+    assert.match(String(quietLine?.en), /^1 hotel quiet\./);
+  });
+
+  // Mutation: keep the old "nothing needs a decision this morning" whenever the
+  // card list is empty. That sentence over a picker showing "2 WAITING" is the
+  // contradiction the reader actually saw.
+  test('no climbed cards but a busy hotel is not a quiet morning', () => {
+    const brief = buildPortfolioBrief(briefInput({ busyHotelIds: [PID_1, PID_2] }))!;
+    assert.equal(brief.kind, 'report');
+    assert.match(brief.lines[0].en, /nothing has reached you, but 2 hotels have something waiting/);
+    assert.match(brief.lines[0].es, /nada llegó hasta ti, pero 2 hoteles tienen algo esperando/);
+  });
+
+  // …and a genuinely quiet company still gets the quiet morning. Mutation:
+  // always take the busy branch, and a company with nothing wrong is told two
+  // hotels are working.
+  test('nothing anywhere is still a quiet morning', () => {
+    const brief = buildPortfolioBrief(briefInput({ busyHotelIds: [] }))!;
+    assert.equal(brief.kind, 'quiet');
+    assert.match(brief.lines[0].en, /nothing needs a decision this morning/);
+  });
+
+  // The chip's own rule, as the predicate both surfaces now share. Mutation:
+  // drop any of the three terms and one screen starts disagreeing with the other.
+  test('any of climbed, critical or waiting counts as live work', () => {
+    assert.equal(hotelHasLiveWork({ climbedCount: 0, waitingCount: 0, criticalCount: 0 }), false);
+    assert.equal(hotelHasLiveWork({ climbedCount: 1, waitingCount: 0, criticalCount: 0 }), true);
+    assert.equal(hotelHasLiveWork({ climbedCount: 0, waitingCount: 2, criticalCount: 0 }), true);
+    assert.equal(hotelHasLiveWork({ climbedCount: 0, waitingCount: 0, criticalCount: 1 }), true);
   });
 });

@@ -93,7 +93,7 @@ export const repeatEquipmentWorkOrderDays: ExamDay[] = [
           lowCents: [80_000, 80_000],
           highCents: [160_000, 160_000],
           basisMatches:
-            /4 work orders at \$210-\$390 each — the range of the 3 repair costs this hotel has recorded against this equipment/,
+            /4 work orders at \$210–\$390 each — the range of the 3 repair costs this hotel has recorded against this equipment/,
         },
         summaryMatches:
           /PTAC units \(installed 2019\) has had 4 work orders in the last 60 days — 1 still open\./,
@@ -230,7 +230,7 @@ export const repeatEquipmentWorkOrderDays: ExamDay[] = [
           lowCents: [45_000, 45_000],
           highCents: [160_000, 160_000],
           basisMatches:
-            /4 work orders at \$120-\$400 each — the range of the 4 repair costs this hotel has recorded on any work order/,
+            /4 work orders at \$120–\$400 each — the range of the 4 repair costs this hotel has recorded on any work order/,
         },
         summaryMatches:
           /^Rooftop HVAC units has had 4 work orders in the last 60 days — all of them closed\.$/,

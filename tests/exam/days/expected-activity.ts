@@ -112,7 +112,7 @@ export const expectedActivityDays: ExamDay[] = [
         price: {
           lowCents: [5_000, 5_000],
           highCents: [8_500, 8_500],
-          basisMatches: /each turned up \$54-\$81 of stock the books could not account for/,
+          basisMatches: /each turned up \$54–\$81 of stock the books could not account for/,
         },
       },
     ],

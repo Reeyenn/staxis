@@ -102,6 +102,7 @@
 // free phrasing.
 
 import type { FindingEvidence, JsonValue, PriceRange } from './types';
+import { formatMoney, formatMoneyRange } from './pricing';
 
 // ─── What the prose is allowed to say ────────────────────────────────────────
 
@@ -518,9 +519,28 @@ function offerSlot(into: Map<string, string>, name: string, value: JsonValue): v
   into.set(key, text);
 }
 
+/**
+ * Money in a slot is money on a CARD, so it is spelled by the one money
+ * formatter in the product (`pricing.ts`) — thousands separated, en dash.
+ *
+ * This file used to carry its own, and the slot path is where that mattered
+ * most: `{price_range}` rendered "$750-$1750" INSIDE the model's sentence while
+ * the price chip a centimetre below it said "$750–$1,750" about the same two
+ * numbers. Same defect the deterministic floor had, on the primary path.
+ *
+ * ─── THIS DOES NOT LOOSEN THE BINDING GUARD ───────────────────────────────
+ * The order of operations is what makes that safe, and it is worth stating
+ * because a comma inside a rendered number looks like exactly the thing
+ * `unbound_numeral` exists to catch. `checkSlotProse` strips every `{…}` group
+ * and runs the digit and number-word checks on what is LEFT — the model's own
+ * typing — and only then calls `renderProseSlots`. A slot's value is therefore
+ * never seen by those two rules, whatever it is spelled like. The rules that DO
+ * read rendered text are the day and month names, which no money format can
+ * collide with, and the receipt's own harvester strips commas and folds en
+ * dashes to hyphens, so a rendered "$1,750" still matches the payload's 1750.
+ */
 function slotMoney(cents: number): string {
-  const dollars = cents / 100;
-  return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
+  return formatMoney(cents);
 }
 
 /**
@@ -559,7 +579,7 @@ export function buildProseSlots(input: ProseReceiptInput): ProseSlots {
     slots.set('price_high', slotMoney(input.price.highCents));
     slots.set(
       'price_range',
-      `${slotMoney(input.price.lowCents)}-${slotMoney(input.price.highCents)}`,
+      formatMoneyRange(input.price.lowCents, input.price.highCents, input.price.currency),
     );
   }
 

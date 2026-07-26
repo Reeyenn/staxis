@@ -77,7 +77,7 @@ export const workOrderRateDays: ExamDay[] = [
           // 10-12 extra tickets at the $32.50-$120 this hotel has actually paid.
           lowCents: [30_000, 30_000],
           highCents: [145_000, 145_000],
-          basisMatches: /more work orders than your usual 2-4 a week, at the \$33-\$120 you have actually paid/,
+          basisMatches: /more work orders than your usual 2-4 a week, at the \$33–\$120 you have actually paid/,
         },
         summaryMatches: /14 work orders opened in the week ending/,
       },
