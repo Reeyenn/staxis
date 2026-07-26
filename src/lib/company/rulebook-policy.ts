@@ -495,9 +495,24 @@ export function describeAuthorityRule(rule: AuthorityReading, lang: 'en' | 'es')
   return `Any ${action} ${boundary} needs approval from ${approver}.`;
 }
 
+/**
+ * The same roles, spelled for the MIDDLE of a sentence.
+ *
+ * APPROVER_LABELS is capitalised for the subject-first Spanish read-back ("El
+ * propietario debe aprobar…"), and lower-casing it wholesale turned "the VP"
+ * into "the vp" on screen. An acronym is not a word you can case-fold, so the
+ * two positions get two spellings instead of one plus a transformation.
+ */
+const APPROVER_LABELS_MID: Record<AuthorityApproverRole, Bilingual> = {
+  owner: { en: 'the owner', es: 'el propietario' },
+  vp: { en: 'the VP', es: 'el supervisor regional' },
+  finance: { en: 'finance', es: 'Finanzas' },
+  general_manager: { en: 'the GM', es: 'el gerente' },
+};
+
 /** "the owner or the VP" / "el propietario o el supervisor regional". */
 function listApprovers(roles: readonly AuthorityApproverRole[], lang: 'en' | 'es'): string {
-  const words = roles.map((role) => APPROVER_LABELS[role][lang].toLowerCase());
+  const words = roles.map((role) => APPROVER_LABELS_MID[role][lang]);
   if (words.length <= 1) return words[0] ?? '';
   const joiner = lang === 'es' ? ' o ' : ' or ';
   return `${words.slice(0, -1).join(', ')}${joiner}${words[words.length - 1]}`;
@@ -519,14 +534,20 @@ export function describeAmbiguousAuthority(
   const action = ACTION_LABELS[read.actionKind][lang];
   const amount = formatCents(read.thresholdCents);
   const who = listApprovers(read.candidates, lang);
+  // "cualquier" and "any" rather than an indefinite article, for the same reason
+  // describeAuthorityRule is subject-first: the labels are two genders in Spanish
+  // ("un factura" was on screen) and two articles in English ("a order"), and
+  // carrying a gender per label is one more thing to get wrong for seven kinds.
   if (lang === 'es') {
     const boundary = read.thresholdInclusive ? `de ${amount} o más` : `de más de ${amount}`;
-    return `Esta línea nombra a ${who}. Staxis no puede saber quién debe aprobar un ${action} `
-      + `${boundary}, así que no aplicará ninguna regla de aprobación. Edita la línea para nombrar a uno.`;
+    return `Esta línea nombra más de un aprobador: ${who}. Staxis no puede saber quién debe `
+      + `aprobar cualquier ${action} ${boundary}, así que no aplicará ninguna regla de aprobación. `
+      + 'Edita la línea para nombrar a uno.';
   }
   const boundary = read.thresholdInclusive ? `of ${amount} or more` : `over ${amount}`;
-  return `This line names ${who}. Staxis cannot tell which of them has to approve an ${action} `
-    + `${boundary}, so it will not enforce an approval rule. Edit the line to name one.`;
+  return `This line names more than one approver: ${who}. Staxis cannot tell which of them has to `
+    + `approve any ${action} ${boundary}, so it will not enforce an approval rule. `
+    + 'Edit the line to name one.';
 }
 
 // ─── Comparable settings ───────────────────────────────────────────────────
