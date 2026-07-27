@@ -21,7 +21,7 @@ describe('My Hotel account status UI', () => {
     assert.match(panel, /Login disabled/);
     assert.match(panel, /No sign-ins yet/);
     assert.match(panel, /if \(!known\) return copy\(lang, 'Last sign-in unavailable'/);
-    assert.match(panel, /lastSignInLabel\(member\.lastSignInKnown, member\.lastSignInAt, lang\)/);
+    assert.match(panel, /lastSignInLabel\(account\.lastSignInKnown, account\.lastSignInAt, lang\)/);
   });
 
   test('sends the exact dialog-open snapshot with ordinary role changes', () => {
@@ -48,7 +48,10 @@ describe('My Hotel account status UI', () => {
     const roleFloor = panel.slice(panel.indexOf('const roleFloor ='), panel.indexOf('const passwordFloor ='));
     assert.doesNotMatch(roleFloor, /canEdit\b/);
     assert.match(roleFloor, /actionFlag\(member, \['canChangeRole'\], 'canChangeRole', false\)/);
-    const editorGate = panel.slice(panel.indexOf('const canOpenEditor ='), panel.indexOf('const staffProfile ='));
+    const editorGate = panel.slice(
+      panel.indexOf('const canOpenAccountEditor ='),
+      panel.indexOf('const employmentEditable ='),
+    );
     assert.match(editorGate, /availableActions\.canEdit\s*\|\| availableActions\.canChangeRole/);
     assert.match(dialogs, /const canChangeLifecycle = member\.active \? actions\.canDeactivate : actions\.canReactivate/);
     assert.match(panel, /!targetHasAllHotels && hotelIds\.length > 0 && hotelIds\.every\(\(id\) => viewerHotels\.has\(id\)\)/);
@@ -138,8 +141,10 @@ describe('My Hotel account lifecycle dialog', () => {
     assert.match(dialogs, /Close while verifying/);
     assert.match(panel, /LIFECYCLE_RECONCILIATION_DELAYS_MS/);
     assert.match(panel, /action: operation\.action,[\s\S]*operationId: operation\.operationId/);
-    assert.match(panel, /pendingLifecycleByAccount\[member\.accountId\]/);
-    assert.match(panel, /member\.lifecyclePending === true/);
+    assert.match(panel, /pendingLifecycleByAccount\[editAccount\.accountId\]/);
+    assert.match(panel, /pendingLifecycleByAccount\[person\.account\.accountId\]/);
+    assert.match(panel, /account\?\.lifecyclePending === true/);
+    assert.match(panel, /editAccount\.lifecyclePending === true/);
     assert.match(panel, /Status change pending/);
     assert.match(panel, /disabled=\{lifecycleIsPending\}/);
     assert.match(panel, /Verification paused\. Reload to check the final status\./);

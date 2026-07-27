@@ -99,7 +99,7 @@ const ORBIT_PAGES = [
   /* farther out than the rest, on purpose: it's not here yet */
   { id: 'comingsoon', label: 'Coming Soon', x: 97, y: 30, dir: 'right', tabs: ['Guest Experience'], soon: true },
   { id: 'inventory', label: 'Inventory', x: 87, y: 52, dir: 'right', tabs: ['Inventory'] },
-  { id: 'staff', label: 'Staff', x: 16, y: 92, dir: 'down-left', tabs: ['Schedule', 'Directory'] },
+  { id: 'staff', label: 'Staff', x: 16, y: 92, dir: 'down-left', tabs: ['Schedule'] },
   { id: 'communications', label: 'Communications', x: 76, y: 94, dir: 'down-right', tabs: ['Messages', 'Log Book', 'Calendar'] },
 ] as const;
 
@@ -510,42 +510,6 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
     );
   }
   if (id === 'staff') {
-    if (sub === 1) {
-      return (
-        <div className="ap">
-          <div className="ap-rail">
-            {['All', 'Housekeeping', 'Front desk', 'Maintenance'].map((r, i) => (
-              <span className={`ap-railbtn seg ${i === 0 ? 'on' : ''}`} key={r}>{r}</span>
-            ))}
-          </div>
-          {[['MG', 'Maria', 'Housekeeping', 'ES'], ['AR', 'Ana', 'Housekeeping', 'ES'], ['LT', 'Luis', 'Maintenance', 'EN'], ['JD', 'Jade', 'Front desk', 'EN']].map(([ini, name, role, lang]) => (
-            <div className="ap-card ap-person" key={name as string}>
-              <span className="ap-avatar">{ini}</span>
-              <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{role}</span></div>
-              <span className="ap-conf yes">Active</span>
-              <span className="ap-lang">{lang}</span>
-            </div>
-          ))}
-        </div>
-      );
-    }
-    if (sub === 2) {
-      return (
-        <div className="ap">
-          <div className="ap-h">LEADERBOARD · 7 DAYS</div>
-          {[['1', 'MG', 'Maria', '48 rooms', '↑ Fast', 'good'], ['2', 'AR', 'Ana', '41 rooms', '· On pace', ''], ['3', 'JD', 'Jade', '12 rooms', '· On pace', '']].map(([rank, ini, name, rooms, pace, c]) => (
-            <div className="ap-card ap-person" key={name as string}>
-              <b className="ap-rank">{rank}</b>
-              <span className="ap-avatar">{ini}</span>
-              <div className="ap-cl-mid"><b>{name}</b><span className="ap-role">{rooms}</span></div>
-              <span className={`ap-conf ${c ? 'yes' : ''}`}>{pace}</span>
-            </div>
-          ))}
-          <div className="ap-h">SHOUT-OUTS</div>
-          <div className="ap-card ap-need"><span className="ti-dot ok" />Maria · 12 perfect inspections in a row ⭐</div>
-        </div>
-      );
-    }
     return (
       <div className="ap wide">
         <div className="x-headrow">

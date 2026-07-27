@@ -19,14 +19,20 @@ describe('Inventory and Staff pilot hardening', () => {
     assert.doesNotMatch(myShifts, /publishedDates\.has/);
   });
 
-  test('manager Staff surfaces wait for exact property capabilities and gate each tab', () => {
+  test('manager Staff surfaces wait for exact property capabilities before rendering', () => {
     const page = source('src/app/staff/page.tsx');
     assert.match(page, /capabilityOverridesPropertyId === activePropertyId/);
     assert.match(page, /capabilityOverridesViewerKey === capabilityViewerKey/);
+    assert.match(page, /if \(isManager && !capabilityContextReady\)/);
     assert.match(page, /const canManageSchedule = isManager && can\('manage_shifts'\)/);
-    assert.match(page, /const canManageDirectory = isManager && can\('manage_team'\)/);
-    assert.match(page, /availableTabs=\{availableTabs\}/);
-    assert.match(page, /onOpenDirectory=\{canManageDirectory/);
+    // The Directory tab is gone (folded into My Hotel → People on 2026-07-27),
+    // but the same manage_team gate still decides whether a manager is offered
+    // the jump to People from inside the schedule.
+    assert.match(page, /const canManagePeople = isManager && can\('manage_team'\)/);
+    assert.match(page, /onOpenPeople=\{canManagePeople \? \(\) => router\.push\(PEOPLE_HREF\) : undefined\}/);
+    assert.match(page, /const PEOPLE_HREF = '\/company\?tab=people'/);
+    // Schedule access alone decides whether the manager surface renders at all.
+    assert.match(page, /if \(canManageSchedule\) \{/);
   });
 
   test('Staff schedule reads honor the Staff section before querying data', () => {

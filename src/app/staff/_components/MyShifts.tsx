@@ -7,7 +7,8 @@
 //   • Time-off requests (real list + "+ Request" modal)
 //
 // Requires accounts.staff_id to be set. If null, render a friendly
-// empty state — the manager has to link the account from the Directory.
+// empty state — the manager has to link the login to the person's schedule
+// profile from My Hotel → People.
 
 'use client';
 
@@ -668,8 +669,8 @@ function NotLinkedState({
           fontFamily: fonts.sans, fontSize: 14, color: T.ink2, lineHeight: 1.6,
         }}>
           {es
-            ? <>Tu cuenta aún no está vinculada a un registro de personal. Pide a tu gerente que abra <strong style={{ color: T.ink }}>Personal → Directorio</strong> y vincule tu inicio de sesión desde tu tarjeta de personal.</>
-            : <>Your account isn’t linked to a staff record yet. Ask your manager to open <strong style={{ color: T.ink }}>Staff → Directory</strong> and link your login from your staff card.</>}
+            ? <>Tu cuenta aún no está vinculada a tu perfil de horario. Pide a tu gerente que abra <strong style={{ color: T.ink }}>Mi hotel → Personas</strong>, te busque en la lista y vincule tu acceso desde tu tarjeta.</>
+            : <>Your account isn’t linked to your schedule profile yet. Ask your manager to open <strong style={{ color: T.ink }}>My Hotel → People</strong>, find you in the list, and link your login from your card.</>}
         </p>
       </div>
     </div>

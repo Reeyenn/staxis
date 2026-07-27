@@ -7,10 +7,12 @@
  *   - 'normal'    → eligible (default)
  *   - 'excluded'  → never auto-placed (POST /auto-assign skips them)
  *
- * Caller: the "Automatic room assignment" picker on the staff member's card
- * in Staff (src/app/staff/_components/ManagerDirectory.tsx). It used to be
- * the Schedule board's "★ Priority" modal, which was removed on 2026-07-24
- * when that board became a view of today rather than a config surface.
+ * Caller: the "Automatic room assignment" picker on the person's card in
+ * My Hotel → People (src/app/company/_components/PersonEmploymentForm.tsx).
+ * It used to be the Schedule board's "★ Priority" modal, removed 2026-07-24
+ * when that board became a view of today rather than a config surface; it then
+ * lived in Staff → Directory until that screen was folded into My Hotel on
+ * 2026-07-27. That picker is still the ONLY editor for this field anywhere.
  *
  * This route — not the browser's staff write — is deliberately the write
  * path, for the same reason as PUT /api/staff/wages: the anon client's

@@ -546,10 +546,14 @@ LOW (selected)
    account). Fix mirrors the shipped `hourly_wage` pattern: strip `phone` from the
    anon read projection (and anon write helpers), add a manager-gated
    `GET/PUT /api/staff/contact` (verifyTeamManager + `manage_team`), and rewire
-   `ManagerDirectory.tsx` to a `phones` map with the same `wageTouched`-style
+   the staff editor to a `phones` map with the same `wageTouched`-style
    race-guard so a save can't clear a phone before the async map loads. Deferred
    because it touches the live staff-management write path and needs signed-in
    browser QA — a rushed version risks clearing staff phone numbers on save.
+   *(2026-07-27: the editor named here was `ManagerDirectory.tsx`, deleted when
+   Staff → Directory was folded into My Hotel → People. The surviving editor is
+   `src/app/company/_components/PersonEmploymentForm.tsx`; re-check this item
+   against that file rather than the old path.)*
 3. **MEDIUM — pms-feeds money tools still allow `front_desk`** for guest-balance/
    future-booking aggregates. `get_payments_summary` is now gated; decide per-tool
    whether front desk needs the others operationally before tightening.

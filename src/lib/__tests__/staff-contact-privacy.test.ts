@@ -35,13 +35,21 @@ describe('staff phone privacy', () => {
     assert.match(route, /validatePhone\(body\.phone, 'phone'\)/);
   });
 
-  test('directory hydrates and writes contacts through the gated API', () => {
-    const ui = source('src/app/staff/_components/ManagerDirectory.tsx');
-    assert.match(ui, /\/api\/staff\/contacts\?propertyId=\$\{pid\}/);
-    assert.match(ui, /fetchWithAuth\('\/api\/staff\/contacts', \{/);
-    assert.match(ui, /phoneTouched/);
-    assert.doesNotMatch(ui, /phone:\s*member\.phone/);
-    assert.match(ui, /contactsUnavailable[\s\S]*'Unavailable'/);
+  test('My Hotel → People hydrates and writes contacts through the gated API', () => {
+    // The merged People panel took over the Directory's phone handling on
+    // 2026-07-27 (Staff → Directory, which held the only other copy of this
+    // logic, was deleted the same day). Same discipline: the number never rides
+    // the browser roster projection, and an untouched blank field never
+    // overwrites a stored one.
+    const panel = source('src/app/company/_components/HotelTeamPanel.tsx');
+    const form = source('src/app/company/_components/PersonEmploymentForm.tsx');
+    assert.match(panel, /\/api\/staff\/contacts\?propertyId=\$\{encodeURIComponent\(hotelId\)\}/);
+    assert.match(form, /fetchWithAuth\('\/api\/staff\/contacts', \{/);
+    assert.match(form, /phoneTouched/);
+    assert.match(form, /if \(!existingId \|\| phoneTouched\) \{/);
+    assert.doesNotMatch(form, /phone:\s*staff\.phone/);
+    assert.doesNotMatch(panel, /member\.phone|staff\.phone/);
+    assert.match(panel, /contactsUnavailable[\s\S]*Phone unavailable/);
   });
 
   test('same-property operational surfaces expose phone presence, never the raw number', () => {
@@ -68,22 +76,30 @@ describe('staff phone privacy', () => {
   });
 
   test('a failed new-staff contact initialization retries by id, not by inserting again', () => {
-    const ui = source('src/app/staff/_components/ManagerDirectory.tsx');
-    assert.match(ui, /const existingId = editMember\?\.id \?\? createdIdRef\.current/);
+    // Saving a brand-new person is several writes: the staff row, then the
+    // phone, then the wage, then the auto-assign rank. If any later one fails,
+    // pressing Save again must REUSE the row the first attempt created —
+    // otherwise the hotel ends up with two of the same housekeeper.
+    const ui = source('src/app/company/_components/PersonEmploymentForm.tsx');
+    assert.match(ui, /const existingId = staffId \?\? createdIdRef\.current/);
     assert.match(ui, /createdIdRef\.current = newId/);
-    assert.match(ui, /const writePromise[\s\S]*existingId\s*\? updateStaffMember[\s\S]*: addStaffMember/);
-    assert.match(ui, /if \(savedStaffId && \(!editMember \|\| phoneTouched\)\)/);
+    assert.match(ui, /existingId\s*\?\s*updateStaffMember[\s\S]*?:\s*addStaffMember/);
+    assert.match(ui, /if \(!existingId \|\| phoneTouched\) \{/);
+
+    // The retry id may only be forgotten once every write has landed.
     const contactWrite = ui.indexOf("fetchWithAuth('/api/staff/contacts'");
-    const successClose = ui.indexOf('      closeModal();', contactWrite);
-    const catchBlock = ui.indexOf('} catch (err) {', successClose);
-    const finallyBlock = ui.indexOf('} finally {', catchBlock);
-    assert.ok(
-      contactWrite >= 0 && successClose > contactWrite && catchBlock > successClose && finallyBlock > catchBlock,
-      'contact failure must enter the save catch');
+    const wageWrite = ui.indexOf("fetchWithAuth('/api/staff/wages'");
+    const priorityWrite = ui.indexOf("fetchWithAuth('/api/housekeeping/staff-priority'");
+    const clearRetryId = ui.indexOf('createdIdRef.current = null;');
+    const catchBlock = ui.indexOf('} catch (saveError) {', clearRetryId);
+    assert.ok(contactWrite > 0 && wageWrite > contactWrite && priorityWrite > wageWrite,
+      'the follow-up writes must run after the staff row is created');
+    assert.ok(clearRetryId > priorityWrite && catchBlock > clearRetryId,
+      'the retry id must only be cleared after every follow-up write succeeded');
     assert.doesNotMatch(
-      ui.slice(catchBlock, finallyBlock),
-      /closeModal\(\)/,
-      'contact failure must leave the modal/idempotent createdId open for retry',
+      ui.slice(catchBlock),
+      /createdIdRef\.current = null/,
+      'a failed save must keep the created row id so the retry updates it',
     );
   });
 

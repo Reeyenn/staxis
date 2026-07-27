@@ -7,28 +7,29 @@ function source(...parts: string[]): string {
   return readFileSync(join(process.cwd(), ...parts), 'utf8');
 }
 
-const staffDirectory = source('src', 'app', 'staff', '_components', 'ManagerDirectory.tsx');
-const invitePanel = source('src', 'components', 'team', 'InviteStaffPanel.tsx');
-const invitePanelCss = source('src', 'components', 'team', 'InviteStaffPanel.module.css');
 const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
 const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
+const hotelTeamDialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
 
+// There is exactly ONE invite surface now. Staff → Directory used to render a
+// second copy (InviteStaffPanel, in its own modal) against the same
+// /api/auth/join-codes and /api/auth/invites routes; both it and its stylesheet
+// were deleted with the Directory on 2026-07-27, so the assertions about that
+// component's markup went with them — there is no component left to break.
+// What that test actually protected — invite staff can reach a join code, a
+// shareable link, a QR image and a manager email invite — is asserted here
+// against the copy that survived.
 describe('Invite Staff popup layout stability', () => {
-  test('Staff opens one viewport-capped dialog and reserves the loaded invite geometry', () => {
-    assert.match(staffDirectory, /className=\{invitePanelStyles\.modalLayer\}/);
-    assert.match(staffDirectory, /className=\{invitePanelStyles\.modalDialog\}[\s\S]*?role="dialog"[\s\S]*?aria-modal="true"/);
-    assert.match(invitePanelCss, /\.modalDialog\s*\{[\s\S]*?height:\s*min\(760px, calc\(100dvh - 32px\)\)/);
-    assert.match(invitePanelCss, /\.modalDialog\s*\{[\s\S]*?max-height:\s*calc\(100dvh - 32px\)/);
-    assert.match(invitePanel, /className=\{styles\.panelBody\}[\s\S]*?aria-busy=\{codeLoading \|\| regenerating \|\| inviteSubmitting\}/);
-    assert.match(invitePanel, /className=\{styles\.primarySkeleton\} role="status" aria-live="polite"/);
-    assert.match(invitePanel, /styles\.skeletonLink/);
-    assert.match(invitePanel, /styles\.skeletonQr/);
-    assert.match(invitePanel, /styles\.skeletonCode/);
-    assert.doesNotMatch(invitePanel, /codeLoading \? \([\s\S]{0,220}className="spinner"/);
-    assert.match(invitePanel, /type="button"\s+className=\{styles\.closeButton\}/);
-    assert.match(invitePanelCss, /\.closeButton\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px/);
-    assert.match(invitePanelCss, /@media \(max-width: 600px\)[\s\S]*?height:\s*calc\(100dvh - 12px\)/);
-    assert.match(invitePanelCss, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?animation:\s*none/);
+  test('the surviving invite dialog still offers code, link, QR and email invite', () => {
+    assert.match(hotelTeamDialogs, /\/api\/auth\/join-codes/);
+    assert.match(hotelTeamDialogs, /\/api\/auth\/invites/);
+    assert.match(hotelTeamDialogs, /QRCode\.toDataURL\(signupLinkFor\(code\.code\)/);
+    assert.match(hotelTeamDialogs, /<img src=\{qrDataUrl\}/);
+    assert.match(hotelTeamDialogs, /copyToClipboard\(/);
+    assert.match(hotelTeamDialogs, /Staff signup link/);
+    assert.match(hotelTeamDialogs, /Invite a General Manager/);
+    // Replacing a link must say the old link and QR stop working.
+    assert.match(hotelTeamDialogs, /The current link and QR code will stop working/);
   });
 
   test('Company Suspense fallback uses the destination dialog shape instead of a tiny spinner', () => {

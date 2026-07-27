@@ -438,6 +438,19 @@ function InviteSectionSkeleton({ label, rows = 3 }: { label: string; rows?: numb
   );
 }
 
+/**
+ * One person, one panel.
+ *
+ * `employmentSlot` is how My Hotel → People shows a person's EMPLOYMENT record
+ * (department, hours cap, pay, vacation, linked login) in the same panel as
+ * their LOGIN. It renders above the account form as its own section with its
+ * own save, because the two halves hit different systems with different
+ * permissions — a manager may be allowed to change somebody's hours and not
+ * their role — and one combined save could only ever report half a truth.
+ *
+ * Omit it and this dialog behaves exactly as it did before the Directory was
+ * folded in: login fields only.
+ */
 export function HotelMemberDialog({
   hotelId,
   hotelName,
@@ -446,6 +459,8 @@ export function HotelMemberDialog({
   currentAccountId,
   lang,
   actions,
+  employmentSlot,
+  personName,
   onClose,
   onChanged,
   onLifecyclePending,
@@ -458,6 +473,13 @@ export function HotelMemberDialog({
   currentAccountId: string;
   lang: HotelTeamLang;
   actions: DialogActions;
+  /** The person's employment section, when they have an employment record or
+   *  the viewer should be told why they do not. */
+  employmentSlot?: React.ReactNode;
+  /** Title override — the roster shows a person's employment name, which can
+   *  differ from the login's display name. Keep the panel calling them what
+   *  the list called them. */
+  personName?: string;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
   onLifecyclePending: (operation: HotelTeamPendingLifecycleOperation) => void;
@@ -773,14 +795,31 @@ export function HotelMemberDialog({
 
   return (
     <DialogShell
-      title={self ? copy(lang, 'Your account', 'Tu cuenta') : member.displayName}
-      eyebrow={copy(lang, 'Hotel account', 'Cuenta del hotel')}
-      description={copy(lang, `Manage this login for ${hotelName}. Account-wide changes are labeled below.`, `Administra este acceso para ${hotelName}. Los cambios para toda la cuenta se indican abajo.`)}
+      title={self
+        ? copy(lang, 'Your account', 'Tu cuenta')
+        : personName || member.displayName}
+      eyebrow={employmentSlot
+        ? copy(lang, 'Person', 'Persona')
+        : copy(lang, 'Hotel account', 'Cuenta del hotel')}
+      description={employmentSlot
+        ? copy(
+            lang,
+            `Everything Staxis knows about this person at ${hotelName}. Account-wide changes are labeled below.`,
+            `Todo lo que Staxis sabe sobre esta persona en ${hotelName}. Los cambios para toda la cuenta se indican abajo.`,
+          )
+        : copy(lang, `Manage this login for ${hotelName}. Account-wide changes are labeled below.`, `Administra este acceso para ${hotelName}. Los cambios para toda la cuenta se indican abajo.`)}
       lang={lang}
       icon={<UserRoundCog size={21} aria-hidden="true" />}
       onClose={requestDialogClose}
       busy={busy}
     >
+      {employmentSlot}
+      {employmentSlot ? (
+        <div className={styles.panelDivider}>
+          <span>{copy(lang, 'Login', 'Acceso')}</span>
+          <h3>{copy(lang, 'Staxis login and hotel access', 'Acceso a Staxis y al hotel')}</h3>
+        </div>
+      ) : null}
       <form
         className={styles.dialogForm}
         onSubmit={submit}
@@ -1082,6 +1121,43 @@ export function HotelMemberDialog({
           </button>
         </div>
       </form>
+    </DialogShell>
+  );
+}
+
+/**
+ * The same panel for somebody who has NO Staxis login — a housekeeper on the
+ * schedule who has never signed in. Same shell, same close behavior; the body
+ * is just their employment section, and there is deliberately no login half to
+ * show because there is no login.
+ */
+export function StaffPersonDialog({
+  hotelName,
+  personName,
+  lang,
+  onClose,
+  children,
+}: {
+  hotelName: string;
+  personName: string;
+  lang: HotelTeamLang;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <DialogShell
+      title={personName}
+      eyebrow={copy(lang, 'Person', 'Persona')}
+      description={copy(
+        lang,
+        `On the schedule at ${hotelName}. This person has no Staxis login.`,
+        `Está en el horario de ${hotelName}. Esta persona no tiene acceso a Staxis.`,
+      )}
+      lang={lang}
+      icon={<UserRoundCog size={21} aria-hidden="true" />}
+      onClose={onClose}
+    >
+      {children}
     </DialogShell>
   );
 }

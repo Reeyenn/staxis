@@ -353,8 +353,8 @@ type TranslationKey =
   | 'pmsConnectionDesc' | 'accountManagement' | 'accountManagementDesc'
   | 'minutes' | 'hours' | 'perShift' | 'optional'
   | 'createProperty' | 'deleteProperty' | 'dangerZone'
-  // ── Staff directory ───────────────────────────────────────────────────────
-  | 'staffDirectory' | 'department' | 'editStaff'
+  // ── Staff ─────────────────────────────────────────────────────────────────
+  | 'department' | 'editStaff'
   // ── Sign-in & auth ────────────────────────────────────────────────────────
   | 'signInPrompt' | 'username' | 'password' | 'invalidCredentials'
   // ── Property selector ─────────────────────────────────────────────────────
@@ -1123,8 +1123,7 @@ const translations: TranslationMaps = {
     createProperty: 'Create Property',
     deleteProperty: 'Delete Property',
     dangerZone: 'Danger Zone',
-    // ── Staff directory ──
-    staffDirectory: 'Staff Directory',
+    // ── Staff ──
     department: 'Department',
     editStaff: 'Edit Staff',
     // ── Sign-in & auth ──
@@ -1980,8 +1979,7 @@ const translations: TranslationMaps = {
     createProperty: 'Crear Propiedad',
     deleteProperty: 'Eliminar Propiedad',
     dangerZone: 'Zona de Peligro',
-    // ── Staff directory ──
-    staffDirectory: 'Directorio de Personal',
+    // ── Staff ──
     department: 'Departamento',
     editStaff: 'Editar Personal',
     // ── Sign-in & auth ──

@@ -22,8 +22,8 @@ const hotelSwitcherCss = source('src', 'app', 'company', '_components', 'HotelSw
 const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
 const hotelTeamDialogs = source('src', 'app', 'company', '_components', 'HotelTeamDialogs.tsx');
 const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
-const operationalStaff = source('src', 'app', 'company', '_components', 'OperationalStaffSection.tsx');
-const operationalStaffCss = source('src', 'app', 'company', '_components', 'OperationalStaffSection.module.css');
+const addStaffDialog = source('src', 'app', 'company', '_components', 'AddStaffDialog.tsx');
+const employmentForm = source('src', 'app', 'company', '_components', 'PersonEmploymentForm.tsx');
 const operationalStaffRoute = source('src', 'app', 'api', 'staff', 'operational', 'route.ts');
 const staffWriteGate = source('supabase', 'migrations', '0330_staff_management_write_gate.sql');
 const settings = source('src', 'app', 'settings', 'page.tsx');
@@ -132,14 +132,15 @@ describe('truthful Company Hub filters', () => {
     assert.match(company, /value: ['"]not_active['"], label: localized\(lang, ['"]Not active['"]/);
   });
 
-  test('People keeps the operational roster separate from hotel accounts and company access', () => {
+  test('People is ONE list of everyone at the hotel, not logins stacked on leftovers', () => {
     assert.doesNotMatch(company, /PeopleStatusFilter|peopleStatusFilter/);
     assert.match(company, /<HotelTeamPanel/);
-    assert.match(company, /<OperationalStaffSection/);
+    // The second stacked list is gone: one person is one card now.
+    assert.doesNotMatch(company, /OperationalStaffSection/);
     assert.match(company, /<PeoplePanel\s+key=\{activeProperty\?\.id \?\? ['"]no-hotel['"]\}/);
-    assert.match(operationalStaff, /Staff without a linked login/);
-    assert.match(operationalStaff, /linkedIds\.has\(member\.id\)/);
-    assert.doesNotMatch(operationalStaff, /Search operational staff|FilterBar|statusOptions/);
+    assert.match(hotelTeam, /buildHotelRoster\(team, rosterStaff\)/);
+    assert.match(hotelTeam, /const rosterStaff = React\.useMemo/);
+    assert.match(company, /staffProfiles=\{staff\}/);
     assert.doesNotMatch(company, /statusFilter === ['"]invited['"]/);
     assert.match(company, /Organization access/);
     assert.match(company, /data\.invitations\.map/);
@@ -151,7 +152,7 @@ describe('truthful Company Hub filters', () => {
     assert.match(propertyContext, /setStaffLoadFailed\(true\)/);
     assert.match(company, /staffViewerKey === `\$\{user\.uid\}:\$\{activePropertyId\}`/);
     assert.match(company, /rosterUnavailable=\{hotelRosterUnavailable\}/);
-    assert.match(operationalStaff, /schedule roster is temporarily unavailable/);
+    assert.match(hotelTeam, /schedule roster is temporarily unavailable/);
     assert.match(company, /hotelId=\{activeProperty\.id\}/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
     assert.match(company, /data\.viewerContext\?\.kind === ['"]staxis_admin_preview['"]/);
@@ -269,10 +270,12 @@ describe('My Hotel account and team integration', () => {
   test('includes member editing, removal, staff approvals, and both invitation paths', () => {
     assert.match(hotelTeam, /\/api\/auth\/team\?hotelId=/);
     assert.match(hotelTeam, /\/api\/staff\/join-requests\?hotelId=/);
-    const accountList = hotelTeam.indexOf('className={styles.teamList}');
-    const accountRows = hotelTeam.indexOf('team.map((member)', accountList);
-    const approvalRows = hotelTeam.indexOf('requests.map((request)', accountList);
-    assert.ok(accountList >= 0 && accountRows > accountList && approvalRows > accountRows);
+    const approvalList = hotelTeam.indexOf('className={styles.teamList}');
+    const approvalRows = hotelTeam.indexOf('requests.map((request)', approvalList);
+    const peopleGrid = hotelTeam.indexOf('className={styles.departmentGrid}', approvalRows);
+    // Approvals sit above the roster: somebody waiting to be let in is the
+    // only thing on this page that needs an answer today.
+    assert.ok(approvalList >= 0 && approvalRows > approvalList && peopleGrid > approvalRows);
     assert.match(hotelTeam, /Pending approval/);
     assert.match(hotelTeam, /copy\(lang, ['"]Approve['"]/);
     assert.match(hotelTeam, /copy\(lang, ['"]Deny['"]/);
@@ -290,35 +293,33 @@ describe('My Hotel account and team integration', () => {
     assert.match(hotelTeamDialogs, /Copy and send the link directly/);
   });
 
-  test('keeps schedule-only staff compact and supports adding them without a login', () => {
-    assert.match(operationalStaff, /aria-haspopup="dialog"/);
-    assert.match(operationalStaff, /copy\(lang, ['"]Add['"], ['"]Agregar['"]\)/);
-    assert.match(operationalStaff, /createPortal\(/);
-    assert.match(operationalStaff, /role="dialog"/);
-    assert.match(operationalStaff, /aria-modal="true"/);
-    assert.match(operationalStaff, /event\.key === ['"]Escape['"]/);
-    assert.match(operationalStaff, /event\.key !== ['"]Tab['"]/);
-    assert.doesNotMatch(operationalStaff, /addStaffMember|@\/lib\/db\/staff/);
-    assert.match(operationalStaff, /fetchWithAuth\(['"]\/api\/staff\/operational['"]/);
-    assert.match(operationalStaff, /['"]Idempotency-Key['"]: attempt\.key/);
-    assert.match(operationalStaff, /AbortSignal\.timeout\(15_000\)/);
-    assert.match(operationalStaff, /body\.code !== ['"]IdempotencyInProgress['"]/);
-    assert.match(operationalStaff, /if \(busyRef\.current\) return;/);
-    assert.match(operationalStaff, /busyRef\.current = true;\s*setBusy\(true\)/);
-    assert.match(operationalStaff, /const \[pendingAttempt, setPendingAttempt\] = React\.useState<OperationalStaffAttempt \| null>\(null\)/);
-    assert.match(operationalStaff, /const attempt = pendingAttempt \?\? \{[\s\S]*payload:/);
-    assert.match(operationalStaff, /onPendingAttemptChange\(attempt\)/);
-    assert.match(operationalStaff, /pendingAttempt=\{pendingAttempt\}/);
-    assert.match(operationalStaff, /body: JSON\.stringify\(attempt\.payload\)/);
-    assert.match(operationalStaff, /disabled=\{busy \|\| retryLocked\}/);
-    assert.match(operationalStaff, /That save is still processing\. Wait a moment, then try again\./);
-    assert.doesNotMatch(operationalStaff, /will not create a duplicate|duplicate-safe/);
-    assert.match(operationalStaff, /onAdded\(\{/);
-    assert.match(operationalStaff, /optimisticStaff\.filter/);
-    assert.match(operationalStaff, /setOptimisticStaff\(\(current\) => \{[\s\S]*!loadedIds\.has\(member\.id\)/);
-    assert.match(operationalStaff, /loadedStaffIdsRef\.current\.has\(member\.id\)/);
-    assert.match(operationalStaff, /document\.addEventListener\(['"]focusin['"]/);
-    assert.match(operationalStaff, /element\.inert = true/);
+  test('keeps one Add that creates a schedule profile and no login', () => {
+    assert.match(hotelTeam, /aria-haspopup="dialog"/);
+    assert.match(hotelTeam, /setAddDepartment\(group\.key as StaffDepartment\)/);
+    assert.match(addStaffDialog, /createPortal\(/);
+    assert.match(addStaffDialog, /role="dialog"/);
+    assert.match(addStaffDialog, /aria-modal="true"/);
+    assert.match(addStaffDialog, /event\.key === ['"]Escape['"]/);
+    assert.match(addStaffDialog, /event\.key !== ['"]Tab['"]/);
+    assert.doesNotMatch(addStaffDialog, /addStaffMember|@\/lib\/db\/staff/);
+    assert.match(addStaffDialog, /fetchWithAuth\(['"]\/api\/staff\/operational['"]/);
+    assert.match(addStaffDialog, /['"]Idempotency-Key['"]: attempt\.key/);
+    assert.match(addStaffDialog, /AbortSignal\.timeout\(15_000\)/);
+    assert.match(addStaffDialog, /body\.code !== ['"]IdempotencyInProgress['"]/);
+    assert.match(addStaffDialog, /if \(busyRef\.current\) return;/);
+    assert.match(addStaffDialog, /busyRef\.current = true;\s*setBusy\(true\)/);
+    assert.match(hotelTeam, /const \[pendingAddAttempt, setPendingAddAttempt\] = React\.useState<AddStaffAttempt \| null>\(null\)/);
+    assert.match(addStaffDialog, /const attempt = pendingAttempt \?\? \{[\s\S]*payload:/);
+    assert.match(addStaffDialog, /onPendingAttemptChange\(attempt\)/);
+    assert.match(hotelTeam, /pendingAttempt=\{pendingAddAttempt\}/);
+    assert.match(addStaffDialog, /body: JSON\.stringify\(attempt\.payload\)/);
+    assert.match(addStaffDialog, /disabled=\{busy \|\| retryLocked\}/);
+    assert.match(addStaffDialog, /That save is still processing\. Wait a moment, then try again\./);
+    assert.doesNotMatch(addStaffDialog, /will not create a duplicate|duplicate-safe/);
+    assert.match(addStaffDialog, /onAdded\(\{/);
+    assert.match(hotelTeam, /optimisticStaff\.filter/);
+    assert.match(addStaffDialog, /document\.addEventListener\(['"]focusin['"]/);
+    assert.match(addStaffDialog, /element\.inert = true/);
     assert.match(operationalStaffRoute, /verifyTeamManager\(req\)/);
     assert.match(operationalStaffRoute, /\.from\(['"]accounts['"]\)[\s\S]*\.select\(['"]active, role, property_access['"]\)/);
     assert.match(operationalStaffRoute, /currentRole !== ['"]owner['"] && currentRole !== ['"]general_manager['"]/);
@@ -343,14 +344,21 @@ describe('My Hotel account and team integration', () => {
     assert.match(staffWriteGate, /create policy staff_manage_update[\s\S]*for update/);
     assert.match(staffWriteGate, /create policy staff_manage_delete[\s\S]*for delete/);
     assert.match(staffWriteGate, /public\.mfa_verified_or_grace\(\)/);
-    assert.match(operationalStaff, /does not create a Staxis login or send an invitation/);
-    assert.doesNotMatch(operationalStaff, /type="search"|All.*Active.*Not active/);
-    assert.match(operationalStaffCss, /\.headingCopy h2 \{[\s\S]*font-size: 14\.5px;/);
-    assert.match(operationalStaffCss, /\.staffRow \{[\s\S]*min-height: 58px;/);
-    assert.match(operationalStaffCss, /\.stateRow \{[\s\S]*min-height: 64px;/);
-    assert.match(operationalStaffCss, /\.addButton,[\s\S]*min-height: 44px;/);
-    assert.match(operationalStaffCss, /\.field input,[\s\S]*min-height: 48px;/);
-    assert.match(operationalStaffCss, /@media \(prefers-reduced-motion: reduce\)/);
+    assert.match(addStaffDialog, /does not create a Staxis login or send an invitation/);
+    assert.doesNotMatch(addStaffDialog, /type="search"|All.*Active.*Not active/);
+    assert.match(hotelTeamCss, /\.departmentAdd \{[\s\S]*min-height: 44px;/);
+    assert.match(hotelTeamCss, /@media \(prefers-reduced-motion: reduce\)/);
+  });
+
+  test('the wage field and its write stay behind the manager-floor capability', () => {
+    // view_wages is in MANAGER_FLOOR_CAPABILITIES: it can never fall to line
+    // staff, and the route re-checks it. The merged panel must not become a
+    // way around either half of that.
+    assert.match(company, /const canViewWages = hotelCapabilitiesReady && can\(['"]view_wages['"]\)/);
+    assert.match(company, /canViewWages=\{canViewWages\}/);
+    assert.match(hotelTeam, /if \(!hotelId \|\| !canManageTeam \|\| !canViewWages\) return;/);
+    assert.match(employmentForm, /\{canViewWages \? \(/);
+    assert.match(employmentForm, /if \(canViewWages && wageTouched\) \{/);
   });
 
   test('keeps account-wide effects honest and dialogs usable above the app shell', () => {

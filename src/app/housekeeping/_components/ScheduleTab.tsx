@@ -354,8 +354,11 @@ export function ScheduleTab() {
   }, [pid, shiftDate, busy, refreshBoard, flashToast, lang]);
 
   // Removed 2026-07-24: the ★ Staff priority modal. Auto-assign eligibility
-  // ("never auto-assign this person") is staffing configuration, so it now
-  // lives on the staff member's own card in Staff — see ManagerDirectory.
+  // ("never auto-assign this person") is staffing configuration, so it lives on
+  // the person's own card in My Hotel → People — see PersonEmploymentForm
+  // (src/app/company/_components/PersonEmploymentForm.tsx), the only editor for
+  // it anywhere in the app. This board can show an EXCLUDED badge; it cannot
+  // clear one.
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (

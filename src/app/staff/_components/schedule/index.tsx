@@ -36,7 +36,7 @@ const DEFAULT_WEEKLY_CAP = 40;
 
 const HL_SHADOW = `inset 0 0 0 1px ${T.brand}`;
 
-export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory?: () => void }) {
+export function UnifiedSchedule({ onOpenPeople }: { onOpenPeople?: () => void }) {
   const { activePropertyId, activeProperty, staff } = useProperty();
   const { lang } = useLang();
   const data = useScheduleData(activePropertyId, staff);
@@ -80,19 +80,19 @@ export function UnifiedSchedule({ onOpenDirectory }: { onOpenDirectory?: () => v
       lang={lang}
       data={data}
       propertyName={activeProperty?.name}
-      onOpenDirectory={onOpenDirectory}
+      onOpenPeople={onOpenPeople}
     />
   );
 }
 
 // ScheduleView — the full schedule surface, decoupled from where its data
 // comes from: the real tab feeds it useScheduleData (Supabase-backed).
-export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory }: {
+export function ScheduleView({ staff, lang, data, propertyName, onOpenPeople }: {
   staff: StaffMember[];
   lang: 'en' | 'es';
   data: ScheduleData;
   propertyName?: string;
-  onOpenDirectory?: () => void;
+  onOpenPeople?: () => void;
 }) {
   const es = lang === 'es';
   const reducedMotion = useReducedMotion();
@@ -797,8 +797,8 @@ export function ScheduleView({ staff, lang, data, propertyName, onOpenDirectory 
           weekMinutes={dayWeekMinutes}
           approvedTorByStaff={approvedTorByStaff}
           onPick={onPickStaff}
-          onOpenDirectory={onOpenDirectory
-            ? () => { setPickerOpen(false); onOpenDirectory(); }
+          onOpenPeople={onOpenPeople
+            ? () => { setPickerOpen(false); onOpenPeople(); }
             : undefined}
           onClose={() => setPickerOpen(false)}
         />

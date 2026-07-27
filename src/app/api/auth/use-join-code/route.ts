@@ -271,7 +271,7 @@ export async function POST(req: NextRequest) {
   // slot + delete auth user).
   // New-flow staff signups (shared code, self-picked role) get NO property
   // access at creation — they land in join_requests as 'pending' and a
-  // manager approves them from the Staff Directory (migration 0315), which
+  // manager approves them in My Hotel → People (migration 0315), which
   // is what grants access + creates their staff row. Legacy baked-role
   // codes (single-use owner/GM onboarding invites) keep immediate access.
   const pendingApproval = !row.role;
@@ -317,7 +317,7 @@ export async function POST(req: NextRequest) {
   // Slot already incremented via the CAS at the top.
 
   // Pending staff signup → create the join request the manager will see in
-  // the Staff Directory. If this write fails the account would be stranded
+  // My Hotel → People. If this write fails the account would be stranded
   // (no access, no request, nothing for a manager to approve), so treat it
   // like the accounts-insert failure: roll everything back and let the
   // person retry the whole signup.

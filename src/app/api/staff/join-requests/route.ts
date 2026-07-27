@@ -1,4 +1,5 @@
-// /api/staff/join-requests — the Directory's "waiting to approve" queue.
+// /api/staff/join-requests — the "waiting to approve" queue on
+// My Hotel → People.
 //
 //   GET  ?hotelId=…
 //     List pending join requests for the hotel (name, department, language,
@@ -201,7 +202,7 @@ export async function PUT(req: NextRequest) {
   if (staffErr || !staffIns) {
     log.error('[join-requests:PUT] staff insert failed', { requestId, msg: errToString(staffErr) });
     await revertClaim();
-    return err('Failed to add them to the directory — try again.', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err('Failed to add them to the hotel roster — try again.', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   const staffId = String(staffIns.id);
 

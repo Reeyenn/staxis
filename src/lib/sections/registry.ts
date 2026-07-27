@@ -54,7 +54,8 @@ export const SECTION_LIST: readonly SectionMeta[] = [
   { key: 'communications', navHref: '/communications', routePrefixes: ['/communications'], label_en: 'Communications', label_es: 'Comunicación',  desc_en: 'Messages, log book, calendar, and announcements', desc_es: 'Mensajes, bitácora, calendario y anuncios' },
   { key: 'maintenance',    navHref: '/maintenance',    routePrefixes: ['/maintenance'],    label_en: 'Maintenance',    label_es: 'Mantenimiento', desc_en: 'Work orders and preventive maintenance',          desc_es: 'Órdenes de trabajo y mantenimiento preventivo' },
   { key: 'inventory',      navHref: '/inventory',      routePrefixes: ['/inventory'],      label_en: 'Inventory',      label_es: 'Inventario',    desc_en: 'Supplies, counts, reorders, and vendors',         desc_es: 'Suministros, conteos, pedidos y proveedores' },
-  { key: 'staff',          navHref: '/staff',          routePrefixes: ['/staff'],          label_en: 'Staff',          label_es: 'Personal',      desc_en: 'Team, scheduling, and performance',               desc_es: 'Equipo, horarios y desempeño' },
+  // People moved to My Hotel → People on 2026-07-27; Staff is the schedule now.
+  { key: 'staff',          navHref: '/staff',          routePrefixes: ['/staff'],          label_en: 'Staff',          label_es: 'Personal',      desc_en: 'Weekly schedule and shifts',                      desc_es: 'Horario semanal y turnos' },
   { key: 'financials',     navHref: '/financials',     routePrefixes: ['/financials'],     label_en: 'Financials',     label_es: 'Finanzas',      desc_en: 'Checkbook, budget, revenue, and profit',          desc_es: 'Chequera, presupuesto, ingresos y ganancias' },
 ];
 

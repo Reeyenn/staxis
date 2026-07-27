@@ -75,6 +75,20 @@
         "3117"
       ],
       "port": 3117
+    },
+    {
+      "name": "hands-dev",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "/Users/reeyen/Projects/staxis-merge",
+        "--",
+        "--port",
+        "3177"
+      ],
+      "port": 3177
     }
   ]
 }

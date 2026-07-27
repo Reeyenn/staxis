@@ -4,32 +4,40 @@
 export const dynamic = 'force-dynamic';
 // Staff page — role-gated entry point.
 //
-//   • Manager (admin / owner / general_manager) → Schedule + Directory tabs
+//   • Manager (admin / owner / general_manager) → Schedule
 //   • Staff   (housekeeping / front_desk / maintenance / staff) → My Shifts
 //
 // Demo/investor logins (accounts.skip_2fa → user.isDemo) that can manage the
 // team get an extra Manager⇄Staff view switch so the shared test login can
 // preview BOTH surfaces — and, in staff mode, preview as any employee.
 //
-// Replaces the previous monolithic /staff page that mixed an AI confirmations
-// flow with a department-filtered directory. The morning SMS workflow now
-// lives exclusively at /housekeeping → Schedule; this surface is for week-
-// level planning + the staff-facing "Am I working?" view.
+// The Directory tab was removed on 2026-07-27. Everyone who works at the hotel
+// — logins and schedule-only people alike — is now ONE list at
+// My Hotel → People (/company?tab=people), which is also the only place a
+// person's pay, hours cap, department, linked login and auto-assign rank are
+// edited. With Schedule the only manager surface left here, the sub-tab bar and
+// its stored tab preference are gone too; a returning manager whose browser
+// still remembers 'directory' simply lands on Schedule.
+//
+// The morning workflow lives at /housekeeping → Schedule; this surface is for
+// week-level planning + the staff-facing "Am I working?" view.
 
 import React, { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
+import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
 import { useCan } from '@/lib/capabilities/useCan';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { SubTabBar, type StaffTab } from './_components/SubTabBar';
 import { UnifiedSchedule } from './_components/schedule';
-import { ManagerDirectory } from './_components/ManagerDirectory';
 import { MyShifts } from './_components/MyShifts';
 import { asDeptKey, deptMeta, T, fonts } from './_components/_tokens';
 
-const TAB_STORAGE_KEY = 'staxis-staff-tab';
+/** My Hotel → People. Where new hires are added and logins get linked. */
+const PEOPLE_HREF = '/company?tab=people';
+
 const VIEWMODE_STORAGE_KEY = 'staxis-staff-viewmode';
 const PREVIEW_STAFF_STORAGE_KEY = 'staxis-staff-previewid';
 
@@ -74,52 +82,41 @@ export default function StaffPage() {
   );
 
   // A missing override snapshot defaults capabilities to allowed. Do not mount
-  // either manager data surface under that optimistic fallback: on a property
-  // switch it could briefly expose controls from the previous hotel's access
-  // decision before the exact user/property snapshot arrives.
+  // the manager surface under that optimistic fallback: on a property switch it
+  // could briefly expose controls from the previous hotel's access decision
+  // before the exact user/property snapshot arrives.
   if (isManager && !capabilityContextReady) {
     return <AppLayout><LoadingState/></AppLayout>;
   }
 
   const canManageSchedule = isManager && can('manage_shifts');
-  const canManageDirectory = isManager && can('manage_team');
-  const hasManagerSurface = canManageSchedule || canManageDirectory;
+  // Not a tab any more — this decides whether we offer the manager a way over
+  // to My Hotel → People from inside the schedule.
+  const canManagePeople = isManager && can('manage_team');
 
   // Demo login + manager → both UIs, switchable.
-  if (user.isDemo && hasManagerSurface) {
+  if (user.isDemo && canManageSchedule) {
     return (
       <AppLayout>
-        <DemoSwitchableView
-          canManageSchedule={canManageSchedule}
-          canManageDirectory={canManageDirectory}
-        />
+        <DemoSwitchableView canManagePeople={canManagePeople} />
       </AppLayout>
     );
   }
-  if (hasManagerSurface) {
+  if (canManageSchedule) {
     return (
       <AppLayout>
-        <ManagerView
-          canManageSchedule={canManageSchedule}
-          canManageDirectory={canManageDirectory}
-        />
+        <ManagerView canManagePeople={canManagePeople} />
       </AppLayout>
     );
   }
   if (isManager) {
-    return <AppLayout><ManagerAccessUnavailable/></AppLayout>;
+    return <AppLayout><ManagerAccessUnavailable canManagePeople={canManagePeople}/></AppLayout>;
   }
   return <AppLayout><MyShifts/></AppLayout>;
 }
 
 // ── Demo-only Manager ⇄ Staff preview ───────────────────────────────────────
-function DemoSwitchableView({
-  canManageSchedule,
-  canManageDirectory,
-}: {
-  canManageSchedule: boolean;
-  canManageDirectory: boolean;
-}) {
+function DemoSwitchableView({ canManagePeople }: { canManagePeople: boolean }) {
   const { user } = useAuth();
   const [mode, setMode] = useState<'manager' | 'staff'>(() => {
     if (typeof window === 'undefined') return 'manager';
@@ -151,12 +148,7 @@ function DemoSwitchableView({
         loginName={user?.displayName ?? user?.username ?? 'demo'}
       />
       {mode === 'manager'
-        ? (
-          <ManagerView
-            canManageSchedule={canManageSchedule}
-            canManageDirectory={canManageDirectory}
-          />
-        )
+        ? <ManagerView canManagePeople={canManagePeople} />
         : <MyShifts previewStaffId={previewStaffId}/>}
     </div>
   );
@@ -263,53 +255,21 @@ function DemoViewSwitch({
   );
 }
 
-function ManagerView({
-  canManageSchedule,
-  canManageDirectory,
-}: {
-  canManageSchedule: boolean;
-  canManageDirectory: boolean;
-}) {
-  const [tab, setTab] = useState<StaffTab>(() => {
-    if (typeof window === 'undefined') return 'schedule';
-    try {
-      const raw = window.localStorage.getItem(TAB_STORAGE_KEY);
-      return raw === 'directory' ? raw : 'schedule';
-    } catch { return 'schedule'; }
-  });
-  const availableTabs = useMemo<StaffTab[]>(() => [
-    ...(canManageSchedule ? ['schedule' as const] : []),
-    ...(canManageDirectory ? ['directory' as const] : []),
-  ], [canManageSchedule, canManageDirectory]);
-  const activeTab = availableTabs.includes(tab) ? tab : availableTabs[0];
-
-  useEffect(() => {
-    if (!activeTab) return;
-    try { window.localStorage.setItem(TAB_STORAGE_KEY, activeTab); } catch { /* noop */ }
-  }, [activeTab]);
-
-  if (!activeTab) return <ManagerAccessUnavailable/>;
+function ManagerView({ canManagePeople }: { canManagePeople: boolean }) {
+  const router = useRouter();
 
   return (
     <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
-      <SubTabBar tab={activeTab} onTab={setTab} availableTabs={availableTabs}/>
-      {activeTab === 'schedule' && (
-        <div id="staff-panel-schedule" role="tabpanel" aria-labelledby="staff-tab-schedule">
-          <UnifiedSchedule
-            onOpenDirectory={canManageDirectory ? () => setTab('directory') : undefined}
-          />
-        </div>
-      )}
-      {activeTab === 'directory' && (
-        <div id="staff-panel-directory" role="tabpanel" aria-labelledby="staff-tab-directory">
-          <ManagerDirectory/>
-        </div>
-      )}
+      <UnifiedSchedule
+        onOpenPeople={canManagePeople ? () => router.push(PEOPLE_HREF) : undefined}
+      />
     </div>
   );
 }
 
-function ManagerAccessUnavailable() {
+function ManagerAccessUnavailable({ canManagePeople }: { canManagePeople: boolean }) {
+  const { lang } = useLang();
+  const es = lang === 'es';
   return (
     <div style={{
       minHeight: '60vh', display: 'grid', placeItems: 'center', padding: 24,
@@ -321,11 +281,29 @@ function ManagerAccessUnavailable() {
         boxShadow: T.cardShadow,
       }}>
         <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 7 }}>
-          Staff tools aren&apos;t available for your access
+          {es
+            ? 'El horario no está disponible para tu acceso'
+            : 'The schedule isn’t available for your access'}
         </div>
         <div style={{ fontSize: 13, lineHeight: 1.5, color: T.ink3 }}>
-          Ask an administrator to enable Schedule or Team access for your role at this hotel.
+          {es
+            ? 'Pide a un administrador que habilite el acceso al Horario para tu puesto en este hotel.'
+            : 'Ask an administrator to enable Schedule access for your role at this hotel.'}
         </div>
+        {canManagePeople ? (
+          <Link
+            href={PEOPLE_HREF}
+            style={{
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              minHeight: 44, marginTop: 16, padding: '0 18px', borderRadius: 12,
+              border: `1px solid ${T.rule}`, background: T.paper,
+              fontFamily: fonts.sans, fontSize: 13, fontWeight: 600, color: T.ink,
+              textDecoration: 'none',
+            }}
+          >
+            {es ? 'Abrir Mi hotel → Personas' : 'Open My Hotel → People'}
+          </Link>
+        ) : null}
       </div>
     </div>
   );

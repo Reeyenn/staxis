@@ -59,12 +59,8 @@ import {
   ReviewAccessRequestDialog,
   type CompanyLifecycleAction,
 } from './_components/AccessWorkflowDialogs';
-import {
-  HotelTeamPanel,
-  type HotelTeamLinkageState,
-} from './_components/HotelTeamPanel';
+import { HotelTeamPanel } from './_components/HotelTeamPanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
-import { OperationalStaffSection } from './_components/OperationalStaffSection';
 
 type TabId = 'overview' | 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
@@ -87,19 +83,6 @@ function isTabId(value: string | null): value is TabId {
     || value === 'people'
     || value === 'access';
 }
-
-const MANAGER_PROFILES = new Set([
-  'organization_owner',
-  'organization_admin',
-  'portfolio_manager',
-  'property_manager',
-  'organization owner',
-  'organization administrator',
-  'portfolio manager',
-  'property manager',
-  'property owner',
-  'staxis administrator',
-]);
 
 function localized(lang: string, en: string, es: string): string {
   return lang === 'es' ? es : en;
@@ -358,6 +341,11 @@ function CompanyAccessContent() {
   // A hotel switch clears readiness synchronously. Never reuse the previous
   // hotel's optimistic capability result while the next snapshot is loading.
   const canManageTeam = hotelCapabilitiesReady && can('manage_team');
+  // Pay is payroll-private. `view_wages` sits on MANAGER_FLOOR_CAPABILITIES, so
+  // it can never be granted down to line staff no matter what an admin sets,
+  // and PUT/GET /api/staff/wages enforce it again server-side. Resolved here,
+  // where the exact-hotel capability snapshot is already known to be current.
+  const canViewWages = hotelCapabilitiesReady && can('view_wages');
   const staffBelongsToCurrentViewer = Boolean(user?.uid && activePropertyId
     && staffViewerKey === `${user.uid}:${activePropertyId}`);
   const currentStaff = staffBelongsToCurrentViewer
@@ -486,31 +474,24 @@ function CompanyAccessContent() {
     COMPANY_LOAD_ERROR_MESSAGES,
   );
   const resolved = currentData ?? EMPTY_COMPANY_ACCESS;
-  const hasCompanyScope = resolved.effectiveAccess.some((receipt) => {
-    const profile = receipt.accessProfile.toLowerCase();
-    return receipt.scopeType !== 'property' || MANAGER_PROFILES.has(profile);
-  });
-  const isHotelManager = user?.role === 'admin' || user?.role === 'owner' || user?.role === 'general_manager';
-  const leaderView = resolved.viewerContext?.scope === 'property'
-    ? false
-    : hasCompanyScope || isHotelManager;
-
+  // Tab NAMES, not tab keys. The `?tab=` values and the `company-tab-*` ids
+  // below never change — old links and bookmarks keep working.
+  //
+  // Until 2026-07-27 a single-hotel manager saw a tab literally called
+  // "My Hotel" *inside* the screen already called My Hotel, and it listed
+  // hotels; their colleagues were filed under "My Team". People went looking
+  // for employees under the tab that shared the page's name and found a hotel
+  // list, which is a large part of why the hotel felt like it had two staff
+  // directories. Every viewer now gets the same two plain nouns: "Hotels" is
+  // buildings, "People" is humans.
   const tabs = React.useMemo<TabDefinition[]>(() => {
     return [
       { id: 'overview', label: localized(lang, 'Overview', 'Resumen'), icon: Building2 },
-      {
-        id: 'hotels',
-        label: leaderView ? localized(lang, 'Hotels', 'Hoteles') : localized(lang, 'My Hotel', 'Mi hotel'),
-        icon: Hotel,
-      },
-      {
-        id: 'people',
-        label: leaderView ? localized(lang, 'People', 'Personas') : localized(lang, 'My Team', 'Mi equipo'),
-        icon: Users,
-      },
+      { id: 'hotels', label: localized(lang, 'Hotels', 'Hoteles'), icon: Hotel },
+      { id: 'people', label: localized(lang, 'People', 'Personas'), icon: Users },
       { id: 'access', label: localized(lang, 'Access', 'Acceso'), icon: KeyRound },
     ];
-  }, [lang, leaderView]);
+  }, [lang]);
 
   React.useEffect(() => {
     const requested = searchParams.get('tab');
@@ -816,6 +797,7 @@ function CompanyAccessContent() {
                   activeProperty={activeProperty}
                   adminToolsEnabled={adminToolsActive}
                   canManageTeam={canManageTeam}
+                  canViewWages={canViewWages}
                   canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
@@ -1023,7 +1005,13 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
   );
 }
 
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged }: {
+/**
+ * One list of everyone at this hotel. Until 2026-07-27 this panel stacked two
+ * lists — logins, then the staff records with no login — and the same person
+ * could appear in both with nothing on screen explaining why. HotelTeamPanel
+ * now merges them.
+ */
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1033,14 +1021,12 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   activeProperty: Property | null;
   adminToolsEnabled: boolean;
   canManageTeam: boolean;
+  canViewWages: boolean;
   canAddOperationalStaff: boolean;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   onChanged: () => void | Promise<void>;
 }) {
-  const [linkage, setLinkage] = React.useState<HotelTeamLinkageState>({ status: 'loading' });
-  React.useEffect(() => setLinkage({ status: 'loading' }), [activeProperty?.id]);
-
   return (
     <div className={styles.stack}>
       {activeProperty ? (
@@ -1052,14 +1038,16 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           currentAccountId={currentAccountId}
           lang={lang === 'es' ? 'es' : 'en'}
           canManageTeam={canManageTeam}
+          canViewWages={canViewWages}
           readOnly={Boolean(data.viewerContext?.readOnly) && !adminToolsEnabled}
           adminPreview={data.viewerContext?.kind === 'staxis_admin_preview'}
           allowAdminActions={adminToolsEnabled}
           inviteDialogOpen={inviteDialogOpen}
           onInviteDialogOpenChange={onInviteDialogOpenChange}
           staffProfiles={staff}
+          rosterUnavailable={hotelRosterUnavailable}
+          canAddStaff={canAddOperationalStaff}
           onChanged={onChanged}
-          onLinkageChange={setLinkage}
         />
       ) : (
         <EmptyState
@@ -1068,20 +1056,6 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
           description={localized(lang, 'Team accounts are always managed for one exact hotel.', 'Las cuentas del equipo siempre se administran para un hotel específico.')}
         />
       )}
-
-      {activeProperty ? (
-        <OperationalStaffSection
-          key={activeProperty.id}
-          hotelId={activeProperty.id}
-          staff={staff}
-          linkage={linkage}
-          rosterUnavailable={hotelRosterUnavailable}
-          lang={lang === 'es' ? 'es' : 'en'}
-          canAddStaff={canAddOperationalStaff}
-          canResolveLinkage={canManageTeam}
-          onChanged={onChanged}
-        />
-      ) : null}
     </div>
   );
 }

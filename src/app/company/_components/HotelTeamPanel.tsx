@@ -1,9 +1,32 @@
 'use client';
 
+// ═══════════════════════════════════════════════════════════════════════════
+// My Hotel → People. ONE list of everyone who works at this hotel.
+//
+// Before 2026-07-27 the same humans were listed twice: Staff → Directory
+// showed the `staff` table (employment), My Hotel → People showed `accounts`
+// (logins) and then, underneath, the `staff` rows that had no login. Nothing on
+// screen explained why a housekeeper appeared in two places, or why her manager
+// appeared in one. This panel merges both tables into a single roster keyed by
+// person and grouped by department — the way a hotel manager actually thinks
+// about their people — so one human is one card.
+//
+// What each half still contributes:
+//   • employment (`staff`) — department, on-shift ring, hours-vs-cap bar,
+//     SENIOR tag, dimming when inactive, and the Roster / On shift / Near OT
+//     counts.
+//   • login (`accounts`)   — role, email, last sign-in, disabled state, the
+//     owner-protected and shared-across-hotels notices, and the linked marker.
+//
+// The join is `account_property_staff_links`, surfaced as `staffId` on each row
+// of GET /api/auth/team. The merge itself lives in ./people-roster.ts.
+// ═══════════════════════════════════════════════════════════════════════════
+
 import React from 'react';
 import { createPortal } from 'react-dom';
 import {
   AlertCircle,
+  AlertTriangle,
   Clock3,
   KeyRound,
   Pencil,
@@ -19,8 +42,16 @@ import {
 import type { AppUser } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { AppRole } from '@/lib/roles';
-import type { StaffMember } from '@/types';
+import type { StaffDepartment, StaffMember } from '@/types';
 
+import type { AddStaffAttempt } from './AddStaffDialog';
+import {
+  ALWAYS_VISIBLE_GROUPS,
+  buildHotelRoster,
+  rosterCounts,
+  type RosterGroupKey,
+  type RosterPerson,
+} from './people-roster';
 import styles from './HotelTeamPanel.module.css';
 
 export type HotelTeamLang = 'en' | 'es';
@@ -93,12 +124,6 @@ export interface HotelJoinRequest {
   created_at: string;
 }
 
-export type HotelTeamLinkageState =
-  | { status: 'loading' }
-  | { status: 'ready'; staffIds: string[] }
-  | { status: 'error' }
-  | { status: 'unavailable' };
-
 export interface HotelTeamPanelProps {
   /** The exact hotel being managed. Never falls back to the app-wide hotel. */
   hotelId: string;
@@ -108,6 +133,11 @@ export interface HotelTeamPanelProps {
   currentAccountId?: string;
   lang: HotelTeamLang;
   canManageTeam: boolean;
+  /** `view_wages` at this exact hotel. A MANAGER_FLOOR capability: it can never
+   *  fall to line staff, no matter what an admin grants. False hides the pay
+   *  field, skips the wage fetch, and suppresses the wage write — and
+   *  /api/staff/wages checks it again on its own. */
+  canViewWages?: boolean;
   readOnly?: boolean;
   adminPreview?: boolean;
   /** Unlocks only the separately authorized hotel-team routes while keeping
@@ -115,10 +145,14 @@ export interface HotelTeamPanelProps {
   allowAdminActions?: boolean;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
+  /** The employment roster for this hotel, from PropertyContext. */
   staffProfiles?: StaffMember[];
+  /** The roster subscription failed — say so instead of implying nobody works
+   *  here. */
+  rosterUnavailable?: boolean;
+  /** May this viewer add somebody to the schedule? */
+  canAddStaff?: boolean;
   onChanged?: () => void | Promise<void>;
-  /** Tri-state result prevents the parent from calling staff "unlinked" before this request succeeds. */
-  onLinkageChange?: (state: HotelTeamLinkageState) => void;
 }
 
 interface Envelope<T> {
@@ -147,6 +181,11 @@ const LazyMemberDialog = React.lazy(async () => {
   return { default: dialogs.HotelMemberDialog };
 });
 
+const LazyStaffPersonDialog = React.lazy(async () => {
+  const dialogs = await import('./HotelTeamDialogs');
+  return { default: dialogs.StaffPersonDialog };
+});
+
 const LazyRemoveDialog = React.lazy(async () => {
   const dialogs = await import('./HotelTeamDialogs');
   return { default: dialogs.RemoveHotelAccessDialog };
@@ -160,6 +199,16 @@ const LazyInviteDialog = React.lazy(async () => {
 const LazyDecisionDialog = React.lazy(async () => {
   const dialogs = await import('./HotelTeamDialogs');
   return { default: dialogs.JoinDecisionDialog };
+});
+
+const LazyEmploymentForm = React.lazy(async () => {
+  const form = await import('./PersonEmploymentForm');
+  return { default: form.PersonEmploymentForm };
+});
+
+const LazyAddStaffDialog = React.lazy(async () => {
+  const dialog = await import('./AddStaffDialog');
+  return { default: dialog.AddStaffDialog };
 });
 
 function copy(lang: HotelTeamLang, en: string, es: string): string {
@@ -264,10 +313,32 @@ function departmentLabel(value: string, lang: HotelTeamLang): string {
   return value.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
+const GROUP_LABELS: Record<RosterGroupKey, [string, string]> = {
+  management: ['Management & office', 'Dirección y oficina'],
+  housekeeping: ['Housekeeping', 'Limpieza'],
+  front_desk: ['Front Desk', 'Recepción'],
+  maintenance: ['Maintenance', 'Mantenimiento'],
+  other: ['Other', 'Otro'],
+};
+
+function groupLabel(group: RosterGroupKey, lang: HotelTeamLang): string {
+  const pair = GROUP_LABELS[group];
+  return copy(lang, pair[0], pair[1]);
+}
+
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return '?';
   return `${parts[0]?.[0] ?? ''}${parts.length > 1 ? parts.at(-1)?.[0] ?? '' : ''}`.toUpperCase();
+}
+
+function formatPhone(value: string): string {
+  const digits = value.replace(/\D/g, '');
+  if (digits.length === 10) return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+  if (digits.length === 11 && digits.startsWith('1')) {
+    return `(${digits.slice(1, 4)}) ${digits.slice(4, 7)}-${digits.slice(7)}`;
+  }
+  return value;
 }
 
 function timeAgo(value: string, lang: HotelTeamLang): string {
@@ -381,6 +452,40 @@ function resolveActions(
   };
 }
 
+/**
+ * Who may change a person's EMPLOYMENT record (hours, pay, department, active
+ * flag, auto-assign rank, linked login).
+ *
+ * The old Directory had NO hierarchy at all — any manager could edit anybody's
+ * staff row, including the owner's. Merging the two surfaces would otherwise
+ * turn the employment half into a way around the account half's rules, so it
+ * gets the same hierarchy floor: a General Manager may not act on an owner or
+ * on another General Manager, nobody may act on a Staxis admin, and a read-only
+ * admin preview may not act at all. Anyone with no login (a housekeeper on the
+ * schedule) is editable by any manager, exactly as before.
+ *
+ * This is deliberately its OWN rule and not `resolveActions().canEdit`: that
+ * flag also requires authority at every hotel the person's ACCOUNT reaches,
+ * which is the right test for an account-wide display-name change and the wrong
+ * one for this hotel's own hours and schedule.
+ */
+function canEditEmployment(
+  account: HotelTeamMember | null,
+  currentUser: AppUser,
+  currentAccountId: string,
+  locked: boolean,
+): boolean {
+  if (locked) return false;
+  if (!account) return true;
+  if (account.isPlatformAdmin === true || account.role === 'admin') return false;
+  if (account.accountId === currentAccountId) return true;
+  if (currentUser.role === 'admin' || currentUser.role === 'owner') return true;
+  if (currentUser.role === 'general_manager') {
+    return account.role !== 'owner' && account.role !== 'general_manager';
+  }
+  return false;
+}
+
 type DialogLoadingVariant = 'invite' | 'member' | 'remove' | 'decision';
 
 function DialogLoading({
@@ -403,7 +508,7 @@ function DialogLoading({
   const title = variant === 'invite'
     ? copy(lang, 'Invite hotel staff', 'Invitar personal del hotel')
     : variant === 'member'
-      ? copy(lang, 'Hotel account details', 'Detalles de la cuenta del hotel')
+      ? copy(lang, 'Person details', 'Detalles de la persona')
       : variant === 'remove'
         ? copy(lang, 'Remove hotel access', 'Quitar acceso al hotel')
         : copy(lang, 'Review join request', 'Revisar solicitud de acceso');
@@ -530,6 +635,28 @@ function DialogLoadingFields({ rows, compact = false }: { rows: number; compact?
   );
 }
 
+/** Hours worked against this person's weekly cap. Turns rust within 4 hours of
+ *  the cap — the same threshold the Near OT count uses. */
+function HoursMeter({ hours, max, lang }: { hours: number; max: number; lang: HotelTeamLang }) {
+  const safeMax = max > 0 ? max : 40;
+  const ratio = Math.min(1, hours / safeMax);
+  const near = hours >= safeMax - 4;
+  return (
+    <span
+      className={`${styles.hoursMeter}${near ? ` ${styles.hoursMeterNear}` : ''}`}
+      title={copy(lang, `${hours} of ${safeMax} hours this week`, `${hours} de ${safeMax} horas esta semana`)}
+    >
+      <span className={styles.hoursTrack} aria-hidden="true">
+        <span className={styles.hoursFill} style={{ width: `${ratio * 100}%` }} />
+      </span>
+      <span className={styles.hoursText}>
+        {hours}
+        <small>/{safeMax}h</small>
+      </span>
+    </span>
+  );
+}
+
 export function HotelTeamPanel({
   hotelId,
   hotelName,
@@ -537,14 +664,16 @@ export function HotelTeamPanel({
   currentAccountId = currentUser.accountId,
   lang,
   canManageTeam,
+  canViewWages = false,
   readOnly = false,
   adminPreview = false,
   allowAdminActions = false,
   inviteDialogOpen,
   onInviteDialogOpenChange,
   staffProfiles = [],
+  rosterUnavailable = false,
+  canAddStaff = false,
   onChanged,
-  onLinkageChange,
 }: HotelTeamPanelProps) {
   const [team, setTeam] = React.useState<HotelTeamMember[]>([]);
   const [jobsByAccountId, setJobsByAccountId] = React.useState<Record<string, CompanyJobLine[]>>({});
@@ -553,8 +682,22 @@ export function HotelTeamPanel({
   const [requests, setRequests] = React.useState<HotelJoinRequest[]>([]);
   const [requestsLoading, setRequestsLoading] = React.useState(false);
   const [requestsError, setRequestsError] = React.useState('');
-  const [editMember, setEditMember] = React.useState<HotelTeamMember | null>(null);
+  const [editKey, setEditKey] = React.useState<string | null>(null);
   const [removeMember, setRemoveMember] = React.useState<HotelTeamMember | null>(null);
+  const [addDepartment, setAddDepartment] = React.useState<StaffDepartment | null>(null);
+  const [pendingAddAttempt, setPendingAddAttempt] = React.useState<AddStaffAttempt | null>(null);
+  const [optimisticStaff, setOptimisticStaff] = React.useState<StaffMember[]>([]);
+  // Phone numbers and wages never travel over the browser roster projection —
+  // `staff` RLS cannot restrict a column. Both are hydrated here from their
+  // management-gated service-role routes, tagged with the hotel they belong to
+  // so a hotel switch can never render the previous hotel's numbers.
+  const [contactSnapshot, setContactSnapshot] = React.useState<{
+    hotelId: string; contacts: Record<string, string | null>;
+  } | null>(null);
+  const [contactsError, setContactsError] = React.useState(false);
+  const [wageSnapshot, setWageSnapshot] = React.useState<{
+    hotelId: string; wages: Record<string, number | null>;
+  } | null>(null);
   const [pendingLifecycleByAccount, setPendingLifecycleByAccount] = React.useState<
     Record<string, PendingLifecycleReconciliation>
   >({});
@@ -568,16 +711,19 @@ export function HotelTeamPanel({
   const teamSequenceRef = React.useRef(0);
   const requestSequenceRef = React.useRef(0);
   const changedRef = React.useRef(onChanged);
-  const linkageRef = React.useRef(onLinkageChange);
   changedRef.current = onChanged;
-  linkageRef.current = onLinkageChange;
-
-  const staffById = React.useMemo(
-    () => new Map(staffProfiles.map((member) => [member.id, member])),
-    [staffProfiles],
-  );
 
   const locked = readOnly || (adminPreview && !allowAdminActions);
+
+  const contacts = React.useMemo(
+    () => (contactSnapshot?.hotelId === hotelId ? contactSnapshot.contacts : {}),
+    [contactSnapshot, hotelId],
+  );
+  const contactsReady = contactSnapshot?.hotelId === hotelId;
+  const wages = React.useMemo(
+    () => (wageSnapshot?.hotelId === hotelId ? wageSnapshot.wages : {}),
+    [wageSnapshot, hotelId],
+  );
 
   const loadTeam = React.useCallback(async (clearFirst = false) => {
     teamAbortRef.current?.abort();
@@ -589,11 +735,9 @@ export function HotelTeamPanel({
       setTeam([]);
       setTeamLoading(false);
       setTeamError('');
-      linkageRef.current?.({ status: 'unavailable' });
       return;
     }
 
-    linkageRef.current?.({ status: 'loading' });
     if (clearFirst) {
       setTeam([]);
     }
@@ -610,7 +754,7 @@ export function HotelTeamPanel({
       if (!response.ok || !body.ok) {
         throw new Error(responseError(
           body,
-          copy(lang, "Couldn't load hotel accounts.", 'No se pudieron cargar las cuentas del hotel.'),
+          copy(lang, "Couldn't load the people at this hotel.", 'No se pudieron cargar las personas de este hotel.'),
         ));
       }
       if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
@@ -620,18 +764,13 @@ export function HotelTeamPanel({
         : responseTeam;
       setTeam(nextTeam);
       setJobsByAccountId(body.data?.hatsByAccountId ?? {});
-      linkageRef.current?.({
-        status: 'ready',
-        staffIds: nextTeam.flatMap((member) => member.staffId ? [member.staffId] : []),
-      });
     } catch (error) {
       if (controller.signal.aborted || sequence !== teamSequenceRef.current) return;
       console.error('[HotelTeamPanel] team load failed', error);
       setTeam([]);
-      linkageRef.current?.({ status: 'error' });
       setTeamError(error instanceof Error && error.message
         ? error.message
-        : copy(lang, "Couldn't load hotel accounts. Check your connection and try again.", 'No se pudieron cargar las cuentas. Revisa tu conexión e intenta de nuevo.'));
+        : copy(lang, "Couldn't load the people at this hotel. Check your connection and try again.", 'No se pudieron cargar las personas. Revisa tu conexión e intenta de nuevo.'));
     } finally {
       if (!controller.signal.aborted && sequence === teamSequenceRef.current) setTeamLoading(false);
     }
@@ -678,6 +817,48 @@ export function HotelTeamPanel({
     }
   }, [canManageTeam, hotelId, lang]);
 
+  const loadContacts = React.useCallback(async (signal?: AbortSignal) => {
+    if (!hotelId || !canManageTeam) return;
+    try {
+      const response = await fetchWithAuth(
+        `/api/staff/contacts?propertyId=${encodeURIComponent(hotelId)}`,
+        signal ? { signal } : undefined,
+      );
+      if (!response.ok) throw new Error(`contacts_failed_${response.status}`);
+      const body = await response.json().catch(() => ({})) as Envelope<{
+        contacts?: Record<string, string | null>;
+      }>;
+      if (signal?.aborted) return;
+      setContactSnapshot({ hotelId, contacts: body.data?.contacts ?? {} });
+      setContactsError(false);
+    } catch (error) {
+      if (signal?.aborted) return;
+      console.error('[HotelTeamPanel] contacts load failed', error);
+      setContactsError(true);
+    }
+  }, [canManageTeam, hotelId]);
+
+  const loadWages = React.useCallback(async (signal?: AbortSignal) => {
+    // Pay is fetched ONLY when this viewer holds view_wages at this hotel. The
+    // route re-checks it; this just avoids asking for data we may not show.
+    if (!hotelId || !canManageTeam || !canViewWages) return;
+    try {
+      const response = await fetchWithAuth(
+        `/api/staff/wages?propertyId=${encodeURIComponent(hotelId)}`,
+        signal ? { signal } : undefined,
+      );
+      if (!response.ok) return;
+      const body = await response.json().catch(() => ({})) as Envelope<{
+        wages?: Record<string, number | null>;
+      }>;
+      if (signal?.aborted) return;
+      setWageSnapshot({ hotelId, wages: body.data?.wages ?? {} });
+    } catch (error) {
+      if (signal?.aborted) return;
+      console.error('[HotelTeamPanel] wages load failed', error);
+    }
+  }, [canManageTeam, canViewWages, hotelId]);
+
   React.useEffect(() => {
     void loadTeam(true);
     return () => teamAbortRef.current?.abort();
@@ -687,6 +868,28 @@ export function HotelTeamPanel({
     void loadRequests(true);
     return () => requestAbortRef.current?.abort();
   }, [loadRequests]);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    setContactsError(false);
+    void loadContacts(controller.signal);
+    return () => controller.abort();
+  }, [loadContacts]);
+
+  React.useEffect(() => {
+    const controller = new AbortController();
+    void loadWages(controller.signal);
+    return () => controller.abort();
+  }, [loadWages]);
+
+  // Drop an optimistic add as soon as the real roster carries it.
+  React.useEffect(() => {
+    const loadedIds = new Set(staffProfiles.map((member) => member.id));
+    setOptimisticStaff((current) => {
+      const pending = current.filter((member) => !loadedIds.has(member.id));
+      return pending.length === current.length ? current : pending;
+    });
+  }, [staffProfiles]);
 
   const hasServerLifecyclePending = team.some((member) => member.lifecyclePending === true);
 
@@ -708,12 +911,10 @@ export function HotelTeamPanel({
     return () => controller.abort();
   }, [hasServerLifecyclePending, hotelId, loadTeam]);
 
-  React.useEffect(() => () => linkageRef.current?.({ status: 'unavailable' }), []);
-
   const refreshAfterChange = React.useCallback(async () => {
-    await Promise.all([loadTeam(), loadRequests()]);
+    await Promise.all([loadTeam(), loadRequests(), loadContacts(), loadWages()]);
     await changedRef.current?.();
-  }, [loadRequests, loadTeam]);
+  }, [loadContacts, loadRequests, loadTeam, loadWages]);
 
   const reconcilePendingLifecycle = React.useCallback((operation: HotelTeamPendingLifecycleOperation) => {
     setPendingLifecycleByAccount((current) => {
@@ -743,7 +944,7 @@ export function HotelTeamPanel({
         delete next[operation.accountId];
         return next;
       });
-      setEditMember((current) => current?.accountId === operation.accountId ? null : current);
+      setEditKey((current) => (current === operation.accountId ? null : current));
       await refreshAfterChange();
     };
 
@@ -804,7 +1005,44 @@ export function HotelTeamPanel({
     return () => controller.abort();
   }, [hotelId, pendingLifecycleByAccount, refreshAfterChange]);
 
-  const loadingDialogVariant: DialogLoadingVariant = editMember
+  // ── The merged roster ────────────────────────────────────────────────────
+  const rosterStaff = React.useMemo(() => {
+    const loadedIds = new Set(staffProfiles.map((member) => member.id));
+    return [
+      ...staffProfiles,
+      ...optimisticStaff.filter((member) => !loadedIds.has(member.id)),
+    ];
+  }, [optimisticStaff, staffProfiles]);
+
+  const groups = React.useMemo(
+    () => buildHotelRoster(team, rosterStaff),
+    [rosterStaff, team],
+  );
+  const visibleGroups = React.useMemo(
+    () => groups.filter((group) => group.people.length > 0 || ALWAYS_VISIBLE_GROUPS.has(group.key)),
+    [groups],
+  );
+  const peopleCount = React.useMemo(
+    () => groups.reduce((total, group) => total + group.people.length, 0),
+    [groups],
+  );
+  const counts = React.useMemo(() => rosterCounts(rosterStaff), [rosterStaff]);
+  const linkAccounts = React.useMemo(
+    () => team.map((member) => ({
+      accountId: member.accountId,
+      displayName: member.displayName,
+      username: member.username,
+      role: member.role,
+      staffId: member.staffId,
+    })),
+    [team],
+  );
+  const editPerson = React.useMemo(
+    () => groups.flatMap((group) => group.people).find((person) => person.key === editKey) ?? null,
+    [editKey, groups],
+  );
+
+  const loadingDialogVariant: DialogLoadingVariant = editPerson
     ? 'member'
     : removeMember
       ? 'remove'
@@ -812,8 +1050,8 @@ export function HotelTeamPanel({
         ? 'invite'
         : 'decision';
   const closeLoadingDialog = React.useCallback(() => {
-    if (editMember) {
-      setEditMember(null);
+    if (editKey) {
+      setEditKey(null);
       return;
     }
     if (removeMember) {
@@ -825,7 +1063,7 @@ export function HotelTeamPanel({
       return;
     }
     setDecision(null);
-  }, [editMember, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
+  }, [editKey, inviteDialogOpen, onInviteDialogOpenChange, removeMember]);
 
   if (!hotelId) {
     return (
@@ -853,17 +1091,57 @@ export function HotelTeamPanel({
     );
   }
 
+  const editAccount = editPerson?.account ?? null;
+  const editActions = editAccount
+    ? resolveActions(
+        editAccount,
+        currentUser,
+        currentAccountId,
+        locked
+          || Boolean(pendingLifecycleByAccount[editAccount.accountId])
+          || editAccount.lifecyclePending === true,
+      )
+    : null;
+
+  const employmentSlot = editPerson ? (
+    <LazyEmploymentForm
+      // Never let one person's unsaved draft survive into another's panel.
+      key={editPerson.key}
+      hotelId={hotelId}
+      uid={currentUser.uid}
+      lang={lang}
+      staff={editPerson.staff}
+      accounts={linkAccounts}
+      canEdit={canEditEmployment(editPerson.account, currentUser, currentAccountId, locked)}
+      canViewWages={canViewWages}
+      wages={wages}
+      contacts={contacts}
+      contactsReady={contactsReady}
+      contactsUnavailable={contactsError}
+      onWageSaved={(staffId, wage) => setWageSnapshot((current) => ({
+        hotelId,
+        wages: { ...(current?.hotelId === hotelId ? current.wages : {}), [staffId]: wage },
+      }))}
+      onContactSaved={(staffId, phone) => setContactSnapshot((current) => ({
+        hotelId,
+        contacts: { ...(current?.hotelId === hotelId ? current.contacts : {}), [staffId]: phone },
+      }))}
+      onChanged={refreshAfterChange}
+      onClosePanel={() => setEditKey(null)}
+    />
+  ) : null;
+
   return (
     <div className={styles.root}>
       <section className={styles.subsection} aria-labelledby="team-members-title">
         <div className={styles.subheading}>
           <div className={styles.subheadingCopy}>
-            <span>{copy(lang, 'Access roster', 'Registro de acceso')}</span>
+            <span>{copy(lang, 'Hotel roster', 'Registro del hotel')}</span>
             <div className={styles.subheadingTitleRow}>
-              <h2 id="team-members-title">{copy(lang, 'Hotel team accounts', 'Cuentas del equipo del hotel')}</h2>
+              <h2 id="team-members-title">{copy(lang, 'Everyone at this hotel', 'Todos en este hotel')}</h2>
               {!teamLoading && !teamError ? (
-                <strong aria-label={copy(lang, `${team.length} hotel team accounts`, `${team.length} cuentas del equipo del hotel`)}>
-                  {team.length}
+                <strong aria-label={copy(lang, `${peopleCount} people at this hotel`, `${peopleCount} personas en este hotel`)}>
+                  {peopleCount}
                 </strong>
               ) : null}
             </div>
@@ -883,153 +1161,43 @@ export function HotelTeamPanel({
           </button>
         </div>
 
-        {teamLoading ? (
-          <div className={styles.skeletonList} role="status" aria-label={copy(lang, 'Loading hotel accounts', 'Cargando cuentas del hotel')}>
-            {[0, 1, 2].map((item) => <span key={item} />)}
+        <div className={styles.kpiStrip}>
+          <div className={styles.kpiCard}>
+            <span className={styles.kpiLabel}>{copy(lang, 'Roster', 'Registro')}</span>
+            <strong>{counts.roster}</strong>
+            <small>{copy(lang, 'people on the books', 'personas en la nómina')}</small>
           </div>
-        ) : teamError ? (
-          <div className={styles.errorState} role="alert">
-            <AlertCircle size={18} aria-hidden="true" />
-            <div><strong>{copy(lang, 'Hotel accounts did not load', 'Las cuentas del hotel no se cargaron')}</strong><span>{teamError}</span></div>
-            <button type="button" onClick={() => void loadTeam()}>
-              <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
-            </button>
+          <div className={styles.kpiCard}>
+            <span className={styles.kpiLabel}>{copy(lang, 'On shift', 'En turno')}</span>
+            <strong>{counts.onShift}</strong>
+            <small>{copy(lang, 'working right now', 'trabajando ahora')}</small>
           </div>
-        ) : team.length > 0 || requests.length > 0 || requestsLoading || Boolean(requestsError) ? (
-          <div className={styles.teamList} role="list">
-            {team.map((member) => {
-              const self = member.accountId === currentAccountId;
-              const pendingLifecycle = pendingLifecycleByAccount[member.accountId];
-              const lifecycleIsPending = Boolean(pendingLifecycle) || member.lifecyclePending === true;
-              const lifecyclePollingPaused = pendingLifecycle?.phase === 'paused'
-                || (!pendingLifecycle && member.lifecyclePending === true && serverLifecyclePollingPaused);
-              const availableActions = resolveActions(member, currentUser, currentAccountId, locked);
-              const actions = lifecycleIsPending
-                ? resolveActions(member, currentUser, currentAccountId, true)
-                : availableActions;
-              const canOpenEditor = availableActions.canEdit
-                || availableActions.canChangeRole
-                || availableActions.canResetPassword
-                || availableActions.canDeactivate
-                || availableActions.canReactivate;
-              const staffProfile = member.staffId ? staffById.get(member.staffId) : undefined;
-              const memberDetails = [
-                `@${member.username}`,
-                roleLabel(member.role, lang),
-                staffProfile ? departmentLabel(staffProfile.department ?? 'other', lang) : null,
-              ].filter(Boolean).join(' · ');
-              // Company spine: one line per job. Absent at an independent
-              // hotel, where the single role above is the whole story.
-              const jobLines = jobsByAccountId[member.accountId] ?? [];
-              return (
-                <div key={member.accountId} className={`${styles.teamRow}${self ? ` ${styles.selfRow}` : ''}`} role="listitem">
-                  <span className={styles.avatar} aria-hidden="true">{initials(member.displayName)}</span>
-                  <div className={styles.rowBody}>
-                    <strong>
-                      {member.displayName}
-                      {self ? <small>{copy(lang, 'You', 'Tú')}</small> : null}
-                    </strong>
-                    <span>{memberDetails}</span>
-                    {jobLines.length > 0 ? (
-                      <span className={styles.companyJobLines}>
-                        {jobLines.map((job) => (
-                          <em key={job.membershipId}>
-                            {`${lang === 'es' ? job.label.es : job.label.en} — ${
-                              job.scope === 'company'
-                                ? copy(lang, 'every hotel', 'todos los hoteles')
-                                : jobHotelsLabel(job, lang)
-                            }`}
-                          </em>
-                        ))}
-                      </span>
-                    ) : null}
-                    <span>{member.email || copy(lang, 'Email unavailable', 'Correo no disponible')}</span>
-                    <span className={styles.signInMetadata}>{lastSignInLabel(member.lastSignInKnown, member.lastSignInAt, lang)}</span>
-                    {lifecycleIsPending ? (
-                      <em className={styles.pendingLifecycleMeta}>
-                        {lifecyclePollingPaused
-                          ? copy(
-                              lang,
-                              'Verification paused. Reload to check the final status.',
-                              'La verificación está en pausa. Recarga para comprobar el estado final.',
-                            )
-                          : copy(lang, 'Verifying the account status…', 'Verificando el estado de la cuenta…')}
-                      </em>
-                    ) : null}
-                    {member.ownerProtected ? (
-                      <em>{copy(
-                        lang,
-                        'Organization owner access is protected',
-                        'El acceso de propietario de la organización está protegido',
-                      )}</em>
-                    ) : null}
-                    {actions.roleIsSharedAcrossHotels ? (
-                      <em>{copy(lang, 'Role shared across multiple hotels', 'Rol compartido entre varios hoteles')}</em>
-                    ) : null}
-                  </div>
-                  <div className={styles.rowBadges}>
-                    <span
-                      className={`${styles.accountStatusBadge}${
-                        lifecycleIsPending
-                          ? ` ${styles.accountStatusPending}`
-                          : member.active ? '' : ` ${styles.accountStatusDisabled}`
-                      }`}
-                      role={lifecycleIsPending ? 'status' : undefined}
-                    >
-                      {lifecycleIsPending
-                        ? copy(lang, 'Status change pending', 'Cambio de estado pendiente')
-                        : member.active
-                          ? copy(lang, 'Active', 'Activa')
-                          : copy(lang, 'Login disabled', 'Acceso desactivado')}
-                    </span>
-                    {member.staffId ? (
-                      <span className={styles.linkedBadge}>
-                        {staffProfile?.isActive === false
-                          ? copy(lang, 'Linked · inactive', 'Vinculada · inactiva')
-                          : copy(lang, 'Linked staff', 'Personal vinculado')}
-                      </span>
-                    ) : null}
-                  </div>
-                  {(canOpenEditor || availableActions.canRemove) ? (
-                    <div className={styles.rowActions}>
-                      {canOpenEditor ? (
-                        <button
-                          type="button"
-                          className={styles.editButton}
-                          onClick={() => setEditMember(member)}
-                          disabled={lifecycleIsPending}
-                          aria-label={copy(lang, `Edit ${member.displayName}`, `Editar a ${member.displayName}`)}
-                        >
-                          <Pencil size={15} aria-hidden="true" />
-                          <span>{copy(lang, 'Edit', 'Editar')}</span>
-                        </button>
-                      ) : null}
-                      {availableActions.canRemove ? (
-                        <button
-                          type="button"
-                          className={styles.removeButton}
-                          onClick={() => setRemoveMember(member)}
-                          disabled={lifecycleIsPending}
-                          aria-label={copy(lang, `Remove ${member.displayName} from this hotel`, `Quitar a ${member.displayName} de este hotel`)}
-                        >
-                          <Trash2 size={15} aria-hidden="true" />
-                          <span className={styles.visuallyHidden}>{copy(lang, 'Remove', 'Quitar')}</span>
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              );
-            })}
+          <div className={`${styles.kpiCard}${counts.nearOvertime > 0 ? ` ${styles.kpiCardAlert}` : ''}`}>
+            <span className={styles.kpiLabel}>{copy(lang, 'Near overtime', 'Cerca de horas extra')}</span>
+            <strong>{counts.nearOvertime}</strong>
+            <small>{copy(lang, 'within 4h of their weekly cap', 'a menos de 4 h de su límite semanal')}</small>
+          </div>
+        </div>
 
-            {requestsLoading && team.length === 0 ? (
+        {rosterUnavailable ? (
+          <div className={styles.warningNotice} role="alert">
+            <AlertTriangle size={17} aria-hidden="true" />
+            <span>{copy(
+              lang,
+              'The schedule roster is temporarily unavailable, so some people may be missing. It will reconnect automatically.',
+              'El registro de horarios no está disponible temporalmente, por lo que pueden faltar personas. Se volverá a conectar automáticamente.',
+            )}</span>
+          </div>
+        ) : null}
+
+        {requestsLoading || requestsError || requests.length > 0 ? (
+          <div className={styles.teamList} role="list" aria-label={copy(lang, 'Waiting to approve', 'Esperando aprobación')}>
+            {requestsLoading ? (
               <div className={`${styles.approvalRow} ${styles.approvalLoadingRow}`} role="listitem">
                 <span className={styles.spinner} aria-hidden="true" />
                 <span role="status">{copy(lang, 'Checking pending approvals…', 'Buscando aprobaciones pendientes…')}</span>
               </div>
-            ) : null}
-
-            {!requestsLoading && requestsError ? (
+            ) : requestsError ? (
               <div className={`${styles.approvalRow} ${styles.approvalErrorRow}`} role="listitem">
                 <AlertCircle size={18} aria-hidden="true" />
                 <div className={styles.approvalErrorCopy} role="alert">
@@ -1040,9 +1208,7 @@ export function HotelTeamPanel({
                   <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
                 </button>
               </div>
-            ) : null}
-
-            {!requestsLoading && !requestsError ? requests.map((request) => (
+            ) : requests.map((request) => (
               <div key={request.id} className={styles.approvalRow} role="listitem">
                 <span className={styles.waitingIcon}><Clock3 size={16} aria-hidden="true" /></span>
                 <div className={styles.rowBody}>
@@ -1073,18 +1239,107 @@ export function HotelTeamPanel({
                   </button>
                 </div>
               </div>
-            )) : null}
+            ))}
           </div>
-        ) : (
+        ) : null}
+
+        {teamLoading ? (
+          <div className={styles.skeletonList} role="status" aria-label={copy(lang, 'Loading the hotel roster', 'Cargando el registro del hotel')}>
+            {[0, 1, 2].map((item) => <span key={item} />)}
+          </div>
+        ) : teamError ? (
+          <div className={styles.errorState} role="alert">
+            <AlertCircle size={18} aria-hidden="true" />
+            <div><strong>{copy(lang, 'The hotel roster did not load', 'El registro del hotel no se cargó')}</strong><span>{teamError}</span></div>
+            <button type="button" onClick={() => void loadTeam()}>
+              <RefreshCw size={15} aria-hidden="true" />{copy(lang, 'Retry', 'Reintentar')}
+            </button>
+          </div>
+        ) : peopleCount === 0 ? (
           <div className={styles.emptyState}>
             <span><Users size={22} aria-hidden="true" /></span>
-            <h3>{copy(lang, 'No hotel accounts yet', 'Aún no hay cuentas del hotel')}</h3>
-            <p>{copy(lang, 'Invite staff to create the first login for this hotel.', 'Invita al personal para crear el primer acceso de este hotel.')}</p>
+            <h3>{copy(lang, 'Nobody here yet', 'Aún no hay nadie')}</h3>
+            <p>{copy(
+              lang,
+              'Add someone to the schedule, or invite them to create a Staxis login.',
+              'Agrega a alguien al horario o invítalo a crear un acceso de Staxis.',
+            )}</p>
             {!locked ? (
-              <button type="button" className={styles.secondaryButton} onClick={() => onInviteDialogOpenChange(true)}>
-                <UserPlus size={16} aria-hidden="true" />{copy(lang, 'Invite staff', 'Invitar personal')}
-              </button>
+              <div className={styles.emptyStateActions}>
+                {/* Both halves of the sentence above need a button behind them.
+                    The department cards carry Add once anybody exists; with
+                    nobody on the roster there are no cards to carry it. */}
+                {canAddStaff ? (
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => setAddDepartment('housekeeping')}
+                    aria-haspopup="dialog"
+                  >
+                    <UserPlus size={16} aria-hidden="true" />
+                    {copy(lang, 'Add to the schedule', 'Agregar al horario')}
+                  </button>
+                ) : null}
+                <button type="button" className={styles.secondaryButton} onClick={() => onInviteDialogOpenChange(true)}>
+                  <UserPlus size={16} aria-hidden="true" />{copy(lang, 'Invite staff', 'Invitar personal')}
+                </button>
+              </div>
             ) : null}
+          </div>
+        ) : (
+          <div className={styles.departmentGrid}>
+            {visibleGroups.map((group) => (
+              <section key={group.key} className={styles.departmentCard} aria-label={groupLabel(group.key, lang)}>
+                <div className={styles.departmentHeader}>
+                  <span className={`${styles.departmentDot} ${styles[`dept_${group.key}`] ?? ''}`} aria-hidden="true" />
+                  <h3>{groupLabel(group.key, lang)}</h3>
+                  <span className={styles.departmentCount}>{group.people.length}</span>
+                </div>
+                {group.people.length === 0 ? (
+                  <p className={styles.departmentEmpty}>
+                    {copy(lang, 'Nobody in this department yet.', 'Aún no hay nadie en este departamento.')}
+                  </p>
+                ) : (
+                <div className={styles.personList} role="list">
+                  {group.people.map((person) => (
+                    <PersonRow
+                      key={person.key}
+                      person={person}
+                      lang={lang}
+                      currentUser={currentUser}
+                      currentAccountId={currentAccountId}
+                      locked={locked}
+                      jobsByAccountId={jobsByAccountId}
+                      phone={person.staff ? contacts[person.staff.id] ?? null : null}
+                      contactsReady={contactsReady}
+                      contactsUnavailable={contactsError}
+                      pendingLifecycle={person.account
+                        ? pendingLifecycleByAccount[person.account.accountId]
+                        : undefined}
+                      serverLifecyclePollingPaused={serverLifecyclePollingPaused}
+                      onOpen={() => setEditKey(person.key)}
+                      onRemoveAccess={(member) => setRemoveMember(member)}
+                    />
+                  ))}
+                </div>
+                )}
+                {canAddStaff && !locked && group.key !== 'management' ? (
+                  <button
+                    type="button"
+                    className={styles.departmentAdd}
+                    onClick={() => setAddDepartment(group.key as StaffDepartment)}
+                    aria-haspopup="dialog"
+                  >
+                    <UserPlus size={15} aria-hidden="true" />
+                    {copy(
+                      lang,
+                      `Add to ${groupLabel(group.key, 'en')}`,
+                      `Agregar a ${groupLabel(group.key, 'es')}`,
+                    )}
+                  </button>
+                ) : null}
+              </section>
+            ))}
           </div>
         )}
       </section>
@@ -1097,30 +1352,35 @@ export function HotelTeamPanel({
           onClose={closeLoadingDialog}
         />
       )}>
-        {editMember ? (
+        {editPerson && editAccount && editActions ? (
           <LazyMemberDialog
             hotelId={hotelId}
             hotelName={hotelName}
-            member={editMember}
+            member={editAccount}
+            personName={editPerson.name}
             currentUser={currentUser}
             currentAccountId={currentAccountId}
             lang={lang}
-            actions={resolveActions(
-              editMember,
-              currentUser,
-              currentAccountId,
-              locked
-                || Boolean(pendingLifecycleByAccount[editMember.accountId])
-                || editMember.lifecyclePending === true,
-            )}
+            actions={editActions}
+            employmentSlot={employmentSlot}
             onLifecyclePending={reconcilePendingLifecycle}
-            onClose={() => setEditMember(null)}
+            onClose={() => setEditKey(null)}
             onChanged={refreshAfterChange}
             onSaved={async () => {
-              setEditMember(null);
+              setEditKey(null);
               await refreshAfterChange();
             }}
           />
+        ) : null}
+        {editPerson && !editAccount ? (
+          <LazyStaffPersonDialog
+            hotelName={hotelName}
+            personName={editPerson.name}
+            lang={lang}
+            onClose={() => setEditKey(null)}
+          >
+            {employmentSlot}
+          </LazyStaffPersonDialog>
         ) : null}
         {removeMember ? (
           <LazyRemoveDialog
@@ -1159,7 +1419,227 @@ export function HotelTeamPanel({
             }}
           />
         ) : null}
+        {addDepartment ? (
+          <LazyAddStaffDialog
+            hotelId={hotelId}
+            hotelName={hotelName}
+            lang={lang}
+            initialDepartment={addDepartment}
+            onClose={() => setAddDepartment(null)}
+            onAdded={(member) => setOptimisticStaff((current) => (
+              current.some((item) => item.id === member.id) ? current : [...current, member]
+            ))}
+            onChanged={refreshAfterChange}
+            pendingAttempt={pendingAddAttempt}
+            onPendingAttemptChange={setPendingAddAttempt}
+          />
+        ) : null}
       </React.Suspense>
+    </div>
+  );
+}
+
+function PersonRow({
+  person,
+  lang,
+  currentUser,
+  currentAccountId,
+  locked,
+  jobsByAccountId,
+  phone,
+  contactsReady,
+  contactsUnavailable,
+  pendingLifecycle,
+  serverLifecyclePollingPaused,
+  onOpen,
+  onRemoveAccess,
+}: {
+  person: RosterPerson<HotelTeamMember, StaffMember>;
+  lang: HotelTeamLang;
+  currentUser: AppUser;
+  currentAccountId: string;
+  locked: boolean;
+  jobsByAccountId: Record<string, CompanyJobLine[]>;
+  phone: string | null;
+  contactsReady: boolean;
+  contactsUnavailable: boolean;
+  pendingLifecycle: PendingLifecycleReconciliation | undefined;
+  serverLifecyclePollingPaused: boolean;
+  onOpen: () => void;
+  onRemoveAccess: (member: HotelTeamMember) => void;
+}) {
+  const account = person.account;
+  const staff = person.staff;
+  const self = account?.accountId === currentAccountId;
+  const lifecycleIsPending = Boolean(pendingLifecycle) || account?.lifecyclePending === true;
+  const lifecyclePollingPaused = pendingLifecycle?.phase === 'paused'
+    || (!pendingLifecycle && account?.lifecyclePending === true && serverLifecyclePollingPaused);
+  const availableActions = account
+    ? resolveActions(account, currentUser, currentAccountId, locked)
+    : null;
+  const canOpenAccountEditor = Boolean(availableActions && (
+    availableActions.canEdit
+    || availableActions.canChangeRole
+    || availableActions.canResetPassword
+    || availableActions.canDeactivate
+    || availableActions.canReactivate
+  ));
+  const employmentEditable = canEditEmployment(account, currentUser, currentAccountId, locked);
+  // Somebody with a login you may not touch and no schedule profile has nothing
+  // behind the button — don't offer one.
+  const canOpen = canOpenAccountEditor || Boolean(staff);
+  const editable = canOpenAccountEditor || (Boolean(staff) && employmentEditable);
+  const onShift = staff?.scheduledToday === true;
+  const dimmed = staff?.isActive === false || (account ? !account.active : false);
+  const jobLines = account ? jobsByAccountId[account.accountId] ?? [] : [];
+
+  const identityLine = [
+    account ? `@${account.username}` : null,
+    account ? roleLabel(account.role, lang) : copy(lang, 'Schedule only — no login', 'Solo horario — sin acceso'),
+  ].filter(Boolean).join(' · ');
+
+  const contactLine = staff
+    ? (contactsUnavailable
+        ? copy(lang, 'Phone unavailable', 'Teléfono no disponible')
+        : !contactsReady
+          ? copy(lang, 'Loading…', 'Cargando…')
+          : phone
+            ? formatPhone(phone)
+            : copy(lang, 'No phone', 'Sin teléfono'))
+    : null;
+  const emailLine = account
+    ? account.email || copy(lang, 'Email unavailable', 'Correo no disponible')
+    : null;
+
+  return (
+    <div
+      className={`${styles.teamRow}${self ? ` ${styles.selfRow}` : ''}${dimmed ? ` ${styles.dimmedRow}` : ''}`}
+      role="listitem"
+    >
+      <span
+        className={`${styles.avatar}${onShift ? ` ${styles.avatarOnShift}` : ''}`}
+        aria-hidden="true"
+      >
+        {initials(person.name)}
+      </span>
+      <div className={styles.rowBody}>
+        <strong>
+          {person.name}
+          {self ? <small>{copy(lang, 'You', 'Tú')}</small> : null}
+          {staff?.isSenior ? (
+            <small className={styles.seniorTag} title={copy(lang, 'Senior', 'Sénior')}>
+              {copy(lang, 'SENIOR', 'SÉNIOR')}
+            </small>
+          ) : null}
+        </strong>
+        <span>{identityLine}</span>
+        {jobLines.length > 0 ? (
+          <span className={styles.companyJobLines}>
+            {jobLines.map((job) => (
+              <em key={job.membershipId}>
+                {`${lang === 'es' ? job.label.es : job.label.en} — ${
+                  job.scope === 'company'
+                    ? copy(lang, 'every hotel', 'todos los hoteles')
+                    : jobHotelsLabel(job, lang)
+                }`}
+              </em>
+            ))}
+          </span>
+        ) : null}
+        {contactLine ? <span>{contactLine}</span> : null}
+        {emailLine ? <span>{emailLine}</span> : null}
+        {account ? (
+          <span className={styles.signInMetadata}>
+            {lastSignInLabel(account.lastSignInKnown, account.lastSignInAt, lang)}
+          </span>
+        ) : null}
+        {lifecycleIsPending ? (
+          <em className={styles.pendingLifecycleMeta}>
+            {lifecyclePollingPaused
+              ? copy(
+                  lang,
+                  'Verification paused. Reload to check the final status.',
+                  'La verificación está en pausa. Recarga para comprobar el estado final.',
+                )
+              : copy(lang, 'Verifying the account status…', 'Verificando el estado de la cuenta…')}
+          </em>
+        ) : null}
+        {account?.ownerProtected ? (
+          <em>{copy(
+            lang,
+            'Organization owner access is protected',
+            'El acceso de propietario de la organización está protegido',
+          )}</em>
+        ) : null}
+        {availableActions?.roleIsSharedAcrossHotels ? (
+          <em>{copy(lang, 'Role shared across multiple hotels', 'Rol compartido entre varios hoteles')}</em>
+        ) : null}
+      </div>
+
+      {staff ? (
+        <HoursMeter
+          hours={staff.weeklyHours ?? 0}
+          max={staff.maxWeeklyHours ?? 40}
+          lang={lang}
+        />
+      ) : null}
+
+      <div className={styles.rowBadges}>
+        {account ? (
+          <span
+            className={`${styles.accountStatusBadge}${
+              lifecycleIsPending
+                ? ` ${styles.accountStatusPending}`
+                : account.active ? '' : ` ${styles.accountStatusDisabled}`
+            }`}
+            role={lifecycleIsPending ? 'status' : undefined}
+          >
+            {lifecycleIsPending
+              ? copy(lang, 'Status change pending', 'Cambio de estado pendiente')
+              : account.active
+                ? copy(lang, 'Login active', 'Acceso activo')
+                : copy(lang, 'Login disabled', 'Acceso desactivado')}
+          </span>
+        ) : (
+          <span className={styles.linkedBadge}>{copy(lang, 'No login', 'Sin acceso')}</span>
+        )}
+        {staff?.isActive === false ? (
+          <span className={`${styles.accountStatusBadge} ${styles.accountStatusDisabled}`}>
+            {copy(lang, 'Off the roster', 'Fuera del registro')}
+          </span>
+        ) : null}
+      </div>
+
+      {canOpen || availableActions?.canRemove ? (
+        <div className={styles.rowActions}>
+          {canOpen ? (
+            <button
+              type="button"
+              className={styles.editButton}
+              onClick={onOpen}
+              disabled={lifecycleIsPending}
+              aria-label={editable
+                ? copy(lang, `Edit ${person.name}`, `Editar a ${person.name}`)
+                : copy(lang, `View ${person.name}`, `Ver a ${person.name}`)}
+            >
+              <Pencil size={15} aria-hidden="true" />
+              <span>{editable ? copy(lang, 'Edit', 'Editar') : copy(lang, 'View', 'Ver')}</span>
+            </button>
+          ) : null}
+          {account && availableActions?.canRemove ? (
+            <button
+              type="button"
+              className={styles.removeButton}
+              onClick={() => onRemoveAccess(account)}
+              disabled={lifecycleIsPending}
+              aria-label={copy(lang, `Remove ${person.name} from this hotel`, `Quitar a ${person.name} de este hotel`)}
+            >
+              <Trash2 size={15} aria-hidden="true" />
+              <span className={styles.visuallyHidden}>{copy(lang, 'Remove', 'Quitar')}</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

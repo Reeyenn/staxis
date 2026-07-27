@@ -1,10 +1,10 @@
-// AddStaffModal — directory picker for "＋ Add staff" on the day board.
+// AddStaffModal — roster picker for "＋ Add staff" on the day board.
 //
-// Lists everyone from the property's staff directory who isn't already on
-// the selected day, grouped by department, each with their department's
-// default shift. Deliberately has NO in-modal "create staff" action — the
-// footer links to Staff → Directory instead (new hires are added there and
-// show up here automatically).
+// Lists everyone on the property's roster who isn't already on the selected
+// day, grouped by department, each with their department's default shift.
+// Deliberately has NO in-modal "create staff" action — the footer links to
+// My Hotel → People instead (new hires are added there and show up here
+// automatically).
 
 'use client';
 
@@ -21,7 +21,7 @@ const DEFAULT_WEEKLY_CAP = 40;
 export function AddStaffModal({
   staff, takenIds, presets, dayTitle, dayPhrase, lang,
   weekMinutes, approvedTorByStaff,
-  onPick, onOpenDirectory, onClose,
+  onPick, onOpenPeople, onClose,
 }: {
   staff: StaffMember[];
   takenIds: Set<string>;
@@ -36,7 +36,7 @@ export function AddStaffModal({
   /** Approved time-off requests landing on this exact day, per staff. */
   approvedTorByStaff: Map<string, TimeOffRequest>;
   onPick: (s: StaffMember, opts?: { overrideTimeOff?: boolean }) => void;
-  onOpenDirectory?: () => void;
+  onOpenPeople?: () => void;
   onClose: () => void;
 }) {
   // Picking someone with approved time off that day asks first.
@@ -86,7 +86,7 @@ export function AddStaffModal({
           padding: '22px 24px 14px', borderBottom: `1px solid ${T.rule}`,
         }}>
           <div>
-            <Caps>{es ? 'Directorio de personal' : 'Staff directory'}</Caps>
+            <Caps>{es ? 'Personal del hotel' : 'Hotel roster'}</Caps>
             <h2 id={titleId} style={{
               margin: '3px 0 0', fontFamily: fonts.sans, fontSize: 22,
               fontWeight: 600, letterSpacing: '-0.02em', whiteSpace: 'nowrap', color: T.ink,
@@ -108,8 +108,8 @@ export function AddStaffModal({
           {groups.length === 0 && (
             <div style={{ padding: '24px 12px', textAlign: 'center', color: T.ink3, fontSize: 13 }}>
               {es
-                ? 'Todo el directorio ya está en este día.'
-                : 'Everyone in the directory is already on this day.'}
+                ? 'Todo el personal ya está en este día.'
+                : 'Everyone on the roster is already on this day.'}
             </div>
           )}
           {groups.map(g => {
@@ -218,26 +218,26 @@ export function AddStaffModal({
             fontFamily: fonts.sans, fontSize: 12, fontWeight: 600, color: T.ink2, marginTop: 1,
           }}>i</span>
           <span style={{ fontSize: 11.5, color: T.ink2, lineHeight: 1.5 }}>
-            {onOpenDirectory ? (
+            {onOpenPeople ? (
               <>
                 {es ? '¿No ves a alguien? Las personas nuevas se agregan en ' : 'Don’t see someone? New hires are added in '}
                 <button
                   type="button"
-                  onClick={onOpenDirectory}
+                  onClick={onOpenPeople}
                   style={{
                     background: 'transparent', border: 'none', padding: 0, cursor: 'pointer',
                     fontFamily: fonts.sans, fontSize: 11.5, fontWeight: 700, color: T.ink,
                     textDecoration: 'underline', textUnderlineOffset: 2,
                   }}
-                >{es ? 'Personal → Directorio' : 'Staff → Directory'}</button>
+                >{es ? 'Mi hotel → Personas' : 'My Hotel → People'}</button>
                 {es
-                  ? '. Cuando estén en el directorio, aparecerán aquí automáticamente.'
-                  : '. Once they’re in the directory, they’ll show up here automatically.'}
+                  ? '. Una vez agregadas ahí, aparecerán aquí automáticamente.'
+                  : '. Once they’re added there, they’ll show up here automatically.'}
               </>
             ) : (
               es
-                ? '¿No ves a alguien? Un administrador con acceso al Directorio puede agregarlo.'
-                : 'Don’t see someone? An administrator with Directory access can add them.'
+                ? '¿No ves a alguien? Un gerente puede agregarlo en Mi hotel → Personas.'
+                : 'Don’t see someone? A manager can add them in My Hotel → People.'
             )}
           </span>
         </div>

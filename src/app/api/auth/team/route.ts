@@ -728,9 +728,9 @@ export async function PUT(req: NextRequest) {
 
   // ── staffId link/unlink ─────────────────────────────────────────────────
   // The /staff page's My Shifts view scopes to accounts.staff_id. Manager
-  // sets this from the Directory edit modal. We allow null (unlink) or any
-  // staff.id that belongs to this hotel. The DB itself has no per-hotel FK,
-  // so the check happens here.
+  // sets this from a person's card in My Hotel → People. We allow null
+  // (unlink) or any staff.id that belongs to this hotel. The DB itself has no
+  // per-hotel FK, so the check happens here.
   let staffLinkChanged = false;
   if (body.staffId !== undefined) {
     const currentStaffId = (target as { staff_id?: string | null }).staff_id ?? null;
