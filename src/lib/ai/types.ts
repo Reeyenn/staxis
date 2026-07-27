@@ -46,6 +46,7 @@ export const AI_FEATURE_KEYS = [
   'communications.voice_transcription',
   'knowledge.embeddings',
   'knowledge.fact_extraction',
+  'knowledge.document_ocr',
   'speech.ask_staxis_dictation',
   'ml.housekeeping_demand',
   'ml.housekeeping_supply',
@@ -63,24 +64,27 @@ export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 // answer is an AI Control Center feature key — the registry already governs
 // which model each of those calls, so the call site always knows its own key.
 //
-// TWO SPENDERS ARE NOT CONTROL-CENTER FEATURES, and pretending otherwise would
+// ONE SPENDER IS NOT A CONTROL-CENTER FEATURE, and pretending otherwise would
 // put a lie in the ledger:
 //
-//   knowledge.document_ocr — the Fly worker's page-reading pass. Its model is
-//     pinned in cua-service (claude-sonnet-4-6) precisely BECAUSE the vector
-//     space it feeds is shared and versioned; there is no model for an admin to
-//     switch, so there is nothing for the Control Center to show. Booking it as
-//     `knowledge.fact_extraction` would merge two genuinely different jobs.
 //   agent.eval_suite — the eval harness. It drives the chat agent, so its spend
 //     would otherwise land on `agent.ask_staxis` and inflate what real managers
 //     appear to cost.
+//
+// `knowledge.document_ocr` USED TO LIVE HERE (2026-07-27). It was ledger-only
+// because the page-reading pass ran on the Fly robot with its model pinned in
+// cua-service, so there was no model for an admin to switch. That robot was
+// decommissioned 2026-07-25 and the OCR pass now runs server-side through
+// `vision-extract` — an admin-configurable model like every other scan — so it
+// moved up into AI_FEATURE_KEYS. The LABEL STRING IS DELIBERATELY UNCHANGED:
+// `agent_costs` rows written by the old worker keep the same name, so the
+// employee card's bill history stays continuous across the move.
 //
 // The union is CLOSED on purpose. Every ledger writer takes an `AiCostFeature`,
 // so a new call site cannot invent a label, cannot pass a typo, and cannot omit
 // the field — it fails to compile instead of quietly booking spend that no
 // employee card can ever find again.
 export const AI_LEDGER_ONLY_FEATURES = [
-  'knowledge.document_ocr',
   'agent.eval_suite',
 ] as const;
 export type AiLedgerOnlyFeature = (typeof AI_LEDGER_ONLY_FEATURES)[number];

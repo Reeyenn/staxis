@@ -1,8 +1,23 @@
 /**
  * POST /api/internal/knowledge/ocr-complete
  *
- * The Fly cua-service vision worker calls this after it has transcribed a
- * scanned PDF / photo. Body:
+ * ⚠ ORPHANED as of 2026-07-27 — kept deliberately, see below.
+ *
+ * The only caller is cua-service's doc-ocr-handler, which claims `doc_ocr`
+ * rows from `workflow_jobs`. Nothing enqueues `doc_ocr` any more: scans are now
+ * read server-side inside the upload's indexing pass (src/lib/knowledge/ocr.ts)
+ * because the robot that used to claim those jobs was decommissioned and the
+ * queue had no other consumer, so every scan stalled on `processing` forever.
+ *
+ * Why this route stays rather than being deleted with the producer: the Fly
+ * handler still POSTs here, and cua-service is out of scope for that fix. A
+ * route deleted out from under a caller that might one day be re-armed is a
+ * 404 that would mark documents failed; an idempotent route with no caller is
+ * inert. It is CRON_SECRET-gated and no-ops unless the document is genuinely
+ * mid-flight, so re-arming the robot cannot corrupt a document either way.
+ * Delete this together with cua-service/src/doc-ocr-handler.ts.
+ *
+ * Body:
  *   { propertyId, documentId, text, pages, inputTokens, outputTokens, costUsd, partial? }
  *
  * We run the SAME chunk→embed→search pipeline the normal upload path uses

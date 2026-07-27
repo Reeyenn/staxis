@@ -20,7 +20,7 @@ import {
 import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
 import type {
   KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeFolderDTO,
-  KnowledgeSection, KnowledgeVisibility, ExtractionStatus, Dept,
+  KnowledgeSection, KnowledgeVisibility, ExtractionStatus, Dept, DocIssueReason,
 } from '@/lib/knowledge/types';
 import { KNOWLEDGE_LIMITS } from '@/lib/knowledge/types';
 import { useCommsResource } from './comms-data';
@@ -38,6 +38,38 @@ function statusBadge(status: ExtractionStatus, L: LFn): { label: string; color: 
     case 'unsupported': return { label: L('Not text-searchable', 'No buscable por texto'), color: 'var(--snow-ink3)', tone: 'muted' };
     case 'failed':      return { label: L('Couldn’t read', 'No se pudo leer'), color: 'var(--snow-warm)', tone: 'warn' };
     default:            return null;
+  }
+}
+
+// Why a document isn't searchable, in the reader's language.
+//
+// The reason is stored in the database as one English sentence (it has to read
+// correctly in a log and an admin screen), so the server hands back a stable
+// CODE and the translation lives here — the same shape as every other bilingual
+// string in this app. Each line says what happened AND what to do about it:
+// "Couldn't read" on its own is a dead end for the manager holding the file.
+function issueNote(reason: DocIssueReason, L: LFn): string {
+  switch (reason) {
+    case 'scan_too_large':
+      return L('This scan is too large to read. Upload a smaller file, or split it up.',
+        'Este escaneo es muy grande para leerlo. Suba un archivo más pequeño o divídalo.');
+    case 'scan_too_long':
+      return L('This scan has too many pages to read at once. Split it into smaller files.',
+        'Este escaneo tiene demasiadas páginas para leerlo de una vez. Divídalo en archivos más pequeños.');
+    case 'scan_empty':
+      return L('No readable text was found on this scan. A sharper photo usually fixes it.',
+        'No se encontró texto legible en este escaneo. Una foto más nítida suele solucionarlo.');
+    case 'scan_busy':
+      return L('Reading this scan didn\'t finish. Upload it again to retry.',
+        'La lectura de este escaneo no terminó. Súbalo de nuevo para reintentar.');
+    case 'scan_budget':
+      return L('This hotel hit its daily limit for reading scans. Try again tomorrow.',
+        'Este hotel alcanzó su límite diario para leer escaneos. Inténtelo mañana.');
+    case 'legacy_doc':
+      return L('Old .doc files can\'t be read. Re-save it as .docx or PDF and upload again.',
+        'Los archivos .doc antiguos no se pueden leer. Guárdelo como .docx o PDF y súbalo de nuevo.');
+    default:
+      return '';
   }
 }
 
@@ -549,6 +581,12 @@ function DocRow({ d, isManager, folders, pid, L, editing, onEdit, onRemove, onCh
         {isManager && <button onClick={onEdit} title={L('Access & folder', 'Acceso y carpeta')} style={{ ...iconBtn, color: editing ? 'var(--snow-sage-deep)' : 'var(--snow-ink2)' }}><Pencil size={15} /></button>}
         {isManager && <button onClick={onRemove} title={L('Delete', 'Eliminar')} style={iconBtn}><Trash2 size={15} /></button>}
       </div>
+      {/* Why it isn't searchable, and what to do — only when we actually know. */}
+      {d.issueReason && (
+        <div style={{ fontSize: 11.5, color: 'var(--snow-ink3)', paddingLeft: 26, marginTop: 2 }}>
+          {issueNote(d.issueReason, L)}
+        </div>
+      )}
       {isManager && editing && <DocEditor d={d} folders={folders} pid={pid} L={L} onDone={onChanged} onCancel={onEdit} />}
     </div>
   );

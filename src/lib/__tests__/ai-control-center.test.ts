@@ -47,8 +47,12 @@ describe('AI Control Center feature registry', () => {
   // 33→34 keys). Its own row rather than a share of Ask Staxis so an operator can
   // move or switch off the company-wide surface without touching the copilot
   // every hotel uses every day.
-  test('covers 26 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 34);
+  // 2026-07-27: knowledge.document_ocr became a real feature (27→28 controllable,
+  // 34→35 keys). It already existed as a ledger-only label because the model was
+  // pinned inside the Fly robot; reading scans moved on-box when that robot was
+  // decommissioned, so there is now a model to switch and a card to show it on.
+  test('covers 27 controllable hosted features and 7 display-only features', () => {
+    assert.equal(AI_FEATURE_KEYS.length, 35);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
@@ -162,7 +166,7 @@ describe('feature/provider compatibility reflects real adapter capability', () =
   test('a feature that needs PDF reading stays Anthropic-only', () => {
     // The OpenAI adapter translates no document block. Offering GPT here would
     // produce a blank extraction that looks like a successful one.
-    for (const key of ['inventory.invoice_scan', 'knowledge.fact_extraction'] as const) {
+    for (const key of ['inventory.invoice_scan', 'knowledge.fact_extraction', 'knowledge.document_ocr'] as const) {
       assert.ok(getAiFeatureDefinition(key).requiredCapabilities.includes('pdf_input'));
       assert.equal(isAiFeatureRuntimeProviderCompatible(key, 'openai'), false);
       assert.equal(isAiFeatureRuntimeProviderCompatible(key, 'anthropic'), true);

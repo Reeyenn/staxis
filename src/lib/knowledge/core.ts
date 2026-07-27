@@ -14,7 +14,7 @@ import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import type { AppRole } from '@/lib/roles';
-import { KNOWLEDGE_LIMITS } from './types';
+import { KNOWLEDGE_LIMITS, DOC_ISSUE_MESSAGE, docIssueReason } from './types';
 import type {
   KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeFolderDTO, KnowledgeContactDTO,
   KnowledgeEventDTO, ContactCategory, KnowledgeVisibility, ExtractionStatus, Dept,
@@ -245,7 +245,65 @@ export async function deleteArticle(pid: string, id: string): Promise<boolean> {
 
 // ── Documents ──────────────────────────────────────────────────────────────────
 
-const DOC_COLS = 'id, title, file_path, mime_type, size_bytes, extraction_status, visibility, visible_dept, folder_id, uploaded_by_name, created_at';
+const DOC_COLS = 'id, title, file_path, mime_type, size_bytes, extraction_status, extract_error, extracted_at, visibility, visible_dept, folder_id, uploaded_by_name, created_at';
+
+// ─── Stranded-scan safety net ────────────────────────────────────────────────
+//
+// `pending` and `processing` are the only two non-terminal statuses, and both
+// are supposed to last seconds: indexDocument now resolves every branch —
+// including a scan — to a terminal status before its invocation ends.
+//
+// But "before its invocation ends" is a promise the platform can break. The
+// indexing pass runs in the upload route's after() hook, so a deploy landing
+// mid-pass, an OOM, or an overrun of maxDuration kills it with the row still on
+// `processing` — and nothing would ever move it again. That is precisely the
+// shape of the bug this pipeline just came out of (a scan queued to a robot
+// that no longer runs), so the fix ships with a floor under it rather than a
+// promise that it can't happen twice.
+//
+// Healing happens on read: whoever opens the Documents tab is exactly who
+// needs the answer, KnowledgePane already re-polls every 4s while anything is
+// unfinished, and it costs nothing on the overwhelmingly common path where no
+// document is stale. A cron for this would be a second scheduled surface to own
+// for an event that resolves itself the moment someone looks.
+//
+// 15 minutes is far past any legitimate pass (the upload route's ceiling is
+// 120s) and far short of "the user gave up".
+const STRANDED_INDEX_MS = 15 * 60 * 1000;
+
+/** Is this row's unfinished status old enough to be certainly dead? */
+export function isStrandedIndex(
+  status: ExtractionStatus,
+  lastTouchedIso: string | null,
+  now: number = Date.now(),
+): boolean {
+  if (status !== 'pending' && status !== 'processing') return false;
+  if (!lastTouchedIso) return false;
+  const t = Date.parse(lastTouchedIso);
+  if (Number.isNaN(t)) return false;
+  return now - t > STRANDED_INDEX_MS;
+}
+
+/**
+ * Persist the stranded verdict. Conditional on the row STILL being unfinished,
+ * so a pass that completed between our read and this write keeps its real
+ * result instead of being overwritten with a failure. Never throws — the reader
+ * already has the right answer to display; persistence is the bonus.
+ */
+async function healStrandedDocument(pid: string, docId: string): Promise<void> {
+  const { error } = await supabaseAdmin
+    .from('knowledge_documents')
+    .update({
+      extraction_status: 'failed',
+      extract_error: DOC_ISSUE_MESSAGE.scan_busy,
+      extracted_at: new Date().toISOString(),
+    })
+    .eq('id', docId)
+    .eq('property_id', pid)
+    .in('extraction_status', ['pending', 'processing']);
+  if (error) log.warn('knowledge.healStrandedDocument failed', { err: error.message, docId });
+  else log.warn('knowledge.healStrandedDocument recovered a stuck document', { docId, pid });
+}
 
 /**
  * List documents visible to `reader`, each with a short-lived signed download
@@ -286,7 +344,18 @@ export async function listDocuments(
       const { data: signed } = await supabaseAdmin.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL);
       downloadUrl = signed?.signedUrl ?? null;
     } catch { /* leave null */ }
-    const status = ((r.extraction_status as ExtractionStatus | null) ?? 'pending');
+    const stored = ((r.extraction_status as ExtractionStatus | null) ?? 'pending');
+    // A pass that was killed before it could write a terminal status would spin
+    // forever. Report it as the retryable failure it is — and persist that, so
+    // search and the agent see the same answer this reader does.
+    const stranded = isStrandedIndex(
+      stored,
+      ((r.extracted_at as string | null) ?? (r.created_at as string | null)),
+    );
+    const status: ExtractionStatus = stranded ? 'failed' : stored;
+    const storedError = (r.extract_error as string | null) ?? null;
+    const issueError = stranded ? DOC_ISSUE_MESSAGE.scan_busy : storedError;
+    if (stranded) await healStrandedDocument(pid, r.id as string);
     return {
       id: r.id as string,
       title: (r.title as string) ?? '',
@@ -294,6 +363,7 @@ export async function listDocuments(
       sizeBytes: (r.size_bytes as number | null) ?? null,
       hasText: status === 'ready' || status === 'partial',
       extractionStatus: status,
+      issueReason: docIssueReason(issueError),
       visibility: ((r.visibility as KnowledgeVisibility | null) ?? 'all_staff'),
       visibleDept: ((r.visible_dept as Dept | null) ?? null),
       folderId: ((r.folder_id as string | null) ?? null),

@@ -717,6 +717,18 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Turns a note you type — or a file you drop in — into the short facts about your hotel that show up on the Knows screen for you to confirm.',
     ['text', 'pdf_input'], SONNET,
   ),
+  // Declaring pdf_input pins this to Anthropic (runtimeProvidersFor): a scanned
+  // PDF rides as a native `document` block, which the OpenAI adapter does not
+  // translate. That is the honest constraint, not an oversight — a manager who
+  // switched this to a GPT model would get every scanned PDF failing.
+  //
+  // Ledger-only until 2026-07-27, when the page-reading pass moved off the
+  // decommissioned Fly robot and onto vision-extract. See AI_LEDGER_ONLY_FEATURES.
+  'knowledge.document_ocr': defineFeature(
+    'knowledge.document_ocr', 'Knowledge', 'Reading scanned documents',
+    'Reads a scanned PDF or a photo of a page uploaded to the Knowledge hub, so staff can search its text.',
+    ['text', 'image_input', 'pdf_input'], SONNET,
+  ),
   'speech.ask_staxis_dictation': defineFeature(
     'speech.ask_staxis_dictation', 'Speech & input', 'Ask Staxis dictation',
     'The free talk-to-type used when dictating into Ask Staxis. Runs in the browser — costs nothing, nothing to configure.',
