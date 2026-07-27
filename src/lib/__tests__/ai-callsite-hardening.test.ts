@@ -9,7 +9,9 @@ const count = (text: string, pattern: RegExp) => [...text.matchAll(pattern)].len
 
 test('scoped provider attempts forward the runtime signal and reject truncation', () => {
   const expected: Array<[string, number, number]> = [
-    ['src/lib/comms/assistant.ts', 5, 4], // four Claude paths + Whisper
+    // Three Claude paths + Whisper (the unread-summary path went with "Catch
+    // up" on 2026-07-27).
+    ['src/lib/comms/assistant.ts', 4, 3],
     ['src/lib/comms/translate.ts', 2, 2],
     ['src/lib/notice-translate.ts', 1, 1],
     ['src/lib/reports/catalog/ai-summary.ts', 1, 1],
@@ -42,7 +44,6 @@ test('malformed output is rejected before executeAiFeature can accept an attempt
   const requiredSignals: Array<[string, string[]]> = [
     ['src/lib/comms/assistant.ts', [
       'action detection returned an invalid schema',
-      'unread summary returned empty output',
       'announcement polish returned empty output',
       'transcription returned malformed JSON',
       'Staxis assistant returned empty output',
@@ -93,7 +94,6 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
   // forgettable-epilogue pattern this refactor removed.
   const routes = [
     'src/app/api/comms/detect-action/route.ts',
-    'src/app/api/comms/summary/route.ts',
     'src/app/api/comms/polish/route.ts',
     'src/app/api/comms/translate/route.ts',
     'src/app/api/comms/transcribe/route.ts',
@@ -102,7 +102,6 @@ test('authenticated scoped routes attribute every provider attempt to agent_cost
     'src/app/api/comms/messages/route.ts',
     'src/app/api/comms/thread/route.ts',
     'src/app/api/comms/pin/route.ts',
-    'src/app/api/comms/threads/route.ts',
     'src/app/api/housekeeping/notices/route.ts',
     'src/app/api/settings/reports/run/route.ts',
     'src/app/api/complaints/log/route.ts',

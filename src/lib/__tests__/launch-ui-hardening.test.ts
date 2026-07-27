@@ -70,7 +70,6 @@ test('communications has a phone list/detail flow and does not collapse failures
   assert.match(composer, /role="alert"/);
   assert.match(overlays, /The worklist could not load/);
   assert.match(overlays, /if \(!r\.ok\)[\s\S]*?The item was not completed/);
-  assert.match(overlays, /Staxis could not summarize this activity/);
   assert.doesNotMatch(overlays, /r\.data\?\.summary \?\? L\('You are all caught up'/);
   assert.match(row, /if \(!r\.ok\)[\s\S]*?Acknowledgement was not saved/);
   for (const pane of [calendar, contacts, knowledge, logbook]) {

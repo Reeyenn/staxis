@@ -1,8 +1,10 @@
 // Front-end-only shared types for the Communications tab.
 import type { ConversationDTO, StaffLite } from '@/lib/comms/types';
 
-export type ViewMode = 'chats' | 'threads' | 'todo' | 'knowledge' | 'logbook' | 'calendar' | 'contacts';
+export type ViewMode = 'chats' | 'todo' | 'knowledge' | 'logbook' | 'contacts';
 export type RightPanel = null | 'pinned' | 'members';
+/** The two views inside the To-do destination. Calendar has no nav item of its own. */
+export type TodoView = 'list' | 'calendar';
 
 export interface Me {
   staffId: string;

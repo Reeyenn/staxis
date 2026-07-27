@@ -1,25 +1,31 @@
 'use client';
 // ═══════════════════════════════════════════════════════════════════════════
 // Communications · Slack-Classic redesign — root.
-// Sidebar (channels / DMs / announcements + Catch-up + Threads / To-do /
-// Knowledge nav) · message pane · on-demand Thread/Pinned/Members panels ·
-// Search palette · Catch-up popover. All data via /api/comms/*. NO SMS.
+// Sidebar (channels / DMs / announcements + To-do / Knowledge / Log book /
+// Contacts nav) · message pane · on-demand Thread/Pinned/Members panels ·
+// Search palette. All data via /api/comms/*. NO SMS.
+//
+// Retired 2026-07-27: the "Catch up" popover, and the "Threads" nav view (the
+// aggregated list of every live thread). Threaded replies themselves are
+// untouched — openThread below, ThreadPanel, GET /api/comms/thread (SINGULAR)
+// and POST /api/comms/send with parentMessageId all still run the in-
+// conversation reply drawer. Calendar also lost its nav item the same day: it
+// is now a view inside To-do (see TodoMode).
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
-import { Search, Sparkles, ListTodo, BookOpen, Notebook, CalendarDays, Phone, Megaphone, Plus, Reply, ArrowRight, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
+import { Search, ListTodo, BookOpen, Notebook, Phone, Megaphone, Plus, ChevronLeft, AlertCircle, Loader2, RefreshCw, X } from 'lucide-react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { apiGet, apiPost } from '@/lib/comms/client';
-import type { ConversationDTO, MessageDTO, CommsDept } from '@/lib/comms/types';
+import type { ConversationDTO, MessageDTO } from '@/lib/comms/types';
 import type { WorklistItem } from '@/lib/worklist/types';
 import { useCommsResource } from './comms-data';
-import type { BootstrapData, ViewMode, RightPanel, L as LType } from './comms-types-fe';
-import { T, SANS, SERIF, MONO, deptColor, deptColorDark, tint, Avatar, MonoLabel, Presence } from './comms-ui';
+import type { BootstrapData, ViewMode, TodoView, RightPanel, L as LType } from './comms-types-fe';
+import { T, SANS, MONO, deptColorDark, Avatar, Presence } from './comms-ui';
 import { MessagePane, ThreadPanel, PinnedPanel, MembersPanel } from './MessagePane';
-import { SearchPalette, CatchUp, NewMessageModal, TodoMode } from './CommsOverlays';
+import { SearchPalette, NewMessageModal, TodoMode } from './CommsOverlays';
 import { KnowledgePane } from './KnowledgePane';
 import { LogbookMode } from './LogbookPane';
-import { CalendarMode } from './CalendarPane';
 import { ContactsMode } from './ContactsPane';
 
 export function CommsApp() {
@@ -37,9 +43,12 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const [selId, setSelId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<MessageDTO[]>([]);
   const [mode, setMode] = React.useState<ViewMode>('chats');
+  // Which of To-do's two views is showing. Held HERE, not inside TodoMode:
+  // TodoMode is conditionally rendered, so component-local state would reset
+  // every time the user visited another nav item and came back.
+  const [todoView, setTodoView] = React.useState<TodoView>('list');
   const [threadParent, setThreadParent] = React.useState<MessageDTO | null>(null);
   const [panel, setPanel] = React.useState<RightPanel>(null);
-  const [catchOpen, setCatchOpen] = React.useState(false);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [showNew, setShowNew] = React.useState(false);
   const [memberCount, setMemberCount] = React.useState<number | null>(null);
@@ -60,9 +69,19 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     // Dashboard "Go to Log Book" deep-links with ?view=logbook. Read it
     // client-only (after mount) so SSR/first-render markup stays identical —
     // same hydration discipline as the pid branch below (#418).
+    //
+    // ?view=calendar is a LIVE inbound link from the dashboard Calendar card
+    // and outlived Calendar's own nav item — it now lands on To-do with the
+    // Calendar view selected. Unknown values fall through silently to Messages,
+    // so a link that stops being handled here looks like a dead button rather
+    // than an error: keep every shipped value mapped.
     try {
       const v = new URLSearchParams(window.location.search).get('view');
-      if (v === 'logbook' || v === 'threads' || v === 'todo' || v === 'knowledge' || v === 'calendar' || v === 'contacts') {
+      if (v === 'calendar') {
+        setMode('todo');
+        setTodoView('calendar');
+        setMobileDetail(true);
+      } else if (v === 'logbook' || v === 'todo' || v === 'knowledge' || v === 'contacts') {
         setMode(v);
         setMobileDetail(true);
       }
@@ -77,10 +96,11 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     { pollMs: 8000, keepDataOnError: true, enabled: !!pid },
   );
   // Worklist: fetched up-front for the sidebar badge; 15s poll only while the
-  // To-do view is open (plus a refresh on entry, below).
+  // worklist is actually on screen (plus a refresh on entry, below). To-do's
+  // calendar view doesn't render it, so it doesn't poll for it either.
   const { data: worklistData, loading: worklistLoading, error: worklistError, reload: loadWorklist } = useCommsResource<{ items: WorklistItem[] }>(
     `/api/worklist?pid=${encodeURIComponent(pid ?? '')}`,
-    { pollMs: mode === 'todo' ? 15000 : undefined, keepDataOnError: true, enabled: !!pid },
+    { pollMs: mode === 'todo' && todoView === 'list' ? 15000 : undefined, keepDataOnError: true, enabled: !!pid },
   );
   const worklist = worklistData?.items ?? [];
 
@@ -120,7 +140,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     const iv = setInterval(() => { if (!document.hidden) void loadThread(); }, 3000);
     return () => clearInterval(iv);
   }, [selId, mode, loadThread]);
-  React.useEffect(() => { if (mode === 'todo') void loadWorklist(); }, [mode, loadWorklist]);
+  React.useEffect(() => { if (mode === 'todo' && todoView === 'list') void loadWorklist(); }, [mode, todoView, loadWorklist]);
 
   // Member count for the selected conversation header.
   React.useEffect(() => {
@@ -137,7 +157,7 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   // ── Actions ─────────────────────────────────────────────────────────────────
   const selectConversation = (id: string) => { setSelId(id); setMode('chats'); setThreadParent(null); setPanel(null); setMobileDetail(true); };
   const switchMode = (m: ViewMode) => { setMode(m); setMobileDetail(true); if (m !== 'chats') { setThreadParent(null); setPanel(null); } };
-  const jump = (id: string) => { selectConversation(id); setCatchOpen(false); setSearchOpen(false); };
+  const jump = (id: string) => { selectConversation(id); setSearchOpen(false); };
   const openThread = (m: MessageDTO) => { setPanel(null); setThreadParent((cur) => (cur?.id === m.id ? null : m)); };
   const togglePanel = (p: Exclude<RightPanel, null>) => { setThreadParent(null); setPanel((cur) => (cur === p ? null : p)); };
   const showMobileList = () => { setMobileDetail(false); setThreadParent(null); setPanel(null); };
@@ -200,7 +220,6 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const channels = conversations.filter((c) => c.kind === 'channel');
   const dms = conversations.filter((c) => c.kind === 'dm');
   const onShiftCount = (boot?.onlineStaffIds ?? []).filter((id) => id !== boot?.me.staffId).length;
-  const catchCount = conversations.filter((c) => c.unread > 0 || (c.pendingAck ?? 0) > 0).length;
   const openItems = worklist.length;
 
   const right = mode === 'chats'
@@ -233,18 +252,10 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
           </button>
         </div>
 
-        <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 14 }}>
-          <div style={{ padding: '4px 8px 2px' }}>
-            <button onClick={() => setCatchOpen(true)} style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', padding: '7px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', background: T.forestTint, color: deptColorDark(T.forest), fontFamily: SANS, fontSize: 14, fontWeight: 600 }}>
-              <Sparkles size={16} /> {L('Catch up', 'Ponerme al día')}
-              {catchCount > 0 && <span style={{ marginLeft: 'auto', fontFamily: MONO, fontSize: 10.5, background: deptColorDark(T.forest), color: '#fff', borderRadius: 9, padding: '1px 7px' }}>{catchCount}</span>}
-            </button>
-          </div>
-          <NavItem icon={<Reply size={17} />} label={L('Threads', 'Hilos')} active={mode === 'threads'} onClick={() => switchMode('threads')} />
+        <div style={{ flex: 1, overflowY: 'auto', paddingTop: 4, paddingBottom: 14 }}>
           <NavItem icon={<ListTodo size={17} />} label={L('To-do', 'Tareas')} active={mode === 'todo'} onClick={() => switchMode('todo')} badge={openItems || undefined} />
           <NavItem icon={<BookOpen size={17} />} label={L('Knowledge', 'Conocimiento')} active={mode === 'knowledge'} onClick={() => switchMode('knowledge')} />
           <NavItem icon={<Notebook size={17} />} label={L('Log book', 'Bitácora')} active={mode === 'logbook'} onClick={() => switchMode('logbook')} />
-          <NavItem icon={<CalendarDays size={17} />} label={L('Calendar', 'Calendario')} active={mode === 'calendar'} onClick={() => switchMode('calendar')} />
           <NavItem icon={<Phone size={17} />} label={L('Contacts', 'Contactos')} active={mode === 'contacts'} onClick={() => switchMode('contacts')} />
 
           <SidebarSection label={L('Announcements', 'Anuncios')} onAdd={() => setSearchOpen(true)} tip={L('Post an announcement', 'Publicar un anuncio')} />
@@ -279,17 +290,14 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
               {right}
             </>
           )}
-          {mode === 'threads' && <ThreadsList pid={pid} L={L} onOpen={(convId, parent) => { selectConversation(convId); setThreadParent(parent); }} />}
-          {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot.staff ?? []} L={L} reload={loadWorklist} loading={worklistLoading} error={worklistError} />}
+          {mode === 'todo' && <TodoMode pid={pid} items={worklist} staff={boot.staff ?? []} isManager={!!boot.me.isManager} view={todoView} onViewChange={setTodoView} L={L} reload={loadWorklist} loading={worklistLoading} error={worklistError} />}
           {mode === 'knowledge' && <div style={{ flex: 1, overflowY: 'auto' }}><KnowledgePane pid={pid} isManager={!!boot.me.isManager} L={L} /></div>}
           {mode === 'logbook' && <LogbookMode key={pid} pid={pid} meName={boot.me.displayName ?? L('You', 'Tú')} L={L} />}
-          {mode === 'calendar' && <CalendarMode key={pid} pid={pid} isManager={!!boot.me.isManager} L={L} />}
           {mode === 'contacts' && <ContactsMode key={pid} pid={pid} isManager={!!boot.me.isManager} L={L} />}
         </div>
       </div>
 
       {/* ── Overlays ── */}
-      {catchOpen && <CatchUp pid={pid} conversations={conversations} L={L} onJump={jump} onClose={() => setCatchOpen(false)} />}
       {searchOpen && <SearchPalette pid={pid} L={L} onClose={() => setSearchOpen(false)} onJump={jump} onOpenDm={openDm} />}
       {showNew && boot && <NewMessageModal staff={boot.staff} L={L} onPick={openDm} onClose={() => setShowNew(false)} />}
 
@@ -410,44 +418,4 @@ function ConvoRow({ c, active, online, onClick, L }: { c: ConversationDTO; activ
 
 function EmptyHint({ text }: { text: string }) {
   return <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.dim, fontSize: 14, padding: 40, textAlign: 'center', fontFamily: SANS }}>{text}</div>;
-}
-
-// ── Threads mode (every conversation that has a live thread) ─────────────────
-interface ThreadSummaryDTO { conversationId: string; conversationTitle: string; dept: CommsDept; parent: MessageDTO }
-function ThreadsList({ pid, L, onOpen }: { pid: string; L: LType; onOpen: (convId: string, parent: MessageDTO) => void }) {
-  const { data, loading, error, reload } = useCommsResource<{ threads: ThreadSummaryDTO[] }>(`/api/comms/threads?pid=${encodeURIComponent(pid)}`, { keepDataOnError: true });
-  const items = data?.threads ?? [];
-  return (
-    <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
-      <div style={{ maxWidth: 760, margin: '0 auto', padding: '26px 28px 60px' }}>
-        <div style={{ marginBottom: 7 }}><MonoLabel>{data ? L(`${items.length} threads`, `${items.length} hilos`) : (loading ? L('Loading threads', 'Cargando hilos') : L('Threads unavailable', 'Hilos no disponibles'))}</MonoLabel></div>
-        <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Threads', 'Hilos')}</div>
-        <div style={{ marginTop: 20, display: 'flex', flexDirection: 'column', gap: 12 }}>
-          {loading && items.length === 0 && <div role="status" style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}><Loader2 size={16} className="comms-spin" aria-hidden="true" /> {L('Loading threads…', 'Cargando hilos…')}</div>}
-          {error && <div role="alert" style={{ fontFamily: SANS, fontSize: 13, color: T.terracotta, padding: '12px 14px', border: `1px solid ${tint(T.terracotta, .28)}`, background: tint(T.terracotta, .08), borderRadius: 12, display: 'flex', alignItems: 'center', gap: 10 }}><AlertCircle size={17} aria-hidden="true" /><span style={{ flex: 1 }}>{items.length > 0 ? L('Threads could not refresh. Showing the last results.', 'No se pudieron actualizar los hilos. Se muestran los últimos resultados.') : L('Threads could not load.', 'No se pudieron cargar los hilos.')}</span><button onClick={() => void reload()} style={{ minWidth: 44, minHeight: 44, borderRadius: 8, border: `1px solid ${tint(T.terracotta, .3)}`, background: T.bg, color: T.terracotta, cursor: 'pointer' }} aria-label={L('Retry loading threads', 'Reintentar cargar hilos')}><RefreshCw size={15} aria-hidden="true" /></button></div>}
-          {!loading && !error && items.length === 0 && <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.dim, padding: '22px 16px', textAlign: 'center', border: `1px dashed ${T.hair}`, borderRadius: 12 }}>{L('No threads yet. Reply to a message to start one.', 'Sin hilos aún. Responde a un mensaje para empezar uno.')}</div>}
-          {items.map(({ conversationId, conversationTitle, dept, parent }) => (
-            <button key={parent.id} onClick={() => onOpen(conversationId, parent)} style={{ textAlign: 'left', border: `1px solid ${T.hair}`, borderRadius: 13, background: T.bg, cursor: 'pointer', padding: '14px 16px' }}
-              onMouseEnter={(e) => (e.currentTarget.style.borderColor = tint(deptColor(dept), .45))} onMouseLeave={(e) => (e.currentTarget.style.borderColor = T.hair)}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <span style={{ fontFamily: SANS, fontSize: 14, color: deptColor(dept), fontWeight: 700 }}>{parent.conversationId ? '#' : '#'}</span>
-                <span style={{ fontFamily: SANS, fontWeight: 700, fontSize: 13.5, color: T.ink }}>{conversationTitle}</span>
-              </div>
-              <div style={{ display: 'flex', gap: 10 }}>
-                <Avatar name={parent.mine ? L('You', 'Tú') : parent.senderName} dept={dept} size={30} me={parent.mine} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: SANS, fontSize: 13, marginBottom: 2 }}><span style={{ fontWeight: 700, color: T.ink }}>{parent.mine ? L('You', 'Tú') : parent.senderName}</span></div>
-                  <div style={{ fontFamily: SANS, fontSize: 13.5, color: T.ink, lineHeight: 1.45 }}>{parent.body || (parent.attachmentKind === 'photo' ? L('Photo', 'Foto') : '')}</div>
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, paddingLeft: 40 }}>
-                <span style={{ fontFamily: SANS, fontSize: 12.5, fontWeight: 600, color: deptColorDark(T.teal) }}>{parent.replyCount === 1 ? L('1 reply', '1 respuesta') : L(`${parent.replyCount} replies`, `${parent.replyCount} respuestas`)}</span>
-                <span style={{ color: T.dim, display: 'flex' }}><ArrowRight size={14} /></span>
-              </div>
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
 }

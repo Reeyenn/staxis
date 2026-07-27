@@ -942,39 +942,6 @@ export async function getThreadForAssistant(
     }));
 }
 
-/** Gather a staff member's unread messages across conversations (for "what did I miss"). */
-export async function getUnreadDigest(
-  pid: string, staffId: string, ctx: { isManager: boolean; dept: string | null; floorMode: boolean },
-): Promise<{ sender: string; body: string }[]> {
-  const convos = (await listConversationsForStaff(pid, staffId, ctx)).filter((c) => c.unread > 0).slice(0, 10);
-  const out: { sender: string; body: string }[] = [];
-  for (const c of convos) {
-    const { data: m } = await supabaseAdmin
-      .from('comms_members').select('last_read_at')
-      .eq('conversation_id', c.id).eq('staff_id', staffId).maybeSingle();
-    const lastRead = (m?.last_read_at as string | null) ?? null;
-    let q = supabaseAdmin
-      .from('comms_messages')
-      .select('sender_staff_id, body, created_at')
-      .eq('conversation_id', c.id).eq('property_id', pid)
-      // NULL-safe "not authored by me" — see listConversationsForStaff. .neq
-      // would drop @Staxis/system (null-sender) messages from the digest.
-      .or(`sender_staff_id.is.null,sender_staff_id.neq.${staffId}`)
-      .order('created_at', { ascending: true }).limit(25);
-    if (lastRead) q = q.gt('created_at', lastRead);
-    const { data } = await q;
-    const rows = (data ?? []) as { sender_staff_id: string | null; body: string }[];
-    const ids = rows.map((r) => r.sender_staff_id).filter((x): x is string => !!x);
-    const names = await staffNameMap(pid, ids);
-    for (const r of rows) {
-      if (!r.body || !r.body.trim()) continue;
-      out.push({ sender: `[${c.title}] ${r.sender_staff_id ? (names.get(r.sender_staff_id) ?? 'Teammate') : 'System'}`, body: r.body });
-      if (out.length >= 80) return out;
-    }
-  }
-  return out;
-}
-
 export async function attachmentSignedUrl(path: string): Promise<string | null> {
   try {
     const { data } = await supabaseAdmin.storage.from(ATTACHMENT_BUCKET).createSignedUrl(path, SIGNED_URL_TTL);
@@ -1817,49 +1784,6 @@ export async function listMembers(
 
 function escapeLike(s: string): string {
   return s.replace(/[\\%_]/g, (m) => `\\${m}`);
-}
-
-/** Every top-level message with replies across the caller's visible conversations (Threads view). */
-export interface ThreadSummary { conversationId: string; conversationTitle: string; dept: CommsDept; parent: MessageDTO }
-export async function listThreads(
-  pid: string, staffId: string, readerLang: CommsLang, ctx: { isManager: boolean; dept: string | null },
-  opts: { ai?: AiCallOptions } = {},
-): Promise<ThreadSummary[]> {
-  const convos = await listConversationsForStaff(pid, staffId, { ...ctx, floorMode: false });
-  const convoIds = convos.map((c) => c.id);
-  if (convoIds.length === 0) return [];
-  const meta = new Map(convos.map((c) => [c.id, { title: c.title, dept: (c.dept ?? 'management') as CommsDept }] as const));
-
-  const { data: parentIdRows } = await supabaseAdmin
-    .from('comms_messages')
-    .select('parent_message_id')
-    .in('conversation_id', convoIds)
-    .not('parent_message_id', 'is', null)
-    .limit(2000);
-  const parentIds = Array.from(new Set(((parentIdRows ?? []) as { parent_message_id: string }[]).map((r) => r.parent_message_id)));
-  if (parentIds.length === 0) return [];
-
-  const { data: parentRows } = await supabaseAdmin
-    .from('comms_messages')
-    .select(MESSAGE_COLUMNS)
-    .in('id', parentIds)
-    .order('created_at', { ascending: false })
-    .limit(100);
-  const hydrated = await hydrateMessages(
-    pid,
-    (parentRows ?? []) as unknown as MessageRow[],
-    staffId,
-    readerLang,
-    { withReplies: true, ai: opts.ai },
-  );
-  return hydrated
-    .map((m) => ({
-      conversationId: m.conversationId,
-      conversationTitle: meta.get(m.conversationId)?.title ?? '',
-      dept: meta.get(m.conversationId)?.dept ?? 'management',
-      parent: m,
-    }))
-    .sort((a, b) => (b.parent.lastReplyAt ?? '').localeCompare(a.parent.lastReplyAt ?? ''));
 }
 
 /** Jump-to / search across the caller's visible channels, the staff directory, and message bodies. */

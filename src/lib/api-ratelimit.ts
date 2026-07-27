@@ -211,7 +211,6 @@ export type RateLimitEndpoint =
   | 'comms-translate'        // per-message + UI-string auto-translate (cache-miss only)
   | 'comms-assistant'        // @Staxis in-chat assistant
   | 'comms-detect-action'    // message → work-order/complaint detection
-  | 'comms-summary'          // "what did I miss" unread summary
   | 'comms-polish'           // AI-polished announcements
   | 'comms-transcribe'       // voice message → text (Whisper)
   // Non-AI comms endpoints — keyed per-user ((pid,userId)/(pid,staffId)
@@ -527,7 +526,6 @@ const HOURLY_CAPS: Record<RateLimitEndpoint, number> = {
   'comms-translate':           1500,
   'comms-assistant':             80,
   'comms-detect-action':        400,
-  'comms-summary':               80,
   'comms-polish':                80,
   'comms-transcribe':           150,
   // Non-AI, per-user composite key (fail-open). comms-read is polled
@@ -758,7 +756,6 @@ const BILLING_IMPACTING_ENDPOINTS: ReadonlySet<RateLimitEndpoint> = new Set<Rate
   'comms-translate',
   'comms-assistant',
   'comms-detect-action',
-  'comms-summary',
   'comms-polish',
   'comms-transcribe',
   // Financials — Claude Vision (scan invoice / contractor quote) + Twilio

@@ -1,16 +1,24 @@
 'use client';
 // ═══════════════════════════════════════════════════════════════════════════
 // Communications · Slack-Classic — overlays & modes:
-//   SearchPalette · CatchUp popover · NewMessageModal · TodoMode (+ composer).
+//   SearchPalette · NewMessageModal · TodoMode (+ composer).
+//
+// TodoMode is the "To-do" nav destination and hosts BOTH of its views: the
+// worklist itself and the team calendar (CalendarMode), switched by the
+// List/Calendar chips under the page header. Calendar lost its own nav item on
+// 2026-07-27; TodoMode owns the single scroll container, the single 760px
+// column and the single page header so the two views cannot double up on any
+// of them. Removed the same day: the "Catch up" popover (AI unread summary).
 // ═══════════════════════════════════════════════════════════════════════════
 import React from 'react';
 import {
-  Search, X, Megaphone, ArrowRight, ArrowUpRight, AlertTriangle, AlertCircle, Sparkles, Plus, Check, Clock, ChevronDown, Loader2, RefreshCw,
+  Search, X, Megaphone, ArrowUpRight, AlertTriangle, AlertCircle, Plus, Check, Clock, ChevronDown, Loader2, RefreshCw, ListTodo, CalendarDays,
 } from 'lucide-react';
 import { apiGet, apiPost, apiDelete } from '@/lib/comms/client';
-import type { ConversationDTO, StaffLite, SearchHitDTO, CommsDept } from '@/lib/comms/types';
+import type { StaffLite, SearchHitDTO, CommsDept } from '@/lib/comms/types';
 import type { WorklistItem, WorklistSourceType } from '@/lib/worklist/types';
-import type { L } from './comms-types-fe';
+import type { L, TodoView } from './comms-types-fe';
+import { CalendarMode } from './CalendarPane';
 import {
   T, SANS, SERIF, MONO, deptColor, deptColorDark, deptLabel, tint, Avatar, DeptDot, MonoLabel, CommsOverlay,
 } from './comms-ui';
@@ -102,79 +110,6 @@ export function SearchPalette({ pid, L, onClose, onJump, onOpenDm }: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CATCH UP popover (ranked unread, with optional AI summary)
-// ─────────────────────────────────────────────────────────────────────────────
-export function CatchUp({ pid, conversations, L, onJump, onClose }: {
-  pid: string; conversations: ConversationDTO[]; L: L; onJump: (conversationId: string) => void; onClose: () => void;
-}) {
-  const items = conversations
-    .filter((c) => c.unread > 0 || (c.pendingAck ?? 0) > 0)
-    .map((c) => ({
-      conversationId: c.id,
-      dept: (c.dept ?? 'management') as CommsDept,
-      urgent: (c.pendingAck ?? 0) > 0,
-      title: c.title,
-      text: c.lastMessagePreview ?? L('New activity', 'Actividad nueva'),
-    }))
-    .sort((a, b) => (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0));
-  const channelCount = new Set(items.map((i) => i.conversationId)).size;
-  const needsYou = items.filter((i) => i.urgent).length;
-
-  const [summary, setSummary] = React.useState<string | null>(null);
-  const [loadingSummary, setLoadingSummary] = React.useState(false);
-  const [summaryError, setSummaryError] = React.useState<string | null>(null);
-  const summarize = async () => {
-    setLoadingSummary(true); setSummaryError(null);
-    try {
-      const r = await apiPost<{ summary: string }>('/api/comms/summary', { pid });
-      if (!r.ok || !r.data?.summary) {
-        setSummaryError(L('Staxis could not summarize this activity. Please try again.', 'Staxis no pudo resumir esta actividad. Inténtalo de nuevo.'));
-        return;
-      }
-      setSummary(r.data.summary);
-    }
-    finally { setLoadingSummary(false); }
-  };
-
-  return (
-    <CommsOverlay onClose={onClose} scrim="rgba(31,35,28,.2)" align="top" paddingTop={76}
-      cardStyle={{ width: 424, maxWidth: '92%', background: T.bg, border: `1px solid ${T.hair}`, borderRadius: 14, boxShadow: '0 18px 50px rgba(31,35,28,.16)', overflow: 'hidden' }}>
-        <div style={{ padding: '15px 18px 12px', borderBottom: `1px solid ${T.hairSoft}`, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 7, color: T.forest, marginBottom: 5 }}><Sparkles size={15} /><MonoLabel color={T.forest}>{L('Catch up', 'Ponerme al día')}</MonoLabel></div>
-            <div style={{ fontFamily: SERIF, fontStyle: 'italic', fontSize: 20, lineHeight: 1.16, color: T.ink }}>
-              {items.length === 0 ? L('You are all caught up', 'Estás al día') : L(`${items.length} things across ${channelCount} conversations`, `${items.length} cosas en ${channelCount} conversaciones`)}
-            </div>
-            {needsYou > 0 && <div style={{ fontFamily: SANS, fontSize: 12, color: T.dim, marginTop: 5 }}>{L(`${needsYou} need you`, `${needsYou} te necesitan`)}</div>}
-          </div>
-          <button onClick={onClose} style={{ width: 30, height: 30, borderRadius: 8, border: 'none', background: 'transparent', color: T.dim, cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={16} /></button>
-        </div>
-        <div style={{ padding: '6px 10px 6px', maxHeight: 320, overflowY: 'auto' }}>
-          {items.map((it) => (
-            <button key={it.conversationId} onClick={() => onJump(it.conversationId)} style={{ display: 'flex', gap: 11, width: '100%', textAlign: 'left', padding: '11px 10px', background: 'transparent', border: 'none', borderRadius: 10, cursor: 'pointer', alignItems: 'flex-start' }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = T.paper)} onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}>
-              <span style={{ marginTop: 3, width: 8, height: 8, borderRadius: '50%', background: deptColor(it.dept), flexShrink: 0, boxShadow: it.urgent ? `0 0 0 4px ${tint(deptColor(it.dept), .16)}` : 'none' }} />
-              <span style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ fontFamily: SANS, fontSize: 13.5, lineHeight: 1.45, color: T.ink }}><strong style={{ fontWeight: 700 }}>{it.title}</strong> — {it.text}</span>
-                {it.urgent && <span style={{ marginLeft: 7, fontFamily: MONO, fontSize: 9, letterSpacing: '.1em', color: T.terracotta }}>{L('NEEDS YOU', 'TE NECESITA')}</span>}
-              </span>
-              <span style={{ color: T.dim, marginTop: 2 }}><ArrowRight size={14} /></span>
-            </button>
-          ))}
-          {items.length > 0 && (
-            summary
-              ? <div style={{ margin: '6px 10px 10px', padding: 12, background: T.forestTint, borderRadius: 10, fontSize: 12.5, color: T.ink, lineHeight: 1.5, whiteSpace: 'pre-wrap', fontFamily: SANS }}>{summary}</div>
-              : <button onClick={summarize} disabled={loadingSummary} style={{ margin: '4px 10px 8px', display: 'flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none', cursor: 'pointer', color: deptColorDark(T.forest), fontFamily: SANS, fontSize: 12.5, fontWeight: 600 }}>
-                  {loadingSummary ? <Loader2 size={13} className="comms-spin" /> : <Sparkles size={13} />} {L('Summarize with AI', 'Resumir con IA')}
-                </button>
-          )}
-          {summaryError && <div role="alert" style={{ margin: '0 10px 10px', color: T.terracotta, fontFamily: SANS, fontSize: 12, lineHeight: 1.4 }}>{summaryError}</div>}
-        </div>
-    </CommsOverlay>
-  );
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // NEW MESSAGE (DM picker)
 // ─────────────────────────────────────────────────────────────────────────────
 export function NewMessageModal({ staff, L, onPick, onClose }: { staff: StaffLite[]; L: L; onPick: (staffId: string) => void; onClose: () => void }) {
@@ -239,7 +174,11 @@ function inDateBucket(it: WorklistItem, bucket: DateBucket): boolean {
   return due.getTime() <= end.getTime();
 }
 
-export function TodoMode({ pid, items, staff, L, reload, loading = false, error = null }: { pid: string; items: WorklistItem[]; staff: StaffLite[]; L: L; reload: () => void; loading?: boolean; error?: string | null }) {
+export function TodoMode({ pid, items, staff, isManager, view, onViewChange, L, reload, loading = false, error = null }: {
+  pid: string; items: WorklistItem[]; staff: StaffLite[]; isManager: boolean;
+  view: TodoView; onViewChange: (v: TodoView) => void;
+  L: L; reload: () => void; loading?: boolean; error?: string | null;
+}) {
   const [adding, setAdding] = React.useState(false);
   const [assignTarget, setAssignTarget] = React.useState<WorklistItem | null>(null);
   const [typeFilter, setTypeFilter] = React.useState<WorklistSourceType | 'all'>('all');
@@ -282,21 +221,59 @@ export function TodoMode({ pid, items, staff, L, reload, loading = false, error 
     color: active ? deptColorDark(color) : T.dim, whiteSpace: 'nowrap',
   });
 
+  // The List/Calendar switcher borrows the filter-chip language below it, one
+  // size up (44pt tall) so a thumb can hit it and so "which view" reads as a
+  // bigger decision than "which filter".
+  const switchChip = (active: boolean): React.CSSProperties => ({
+    ...chipStyle(active, T.forest),
+    minHeight: 44, display: 'inline-flex', alignItems: 'center', gap: 7,
+    padding: '0 15px', fontSize: 13.5,
+  });
+
+  // Switching views drops any half-finished form on the way out, in BOTH
+  // directions: the to-do composer/assign popup unmount here, and the calendar's
+  // Add-event form goes with CalendarMode when it unmounts.
+  const changeView = (v: TodoView) => {
+    if (v === view) return;
+    setAdding(false);
+    setAssignTarget(null);
+    setMutationError(null);
+    onViewChange(v);
+  };
+
+  const switcher = (
+    <div role="group" aria-label={L('Choose a view', 'Elegir vista')} style={{ marginTop: 16, display: 'flex', flexWrap: 'wrap', gap: 7 }}>
+      <button className="comms-viewswitch" onClick={() => changeView('list')} aria-pressed={view === 'list'} style={switchChip(view === 'list')}>
+        <ListTodo size={15} aria-hidden="true" /> {L('List', 'Lista')}
+      </button>
+      <button className="comms-viewswitch" onClick={() => changeView('calendar')} aria-pressed={view === 'calendar'} style={switchChip(view === 'calendar')}>
+        <CalendarDays size={15} aria-hidden="true" /> {L('Calendar', 'Calendario')}
+      </button>
+      <style>{`.comms-viewswitch:focus-visible{outline:2px solid ${T.teal};outline-offset:2px}`}</style>
+    </div>
+  );
+
+  // ONE scroll container and ONE 760px column for both views — CalendarMode
+  // renders its header/body bare into this frame rather than bringing its own.
   return (
     <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
       <div style={{ maxWidth: 760, margin: '0 auto', padding: '26px 28px 60px' }}>
+        {view === 'calendar' ? <CalendarMode key={pid} pid={pid} isManager={isManager} L={L} switcher={switcher} /> : (
+        <>
         <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 16 }}>
           <div>
             <div style={{ marginBottom: 7 }}><MonoLabel>{L(`${items.length} open · ${overdueCount} overdue`, `${items.length} abiertas · ${overdueCount} vencidas`)}</MonoLabel></div>
             <div style={{ fontFamily: SERIF, fontSize: 34, fontStyle: 'italic', lineHeight: 1, color: T.ink }}>{L('Worklist', 'Lista')}</div>
           </div>
-          <button onClick={() => setAdding(true)} style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${tint(T.forest, .4)}`, background: tint(T.forest, .12), color: deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
+          <button onClick={() => setAdding(true)} style={{ minHeight: 44, display: 'flex', alignItems: 'center', gap: 7, padding: '9px 14px', borderRadius: 10, cursor: 'pointer', flexShrink: 0, border: `1px solid ${tint(T.forest, .4)}`, background: tint(T.forest, .12), color: deptColorDark(T.forest), fontFamily: SANS, fontSize: 13.5, fontWeight: 600 }}>
             <Plus size={16} /> {L('Add to-do', 'Agregar tarea')}
           </button>
         </div>
 
+        {switcher}
+
         {/* Filters — Type then date bucket (mirrors QUORE) */}
-        <div style={{ marginTop: 18, display: 'flex', flexWrap: 'wrap', gap: 7, alignItems: 'center' }}>
+        <div style={{ marginTop: 14, display: 'flex', flexWrap: 'wrap', gap: 7, alignItems: 'center' }}>
           <button onClick={() => setTypeFilter('all')} style={chipStyle(typeFilter === 'all', T.ink)}>{L('All', 'Todo')} {items.length}</button>
           {presentTypes.map(({ t, n }) => (
             <button key={t} onClick={() => setTypeFilter(t)} style={chipStyle(typeFilter === t, meta[t].color)}>{meta[t].label} {n}</button>
@@ -343,10 +320,12 @@ export function TodoMode({ pid, items, staff, L, reload, loading = false, error 
             <WorklistRow key={it.id} it={it} meta={meta[it.sourceType]} L={L} onComplete={() => complete(it)} onAssign={() => setAssignTarget(it)} onDelete={() => deleteTask(it)} />
           ))}
         </div>
+        </>
+        )}
       </div>
 
-      {adding && <TodoComposer pid={pid} staff={staff} L={L} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
-      {assignTarget && <AssignModal item={assignTarget} pid={pid} staff={staff} L={L} onClose={() => setAssignTarget(null)} onDone={() => { setAssignTarget(null); reload(); }} />}
+      {view === 'list' && adding && <TodoComposer pid={pid} staff={staff} L={L} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
+      {view === 'list' && assignTarget && <AssignModal item={assignTarget} pid={pid} staff={staff} L={L} onClose={() => setAssignTarget(null)} onDone={() => { setAssignTarget(null); reload(); }} />}
     </div>
   );
 }

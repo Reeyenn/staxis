@@ -560,8 +560,7 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
         <div className="ap-siderail">
           <div className="comms-head">Communications<span>○ 3 on shift</span></div>
           <span className="ap-search">⌕ Jump to or search…</span>
-          <div className="ap-catchup">✨ Catch up<span className="ap-badge">3</span></div>
-          {['↩ Threads', '☰ To-do', '📖 Knowledge', '▤ Log book', '▦ Calendar', '✆ Contacts'].map((n) => (
+          {['☰ To-do', '📖 Knowledge', '▤ Log book', '✆ Contacts'].map((n) => (
             <span className="side-chan cnav" key={n}>{n}</span>
           ))}
           <div className="ap-h">ANNOUNCEMENTS +</div>
@@ -1870,11 +1869,6 @@ const CSS = `
 .ap-badge { margin-left: auto; font-family: var(--mono); font-size: 8px;
   color: var(--sage-deep); background: var(--sage-dim);
   border: 1px solid rgba(92,122,96,.3); border-radius: 999px; padding: 2px 7px; flex: none; }
-.ap-catchup { display: flex; align-items: center; gap: 8px; font-size: 12px;
-  font-weight: 600; color: #fff; background: var(--sage-deep); border-radius: 9px;
-  padding: 8px 12px; }
-.ap-catchup .ap-badge { background: rgba(255,255,255,.2); color: #fff;
-  border-color: transparent; }
 .ap-chan { font-family: var(--mono); font-size: 10.5px; color: var(--ink-soft);
   padding: 9px 12px; }
 .ap-online { width: 7px; height: 7px; border-radius: 50%; background: var(--sage-deep);
