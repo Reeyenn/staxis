@@ -292,7 +292,6 @@ export async function POST(req: NextRequest): Promise<Response> {
     role: userCtx.role,
     accountId: userCtx.accountId,
     authUserId: userCtx.uid,
-    staffId,
     organizationId: companyOrganizationId,
     pathname: body.pathname,
     snapshot,

@@ -163,7 +163,6 @@ function input(overrides: Record<string, unknown> = {}) {
     role: 'general_manager' as const,
     accountId: ACCOUNT_ID,
     authUserId: AUTH_UID,
-    staffId: null,
     snapshot: snapshot(),
     now: NOW,
     ...overrides,
