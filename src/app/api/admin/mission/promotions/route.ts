@@ -44,6 +44,10 @@ import {
   isExpired,
   isMissingRelationError,
   meetsEvidenceBar,
+  plainLockReason,
+  promotionJourney,
+  promotionOriginLabel,
+  shortClaim,
   tierLabel,
   unmetPreconditions,
 } from '@/lib/promotion-queue';
@@ -73,6 +77,16 @@ interface PromotionView {
   liveContent: string | null;
   status: PromotionRow['status'];
   origin: PromotionRow['origin'];
+  /** The claim cut to two lines. Full text stays on `claim`, under Details. */
+  headline: string;
+  headlineTruncated: boolean;
+  /** "Written by hand" / "Learned from hotels" — the card's eyebrow. */
+  originLabel: string;
+  /** Where it lives now → where it is asking to go, in plain words. */
+  journey: { from: string; to: string };
+  /** ONE plain sentence for why Approve is off. Empty exactly when
+   *  `blockedReasons` is empty — the same verdict, said shorter. */
+  lockReason: string;
   /** Plain English: "Every hotel" / "Every hotel on choice advantage". */
   audience: string;
   /** Plain English: where it came from. */
@@ -591,6 +605,7 @@ function toView(
   const bar = meetsEvidenceBar(row);
   const blocked = [...unmetPreconditions(row, facts)];
   if (!bar.ok) blocked.unshift(bar.reason);
+  const headline = shortClaim(row.claim);
 
   // Live items report who they actually reached; pending items report who they
   // WOULD reach, so the cost of saying yes is visible before saying it.
@@ -614,6 +629,11 @@ function toView(
     liveContent: row.final_content,
     status: row.status,
     origin: row.origin,
+    headline: headline.text,
+    headlineTruncated: headline.truncated,
+    originLabel: promotionOriginLabel(row),
+    journey: promotionJourney(row),
+    lockReason: plainLockReason(row, facts),
     audience: tierLabel(row.target_tier, row.pms_family),
     cameFrom: cameFromLabel(row),
     evidence: describeEvidence(row),
