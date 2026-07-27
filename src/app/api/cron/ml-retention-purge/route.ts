@@ -78,12 +78,27 @@ export const EXEMPT_FROM_PURGE: ReadonlySet<string> = new Set([
   'agent_pending_actions',
   'user_feedback',
   'agent_eval_baselines',
+  // ── 2026-07-27 (chore audit): SINGLE OWNER for the AI books ──────────────
+  // `agent_costs` is the financial record — INV-43 calls it "the BOOKS", and
+  // every spend figure the founder sees is summed from it. It used to be in
+  // RETENTION below at a 5-year window, which meant TWO crons could delete
+  // from it. Two owners of one table is how a ledger loses rows nobody meant
+  // to lose: neither owner's window is the real policy, and the surviving
+  // total is whichever ran last.
+  //
+  // Its retention now belongs to exactly one job,
+  // /api/cron/agent-costs-rollup, which may only prune a raw row AFTER that
+  // row's month has been rolled up and the rollup's sum verified against the
+  // raw sum. This purge must never touch it again — an unconditional DELETE
+  // here would drop rows the rollup had not yet folded in, and the money in
+  // them would be gone from every screen with no way to reconstruct it.
+  'agent_costs',
 ]);
 
 const RETENTION: ReadonlyArray<RetentionEntry> = [
   { table: 'prediction_log', column: 'logged_at',  days: CORPUS_RETENTION_DAYS },
   { table: 'app_events',     column: 'ts',         days: CORPUS_RETENTION_DAYS },
-  { table: 'agent_costs',    column: 'created_at', days: CORPUS_RETENTION_DAYS },
+  // agent_costs deliberately REMOVED 2026-07-27 — see EXEMPT_FROM_PURGE above.
   // Every pairing capability expires within roughly two minutes. Two days
   // from creation guarantees at least a full day of operational audit after
   // the terminal/expiry event; the daily job then bounds removal to 2–3 days
@@ -96,13 +111,58 @@ const RETENTION: ReadonlyArray<RetentionEntry> = [
 // Tune after the first prod run reveals real volume.
 const MAX_PURGE_PER_TABLE = 100_000;
 
+/**
+ * ─── THE RE-ENABLE CLIFF, AND THE THREE THINGS THAT DEFUSE IT ──────────────
+ *
+ * This cron's schedule has been commented out since 2026-05-30. The danger was
+ * never the steady state — it was the FIRST RUN after the switch is flipped,
+ * which would have issued one unbounded `DELETE … WHERE ts < cutoff` per table
+ * and removed months of accumulated history in a single statement. On a table
+ * that had drifted far past its window that is both a very long-running lock
+ * and an irreversible loss, and the operator would find out afterwards.
+ *
+ * 1. BATCH CAP. Deletes are now issued in bounded batches of BATCH_SIZE, oldest
+ *    first, up to MAX_DELETE_PER_RUN_PER_TABLE rows per table per run. A table
+ *    that is years past its window drains over several days instead of in one
+ *    statement, and each run stays inside the function's time budget. When a
+ *    run hits the cap it reports `capped: true` and tags the heartbeat
+ *    'degraded', so a table that is not converging is visible rather than
+ *    silent.
+ *
+ * 2. DRY RUN. `?dryRun=true` counts exactly what WOULD be deleted, per table,
+ *    and writes nothing. This is the intended first move on re-enable: run it
+ *    by hand, read the numbers, then schedule. It is also why the counts are
+ *    computed with a real `count: 'exact'` query rather than estimated.
+ *
+ * 3. SINGLE OWNER. `agent_costs` is gone from RETENTION (see above), so the one
+ *    table here that is a financial record can no longer be deleted by this
+ *    job at all.
+ *
+ * DO NOT re-enable the schedule as part of an unrelated change. The re-enable
+ * checklist lives in .github/workflows/ml-retention-purge.yml.
+ */
+/** Rows per DELETE statement. Small enough to never hold a long lock. */
+const BATCH_SIZE = 1_000;
+/**
+ * Ceiling per table per run. At a daily cadence this drains 150k rows/table
+ * over a month — fast enough to converge, slow enough that a mistake is caught
+ * by a human before the table is gone.
+ */
+const MAX_DELETE_PER_RUN_PER_TABLE = 5_000;
+
 export async function GET(req: NextRequest): Promise<NextResponse> {
   const requestId = getOrMintRequestId(req);
   const unauth = requireCronSecret(req);
   if (unauth) return unauth;
 
+  // Dry run: count what WOULD go, delete nothing. The intended first move when
+  // re-enabling after a long dormancy — see the cliff note above.
+  const dryRun = new URL(req.url).searchParams.get('dryRun') === 'true';
+
   const purged: Record<string, number> = {};
   const errors: Record<string, string> = {};
+  /** Tables that hit the per-run ceiling and still have rows past the window. */
+  const capped: string[] = [];
   let degraded = false;
 
   for (const { table, column, days } of RETENTION) {
@@ -116,23 +176,78 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
     const cutoff = new Date(Date.now() - days * 86400 * 1000).toISOString();
     try {
-      const { count, error } = await supabaseAdmin
-        .from(table)
-        .delete({ count: 'exact' })
-        .lt(column, cutoff);
-      if (error) {
-        // Missing-table errors (table dropped, RLS blocking, etc) tag
-        // 'degraded' but don't crash the route — other tables keep purging.
-        log.warn('retention-purge: delete failed', { requestId, table, err: error });
-        errors[table] = errToString(error);
-        degraded = true;
+      if (dryRun) {
+        const { count, error } = await supabaseAdmin
+          .from(table)
+          .select('id', { count: 'exact', head: true })
+          .lt(column, cutoff);
+        if (error) {
+          log.warn('retention-purge: dry-run count failed', { requestId, table, err: error });
+          errors[table] = errToString(error);
+          degraded = true;
+          continue;
+        }
+        purged[table] = count ?? 0;
         continue;
       }
-      const purgedCount = count ?? 0;
-      purged[table] = purgedCount;
-      if (purgedCount > MAX_PURGE_PER_TABLE) {
+
+      // ── Batched delete, oldest first ──────────────────────────────────────
+      // Select a bounded page of PKs, delete exactly those, repeat. Deleting by
+      // PK (rather than re-issuing the range predicate) means each statement
+      // touches at most BATCH_SIZE rows and can never run away, even if new
+      // rows land past the cutoff mid-run.
+      let deletedHere = 0;
+      let hitCap = false;
+      for (;;) {
+        const remaining = MAX_DELETE_PER_RUN_PER_TABLE - deletedHere;
+        if (remaining <= 0) { hitCap = true; break; }
+        const pageSize = Math.min(BATCH_SIZE, remaining);
+
+        const { data: page, error: selErr } = await supabaseAdmin
+          .from(table)
+          .select('id')
+          .lt(column, cutoff)
+          .order(column, { ascending: true })
+          .limit(pageSize);
+        if (selErr) {
+          log.warn('retention-purge: batch select failed', { requestId, table, err: selErr });
+          errors[table] = errToString(selErr);
+          degraded = true;
+          break;
+        }
+        const ids = ((page ?? []) as Array<{ id: string }>).map((r) => r.id);
+        if (ids.length === 0) break; // table is inside its window
+
+        const { count, error } = await supabaseAdmin
+          .from(table)
+          .delete({ count: 'exact' })
+          .in('id', ids);
+        if (error) {
+          // Missing-table errors (table dropped, RLS blocking, etc) tag
+          // 'degraded' but don't crash the route — other tables keep purging.
+          log.warn('retention-purge: delete failed', { requestId, table, err: error });
+          errors[table] = errToString(error);
+          degraded = true;
+          break;
+        }
+        deletedHere += count ?? ids.length;
+        // A short page means we drained everything past the cutoff.
+        if (ids.length < pageSize) break;
+      }
+
+      purged[table] = deletedHere;
+      if (hitCap) {
+        // Not an error — the cap did its job. But a table that keeps hitting it
+        // is not converging, and that should be visible.
+        capped.push(table);
+        log.warn('retention-purge: hit per-run cap, will continue next run', {
+          requestId, table, deleted: deletedHere, cap: MAX_DELETE_PER_RUN_PER_TABLE,
+        });
+        degraded = true;
+      }
+      if (deletedHere > MAX_PURGE_PER_TABLE) {
         log.warn('retention-purge: anomalous purge volume', {
-          requestId, table, count: purgedCount, ceiling: MAX_PURGE_PER_TABLE,
+          requestId, table, count: deletedHere, ceiling: MAX_PURGE_PER_TABLE,
         });
         degraded = true;
       }
@@ -143,14 +258,24 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
     }
   }
 
-  await writeCronHeartbeat('ml-retention-purge', {
-    requestId,
-    status: degraded ? 'degraded' : 'ok',
-    notes: { purged, errors, max_per_table: MAX_PURGE_PER_TABLE },
-  });
+  // A dry run must not look like a completed purge to the monitoring layer.
+  if (!dryRun) {
+    await writeCronHeartbeat('ml-retention-purge', {
+      requestId,
+      status: degraded ? 'degraded' : 'ok',
+      notes: { purged, errors, capped, max_per_table: MAX_PURGE_PER_TABLE },
+    });
+  }
 
   return NextResponse.json(
-    { ok: !degraded, requestId, purged, errors: degraded ? errors : undefined },
+    {
+      ok: !degraded,
+      requestId,
+      dryRun,
+      purged,
+      capped: capped.length > 0 ? capped : undefined,
+      errors: degraded ? errors : undefined,
+    },
     { status: degraded ? 207 : 200 },
   );
 }

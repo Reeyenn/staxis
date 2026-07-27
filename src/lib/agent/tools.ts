@@ -273,9 +273,34 @@ export interface ToolDefinition<TArgs = unknown> {
    * When a hotel has this section turned OFF, the tool is dropped from the
    * catalog handed to Claude (getToolsForRole) AND refused inside executeTool
    * as defense-in-depth — a back-door parallel to requiresCapability. Absent on
-   * cross-cutting tools (memory, knowledge, reminders, PMS reads, walkthrough,
-   * complaints, lost-and-found) which are NEVER section-gated. FAIL-OPEN: when
-   * the hotel's section map is unavailable, every section is treated as ON.
+   * cross-cutting tools (memory, knowledge, PMS reads, walkthrough, complaints,
+   * lost-and-found) which are NEVER section-gated. FAIL-OPEN: when the hotel's
+   * section map is unavailable, every section is treated as ON.
+   *
+   * ─── Reminders: CREATING one is gated, managing one is not (2026-07-27) ──
+   * `create_reminder` carries `section: 'communications'`; `cancel_reminder`
+   * and `list_scheduled_items` deliberately do not. Reminders were originally
+   * listed above as cross-cutting, and for reading and cancelling they still
+   * are — but CREATION is different, because a reminder is delivered through
+   * Communications and nowhere else (a DM from the creator, or a post in a
+   * department channel).
+   *
+   * `fireDueReminders` already skips hotels with Communications off, and it
+   * skips them BEFORE claiming the lease, so a reminder made at such a hotel is
+   * not lost — it is paused, and resumes if the section is switched back on.
+   * That is the right delivery behaviour and is unchanged. The bug it left open
+   * was at the other end: the assistant would cheerfully accept "remind me
+   * to…", show a confirmation card, write the row, and say it was scheduled —
+   * and the user would never hear about it again, with nothing anywhere telling
+   * them why.
+   *
+   * The gate has to be the CATALOG, not the handler. `create_reminder` is
+   * `approval: 'card'`, so its handler does not run until after the user has
+   * already tapped to confirm — a refusal there would promise a reminder and
+   * then take it back. Dropping the tool from the catalog means the assistant
+   * never offers it in the first place, and the executeTool refusal below still
+   * covers the race where the section is switched off between the card being
+   * shown and the user confirming it.
    */
   section?: AppSection;
   /**

@@ -69,6 +69,12 @@ const MIN_AGE_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const PAGE_SIZE = 1000;
 const MAX_PAGES = 50; // safety cap: scans up to 50k auth users per run
+/**
+ * How many refused users to name inside the per-run summary event. The full
+ * count is always reported; this only bounds the jsonb payload so one bad run
+ * can't write a huge row. 50 is far more than the handful this has ever seen.
+ */
+const SKIPPED_SAMPLE_LIMIT = 50;
 
 interface SweepResult {
   total_auth_users: number;
@@ -101,6 +107,13 @@ export async function GET(req: NextRequest) {
     has_account: 0,
     owns_property: 0,
   };
+
+  /**
+   * Auth users this run declined to delete for being older than 7 days.
+   * Accumulated across the whole run and written as ONE summary row — see the
+   * note at the push site.
+   */
+  const skippedTooOld: Array<{ auth_user_id: string; email_sha: string | null; age_seconds: number }> = [];
 
   try {
     // Build a Set of data_user_ids that have matching accounts rows.
@@ -178,18 +191,18 @@ export async function GET(req: NextRequest) {
         }
         if (age > MAX_AGE_MS) {
           // Older than 7 days — refuse to unilaterally delete.
+          //
+          // Collected here, written ONCE after the loop. This used to write one
+          // app_events row per refused user per run, and the refused users are
+          // permanently older than 7 days — so every run re-logged the same
+          // handful forever. That produced 18,174 rows, 71% of the whole table,
+          // all of them restating an unchanged fact. Migration 0376 removes the
+          // backlog; this is the fix that stops it coming back.
           result.skipped_too_old += 1;
-          await recordAppEvent({
-            property_id: null,
-            user_id: null,
-            user_role: 'system',
-            event_type: 'orphan_auth_user_skipped_too_old',
-            metadata: {
-              auth_user_id: user.id,
-              email_sha: emailHash(user.email),
-              age_seconds: Math.floor(age / 1000),
-              request_id: requestId,
-            },
+          skippedTooOld.push({
+            auth_user_id: user.id,
+            email_sha: emailHash(user.email),
+            age_seconds: Math.floor(age / 1000),
           });
           continue;
         }
@@ -222,6 +235,24 @@ export async function GET(req: NextRequest) {
 
       // listUsers returns fewer than perPage when we've reached the tail.
       if (users.length < PAGE_SIZE) break;
+    }
+
+    // ── ONE summary row per run, and only when there was something to say ──
+    // Bounded: the sample is capped so a fleet-wide anomaly can't write a
+    // multi-megabyte jsonb blob. `count` is the honest total either way.
+    if (skippedTooOld.length > 0) {
+      await recordAppEvent({
+        property_id: null,
+        user_id: null,
+        user_role: 'system',
+        event_type: 'orphan_auth_users_skipped_too_old_summary',
+        metadata: {
+          count: skippedTooOld.length,
+          sample: skippedTooOld.slice(0, SKIPPED_SAMPLE_LIMIT),
+          sample_truncated: skippedTooOld.length > SKIPPED_SAMPLE_LIMIT,
+          request_id: requestId,
+        },
+      });
     }
 
     if (result.swept > 0) {

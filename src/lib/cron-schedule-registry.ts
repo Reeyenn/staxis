@@ -47,6 +47,28 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // /api/admin/mission/workers. (compliance-reminders and
   // compliance-anomaly-sweep were deleted outright the same day with the
   // whole compliance section.)
+  //
+  // 2026-07-27 (chore audit): unscheduled three crons that were provably
+  // doing nothing — every one of them swept a table with no live producer.
+  // Same dormant treatment as the 2026-07-19 trim: routes KEPT, each with a
+  // header comment naming the exact condition that would earn it a schedule
+  // back.
+  //   webhook-dedup-purge   — both dedup tables have no live writer. The
+  //                           Sentry webhook producer was deleted 2026-07-17
+  //                           (90512ffe); the Stripe one survives at
+  //                           /api/stripe/webhook but is inert behind
+  //                           stripeIsConfigured() and the table has never
+  //                           held a row. RE-ENABLE THE DAY BILLING GOES
+  //                           LIVE — that route writes stripe_processed_events
+  //                           on every delivery and nothing else prunes it.
+  //   expire-help-requests  — its producer is the decommissioned robot's
+  //                           human-assist flow. All 4 prod rows expired
+  //                           2026-07-01; it was a proven no-op 288×/day.
+  //   claude-sessions-purge — claude_sessions has never held a row: the
+  //                           writer is a developer-laptop hook POSTing to
+  //                           the vercel.app host, which 308s to
+  //                           getstaxis.com and drops the body. Not a hotel
+  //                           chore either way.
   { heartbeatName: 'agent-sweep-reservations',          source: { kind: 'vercel', cronPath: '/api/cron/agent-sweep-reservations' },          cronExpr: '*/5 * * * *' },
   { heartbeatName: 'sweep-account-lifecycle',           source: { kind: 'vercel', cronPath: '/api/cron/sweep-account-lifecycle' },           cronExpr: '*/5 * * * *' },
   { heartbeatName: 'process-agent-schedules',           source: { kind: 'vercel', cronPath: '/api/cron/process-agent-schedules' },           cronExpr: '*/5 * * * *' },
@@ -66,10 +88,17 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // (ml-cron.yml schedule) but its heartbeat isn't tracked.
   { heartbeatName: 'purge-old-error-logs',  source: { kind: 'github', workflowFile: 'purge-old-error-logs-cron.yml' }, cronExpr: '30 9 * * *' },
   { heartbeatName: 'agent-archive-stale-conversations', source: { kind: 'vercel', cronPath: '/api/cron/agent-archive-stale-conversations' },cronExpr: '0 3 * * *' },
-  { heartbeatName: 'claude-sessions-purge',             source: { kind: 'vercel', cronPath: '/api/cron/claude-sessions-purge' },             cronExpr: '30 3 * * *' },
   { heartbeatName: 'agent-heal-counters',               source: { kind: 'vercel', cronPath: '/api/cron/agent-heal-counters' },              cronExpr: '0 4 * * *' },
-  { heartbeatName: 'webhook-dedup-purge',               source: { kind: 'vercel', cronPath: '/api/cron/webhook-dedup-purge' },              cronExpr: '15 4 * * *' },
+  // 2026-07-27: the ONLY owner of agent_costs retention. Folds each month into
+  // agent_costs_monthly, verifies the fold reproduces the raw sum exactly, and
+  // only then prunes raw rows older than 6 months. Daily because a verified
+  // month is frozen, so a run costs a couple of statements.
+  { heartbeatName: 'agent-costs-rollup',                source: { kind: 'vercel', cronPath: '/api/cron/agent-costs-rollup' },            cronExpr: '20 5 * * *' },
   { heartbeatName: 'pms-auth-codes-purge',              source: { kind: 'vercel', cronPath: '/api/cron/pms-auth-codes-purge' },             cronExpr: '45 4 * * *' },
+  // 2026-07-27: gives 0343's sanctioned observation purge its first caller.
+  // 5-year window, so it is a guaranteed no-op today — wired now so the plumbing
+  // exists before report ingestion restarts and these tables take real volume.
+  { heartbeatName: 'pms-observations-purge',            source: { kind: 'vercel', cronPath: '/api/cron/pms-observations-purge' },       cronExpr: '40 5 * * *' },
   // Weekly
   { heartbeatName: 'ml-train-inventory',    source: { kind: 'github', workflowFile: 'ml-cron.yml' },                 cronExpr: '0 9 * * 0' },
   // Plan v4 (2026-05-24): removed `scraper-weekly-digest` — Railway
@@ -78,11 +107,4 @@ export const SCHEDULE_REGISTRY: ReadonlyArray<ScheduleEntry> = [
   // process killed in the v4 cutover). Polls /api/admin/doctor every 5
   // min and alerts Sentry/SMS on fail with business-hours-only bumps.
   { heartbeatName: 'vercel-watchdog',       source: { kind: 'vercel', cronPath: '/api/cron/vercel-watchdog' },                  cronExpr: '*/5 * * * *' },
-  // Plan v8 Phase B (migration 0217): every 5 min, flips
-  // mapping_help_requests past expires_at from 'pending' to 'expired'
-  // and deletes the corresponding screenshot objects from the
-  // mapping-screenshots Supabase Storage bucket. Without this the
-  // 15-min TTL pending rows + their screenshots would accumulate
-  // forever.
-  { heartbeatName: 'expire-help-requests', source: { kind: 'vercel', cronPath: '/api/cron/expire-help-requests' },                cronExpr: '*/5 * * * *' },
 ];

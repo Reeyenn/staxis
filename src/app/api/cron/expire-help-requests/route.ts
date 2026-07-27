@@ -1,6 +1,21 @@
 /**
  * GET /api/cron/expire-help-requests
  *
+ * ┌─ DORMANT since 2026-07-27 (chore audit) — UNSCHEDULED, NOT DELETED ─────┐
+ * │ Everything this sweeps is produced by the CUA robot's human-assist      │
+ * │ flow, and the robot is decommissioned. Production evidence: all 4       │
+ * │ mapping_help_requests rows are already 'expired', the newest expired    │
+ * │ 2026-07-01. At every-5-minutes that was a proven no-op 288 times a day. │
+ * │                                                                         │
+ * │ RE-ENABLE WHEN THE ROBOT COMES BACK — specifically when cua-service     │
+ * │ starts running mapper jobs again. Both halves of this route depend on   │
+ * │ it: the expiry RPC drains pending help requests (15-min TTL, so the     │
+ * │ 5-min cadence matters), and the live-frame sweep cleans up after        │
+ * │ hard-crashed mapper runs. Restore all five registry rows: vercel.json   │
+ * │ crons[] on a five-minute schedule, SCHEDULE_REGISTRY, the doctor's      │
+ * │ EXPECTED_CRONS, and WORKER_META in /api/admin/mission/workers.          │
+ * └─────────────────────────────────────────────────────────────────────────┘
+ *
  * Plan v8 hardening (Codex P1 #5) — runs every few minutes to:
  *   1. Flip mapping_help_requests rows past expires_at from 'pending'
  *      to 'expired' via the expire_stale_help_requests() SECURITY DEFINER

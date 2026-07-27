@@ -213,15 +213,23 @@ async function spendByFeature(keys: string[]): Promise<SpendTotals | null> {
  * the page should say nothing rather than imply a date it does not have.
  */
 async function attributionStartedAt(): Promise<string | null | undefined> {
-  const { data, error } = await supabaseAdmin
-    .from('agent_costs')
-    .select('created_at')
-    .not('feature', 'is', null)
-    .order('created_at', { ascending: true })
-    .limit(1);
+  // Reads the RPC (migration 0375), not agent_costs directly, for two reasons.
+  //
+  // 1. CORRECTNESS ACROSS THE ROLLUP BOUNDARY. This was an unbounded
+  //    full-history scan for "the oldest attributed row". The moment
+  //    /api/cron/agent-costs-rollup prunes a raw month, that scan starts
+  //    returning the oldest SURVIVING row — so this page would quietly claim
+  //    attribution began later than it did, and the very caveat this date
+  //    exists to display would retire itself. The RPC takes the earliest of
+  //    the surviving raw rows AND the monthly summary, so the sentence stays
+  //    true after a prune.
+  //
+  // 2. COST. Even before pruning, this ran on every page load with no date
+  //    floor. The RPC resolves it as two index-backed min() lookups.
+  const { data, error } = await supabaseAdmin.rpc('staxis_agent_costs_attribution_start');
   if (error) return undefined;
-  const row = (data ?? [])[0] as { created_at?: string } | undefined;
-  return row?.created_at ?? null;
+  // The function returns a bare timestamptz — null when nothing is attributed.
+  return (data as string | null) ?? null;
 }
 
 export async function GET(req: NextRequest) {

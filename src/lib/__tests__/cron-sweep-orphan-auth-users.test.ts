@@ -212,19 +212,56 @@ describe('sweep-orphan-auth-users', () => {
     assert.deepEqual(state.deletedUserIds, []);
   });
 
-  test('does NOT sweep when the auth user is older than 7 days, but emits skipped event', async () => {
+  test('does NOT sweep when the auth user is older than 7 days, and logs ONE summary row', async () => {
     state.authUsers = [
-      { id: 'too-old', email: 'a@x.com', created_at: isoMinusDays(10) },
+      { id: 'too-old-1', email: 'a@x.com', created_at: isoMinusDays(10) },
+      { id: 'too-old-2', email: 'b@x.com', created_at: isoMinusDays(11) },
+      { id: 'too-old-3', email: 'c@x.com', created_at: isoMinusDays(12) },
     ];
 
     const res = await GET(makeRequest());
     const body = await res.json();
 
     assert.equal(body.data.swept, 0);
-    assert.equal(body.data.skipped_too_old, 1);
+    assert.equal(body.data.skipped_too_old, 3);
     assert.deepEqual(state.deletedUserIds, []);
-    const skippedEvent = state.appEvents.find(e => e.event_type === 'orphan_auth_user_skipped_too_old');
-    assert.ok(skippedEvent, 'should emit skipped_too_old event');
+
+    // ONE row per RUN, not one per refused user. This used to be per-user, and
+    // because a refused user is permanently older than 7 days it was refused
+    // again on every run — 18,174 rows, 71% of app_events, all restating an
+    // unchanged fact. Migration 0376 cleared the backlog; this is the fix that
+    // stops it returning.
+    const summaries = state.appEvents.filter(
+      e => e.event_type === 'orphan_auth_users_skipped_too_old_summary',
+    );
+    assert.equal(summaries.length, 1, 'exactly one summary row per run, regardless of how many were refused');
+    assert.equal(
+      state.appEvents.filter(e => e.event_type === 'orphan_auth_user_skipped_too_old').length,
+      0,
+      'the per-user event must be gone — it is what filled the table',
+    );
+
+    // The summary still carries the information: how many, and who.
+    const meta = summaries[0].metadata as { count: number; sample: unknown[] };
+    assert.equal(meta.count, 3);
+    assert.equal(meta.sample.length, 3);
+  });
+
+  test('logs no summary row at all when nothing was refused', async () => {
+    // A quiet run must write nothing — otherwise the table still grows daily
+    // on a no-op, which was the original complaint.
+    state.authUsers = [
+      { id: 'has-account', email: 'h@x.com', created_at: isoMinusMinutes(30) },
+    ];
+    state.accountUserIds = ['has-account'];
+
+    await GET(makeRequest());
+
+    assert.deepEqual(
+      state.appEvents.filter(e => String(e.event_type).includes('skipped_too_old')),
+      [],
+      'no refusals means no rows written',
+    );
   });
 
   test('classifies mixed batches correctly', async () => {
