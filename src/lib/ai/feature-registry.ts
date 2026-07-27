@@ -645,11 +645,6 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
     'Spots messages like broken-AC reports in team chat and offers a one-tap create-work-order button.',
     ['text'], HAIKU,
   ),
-  'communications.unread_summary': defineFeature(
-    'communications.unread_summary', 'Communications', 'Unread-message summaries',
-    'Writes the what-did-I-miss summary of unread team messages.',
-    ['text'], HAIKU,
-  ),
   'communications.announcement_polish': defineFeature(
     'communications.announcement_polish', 'Communications', 'Announcement polish',
     'Cleans up a rough manager note into a clear announcement before posting.',

@@ -51,8 +51,16 @@ describe('AI Control Center feature registry', () => {
   // 34→35 keys). It already existed as a ledger-only label because the model was
   // pinned inside the Fly robot; reading scans moved on-box when that robot was
   // decommissioned, so there is now a model to switch and a card to show it on.
+  // 2026-07-27: the "Catch up" screen removal took its only consumer with it, so
+  // communications.unread_summary left too (28→27 controllable, 35→34 keys). A
+  // registry entry with no call site is a knob on the AI Control Center that
+  // switches nothing — the operator changes its model, saves, and no behaviour
+  // anywhere moves. Past spend booked under the key is unaffected: see
+  // mission-control-ai-staff-roster.test.ts, "a de-registered feature's history".
+  // (The title said 27 while the registry held 28 for a few hours between those
+  // two commits — only the title, which nothing asserts. It is true again now.)
   test('covers 27 controllable hosted features and 7 display-only features', () => {
-    assert.equal(AI_FEATURE_KEYS.length, 35);
+    assert.equal(AI_FEATURE_KEYS.length, 34);
     assert.equal(new Set(AI_FEATURE_KEYS).size, AI_FEATURE_KEYS.length);
     assert.deepEqual(Object.keys(AI_FEATURE_REGISTRY).sort(), [...AI_FEATURE_KEYS].sort());
 
@@ -90,7 +98,6 @@ describe('AI Control Center feature registry', () => {
     const haiku = [
       'agent.conversation_summary',
       'communications.action_detection',
-      'communications.unread_summary',
       'communications.announcement_polish',
       'communications.ui_translation',
       'communications.message_translation',

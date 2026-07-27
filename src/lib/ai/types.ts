@@ -33,7 +33,6 @@ export const AI_FEATURE_KEYS = [
   'financials.quote_scan',
   'communications.staxis_assistant',
   'communications.action_detection',
-  'communications.unread_summary',
   'communications.announcement_polish',
   'communications.ui_translation',
   'communications.message_translation',
