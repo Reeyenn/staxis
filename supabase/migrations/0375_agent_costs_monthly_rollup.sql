@@ -162,6 +162,16 @@ revoke all on public.agent_costs_monthly from anon, authenticated;
 -- verify once and are then frozen; only frozen months are prunable.
 --
 -- Returns one row: what it folded and whether it verified.
+--
+-- ═══ WHAT `verified` MEANS IN THE RETURN ROW ═════════════════════════════
+-- `verified` = "the fold reproduces the raw sum and row count exactly". It is
+-- NOT the same as "this month is now prunable". An OPEN month can be perfectly
+-- correct — and returns verified=true — while deliberately carrying no
+-- `verified_at` stamp, because Guard 2 withholds the stamp until the month is
+-- over. That is why the two are separate: the return value is a health signal
+-- the cron logs, and the DURABLE STAMP is the only thing that authorises a
+-- prune. /api/cron/agent-costs-rollup re-reads the stamp from the table
+-- immediately before deleting anything and never prunes on this boolean.
 -- ═══════════════════════════════════════════════════════════════════════════
 create or replace function public.staxis_rollup_agent_costs_month(p_month date)
 returns table (
@@ -177,6 +187,17 @@ security definer
 set search_path = public, pg_temp
 as $$
 declare
+  -- The bucket label. Computed as a pure DATE, never by casting a timestamptz.
+  --
+  -- Casting v_start to date would be a real bug: v_start is a timestamptz, and
+  -- casting one to date resolves it in the SESSION's timezone. At any negative UTC
+  -- offset that lands on the last day of the PREVIOUS month — 2026-01-01 was
+  -- stored as 2025-12-31 — so every bucket was mislabelled, and the cron's
+  -- freeze/prune matching (which compares 'YYYY-MM-01' strings) silently
+  -- stopped lining up with the rows. Caught by the PGlite integration test,
+  -- which runs at a non-UTC offset; production Postgres defaults to UTC and
+  -- would have hidden it until someone changed the session timezone.
+  v_month date;
   v_start timestamptz;
   v_end   timestamptz;
   v_raw_cost    numeric;
@@ -189,6 +210,7 @@ begin
   -- Month boundaries in UTC. The source column is timestamptz, so this is an
   -- unambiguous half-open range [start, end) — no row lands in two months and
   -- none falls between them.
+  v_month := date_trunc('month', p_month::timestamp)::date;
   v_start := date_trunc('month', p_month::timestamp) at time zone 'UTC';
   v_end   := (date_trunc('month', p_month::timestamp) + interval '1 month') at time zone 'UTC';
 
@@ -197,18 +219,18 @@ begin
   -- already pruned would delete the summary and replace it with nothing.
   if exists (
     select 1 from public.agent_costs_monthly
-     where agent_costs_monthly.month = v_start::date
+     where agent_costs_monthly.month = v_month
        and agent_costs_monthly.verified_at is not null
   ) then
     return query
-      select v_start::date,
+      select v_month,
              count(*)::bigint,
              coalesce(sum(acm.row_count), 0)::bigint,
              coalesce(sum(acm.cost_usd), 0)::numeric,
              coalesce(sum(acm.cost_usd), 0)::numeric,
              true
         from public.agent_costs_monthly acm
-       where acm.month = v_start::date;
+       where acm.month = v_month;
     return;
   end if;
 
@@ -223,7 +245,7 @@ begin
   -- alone: if a grain existed last night and has no rows tonight (a row was
   -- corrected away), a pure upsert would leave the stale grain behind and the
   -- verification below would fail for a reason nobody could find.
-  delete from public.agent_costs_monthly where agent_costs_monthly.month = v_start::date;
+  delete from public.agent_costs_monthly where agent_costs_monthly.month = v_month;
 
   insert into public.agent_costs_monthly (
     month, property_id, feature, model, kind, state, swept,
@@ -231,7 +253,7 @@ begin
     earliest_created_at, latest_created_at, updated_at
   )
   select
-    v_start::date,
+    v_month,
     ac.property_id,
     ac.feature,
     ac.model,
@@ -258,7 +280,7 @@ begin
   select coalesce(sum(cost_usd), 0), coalesce(sum(row_count), 0)
     into v_rolled_cost, v_rolled_rows
     from public.agent_costs_monthly
-   where agent_costs_monthly.month = v_start::date;
+   where agent_costs_monthly.month = v_month;
 
   v_ok := (v_rolled_cost = v_raw_cost) and (v_rolled_rows = v_raw_rows);
 
@@ -268,11 +290,11 @@ begin
   if v_ok and v_end <= now() then
     update public.agent_costs_monthly
        set verified_at = now()
-     where agent_costs_monthly.month = v_start::date;
+     where agent_costs_monthly.month = v_month;
   end if;
 
   return query select
-    v_start::date, v_grains, v_raw_rows, v_raw_cost, v_rolled_cost, v_ok;
+    v_month, v_grains, v_raw_rows, v_raw_cost, v_rolled_cost, v_ok;
 end;
 $$;
 
