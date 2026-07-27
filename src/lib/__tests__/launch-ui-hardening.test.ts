@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -52,8 +52,13 @@ test('communications has a phone list/detail flow and does not collapse failures
   const overlays = source('src', 'app', 'communications', '_components', 'CommsOverlays.tsx');
   const row = source('src', 'app', 'communications', '_components', 'MessageRow.tsx');
   const calendar = source('src', 'app', 'communications', '_components', 'CalendarPane.tsx');
-  const contacts = source('src', 'app', 'communications', '_components', 'ContactsPane.tsx');
-  const knowledge = source('src', 'app', 'communications', '_components', 'KnowledgePane.tsx');
+  // Contacts and the knowledge hub moved to the Knows tab's "told" half. These
+  // two lines follow the SURVIVING copies, so the protections stay attached to
+  // the code that actually runs; the Communications originals can be deleted
+  // without touching this test again. Same assertions, restated against the
+  // envelope shape the concourse surface uses (result.error, not result.ok).
+  const contacts = source('src', 'components', 'concourse', 'ToldContacts.tsx');
+  const knowledge = source('src', 'components', 'concourse', 'ToldKnowledge.tsx');
   const logbook = source('src', 'app', 'communications', '_components', 'LogbookPane.tsx');
   const snow = source('src', 'app', 'communications', '_components', 'comms-snow.tsx');
 
@@ -75,11 +80,21 @@ test('communications has a phone list/detail flow and does not collapse failures
   for (const pane of [calendar, contacts, knowledge, logbook]) {
     assert.match(pane, /error: loadError/);
   }
-  assert.match(knowledge, /if \(!docsR\.ok \|\| !docsR\.data\) return \{ error:/);
-  assert.match(knowledge, /if \(!foldersR\.ok \|\| !foldersR\.data\) return \{ error:/);
-  assert.doesNotMatch(knowledge, /documents: docsR\.ok && docsR\.data \? docsR\.data\.documents : \[\]/);
+  assert.match(knowledge, /if \(docsR\.error !== undefined \|\| !docsR\.data\) return \{ error:/);
+  assert.match(knowledge, /if \(foldersR\.error !== undefined \|\| !foldersR\.data\) return \{ error:/);
+  assert.doesNotMatch(knowledge, /documents: docsR\.data\?\.documents \?\? \[\]/);
   assert.match(logbook, /if \(!r\.ok\).*The recap was not posted/);
   assert.match(snow, /export const iconBtn:[\s\S]*?width: 44, height: 44/);
+
+  // The Communications originals are still mounted by CommsApp until the
+  // clean-out lands, so they keep their guards until the day they disappear.
+  // Existence-checked rather than path-listed: the whole point of the repoint
+  // above is that deleting them needs no edit here.
+  for (const legacy of ['ContactsPane.tsx', 'KnowledgePane.tsx']) {
+    const path = join(process.cwd(), 'src', 'app', 'communications', '_components', legacy);
+    if (!existsSync(path)) continue;
+    assert.match(readFileSync(path, 'utf8'), /error: loadError/, legacy);
+  }
 });
 
 test('zero occupied rooms remains a real occupancy reading', () => {

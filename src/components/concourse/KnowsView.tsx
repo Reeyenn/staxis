@@ -5,10 +5,24 @@
 // I'm wrong." The second view in the Staxis section, beside the approvals
 // queue.
 //
-// Everything Staxis believes about this hotel, grouped into five buckets, each
-// fact carrying its provenance in plain English and three actions: Confirm,
-// Edit, Remove. Plus an open box at the top — type a sentence or drop in a
-// file, and it becomes facts you then approve.
+// TWO HALVES, DELIBERATELY NOT MIXED
+//   Figured out on its own  what Staxis INFERRED — facts grouped into five
+//                           buckets, each carrying its provenance in plain
+//                           English and three actions: Confirm, Edit, Remove.
+//                           Plus an open box: type a sentence or drop in a
+//                           file, and it becomes facts you then approve.
+//   What you've told it     what a human ASSERTED — the contact directory,
+//                           the written procedures, and the document cabinet
+//                           the copilot reads. Ported here from the
+//                           Communications section (see ToldView.tsx).
+//
+// The halves are two exclusive panes behind one control and never interleave,
+// because a manager must always be able to tell an inference from an
+// assertion. Their access rules differ too, and that is the point:
+// the inferred half is a manager view; the told half is NOT, because in
+// Communications every signed-in person could reach the emergency numbers and
+// moving the directory here must not quietly take that away. See canReadTold /
+// canReadLearned in told-knowledge.ts.
 //
 // HONESTY RULES THIS SCREEN LIVES BY
 //   • A brand-new hotel has zero facts. The empty state invites input; it
@@ -22,7 +36,6 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { canManageTeam } from '@/lib/roles';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
@@ -38,6 +51,8 @@ import {
 import { CxStyle } from './concourse-css';
 import { CxIcon } from './icons';
 import { CompanyRulebookPanel } from './CompanyRulebookPanel';
+import { ToldView, ToldStyle } from './ToldView';
+import { canReadLearned, defaultHalf, type KnowsHalf } from './told-knowledge';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -73,8 +88,23 @@ interface IntakeResult {
 const S = {
   title: { en: 'What Staxis knows', es: 'Lo que Staxis sabe' },
   sub: {
+    en: 'Two kinds of knowledge, kept apart on purpose: what Staxis worked out by itself, and what your team has told it.',
+    es: 'Dos tipos de conocimiento, separados a propósito: lo que Staxis dedujo por su cuenta y lo que tu equipo le contó.',
+  },
+
+  // ── The two halves ────────────────────────────────────────────────────────
+  // Named so nobody has to be told which is which. "Figured out on its own"
+  // is a guess Staxis made and may be wrong; "What you've told it" is a person
+  // vouching. Mixing them in one list would erase that difference.
+  halfLearned: { en: 'Figured out on its own', es: 'Lo que dedujo solo' },
+  halfTold: { en: 'What you’ve told it', es: 'Lo que le contaste' },
+  learnedSub: {
     en: 'Everything Staxis believes about your hotel, and where it learned it. Tell it if it is wrong.',
     es: 'Todo lo que Staxis cree sobre tu hotel, y dónde lo aprendió. Dile si está equivocado.',
+  },
+  toldSub: {
+    en: 'Contacts, procedures, and documents your team wrote or uploaded. Staxis answers from these.',
+    es: 'Contactos, procedimientos y documentos que tu equipo escribió o subió. Staxis responde con esto.',
   },
   boxEyebrow: { en: 'Tell Staxis about your hotel', es: 'Cuéntale a Staxis sobre tu hotel' },
   boxPlaceholder: {
@@ -122,9 +152,11 @@ const S = {
   },
   removeYes: { en: 'Yes, remove', es: 'Sí, quitar' },
   nothingHere: { en: 'Nothing here yet', es: 'Nada aquí todavía' },
+  // Scoped to the LEARNED half only. The told half beside it is open to
+  // everyone, so this points there rather than dead-ending the reader.
   managerOnly: {
-    en: 'What Staxis knows about the hotel is a manager view. Ask your manager to open it.',
-    es: 'Lo que Staxis sabe del hotel es una vista de gerencia. Pídele a tu gerente que la abra.',
+    en: 'What Staxis has figured out on its own is a manager view. Ask your manager to open it — the contacts, procedures, and documents next door are open to you.',
+    es: 'Lo que Staxis dedujo por su cuenta es una vista de gerencia. Pídele a tu gerente que la abra — los contactos, procedimientos y documentos de al lado sí puedes verlos.',
   },
   loadFailed: {
     en: 'Could not load what Staxis knows right now. Do not read this as "it knows nothing".',
@@ -406,6 +438,12 @@ const KN_CSS = `
   font-size:12px;padding:0 9px;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;}
 .kn-meta{display:flex;gap:14px;margin-top:14px;flex-wrap:wrap;}
 .kn-metai{font-family:var(--font-geist-mono),ui-monospace,monospace;font-size:10.5px;color:#8A9187;}
+/* The inferred/asserted switch, and the line under it that says which one you
+   are looking at. The label alone does the work — no colour coding, because
+   the distinction has to survive being printed or read by somebody colour
+   blind. */
+.kn-halves{width:fit-content;max-width:100%;overflow-x:auto;margin-top:20px;}
+.kn-halfsub{font-size:12.5px;color:#8A9187;margin-top:14px;line-height:1.5;max-width:580px;}
 `;
 
 // ─── Component ──────────────────────────────────────────────────────────────
@@ -416,7 +454,15 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
 
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
-  const canSee = !!user && canManageTeam(user.role);
+  const canSee = canReadLearned(user?.role);
+
+  // Which half is open. `null` means "nobody has chosen yet", so the default
+  // is derived from the role LIVE rather than frozen at first render — `user`
+  // arrives asynchronously, and freezing it would land every manager on the
+  // told half just because auth had not resolved yet. An explicit tap wins
+  // from then on.
+  const [chosenHalf, setChosenHalf] = useState<KnowsHalf | null>(null);
+  const half: KnowsHalf = chosenHalf ?? defaultHalf(user?.role);
 
   const { data, loading, error, reload } = useApiResource<KnowsData>(
     `/api/memory/knows?propertyId=${activePropertyId}`,
@@ -572,27 +618,63 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   // manager-only is the HOTEL's own knowledge base below.
   const companyBook = <CompanyRulebookPanel lang={lang} />;
 
-  if (!canSee) {
-    return (
-      <div className="cx-page cx-swap">
-        <CxStyle />
-        <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
-        {companyBook}
-        <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
-        <div className="cx-psub">{L('managerOnly')}</div>
-      </div>
-    );
-  }
-
-  return (
+  // The page chrome both halves share. A plain render helper, not a component:
+  // it holds no state, so inlining it would only duplicate the header three
+  // times. The half switch lives here so it is in the same place whichever
+  // half you are on, and whoever you are.
+  const shell = (body: React.ReactNode) => (
     <div className="cx-page cx-swap">
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: KN_CSS }} />
+      <ToldStyle />
 
       {companyBook}
 
       <div className="cx-ptitle" style={{ marginTop: 0 }}>{L('title')}</div>
       <div className="cx-psub">{L('sub')}</div>
+
+      <div className="cx-seg kn-halves" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={half === 'learned'}
+          className={half === 'learned' ? 'cx-on' : ''}
+          onClick={() => setChosenHalf('learned')}
+        >
+          {L('halfLearned')}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={half === 'told'}
+          className={half === 'told' ? 'cx-on' : ''}
+          onClick={() => setChosenHalf('told')}
+        >
+          {L('halfTold')}
+        </button>
+      </div>
+
+      {body}
+    </div>
+  );
+
+  // What a person told it. Open to everyone signed in — see canReadTold.
+  if (half === 'told') {
+    return shell(
+      <>
+        <div className="kn-halfsub">{L('toldSub')}</div>
+        <ToldView lang={lang} />
+      </>,
+    );
+  }
+
+  // What it worked out by itself. Still a manager view, and the note now
+  // points at the half that is open to the reader instead of dead-ending.
+  if (!canSee) return shell(<div className="kn-halfsub">{L('managerOnly')}</div>);
+
+  return shell(
+    <>
+      <div className="kn-halfsub">{L('learnedSub')}</div>
 
       {/* ── The open box ── */}
       <div className="kn-box">
@@ -802,6 +884,6 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
             </div>
           );
         })}
-    </div>
+    </>,
   );
 }
