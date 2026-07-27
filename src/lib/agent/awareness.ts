@@ -352,8 +352,16 @@ export interface AwarenessInput {
    * frequently repeated bug shape.
    */
   authUserId?: string | null;
-  /** Resolved staff row for this person at this hotel, when they have one. */
-  staffId: string | null;
+  // NOTE — there is deliberately NO staffId here, and the absence is a known
+  // gap rather than an oversight. All three "what you did today" sources key
+  // the actor by an ACCOUNT (activity_log.actor_account_id,
+  // agent_decisions.actor_account_id) or by an AUTH UID
+  // (inventory_audit_events.actor_user_id). Actions recorded only against a
+  // `staff.id` — the staff-keyed paths behind the public housekeeper link —
+  // are therefore not attributed to the person asking. That costs nothing
+  // today, because housekeepers have no chat at all; it would start to matter
+  // if a staff-keyed write path ever appeared for a hat that does. Carrying an
+  // unused field in the meantime would just be surface nobody maintains.
   /**
    * The company this person holds a COMPANY-scope hat in, when they hold one.
    *
