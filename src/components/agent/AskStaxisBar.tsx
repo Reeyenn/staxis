@@ -208,6 +208,9 @@ export function AskStaxisBar() {
     // Lazily warm the conversation list once the user engages the bar, so the
     // Past-chats sheet is populated by the time they open it.
     active: focused || historyOpen || mobileOpen || chatState !== 'empty',
+    // Already computed above for the inventory styling; reused here so the
+    // copilot knows which screen the question was asked from.
+    pathname,
   });
 
   const hasText = input.trim().length > 0;

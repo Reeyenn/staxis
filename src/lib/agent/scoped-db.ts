@@ -140,7 +140,17 @@ export type UnscopedReason =
   /** A shared `src/lib/**` helper that takes the raw client plus its own
    *  `pid` argument (e.g. getInventoryAccountingSummary). The helper does its
    *  own scoping; the accessor has nothing to wrap. */
-  | 'shared-lib-client-param';
+  | 'shared-lib-client-param'
+  /**
+   * A table keyed by `organization_id` rather than `property_id`
+   * (`company_findings`). The accessor CANNOT scope it — it would filter on a
+   * column the table does not have — but the tenant boundary is not weaker
+   * here, it is drawn one level up: the organization id must come from the
+   * caller's own hat on the company spine, never from a request parameter.
+   * A call site that takes an organization id from user input is a bug this
+   * reason does not excuse.
+   */
+  | 'company-scope-table';
 
 /**
  * Deliberately step outside the hotel boundary. The `reason` argument exists

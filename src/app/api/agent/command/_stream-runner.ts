@@ -63,7 +63,26 @@ export interface AgentUserCtx {
 }
 
 export type LoadUserCtxResult =
-  | { ok: true; userCtx: AgentUserCtx; staffId: string | null }
+  | {
+    ok: true;
+    userCtx: AgentUserCtx;
+    staffId: string | null;
+    /**
+     * The organization this person holds a COMPANY-SCOPE hat in, else null.
+     *
+     * The spine's `effectiveRole` is already resolved below to pick the hat;
+     * this surfaces the company half of that answer instead of throwing it
+     * away, so the awareness block can count a VP's own queue without a second
+     * round trip through `resolveCompanyForProperty`.
+     *
+     * NARROW ON PURPOSE — `scope === 'company'` only. A property-scope hat
+     * covering four hotels is NOT a company job, and Wall A in
+     * `companyScopeFor` draws the line in exactly the same place. Reading it
+     * any wider here would hand a multi-hotel GM a company queue the rest of
+     * the product would refuse them.
+     */
+    companyOrganizationId: string | null;
+  }
   | { ok: false; reason: 'account_not_found' };
 
 /**
@@ -93,9 +112,11 @@ export async function loadAgentUserCtx(
   // null here means the spine actively found no standing at this property.
   // Never widens: the route's `userHasPropertyAccess` gate ran first.
   let roleHere: AppRole = legacyRole;
+  let companyOrganizationId: string | null = null;
   try {
     const hat = await effectiveRole(accountId, propertyId);
     if (hat.role) roleHere = hat.role;
+    if (hat.scope === 'company') companyOrganizationId = hat.organizationId ?? null;
   } catch {
     // A spine hiccup must not take the chat down. The legacy role is what this
     // route used for its whole life, so falling back to it is the pre-lens
@@ -127,7 +148,7 @@ export async function loadAgentUserCtx(
   const staffId = (staffRow?.id as string) ?? null;
   userCtx.dept = (staffRow?.department as string | null) ?? null;
 
-  return { ok: true, userCtx, staffId };
+  return { ok: true, userCtx, staffId, companyOrganizationId };
 }
 
 export interface StreamRunnerContext {
