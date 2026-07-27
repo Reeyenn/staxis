@@ -476,40 +476,6 @@ export function containsWord(haystack: string, word: string): boolean {
   return false;
 }
 
-/**
- * The bilingual gate applied before any generated phrasing is stored.
- *
- * BOTH languages must pass, and failure in EITHER discards BOTH. A card that is
- * half model prose and half template reads as two different systems talking,
- * and a model that just invented a number in Spanish has not earned the benefit
- * of the doubt in English.
- *
- * The equality check is the language rule made mechanical (CLAUDE.md: every
- * user-facing string is EN + ES): a model that returns the English sentence
- * twice has produced no Spanish, and English silently standing in for Spanish
- * is exactly what must never reach a Spanish speaker's screen.
- */
-export function checkBilingualProse(
-  en: string,
-  es: string,
-  receipt: ProseReceipt,
-): ProseGuardResult {
-  const violations: ProseViolation[] = [];
-  const foldedEn = foldForProseMatch(en);
-  const foldedEs = foldForProseMatch(es);
-
-  if (!foldedEn) violations.push({ kind: 'numeral', lang: 'en', token: '(empty)' });
-  if (!foldedEs) violations.push({ kind: 'numeral', lang: 'es', token: '(empty)' });
-  if (foldedEn && foldedEs && foldedEn === foldedEs) {
-    violations.push({ kind: 'numeral', lang: 'es', token: '(english-standing-in-for-spanish)' });
-  }
-
-  violations.push(...checkProse(en, receipt, 'en').violations);
-  violations.push(...checkProse(es, receipt, 'es').violations);
-
-  return { ok: violations.length === 0, violations };
-}
-
 // ─── Slot mode: the model names a field, code prints the value ────────────────
 //
 // The binding fix. Read the header's "THE PRESENCE HOLE" note first — this is
@@ -775,8 +741,16 @@ export interface BilingualSlotProseResult extends ProseGuardResult {
 }
 
 /**
- * The bilingual slot gate. Same two structural rules as `checkBilingualProse`:
- * both languages must pass, and either failing discards both.
+ * The bilingual slot gate, and the only bilingual gate there is.
+ *
+ * Two structural rules on top of the per-language check: both languages must
+ * pass, and either failing discards BOTH. A card that is half model prose and
+ * half template reads as two different systems talking, and a model that just
+ * invented a number in Spanish has not earned the benefit of the doubt in
+ * English. The equality rule is CLAUDE.md's language requirement made
+ * mechanical — a model that returns the English sentence twice has produced no
+ * Spanish, and English silently standing in for Spanish is exactly what must
+ * never reach a Spanish speaker's screen.
  *
  * The English-standing-in-for-Spanish check runs on the RENDERED text, because
  * that is what a Spanish speaker would be shown. Two different slot spellings

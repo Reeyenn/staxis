@@ -24,7 +24,6 @@ import type { MessagesClient, UsageReport } from '@/lib/agent/llm';
 import {
   buildProseReceipt,
   buildProseSlots,
-  checkBilingualProse,
   checkBilingualSlotProse,
   checkProse,
   checkSlotProse,
@@ -250,27 +249,6 @@ describe('the prose guard: no number without a receipt', () => {
     assert.equal(checkProse('It happens every Monday.', backed, 'en').ok, true);
   });
 
-  test('English standing in for Spanish is refused', () => {
-    const same = 'Room 214 has 4 open work orders.';
-    const verdict = checkBilingualProse(same, same, receipt);
-    assert.equal(verdict.ok, false, 'a Spanish speaker must never be shown English silently');
-    assert.ok(verdict.violations.some((v) => v.token.includes('english-standing-in-for-spanish')));
-  });
-
-  test('a failure in either language discards both', () => {
-    const verdict = checkBilingualProse(
-      'Room 214 has 4 open work orders.',
-      'La habitación 214 tiene nueve órdenes.',
-      receipt,
-    );
-    assert.equal(verdict.ok, false);
-    assert.ok(verdict.violations.some((v) => v.lang === 'es'));
-  });
-
-  test('empty phrasing is a failure, not an empty pass', () => {
-    assert.equal(checkBilingualProse('', 'algo', receipt).ok, false);
-    assert.equal(checkBilingualProse('something', '', receipt).ok, false);
-  });
 });
 
 // ─── slot mode: the binding fix ─────────────────────────────────────────────
@@ -572,8 +550,14 @@ describe('the deterministic template is the floor, so it must clear the guard', 
   for (const c of [candidate(), PRICED, candidate({ magnitude: 9.44, severity: 'critical' })]) {
     test(`template phrasing passes its own guard (${c.severity}, price=${c.price ? 'yes' : 'no'})`, () => {
       const template = templateJudgment(c);
-      const verdict = checkBilingualProse(template.en, template.es, receiptFor(c));
-      assert.equal(verdict.ok, true, JSON.stringify(verdict.violations));
+      const r = receiptFor(c);
+      // Each language against checkProse — the gate brief-server actually runs.
+      // The bilingual wrapper that used to do this in one call was retired with
+      // its last production caller; the rule it enforced is unchanged.
+      const en = checkProse(template.en, r, 'en');
+      const es = checkProse(template.es, r, 'es');
+      assert.equal(en.ok, true, JSON.stringify(en.violations));
+      assert.equal(es.ok, true, JSON.stringify(es.violations));
     });
   }
 
