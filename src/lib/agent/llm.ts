@@ -32,6 +32,7 @@ import {
   type FakeSuccessRule,
   type UnbackedClaim,
 } from '@/lib/agent/fake-success-guard';
+import { AWARENESS_HEADER } from './awareness';
 import {
   buildAnswerReceipt,
   checkAnswerNumbers,
@@ -596,6 +597,11 @@ const DYNAMIC_ONLY_MARKERS = [
   '─── Current hotel snapshot ───',
   '─── What Staxis remembers about this hotel ───',
   '</staxis-memory-block>',
+  // The situational-awareness block. Imported rather than retyped so the guard
+  // cannot drift away from the header it is guarding — a stale literal here
+  // would keep passing while policing a string nothing emits any more.
+  AWARENESS_HEADER,
+  '</staxis-awareness>',
 ] as const;
 
 /**
