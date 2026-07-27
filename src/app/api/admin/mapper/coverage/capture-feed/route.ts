@@ -31,6 +31,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,6 +47,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return err('Unauthorized', { requestId, status: 401, code: 'unauthorized' });
+
+  // Robot off ⇒ refuse BEFORE spending anything. This route enqueues a
+  // workflow_jobs row whose only consumer (cua-service's queue poller) refuses
+  // to start while the robot is decommissioned, so the row would sit queued
+  // forever AND hold its idempotency slot. See robotDecommissionedResponse.
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: { propertyId?: unknown; feedKey?: unknown; pmsFamily?: unknown };
   try { body = await req.json(); } catch {

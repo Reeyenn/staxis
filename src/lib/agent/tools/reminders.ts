@@ -44,7 +44,7 @@ registerTool<CreateReminderArgs>({
     'Use when: the user wants something said LATER at a known moment — "remind the morning shift about the pool at 8am", "remind Maria to check the gym at 2pm", "recuérdale a mantenimiento revisar la piscina a las 9". For something that repeats use create_recurring_todo; for a job with no particular time use create_todo. ' +
     'Args: body — what the reminder should say, capped at 1000 characters. fireAt — a full ISO-8601 timestamp WITH the timezone offset (e.g. "2026-07-06T08:00:00-05:00"); work the exact instant out from the user\'s words in the hotel\'s timezone rather than passing their phrase through. recipient — one staff member by name, OR department — one of front_desk / housekeeping / maintenance / general. Exactly one of the two. ' +
     'Returns: the reminder id, its text, when it fires and who it is for. A proposal until the user approves the card. ' +
-    'Refuses: an empty body, a time it cannot read, any time in the PAST, both a person and a department at once, neither of them, and a recipient name matching several people. It delivers in-app only — a direct message from the user, or a post in the department channel — so it will not text, email or call anyone at that hour.',
+    'Refuses: an empty body, a time it cannot read, any time in the PAST, both a person and a department at once, neither of them, a recipient name matching several people, and any hotel with the Communications section switched off (reminders are delivered through Communications, so there would be no way to deliver it). It delivers in-app only — a direct message from the user, or a post in the department channel — so it will not text, email or call anyone at that hour.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -58,6 +58,13 @@ registerTool<CreateReminderArgs>({
   allowedRoles: ['admin', 'owner', 'general_manager', 'front_desk'],
   mutates: true,
   approval: 'card',
+  // A reminder is delivered through Communications and nowhere else, so at a
+  // hotel with that section off there is no way to deliver it. Gating CREATION
+  // only — cancel_reminder and list_scheduled_items stay ungated so anyone can
+  // still see and clear reminders made before the section was switched off.
+  // The full reasoning (and why this is the catalog gate rather than a check in
+  // the handler) is on the `section` field in ../tools.ts.
+  section: 'communications',
   handler: async ({ body, fireAt, recipient, department }, ctx: ToolHandlerContext): Promise<ToolResult> => {
     const text = String(body ?? '').trim().slice(0, 1000);
     if (!text) return { ok: false, error: 'The reminder is empty — tell me what it should say.' };

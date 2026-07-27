@@ -193,6 +193,15 @@ export const ApiErrorCode = {
   /** The hotel's daily AI spend cap. Distinct from `rate_limited` on purpose:
    *  "come back in a minute" and "come back tomorrow" are different answers. */
   AiBudgetExhausted: 'ai_budget_exhausted',
+  /**
+   * The action would have handed work to the PMS robot, which is switched off
+   * (`CUA_DECOMMISSIONED`). Deliberately NOT `ai_disabled`: that code is bound
+   * to the knowledge/rulebook surfaces and is mapped to their own EN/ES banner
+   * copy, so reusing it here would put the wrong sentence on those screens.
+   * Distinct from `not_found` / `validation_failed` too — nothing is wrong with
+   * the request; there is simply nobody to do the work.
+   */
+  RobotDecommissioned: 'robot_decommissioned',
 } as const;
 
 export type ApiErrorCodeValue = typeof ApiErrorCode[keyof typeof ApiErrorCode];

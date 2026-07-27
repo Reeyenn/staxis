@@ -964,7 +964,14 @@ function SimpleWorkerRow({ w }: { w: WorkerRow }) {
     <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9 }}>
       <Dot tone={v.tone} size={7} style={{ marginTop: 4 }} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {/* One-line row, so a long description ellipsises. `title` keeps the
+            full sentence reachable on hover — some chores (the PMS retention
+            janitor) do several jobs and the tail of the sentence is the part
+            that matters most. */}
+        <div
+          title={w.description || humanize(w.name)}
+          style={{ fontSize: 12, color: '#fff', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
           {w.description || humanize(w.name)}
         </div>
         <div className="mono" style={{ fontSize: 9.5, color: dimWhite(.45), marginTop: 1 }}>{last}</div>

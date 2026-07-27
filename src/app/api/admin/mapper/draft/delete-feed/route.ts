@@ -45,6 +45,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { requireAdmin } from '@/lib/admin-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
+import { robotDecommissionedResponse } from '@/lib/pms/decommission';
 import { REQUIRED_ACTION_KEYS } from '@/lib/pms/recipe-coverage';
 import { draftDeleteFeedsPayload } from '@/lib/pms/draft-edit-ops';
 
@@ -152,6 +153,13 @@ export async function POST(req: NextRequest): Promise<Response> {
   const requestId = getOrMintRequestId(req);
   const admin = await requireAdmin(req);
   if (!admin.ok) return admin.response;
+
+  // Robot off ⇒ refuse BEFORE spending anything. This route enqueues a
+  // workflow_jobs row whose only consumer (cua-service's queue poller) refuses
+  // to start while the robot is decommissioned, so the row would sit queued
+  // forever AND hold its idempotency slot. See robotDecommissionedResponse.
+  const robotOff = robotDecommissionedResponse(requestId);
+  if (robotOff) return robotOff;
 
   let body: { jobId?: unknown; draftId?: unknown; propertyId?: unknown; feedKey?: unknown };
   try { body = await req.json(); } catch {

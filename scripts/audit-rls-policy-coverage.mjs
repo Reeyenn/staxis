@@ -121,6 +121,9 @@ const SERVICE_ROLE_ONLY = new Set([
   'claude_usage_log',
   'trusted_devices',
   'agent_cost_finalize_failures',
+  // 0375 — AI-books monthly summary. Service-role only (deny-all), twin of the
+  // runtime allowlist in src/app/api/admin/doctor/route.ts.
+  'agent_costs_monthly',
   'staff_magic_codes',
   // Phase A (2026-05-22 audit, Hole #1): hook writes proof rows when
   // Supabase tags JWT issuance with authentication_method='password';
