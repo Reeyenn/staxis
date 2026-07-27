@@ -85,6 +85,38 @@ const LATE_NIGHT = new Date('2026-07-26T03:00:00.000Z');
 const NEXT_DAY = new Date('2026-07-26T06:00:00.000Z');
 const RAN_AT = '2026-07-25T08:00:00.000Z';
 
+// ═══ THE ROUTE OWNS ITS OWN CLOCK — fixtures for it must be relative ════════
+//
+// The three instants above are for the tests that call `getMorningBrief`
+// directly and hand it an explicit `now`. Those are pinned and stay pinned.
+//
+// The tests that go through GET /api/findings/brief cannot do that, and MUST
+// NOT be able to: the route deliberately takes no `now` — the brief is cached
+// against the hotel's own day and can cost a model call, so letting a caller
+// name the hour would let a caller mint a second one. It reads `new Date()`.
+//
+// That means every fixture a ROUTE test asserts content about has to be placed
+// relative to the real clock, or the test is quietly asserting something about
+// today's date. This bit us: the run was pinned at 2026-07-25T08:00Z and the
+// suite asserted `lines[1]` was the biggest-dollar card. That held while the
+// fixture was inside `RUN_FRESH_HOURS` (48h) of the real now — the brief opened
+// with an "Overnight: …" framing line and the highlights started at index 1.
+// At 2026-07-27T08:00Z the run went stale, the framing line correctly
+// disappeared, every highlight shifted up one, and a green suite went red at a
+// wall-clock time with nothing to do with the code. The ordering was right the
+// whole time.
+//
+// So: relative offsets here, and assertions below that name the RULE rather
+// than a row number.
+const agoHours = (h: number): string => new Date(Date.now() - h * 3_600_000).toISOString();
+const agoDays = (d: number): string => agoHours(d * 24);
+
+/** Comfortably inside the 48h freshness band at any hour, in any timezone. */
+const FRESH_RUN_AGO_HOURS = 6;
+/** Comfortably outside it, and far enough past the boundary that the "N days
+ *  ago" it renders cannot flip mid-suite. */
+const STALE_RUN_AGO_HOURS = 72;
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function getReq(propertyId: string | null): NextRequest {
@@ -170,6 +202,51 @@ async function clearLedger(): Promise<void> {
   await pg.query("delete from public.idempotency_log where route = 'findings-brief'");
 }
 
+/**
+ * TAKE THE WORDING PASS'S SPEND HOLD AWAY, SO NOTHING HERE DIALS A PROVIDER.
+ *
+ * The route does not accept a scripted model — deliberately, like `now`. So
+ * every `readBrief()` below used to make a REAL Anthropic request: it reached
+ * `phraseBrief`, `reserveFindingsSpend` succeeded, and the call went out over
+ * the network on a unit-suite run — seven requests per run of this file. Two
+ * ways that goes wrong:
+ *
+ *   • OBSERVED — no valid key in the shell. One machine got a hard
+ *     `401 invalid x-api-key`; on another the same 401 was swallowed by
+ *     `phraseBrief`'s catch and the suite stayed green while still making every
+ *     call. A test whose result depends on which of those happens is not a test.
+ *   • REASONED, not observed — a VALID key. `applyBriefPhrasing` replaces each
+ *     line's text with the model's rewrite, so every assertion below that names
+ *     a template sentence ("The ice machine has had 3 service calls.") would be
+ *     asserting on model prose. The machine most likely to hold a working key is
+ *     a developer's, which is where this suite runs most often.
+ *
+ * Booking more finalised spend than the wording pass's share of the hotel's
+ * daily findings budget makes `reserveFindingsSpend` refuse, and `phraseBrief`
+ * returns the deterministic template BEFORE a prompt is built. That is the
+ * product's own escape hatch, used on purpose — the same one
+ * ai-staff-kill-switch.integration.test.ts uses on this same route, and for the
+ * same reason.
+ *
+ * It weakens nothing that is asserted here. The claims in this file are about
+ * WHICH lines the brief contains, in WHAT order, for WHICH hotel, and how often
+ * it is built — all decided by `buildBrief` before any model is consulted. The
+ * wording pass has its own suite (findings-brief.test.ts) with a scripted
+ * client and no network.
+ *
+ * Re-booked per test rather than once, so a run that crosses local midnight
+ * cannot silently land back on the network for its remaining tests.
+ */
+async function denyPhrasingBudget(): Promise<void> {
+  for (const pid of [PID_A, PID_B]) {
+    await pg.query(
+      `insert into public.findings_ai_spend (property_id, feature, state, cost_usd)
+       values ($1,'findings.judge','finalized',999)`,
+      [pid],
+    );
+  }
+}
+
 async function cacheRows(): Promise<Array<{ key: string; property_id: string | null }>> {
   const r = await pg.query<{ key: string; property_id: string | null }>(
     "select key, property_id from public.idempotency_log where route = 'findings-brief' order by key",
@@ -235,6 +312,7 @@ describe('/api/findings/brief — the morning brief', () => {
   beforeEach(async () => {
     currentUser = GM_A_UID;
     await clearLedger();
+    await denyPhrasingBudget();
   });
 
   // ── The door ──────────────────────────────────────────────────────────────
@@ -296,33 +374,71 @@ describe('/api/findings/brief — the morning brief', () => {
   // ── What it says ──────────────────────────────────────────────────────────
 
   describe('what it says about a real hotel', () => {
+    // Every timestamp here is relative to the real now — see the clocks note at
+    // the top. These tests read through the route, so the fixture has to move
+    // with the wall clock or the assertions drift off it.
     beforeEach(async () => {
-      await insertRun(PID_A, { checked: 34 });
+      await insertRun(PID_A, { checked: 34, runAt: agoHours(FRESH_RUN_AGO_HOURS) });
+      const seenLast = agoHours(FRESH_RUN_AGO_HOURS);
       await insertFinding({
         propertyId: PID_A, dedupeKey: 'brief:ice', summary: 'The ice machine has had 3 service calls.',
         severity: 'critical', priceLowCents: 210_000, priceHighCents: 380_000, magnitude: 3,
-        firstSeenAt: '2026-07-02T22:00:00.000Z',
+        firstSeenAt: agoDays(23), lastSeenAt: seenLast,
       });
       await insertFinding({
         propertyId: PID_A, dedupeKey: 'brief:hvac', summary: 'Room 214 has had 4 HVAC work orders.',
         priceLowCents: 60_000, priceHighCents: 140_000, magnitude: 4,
-        firstSeenAt: '2026-07-09T22:00:00.000Z',
+        firstSeenAt: agoDays(16), lastSeenAt: seenLast,
       });
       await insertFinding({
         propertyId: PID_A, dedupeKey: 'brief:linen', summary: 'Nobody has counted linen in 9 days.',
-        magnitude: 9, firstSeenAt: '2026-07-21T22:00:00.000Z',
+        magnitude: 9, firstSeenAt: agoDays(4), lastSeenAt: seenLast,
       });
     });
 
     test('leads with the biggest dollars and ends with the liveness line', async () => {
       const { body } = await readBrief(PID_A);
       const brief = body.data!.brief!;
-      const en = brief.lines.map((l) => l.text);
-      assert.ok(en[1].startsWith('The ice machine has had 3 service calls.'), en[1]);
-      assert.match(en[1], /\$2,100–\$3,800/);
-      assert.ok(en[2].startsWith('Room 214'), en[2]);
-      assert.match(en[en.length - 1], /^Checked 34 things last night/);
+      const lines = brief.lines.map((l) => l.text);
+
+      // THE ORDERING RULE — dollars first — asserted on the lines that QUOTE a
+      // card, not on row numbers. Whether the brief opens with a framing
+      // sentence depends on what the night actually held, and a positional
+      // assertion turns this into a test about that instead.
+      const quoted = brief.lines.filter((l) => l.findingId).map((l) => l.text);
+      assert.equal(quoted.length, 3, lines.join(' | '));
+      assert.ok(quoted[0].startsWith('The ice machine has had 3 service calls.'), quoted[0]);
+      assert.match(quoted[0], /\$2,100–\$3,800/);
+      assert.ok(quoted[1].startsWith('Room 214'), quoted[1]);
+      assert.ok(quoted[2].startsWith('Nobody has counted linen'), quoted[2]);
+
+      // A run this fresh recites its counts rather than its age.
+      assert.match(lines[lines.length - 1], /^Checked 34 things last night/);
       assert.ok(brief.lines.length <= 8);
+    });
+
+    // The case that made the positional assertion above look like an ordering
+    // bug. A stale run drops the "Overnight: …" framing line — correctly, since
+    // there was no overnight to describe — and everything shifts up. The
+    // ordering must be exactly the same, and the last line must stop reciting
+    // counts as if they were today's.
+    test('a stale run keeps the same order and stops claiming last night', async () => {
+      await pg.query(
+        `update public.finding_runs set run_at = $2::timestamptz where property_id = $1`,
+        [PID_A, agoHours(STALE_RUN_AGO_HOURS)],
+      );
+      const { body } = await readBrief(PID_A);
+      const brief = body.data!.brief!;
+      const lines = brief.lines.map((l) => l.text);
+
+      const quoted = brief.lines.filter((l) => l.findingId).map((l) => l.text);
+      assert.ok(quoted[0].startsWith('The ice machine has had 3 service calls.'), quoted[0]);
+      assert.ok(quoted[1].startsWith('Room 214'), quoted[1]);
+
+      const last = lines[lines.length - 1];
+      assert.match(last, /^Last checked \d+ days ago/);
+      assert.ok(!last.includes('34'), last);
+      assert.ok(!lines.some((l) => /^Overnight/.test(l)), lines.join(' | '));
     });
 
     test('an `ask` finding is a question, not a brief line', async () => {
@@ -338,12 +454,16 @@ describe('/api/findings/brief — the morning brief', () => {
     });
 
     test('a problem that went away on its own is reported', async () => {
+      // Inside the window at any hour: the window starts at or before the run
+      // (briefWindowStart takes the earlier of local midnight and the run), and
+      // the run is FRESH_RUN_AGO_HOURS old, so anything retired more recently
+      // than that is inside it whatever the wall clock says.
       await insertFinding({
         propertyId: PID_A, dedupeKey: 'brief:gone', summary: 'The lobby printer stopped erroring.',
-        status: 'expired', statusChangedAt: '2026-07-25T08:30:00.000Z',
+        status: 'expired', statusChangedAt: agoHours(FRESH_RUN_AGO_HOURS - 1),
       });
-      const { brief } = await getMorningBrief({ propertyId: PID_A, now: AFTERNOON, phrasing: false });
-      assert.ok(brief!.lines.some((l) => l.text.startsWith('1 thing cleared on its own:')));
+      const { body } = await readBrief(PID_A);
+      assert.ok(body.data!.brief!.lines.some((l) => l.text.startsWith('1 thing cleared on its own:')));
     });
 
     test('a problem that expired LAST month is not this morning’s good news', async () => {
@@ -351,10 +471,10 @@ describe('/api/findings/brief — the morning brief', () => {
       // finding this hotel has ever retired would be announced every morning.
       await insertFinding({
         propertyId: PID_A, dedupeKey: 'brief:ancient', summary: 'An old thing.',
-        status: 'expired', statusChangedAt: '2026-06-01T08:30:00.000Z',
+        status: 'expired', statusChangedAt: agoDays(56),
       });
-      const { brief } = await getMorningBrief({ propertyId: PID_A, now: AFTERNOON, phrasing: false });
-      assert.ok(!brief!.lines.some((l) => /cleared on its own|cleared on their own/.test(l.text)));
+      const { body } = await readBrief(PID_A);
+      assert.ok(!body.data!.brief!.lines.some((l) => /cleared on its own|cleared on their own/.test(l.text)));
     });
 
     // Founder ruling (2026-07-26): the brief is ENGLISH-ONLY, whatever language
