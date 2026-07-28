@@ -323,7 +323,7 @@ function chipBox(bg: string, color: string): React.CSSProperties {
   };
 }
 
-function Welcome({ tx, onGo, busy }: { tx: OrderingStrings; onGo: () => void; busy: boolean }) {
+export function Welcome({ tx, onGo, busy }: { tx: OrderingStrings; onGo: () => void; busy: boolean }) {
   return (
     <section
       style={{
@@ -352,7 +352,7 @@ function Welcome({ tx, onGo, busy }: { tx: OrderingStrings; onGo: () => void; bu
   );
 }
 
-function EmptyState({ tx, noItems }: { tx: OrderingStrings; noItems?: boolean }) {
+export function EmptyState({ tx, noItems }: { tx: OrderingStrings; noItems?: boolean }) {
   return (
     <section style={{ padding: '20px 4px', display: 'flex', flexDirection: 'column', gap: 8 }}>
       <div style={{ fontFamily: fonts.sans, fontSize: 15, fontWeight: 650, color: T.ink }}>{tx.emptyTitle}</div>
@@ -367,7 +367,7 @@ function EmptyState({ tx, noItems }: { tx: OrderingStrings; noItems?: boolean })
   );
 }
 
-function Suggestions({
+export function Suggestions({
   tx, suggestions, categories, lang, busy, onConfirm,
 }: {
   tx: OrderingStrings;
@@ -452,7 +452,7 @@ function Suggestions({
   );
 }
 
-function GroupCard({
+export function GroupCard({
   group, tx, lang, vendors, categoriesByKey, pendingSeconds, busy,
   onStartSend, onCancelSend, onMarkOrdered, onSetMethod, onSetItemVendor, onSetCategoryVendor,
 }: {
@@ -700,7 +700,7 @@ function ItemRow({
   );
 }
 
-function BasisFooter({ tx, basis }: { tx: OrderingStrings; basis: OrderingState['burnBasis'] }) {
+export function BasisFooter({ tx, basis }: { tx: OrderingStrings; basis: OrderingState['burnBasis'] }) {
   // Says which of the three evidence tiers the rates on this screen came from.
   // A hotel with no history reads "based on par levels alone" rather than
   // being left to assume the days-left dashes are a glitch.

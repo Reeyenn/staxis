@@ -515,6 +515,90 @@ describe('ordering — the screen promises only what it can do', () => {
     });
   }
 
+  // ═══ THE COPY RULES ═══════════════════════════════════════════════════════
+  //
+  // Founder ruling, 2026-07-28: no em dashes in user-facing copy, and keep the
+  // sentences short and plain. Both halves are checked mechanically because
+  // both are the kind of thing that comes back one careless edit at a time,
+  // and neither shows up as a bug anywhere else.
+  //
+  // SCOPE: strings a USER reads. That is this file's UI strings and the
+  // rendered purchase-order email. It deliberately does NOT cover agent tool
+  // `description` / `inputSchema` text, which is prompt copy only the model
+  // ever sees and which follows the catalog's own house style.
+
+  const EM_DASH = '—';
+
+  function everyString(): Array<[string, string]> {
+    const out: Array<[string, string]> = [];
+    for (const lang of ['en', 'es'] as const) {
+      const strings = orderingStrings(lang) as Record<string, unknown>;
+      for (const [key, value] of Object.entries(strings)) {
+        if (typeof value === 'string') {
+          out.push([`${lang}.${key}`, value]);
+        } else if (typeof value === 'function') {
+          // Interpolating strings are just as user-facing as literal ones, and
+          // in practice the em dash hides in exactly these. Call each with
+          // plausible arguments and check what comes out.
+          const fn = value as (...args: unknown[]) => unknown;
+          for (const args of [[2], ['$12.34'], ['9'], ['12', '100'], ['Breakfast']]) {
+            try {
+              const produced = fn(...args);
+              if (typeof produced === 'string') out.push([`${lang}.${key}()`, produced]);
+            } catch { /* wrong arity for this one; another shape will cover it */ }
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  test('no user-facing string contains an em dash, in either language', () => {
+    const offenders = everyString().filter(([, value]) => value.includes(EM_DASH));
+    assert.deepEqual(
+      offenders,
+      [],
+      `Em dashes are not used in Staxis UI copy. Use a full stop, a comma or a new `
+      + `line instead. Offending strings: ${offenders.map(([k]) => k).join(', ')}`,
+    );
+  });
+
+  test('no user-facing string uses filler or marketing words', () => {
+    // Each of these makes a sentence longer without making it truer, which is
+    // the whole objection. "Just"/"simply" also quietly tell a busy manager
+    // that whatever went wrong was easy, which is rarely how it feels.
+    const BANNED = /\b(simply|just|seamless(ly)?|effortless(ly)?|powerful|robust|leverage|unlock|delight(ful)?|revolutionary|cutting[- ]edge|best[- ]in[- ]class)\b/i;
+    const offenders = everyString()
+      .filter(([, value]) => BANNED.test(value))
+      .map(([key, value]) => `${key}: ${value}`);
+    assert.deepEqual(offenders, [], `Filler or marketing words found:\n${offenders.join('\n')}`);
+  });
+
+  test('the purchase-order email carries no em dash either', () => {
+    // The email is the one thing here that leaves the building, so it is held
+    // to the same rule. A missing price renders the WORDS "no price" rather
+    // than a dash: in a price column a dash reads as zero or free, which is
+    // the opposite of what it means.
+    const rendered = renderPoEmail({
+      to: 'orders@sysco.test',
+      vendorName: 'Sysco',
+      hotelName: 'Comfort Suites Beaumont',
+      managerName: 'Maria Garcia',
+      managerEmail: 'maria@hotel.test',
+      poNumber: 'PO-260728-A1B2',
+      accountNumber: '55123',
+      notes: 'Back door before 10am please.',
+      lines: [
+        { description: 'Eggs', qty: 18, unit: 'case', unitCostCents: 3400 },
+        { description: 'Sausage', qty: 6, unit: 'case', unitCostCents: null },
+      ],
+    });
+    assert.ok(!rendered.text.includes(EM_DASH), `PO email text contains an em dash:\n${rendered.text}`);
+    assert.ok(!rendered.html.includes(EM_DASH), 'PO email HTML contains an em dash');
+    assert.ok(!rendered.subject.includes(EM_DASH), 'PO email subject contains an em dash');
+    assert.match(rendered.text, /no price/, 'an unpriced line must say so in words');
+  });
+
   test('every string exists in both languages', () => {
     const en = orderingStrings('en') as Record<string, unknown>;
     const es = orderingStrings('es') as Record<string, unknown>;

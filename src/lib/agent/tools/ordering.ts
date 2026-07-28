@@ -98,15 +98,24 @@ function matchBucket(raw: string, buckets: ReadonlyMap<BucketKey, string>): Buck
   return null;
 }
 
-function buildReadBack(vendors: readonly ProposedVendor[]): ReadBack {
+// The read-back is the sentence the manager checks, so it prints the category
+// LABELS the hotel knows, never the internal bucket keys. A custom category's
+// key is `custom:<uuid>`, and reading a UUID out to somebody is the difference
+// between a check they can do and one they will wave through.
+function buildReadBack(
+  vendors: readonly ProposedVendor[],
+  buckets: ReadonlyMap<BucketKey, string>,
+): ReadBack {
   const line = (v: ProposedVendor, lang: 'en' | 'es'): string => {
     const method = v.method
       ? METHOD_WORDS[v.method][lang]
       : (lang === 'en' ? 'method not set yet' : 'sin método todavía');
     const where = v.email ?? v.websiteUrl ?? v.phone;
     const detail = where ? ` (${where})` : '';
-    const cats = v.buckets.length > 0 ? v.buckets.join(', ') : (lang === 'en' ? 'no categories' : 'sin categorías');
-    return `${v.name} — ${method}${detail} — ${cats}`;
+    const cats = v.buckets.length > 0
+      ? v.buckets.map((b) => buckets.get(b) ?? b).join(', ')
+      : (lang === 'en' ? 'no categories' : 'sin categorías');
+    return `${v.name}, ${method}${detail}, ${cats}`;
   };
   return {
     en: `Saving ${vendors.length} supplier(s): ${vendors.map((v) => line(v, 'en')).join('; ')}. `
@@ -216,7 +225,7 @@ registerTool<{
     // ── the propose half — writes nothing ──
     const rawVendors = Array.isArray(args.vendors) ? args.vendors : [];
     if (rawVendors.length === 0) {
-      return { ok: false, error: 'Which suppliers? Ask them who supplies what — do not name suppliers yourself.' };
+      return { ok: false, error: 'Which suppliers? Ask them who supplies what. Do not name suppliers yourself.' };
     }
     if (rawVendors.length > 20) {
       return { ok: false, error: 'That is more than 20 suppliers at once. Do them in smaller groups so the person can actually check the read-back.' };
@@ -235,7 +244,7 @@ registerTool<{
       }
       const key = name.toLowerCase();
       if (existingNames.has(key)) {
-        return { ok: false, error: `"${name}" is already on this hotel's supplier list. Tell them it is already there — do not add a second one. To change how they order from it, say so and I will update that one instead.` };
+        return { ok: false, error: `"${name}" is already on this hotel's supplier list. Tell them it is already there. Do not add a second one. To change how they order from it, say so and I will update that one instead.` };
       }
       if (seen.has(key)) {
         return { ok: false, error: `You listed "${name}" twice. Send each supplier once.` };
@@ -246,7 +255,7 @@ registerTool<{
       if (raw.method !== undefined && raw.method !== null && String(raw.method).trim() !== '') {
         const candidate = String(raw.method).trim().toLowerCase();
         if (!(ORDER_METHODS as readonly string[]).includes(candidate)) {
-          return { ok: false, error: `"${raw.method}" is not a way to order. It is one of: email, website, store, phone. If they did not say, leave it out — the screen will ask them.` };
+          return { ok: false, error: `"${raw.method}" is not a way to order. It is one of: email, website, store, phone. If they did not say, leave it out. The screen will ask them.` };
         }
         method = candidate as OrderMethod;
       }
@@ -268,7 +277,7 @@ registerTool<{
         if (!matched) {
           return {
             ok: false,
-            error: `This hotel has no category called "${rawCat}". Its categories are: ${[...buckets.values()].join(', ')}. Ask which of those ${name} covers — do not create a category.`,
+            error: `This hotel has no category called "${rawCat}". Its categories are: ${[...buckets.values()].join(', ')}. Ask which of those ${name} covers. Do not create a category.`,
           };
         }
         if (!itemBuckets.includes(matched)) itemBuckets.push(matched);
@@ -292,7 +301,7 @@ registerTool<{
       for (const bucket of vendor.buckets) {
         const already = claimed.get(bucket);
         if (already) {
-          return { ok: false, error: `Both ${already} and ${vendor.name} were given the same category (${buckets.get(bucket) ?? bucket}). One supplier per category — ask them which one it is. Individual items can be pointed elsewhere afterwards.` };
+          return { ok: false, error: `Both ${already} and ${vendor.name} were given the same category (${buckets.get(bucket) ?? bucket}). One supplier per category, so ask them which one it is. Individual items can be pointed elsewhere afterwards.` };
         }
         claimed.set(bucket, vendor.name);
       }
@@ -302,7 +311,7 @@ registerTool<{
     return {
       ok: true,
       data: {
-        ...(await proposeConfirmation(ctx, 'vendor_setup', params, buildReadBack(proposed))),
+        ...(await proposeConfirmation(ctx, 'vendor_setup', params, buildReadBack(proposed, buckets))),
         // Named so the model can read the gap out loud rather than glossing it.
         missingMethod: proposed.filter((v) => !v.method).map((v) => v.name),
         withoutCategories: proposed.filter((v) => v.buckets.length === 0).map((v) => v.name),

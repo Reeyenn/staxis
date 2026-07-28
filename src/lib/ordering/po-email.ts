@@ -12,8 +12,8 @@
 //      manager so the vendor's reply reaches a human at the hotel and not a
 //      noreply box, and copies the manager so they hold the same record the
 //      vendor does.
-//   2. IT NEVER INVENTS A PRICE. A line with no invoice history renders with
-//      a dash and the footer says how many lines have no price on file. The
+//   2. IT NEVER INVENTS A PRICE. A line with no invoice history renders the
+//      words "no price" and the footer says how many lines lack one. The
 //      total is labelled as covering only the priced lines. A purchase order
 //      is a document a vendor may act on and a hotel may be billed against —
 //      an estimated number in it is worse than a blank.
@@ -98,7 +98,7 @@ export function renderPoEmail(params: PoEmailParams): RenderedPoEmail {
   // total as partial and the hotel sees the same sentence in its own copy.
   const priceNote = linesWithoutPrice > 0
     ? `Subtotal covers the ${params.lines.length - linesWithoutPrice} line(s) with a price on file. `
-      + `${linesWithoutPrice} line(s) have no price on file — please quote them.`
+      + `${linesWithoutPrice} line(s) have no price on file. Please quote them.`
     : 'Prices are from our last invoice. Please confirm current pricing.';
 
   const closing = 'Please confirm price and availability before shipping. '
@@ -112,9 +112,9 @@ export function renderPoEmail(params: PoEmailParams): RenderedPoEmail {
   if (params.accountNumber) textLines.push(`Account: ${params.accountNumber}`);
   textLines.push('', 'Items:');
   for (const line of params.lines) {
-    const price = line.unitCostCents == null ? '—' : moneyFromCents(line.unitCostCents);
-    const total = line.unitCostCents == null ? '—' : moneyFromCents(line.unitCostCents * line.qty);
-    textLines.push(`  • ${line.description} — ${qtyLabel(line)} @ ${price} = ${total}`);
+    const price = line.unitCostCents == null ? 'no price' : moneyFromCents(line.unitCostCents);
+    const total = line.unitCostCents == null ? 'no price' : moneyFromCents(line.unitCostCents * line.qty);
+    textLines.push(`  ${line.description}, ${qtyLabel(line)}, ${price} each, ${total}`);
   }
   textLines.push('', `Subtotal: ${moneyFromCents(knownSubtotalCents)}`, priceNote);
   if (params.notes) textLines.push('', `Notes: ${params.notes}`);
@@ -122,7 +122,7 @@ export function renderPoEmail(params: PoEmailParams): RenderedPoEmail {
     '',
     closing,
     '',
-    managerName ? `— ${managerName}, ${hotelName}` : `— ${hotelName}`,
+    managerName ? `${managerName}, ${hotelName}` : hotelName,
     `Reply to this email to reach us: ${params.managerEmail}`,
     '',
     `Sent by Staxis on behalf of ${hotelName}.`,
@@ -131,10 +131,10 @@ export function renderPoEmail(params: PoEmailParams): RenderedPoEmail {
 
   const rows = params.lines.map((line) => {
     const price = line.unitCostCents == null
-      ? '<span style="color:#9aa3b0">—</span>'
+      ? '<span style="color:#9aa3b0">no price</span>'
       : escapeHtml(moneyFromCents(line.unitCostCents));
     const total = line.unitCostCents == null
-      ? '<span style="color:#9aa3b0">—</span>'
+      ? '<span style="color:#9aa3b0">no price</span>'
       : escapeHtml(moneyFromCents(line.unitCostCents * line.qty));
     return `<tr>
             <td style="padding:9px 8px;border-bottom:1px solid #eef1f5;font-size:14px">${escapeHtml(line.description)}</td>
@@ -171,7 +171,7 @@ ${rows}
           <p style="font-size:12px;line-height:1.55;color:#7a8494;margin:0 0 16px">${escapeHtml(priceNote)}</p>
           ${params.notes ? `<p style="font-size:14px;line-height:1.6;color:#4f5c6f;margin:0 0 16px;padding:12px;background:#f8fafc;border-radius:8px">${escapeHtml(params.notes)}</p>` : ''}
           <p style="font-size:14px;line-height:1.6;color:#4f5c6f;margin:0 0 20px">${escapeHtml(closing)}</p>
-          <p style="font-size:14px;line-height:1.6;margin:0 0 4px">${managerName ? `— ${escapeHtml(managerName)}, ${escapeHtml(hotelName)}` : `— ${escapeHtml(hotelName)}`}</p>
+          <p style="font-size:14px;line-height:1.6;margin:0 0 4px">${managerName ? `${escapeHtml(managerName)}, ${escapeHtml(hotelName)}` : escapeHtml(hotelName)}</p>
           <p style="font-size:13px;line-height:1.6;color:#7a8494;margin:0">Reply to this email to reach us: <a href="mailto:${escapeHtml(params.managerEmail)}" style="color:#2f6f4f">${escapeHtml(params.managerEmail)}</a></p>
         </td></tr>
         <tr><td style="padding:0 32px 26px">
