@@ -49,6 +49,11 @@ import {
   type ClimbCandidate,
   type PortfolioCard,
 } from '@/lib/company/vp-queue';
+import { companyQueueAvailableFromAuthorization } from '@/lib/company/company-queue-access';
+import {
+  classifyPortfolioDayClaim,
+  type PortfolioClaimRow,
+} from '@/lib/company/portfolio-run-claim';
 import {
   MIN_HOTELS_FOR_OUTLIER_WORDING,
   PORTFOLIO_DETECTORS,
@@ -1242,6 +1247,251 @@ describe('the VP queue does not print GM tap-state', () => {
   test('the occurrence line is still produced for a hotel’s own feed', () => {
     const f = queueCard({ occurrenceCount: 6, firstSeenAt: '2026-07-09T00:00:00.000Z' });
     assert.match(String(occurrenceLine(f, 'en', NOW)), /Seen 6 times/);
+  });
+});
+
+describe('whole-company queue availability comes from exact receipt provenance', () => {
+  const access = (
+    propertyIds: string[],
+    entitlements: Array<{ propertyId: string; scopeType: string | null }>,
+  ) => ({
+    propertyIds,
+    authorizationReceipt: { provenance: { entitlements } },
+  });
+
+  test('company and normalized organization provenance covering every hotel opens the queue', () => {
+    assert.equal(companyQueueAvailableFromAuthorization(access(
+      [PID_1, PID_2],
+      [
+        { propertyId: PID_1, scopeType: 'company' },
+        { propertyId: PID_2, scopeType: 'organization' },
+      ],
+    )), true);
+  });
+
+  test('one broad row cannot elevate another hotel reached only through a narrow grant', () => {
+    assert.equal(companyQueueAvailableFromAuthorization(access(
+      [PID_1, PID_2],
+      [
+        { propertyId: PID_1, scopeType: 'company' },
+        { propertyId: PID_2, scopeType: 'portfolio' },
+      ],
+    )), false);
+    assert.equal(companyQueueAvailableFromAuthorization(access(
+      [PID_1],
+      [{ propertyId: PID_1, scopeType: 'property' }],
+    )), false);
+    assert.equal(companyQueueAvailableFromAuthorization(access([], [])), false);
+  });
+});
+
+describe('portfolio daily claim states fail closed', () => {
+  const expected = {
+    route: 'company-portfolio-run',
+    runVersion: 1,
+    organizationId: ORG_A,
+    localDate: '2026-07-26',
+  } as const;
+
+  const cached = (errors: unknown): PortfolioClaimRow => ({
+    claimed: false,
+    existing_route: expected.route,
+    existing_status: 200,
+    existing_response: {
+      ran: true,
+      v: expected.runVersion,
+      organizationId: expected.organizationId,
+      localDate: expected.localDate,
+      summary: {
+        ran: true,
+        completion: Array.isArray(errors) && errors.length === 0 ? 'completed' : 'incomplete',
+        errors,
+      },
+    },
+  });
+
+  test('a new claim and a live pending lease stay distinct', () => {
+    assert.equal(classifyPortfolioDayClaim({ claimed: true }, expected), 'claimed');
+    assert.equal(classifyPortfolioDayClaim({
+      claimed: false,
+      existing_route: expected.route,
+      existing_status: 0,
+      existing_response: { __pending__: true },
+    }, expected), 'in_progress');
+  });
+
+  test('a verified completed receipt is held, while a receipt with errors is incomplete', () => {
+    assert.equal(classifyPortfolioDayClaim(cached([]), expected), 'held_complete');
+    assert.equal(classifyPortfolioDayClaim(cached([
+      { detectorId: 'source_coverage', error: 'one hotel was unavailable' },
+    ]), expected), 'held_incomplete');
+  });
+
+  test('wrong-route, wrong-status, and malformed claims are unavailable', () => {
+    const cases: Array<PortfolioClaimRow | null | undefined> = [
+      null,
+      undefined,
+      {},
+      { claimed: 'false' },
+      {
+        claimed: false,
+        existing_route: 'some-other-route',
+        existing_status: 0,
+        existing_response: { __pending__: true },
+      },
+      {
+        claimed: false,
+        existing_route: expected.route,
+        existing_status: 0,
+        existing_response: { __pending__: false },
+      },
+      {
+        claimed: false,
+        existing_route: expected.route,
+        existing_status: 500,
+        existing_response: cached([]).existing_response,
+      },
+      {
+        claimed: false,
+        existing_route: expected.route,
+        existing_status: 200,
+        existing_response: null,
+      },
+      cached(undefined),
+      {
+        ...cached([]),
+        existing_response: {
+          ...(cached([]).existing_response as Record<string, unknown>),
+          summary: { ran: true, completion: 'incomplete', errors: [] },
+        },
+      },
+      {
+        ...cached([]),
+        existing_response: {
+          ...(cached([]).existing_response as Record<string, unknown>),
+          v: expected.runVersion + 1,
+        },
+      },
+      {
+        ...cached([]),
+        existing_response: {
+          ...(cached([]).existing_response as Record<string, unknown>),
+          organizationId: ORG_B,
+        },
+      },
+      {
+        ...cached([]),
+        existing_response: {
+          ...(cached([]).existing_response as Record<string, unknown>),
+          localDate: '2026-07-25',
+        },
+      },
+    ];
+
+    for (const row of cases) {
+      assert.equal(classifyPortfolioDayClaim(row, expected), 'unavailable');
+    }
+  });
+
+  test('only a completed run is wired to extend the claim beyond its retry lease', () => {
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/lib/company/vp-queue-server.ts'),
+      'utf8',
+    ).replace(/\s+/g, ' ');
+
+    assert.ok(source.includes(
+      "if (summary.ran && summary.completion === 'completed') { await holdPortfolioDay(",
+    ));
+    assert.ok(
+      !source.includes('if (summary.ran) await holdPortfolioDay('),
+      'an incomplete run would be held and therefore blocked from retrying',
+    );
+  });
+});
+
+describe('the selected company survives every portfolio-feed UI boundary', () => {
+  const source = (...parts: string[]) => readFileSync(
+    resolve(process.cwd(), ...parts),
+    'utf8',
+  );
+  const compact = (value: string) => value.replace(/\s+/g, ' ');
+
+  test('the command center link carries the company that the picker named', () => {
+    const commandCenter = source('src/app/property-selector/CommandCenter.tsx');
+    assert.ok(
+      commandCenter.includes(
+        'href={`/feed?organizationId=${encodeURIComponent(company.organizationId)}`}',
+      ),
+      'the portfolio entry link dropped its selected company',
+    );
+  });
+
+  test('the feed reads explicit presence and preserves the company through drill-down/back', () => {
+    const queueView = compact(source('src/components/concourse/QueueView.tsx'));
+    const portfolioView = compact(source('src/components/concourse/PortfolioQueueView.tsx'));
+
+    assert.ok(
+      queueView.includes(
+        "const values = params.getAll('organizationId')",
+      ),
+      'duplicate company selections could be collapsed to the first value',
+    );
+    assert.ok(
+      queueView.includes(
+        "values.length === 0 ? null : values.length === 1 ? values[0]! : ''",
+      ),
+      'missing, exact, and invalid duplicate company selections were collapsed together',
+    );
+    assert.ok(
+      queueView.includes(
+        '`/feed?organizationId=${encodeURIComponent(requestedOrganizationId)}`',
+      ),
+      'the feed did not rebuild a company-preserving back link',
+    );
+    assert.ok(queueView.includes('organizationId={requestedOrganizationId}'));
+    assert.ok(queueView.includes('backHref={portfolioHref}'));
+    assert.ok(
+      queueView.includes(
+        '`/api/property-selector/bootstrap?organizationId=${encodeURIComponent(requestedOrganizationId)}`',
+      ),
+      'portfolio drill-down coverage was not bound to the selected company',
+    );
+    assert.ok(
+      portfolioView.includes(
+        '`${href}&organizationId=${encodeURIComponent(scope.organizationId)}`',
+      ),
+      'the hotel drill-down dropped the selected company needed by its back link',
+    );
+    assert.ok(
+      portfolioView.includes('onScope?.(undefined)'),
+      'a failed or changing company receipt could leave the prior company scope mounted',
+    );
+  });
+
+  test('portfolio GET, company verdict POST, and partial-coverage honesty stay wired', () => {
+    const view = compact(source('src/components/concourse/PortfolioQueueView.tsx'));
+
+    assert.ok(
+      view.includes(
+        '`/api/company/queue?organizationId=${encodeURIComponent(organizationId)}`',
+      ),
+      'the selected company was not sent on the queue GET',
+    );
+    assert.match(
+      view,
+      /fetchWithAuth\('\/api\/company\/queue',[\s\S]*?organizationId: resolvedOrganizationId,[\s\S]*?findingId,[\s\S]*?action: verdict/,
+      'the company verdict body is not bound to the resolved company',
+    );
+    assert.ok(
+      view.includes('|| coverage.unavailableHotelCount > 0'),
+    );
+    assert.ok(view.includes('<div className="pq-coverage" role="status">'));
+    assert.ok(
+      view.includes(
+        '<MorningBriefView brief={partialCoverage ? null : brief} lang={lang} readFailed={readFailed} />',
+      ),
+      'a whole-company brief can render from a partial hotel load',
+    );
   });
 });
 

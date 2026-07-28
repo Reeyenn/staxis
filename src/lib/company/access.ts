@@ -534,6 +534,11 @@ function exactObjectKeys(
  * as "the company has no hotels". PostgreSQL evaluates every current-primary
  * row for the candidate hotels in one statement, so two companies cannot each
  * see an isolated apparently-valid claim to the same hotel.
+ *
+ * The effective instant is supplied by deterministic runners so relationship
+ * windows and the data window are evaluated against the same clock. Legacy
+ * callers keep using the lenient wrapper above and retain their exact `[]` on
+ * failure behaviour.
  */
 export async function resolveOrganizationPropertyTopology(
   organizationId: string,
