@@ -196,9 +196,26 @@ describe('section gates fail closed and cover high-risk routes', () => {
 
   test('every authenticated comms route inherits the central communications gate', () => {
     const helper = source('src/lib/comms/route-helpers.ts');
-    const gate = helper.indexOf("requireSectionEnabled(req, pid, 'communications')");
+    // The section is no longer a literal at the call site: commsContext takes
+    // an optional sectionGate so the /api/knowledge/* routes can opt out (they
+    // now serve the Knows tab too, and dying with the Communications toggle
+    // would black out a hotel's SOPs and emergency contacts). See
+    // resolveSectionGate + KNOWLEDGE_CTX in route-helpers.
+    //
+    // Two things still have to hold, and both are asserted here.
+    //
+    // 1. ORDERING — the gate runs before identity resolution. This is the
+    //    load-bearing half: resolveStaffIdForAccount can CREATE a caller-bound
+    //    staff row on first use, so resolving identity ahead of the gate would
+    //    write data for a hotel that has the section switched off.
+    const gate = helper.indexOf('requireSectionEnabled(req, pid, gatedSection)');
     const identity = helper.indexOf('resolveStaffIdForAccount(');
     assert.ok(gate >= 0 && identity > gate, 'section gate must precede identity creation');
+    // 2. DEFAULT — a caller that says nothing is still gated on communications.
+    //    Opting out has to be deliberate and explicit; silence must never mean
+    //    "ungated". resolveSectionGate's own test covers the explicit-null case
+    //    and the `??`-instead-of-`!== undefined` trap that would break it.
+    assert.match(helper, /opts\?\.sectionGate !== undefined \? opts\.sectionGate : 'communications'/);
     for (const file of routeFilesBelow('src/app/api/comms')) {
       if (file.endsWith('/language/route.ts')) {
         const language = readFileSync(file, 'utf8');

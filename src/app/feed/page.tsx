@@ -37,6 +37,19 @@ function FeedInner() {
   const es = lang === 'es';
   const [tab, setTab] = useState<FeedTab>('queue');
 
+  // ?tab=knows opens straight on Knows. Added because the old Communications
+  // Knowledge and Contacts screens now redirect here — landing a redirect on
+  // the Queue tab would be a link that visibly goes to the wrong place.
+  //
+  // Read in an effect rather than during render: useSearchParams would force a
+  // Suspense boundary, and reading window during render is a hydration
+  // mismatch (React #418). Same mount-gated pattern CommsApp uses for ?view=.
+  React.useEffect(() => {
+    try {
+      if (new URLSearchParams(window.location.search).get('tab') === 'knows') setTab('knows');
+    } catch { /* no search params available — keep the default */ }
+  }, []);
+
   const tabs: Array<{ key: FeedTab; label: string }> = [
     { key: 'queue', label: es ? 'Cola' : 'Queue' },
     { key: 'knows', label: es ? 'Sabe' : 'Knows' },
