@@ -776,6 +776,9 @@ const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0141', '0142', '0143', '0144', '0145', '0146', '0147', '0148',
   '0149', '0150', '0151', '0152', '0153', '0154', '0155', '0156', '0157', '0158', '0159',
   '0160', '0161', '0162', '0163', '0164', '0165', '0166',
+  // 0375-0401 belong to concurrent release lanes and enter at the certified
+  // integration boundary. 0402 is reserved to Navigation/Loading.
+  '0402',
 ];
 
 /**

@@ -11,7 +11,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { ArrowRight, ChevronLeft, UserCog, Crown, ShieldCheck } from 'lucide-react';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
+import { RequestTimeoutError } from '@/lib/fetch-deadline';
 import {
   clearOwnershipTransferAttempt,
   findOwnershipTransferAttempt,
@@ -19,6 +20,7 @@ import {
 } from '@/lib/ownership-transfer-attempt';
 import { roleLabel, type AppRole } from '@/lib/roles';
 import { useCan } from '@/lib/capabilities/useCan';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
 
 interface UserRow {
   accountId: string;
@@ -38,16 +40,18 @@ export default function UsersPage() {
     properties,
     activeProperty,
     activePropertyId,
+    activePropertyViewerKey,
     loading: propertyLoading,
     capabilityOverridesViewerKey,
     capabilityOverridesPropertyId,
+    capabilityOverridesStatus,
+    capabilityOverridesError,
+    refreshCapabilities,
     setActivePropertyId,
   } = useProperty();
   const { lang } = useLang();
   const can = useCan();
-  const capabilityViewerKey = user?.uid && activePropertyId
-    ? `${user.uid}:${activePropertyId}`
-    : null;
+  const capabilityViewerKey = activePropertyViewerKey;
   const accessContextReady = Boolean(
     capabilityViewerKey
     && activeProperty?.id === activePropertyId
@@ -55,12 +59,6 @@ export default function UsersPage() {
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
   const allowed = accessContextReady && !!user && can('manage_users');
-
-  useEffect(() => {
-    if (!authLoading && !propertyLoading && user && accessContextReady && !allowed) {
-      router.replace('/settings');
-    }
-  }, [user, authLoading, propertyLoading, accessContextReady, allowed, router]);
 
   // Keep the data scope and capability scope identical. A separate local
   // hotel selector could otherwise authorize against one hotel's overrides
@@ -160,6 +158,7 @@ export default function UsersPage() {
           operationId,
           reason: persistedReason,
         }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const body = await res.json() as { ok?: boolean; error?: string };
       const definitive = (res.ok && body.ok === true)
@@ -184,9 +183,13 @@ export default function UsersPage() {
     } catch (err) {
       if (activeScopeRef.current !== requestedPropertyId) return;
       console.error('[users:settings] ownership transfer failed', err);
-      setError(lang === 'es'
-        ? 'La transferencia de propiedad falló — revisa tu conexión e intenta de nuevo'
-        : 'Ownership transfer failed — check your connection and try again');
+      setError(err instanceof RequestTimeoutError
+        ? (lang === 'es'
+          ? 'La confirmación tardó demasiado y la transferencia puede haberse completado. Actualiza antes de reintentar; se reutilizará la misma operación.'
+          : 'Confirmation timed out and the transfer may have completed. Refresh before retrying; the same operation will be reused.')
+        : (lang === 'es'
+          ? 'La transferencia de propiedad falló — revisa tu conexión e intenta de nuevo'
+          : 'Ownership transfer failed — check your connection and try again'));
     } finally {
       setBusyAccountId(null);
     }
@@ -224,12 +227,22 @@ export default function UsersPage() {
     });
   }, [users]);
 
+  if (capabilityOverridesStatus === 'error') {
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title={lang === 'es' ? 'No se pudo confirmar el acceso a usuarios' : 'User access could not be confirmed'}
+          message={capabilityOverridesError ?? undefined}
+          retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
+          onRetry={() => void refreshCapabilities()}
+        />
+      </AppLayout>
+    );
+  }
   if (authLoading || propertyLoading || (!!user && !accessContextReady)) {
     return (
       <AppLayout>
-        <div role="status" style={{ minHeight: '50dvh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
-          {lang === 'es' ? 'Comprobando acceso…' : 'Checking access…'}
-        </div>
+        <RouteLoadingState title={lang === 'es' ? 'Comprobando acceso…' : 'Checking access…'} />
       </AppLayout>
     );
   }
@@ -237,9 +250,14 @@ export default function UsersPage() {
   if (!allowed) {
     return (
       <AppLayout>
-        <div role="status" style={{ minHeight: '50dvh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
-          {lang === 'es' ? 'Volviendo a Configuración…' : 'Returning to Settings…'}
-        </div>
+        <RouteErrorState
+          title={lang === 'es' ? 'Usuarios no está disponible para esta cuenta' : 'Users is not available for this account'}
+          message={lang === 'es'
+            ? 'Tu rol actual en este hotel no incluye la administración de usuarios.'
+            : 'Your current hotel role does not include user administration.'}
+          retryLabel={lang === 'es' ? 'Volver a Configuración' : 'Return to Settings'}
+          onRetry={() => window.location.assign('/settings')}
+        />
       </AppLayout>
     );
   }

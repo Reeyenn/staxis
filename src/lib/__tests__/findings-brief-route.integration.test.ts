@@ -85,6 +85,11 @@ const LATE_NIGHT = new Date('2026-07-26T03:00:00.000Z');
 const NEXT_DAY = new Date('2026-07-26T06:00:00.000Z');
 const RAN_AT = '2026-07-25T08:00:00.000Z';
 
+/** Route tests use the real clock, so content fixtures must stay inside the
+ * liveness window instead of silently expiring as the calendar advances. */
+const hoursAgo = (hours: number): string =>
+  new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function getReq(propertyId: string | null): NextRequest {
@@ -315,12 +320,17 @@ describe('/api/findings/brief — the morning brief', () => {
     });
 
     test('leads with the biggest dollars and ends with the liveness line', async () => {
+      await pg.query(
+        'update public.finding_runs set run_at = $2::timestamptz where property_id = $1',
+        [PID_A, hoursAgo(6)],
+      );
       const { body } = await readBrief(PID_A);
       const brief = body.data!.brief!;
       const en = brief.lines.map((l) => l.text);
-      assert.ok(en[1].startsWith('The ice machine has had 3 service calls.'), en[1]);
-      assert.match(en[1], /\$2,100–\$3,800/);
-      assert.ok(en[2].startsWith('Room 214'), en[2]);
+      const quoted = brief.lines.filter((line) => line.findingId).map((line) => line.text);
+      assert.ok(quoted[0].startsWith('The ice machine has had 3 service calls.'), quoted[0]);
+      assert.match(quoted[0], /\$2,100–\$3,800/);
+      assert.ok(quoted[1].startsWith('Room 214'), quoted[1]);
       assert.match(en[en.length - 1], /^Checked 34 things last night/);
       assert.ok(brief.lines.length <= 8);
     });

@@ -17,7 +17,7 @@ import {
   Download, Loader2, ChevronLeft, Search, Lock, AlertTriangle,
   Folder, FolderPlus, Users,
 } from 'lucide-react';
-import { apiGet, apiPost, apiPatch, apiDelete } from '@/lib/comms/client';
+import { apiGet, apiPost, apiPatch, apiDelete, uploadToSignedUrl } from '@/lib/comms/client';
 import type {
   KnowledgeArticleDTO, KnowledgeDocumentDTO, KnowledgeFolderDTO,
   KnowledgeSection, KnowledgeVisibility, ExtractionStatus, Dept,
@@ -337,8 +337,8 @@ function DocumentsSection({ pid, isManager, L }: { pid: string; isManager: boole
       const pre = await apiPost<{ path: string; signedUrl: string; contentType: string }>('/api/knowledge/documents/presign', { pid, filename: file.name });
       if (!pre.ok || !pre.data) { setError(pre.error || L('Unsupported file type.', 'Tipo de archivo no admitido.')); return; }
       // PUT with the SERVER-resolved Content-Type so it matches the bucket's allowed types.
-      const up = await fetch(pre.data.signedUrl, { method: 'PUT', body: file, headers: { 'Content-Type': pre.data.contentType } });
-      if (!up.ok) { setError(L('Upload failed. Try again.', 'La carga falló. Inténtalo de nuevo.')); return; }
+      const uploaded = await uploadToSignedUrl(pre.data.signedUrl, file, pre.data.contentType);
+      if (!uploaded) { setError(L('Upload failed. Try again.', 'La carga falló. Inténtalo de nuevo.')); return; }
       const title = file.name.replace(/\.[^.]+$/, '').slice(0, KNOWLEDGE_LIMITS.TITLE_MAX) || file.name;
       const access = accessToPayload(uploadAccess);
       const reg = await apiPost('/api/knowledge/documents', { pid, title, path: pre.data.path, mimeType: pre.data.contentType, sizeBytes: file.size, visibility: access.visibility, visibleDept: access.visibleDept, folderId: targetFolderId });

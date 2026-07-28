@@ -163,7 +163,7 @@ export default function PmsInboxPage() {
   return (
     <DarkPage>
       {/* ── Header ───────────────────────────────────────────────────────── */}
-      <Link href="/admin" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12.5, color: dim(.5), textDecoration: 'none', marginBottom: 14 }}>
+      <Link href="/admin/properties" style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 12.5, color: dim(.5), textDecoration: 'none', marginBottom: 14 }}>
         <ChevronLeft size={14} /> Admin
       </Link>
 

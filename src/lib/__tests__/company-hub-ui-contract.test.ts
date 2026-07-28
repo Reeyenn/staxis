@@ -51,7 +51,10 @@ describe('Home management entry', () => {
     assert.ok(boardIndex >= 0 && managementIndex > boardIndex);
     assert.doesNotMatch(homeHub, /cx-management-head/);
     assert.doesNotMatch(homeHub, /cx-management-description/);
-    assert.match(homeHub, /<Link href=\{management\.href\} className="cx-management-link">/);
+    assert.match(
+      homeHub,
+      /<Link[\s\S]*?href=\{management\.href\}[\s\S]*?className="cx-management-link"[\s\S]*?onClick=\{\(event\) =>/,
+    );
     assert.match(homeHub, /<CxIcon name="company"/);
     assert.doesNotMatch(home, /Review the hotel team and access/);
   });
@@ -150,7 +153,7 @@ describe('truthful Company Hub filters', () => {
     assert.match(propertyContext, /staffViewerKey/);
     assert.match(propertyContext, /setStaffViewerKey\(subscriptionViewerKey\)/);
     assert.match(propertyContext, /setStaffLoadFailed\(true\)/);
-    assert.match(company, /staffViewerKey === `\$\{user\.uid\}:\$\{activePropertyId\}`/);
+    assert.match(company, /staffViewerKey === activePropertyViewerKey/);
     assert.match(company, /rosterUnavailable=\{hotelRosterUnavailable\}/);
     assert.match(hotelTeam, /schedule roster is temporarily unavailable/);
     assert.match(company, /hotelId=\{activeProperty\.id\}/);
@@ -165,7 +168,7 @@ describe('truthful Company Hub filters', () => {
 describe('My Hotel account and team integration', () => {
   test('moves the hotel-facing entry out of Settings and preserves old bookmarks', () => {
     assert.doesNotMatch(settings, /href:\s*['"]\/settings\/accounts['"]/);
-    assert.match(legacyAccounts, /router\.replace\(['"]\/company\?tab=people['"]\)/);
+    assert.match(legacyAccounts, /replace\(['"]\/company\?tab=people['"]\)/);
     assert.match(legacyAccounts, /\/admin\/properties\/\$\{encodeURIComponent\(activePropertyId\)\}/);
   });
 

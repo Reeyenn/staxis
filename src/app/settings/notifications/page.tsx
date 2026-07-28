@@ -9,14 +9,14 @@ export const dynamic = 'force-dynamic';
 // It is no longer linked from the Settings menu.
 
 import React from 'react';
-import { useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { ChevronLeft, Bell } from 'lucide-react';
 import { NotificationsPanel } from './_components/NotificationsPanel';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 export default function NotificationsPage() {
-  const router = useRouter();
+  const { push } = useReliableNavigation();
   const { lang } = useLang();
 
   return (
@@ -24,7 +24,7 @@ export default function NotificationsPage() {
       <div style={{ padding: '20px 16px', display: 'flex', flexDirection: 'column', gap: '14px', maxWidth: 720 }}>
         <div>
           <button
-            onClick={() => router.push('/settings')}
+            onClick={() => push('/settings')}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: '4px',
               background: 'transparent', border: 'none',

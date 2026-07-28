@@ -62,6 +62,10 @@ test('communications has a phone list/detail flow and does not collapse failures
   assert.match(app, /<CommsPropertyApp key=\{activePropertyId \?\? 'no-property'\}/);
   assert.match(app, /<ThreadPanel key=\{`\$\{selConvo\.id\}:\$\{threadParent\.id\}`\}/);
   assert.match(app, /data: boot, loading: bootLoading, error: bootError/);
+  assert.match(app, /const worklistEnabled = !!pid && mode === 'todo' && todoView === 'list'/);
+  assert.match(app, /pollMs: worklistEnabled \? 15000 : undefined[\s\S]*?enabled: worklistEnabled/);
+  assert.match(app, /worklistEnabled && worklistData == null && worklistError == null/);
+  assert.doesNotMatch(app, /if \(mode === 'todo' && todoView === 'list'\) void loadWorklist\(\)/);
   assert.match(app, /messagesError=\{messagesError\}/);
   assert.match(app, /if \(!r\.ok\)[\s\S]*?Could not update the acknowledgement/);
   assert.match(pane, /Messages could not load/);

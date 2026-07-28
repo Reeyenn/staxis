@@ -11,7 +11,7 @@
 // All reads/writes go through /api/financials/capex* behind the owner/GM
 // finance gate. Money is integer cents.
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 import { shortDateFromYmd } from '@/lib/format-date';
@@ -24,7 +24,7 @@ import {
   type CapexProject,
   type CapexStatus,
 } from '@/lib/financials/shared';
-import { Btn, Pill, Notice, T, FONT_SANS, FONT_MONO } from './fin-ui';
+import { Btn, Pill, Notice, newFinancialCreateOperationId, T, FONT_SANS, FONT_MONO } from './fin-ui';
 import { CapexCard, BigMoney, StatStrip, statNum } from './fin-board';
 import { ft, capexStatusLabel, capexCategoryLabel, requestTypeLabel } from './fin-i18n';
 import { ScanButton, type QuoteDraft } from './ScanButton';
@@ -46,9 +46,30 @@ function statusColor(s: CapexStatus): string {
 // Column grouping colors (each card still carries its own real-status accent).
 const COL_COLOR = { pending: T.sageBrand, active: T.caramelDeep, closed: T.sageDeep };
 
-export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; onChanged: () => void }) {
+export function CapexTab({
+  scopeKey,
+  pid,
+  lang,
+  onChanged,
+}: {
+  scopeKey: string;
+  pid: string;
+  lang: Lang;
+  onChanged: () => void;
+}) {
   const S = ft(lang);
   const { properties } = useProperty();
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      activeScopeRef.current = null;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
   const [view, setView] = useState<View>('board');
   const [openId, setOpenId] = useState<string | null>(null);
   const [requestForm, setRequestForm] = useState<RequestForm | null>(null);
@@ -86,6 +107,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
   );
 
   const afterChange = (focusId?: string) => {
+    if (!ownsScope()) return;
     setNonce((n) => n + 1);
     onChanged();
     if (focusId) void detailRes.reload();
@@ -112,6 +134,7 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
   ];
 
   const onScanQuote = (d: QuoteDraft) => {
+    if (!ownsScope()) return;
     setRequestForm({
       ...blankRequest(),
       name: d.name ?? '',
@@ -119,11 +142,14 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
       vendor: d.vendor ?? '',
       targetDate: d.quoteDate ?? '',
       description: d.summary ?? '',
-      pendingLines: d.lineItems.filter((l) => l.label.trim()),
+      pendingLines: d.lineItems
+        .filter((l) => l.label.trim())
+        .map((line) => ({ ...line, operationId: newFinancialCreateOperationId() })),
     });
   };
 
   const openDecision = (project: CapexProject, action: DecisionAction) => {
+    if (!ownsScope()) return;
     setOpenId(null);
     setDecision({ project, action });
   };
@@ -267,6 +293,8 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
       {/* Detail / binder modal */}
       {openId && (
         <DetailModal
+          key={`${scopeKey}:${openId}`}
+          scopeKey={`${scopeKey}:${openId}`}
           pid={pid}
           lang={lang}
           project={detail}
@@ -281,12 +309,13 @@ export function CapexTab({ pid, lang, onChanged }: { pid: string; lang: Lang; on
 
       {/* New request modal */}
       {requestForm && (
-        <RequestModal pid={pid} lang={lang} form={requestForm} setForm={setRequestForm} onClose={() => setRequestForm(null)} onCreated={() => afterChange()} />
+        <RequestModal scopeKey={scopeKey} pid={pid} lang={lang} form={requestForm} setForm={setRequestForm} onClose={() => setRequestForm(null)} onCreated={() => afterChange()} />
       )}
 
       {/* Decision modal */}
       {decision && (
         <DecisionModal
+          scopeKey={`${scopeKey}:${decision.project.id}:${decision.action}`}
           pid={pid}
           lang={lang}
           project={decision.project}

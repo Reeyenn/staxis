@@ -27,6 +27,9 @@ import {
 } from '@/app/housekeeping/_components/_snow';
 import { EmptyState } from '@/app/_components/ui/EmptyState';
 import { initialsOf } from '@/app/_components/ui/Avatar';
+import { withPromiseDeadline } from '@/lib/fetch-deadline';
+
+const STORAGE_IMAGE_URL_TIMEOUT_MS = 10_000;
 
 // Re-export the shared Snow primitives so the maintenance tabs have a single
 // import source (tokens + Caps/Card live in housekeeping/_snow). Pill and Btn
@@ -496,11 +499,11 @@ export function MtEmptyCard({
 // fires — so a board that got NO data was indistinguishable from a board that
 // loaded an EMPTY list, and the tabs rendered their happy "all caught up"
 // empty state during a network blip (the silent-empty-state bug class, here
-// for signed-in users). This hook runs a 1-row probe against the same table
-// so the tab can tell "loaded empty" apart from "failed to load", plus a
-// stall timer so a probe-passed-but-subscription-failed race still surfaces
-// as an error instead of an infinite spinner. `loaded` = the subscription
-// callback has fired at least once (data always wins).
+// for signed-in users). A firm deadline distinguishes a legitimate empty
+// callback from a subscription that never settles. The former 1-row probe
+// duplicated the board's initial query and its own timeout did not start until
+// that probe resolved, so the supposed guard could itself hang forever.
+// `loaded` = the subscription callback has fired at least once (data wins).
 export type BoardLoadStatus = 'loading' | 'error' | 'ready';
 
 export function useBoardGate(
@@ -508,36 +511,17 @@ export function useBoardGate(
   table: string,
   loaded: boolean,
 ): { status: BoardLoadStatus; retryKey: number; retry: () => void } {
-  const [probe, setProbe] = useState<'pending' | 'ok' | 'error'>('pending');
   const [stalled, setStalled] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
 
   useEffect(() => {
-    if (!pid || loaded) return;
-    let alive = true;
-    setProbe('pending');
     setStalled(false);
-    void (async () => {
-      try {
-        const { supabase } = await import('@/lib/supabase');
-        const { error } = await supabase.from(table).select('id').eq('property_id', pid).limit(1);
-        if (alive) setProbe(error ? 'error' : 'ok');
-      } catch {
-        if (alive) setProbe('error');
-      }
-    })();
-    return () => { alive = false; };
-  }, [pid, table, retryKey, loaded]);
-
-  // Probe passed but the subscription's own initial fetch never delivered —
-  // don't spin forever, offer the retry instead.
-  useEffect(() => {
-    if (loaded || probe !== 'ok') { setStalled(false); return; }
-    const t = window.setTimeout(() => setStalled(true), 15000);
+    if (!pid || loaded) return;
+    const t = window.setTimeout(() => setStalled(true), 8_000);
     return () => window.clearTimeout(t);
-  }, [probe, loaded, retryKey]);
+  }, [pid, table, loaded, retryKey]);
 
-  const status: BoardLoadStatus = loaded ? 'ready' : (probe === 'error' || stalled) ? 'error' : 'loading';
+  const status: BoardLoadStatus = loaded ? 'ready' : stalled ? 'error' : 'loading';
   return { status, retryKey, retry: () => setRetryKey((k) => k + 1) };
 }
 
@@ -579,9 +563,9 @@ export class MaintenanceErrorBoundary extends React.Component<
           <div style={{ maxWidth: 420, textAlign: 'center', background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '32px 28px', boxShadow: CX_CARD_SHADOW }}>
             <div style={{ fontFamily: FONT_SANS, fontSize: 21, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>Something hiccuped.</div>
             <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, lineHeight: 1.5, margin: '10px 0 18px' }}>
-              The page hit a snag — your data is safe. Reload to pick back up.
+              The page hit a snag — your data is safe. Try this section again.
             </p>
-            <Btn variant="primary" onClick={() => location.reload()}>↻ Reload</Btn>
+            <Btn variant="primary" onClick={() => this.setState({ err: null })}>↻ Try again</Btn>
           </div>
         </div>
       );
@@ -652,28 +636,37 @@ export function StorageImage({
   height?: number;
 }) {
   const { lang } = useLang();
-  const [url, setUrl] = React.useState<string | null>(null);
+  const [imageState, setImageState] = React.useState<{
+    path: string;
+    status: 'loading' | 'ready' | 'error';
+    url: string | null;
+  }>({ path, status: 'loading', url: null });
+  const currentImageState = imageState.path === path
+    ? imageState
+    : { path, status: 'loading' as const, url: null };
   React.useEffect(() => {
     let alive = true;
+    setImageState({ path, status: 'loading', url: null });
     void (async () => {
       try {
         const { supabase } = await import('@/lib/supabase');
-        const { data, error } = await supabase.storage
-          .from('maintenance-photos')
-          .createSignedUrl(path, 60 * 5);
+        const { data, error } = await withPromiseDeadline(
+          supabase.storage
+            .from('maintenance-photos')
+            .createSignedUrl(path, 60 * 5),
+          { timeoutMs: STORAGE_IMAGE_URL_TIMEOUT_MS, label: 'Photo link' },
+        );
         if (!alive) return;
-        if (error || !data?.signedUrl) setUrl(null);
-        else setUrl(data.signedUrl);
+        if (error || !data?.signedUrl) setImageState({ path, status: 'error', url: null });
+        else setImageState({ path, status: 'ready', url: data.signedUrl });
       } catch {
-        // Thumbnail render is best-effort — dynamic import or auth failure
-        // just hides the image.
-        if (alive) setUrl(null);
+        if (alive) setImageState({ path, status: 'error', url: null });
       }
     })();
     return () => { alive = false; };
   }, [path]);
 
-  if (!url) {
+  if (currentImageState.status !== 'ready' || !currentImageState.url) {
     return (
       <div style={{
         height, borderRadius: 12,
@@ -683,15 +676,22 @@ export function StorageImage({
         fontFamily: FONT_MONO, fontSize: 11, color: T.ink3,
         letterSpacing: '0.08em', textTransform: 'uppercase',
       }}>
-        {lang === 'es' ? 'Cargando foto…' : 'Loading photo…'}
+        {currentImageState.status === 'loading'
+          ? (lang === 'es' ? 'Cargando foto…' : 'Loading photo…')
+          : (lang === 'es' ? 'Foto no disponible' : 'Photo unavailable')}
       </div>
     );
   }
   return (
     // eslint-disable-next-line @next/next/no-img-element
     <img
-      src={url}
+      src={currentImageState.url}
       alt={alt}
+      onError={() => {
+        setImageState((current) => current.path === path
+          ? { path, status: 'error', url: null }
+          : current);
+      }}
       style={{
         height, width: '100%', objectFit: 'cover',
         borderRadius: 12, border: `1px solid ${T.rule}`, display: 'block',

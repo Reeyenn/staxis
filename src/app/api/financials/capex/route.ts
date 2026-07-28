@@ -3,7 +3,7 @@
  *
  *   GET    ?pid=            → projects[] (each with spentCents)
  *   GET    ?pid=&id=        → one project with its line items
- *   POST   { pid, name, quoteCents|quoteDollars, status?, vendor?, description?,
+ *   POST   { pid, operationId, name, quoteCents|quoteDollars, status?, vendor?, description?,
  *            startDate?, targetDate? }                → create
  *   PATCH  { pid, id, ...patch }                      → update
  *   DELETE { pid, id }                                → delete (line items cascade)
@@ -14,9 +14,10 @@
 
 import type { NextRequest } from 'next/server';
 import { requireFinanceAccess } from '@/lib/financials/api-gate';
-import { ok, err } from '@/lib/api-response';
-import { validateString, validateInt } from '@/lib/api-validate';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { validateString, validateInt, validateUuid } from '@/lib/api-validate';
 import { isRequestType, isCapexCategory, parseDollarsToCents } from '@/lib/financials/shared';
+import { isFinancialCreateConflict } from '@/lib/financials/idempotent-create';
 import {
   listCapexProjects,
   getCapexProject,
@@ -63,6 +64,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   const gate = await requireFinanceAccess(req, body.pid as string | undefined);
   if (!gate.ok) return gate.response;
 
+  const operationCheck = validateUuid(body.operationId, 'operationId');
+  if (operationCheck.error || !operationCheck.value) {
+    return err('operationId is required', { requestId: gate.requestId, status: 400, code: 'invalid_operation' });
+  }
+
   const nameCheck = validateString(body.name, { max: 200, label: 'name' });
   if (nameCheck.error || !nameCheck.value) return err('name is required', { requestId: gate.requestId, status: 400, code: 'invalid_name' });
 
@@ -98,9 +104,16 @@ export async function POST(req: NextRequest): Promise<Response> {
       startDate: ymdOrNull(body.startDate),
       targetDate: ymdOrNull(body.targetDate),
       attachmentPath: optStr(body.attachmentPath, 500),
-    });
+    }, operationCheck.value);
     return ok({ project }, { requestId: gate.requestId });
-  } catch {
+  } catch (error) {
+    if (isFinancialCreateConflict(error)) {
+      return err('This create operation was already used with different project data', {
+        requestId: gate.requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
     return err('failed to create project', { requestId: gate.requestId, status: 500, code: 'create_failed' });
   }
 }

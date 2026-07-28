@@ -2,10 +2,9 @@
 // ═══════════════════════════════════════════════════════════════════════════
 // Communications · data adapter — useCommsResource (F2 for this tab).
 //
-// Every read still goes through @/lib/comms/client's apiGet (Supabase bearer
-// token + default same-origin cookies, silent failure on auth errors) — NOT
-// fetchWithAuth, whose token preflight / 401 auto-recovery / signout redirect
-// would change this tab's behavior. The foundation hook supplies the rest:
+// Every read goes through @/lib/comms/client's apiGet, which now uses the
+// shared bounded fetchWithAuth transport (token recovery + terminal session
+// handling). The foundation hook supplies the rest:
 // stale-response gating, poll hygiene (document.hidden + in-flight skip),
 // keepDataOnError.
 //

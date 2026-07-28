@@ -23,8 +23,6 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -33,6 +31,8 @@ import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state
 import { safeRedirect } from '@/lib/url-redirect';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import type { OnboardingState } from '@/lib/onboarding/state';
+import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
+import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
 
 import JoinStatusGate from './JoinStatusGate';
 import {
@@ -61,20 +61,35 @@ function Spinner() {
 }
 
 export default function PropertySelectorPage() {
+  useNavigationReady();
   const { user, loading: authLoading, signOut } = useAuth();
   const { setActivePropertyId } = useProperty();
   const { lang } = useLang();
-  const router = useRouter();
+  const navigation = useReliableNavigation();
+  const replaceNavigation = navigation.replace;
   const [companyRouteChecked, setCompanyRouteChecked] = useState(false);
+  const authorizationIdentityKey = user
+    ? `${user.uid}:${user.accountId}:${user.role}:${[...user.propertyAccess].sort().join(',')}`
+    : null;
+  const authorizationViewerKey = useAuthorizationRefreshKey(
+    authorizationIdentityKey,
+    !authLoading && Boolean(user),
+  );
 
   // Redirect unauthenticated users to sign-in.
   useEffect(() => {
-    if (!authLoading && !user) router.replace('/signin');
-  }, [user, authLoading, router]);
+    if (!authLoading && !user) replaceNavigation('/signin');
+  }, [user, authLoading, replaceNavigation]);
 
   const { data, error, reload } = useApiResource<CommandCenterPayload>(
     '/api/property-selector/bootstrap',
-    { enabled: !authLoading && !!user },
+    {
+      enabled: !authLoading && !!user,
+      // Same-UID role/grant updates are authorization changes even though the
+      // endpoint URL is stable. Drop the old picker payload immediately and
+      // re-resolve server coverage so revoked hotels never remain selectable.
+      identityKey: authorizationViewerKey ?? 'signed-out',
+    },
   );
 
   const hotels = data?.hotels ?? [];
@@ -87,29 +102,33 @@ export default function PropertySelectorPage() {
     // Mid-onboarding owner/manager → resume the wizard, but only the FIRST time
     // it's ever opened for this hotel. RESUME_GUARD_KEY is the same-session
     // loop breaker: a failed resume bounces back here and falls through to Home.
-    if (
-      shouldResumeOnboarding(
-        user?.role,
-        hotel.onboardingCompletedAt,
-        hotel.onboardingState as OnboardingState | null,
-        hotel.onboardingPromptShownAt,
-      )
-      && typeof window !== 'undefined'
-      && sessionStorage.getItem(RESUME_GUARD_KEY) !== hotel.propertyId
-    ) {
-      sessionStorage.setItem(RESUME_GUARD_KEY, hotel.propertyId);
-      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(hotel.propertyId)}`;
-      return;
+    const onboardingNeedsResume = shouldResumeOnboarding(
+      user?.role,
+      hotel.onboardingCompletedAt,
+      hotel.onboardingState as OnboardingState | null,
+      hotel.onboardingPromptShownAt,
+    );
+    if (onboardingNeedsResume && typeof window !== 'undefined') {
+      // A blocked sessionStorage must not crash hotel selection or create an
+      // unguarded resume loop. In that environment, continue to the terminal
+      // Home surface just as Home's own resume guard does.
+      try {
+        if (sessionStorage.getItem(RESUME_GUARD_KEY) !== hotel.propertyId) {
+          sessionStorage.setItem(RESUME_GUARD_KEY, hotel.propertyId);
+          window.location.assign(`/api/onboard/resume?propertyId=${encodeURIComponent(hotel.propertyId)}`);
+          return;
+        }
+      } catch { /* storage unavailable — continue into the selected hotel */ }
     }
     setActivePropertyId(hotel.propertyId);
-    sessionStorage.setItem('hotelops-session-selected', '1');
+    try { sessionStorage.setItem('hotelops-session-selected', '1'); } catch { /* optional funnel hint */ }
     // Ordinary login lands on Home. A protected deep link is honored only after
     // the user has explicitly selected which hotel it belongs to.
     const requestedTarget = typeof window === 'undefined'
       ? '/home'
       : safeRedirect(new URLSearchParams(window.location.search).get('redirect'), '/home');
-    router.replace(requestedTarget);
-  }, [router, setActivePropertyId, user?.role]);
+    replaceNavigation(requestedTarget);
+  }, [replaceNavigation, setActivePropertyId, user?.role]);
 
   // Exactly one hotel and nothing company-scope to show → skip the screen
   // entirely. A company person with one hotel keeps the command centre: their
@@ -144,7 +163,7 @@ export default function PropertySelectorPage() {
           (organization) => organization.type !== 'single_hotel',
         ) === true;
         if (!cancelled && response.ok && body.ok && hasCustomerOrganization) {
-          router.replace('/company');
+          replaceNavigation('/company');
           return;
         }
       } catch {
@@ -155,11 +174,13 @@ export default function PropertySelectorPage() {
     })();
 
     return () => { cancelled = true; };
-  }, [authLoading, data, hotels.length, router, user]);
+  }, [authLoading, data, hotels.length, replaceNavigation, user]);
 
   const handleSignOut = useCallback(async () => {
-    sessionStorage.removeItem('hotelops-session-selected');
-    sessionStorage.removeItem(RESUME_GUARD_KEY);
+    try {
+      sessionStorage.removeItem('hotelops-session-selected');
+      sessionStorage.removeItem(RESUME_GUARD_KEY);
+    } catch { /* sign-out must continue when storage is blocked */ }
     await signOut();
   }, [signOut]);
 

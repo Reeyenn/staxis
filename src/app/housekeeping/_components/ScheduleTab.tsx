@@ -52,14 +52,14 @@ import { createPortal } from 'react-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+} from '@/lib/api-fetch';
 import { useFeedStatus } from '@/lib/use-feed-status';
 import { FeedLearningBanner } from '@/components/FeedLearningBanner';
-import {
-  subscribeToPlanSnapshot,
-  subscribeToDashboardByDate,
-} from '@/lib/db';
-import type { PlanSnapshot, DashboardNumbers } from '@/lib/db';
+import { subscribeToDashboardByDate } from '@/lib/db';
+import type { DashboardNumbers } from '@/lib/db';
 import {
   defaultShiftDate, addDays, formatDisplayDate, formatPulledAt,
 } from './_shared';
@@ -89,6 +89,36 @@ interface BoardData {
   shift_minutes?: number;
 }
 
+interface BoardScope {
+  propertyId: string;
+  date: string;
+  key: string;
+}
+
+export interface ScheduleBoardRequestStamp {
+  scopeKey: string;
+  sequence: number;
+}
+
+/**
+ * Shared by the live board and its deferred-response regression test. A board
+ * response owns the UI only while both its hotel/date scope and its request
+ * sequence are still current. The signal check also makes an aborted request
+ * terminal even before its transport notices the cancellation.
+ */
+export function isCurrentScheduleBoardRequest(
+  currentScopeKey: string | null,
+  latestSequence: number,
+  stamp: ScheduleBoardRequestStamp,
+  signal?: Pick<AbortSignal, 'aborted'>,
+): boolean {
+  return (
+    currentScopeKey === stamp.scopeKey
+    && latestSequence === stamp.sequence
+    && signal?.aborted !== true
+  );
+}
+
 const PRIORITY_RANK: Record<string, number> = { priority: 0, normal: 1, excluded: 2 };
 
 export function ScheduleTab() {
@@ -97,10 +127,9 @@ export function ScheduleTab() {
   const { lang } = useLang();
 
   const [shiftDate, setShiftDate] = useState(defaultShiftDate);
-  const [planSnapshot, setPlanSnapshot] = useState<PlanSnapshot | null>(null);
-  const [planLoaded, setPlanLoaded] = useState(false);
   const [dashboardNums, setDashboardNums] = useState<DashboardNumbers | null>(null);
   const [dashboardLoaded, setDashboardLoaded] = useState(false);
+  const [pmsSummaryRetryKey, setPmsSummaryRetryKey] = useState(0);
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -121,14 +150,34 @@ export function ScheduleTab() {
   // ── Board data ─────────────────────────────────────────────────────────
   const [boardData, setBoardData] = useState<BoardData | null>(null);
   const [boardLoaded, setBoardLoaded] = useState(false);
+  const [boardResultScopeKey, setBoardResultScopeKey] = useState<string | null>(null);
   const [boardErr, setBoardErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<null | 'auto' | 'replan'>(null);
 
   // Room detail drawer.
   const [openTask, setOpenTask] = useState<BoardTask | null>(null);
 
-  const uid = user?.uid ?? '';
   const pid = activePropertyId ?? '';
+  const boardViewerKey = user
+    ? JSON.stringify([user.uid, user.role, [...user.propertyAccess].sort()])
+    : '';
+  const boardScope = useMemo<BoardScope | null>(() => (
+    pid && boardViewerKey
+      ? {
+          propertyId: pid,
+          date: shiftDate,
+          key: JSON.stringify([boardViewerKey, pid, shiftDate]),
+        }
+      : null
+  ), [boardViewerKey, pid, shiftDate]);
+  const boardScopeRef = useRef<BoardScope | null>(boardScope);
+  boardScopeRef.current = boardScope;
+  const boardRequestSequence = useRef(0);
+  const activeBoardRequest = useRef<{
+    scope: BoardScope;
+    stamp: ScheduleBoardRequestStamp;
+    controller: AbortController;
+  } | null>(null);
 
   // feat/cua-partial-promotion — the board classifies rooms (checkout vs
   // stayover) from PMS reservations; while arrivals/departures are still
@@ -155,60 +204,115 @@ export function ScheduleTab() {
   useEffect(() => {
     if (!pid) return;
     setDashboardLoaded(false);
+    setDashboardNums(null);
     return subscribeToDashboardByDate(pid, shiftDate, (nums) => {
       setDashboardNums(nums);
       setDashboardLoaded(true);
     });
-  }, [pid, shiftDate]);
+  }, [pid, shiftDate, pmsSummaryRetryKey]);
 
-  // Plan snapshot — kept only for the "Latest PMS pull" freshness stamp.
-  useEffect(() => {
-    if (!uid || !pid) return;
-    setPlanLoaded(false);
-    return subscribeToPlanSnapshot(uid, pid, shiftDate, (snap) => {
-      setPlanSnapshot(snap);
-      setPlanLoaded(true);
-    });
-  }, [uid, pid, shiftDate]);
+  const retryPmsSummary = useCallback(() => {
+    setDashboardLoaded(false);
+    setDashboardNums(null);
+    setPmsSummaryRetryKey((key) => key + 1);
+  }, []);
 
-  // Board fetch (rooms + crew + assignment).
-  const refreshBoard = useCallback(async () => {
-    if (!pid) return;
+  // Board fetch (rooms + crew + assignment). Callers pass the exact scope
+  // they intend to reconcile. A stale callback from hotel/date A cannot
+  // silently turn into a read for whichever hotel/date happens to be active
+  // when its POST finishes.
+  const refreshBoard = useCallback(async (requestedScope?: BoardScope): Promise<boolean> => {
+    const scope = requestedScope ?? boardScopeRef.current;
+    if (!scope || boardScopeRef.current !== scope) return false;
+
+    const controller = new AbortController();
+    const stamp: ScheduleBoardRequestStamp = {
+      scopeKey: scope.key,
+      sequence: ++boardRequestSequence.current,
+    };
+    activeBoardRequest.current?.controller.abort();
+    activeBoardRequest.current = { scope, stamp, controller };
+    const ownsRequest = () => isCurrentScheduleBoardRequest(
+      boardScopeRef.current?.key ?? null,
+      boardRequestSequence.current,
+      stamp,
+      controller.signal,
+    );
+
     try {
       const res = await fetchWithAuth(
-        `/api/housekeeping/board?propertyId=${encodeURIComponent(pid)}&date=${encodeURIComponent(shiftDate)}`,
+        `/api/housekeeping/board?propertyId=${encodeURIComponent(scope.propertyId)}&date=${encodeURIComponent(scope.date)}`,
+        { signal: controller.signal },
       );
       const body = (await res.json()) as { ok: boolean; data?: BoardData; error?: string };
       if (!res.ok || !body.ok || !body.data) throw new Error(body?.error ?? `HTTP ${res.status}`);
+      if (!ownsRequest()) return false;
       setBoardData(body.data);
       setBoardErr(null);
+      return true;
     } catch (e) {
+      if (!ownsRequest()) return false;
       setBoardErr(e instanceof Error ? e.message : String(e));
+      return true;
     } finally {
-      setBoardLoaded(true);
+      if (ownsRequest()) {
+        setBoardResultScopeKey(scope.key);
+        setBoardLoaded(true);
+      }
+      if (activeBoardRequest.current?.stamp.sequence === stamp.sequence) {
+        activeBoardRequest.current = null;
+      }
     }
-  }, [pid, shiftDate]);
+  }, []);
 
   useEffect(() => {
+    const scope = boardScope;
+    boardRequestSequence.current += 1;
+    activeBoardRequest.current?.controller.abort();
+    activeBoardRequest.current = null;
     setBoardLoaded(false);
+    setBoardResultScopeKey(null);
     setBoardData(null);
-    void refreshBoard();
-  }, [refreshBoard]);
+    setBoardErr(null);
+    setBusy(null);
+    setOpenTask(null);
+    if (!scope) return;
+    void refreshBoard(scope);
+    return () => {
+      const active = activeBoardRequest.current;
+      if (active?.scope === scope) {
+        boardRequestSequence.current += 1;
+        active.controller.abort();
+        activeBoardRequest.current = null;
+      }
+    };
+  }, [boardScope, refreshBoard]);
+  useEffect(() => () => {
+    boardScopeRef.current = null;
+    boardRequestSequence.current += 1;
+    activeBoardRequest.current?.controller.abort();
+    activeBoardRequest.current = null;
+  }, []);
 
   // ── Derived ────────────────────────────────────────────────────────────
+  const boardDataMatchesScope = Boolean(
+    boardScope && boardResultScopeKey === boardScope.key,
+  );
+  const currentBoardData = boardDataMatchesScope ? boardData : null;
+  const currentBoardLoaded = boardLoaded && boardDataMatchesScope;
   const SHIFT_MINS = Math.max(
     60,
-    boardData?.shift_minutes ?? activeProperty?.shiftMinutes ?? 420,
+    currentBoardData?.shift_minutes ?? activeProperty?.shiftMinutes ?? 420,
   );
 
-  const tasks = useMemo(() => boardData?.tasks ?? [], [boardData]);
+  const tasks = useMemo(() => currentBoardData?.tasks ?? [], [currentBoardData]);
   const crew = useMemo(() => {
-    const list = (boardData?.housekeepers ?? []).filter(h => h.is_active);
+    const list = (currentBoardData?.housekeepers ?? []).filter(h => h.is_active);
     return [...list].sort((a, b) => {
       const pr = (PRIORITY_RANK[a.schedule_priority] ?? 1) - (PRIORITY_RANK[b.schedule_priority] ?? 1);
       return pr !== 0 ? pr : a.name.localeCompare(b.name);
     });
-  }, [boardData]);
+  }, [currentBoardData]);
 
   const checkouts = tasks.filter(t => chipKind(t.cleaning_type) === 'checkout').length;
   const stayovers = tasks.filter(t => chipKind(t.cleaning_type) === 'stayover').length;
@@ -220,16 +324,22 @@ export function ScheduleTab() {
   const isYesterday = shiftDate === addDays(today, -1);
   const isTomorrow = shiftDate === addDays(today, 1);
 
-  const pulledAtIso = planSnapshot?.pulledAt
-    ? (planSnapshot.pulledAt instanceof Date ? planSnapshot.pulledAt.toISOString() : String(planSnapshot.pulledAt))
+  // The dashboard bridge already carries the authoritative PMS capture time.
+  // The removed plan subscription always returned pulledAt=null while also
+  // issuing two extra RPCs plus a property read on every Schedule navigation.
+  const pulledAtIso = dashboardNums?.pulledAt
+    ? (dashboardNums.pulledAt instanceof Date ? dashboardNums.pulledAt.toISOString() : String(dashboardNums.pulledAt))
     : null;
   const pulledAtLabel = pulledAtIso
     ? formatPulledAt(pulledAtIso, lang)
     : (lang === 'es' ? 'sin datos' : 'no data');
+  const pmsSummaryFailed = dashboardLoaded && dashboardNums === null;
 
   // ── Mutations ──────────────────────────────────────────────────────────
 
-  // Optimistic single-task assignee patch (hkId or null), with rollback.
+  // Optimistic single-task assignee patch (hkId or null). A failed write is
+  // always reconciled from the server: a timeout can mean the write landed
+  // and only its response was lost, so blindly rolling back would lie.
   const patchAssignee = useCallback((taskId: string, assignee: string | null) => {
     setBoardData(d => {
       if (!d) return d;
@@ -238,64 +348,81 @@ export function ScheduleTab() {
   }, []);
 
   const onReassign = useCallback(async (taskId: string, toHkId: string) => {
-    const prev = boardData?.tasks.find(t => t.id === taskId)?.assignee_id ?? null;
+    const scope = boardScopeRef.current;
+    if (!scope) return;
+    const prev = currentBoardData?.tasks.find(t => t.id === taskId)?.assignee_id ?? null;
     if (prev === toHkId) return;
     patchAssignee(taskId, toHkId);
     try {
       const res = await fetchWithAuth('/api/housekeeping/reassign', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, taskId, toHousekeeperId: toHkId }),
+        body: JSON.stringify({ propertyId: scope.propertyId, taskId, toHousekeeperId: toHkId }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-      await refreshBoard();
+      await refreshBoard(scope);
     } catch (e) {
-      patchAssignee(taskId, prev);
-      flashToast((lang === 'es' ? 'No se pudo mover: ' : 'Move failed: ') + (e instanceof Error ? e.message : String(e)));
+      await refreshBoard(scope);
+      if (boardScopeRef.current === scope) {
+        flashToast((lang === 'es' ? 'No se pudo mover: ' : 'Move failed: ') + (e instanceof Error ? e.message : String(e)));
+      }
     }
-  }, [boardData, pid, patchAssignee, refreshBoard, flashToast, lang]);
+  }, [currentBoardData, patchAssignee, refreshBoard, flashToast, lang]);
 
   const onUnassign = useCallback(async (taskId: string) => {
-    const prev = boardData?.tasks.find(t => t.id === taskId)?.assignee_id ?? null;
+    const scope = boardScopeRef.current;
+    if (!scope) return;
+    const prev = currentBoardData?.tasks.find(t => t.id === taskId)?.assignee_id ?? null;
     if (prev === null) return;
     patchAssignee(taskId, null);
     try {
       const res = await fetchWithAuth('/api/housekeeping/reset-assignments', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, date: shiftDate, taskId }),
+        body: JSON.stringify({ propertyId: scope.propertyId, date: scope.date, taskId }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
-      await refreshBoard();
+      await refreshBoard(scope);
     } catch (e) {
-      patchAssignee(taskId, prev);
-      flashToast((lang === 'es' ? 'No se pudo quitar: ' : 'Unassign failed: ') + (e instanceof Error ? e.message : String(e)));
+      await refreshBoard(scope);
+      if (boardScopeRef.current === scope) {
+        flashToast((lang === 'es' ? 'No se pudo quitar: ' : 'Unassign failed: ') + (e instanceof Error ? e.message : String(e)));
+      }
     }
-  }, [boardData, pid, shiftDate, patchAssignee, refreshBoard, flashToast, lang]);
+  }, [currentBoardData, patchAssignee, refreshBoard, flashToast, lang]);
 
   const onAutoAssign = useCallback(async () => {
-    if (!pid || busy) return;
+    const scope = boardScopeRef.current;
+    if (!scope || busy) return;
     setBusy('auto');
     try {
       const res = await fetchWithAuth('/api/housekeeping/auto-assign', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
+        body: JSON.stringify({ propertyId: scope.propertyId, date: scope.date }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok || !body.ok) throw new Error(body?.error ?? `HTTP ${res.status}`);
       const n = body.data?.assigned ?? 0;
-      await refreshBoard();
-      flashToast(
-        n > 0
-          ? (lang === 'es' ? `Asignados ${n} cuartos` : `Auto-assigned ${n} rooms`)
-          : (lang === 'es' ? 'No hay cuartos por asignar' : 'No rooms to assign'),
-      );
+      await refreshBoard(scope);
+      if (boardScopeRef.current === scope) {
+        flashToast(
+          n > 0
+            ? (lang === 'es' ? `Asignados ${n} cuartos` : `Auto-assigned ${n} rooms`)
+            : (lang === 'es' ? 'No hay cuartos por asignar' : 'No rooms to assign'),
+        );
+      }
     } catch (e) {
-      flashToast((lang === 'es' ? 'Error al asignar: ' : 'Auto-assign failed: ') + (e instanceof Error ? e.message : String(e)));
+      await refreshBoard(scope);
+      if (boardScopeRef.current === scope) {
+        flashToast((lang === 'es' ? 'Error al asignar: ' : 'Auto-assign failed: ') + (e instanceof Error ? e.message : String(e)));
+      }
     } finally {
-      setBusy(null);
+      if (boardScopeRef.current === scope) setBusy(null);
     }
-  }, [pid, shiftDate, busy, refreshBoard, flashToast, lang]);
+  }, [busy, refreshBoard, flashToast, lang]);
 
   // Re-plan the whole day: clear every assignment that can still be moved,
   // then let the engine spread the rooms across today's crew again.
@@ -311,7 +438,8 @@ export function ScheduleTab() {
   // Rooms already in progress / finished keep their housekeeper — the server
   // only resets scheduled / ready_now / deferred (see reset-assignments).
   const onReplan = useCallback(async () => {
-    if (!pid || busy) return;
+    const scope = boardScopeRef.current;
+    if (!scope || busy) return;
     const proceed = window.confirm(
       lang === 'es'
         ? 'Volver a repartir los cuartos de este día entre el personal de hoy. Los cuartos que ya se están limpiando o que ya terminaron no se tocan. ¿Continuar?'
@@ -322,36 +450,42 @@ export function ScheduleTab() {
     try {
       const resetRes = await fetchWithAuth('/api/housekeeping/reset-assignments', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
+        body: JSON.stringify({ propertyId: scope.propertyId, date: scope.date }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const resetBody = await resetRes.json().catch(() => ({}));
       if (!resetRes.ok || !resetBody.ok) throw new Error(resetBody?.error ?? `HTTP ${resetRes.status}`);
 
       const assignRes = await fetchWithAuth('/api/housekeeping/auto-assign', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: pid, date: shiftDate }),
+        body: JSON.stringify({ propertyId: scope.propertyId, date: scope.date }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const assignBody = await assignRes.json().catch(() => ({}));
       if (!assignRes.ok || !assignBody.ok) throw new Error(assignBody?.error ?? `HTTP ${assignRes.status}`);
 
       const n = assignBody.data?.assigned ?? 0;
-      await refreshBoard();
-      flashToast(
-        lang === 'es' ? `Plan rehecho · ${n} cuartos repartidos` : `Day re-planned · ${n} rooms spread`,
-      );
+      await refreshBoard(scope);
+      if (boardScopeRef.current === scope) {
+        flashToast(
+          lang === 'es' ? `Plan rehecho · ${n} cuartos repartidos` : `Day re-planned · ${n} rooms spread`,
+        );
+      }
     } catch (e) {
       // Whatever failed, show the board's real state — the clear may have
       // landed even if the re-assign didn't, and the manager needs to see
       // that rather than a stale screen.
-      await refreshBoard();
-      flashToast(
-        (lang === 'es' ? 'No se pudo rehacer el plan: ' : "Couldn't re-plan the day: ")
-        + (e instanceof Error ? e.message : String(e)),
-      );
+      await refreshBoard(scope);
+      if (boardScopeRef.current === scope) {
+        flashToast(
+          (lang === 'es' ? 'No se pudo rehacer el plan: ' : "Couldn't re-plan the day: ")
+          + (e instanceof Error ? e.message : String(e)),
+        );
+      }
     } finally {
-      setBusy(null);
+      if (boardScopeRef.current === scope) setBusy(null);
     }
-  }, [pid, shiftDate, busy, refreshBoard, flashToast, lang]);
+  }, [busy, refreshBoard, flashToast, lang]);
 
   // Removed 2026-07-24: the ★ Staff priority modal. Auto-assign eligibility
   // ("never auto-assign this person") is staffing configuration, so it lives on
@@ -442,7 +576,11 @@ export function ScheduleTab() {
               /settings/clean-times, which saves for real. */}
           <Caps size={9}>{lang === 'es' ? 'Última carga PMS' : 'Latest PMS pull'}</Caps>
           <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink, fontWeight: 600, marginTop: 3 }}>
-            {planLoaded ? pulledAtLabel : (lang === 'es' ? 'Cargando…' : 'Loading…')}
+            {!dashboardLoaded
+              ? (lang === 'es' ? 'Cargando…' : 'Loading…')
+              : dashboardNums
+                ? pulledAtLabel
+                : (lang === 'es' ? 'No disponible' : 'Unavailable')}
           </span>
         </div>
         <span style={{ width: 1, height: 40, background: T.rule }} />
@@ -457,10 +595,10 @@ export function ScheduleTab() {
             { l: lang === 'es' ? 'En Casa'      : 'In House',    v: stripCountsLive ? (feedStatus.derived?.snapshotInHouse ?? null) : (fsLive ? null : dashboardNums?.inHouse ?? null), loaded: dashboardLoaded },
             { l: lang === 'es' ? 'Llegadas'     : 'Arrivals',    v: stripCountsLive ? (feedStatus.derived?.snapshotArrivalsRemaining ?? null) : (fsLive ? null : dashboardNums?.arrivals ?? null), loaded: dashboardLoaded },
             { l: lang === 'es' ? 'Salen'        : 'Departures',  v: stripCountsLive ? (feedStatus.derived?.snapshotDeparturesRemaining ?? null) : (fsLive ? null : dashboardNums?.departures ?? null), loaded: dashboardLoaded },
-            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: reservationsLearning ? null : checkouts,                loaded: boardLoaded },
-            { l: lang === 'es' ? 'Continúan'    : 'Stayovers',   v: reservationsLearning ? null : stayovers,                loaded: boardLoaded },
-            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: reservationsLearning ? null : fmtMinutes(totalMinutes), loaded: boardLoaded },
-            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: reservationsLearning ? null : `${recommendedHKs} HK`,   loaded: boardLoaded, tone: T.sageDeep },
+            { l: lang === 'es' ? 'Salidas'      : 'Checkouts',   v: reservationsLearning ? null : checkouts,                loaded: currentBoardLoaded },
+            { l: lang === 'es' ? 'Continúan'    : 'Stayovers',   v: reservationsLearning ? null : stayovers,                loaded: currentBoardLoaded },
+            { l: lang === 'es' ? 'Tiempo total' : 'Total time',  v: reservationsLearning ? null : fmtMinutes(totalMinutes), loaded: currentBoardLoaded },
+            { l: lang === 'es' ? 'Recomendado'  : 'Recommended', v: reservationsLearning ? null : `${recommendedHKs} HK`,   loaded: currentBoardLoaded, tone: T.sageDeep },
           ] as Array<{ l: string; v: React.ReactNode; loaded: boolean; tone?: string }>).map(n => (
             <div key={n.l} style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 58 }}>
               <Caps size={9}>{n.l}</Caps>
@@ -471,6 +609,25 @@ export function ScheduleTab() {
             </div>
           ))}
         </div>
+        {pmsSummaryFailed && (
+          <div
+            role="alert"
+            style={{
+              flexBasis: '100%', borderTop: `1px solid ${T.rule}`, paddingTop: 12,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              gap: 12, flexWrap: 'wrap', color: T.warm, fontFamily: FONT_SANS, fontSize: 13,
+            }}
+          >
+            <span>
+              {lang === 'es'
+                ? 'No se pudo cargar parte del resumen del PMS. El tablero de cuartos sigue disponible.'
+                : 'Part of the PMS summary could not load. The room board is still available.'}
+            </span>
+            <Btn variant="ghost" size="sm" onClick={retryPmsSummary}>
+              {lang === 'es' ? 'Reintentar' : 'Retry'}
+            </Btn>
+          </div>
+        )}
       </div>
 
       {/* TOOLBAR — view toggle + actions */}
@@ -523,7 +680,7 @@ export function ScheduleTab() {
           {lang === 'es' ? 'Selecciona una propiedad.' : 'Select a property to see today’s board.'}
         </div>
       )}
-      {pid && !boardLoaded && (
+      {pid && !currentBoardLoaded && (
         <div style={{ padding: '40px 0', textAlign: 'center' }}>
           <div className="animate-spin" style={{
             width: 26, height: 26, margin: '0 auto',
@@ -531,7 +688,7 @@ export function ScheduleTab() {
           }} />
         </div>
       )}
-      {pid && boardLoaded && boardErr && (
+      {pid && currentBoardLoaded && boardErr && (
         <div style={{
           padding: '18px 20px', border: `1px solid ${T.rule}`, borderRadius: 12,
           background: T.warmDim, color: T.warm, fontFamily: FONT_SANS, fontSize: 13,
@@ -541,7 +698,7 @@ export function ScheduleTab() {
           <Btn variant="ghost" size="sm" onClick={() => void refreshBoard()}>{lang === 'es' ? 'Reintentar' : 'Retry'}</Btn>
         </div>
       )}
-      {pid && boardLoaded && !boardErr && crew.length === 0 && (
+      {pid && currentBoardLoaded && !boardErr && crew.length === 0 && (
         <div style={{
           padding: '40px 20px', textAlign: 'center', color: T.ink2,
           fontFamily: FONT_SANS, fontSize: 14, border: `1px dashed ${T.rule}`, borderRadius: 12,
@@ -551,7 +708,7 @@ export function ScheduleTab() {
             : 'No active housekeeping staff yet — add crew in Staff to start assigning.'}
         </div>
       )}
-      {pid && boardLoaded && !boardErr && crew.length > 0 && (
+      {pid && currentBoardLoaded && !boardErr && crew.length > 0 && (
         <>
           {tasks.length === 0 && (
             <div style={{
@@ -569,7 +726,7 @@ export function ScheduleTab() {
               crew={crew}
               tasks={tasks}
               shiftMinutes={SHIFT_MINS}
-              crewSource={boardData?.crew_source ?? 'scheduled'}
+              crewSource={currentBoardData?.crew_source ?? 'scheduled'}
               lang={lang}
               onReassign={onReassign}
               onUnassign={onUnassign}

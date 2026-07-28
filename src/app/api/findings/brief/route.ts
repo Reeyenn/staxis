@@ -11,11 +11,10 @@
  * having looked, and on a hotel nobody has looked at, silence is the only true
  * thing to say.
  *
- * NO CRON. The brief is built on the first load of the hotel's own calendar day
- * and cached against that day (src/lib/findings/brief-server.ts), so one hotel
- * generates one brief per day whether or not any cron is scheduled. Every cron
- * in this product is a switch the founder owns; a screen that needs a new one
- * flipped is a screen that does not work.
+ * NO CRON AND NO PAID MODEL ON GET. The brief is assembled from deterministic
+ * templates on the first load of the hotel's own calendar day and cached
+ * against that day (src/lib/findings/brief-server.ts). Opening or navigating to
+ * Feed must never wait on, retry, or spend money with an AI provider.
  *
  * WHY THE property_id FILTER IS THE TENANT WALL HERE
  * Identical to /api/findings: `findings` and `finding_runs` are deny-all to
@@ -41,7 +40,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { loadManagerCaller, managerManagesHotel } from '@/lib/team-auth';
-import { getMorningBrief } from '@/lib/findings/brief-server';
+import { loadFeedMorningBrief } from '@/lib/findings/feed-brief';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,9 +63,8 @@ export async function GET(req: NextRequest) {
 
   // Keyed on the RAW property id — api_limits.property_id FKs properties(id),
   // so a hashed composite would FK-violate and this would fail for the wrong
-  // reason. Billing-impacting (the first load of a hotel-day can make one model
-  // call) so it fails CLOSED: losing the summary is cheap, uncapped spend is
-  // not, and the cards below the brief are unaffected either way.
+  // reason. The read is deterministic now, but the limiter still bounds cache
+  // and ledger work from rapid reloads. The cards below remain unaffected.
   const limit = await checkAndIncrementRateLimit('findings-brief', propertyId);
   if (!limit.allowed) {
     return err('Too many requests, try again shortly', {
@@ -78,12 +76,7 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const result = await getMorningBrief({
-      propertyId,
-      // The tokens are booked against the manager who happened to open the app
-      // first. Same hotel, same daily envelope — this is the books, not the cap.
-      accountId: caller.accountId,
-    });
+    const result = await loadFeedMorningBrief(propertyId);
     // `stopped` distinguishes the two reasons there is no brief. A null brief
     // has always meant "nobody has checked this hotel"; a switched-off Morning
     // Briefer (admin AI Staff page) means "nobody is writing one". The screen

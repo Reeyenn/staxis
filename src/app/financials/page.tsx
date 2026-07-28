@@ -13,8 +13,7 @@ export const dynamic = 'force-dynamic';
 // board-style tabs, hairline cards on the app-wide radial wash. The data
 // layer is unchanged; this is a re-skin.
 
-import React, { useCallback, useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import React, { useCallback, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -30,6 +29,8 @@ import { ft } from './_components/fin-i18n';
 import { CheckbookTab } from './_components/CheckbookTab';
 import { BudgetTab } from './_components/BudgetTab';
 import { CapexTab } from './_components/CapexTab';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 type Lang = 'en' | 'es';
 type TabKey = 'checkbook' | 'budget' | 'capex';
@@ -53,13 +54,17 @@ export default function FinancialsPage() {
   const {
     activePropertyId,
     activeProperty,
+    activePropertyViewerKey,
     loading: propLoading,
     capabilityOverridesViewerKey,
     capabilityOverridesPropertyId,
+    capabilityOverridesStatus,
+    capabilityOverridesError,
+    refreshCapabilities,
   } = useProperty();
   const can = useCan();
   const { lang } = useLang();
-  const router = useRouter();
+  const { push } = useReliableNavigation();
   const S = ft(lang as Lang);
 
   const [tab, setTab] = useState<TabKey>('checkbook');
@@ -71,9 +76,7 @@ export default function FinancialsPage() {
 
   const currentMonth = localMonthKey(new Date());
   const financialsEnabled = useSectionEnabled('financials');
-  const capabilityViewerKey = user?.uid && activePropertyId
-    ? `${user.uid}:${activePropertyId}`
-    : null;
+  const capabilityViewerKey = activePropertyViewerKey;
   const accessContextReady = Boolean(
     capabilityViewerKey
     && activeProperty?.id === activePropertyId
@@ -81,21 +84,6 @@ export default function FinancialsPage() {
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
   const allowed = accessContextReady && financialsEnabled && !!user && can('view_financials');
-
-  // Redirect a restricted role away (client guard; the API gate is the real
-  // enforcement). `allowed` honors this hotel's Access-tab restrictions and
-  // re-evaluates once the override map finishes loading.
-  useEffect(() => {
-    if (authLoading || propLoading) return;
-    if (!user) {
-      router.replace('/signin');
-      return;
-    }
-    if (activePropertyId && !accessContextReady) return;
-    if (!allowed) {
-      router.replace('/dashboard');
-    }
-  }, [user, authLoading, propLoading, activePropertyId, accessContextReady, allowed, router]);
 
   const summaryRes = useApiResource<{ summary: FinanceSummary }>(
     `/api/financials/summary?pid=${activePropertyId}&month=${month}#${summaryNonce}`,
@@ -111,21 +99,69 @@ export default function FinancialsPage() {
   // Tabs call this after any mutation so the header totals stay live.
   const onTabChanged = useCallback(() => setSummaryNonce((n) => n + 1), []);
 
-  if (authLoading || propLoading || !accessContextReady || !allowed) {
+  if (capabilityOverridesStatus === 'error') {
     return (
       <AppLayout>
-        <div style={{ background: 'transparent', minHeight: 'calc(100dvh - 64px)', padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>
+        <RouteErrorState
+          title="Financial access could not be confirmed"
+          message={capabilityOverridesError ?? undefined}
+          onRetry={() => void refreshCapabilities()}
+        />
       </AppLayout>
     );
   }
 
-  if (!activePropertyId) {
+  if (!authLoading && !propLoading && user && !activePropertyId) {
     return (
       <AppLayout>
-        <div style={{ background: 'transparent', minHeight: 'calc(100dvh - 64px)', padding: 60, textAlign: 'center', fontFamily: FONT_SANS, color: T.ink2 }}>{S.loading}</div>
+        <RouteErrorState
+          title="No hotel is selected"
+          message="Choose a hotel before opening Financials."
+          retryLabel="Choose a hotel"
+          onRetry={() => push('/property-selector')}
+        />
       </AppLayout>
     );
   }
+
+  if (!authLoading && !user) {
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title="Your session is no longer available"
+          message="Sign in again to open Financials."
+          retryLabel="Sign in"
+          onRetry={() => window.location.assign('/signin')}
+        />
+      </AppLayout>
+    );
+  }
+
+  if (authLoading || propLoading || !accessContextReady) {
+    return (
+      <AppLayout>
+        <RouteLoadingState title={S.loading} message="Checking hotel access and current accounting data." />
+      </AppLayout>
+    );
+  }
+
+  if (!allowed) {
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title="Financials is not available for this account"
+          message="Your current hotel role does not include financial access."
+          retryLabel="Return to Dashboard"
+          onRetry={() => window.location.assign('/dashboard')}
+        />
+      </AppLayout>
+    );
+  }
+
+  // The terminal no-hotel branch above handles the reachable case. Keep this
+  // explicit guard so request URLs below remain non-null under strict typing.
+  if (!activePropertyId) return null;
+  const financialScopeKey = `${user.uid}:${activePropertyId}`;
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'checkbook', label: S.tabCheckbook },
@@ -255,9 +291,9 @@ export default function FinancialsPage() {
 
         {/* Active tab */}
         <div style={{ marginTop: 22 }}>
-          {tab === 'checkbook' && <CheckbookTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
-          {tab === 'budget' && <BudgetTab pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
-          {tab === 'capex' && <CapexTab pid={activePropertyId} lang={lang as Lang} onChanged={onTabChanged} />}
+          {tab === 'checkbook' && <CheckbookTab key={financialScopeKey} scopeKey={financialScopeKey} pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
+          {tab === 'budget' && <BudgetTab key={financialScopeKey} scopeKey={financialScopeKey} pid={activePropertyId} lang={lang as Lang} month={month} onChanged={onTabChanged} />}
+          {tab === 'capex' && <CapexTab key={financialScopeKey} scopeKey={financialScopeKey} pid={activePropertyId} lang={lang as Lang} onChanged={onTabChanged} />}
         </div>
         </div>
       </div>

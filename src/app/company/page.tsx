@@ -32,6 +32,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { RouteErrorState } from '@/components/layout/RouteResourceState';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { useCan } from '@/lib/capabilities/useCan';
 import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
@@ -49,6 +50,9 @@ import {
   type CompanyProperty,
   type EffectiveAccessReceipt,
 } from '@/lib/company-access/dto';
+import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
+import { notifyAuthorizationChanged } from '@/lib/hooks/use-authorization-refresh-key';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import type { StaffMember, Property } from '@/types';
 
 import styles from './CompanyAccess.module.css';
@@ -279,18 +283,23 @@ function CompanyPageFallback() {
 
 function CompanyAccessContent() {
   const router = useRouter();
+  const { push: pushReliable } = useReliableNavigation();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { user, loading: authLoading } = useAuth();
   const {
     properties: contextProperties,
     activeProperty,
+    activePropertyViewerKey,
     staff,
     staffLoaded,
     staffLoadFailed,
     staffViewerKey,
     capabilityOverridesViewerKey,
     capabilityOverridesPropertyId,
+    capabilityOverridesStatus,
+    capabilityOverridesError,
+    refreshCapabilities,
     loading: propertyLoading,
     setActivePropertyId,
     refreshStaff,
@@ -320,15 +329,26 @@ function CompanyAccessContent() {
   const [adminToolsEnabled, setAdminToolsEnabled] = React.useState(false);
   const previewHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const focusPreviewAfterRetryRef = React.useRef(false);
+  const completeAccessMutation = React.useCallback(() => {
+    notifyAuthorizationChanged();
+    setRetryKey((value) => value + 1);
+  }, []);
 
   const propertyKey = contextProperties.map((property) => property.id).sort().join(',');
-  const accountId = user?.accountId ?? null;
   const userRole = user?.role ?? null;
   const activePropertyId = activeProperty?.id ?? null;
   const adminPreview = userRole === 'admin';
-  const capabilityViewerKey = user?.uid && activePropertyId
-    ? `${user.uid}:${activePropertyId}`
+  const currentViewerKey = user
+    ? buildCompanyAccessViewerKey({
+        uid: user.uid,
+        accountId: user.accountId,
+        role: user.role,
+        propertyAccess: user.propertyAccess,
+        resolvedPropertyKey: propertyKey,
+        adminTargetPropertyId: adminPreview ? activePropertyId : null,
+      })
     : null;
+  const capabilityViewerKey = activePropertyViewerKey;
   const hotelCapabilitiesReady = Boolean(
     activePropertyId
     && capabilityViewerKey
@@ -346,8 +366,8 @@ function CompanyAccessContent() {
   // and PUT/GET /api/staff/wages enforce it again server-side. Resolved here,
   // where the exact-hotel capability snapshot is already known to be current.
   const canViewWages = hotelCapabilitiesReady && can('view_wages');
-  const staffBelongsToCurrentViewer = Boolean(user?.uid && activePropertyId
-    && staffViewerKey === `${user.uid}:${activePropertyId}`);
+  const staffBelongsToCurrentViewer = Boolean(activePropertyViewerKey
+    && staffViewerKey === activePropertyViewerKey);
   const currentStaff = staffBelongsToCurrentViewer
     ? staff
     : [];
@@ -371,9 +391,9 @@ function CompanyAccessContent() {
   langRef.current = lang;
 
   React.useEffect(() => {
-    if (!user || authLoading || propertyLoading) return;
+    if (!user || !currentViewerKey || authLoading || propertyLoading) return;
     const requestedPropertyId = user.role === 'admin' ? activePropertyId : null;
-    const requestedViewerKey = `${user.accountId}:${user.role}:${requestedPropertyId ?? 'customer'}`;
+    const requestedViewerKey = currentViewerKey;
     if (user.role === 'admin' && !requestedPropertyId) {
       setAdminTargetPropertyId(null);
       setData(null);
@@ -456,12 +476,9 @@ function CompanyAccessContent() {
     })();
 
     return () => { cancelled = true; };
-  }, [accountId, activePropertyId, authLoading, propertyKey, propertyLoading, retryKey, userRole]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authLoading, currentViewerKey, propertyLoading, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const adminTargetIsCurrent = !adminPreview || adminTargetPropertyId === activePropertyId;
-  const currentViewerKey = accountId && userRole
-    ? `${accountId}:${userRole}:${adminPreview ? activePropertyId ?? 'customer' : 'customer'}`
-    : null;
   const dataBelongsToCurrentViewer = Boolean(currentViewerKey && dataViewerKey === currentViewerKey);
   const adminDataMatchesSelection = !adminPreview || Boolean(
     data?.viewerContext
@@ -719,7 +736,7 @@ function CompanyAccessContent() {
                 <RefreshCw size={14} aria-hidden="true" />
                 {localized(lang, 'Retry', 'Reintentar')}
               </button>
-              <button type="button" onClick={() => router.push('/admin/properties#live')}>
+              <button type="button" onClick={() => pushReliable('/admin/properties#live')}>
                 {localized(lang, 'Back to Admin', 'Volver a Admin')}
                 <ArrowRight size={14} aria-hidden="true" />
               </button>
@@ -759,7 +776,14 @@ function CompanyAccessContent() {
               aria-labelledby={`company-tab-${tab}`}
               className={styles.panel}
             >
-              {showLoading ? (
+              {tab === 'people' && capabilityOverridesStatus === 'error' ? (
+                <RouteErrorState
+                  title={localized(lang, 'People access could not be confirmed', 'No se pudo confirmar el acceso a Personas')}
+                  message={capabilityOverridesError ?? undefined}
+                  retryLabel={localized(lang, 'Try again', 'Reintentar')}
+                  onRetry={() => void refreshCapabilities()}
+                />
+              ) : showLoading ? (
                 <CompanyHubSkeleton lang={lang} />
               ) : !user ? (
                 <EmptyState
@@ -839,7 +863,7 @@ function CompanyAccessContent() {
           data={resolved}
           lang={lang}
           onClose={() => setInviteOpen(false)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
+          onCompleted={completeAccessMutation}
         />
       ) : null}
       {currentData && requestOpen && !resolved.viewerContext ? (
@@ -847,7 +871,7 @@ function CompanyAccessContent() {
           data={resolved}
           lang={lang}
           onClose={() => setRequestOpen(false)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
+          onCompleted={completeAccessMutation}
         />
       ) : null}
       {currentData && reviewRequest && !resolved.viewerContext ? (
@@ -855,7 +879,7 @@ function CompanyAccessContent() {
           request={reviewRequest}
           lang={lang}
           onClose={() => setReviewRequest(null)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
+          onCompleted={completeAccessMutation}
         />
       ) : null}
       {currentData && lifecycleAction && !resolved.viewerContext ? (
@@ -863,7 +887,7 @@ function CompanyAccessContent() {
           action={lifecycleAction}
           lang={lang}
           onClose={() => setLifecycleAction(null)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
+          onCompleted={completeAccessMutation}
         />
       ) : null}
     </AppLayout>

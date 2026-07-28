@@ -14,6 +14,7 @@ import { type Complaint, fromComplaintRow } from '../complaints-shared';
 export function subscribeToComplaints(
   _uid: string, pid: string,
   callback: (complaints: Complaint[]) => void,
+  onError?: (error: unknown) => void,
 ): () => void {
   return subscribeTable<Complaint>(
     `complaints:${pid}`, 'complaints', `property_id=eq.${pid}`,
@@ -26,6 +27,8 @@ export function subscribeToComplaints(
       return (data ?? []).map((r) => fromComplaintRow(r as Record<string, unknown>));
     },
     callback,
+    undefined,
+    undefined,
+    onError,
   );
 }
-

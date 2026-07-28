@@ -48,7 +48,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+  SessionEndedError,
+} from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
 
 import { CxIcon } from './icons';
@@ -964,6 +968,7 @@ export function FindingCards({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ propertyId: hotelId, findingId, action: verdict }),
+            timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
           });
           const body = await readEnvelope<{ status: string }>(res);
           if (body.error !== undefined) {
@@ -1008,6 +1013,7 @@ export function FindingCards({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ propertyId: hotelId, actionId, intent }),
+            timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
           });
           const body = await readEnvelope<{ state: string }>(res);
           if (body.error !== undefined) setSaveFailed(true);
@@ -1043,6 +1049,7 @@ export function FindingCards({
           findingId,
           action: 'receipt_opened',
         }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       }).catch(() => {});
     },
     [hotelId],

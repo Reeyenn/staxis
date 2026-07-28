@@ -24,7 +24,9 @@ import assert from 'node:assert/strict';
 
 import {
   fetchWithAuth,
+  markAuthenticatedSessionStarted,
   SessionEndedError,
+  __resetInFlightRefreshForTesting,
   __resetSessionEndForTesting,
 } from '@/lib/api-fetch';
 // IMPORTANT: static import here so we share the same cached supabase
@@ -178,6 +180,24 @@ describe('fetchWithAuth — requires_2fa dedup', () => {
     assert.equal(location.assignCalls.length, 0, 'no redirect from /signin pages');
   });
 
+  test('a signin-page verdict does not poison a later authenticated redirect', async () => {
+    location.pathname = '/signin/verify';
+    await assert.rejects(fetchWithAuth('/api/some-call'), SessionEndedError);
+    assert.equal(signOutCalls, 0);
+    assert.equal(location.assignCalls.length, 0);
+
+    // Model an SPA sign-in finishing without reloading this JS module, then a
+    // later genuinely terminal request from an authenticated page.
+    markAuthenticatedSessionStarted();
+    __resetInFlightRefreshForTesting();
+    location.pathname = '/inventory';
+    await assert.rejects(fetchWithAuth('/api/protected'), SessionEndedError);
+
+    assert.equal(signOutCalls, 1);
+    assert.equal(location.assignCalls.length, 1);
+    assert.match(location.assignCalls[0], /reason=2fa_required/);
+  });
+
   test('non-requires_2fa unknown 401 code still triggers session-ended path (regression guard)', async () => {
     // Replace the fetch mock with one returning a different unrecoverable code.
     globalThis.fetch = (async () => {
@@ -232,6 +252,89 @@ describe('fetchWithAuth — requires_2fa dedup', () => {
     assert.equal(calls, 2, 'should retry exactly once after refresh');
     assert.equal(signOutCalls, 0, 'must NOT sign out when the retry recovers');
     assert.equal(location.assignCalls.length, 0, 'must NOT redirect to /signin');
+  });
+
+  test('trust may settle after the first retry but before the final authoritative check', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      if (calls <= 2) {
+        return new Response(JSON.stringify({ code: 'requires_2fa' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+
+    const res = await fetchWithAuth('/api/properties');
+
+    assert.equal(res.status, 200);
+    assert.equal(calls, 3, 'one delayed final check observes the newly landed trust state');
+    assert.equal(signOutCalls, 0);
+    assert.equal(location.assignCalls.length, 0);
+  });
+
+  test('a transient 401 on the trust retry preserves the valid session', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      const code = calls === 1 ? 'requires_2fa' : 'auth_unavailable';
+      return new Response(JSON.stringify({ ok: false, code }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+
+    const res = await fetchWithAuth('/api/capabilities/overrides?propertyId=p1');
+
+    assert.equal(res.status, 401);
+    assert.deepEqual(await res.json(), { ok: false, code: 'auth_unavailable' });
+    assert.equal(calls, 2, 'trust recovery retries only once');
+    assert.equal(signOutCalls, 0, 'a transient retry is not a dead-session verdict');
+    assert.equal(location.assignCalls.length, 0, 'a transient retry must remain in place');
+  });
+
+  test('an unstructured 401 on the trust retry also preserves the session', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return calls === 1
+        ? new Response(JSON.stringify({ code: 'requires_2fa' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        })
+        : new Response('upstream unauthorized', { status: 401 });
+    }) as typeof globalThis.fetch;
+
+    const res = await fetchWithAuth('/api/protected');
+
+    assert.equal(res.status, 401);
+    assert.equal(calls, 2);
+    assert.equal(signOutCalls, 0);
+    assert.equal(location.assignCalls.length, 0);
+  });
+
+  test('a project mismatch on the trust retry uses the configuration-error path', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      const code = calls === 1 ? 'requires_2fa' : 'project_mismatch';
+      return new Response(JSON.stringify({ code }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+
+    await assert.rejects(fetchWithAuth('/api/protected'), SessionEndedError);
+
+    assert.equal(signOutCalls, 1);
+    assert.equal(location.assignCalls.length, 1);
+    const qs = new URLSearchParams(location.assignCalls[0].split('?')[1]);
+    assert.equal(qs.get('reason'), 'config-error');
   });
 });
 

@@ -8,7 +8,7 @@
 // /api/financials/budgets + /api/financials/forecast; budgets save through the
 // upsert endpoint. Money is integer cents.
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal } from '@/app/maintenance/_components/_mt-snow';
 import { useApiResource, useApiAction } from '@/lib/hooks/use-api-resource';
 import {
@@ -45,17 +45,32 @@ interface AnomalyRow {
 }
 
 export function BudgetTab({
+  scopeKey,
   pid,
   lang,
   month,
   onChanged,
 }: {
+  scopeKey: string;
   pid: string;
   lang: Lang;
   month: string;
   onChanged: () => void;
 }) {
   const S = ft(lang);
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  const saveAttemptRef = useRef(0);
+  useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      activeScopeRef.current = null;
+      saveAttemptRef.current += 1;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
   // Mutation/retry counter — rides the URLs as a fragment (never sent over
   // HTTP) so a refetch replays the full "Loading…" flash like the old load().
   const [nonce, setNonce] = useState(0);
@@ -88,9 +103,18 @@ export function BudgetTab({
   // sequentially). Stops at the first failure and reports it — a failed
   // upsert must not close the modal as if it saved. Re-saving after a
   // mid-loop failure re-upserts already-saved lines, which is harmless.
-  const saveAction = useApiAction(async (changed: Array<{ department: Department; cents: number }>) => {
-    for (const c of changed) {
-      const res = await finSend('/api/financials/budgets', 'POST', { pid, department: c.department, month, budgetCents: c.cents });
+  const saveAction = useApiAction(async (input: {
+    propertyId: string;
+    month: string;
+    changed: Array<{ department: Department; cents: number }>;
+  }) => {
+    for (const c of input.changed) {
+      const res = await finSend('/api/financials/budgets', 'POST', {
+        pid: input.propertyId,
+        department: c.department,
+        month: input.month,
+        budgetCents: c.cents,
+      });
       if (res.error) return res;
     }
     return { data: true as const };
@@ -112,7 +136,16 @@ export function BudgetTab({
       if (cents !== (byDept.get(dept) ?? 0)) changed.push({ department: dept, cents });
     }
     setModalError(null);
-    const res = await saveAction.run(changed);
+    const requestedPropertyId = pid;
+    const requestedMonth = month;
+    const attempt = ++saveAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && saveAttemptRef.current === attempt;
+    const res = await saveAction.run({
+      propertyId: requestedPropertyId,
+      month: requestedMonth,
+      changed,
+    });
+    if (!ownsAttempt()) return;
     if (res.error) {
       setModalError(S.couldNotSave);
       return;

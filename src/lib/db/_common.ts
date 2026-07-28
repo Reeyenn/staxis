@@ -360,7 +360,12 @@ export function subscribeTable<T>(
     doFetch()
       .then(rows => {
         if (!active) return;
-        if (myReq <= lastPublishedSeq) return;  // a newer fetch already published
+        // Latest-started request owns the visible verdict, including failure.
+        // If request B fails before slower request A succeeds, publishing A
+        // here would incorrectly clear B's terminal error/stale state. A
+        // reducer publication also increments requestSeq, so the same guard
+        // prevents an in-flight fetch from rolling back locally-fresher data.
+        if (myReq !== requestSeq || myReq <= lastPublishedSeq) return;
         lastPublishedSeq = myReq;
         // Do not enable payload reduction if a relevant event arrived while
         // this fetch was in flight. Its debounced follow-up fetch must land
@@ -371,7 +376,10 @@ export function subscribeTable<T>(
       })
       .catch(err => {
         logErr(`Listener error in ${channelName}`, err);
-        if (active) onFetchError?.(err);
+        // If another fetch started after this one, only that newer request may
+        // decide whether the visible snapshot is stale. Its success callback
+        // clears the error; its failure calls this hook with the newest id.
+        if (active && myReq === requestSeq) onFetchError?.(err);
       });
   };
 

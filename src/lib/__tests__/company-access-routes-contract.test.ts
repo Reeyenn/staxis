@@ -19,6 +19,7 @@ const adminPreviewHelpers = source('src/lib/company-access/admin-preview.ts');
 const dialog = source('src/app/company/_components/AccessWorkflowDialogs.tsx');
 const page = source('src/app/company/page.tsx');
 const signIn = source('src/app/signin/page.tsx');
+const signInNavigationPolicy = source('src/lib/auth/signin-navigation-policy.ts');
 
 describe('company access read/delegation boundary', () => {
   test('derives tenant membership from the authenticated account and projects per-org policies', () => {
@@ -188,7 +189,8 @@ describe('organization invitation acceptance', () => {
   test('sign-in bypasses property selection only for Company targets', () => {
     assert.match(signIn, /requestedTarget === ['"]\/company['"]/);
     assert.match(signIn, /requestedTarget\.startsWith\(['"]\/company-invite\/['"]\)/);
-    assert.match(signIn, /user && !isPropertyIndependentCompanyTarget/);
+    assert.match(signIn, /propertyIndependent: isPropertyIndependentCompanyTarget/);
+    assert.match(signInNavigationPolicy, /input\.user[\s\S]*?!input\.propertyIndependent/);
   });
 });
 

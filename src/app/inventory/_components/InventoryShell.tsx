@@ -20,8 +20,10 @@ import {
   sectionBudgetKey,
   saveInventoryCountAtomic,
 } from '@/lib/db';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
+import { withPromiseDeadline } from '@/lib/fetch-deadline';
 import { generateId } from '@/lib/utils';
+import { saveOrderedInventoryTabLayout } from '@/lib/inventory-tab-layout-save';
 import { buildHistoryEvents } from './history-events';
 import {
   clearQuickCountAttempt,
@@ -102,6 +104,8 @@ import type { DisplayItem } from './types';
 import type { StockBucket, StockStatus } from './tokens';
 
 import { t, invLang, dateLocale } from './inv-i18n';
+
+const INVENTORY_BOARD_LOAD_TIMEOUT_MS = 12_000;
 
 // ── Lazy-loaded overlays ─────────────────────────────────────────────────────
 // The inventory page is opened many times a day just to view stock. These 11
@@ -268,6 +272,7 @@ export function InventoryShell() {
   const {
     activePropertyId,
     activeProperty,
+    activePropertyViewerKey,
     capabilityOverridesViewerKey,
     capabilityOverridesPropertyId,
   } = useProperty();
@@ -283,7 +288,7 @@ export function InventoryShell() {
   if (user) lastUserRef.current = user;
   const stableUser = user ?? lastUserRef.current;
   const uid = stableUser?.uid ?? null;
-  const capabilityViewerKey = uid && activePropertyId ? `${uid}:${activePropertyId}` : null;
+  const capabilityViewerKey = activePropertyViewerKey;
   const inventoryContextReady = Boolean(
     capabilityViewerKey
     && activeProperty?.id === activePropertyId
@@ -371,6 +376,10 @@ export function InventoryShell() {
   const layoutSaveScopeRef = React.useRef<string | null>(activePropertyId);
   const layoutDesiredKeyRef = React.useRef(JSON.stringify(tabLayout));
   const layoutLastSavedRef = React.useRef<InventoryTabLayout>(tabLayout);
+  // PropertyContext exposes only public {order,hidden}, never the private CAS
+  // metadata. Resolve this lazily on the first edit, then carry it through the
+  // serialized save queue. Property switches always return to unknown.
+  const layoutRevisionRef = React.useRef<number | null>(null);
   // Resync from the property record when it hydrates / on property switch. Dep
   // is a stable JSON key (not the object identity, which churns on auth-token
   // rebuilds) so an optimistic local layout is never clobbered by a re-render.
@@ -385,6 +394,7 @@ export function InventoryShell() {
       layoutLastSavedRef.current = storedLayout;
       layoutDesiredKeyRef.current = storedLayoutKey;
       layoutSaveScopeRef.current = activePropertyId;
+      layoutRevisionRef.current = null;
       layoutSaveGenerationRef.current += 1;
       layoutSaveChainRef.current = Promise.resolve();
       setInventoryConfigError(null);
@@ -687,7 +697,10 @@ export function InventoryShell() {
 
     void (async () => {
       try {
-        const d = await fetchBoardData(uid, activePropertyId);
+        const d = await withPromiseDeadline(fetchBoardData(uid, activePropertyId), {
+          timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
+          label: 'Inventory details',
+        });
         if (
           cancelled
           || sequence !== boardLoadSequence.current
@@ -1413,7 +1426,10 @@ export function InventoryShell() {
     const requestedPropertyId = activePropertyId;
     const sequence = ++boardLoadSequence.current;
     try {
-      const data = await fetchBoardData(uid, requestedPropertyId);
+      const data = await withPromiseDeadline(fetchBoardData(uid, requestedPropertyId), {
+        timeoutMs: INVENTORY_BOARD_LOAD_TIMEOUT_MS,
+        label: 'Inventory details',
+      });
       if (
         sequence !== boardLoadSequence.current
         || activePropertyIdRef.current !== requestedPropertyId
@@ -1494,36 +1510,63 @@ export function InventoryShell() {
     setInventoryConfigError(null);
 
     const save = async () => {
-      try {
-        const res = await fetchWithAuth('/api/inventory/property-config', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ pid: propertyId, tabLayout: next }),
-        });
-        if (!res.ok) throw new Error(`save failed (${res.status})`);
-        if (
-          generation === layoutSaveGenerationRef.current
-          && layoutSaveScopeRef.current === propertyId
-        ) {
-          layoutLastSavedRef.current = next;
-          if (layoutDesiredKeyRef.current === nextKey) setInventoryConfigError(null);
+      if (
+        generation !== layoutSaveGenerationRef.current
+        || layoutSaveScopeRef.current !== propertyId
+      ) return;
+
+      const outcome = await saveOrderedInventoryTabLayout({
+        request: fetchWithAuth,
+        propertyId,
+        tabLayout: next,
+        baselineLayout: layoutLastSavedRef.current,
+        expectedRevision: layoutRevisionRef.current,
+        operationId: generateId(),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+      });
+      if (
+        generation !== layoutSaveGenerationRef.current
+        || layoutSaveScopeRef.current !== propertyId
+      ) return;
+
+      if (outcome.kind === 'saved') {
+        layoutLastSavedRef.current = outcome.state.tabLayout;
+        layoutRevisionRef.current = outcome.state.revision;
+        if (layoutDesiredKeyRef.current === nextKey) {
+          setTabLayout(outcome.state.tabLayout);
+          setInventoryConfigError(null);
         }
-      } catch (err) {
-        console.error('[inventory] save tab layout failed', err);
-        if (
-          generation !== layoutSaveGenerationRef.current
-          || layoutSaveScopeRef.current !== propertyId
-          || layoutDesiredKeyRef.current !== nextKey
-        ) return;
-        const fallback = layoutLastSavedRef.current;
-        layoutDesiredKeyRef.current = JSON.stringify(fallback);
-        setTabLayout(fallback);
-        setInventoryConfigError(
-          L === 'es'
-            ? 'No se guardó el cambio de pestañas. Se restauró el diseño anterior.'
-            : 'The tab change was not saved. The previous layout was restored.',
-        );
+        return;
       }
+
+      console.error('[inventory] ordered tab layout save did not commit', outcome.kind);
+
+      // A conflict or uncertain result invalidates every edit queued from the
+      // stale base document. Adopt only an authoritative reconciliation state;
+      // never claim an ambiguous optimistic layout was rolled back/saved.
+      layoutSaveGenerationRef.current += 1;
+      layoutSaveChainRef.current = Promise.resolve();
+      if (outcome.state) {
+        layoutLastSavedRef.current = outcome.state.tabLayout;
+        layoutRevisionRef.current = outcome.state.revision;
+        layoutDesiredKeyRef.current = JSON.stringify(outcome.state.tabLayout);
+        setTabLayout(outcome.state.tabLayout);
+      } else {
+        layoutRevisionRef.current = null;
+      }
+      setInventoryConfigError(
+        outcome.kind === 'conflict'
+          ? (L === 'es'
+              ? 'El diseño de pestañas cambió en otro lugar. Se muestra la versión guardada más reciente; vuelve a intentar tu cambio.'
+              : 'The tab layout changed elsewhere. The latest saved layout is shown; try your change again.')
+          : outcome.kind === 'unconfirmed'
+            ? (L === 'es'
+                ? 'No se pudo confirmar el cambio de pestañas. Se actualizó el estado del servidor cuando fue posible; vuelve a intentarlo.'
+                : 'The tab change could not be confirmed. Server state was refreshed when possible; try again.')
+            : (L === 'es'
+                ? 'No se pudo guardar el diseño de pestañas. No se aplicaron más cambios en cola; vuelve a intentarlo.'
+                : 'The tab layout could not be saved. No further queued changes were applied; try again.'),
+      );
     };
 
     const queued = layoutSaveChainRef.current.catch(() => {}).then(save);
@@ -1559,9 +1602,9 @@ export function InventoryShell() {
   }, [persistLayout, tabLayout]);
 
   // Page-load choreography: masthead blocks, rail and filter bar rise in as a
-  // cascade — ONCE. `revealed` is a one-way latch: it flips true when the
-  // initial data is in (or after a 3.5s failsafe so a single failed fetch can
-  // never strand the page on "loading"), and never flips back. Auth-token
+  // cascade — ONCE. `revealed` is a one-way latch: it flips true only when the
+  // initial item snapshot and the bounded board bundle have reached a terminal
+  // result, and never flips back. Auth-token
   // refreshes transiently null the user; without the latch each blip
   // unmounted the whole board back to the loading branch and replayed the
   // entrance — the "UI pops up over and over" bug.
@@ -1570,10 +1613,6 @@ export function InventoryShell() {
   const dataReady = inventoryDataMatchesViewer && itemsLoaded && bundleLoaded;
   const [revealed, setRevealed] = useState(false);
   useEffect(() => { if (dataReady) setRevealed(true); }, [dataReady]);
-  useEffect(() => {
-    const failsafe = setTimeout(() => setRevealed(true), 3500);
-    return () => clearTimeout(failsafe);
-  }, []);
   const pageRef = useRiseIn<HTMLDivElement>([revealed], { step: 75, dist: 16 });
 
   if (itemsLoadError) {
@@ -1602,7 +1641,7 @@ export function InventoryShell() {
     }
   }
 
-  if (!inventoryDataMatchesViewer || !revealed || !itemsLoaded) {
+  if (!inventoryDataMatchesViewer || !revealed || !itemsLoaded || !bundleLoaded) {
     // Byte-identical to InventoryLoading in ../page.tsx (the SSR Suspense
     // fallback); any drift between the two makes React hydration re-render
     // the whole tree and the loading text visibly flash mid-load.

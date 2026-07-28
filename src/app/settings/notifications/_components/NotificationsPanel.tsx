@@ -14,8 +14,10 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { Bell, Mail, MessageSquare, Plus, X, Save } from 'lucide-react';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
+import { RequestTimeoutError } from '@/lib/fetch-deadline';
 import { useCan } from '@/lib/capabilities/useCan';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
 import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 
 interface Preferences {
@@ -40,6 +42,10 @@ const NOTIFICATION_ERROR_MESSAGES = [
     'Failed to save — check your connection and try again',
     'No se pudo guardar — revisa tu conexión e intenta de nuevo',
   ],
+  [
+    'Save confirmation timed out. Current settings were refreshed; review them before retrying.',
+    'La confirmación tardó demasiado. Se actualizaron los ajustes actuales; revísalos antes de reintentar.',
+  ],
   ['That email is already in the list', 'Ese correo ya está en la lista'],
 ] as const satisfies readonly LocalizedMessagePair[];
 
@@ -49,9 +55,13 @@ export function NotificationsPanel() {
     properties,
     activeProperty,
     activePropertyId,
+    activePropertyViewerKey,
     loading: propertyLoading,
     capabilityOverridesViewerKey,
     capabilityOverridesPropertyId,
+    capabilityOverridesStatus,
+    capabilityOverridesError,
+    refreshCapabilities,
     setActivePropertyId,
   } = useProperty();
   const { lang } = useLang();
@@ -62,9 +72,7 @@ export function NotificationsPanel() {
   const langRef = useRef(lang);
   langRef.current = lang;
   const can = useCan();
-  const capabilityViewerKey = user?.uid && activePropertyId
-    ? `${user.uid}:${activePropertyId}`
-    : null;
+  const capabilityViewerKey = activePropertyViewerKey;
   const accessContextReady = Boolean(
     capabilityViewerKey
     && activeProperty?.id === activePropertyId
@@ -85,19 +93,23 @@ export function NotificationsPanel() {
   const [savedFlash, setSavedFlash] = useState(false);
   const [newCc, setNewCc] = useState('');
   const loadRequestRef = useRef(0);
+  const saveRequestRef = useRef(0);
   const activeScopeRef = useRef<string | null>(null);
   activeScopeRef.current = allowed ? propertyId : null;
   const visibleError = localizeKnownMessage(error, lang, NOTIFICATION_ERROR_MESSAGES);
 
   useEffect(() => {
-    // Invalidate any response for the previous hotel and remove its settings
-    // before the newly selected hotel's capability snapshot can become ready.
+    // Invalidate any response and draft for the previous viewer+hotel before
+    // the newly selected scope's capability snapshot can become ready.
     loadRequestRef.current += 1;
+    saveRequestRef.current += 1;
     setPrefs(null);
     setError('');
     setSavedFlash(false);
+    setNewCc('');
+    setSaving(false);
     setLoading(true);
-  }, [propertyId]);
+  }, [capabilityViewerKey, propertyId]);
 
   const load = useCallback(async () => {
     const requestedPropertyId = propertyId;
@@ -134,33 +146,52 @@ export function NotificationsPanel() {
   const save = async (next: Partial<Preferences>): Promise<boolean> => {
     if (!allowed || !prefs || !propertyId) return false;
     const requestedPropertyId = propertyId;
+    const requestId = ++saveRequestRef.current;
+    const ownsSave = () => (
+      requestId === saveRequestRef.current
+      && activeScopeRef.current === requestedPropertyId
+    );
     setSaving(true);
     setError('');
     try {
       const res = await fetchWithAuth('/api/settings/notifications', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId, ...next }),
+        body: JSON.stringify({ propertyId: requestedPropertyId, ...next }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const body = await res.json() as { ok?: boolean; data?: { preferences: Preferences }; error?: string };
-      if (activeScopeRef.current !== requestedPropertyId) return false;
+      if (!ownsSave()) return false;
       if (!res.ok || !body.ok || !body.data) {
         setError(body.error || (lang === 'es' ? 'No se pudo guardar' : 'Failed to save'));
         return false;
       }
       setPrefs(body.data.preferences);
       setSavedFlash(true);
-      window.setTimeout(() => setSavedFlash(false), 1800);
+      window.setTimeout(() => {
+        if (ownsSave()) setSavedFlash(false);
+      }, 1800);
       return true;
     } catch (err) {
-      if (activeScopeRef.current !== requestedPropertyId) return false;
+      if (!ownsSave()) return false;
       // A network throw used to escape silently — toggles/pause buttons did
       // nothing with zero feedback.
       console.error('[notifications:settings] save failed', err);
-      setError(lang === 'es' ? 'No se pudo guardar — revisa tu conexión e intenta de nuevo' : 'Failed to save — check your connection and try again');
+      if (err instanceof RequestTimeoutError) {
+        // The PUT is idempotent, but the response may have been lost after the
+        // commit. Re-read instead of blindly replaying and risking a misleading
+        // local toggle state.
+        await load();
+        if (!ownsSave()) return false;
+        setError(lang === 'es'
+          ? 'La confirmación tardó demasiado. Se actualizaron los ajustes actuales; revísalos antes de reintentar.'
+          : 'Save confirmation timed out. Current settings were refreshed; review them before retrying.');
+      } else {
+        setError(lang === 'es' ? 'No se pudo guardar — revisa tu conexión e intenta de nuevo' : 'Failed to save — check your connection and try again');
+      }
       return false;
     } finally {
-      setSaving(false);
+      if (ownsSave()) setSaving(false);
     }
   };
 
@@ -194,11 +225,19 @@ export function NotificationsPanel() {
     await save({ pausedUntil: until });
   };
 
+  if (capabilityOverridesStatus === 'error') {
+    return (
+      <RouteErrorState
+        title={lang === 'es' ? 'No se pudo confirmar el acceso a notificaciones' : 'Notification access could not be confirmed'}
+        message={capabilityOverridesError ?? undefined}
+        retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
+        onRetry={() => void refreshCapabilities()}
+      />
+    );
+  }
   if (authLoading || propertyLoading || (!!user && !accessContextReady)) {
     return (
-      <div role="status" style={{ minHeight: '30dvh', display: 'grid', placeItems: 'center', color: 'var(--text-muted)', fontSize: 14 }}>
-        {lang === 'es' ? 'Comprobando acceso…' : 'Checking access…'}
-      </div>
+      <RouteLoadingState title={lang === 'es' ? 'Comprobando acceso…' : 'Checking access…'} />
     );
   }
   if (!user || !allowed) {

@@ -1,0 +1,205 @@
+.frame {
+  min-height: min(62vh, 640px);
+  width: 100%;
+  padding: clamp(32px, 9vh, 88px) 20px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  font-family: var(--font-geist), var(--font-sans), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.card {
+  width: min(100%, 460px);
+  border: 1px solid var(--snow-rule, rgba(31, 35, 28, 0.08));
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 30px rgba(31, 35, 28, 0.06);
+  padding: 24px;
+}
+
+.statusRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.iconWrap {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: var(--snow-warm-dim, rgba(184, 92, 61, 0.1));
+  color: var(--snow-warm, #b85c3d);
+}
+
+.copy {
+  min-width: 0;
+}
+
+.title {
+  margin: 0;
+  color: var(--snow-ink, #1f231c);
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.message {
+  margin: 6px 0 0;
+  color: var(--snow-ink2, #5c625c);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.progressTrack {
+  height: 4px;
+  margin-top: 18px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--snow-sage-dim, rgba(92, 122, 96, 0.1));
+}
+
+.progressBar {
+  width: 42%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--snow-sage-deep, #5c7a60);
+  animation: route-resource-progress 1.25s cubic-bezier(0.2, 0, 0, 1) infinite;
+}
+
+.actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.button {
+  min-width: 112px;
+  min-height: 44px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--snow-ink, #1f231c);
+  border-radius: 12px;
+  background: var(--snow-ink, #1f231c);
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.button:hover {
+  background: var(--snow-ink-soft, #3a3f38);
+  box-shadow: 0 4px 12px rgba(31, 35, 28, 0.14);
+}
+
+.button:active {
+  transform: scale(0.98);
+}
+
+.button:focus-visible {
+  outline: 3px solid rgba(92, 122, 96, 0.38);
+  outline-offset: 3px;
+}
+
+@keyframes route-resource-progress {
+  from { transform: translateX(-110%); }
+  to { transform: translateX(350%); }
+}
+
+@media (max-width: 520px) {
+  .frame { padding: 28px 16px; }
+  .card { padding: 20px; }
+  .button { width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progressBar { width: 100%; animation: none; opacity: 0.72; }
+  .button { transition: none; }
+}
+
+.navigationToast {
+  position: fixed;
+  z-index: 1000;
+  left: 50%;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  width: min(calc(100vw - 32px), 520px);
+  transform: translateX(-50%);
+  border: 1px solid rgba(184, 92, 61, 0.24);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 14px 42px rgba(31, 35, 28, 0.18);
+  padding: 16px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  font-family: var(--font-geist), var(--font-sans), -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.toastCopy { min-width: 0; }
+.toastTitle {
+  color: var(--snow-ink, #1f231c);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+.toastMessage {
+  margin: 3px 0 0;
+  color: var(--snow-ink2, #5c625c);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.toastActions {
+  grid-column: 2 / 4;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.toastButton,
+.toastSecondary {
+  min-height: 44px;
+  border-radius: 10px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.toastButton,
+.toastSecondary {
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+.toastButton {
+  border: 1px solid var(--snow-ink, #1f231c);
+  background: var(--snow-ink, #1f231c);
+  color: #fff;
+}
+.toastSecondary {
+  border: 1px solid var(--snow-rule, rgba(31, 35, 28, 0.12));
+  background: #fff;
+  color: var(--snow-ink, #1f231c);
+}
+.toastButton:focus-visible,
+.toastSecondary:focus-visible {
+  outline: 3px solid rgba(92, 122, 96, 0.38);
+  outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .navigationToast { bottom: max(12px, env(safe-area-inset-bottom)); }
+  .toastActions { grid-column: 1 / -1; }
+  .toastButton, .toastSecondary { flex: 1 1 140px; }
+}

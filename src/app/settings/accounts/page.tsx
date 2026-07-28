@@ -7,15 +7,15 @@ export const dynamic = 'force-dynamic';
 // internal property account console so the customer preview remains read-only.
 
 import React from 'react';
-import { useRouter } from 'next/navigation';
 
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 export default function AccountsCompatibilityPage() {
-  const router = useRouter();
+  const { replace } = useReliableNavigation();
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, loading: propertyLoading } = useProperty();
   const { lang } = useLang();
@@ -23,13 +23,13 @@ export default function AccountsCompatibilityPage() {
   React.useEffect(() => {
     if (authLoading || propertyLoading || !user) return;
     if (user.role === 'admin') {
-      router.replace(activePropertyId
+      replace(activePropertyId
         ? `/admin/properties/${encodeURIComponent(activePropertyId)}`
         : '/admin/properties#live');
       return;
     }
-    router.replace('/company?tab=people');
-  }, [activePropertyId, authLoading, propertyLoading, router, user]);
+    replace('/company?tab=people');
+  }, [activePropertyId, authLoading, propertyLoading, replace, user]);
 
   return (
     <AppLayout>

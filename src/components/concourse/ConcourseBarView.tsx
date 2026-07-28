@@ -23,6 +23,7 @@ export interface BarItem {
    *  own text from a screen reader, so without this the number is visible to
    *  sighted users only. */
   badgeLabel?: string;
+  onIntent?: () => void;
   onClick: () => void;
 }
 
@@ -31,6 +32,8 @@ export interface ConcourseBarViewProps {
   gearActive: boolean;
   onGear: () => void;
   onLogo: () => void;
+  onLogoIntent?: () => void;
+  onGearIntent?: () => void;
   homeLabel: string;
   settingsLabel: string;
   /** Avatar slot — the connected bar passes its dropdown, the demo a plain circle. */
@@ -45,7 +48,7 @@ export interface ConcourseBarViewProps {
 }
 
 export function ConcourseBarView({
-  items, gearActive, onGear, onLogo, homeLabel, settingsLabel, avatar,
+  items, gearActive, onGear, onLogo, onLogoIntent, onGearIntent, homeLabel, settingsLabel, avatar,
   showHome = false, desktopOnly = false,
 }: ConcourseBarViewProps) {
   return (
@@ -59,6 +62,8 @@ export function ConcourseBarView({
           type="button"
           className={`cx-pill${showHome ? ' cx-context-home' : ''}`}
           onClick={onLogo}
+          onPointerEnter={onLogoIntent}
+          onFocus={onLogoIntent}
           aria-label={homeLabel}
           title={homeLabel}
         >
@@ -76,6 +81,8 @@ export function ConcourseBarView({
             type="button"
             className={`cx-pill${it.active ? ' cx-active' : ''}`}
             onClick={it.onClick}
+            onPointerEnter={it.onIntent}
+            onFocus={it.onIntent}
             title={it.badgeLabel ? `${it.label} — ${it.badgeLabel}` : it.label}
             aria-label={it.badgeLabel ? `${it.label}, ${it.badgeLabel}` : it.label}
             aria-current={it.active ? 'page' : undefined}
@@ -94,6 +101,8 @@ export function ConcourseBarView({
           type="button"
           className={`cx-gear${gearActive ? ' cx-on' : ''}`}
           onClick={onGear}
+          onPointerEnter={onGearIntent}
+          onFocus={onGearIntent}
           aria-label={settingsLabel}
           aria-current={gearActive ? 'page' : undefined}
         >
