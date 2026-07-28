@@ -13,6 +13,7 @@ import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { requireSectionEnabled } from '@/lib/sections/server';
+import type { AppSection } from '@/lib/sections/registry';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { resolveAccount, resolveStaffIdForAccount, getStaffRow, isManagerRole } from './core';
 import type { CommsLang } from './types';
@@ -51,12 +52,59 @@ export async function listAccessiblePropertyIds(role: string, propertyAccess: st
 }
 
 /**
+ * Which section toggle, if any, this call is gated on.
+ *
+ * Defaults to 'communications' — correct for /api/comms/* and /api/worklist/*,
+ * whose UI lives in that section and should disappear with it.
+ *
+ * `null` skips the section gate entirely. The /api/knowledge/* routes pass it,
+ * because knowledge is no longer owned by one section: SOPs, uploaded
+ * documents, folders and the contact directory render on the Staxis/Knows tab
+ * as well as in Communications. Gating them on 'communications' meant a hotel
+ * that switched off a near-empty Communications section silently lost its
+ * documents, SOPs and emergency contacts from a screen that was still on-
+ * screen and still said it worked — a data blackout dressed up as a load error.
+ *
+ * Dropping the gate costs nothing in access terms: commsContext still enforces
+ * requireSession + userHasPropertyAccess above, and every /api/knowledge/*
+ * route runs its own capabilityDecisionForUserId check per verb. Section
+ * toggles govern what a hotel SEES, never what it may reach — and a section
+ * that is off has no UI to reach these from in the first place.
+ */
+export interface CommsContextOptions {
+  sectionGate?: AppSection | null;
+}
+
+/**
+ * The options every /api/knowledge/* route passes. Named rather than inlined so
+ * the reason lives in one place and a new knowledge route copies the intent
+ * instead of re-deriving it — or worse, silently inheriting the
+ * 'communications' default and reintroducing the blackout.
+ */
+export const KNOWLEDGE_CTX: CommsContextOptions = { sectionGate: null };
+
+/**
+ * Which section a call is gated on: an AppSection, or null for "don't gate".
+ *
+ * Extracted so it can be tested, because the obvious one-liner is wrong in a
+ * way that reads fine: `opts?.sectionGate ?? 'communications'` treats an
+ * EXPLICIT null as nullish and silently re-gates the knowledge routes on
+ * Communications — restoring the exact blackout this exists to prevent, with
+ * no type error and no failing build. Only `!== undefined` distinguishes
+ * "asked for no gate" from "didn't ask".
+ */
+export function resolveSectionGate(opts?: CommsContextOptions): AppSection | null {
+  return opts?.sectionGate !== undefined ? opts.sectionGate : 'communications';
+}
+
+/**
  * Authenticate + resolve the caller's messaging context for a property.
  * `pid` is read from the query string (GET) or must be passed explicitly.
  */
 export async function commsContext(
   req: NextRequest,
   pidRaw: string | null,
+  opts?: CommsContextOptions,
 ): Promise<CommsCtx | { ok: false; response: NextResponse }> {
   const requestId = getOrMintRequestId(req);
   const headers = { 'x-request-id': requestId };
@@ -78,8 +126,15 @@ export async function commsContext(
   // Central policy boundary for every authenticated /api/comms route. Keep it
   // before account/staff resolution because that resolution can create a
   // caller-bound staff identity on first use.
-  const sectionGate = await requireSectionEnabled(req, pid, 'communications');
-  if (!sectionGate.ok) return { ok: false, response: sectionGate.response };
+  //
+  // `sectionGate: null` opts out — see CommsContextOptions. Only the
+  // /api/knowledge/* routes do that; every /api/comms/* and /api/worklist/*
+  // caller keeps the default and stays gated on 'communications'.
+  const gatedSection = resolveSectionGate(opts);
+  if (gatedSection !== null) {
+    const sectionGate = await requireSectionEnabled(req, pid, gatedSection);
+    if (!sectionGate.ok) return { ok: false, response: sectionGate.response };
+  }
 
   const account = await resolveAccount(session.userId);
   if (!account) {
