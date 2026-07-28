@@ -126,6 +126,7 @@ const AiReportSheet = dynamic(() => import('./overlays/AiReportSheet').then((m) 
 const MonthClosePanel = dynamic(() => import('./overlays/MonthClosePanel').then((m) => m.MonthClosePanel), { ssr: false });
 const StockLossSheet = dynamic(() => import('./overlays/StockLossSheet').then((m) => m.StockLossSheet), { ssr: false });
 const DeliveryCorrectionSheet = dynamic(() => import('./overlays/DeliveryCorrectionSheet').then((m) => m.DeliveryCorrectionSheet), { ssr: false });
+const OrderingPanel = dynamic(() => import('./overlays/OrderingPanel').then((m) => m.OrderingPanel), { ssr: false });
 
 // The inventory tab is 100% manual — no ML numbers, no AI pre-fill. The "AI
 // Helper" rail button opens the AI report as a large overlay (`ai`) right on
@@ -140,6 +141,7 @@ type OverlayKey =
   | 'budgets'
   | 'close'
   | 'ai'
+  | 'ordering'
   | 'add'
   | 'stock-loss'
   | 'delivery-correction'
@@ -148,7 +150,7 @@ type OverlayKey =
 type QueryAction = Exclude<OverlayKey, null> | 'scan';
 
 const VALID_QUERY_ACTIONS: ReadonlyArray<QueryAction> = [
-  'count', 'scan', 'reports', 'compare', 'history', 'budgets', 'close', 'ai', 'add',
+  'count', 'scan', 'reports', 'compare', 'history', 'budgets', 'close', 'ai', 'ordering', 'add',
 ];
 
 // Shared container for the full-page loading / load-error notices (identical
@@ -2026,6 +2028,20 @@ export function InventoryShell() {
         lang={L}
         open={overlay === 'ai'}
         onClose={closeOverlay}
+      />
+      )}
+
+      {/* Ordering — what is worth ordering now, grouped by supplier, with a
+          truthful action per supplier. Management-only (it can send mail to a
+          vendor in the hotel's name); the same capability the rail button and
+          the API gate use. Refreshes the list on close because marking items
+          ordered changes what the page should show. */}
+      {loadedOverlays.has('ordering') && activePropertyId && (
+      <OrderingPanel
+        lang={L}
+        open={overlay === 'ordering' && canManage}
+        onClose={() => { closeOverlay(); void refreshData(); }}
+        propertyId={activePropertyId}
       />
       )}
 

@@ -996,3 +996,213 @@ describe('the walls hold on every DO tool', () => {
     assert.equal(row.status, 'open');
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 7. Setting up suppliers by talking (the Ordering Manager's one DO wire)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The sentence this exists for is "food from Sysco by email, linens from Guest
+// Supply's site, rest is Sam's". It is the highest-leverage wire in the file —
+// one confirmation writes several suppliers AND the category routing that
+// decides who gets emailed for every item in the storeroom — so it gets the
+// same treatment as the rest: it must not be able to confirm itself, must not
+// invent a category, and must not quietly guess how a hotel orders.
+
+describe('setting up suppliers by talking', () => {
+  // The vendor writes go through `staxis_create_inventory_vendor` (0326), which
+  // refuses anything that is not the service role — it is the RPC that records
+  // WHO changed a supplier record, so it will not run for a browser session.
+  // In production the service-role key makes PostgREST set this claim; PGlite's
+  // `auth.role()` stub reads the same GUC and nothing sets it, so without this
+  // the confirm half fails for a reason that does not exist in production.
+  // Reset afterwards so no later file inherits a service-role session.
+  before(async () => {
+    await pg.query("select set_config('request.jwt.claim.role', 'service_role', false)");
+  });
+  after(async () => {
+    await pg.query("select set_config('request.jwt.claim.role', '', false)");
+  });
+
+  async function vendorCount(pid: string): Promise<number> {
+    return count('select count(*)::text as n from vendors where property_id = $1', [pid]);
+  }
+
+  test('the proposal writes no supplier, and reads back every method and category', async () => {
+    const ctx = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const before = await vendorCount(PID_A1);
+
+    const [proposed] = await turn(ctx, "food from Sysco by email, linens from Guest Supply's site", [
+      {
+        name: 'staxis_set_up_vendors',
+        args: {
+          vendors: [
+            { name: 'Sysco Foods', method: 'email', email: 'orders@sysco.test', categories: ['Breakfast'] },
+            { name: 'Guest Supply Co', method: 'website', websiteUrl: 'https://gs.test/order', categories: ['General'] },
+          ],
+        },
+      },
+    ]);
+
+    assert.equal(proposed.ok, true, proposed.error ?? '');
+    assert.equal(proposed.data.awaitingConfirmation, true);
+    assert.ok(tokenOf(proposed), 'a proposal must hand back a token');
+
+    const back = readBack(proposed);
+    for (const sentence of [back.en, back.es]) {
+      assert.match(sentence, /Sysco Foods/);
+      assert.match(sentence, /Guest Supply Co/);
+      assert.match(sentence, /breakfast/i, 'the category routing must be in the sentence they check');
+    }
+    assert.notEqual(back.en, back.es, 'the Spanish read-back is English wearing a label');
+
+    assert.equal(await vendorCount(PID_A1), before, 'a proposal created a supplier');
+    assert.equal(isAwaitingConfirmation(proposed.data), true);
+  });
+
+  test('THE MUTATION: the model cannot confirm its own supplier list', async () => {
+    const ctx = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const before = await vendorCount(PID_A1);
+
+    const [proposed] = await turn(ctx, 'everything else is Sams', [
+      { name: 'staxis_set_up_vendors', args: { vendors: [{ name: "Sam's Wholesale", method: 'store' }] } },
+    ]);
+    const token = tokenOf(proposed)!;
+    const [selfConfirmed] = await sameTurn(ctx, [
+      { name: 'staxis_set_up_vendors', args: { confirmToken: token } },
+    ]);
+
+    assert.equal(selfConfirmed.ok, false, 'the model confirmed its own supplier list and the tool allowed it');
+    assert.match(selfConfirmed.error ?? '', /not been answered yet|your own agreement/i);
+    assert.equal(await vendorCount(PID_A1), before, 'a self-confirmed supplier list reached the database');
+  });
+
+  test('the person says yes, and the suppliers AND their category routing land', async () => {
+    const ctx = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const [proposed] = await turn(ctx, 'paper goods come from Beaumont Paper, by phone', [
+      {
+        name: 'staxis_set_up_vendors',
+        args: {
+          vendors: [{
+            name: 'Beaumont Paper', method: 'phone', phone: '(409) 555-0134', categories: ['General'],
+          }],
+        },
+      },
+    ]);
+    const token = tokenOf(proposed)!;
+
+    const [confirmed] = await turn(ctx, 'yes that is right', [
+      { name: 'staxis_set_up_vendors', args: { confirmToken: token } },
+    ]);
+    assert.equal(confirmed.ok, true, confirmed.error ?? '');
+    assert.equal(isAwaitingConfirmation(confirmed.data), false);
+
+    const row = (await pg.query<{ id: string; order_method: string; review_state: string; suggested_from: string; phone: string }>(
+      `select id, order_method, review_state, suggested_from, phone
+         from vendors where property_id = $1 and name = 'Beaumont Paper'`,
+      [PID_A1],
+    )).rows[0];
+    assert.ok(row, 'the supplier should exist after a real confirmation');
+    assert.equal(row.order_method, 'phone');
+    // Born confirmed: unlike a contact scrape, somebody TOLD us this.
+    assert.equal(row.review_state, 'confirmed');
+    assert.equal(row.suggested_from, 'chat');
+
+    const mapped = (await pg.query<{ vendor_id: string }>(
+      `select vendor_id from vendor_category_map where property_id = $1 and bucket_key = 'general'`,
+      [PID_A1],
+    )).rows[0];
+    assert.equal(mapped?.vendor_id, row.id, 'confirming must apply the category routing too');
+  });
+
+  test('it refuses a category this hotel does not have, and names the real ones', async () => {
+    // Inventing a category from a chat sentence would file items nowhere.
+    const ctx = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const [ran] = await turn(ctx, 'pool chemicals from PoolCo', [
+      {
+        name: 'staxis_set_up_vendors',
+        args: { vendors: [{ name: 'PoolCo', method: 'store', categories: ['Pool chemicals'] }] },
+      },
+    ]);
+    assert.equal(ran.ok, false);
+    assert.match(ran.error ?? '', /no category called/i);
+    assert.match(ran.error ?? '', /General/, 'the refusal must quote the categories that DO exist');
+  });
+
+  test('it refuses to guess how a hotel orders, and refuses a website with no link', async () => {
+    const ctx = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const [bogus] = await turn(ctx, 'we order from Acme somehow', [
+      { name: 'staxis_set_up_vendors', args: { vendors: [{ name: 'Acme Supply', method: 'carrier pigeon' }] } },
+    ]);
+    assert.equal(bogus.ok, false);
+    assert.match(bogus.error ?? '', /not a way to order/i);
+
+    const [noUrl] = await turn(ctx, 'Widgets from their website', [
+      { name: 'staxis_set_up_vendors', args: { vendors: [{ name: 'Widget Web', method: 'website' }] } },
+    ]);
+    assert.equal(noUrl.ok, false);
+    assert.match(noUrl.error ?? '', /no web address/i);
+
+    // An UNKNOWN method is fine, though — that is the honest half-known state
+    // the screen renders as a question, and refusing it would force a guess.
+    const [ok] = await turn(ctx, 'we also use Riverside Linen, not sure how we order', [
+      { name: 'staxis_set_up_vendors', args: { vendors: [{ name: 'Riverside Linen' }] } },
+    ]);
+    assert.equal(ok.ok, true, ok.error ?? '');
+    assert.deepEqual(ok.data.missingMethod, ['Riverside Linen'], 'the gap must be named so the model can say it out loud');
+  });
+
+  test('it refuses to give two suppliers the same category', async () => {
+    // Whichever won would decide who gets emailed for every item in it.
+    const ctx = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const [ran] = await turn(ctx, 'breakfast from both of them', [
+      {
+        name: 'staxis_set_up_vendors',
+        args: {
+          vendors: [
+            { name: 'First Foods', method: 'store', categories: ['Breakfast'] },
+            { name: 'Second Foods', method: 'store', categories: ['Breakfast'] },
+          ],
+        },
+      },
+    ]);
+    assert.equal(ran.ok, false);
+    assert.match(ran.error ?? '', /same category/i);
+  });
+
+  test('it refuses a supplier the hotel already has rather than making a duplicate', async () => {
+    const ctx = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const [ran] = await turn(ctx, 'add Beaumont Paper', [
+      { name: 'staxis_set_up_vendors', args: { vendors: [{ name: 'beaumont paper', method: 'phone' }] } },
+    ]);
+    assert.equal(ran.ok, false, 'a case-different duplicate slipped through');
+    assert.match(ran.error ?? '', /already/i);
+  });
+
+  test('a token minted at one hotel cannot set up suppliers at another', async () => {
+    const ctxA = await chatCtx({ accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner' });
+    const [proposed] = await turn(ctxA, 'add Crosstown Foods by store run', [
+      { name: 'staxis_set_up_vendors', args: { vendors: [{ name: 'Crosstown Foods', method: 'store' }] } },
+    ]);
+    const token = tokenOf(proposed)!;
+
+    const ctxB = await chatCtx({ accountId: ACCOUNT_VERA, uid: UID_VERA, propertyId: PID_B1, role: 'owner' });
+    const beforeB = await vendorCount(PID_B1);
+    const [ran] = await turn(ctxB, 'yes do it', [
+      { name: 'staxis_set_up_vendors', args: { confirmToken: token } },
+    ]);
+    assert.equal(ran.ok, false, "hotel A's token wrote at hotel B");
+    assert.equal(await vendorCount(PID_B1), beforeB);
+  });
+
+  test('the floor cannot set up suppliers', async () => {
+    const ctx = await chatCtx({
+      accountId: ACCOUNT_GIL, uid: UID_GIL, propertyId: PID_B1, role: 'maintenance',
+    });
+    const before = await vendorCount(PID_B1);
+    const [ran] = await turn(ctx, 'add Bobs Hardware', [
+      { name: 'staxis_set_up_vendors', args: { vendors: [{ name: 'Bobs Hardware', method: 'store' }] } },
+    ]);
+    assert.equal(ran.ok, false, 'a maintenance tech set up a supplier');
+    assert.equal(await vendorCount(PID_B1), before);
+  });
+});

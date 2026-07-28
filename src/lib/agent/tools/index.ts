@@ -38,6 +38,10 @@ import './staxis-findings';
 // recorded a message from the human since that read-back. See chat-confirm.ts.
 import './staxis-setup';
 import './staxis-decisions';
+// The one-sentence supplier setup (2026-07-28). Same two-call shape: it
+// proposes a structured vendor list, reads it back, and writes only after the
+// route has recorded a human message since. See chat-confirm.ts.
+import './ordering';
 // Cross-hotel chat. Every tool in here declares `surfaces: ['portfolio']`, so
 // importing it does NOT widen the chat/voice/walkthrough catalogs — the surface
 // filter in getToolsForRole keeps the two sets disjoint by construction.

@@ -13,6 +13,7 @@ import type { InventoryBudgetActualState } from '@/lib/inventory-budget-actual';
 export type SidebarAction =
   | 'count'
   | 'delivery'
+  | 'ordering'
   | 'close'
   | 'reports'
   | 'compare'
@@ -81,6 +82,15 @@ export function Sidebar({
     >
       <Caps size={9} style={{ padding: '4px 8px 7px' }}>{tx.do}</Caps>
       <RailBtn label={tx.startCount} badge={totalItems} primary onClick={() => onAction('count')} />
+      {/* Ordering sits in "Do" beside Add delivery: they are the two halves of
+          the same errand, and it is management-only for the same reason — it
+          can send an order to a supplier in the hotel's name.
+          DELIBERATELY NO BADGE. The obvious one is the masthead's "Order now"
+          count, but that is computed with this page's 0.5/1.0 thresholds while
+          the Ordering screen uses the house 70/30 rule, and the two also
+          disagree about estimated vs counted stock. A badge that does not
+          match the list it opens is worse than no badge. */}
+      {canManage && <RailBtn label={tx.ordering} tone="teal" onClick={() => onAction('ordering')} />}
       {canManage && <RailBtn label={tx.addDelivery} tone="teal" onClick={() => onAction('delivery')} />}
       {canManage && canViewFinancials && <RailBtn label={tx.monthClose} onClick={() => onAction('close')} />}
       <Divider />

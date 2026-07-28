@@ -67,10 +67,35 @@ function fixture(over: Partial<AiEmployee> = {}): AiEmployee {
 }
 
 describe('AI employee roster — integrity', () => {
-  test('the roster is not empty and the Morning Briefer is the one hired employee', () => {
+  test('the roster is not empty and names exactly the employees that exist', () => {
     assert.ok(AI_EMPLOYEES.length >= 13, 'the org chart should carry the whole plan');
     const names = hired().map((e) => e.id);
-    assert.deepEqual(names, [MORNING_BRIEFER_ID]);
+    // Pinned by name rather than counted. The page's whole claim is that a
+    // card means real work is happening, so hiring someone has to be a
+    // deliberate edit here — a length check would let a half-built employee
+    // reach the founder's page by accident.
+    assert.deepEqual(names, ['ordering_manager', MORNING_BRIEFER_ID]);
+  });
+
+  test('an employee with no billed feature says so instead of showing $0.00', () => {
+    // The Ordering Manager's only model work happens inside a chat turn and is
+    // billed to the chat's own feature. Bundling a key here that never
+    // receives an agent_costs row would render a confident zero next to work
+    // that does cost money — so the empty bundle is the assertion, not an
+    // omission waiting to be filled in.
+    const ordering = getAiEmployee('ordering_manager');
+    assert.ok(ordering, 'the Ordering Manager should be on the roster');
+    assert.equal(ordering!.hired, true);
+    assert.deepEqual(
+      ordering!.bundle.features,
+      [],
+      'adding a feature key here makes the AI Staff card claim a bill; only do it '
+      + 'when a model call actually writes agent_costs under that key.',
+    );
+    assert.ok(
+      ordering!.bundle.surfaces.length > 0,
+      'a hired employee must name where its work shows up',
+    );
   });
 
   test('every id code refers to by name is declared, hired, and spelled the same', () => {
