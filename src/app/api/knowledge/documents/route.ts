@@ -20,7 +20,7 @@ import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } f
 import { type AppRole } from '@/lib/roles';
 import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { commsContext } from '@/lib/comms/route-helpers';
+import { commsContext, KNOWLEDGE_CTX } from '@/lib/comms/route-helpers';
 import { listDocuments, registerDocument, deleteDocument, updateDocumentAccess, moveDocument } from '@/lib/knowledge/core';
 import { indexDocument } from '@/lib/knowledge/indexing';
 import { KNOWLEDGE_LIMITS, KNOWLEDGE_VISIBILITIES, KNOWLEDGE_DEPTS, type KnowledgeVisibility } from '@/lib/knowledge/types';
@@ -32,7 +32,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function GET(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   // Optional folder filter. Absent → all visible docs (the UI groups by folder).
   let folderId: string | undefined;
@@ -50,7 +50,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; title?: unknown; path?: unknown; mimeType?: unknown; sizeBytes?: unknown; visibility?: unknown; visibleDept?: unknown; folderId?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -121,7 +121,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
   let raw: { pid?: string; id?: unknown; action?: unknown; visibility?: unknown; visibleDept?: unknown; folderId?: unknown };
   try { raw = await req.json(); } catch { raw = {}; }
 
-  const ctx = await commsContext(req, raw.pid ?? null);
+  const ctx = await commsContext(req, raw.pid ?? null, KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
@@ -166,7 +166,7 @@ export async function PATCH(req: NextRequest): Promise<Response> {
 }
 
 export async function DELETE(req: NextRequest): Promise<Response> {
-  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'));
+  const ctx = await commsContext(req, req.nextUrl.searchParams.get('pid'), KNOWLEDGE_CTX);
   if (!ctx.ok) return ctx.response;
   const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'manage_knowledge', ctx.pid);
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
