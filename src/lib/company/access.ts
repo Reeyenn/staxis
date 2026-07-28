@@ -510,29 +510,75 @@ export async function accountReachesProperty(
  * into a hotel list, so Wall B has exactly one place to be right.
  */
 export async function propertiesOfOrganization(organizationId: string): Promise<string[]> {
-  if (!organizationId) return [];
-  try {
-    return await readPropertiesOfOrganization(organizationId);
-  } catch {
-    return [];
-  }
+  const resolved = await resolveOrganizationPropertyTopology(organizationId);
+  return resolved.ok ? [...resolved.topology.propertyIds] : [];
 }
 
-async function readPropertiesOfOrganization(organizationId: string): Promise<string[]> {
-  const { data, error } = await supabaseAdmin
-    .from('organization_property_relationships')
-    .select('property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
-    .eq('organization_id', organizationId);
-  if (error || !Array.isArray(data)) return [];
-  const nowMs = Date.now();
-  // The SAME governing filter `loadHats` applies. These two must agree: this
-  // list is what the hats route offers as "hotels you may put someone at", and
-  // `loadHats` is what decides whether the resulting hat reaches anything. A
-  // wider list here would mint hats that resolve to no coverage at all.
-  const ids = (data as Array<RelationshipRow & { property_id: string }>)
-    .filter((row) => relationshipIsGoverning(row) && relationshipIsOpen(row, nowMs))
-    .map((row) => row.property_id);
-  return [...new Set(ids)].sort();
+/**
+ * An immutable, point-in-time answer for the hotels one organization governs.
+ * An empty `propertyIds` array is a successfully proven empty organization;
+ * it is deliberately different from an unavailable relationship read.
+ */
+export interface OrganizationPropertyTopology {
+  readonly organizationId: string;
+  readonly effectiveAt: string;
+  readonly propertyIds: readonly string[];
+}
+
+export type OrganizationPropertyTopologyResult =
+  | { readonly ok: true; readonly topology: OrganizationPropertyTopology }
+  | { readonly ok: false; readonly reason: 'invalid_input' | 'store_unavailable' };
+
+/**
+ * Strict counterpart to `propertiesOfOrganization` for authorization, clocks,
+ * comparisons and other callers where "we could not read the company" must
+ * never be mistaken for "the company operates no hotels".
+ *
+ * The effective instant is supplied by deterministic runners so relationship
+ * windows and the data window are evaluated against the same clock. Legacy
+ * callers keep using the lenient wrapper above and retain their exact `[]` on
+ * failure behaviour.
+ */
+export async function resolveOrganizationPropertyTopology(
+  organizationId: string,
+  effectiveAt: Date = new Date(),
+): Promise<OrganizationPropertyTopologyResult> {
+  const effectiveAtMs = effectiveAt.getTime();
+  if (!organizationId || !Number.isFinite(effectiveAtMs)) {
+    return { ok: false, reason: 'invalid_input' };
+  }
+  // Capture the caller's mutable Date before the first await so the stamp and
+  // relationship-window filter always describe the same instant.
+  const effectiveAtIso = new Date(effectiveAtMs).toISOString();
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('organization_property_relationships')
+      .select('property_id, relationship_type, is_primary_grouping, starts_at, ends_at')
+      .eq('organization_id', organizationId);
+    if (error || !Array.isArray(data)) return { ok: false, reason: 'store_unavailable' };
+
+    // The SAME governing filter `loadHats` applies. These two must agree: this
+    // list is what the hats route offers as "hotels you may put someone at", and
+    // `loadHats` is what decides whether the resulting hat reaches anything. A
+    // wider list here would mint hats that resolve to no coverage at all.
+    const ids = (data as Array<RelationshipRow & { property_id: string }>)
+      .filter((row) => (
+        relationshipIsGoverning(row) && relationshipIsOpen(row, effectiveAtMs)
+      ))
+      .map((row) => row.property_id);
+    const propertyIds = Object.freeze([...new Set(ids)].sort());
+    return {
+      ok: true,
+      topology: Object.freeze({
+        organizationId,
+        effectiveAt: effectiveAtIso,
+        propertyIds,
+      }),
+    };
+  } catch {
+    return { ok: false, reason: 'store_unavailable' };
+  }
 }
 
 /**

@@ -46,11 +46,29 @@ export interface PortfolioScope {
   hotelCount: number;
 }
 
+export interface PortfolioCoverage {
+  /** Hotels this caller is authorized to see in the selected company. */
+  authorizedHotelCount: number;
+  /** Authorized hotels inside this response's bounded read window. */
+  attemptedHotelCount: number;
+  /** Hotels whose hotel-local queue data was actually read for this response. */
+  processedHotelCount: number;
+  /** Authorized hotels intentionally left out of this bounded response. */
+  omittedHotelCount: number;
+  /** Attempted hotels whose data source did not answer completely. */
+  unavailableHotelCount: number;
+  /** Reproducible completion state for the deterministic company-level checks. */
+  portfolioChecksStatus: 'completed' | 'held' | 'in_progress' | 'incomplete' | 'unavailable';
+  /** True only when processedHotelCount covers the full authorized set. */
+  complete: boolean;
+}
+
 export interface PortfolioPayload {
   scope: PortfolioScope | null;
   cards: PortfolioCard[];
   brief: PortfolioBrief | null;
   run: PortfolioRun | null;
+  coverage: PortfolioCoverage | null;
   cap?: number;
   /**
    * May this reader cast a verdict? Comes from the ROUTE, which asks the
@@ -84,6 +102,8 @@ const S = {
 
 const PQ_CSS = `
 .pq-sub{font-size:12.5px;color:#8A9187;margin-top:4px;}
+.pq-coverage{margin-top:14px;border-radius:14px;border:1px solid rgba(201,150,68,.35);background:#FDFAF4;
+  padding:12px 14px;font-size:12.5px;line-height:1.55;color:#5C4B2E;}
 .pq-empty{margin-top:20px;border-radius:16px;border:1px solid rgba(31,35,28,.08);background:#FAFBF9;
   padding:16px 17px;font-size:13px;line-height:1.6;color:#5C625C;}
 `;
@@ -98,6 +118,7 @@ export function PortfolioQueueBody({
   cards,
   brief,
   run,
+  coverage,
   cap = DAILY_CARD_CAP,
   lang,
   canAct = true,
@@ -112,6 +133,7 @@ export function PortfolioQueueBody({
   cards: PortfolioCard[];
   brief: PortfolioBrief | null;
   run: PortfolioRun | null;
+  coverage: PortfolioCoverage;
   cap?: number;
   lang: Lang;
   /** False for a finance hat: every card, every number, no verdict controls. */
@@ -124,6 +146,10 @@ export function PortfolioQueueBody({
   onAction?: (actionId: string, intent: 'execute' | 'undo') => void;
 }) {
   const es = lang === 'es';
+  const partialCoverage = !coverage.complete
+    || coverage.omittedHotelCount > 0
+    || coverage.unavailableHotelCount > 0
+    || (coverage.portfolioChecksStatus !== 'completed' && coverage.portfolioChecksStatus !== 'held');
   const byId = React.useMemo(
     () => new Map(cards.map((card) => [card.id, card])),
     [cards],
@@ -140,9 +166,12 @@ export function PortfolioQueueBody({
   const hrefFor = React.useCallback(
     (f: QueueFinding) => {
       const card = byId.get(f.id);
-      return card ? drillDownHref(card) : null;
+      const href = card ? drillDownHref(card) : null;
+      return href
+        ? `${href}&organizationId=${encodeURIComponent(scope.organizationId)}`
+        : null;
     },
-    [byId],
+    [byId, scope.organizationId],
   );
 
   return (
@@ -157,7 +186,45 @@ export function PortfolioQueueBody({
           : `${scope.hotelCount} ${scope.hotelCount === 1 ? 'hotel' : 'hotels'}`}
       </div>
 
-      <MorningBriefView brief={brief} lang={lang} readFailed={readFailed} />
+      {partialCoverage && (
+        <div className="pq-coverage" role="status">
+          {es
+            ? `Se leyeron datos completos de ${coverage.processedHotelCount} de ${coverage.authorizedHotelCount} hoteles. `
+              + (coverage.omittedHotelCount > 0
+                ? `${coverage.omittedHotelCount} ${coverage.omittedHotelCount === 1 ? 'hotel quedó fuera' : 'hoteles quedaron fuera'} del límite de esta carga. `
+                : '')
+              + (coverage.unavailableHotelCount > 0
+                ? `${coverage.unavailableHotelCount} ${coverage.unavailableHotelCount === 1 ? 'hotel no respondió' : 'hoteles no respondieron'} por completo. `
+                : '')
+              + (coverage.portfolioChecksStatus === 'in_progress'
+                ? 'Las comprobaciones de empresa todavía estaban en curso. '
+                : coverage.portfolioChecksStatus === 'incomplete'
+                  ? 'Las comprobaciones de empresa no terminaron por completo. '
+                  : coverage.portfolioChecksStatus === 'unavailable'
+                    ? 'No se pudo verificar el estado de las comprobaciones de empresa. '
+                    : '')
+              + 'No lo interpretes como cobertura completa de la empresa.'
+            : `Complete data was read from ${coverage.processedHotelCount} of ${coverage.authorizedHotelCount} hotels. `
+              + (coverage.omittedHotelCount > 0
+                ? `${coverage.omittedHotelCount} ${coverage.omittedHotelCount === 1 ? 'hotel was' : 'hotels were'} outside this load's limit. `
+                : '')
+              + (coverage.unavailableHotelCount > 0
+                ? `${coverage.unavailableHotelCount} ${coverage.unavailableHotelCount === 1 ? 'hotel did' : 'hotels did'} not answer completely. `
+                : '')
+              + (coverage.portfolioChecksStatus === 'in_progress'
+                ? 'Company-level checks were still in progress. '
+                : coverage.portfolioChecksStatus === 'incomplete'
+                  ? 'Company-level checks did not finish completely. '
+                  : coverage.portfolioChecksStatus === 'unavailable'
+                    ? 'Company-level check status could not be verified. '
+                    : '')
+              + 'Do not read this as whole-company coverage.'}
+        </div>
+      )}
+
+      {/* A portfolio brief contains whole-company rollups. Suppress it unless
+          the coverage receipt proves every authorized hotel was processed. */}
+      <MorningBriefView brief={partialCoverage ? null : brief} lang={lang} readFailed={readFailed} />
 
       {/* The liveness rollup is inside the brief (its last line), so the card
           list is told not to repeat it — same reasoning as the hotel queue. */}
@@ -195,8 +262,16 @@ export function PortfolioQueueBody({
       {!readFailed && cards.length === 0 && (
         <div className="pq-empty">
           {run
-            ? (es ? S.subEmpty.es : S.subEmpty.en)
-            : (es ? S.neverChecked.es : S.neverChecked.en)}
+            ? partialCoverage
+              ? (es
+                ? `Nada de los ${coverage.processedHotelCount} hoteles procesados llegó hasta ti esta mañana.`
+                : `Nothing from the ${coverage.processedHotelCount} processed hotels reached you this morning.`)
+              : (es ? S.subEmpty.es : S.subEmpty.en)
+            : partialCoverage
+              ? (es
+                ? `Ninguno de los ${coverage.processedHotelCount} hoteles procesados ha sido revisado todavía. No lo tomes como que todo está bien.`
+                : `None of the ${coverage.processedHotelCount} processed hotels has been checked yet. Do not read this as an all-clear.`)
+              : (es ? S.neverChecked.es : S.neverChecked.en)}
         </div>
       )}
       {readFailed && (
@@ -216,20 +291,36 @@ export function PortfolioQueueBody({
  */
 export function PortfolioQueueView({
   lang,
+  organizationId,
   onScope,
 }: {
   lang: Lang;
-  onScope?: (scope: PortfolioScope | null) => void;
+  /** Explicit picker selection. Null is allowed only for single-company fallback. */
+  organizationId: string | null;
+  onScope?: (scope: PortfolioScope | null | undefined) => void;
 }) {
+  const queueUrl = organizationId === null
+    ? '/api/company/queue'
+    : `/api/company/queue?organizationId=${encodeURIComponent(organizationId)}`;
   const { data, error, reload } = useApiResource<PortfolioPayload>(
-    '/api/company/queue',
-    { keepDataOnError: true },
+    queueUrl,
+    // Authorization is rechecked by every response. If that check fails, do
+    // not keep a prior company's cards rendered under a stale receipt.
+    { keepDataOnError: false },
   );
 
   const scope = data?.scope ?? null;
+  const resolvedOrganizationId = scope?.organizationId ?? null;
+  // A URL company change invalidates the previous scope synchronously from the
+  // parent's point of view. Never leave a prior company's successful probe in
+  // place while the replacement receipt is loading.
   React.useEffect(() => {
-    if (data) onScope?.(scope);
-  }, [data, scope, onScope]);
+    onScope?.(undefined);
+  }, [organizationId, onScope]);
+  React.useEffect(() => {
+    if (error) onScope?.(undefined);
+    else if (data) onScope?.(scope);
+  }, [data, error, scope, onScope]);
 
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [saveFailed, setSaveFailed] = React.useState(false);
@@ -253,6 +344,7 @@ export function PortfolioQueueView({
     (findingId: string, verdict: ClosureVerdict) => {
       const card = (data?.cards ?? []).find((c) => c.id === findingId);
       if (!card) return;
+      if (!card.hotel && !resolvedOrganizationId) return;
       void (async () => {
         setBusyId(findingId);
         setSaveFailed(false);
@@ -270,7 +362,11 @@ export function PortfolioQueueView({
             : await fetchWithAuth('/api/company/queue', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ findingId, action: verdict }),
+              body: JSON.stringify({
+                organizationId: resolvedOrganizationId,
+                findingId,
+                action: verdict,
+              }),
             });
           const body = await readEnvelope<{ status: string }>(res);
           if (body.error !== undefined) {
@@ -289,7 +385,7 @@ export function PortfolioQueueView({
         }
       })();
     },
-    [data, reload],
+    [data, reload, resolvedOrganizationId],
   );
 
   /**
@@ -326,7 +422,16 @@ export function PortfolioQueueView({
     [data, reload],
   );
 
-  if (!scope) return null;
+  if (!scope) {
+    if (!error) return null;
+    return (
+      <div className="cx-page cx-swap">
+        <CxStyle />
+        <style dangerouslySetInnerHTML={{ __html: PQ_CSS }} />
+        <div className="pq-empty">{lang === 'es' ? S.loadFailed.es : S.loadFailed.en}</div>
+      </div>
+    );
+  }
 
   return (
     <PortfolioQueueBody
@@ -334,6 +439,15 @@ export function PortfolioQueueView({
       cards={cards}
       brief={data?.brief ?? null}
       run={data?.run ?? null}
+      coverage={data?.coverage ?? {
+        authorizedHotelCount: scope.hotelCount,
+        attemptedHotelCount: 0,
+        processedHotelCount: 0,
+        omittedHotelCount: scope.hotelCount,
+        unavailableHotelCount: 0,
+        portfolioChecksStatus: 'unavailable',
+        complete: false,
+      }}
       cap={data?.cap ?? DAILY_CARD_CAP}
       lang={lang}
       canAct={data?.canAct ?? true}
