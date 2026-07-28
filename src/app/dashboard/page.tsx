@@ -729,7 +729,7 @@ export default function DashboardPage() {
                   <span style={{ fontSize: 13, color: C.rustD }}>{a.text}</span>
                 </div>
               )) : (
-                <div style={{ fontSize: 14, color: C.green, paddingTop: 2 }}>{ES ? 'Todo en orden.' : 'All clear — nothing needs you right now.'}</div>
+                <div style={{ fontSize: 14, color: C.green, paddingTop: 2 }}>{ES ? 'Todo en orden.' : 'All clear. Nothing needs you right now.'}</div>
               )}
             </div>
           </section>

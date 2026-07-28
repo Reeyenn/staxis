@@ -150,7 +150,7 @@ function workOrderRateBaseline(r: Receipt): BasisSpanish | null {
     price: null,
     evidence:
       `órdenes de trabajo creadas en la semana que terminó el ${end}, frente a las ` +
-      `${semanas(weeks)} anteriores — cada ventana con la misma mezcla de días de la semana`,
+      `${semanas(weeks)} anteriores. Cada ventana con la misma mezcla de días de la semana`,
   };
 }
 
@@ -171,8 +171,8 @@ function supplySpendBaseline(r: Receipt): BasisSpanish | null {
   return {
     price,
     evidence:
-      `la semana que terminó el ${end} frente a las ${semanas(weeks)} anteriores — ` +
-      'cada ventana con la misma mezcla de días de la semana',
+      `la semana que terminó el ${end} frente a las ${semanas(weeks)} anteriores. ` +
+      'Cada ventana con la misma mezcla de días de la semana',
   };
 }
 
@@ -185,7 +185,7 @@ function inventoryUsageBaseline(r: Receipt): BasisSpanish | null {
     price: null,
     evidence:
       `existencias contadas el ${end} frente al conteo anterior, más entregas y descartes ` +
-      `entre medias — medido contra los ${counts} conteos anteriores de este artículo`,
+      `entre medias. Medido contra los ${counts} conteos anteriores de este artículo`,
   };
 }
 

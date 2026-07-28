@@ -221,7 +221,7 @@ export async function POST(req: NextRequest) {
     userMetadata: { username: normalizedUsername, displayName: displayName || normalizedUsername },
   });
   if (authResult.alreadyHasAccount) {
-    return err('An account with this email already exists — please sign in instead.', {
+    return err('An account with this email already exists. Please sign in instead.', {
       requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
     });
   }
@@ -294,7 +294,7 @@ export async function POST(req: NextRequest) {
         insert_error: errToString(insErr),
       });
       return err(
-        `Failed to create account record. ALSO: rollback of the auth user failed — orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
+        `Failed to create account record. ALSO: rollback of the auth user failed. An orphaned auth row remains for username "${normalizedUsername}". Have an admin delete the row manually in Supabase Authentication.`,
         { requestId, status: 500, code: ApiErrorCode.InternalError },
       );
     }

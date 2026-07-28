@@ -229,7 +229,7 @@ function VerifyInner() {
       setSubmitting(false);
       setError(lang === 'es'
         ? 'No pudimos terminar de proteger tu sesión. Inicia sesión de nuevo.'
-        : "Couldn't finish securing your session — please sign in again.");
+        : "Couldn't finish securing your session. Please sign in again.");
       console.warn('verify: securing session failed', err);
       return;
     }

@@ -332,7 +332,7 @@ describe('every card can be put down, and the ways of putting it down differ', (
     const asks = rec.filter((b) => b.confirm !== null).map((b) => b.verdict);
     assert.deepEqual(asks, ['muted'], 'the confirm step moved to the wrong button');
     const mute = rec.find((b) => b.verdict === 'muted')!;
-    assert.equal(mute.confirm!.prompt, 'Staxis will stop watching this — sure?');
+    assert.equal(mute.confirm!.prompt, 'Staxis will stop watching this. Sure?');
     assert.ok(mute.confirm!.yes.length > 0);
     // Handled and Seen are recoverable — a problem that recurs comes back, and
     // an escalating one pierces the silence — so neither may grow a dialog.
@@ -581,25 +581,25 @@ describe('a quiet watcher and a dead one must not look the same', () => {
   test('a recent run reports what it checked and how much was normal', () => {
     const line = livenessLine(run(9), 1, 'en', NOW);
     assert.equal(line.kind, 'fresh');
-    assert.equal(line.text, 'Checked 34 things last night — 33 look normal.');
+    assert.equal(line.text, 'Checked 34 things last night. 33 look normal.');
   });
 
   test('a night that found nothing still says it checked', () => {
     const line = livenessLine(run(9), 0, 'en', NOW);
-    assert.equal(line.text, 'Checked 34 things last night — 34 look normal.');
+    assert.equal(line.text, 'Checked 34 things last night. 34 look normal.');
   });
 
   test('the Spanish line is Spanish, not the English one', () => {
     const en = livenessLine(run(9), 1, 'en', NOW).text;
     const es = livenessLine(run(9), 1, 'es', NOW).text;
-    assert.equal(es, 'Se revisaron 34 cosas anoche — 33 se ven normales.');
+    assert.equal(es, 'Se revisaron 34 cosas anoche. 33 se ven normales.');
     assert.notEqual(en, es);
   });
 
   test('an old run says how old instead of implying it is current', () => {
     const line = livenessLine(run(72), 1, 'en', NOW);
     assert.equal(line.kind, 'stale');
-    assert.equal(line.text, 'Last checked 3 days ago — this may not be up to date.');
+    assert.equal(line.text, 'Last checked 3 days ago. This may not be up to date.');
     assert.doesNotMatch(String(line.text), /normal/, 'a stale line must not recite last week’s all-clear');
   });
 
@@ -632,7 +632,7 @@ describe('a quiet watcher and a dead one must not look the same', () => {
     // A detector that skipped tonight leaves yesterday's cards standing, so
     // this really happens. Clamped at zero rather than rendering "-3 normal".
     const line = livenessLine(run(2, { detectorsChecked: 2 }), 7, 'en', NOW);
-    assert.equal(line.text, 'Checked 2 things last night — 0 look normal.');
+    assert.equal(line.text, 'Checked 2 things last night. 0 look normal.');
   });
 
   // Mutation: hard-code the plural. A hotel on its first night, or one where
@@ -641,9 +641,9 @@ describe('a quiet watcher and a dead one must not look the same', () => {
   // this screen before they did.
   test('one check reads as one thing, in both languages', () => {
     const single = run(1, { detectorsChecked: 1 });
-    assert.equal(livenessLine(single, 0, 'en', NOW).text, 'Checked 1 thing last night — 1 look normal.');
-    assert.equal(livenessLine(single, 1, 'es', NOW).text, 'Se revisó 1 cosa anoche — 0 se ven normales.');
-    assert.equal(livenessLine(single, 0, 'es', NOW).text, 'Se revisó 1 cosa anoche — 1 se ve normal.');
+    assert.equal(livenessLine(single, 0, 'en', NOW).text, 'Checked 1 thing last night. 1 look normal.');
+    assert.equal(livenessLine(single, 1, 'es', NOW).text, 'Se revisó 1 cosa anoche. 0 se ven normales.');
+    assert.equal(livenessLine(single, 0, 'es', NOW).text, 'Se revisó 1 cosa anoche. 1 se ve normal.');
   });
 
   test('"normal" counts distinct CHECKS, not findings — five cards from one check is one', () => {
@@ -654,15 +654,15 @@ describe('a quiet watcher and a dead one must not look the same', () => {
     ];
     assert.equal(distinctDetectors(fromOneDetector), 2);
     assert.equal(livenessLine(run(3), distinctDetectors(fromOneDetector), 'en', NOW).text,
-      'Checked 34 things last night — 32 look normal.');
+      'Checked 34 things last night. 32 look normal.');
   });
 
   test('checks that could not run for want of data are named, not counted as normal', () => {
     assert.equal(skippedNote(run(3, { detectorsSkipped: 0 }), 'en', NOW), null);
     assert.equal(skippedNote(run(3, { detectorsSkipped: 1 }), 'en', NOW),
-      "1 check couldn't run yet — not enough history.");
+      "1 check couldn't run yet. Not enough history.");
     assert.equal(skippedNote(run(3, { detectorsSkipped: 4 }), 'en', NOW),
-      "4 checks couldn't run yet — not enough history.");
+      "4 checks couldn't run yet. Not enough history.");
     assert.match(String(skippedNote(run(3, { detectorsSkipped: 4 }), 'es', NOW)), /falta de datos/);
     assert.equal(skippedNote(null, 'en', NOW), null);
   });

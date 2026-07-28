@@ -114,7 +114,7 @@ export function CoveragePickerModal({
       const json = await res.json();
       if (!json.ok) {
         if (json.code === 'no_active_map') {
-          setSaveError("That system isn't ready yet — it has no learned coverage to run from. Pick one that's live, or learn it first.");
+          setSaveError("That system isn't ready yet. It has no learned coverage to run from. Pick one that's live, or learn it first.");
         } else {
           setSaveError(json.error ?? 'Could not assign coverage. Please try again.');
         }
@@ -173,7 +173,7 @@ export function CoveragePickerModal({
               border: '1px dashed var(--rule)', borderRadius: 12,
               color: 'var(--dim)', fontFamily: FONT_SERIF, fontStyle: 'italic', fontSize: 13,
             }}>
-              No systems have been learned yet — finish onboarding a PMS first, then
+              No systems have been learned yet. Finish onboarding a PMS first, then
               you can assign hotels to it.
             </div>
           ) : (

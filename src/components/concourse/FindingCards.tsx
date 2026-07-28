@@ -96,7 +96,15 @@ type Verdict = ClosureVerdict;
 
 // ─── Copy ───────────────────────────────────────────────────────────────────
 
-const S = {
+/**
+ * Every fixed string this surface can put on a screen, in both languages.
+ *
+ * Exported ONLY so the copy guard (findings-copy-rules.test.ts) can walk it.
+ * A guard that greps this file's source would pass on a dash arriving through
+ * an interpolation and fail on a harmless rename; walking the real table is
+ * what makes it a test of the copy rather than of the text of the file.
+ */
+export const S = {
   heading: { en: 'What Staxis noticed', es: 'Lo que Staxis notó' },
   cancel: { en: 'Cancel', es: 'Cancelar' },
   seeNumbers: { en: 'See the numbers', es: 'Ver los números' },
@@ -108,8 +116,12 @@ const S = {
   showFewer: { en: 'Show fewer', es: 'Ver menos' },
   asOf: { en: 'Numbers as of', es: 'Números al' },
   receiptQuery: { en: 'Check', es: 'Comprobación' },
+  // What an empty cell in the receipt says. It used to be a bare em dash, which
+  // in a column of numbers reads as a zero rather than as an absence, and which
+  // the founder's 2026-07-28 copy ruling took out of user-facing text anyway.
+  noValue: { en: 'not recorded', es: 'sin dato' },
   saveFailed: {
-    en: 'That did not save. Nothing changed — try again in a moment.',
+    en: 'That did not save. Nothing changed. Try again in a moment.',
     es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
   },
   loadFailed: {
@@ -120,7 +132,7 @@ const S = {
   // all-clear and deliberately not an apology: it reports that the watching
   // has not begun, which is the one true thing available to say.
   neverChecked: {
-    en: 'Staxis has not started checking this hotel yet. Nothing here means "all clear" — it means nothing has been looked at.',
+    en: 'Staxis has not started checking this hotel yet. Nothing here means "all clear". It means nothing has been looked at.',
     es: 'Staxis todavía no ha empezado a revisar este hotel. Esto no significa "todo bien": significa que aún no se ha revisado nada.',
   },
 
@@ -230,8 +242,8 @@ const FD_CSS = `
 // ─── Receipt rendering ──────────────────────────────────────────────────────
 
 /** Render one evidence value without pretending to understand its shape. */
-function renderValue(value: unknown): string {
-  if (value === null || value === undefined) return '—';
+function renderValue(value: unknown, lang: Lang): string {
+  if (value === null || value === undefined) return lang === 'es' ? S.noValue.es : S.noValue.en;
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   try {
@@ -272,12 +284,12 @@ export function Receipt({ finding, lang }: { finding: QueueFinding; lang: Lang }
         entries.map(([k, v]) => (
           <div className="fd-rrow" key={k}>
             <span className="fd-rk">{humanKey(k)}</span>
-            <span className="fd-rv">{renderValue(v)}</span>
+            <span className="fd-rv">{renderValue(v, lang)}</span>
           </div>
         ))
       )}
       <div className="fd-rfoot">
-        {(es ? S.receiptQuery.es : S.receiptQuery.en)}: {finding.evidence.queryId || '—'}
+        {(es ? S.receiptQuery.es : S.receiptQuery.en)}: {finding.evidence.queryId || (es ? S.noValue.es : S.noValue.en)}
         {asOf ? ` · ${es ? S.asOf.es : S.asOf.en} ${asOf}` : ''}
       </div>
     </div>

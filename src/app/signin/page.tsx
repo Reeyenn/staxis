@@ -49,7 +49,7 @@ function SessionEndedBanner() {
       }}
     >
       {isConfig
-        ? 'Sign-in is temporarily unavailable. Our team has been notified — please try again in a few minutes.'
+        ? 'Sign-in is temporarily unavailable. Our team has been notified. Please try again in a few minutes.'
         : 'Your session ended. Sign in to continue.'}
     </div>
   );

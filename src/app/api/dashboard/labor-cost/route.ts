@@ -102,7 +102,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
     // Tenant scope.
     if (!(await userHasPropertyAccess(auth.userId, propertyId))) {
-      return err('forbidden — no access to this property', {
+      return err('forbidden: no access to this property', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
     }
@@ -126,7 +126,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       return capabilityUnavailableResponse(requestId);
     }
     if (capabilityDecision === 'denied') {
-      return err('forbidden — role does not have labor cost access', {
+      return err('forbidden: role does not have labor cost access', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
     }

@@ -542,7 +542,7 @@ function ChipDemo({ id, sub }: { id: string; sub: number }) {
         <div className="ap-laneh"><i className="lane-dot ld-pur" />FRONT DESK · 1</div>
         <div className="x-shiftlane"><span className="x-shift pur" style={{ left: '7%', width: '50%' }}>Jade · 7a–3p</span></div>
         <div className="ap-laneh"><i className="lane-dot ld-warm" />MAINTENANCE · 0</div>
-        <div className="x-shiftlane empty">No one on MT yet — use + Add staff above.</div>
+        <div className="x-shiftlane empty">No one on MT yet. Use + Add staff above.</div>
         <div className="ap-h">THIS WEEK · JUL 5–11</div>
         <div className="x-weekrow">
           {[['SUN · NOW', '5', true], ['MON', '6', false], ['TUE', '7', false], ['WED', '8', false], ['THU', '9', false]].map(([d, n, on]) => (

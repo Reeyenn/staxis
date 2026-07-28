@@ -146,7 +146,7 @@ export default function ConsentPage() {
             <p className="section-title">How Consent Is Collected</p>
             <span className="badge">Opt-In Type: Verbal (In-Person)</span>
             <div className="section-body">
-              <p>Before any phone number is added to Staxis, the Staxis founder goes to the hotel property in person, stands with the head housekeeper, and asks each housekeeper one at a time — face to face — whether she is okay with receiving the nightly scheduling text from Staxis. The phone number is only entered into the system after the housekeeper says yes. If she says no, her number is never added and she continues to be scheduled the way she was before.</p>
+              <p>Before any phone number is added to Staxis, the Staxis founder goes to the hotel property in person, stands with the head housekeeper, and asks each housekeeper one at a time, face to face, whether she is okay with receiving the nightly scheduling text from Staxis. The phone number is only entered into the system after the housekeeper says yes. If she says no, her number is never added and she continues to be scheduled the way she was before.</p>
             </div>
           </div>
 
@@ -156,17 +156,17 @@ export default function ConsentPage() {
             <div className="section-body">
               <p>This is what is said, in person, to each housekeeper before her number is added:</p>
               <div className="example-box">
-                <p className="example-label">Verbatim — Spoken to Each Housekeeper</p>
+                <p className="example-label">Verbatim: Spoken to Each Housekeeper</p>
                 <p>
-                  "Hey, I'm Reeyen — I built a scheduling tool called Staxis that the hotel is
+                  "Hey, I'm Reeyen. I built a scheduling tool called Staxis that the hotel is
                   going to start using. Right now Maria texts you every night from her own phone
                   to tell you if you're working tomorrow. With Staxis, you'll get that same text,
-                  but it'll come from the Staxis number — 855-514-1450 — instead of from Maria.
+                  but it'll come from the Staxis number, 855-514-1450, instead of from Maria.
                 </p>
                 <p>
                   It asks one thing: can you work tomorrow, yes or no. You text back YES or NO. If
                   you say yes, in the morning you get one more text with the rooms you're cleaning
-                  that day. That's it — two texts max per day, nothing else. No ads, no spam.
+                  that day. That's it. Two texts max per day, nothing else. No ads, no spam.
                 </p>
                 <p>
                   If you ever want it to stop, text back STOP and it stops. Is it okay with you if
@@ -228,7 +228,7 @@ export default function ConsentPage() {
 
           <footer>
             <div style={{ marginBottom: '6px' }}>
-              Staxis — operated by Reeyen Patel (sole proprietor)
+              Staxis, operated by Reeyen Patel (sole proprietor)
             </div>
             <div style={{ marginBottom: '6px' }}>
               2215 Rio Grande St, Austin, TX 78705, United States

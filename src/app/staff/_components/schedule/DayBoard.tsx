@@ -143,8 +143,8 @@ export function DayBoard({
                 <div style={{ width: GUT, flexShrink: 0 }}/>
                 <span style={{ fontFamily: fonts.mono, fontSize: 10, color: T.ink3, letterSpacing: '0.03em' }}>
                   {lang === 'es'
-                    ? `Nadie en ${m.short} todavía — usa ＋ Agregar personal arriba.`
-                    : `No one on ${m.short} yet — use ＋ Add staff above.`}
+                    ? `Nadie en ${m.short} todavía. Usa ＋ Agregar personal arriba.`
+                    : `No one on ${m.short} yet. Use ＋ Add staff above.`}
                 </span>
               </div>
             )}
@@ -331,7 +331,7 @@ function ShiftRow({
         <div
           ref={blockRef}
           onPointerDown={e => startDrag(e, 'move')}
-          title={`${nameOf(sh.staffId)}${sh.note ? ` — ${sh.note}` : ''}`}
+          title={`${nameOf(sh.staffId)}${sh.note ? `: ${sh.note}` : ''}`}
           style={{
             position: 'absolute', top: 4, height: 26, left: `${left}%`, width: `${width}%`,
             borderRadius: 8, background: dim, border: `1px solid ${tone}66`, cursor: 'grab',

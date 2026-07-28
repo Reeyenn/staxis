@@ -383,7 +383,7 @@ export async function PATCH(req: NextRequest) {
     const access = (account?.property_access ?? []) as string[];
     const isAdmin = account?.role === 'admin';
     if (!isAdmin && !access.includes(resolved.propertyId)) {
-      return err('Forbidden — your session does not own this property', {
+      return err('Forbidden. Your session does not own this property', {
         requestId, status: 403, code: ApiErrorCode.Unauthorized,
       });
     }

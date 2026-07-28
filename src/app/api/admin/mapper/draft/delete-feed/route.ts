@@ -84,10 +84,10 @@ async function resolveFromJob(jobId: string): Promise<ResolveResult> {
   const result = (job.result ?? {}) as Record<string, unknown>;
   const knowledgeFileId = typeof result.knowledge_file_id === 'string' ? result.knowledge_file_id : null;
   if (!knowledgeFileId) {
-    return { ok: false, status: 400, message: "Nothing to edit — this run didn't produce a map yet." };
+    return { ok: false, status: 400, message: "Nothing to edit. This run didn't produce a map yet." };
   }
   if (typeof job.property_id !== 'string') {
-    return { ok: false, status: 409, message: 'This run has no property — refresh and try again.' };
+    return { ok: false, status: 409, message: 'This run has no property. Refresh and try again.' };
   }
 
   const { data, error: e } = await supabaseAdmin
@@ -133,7 +133,7 @@ async function resolveFromDraftId(draftId: string, propertyId: string): Promise<
   if (sessErr) return { ok: false, status: 500, message: `could not load session: ${sessErr.message}` };
   if (!sessionRow) return { ok: false, status: 404, message: 'This property has no CUA session.' };
   if ((sessionRow.pms_family as string) !== (data.pms_family as string)) {
-    return { ok: false, status: 409, message: 'This map changed since you opened it — refresh and try again.' };
+    return { ok: false, status: 409, message: 'This map changed since you opened it. Refresh and try again.' };
   }
 
   return {
@@ -185,7 +185,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // re-checks; this is the fast-fail so the founder gets an instant, clear no.)
   if (REQUIRED_ACTION_KEYS.has(feedKey)) {
     return err(
-      'This is a core feed the robot must always read — it can’t be removed here.',
+      'This is a core feed the robot must always read. It can’t be removed here.',
       { requestId, status: 400, code: 'required_feed' },
     );
   }
@@ -198,7 +198,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Once active, edits go through the signed Coverage Editor path — never here.
   if (draft.row.status === 'active') {
     return err(
-      'This map is already live — remove feeds from the Coverage Editor instead.',
+      'This map is already live. Remove feeds from the Coverage Editor instead.',
       { requestId, status: 409, code: 'already_live' },
     );
   }
@@ -215,7 +215,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   // Refuse to empty the map — a zero-feed draft is useless and trips promote.
   if (Object.keys(actions).length <= 1) {
     return err(
-      'This is the only feed left — removing it would leave nothing to go live.',
+      'This is the only feed left. Removing it would leave nothing to go live.',
       { requestId, status: 400, code: 'would_empty_map' },
     );
   }

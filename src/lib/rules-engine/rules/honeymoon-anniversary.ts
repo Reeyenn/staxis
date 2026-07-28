@@ -32,7 +32,7 @@ export const honeymoonAnniversaryRule: Rule = {
     }
     return {
       id: RULE_ID,
-      summary: `${occasion} stay — place welcome amenity`,
+      summary: `${occasion} stay. Place welcome amenity`,
       partial: {
         extras,
         notes: [`${occasion} stay`],

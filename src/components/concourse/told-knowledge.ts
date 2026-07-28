@@ -292,13 +292,13 @@ export async function uploadDocument(
 }
 
 export const UPLOAD_FAILURE_COPY: Record<UploadFailure, Bilingual> = {
-  too_big: { en: 'That file is too big — keep it under 10 MB.', es: 'Ese archivo es muy grande: máximo 10 MB.' },
+  too_big: { en: 'That file is too big. Keep it under 10 MB.', es: 'Ese archivo es muy grande: máximo 10 MB.' },
   presign_failed: {
     en: 'Staxis cannot take that kind of file. Nothing was saved.',
     es: 'Staxis no acepta ese tipo de archivo. No se guardó nada.',
   },
   put_failed: {
-    en: 'The file did not finish uploading. Nothing was saved — try again.',
+    en: 'The file did not finish uploading. Nothing was saved. Try again.',
     es: 'El archivo no terminó de subirse. No se guardó nada: inténtalo de nuevo.',
   },
   register_failed: {

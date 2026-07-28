@@ -51,7 +51,7 @@ const S = {
   },
   // An error must never read as "this hotel has no emergency numbers".
   loadFailed: {
-    en: 'The contact list could not load. Do not read this as "there are no contacts" — check your connection and try again.',
+    en: 'The contact list could not load. Do not read this as "there are no contacts". Check your connection and try again.',
     es: 'No se pudo cargar la lista de contactos. No lo tomes como "no hay contactos": revisa tu conexión e inténtalo de nuevo.',
   },
   refreshFailed: {
@@ -69,9 +69,9 @@ const S = {
   fCompany: { en: 'Role / company', es: 'Rol / empresa' },
   fCompanyPh: { en: 'e.g. Plumber, ABC Supply', es: 'ej. Plomero, ABC' },
   fCategory: { en: 'Category', es: 'Categoría' },
-  fNone: { en: '— none —', es: '— ninguna —' },
+  fNone: { en: '(none)', es: '(ninguna)' },
   fLocalCat: { en: 'Local category', es: 'Categoría local' },
-  fLocalPick: { en: '— choose a type —', es: '— elige un tipo —' },
+  fLocalPick: { en: '(choose a type)', es: '(elige un tipo)' },
   fPhone: { en: 'Phone', es: 'Teléfono' },
   fEmail: { en: 'Email', es: 'Correo' },
   fAddress: { en: 'Address', es: 'Dirección' },
@@ -211,7 +211,7 @@ function ContactCard({ c, canEdit, lang, onEdit, onRemove }: {
             {/* The number leads the accessible name so it CONTAINS the visible
                 text — a voice-control user saying the number they can see has
                 to match (WCAG 2.5.3). "Call <name>" alone did not. */}
-            {tel && <a className="td-tap td-call" href={tel} aria-label={`${c.phone} — ${L('call')} ${c.name}`}>{c.phone}</a>}
+            {tel && <a className="td-tap td-call" href={tel} aria-label={`${c.phone}, ${L('call')} ${c.name}`}>{c.phone}</a>}
             {mail && <a className="td-tap" href={mail}>{c.email}</a>}
           </div>
         )}
@@ -220,7 +220,7 @@ function ContactCard({ c, canEdit, lang, onEdit, onRemove }: {
           <div className="td-cmeta">
             {map ? (
               <a className="td-tap td-quiet" href={map} target="_blank" rel="noopener noreferrer"
-                 aria-label={`${L('directions')} — ${line}`}>{line}</a>
+                 aria-label={`${L('directions')}, ${line}`}>{line}</a>
             ) : line}
           </div>
         )}

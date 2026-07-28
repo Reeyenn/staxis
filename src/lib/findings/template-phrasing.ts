@@ -123,6 +123,53 @@ const SEVERITY_ES: Record<FindingSeverity, string> = {
   info: 'Información',
 };
 
+/** U+2014. Named because it is invisible in a diff otherwise. */
+const EM_DASH = '—';
+
+/**
+ * The same sentence with its em dashes turned into full stops.
+ *
+ * ─── WHY THIS EXISTS AT ALL ───────────────────────────────────────────────
+ * Findings prose is PERSISTED, not derived. `findings.summary` is written by
+ * the detector at detection time and `judged_summary_en` / `judged_summary_es`
+ * are written by the judge; all three are read back verbatim months later. So
+ * fixing the templates only cleans rows written from now on. Every card already
+ * in the database would keep its dash forever.
+ *
+ * Rather than rewrite history in a table that is meant to be an immutable
+ * record of what Staxis said and when, the fix runs on READ, at the single seam
+ * every card headline passes through (`cardPhrasing`). Old rows render clean,
+ * the stored record stays exactly as it was written, and nothing has to be
+ * backfilled.
+ *
+ * The transform is deliberately dumb: split on the dash, join the pieces with a
+ * full stop, capitalise what follows. It does not try to guess whether a comma
+ * would have read better, because it is operating on text nobody is reviewing.
+ * New copy gets written properly at the template instead, and the guard test
+ * holds the templates to that.
+ */
+export function withoutEmDash(text: string): string {
+  if (!text.includes(EM_DASH)) return text;
+  const parts = text
+    .split(EM_DASH)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+  if (parts.length === 0) return '';
+
+  let out = parts[0];
+  for (let i = 1; i < parts.length; i += 1) {
+    // A clause that already closed itself does not need a second stop stacked
+    // onto it: "Room 231: — 4 work orders" must not become "Room 231:. 4 …".
+    const alreadyClosed = /[.,:;!?]$/.test(out);
+    if (alreadyClosed) {
+      out += ` ${parts[i]}`;
+    } else {
+      out += `. ${parts[i].charAt(0).toLocaleUpperCase()}${parts[i].slice(1)}`;
+    }
+  }
+  return out;
+}
+
 /** " Costo estimado: $750–$1,750." — one money formatter, shared with the card
  *  chip that sits a centimetre below this sentence. */
 export function templatePriceSentence(
@@ -145,21 +192,28 @@ export interface TemplateFloorInput {
 /**
  * The Spanish floor: real Spanish, the subject named, and no jargon.
  *
- *   "Atención — Room 231: Staxis tiene algo abierto aquí. Toca «Ver los
+ *   "Atención: Habitación 231. Staxis tiene algo abierto aquí. Toca «Ver los
  *    números» para el detalle. Costo estimado: $750–$1,750."
  *
  * Deliberately vaguer than the English, and that is the honest asymmetry: the
  * English reuses the detector's own template sentence, which is already exact.
  * Spanish has no such sentence to reuse, so it says only what it can vouch for
- * and hands the reader the receipt — rather than paraphrasing a claim it cannot
+ * and hands the reader the receipt, rather than paraphrasing a claim it cannot
  * check, which is the failure mode a translated sentence invites.
+ *
+ * The severity, the subject and the body are three short statements separated by
+ * ordinary punctuation. They used to be joined with an em dash; the founder
+ * ruled those out of user-facing copy on 2026-07-28, and this sentence is the
+ * one every findings surface shares, so it is the one that mattered most.
  */
 export function spanishTemplateSentence(input: TemplateFloorInput): string {
   const subject = templateSubject(input.evidence, 'es');
-  const where = subject ? `${SEVERITY_ES[input.severity]} — ${subject}` : SEVERITY_ES[input.severity];
+  const where = subject
+    ? `${SEVERITY_ES[input.severity]}: ${subject}.`
+    : `${SEVERITY_ES[input.severity]}:`;
   const body = subject
     ? 'Staxis tiene algo abierto aquí.'
     : 'Staxis tiene algo abierto en este hotel.';
-  return `${where}: ${body} Toca «Ver los números» para el detalle.${templatePriceSentence(input.price, 'es')}`
+  return `${where} ${body} Toca «Ver los números» para el detalle.${templatePriceSentence(input.price, 'es')}`
     .trim();
 }

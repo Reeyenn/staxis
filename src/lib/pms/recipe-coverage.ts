@@ -77,9 +77,9 @@ export const RESERVED_CUSTOM_KEYS = new Set<string>([
 /** Why a custom column key is not allowed on a feed (reserved name, or a typed
  *  contract column captured automatically), or null when it's a fine custom key. */
 export function customColumnKeyConflict(feedKey: string, key: string): string | null {
-  if (RESERVED_CUSTOM_KEYS.has(key)) return `"${key}" is a reserved name — pick another.`;
+  if (RESERVED_CUSTOM_KEYS.has(key)) return `"${key}" is a reserved name. Pick another.`;
   if (CONTRACT_COLUMNS_BY_FEED[feedKey]?.has(key)) {
-    return `"${key}" is a standard field for this feed — the robot already captures it, no need to add it.`;
+    return `"${key}" is a standard field for this feed. The robot already captures it, no need to add it.`;
   }
   return null;
 }

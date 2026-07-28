@@ -376,8 +376,8 @@ export function buildCorrectionNote(failedItems: InspectionFailedItem[]): string
     return `${sev}: ${it.label}${note}`;
   });
 
-  if (labels.length === 1) return `Re-clean needed — ${labels[0]}`;
-  return `Re-clean needed — ${labels.join('; ')}`;
+  if (labels.length === 1) return `Re-clean needed: ${labels[0]}`;
+  return `Re-clean needed: ${labels.join('; ')}`;
 }
 
 // ─── Queue helpers ────────────────────────────────────────────────────────

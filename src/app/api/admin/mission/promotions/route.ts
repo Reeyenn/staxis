@@ -360,7 +360,7 @@ async function approve(row: PromotionRow, ctx: DecisionCtx) {
       log.error('[mission/promotions] activation failed, item returned to the queue', {
         requestId, err: e instanceof Error ? e : new Error(String(e)),
       });
-      return err('Could not switch the new instructions on — nothing changed and the item is back in the queue.', {
+      return err('Could not switch the new instructions on. Nothing changed and the item is back in the queue.', {
         requestId, status: 500, code: ApiErrorCode.InternalError, headers: NO_STORE,
       });
     }
@@ -477,7 +477,7 @@ async function retract(row: PromotionRow, ctx: DecisionCtx) {
       log.error('[mission/promotions] restore failed, item left live', {
         requestId, err: e instanceof Error ? e : new Error(String(e)),
       });
-      return err('Could not put the previous instructions back — nothing changed.', {
+      return err('Could not put the previous instructions back. Nothing changed.', {
         requestId, status: 500, code: ApiErrorCode.InternalError, headers: NO_STORE,
       });
     }

@@ -201,7 +201,7 @@ export async function POST(req: NextRequest) {
         joinCode: null,
         signupUrl: null,
         expiresAt: null,
-        warning: 'Property created but join code generation failed — mint one via /admin/properties/' + created.id,
+        warning: 'Property created but join code generation failed. Mint one via /admin/properties/' + created.id,
       },
       { requestId },
     );

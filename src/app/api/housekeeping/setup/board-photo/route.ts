@@ -337,7 +337,7 @@ export const POST = defineRoute({
         detected: detectedMime,
         bytesLength: bytes.length,
       });
-      return ctx.err("That photo looks damaged — try taking it again", {
+      return ctx.err("That photo looks damaged. Try taking it again", {
         status: 415, code: ApiErrorCode.ValidationFailed,
       });
     }

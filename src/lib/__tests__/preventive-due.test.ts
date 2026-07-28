@@ -220,13 +220,13 @@ describe('called → resting → follow-up', () => {
   });
 
   test('a follow-up on the very day it comes due still reads as a sentence', () => {
-    // Called in advance, eight days ago; due today. "still has not been done —
+    // Called in advance, eight days ago; due today. "still has not been done,
     // today." is not English, so zero has its own wording.
     const [draft] = detectPreventiveDue(
       ctx([task({ nextDueDate: TODAY, calledDate: daysAgo(8), calledBy: 'Dana' })]),
     );
-    assert.match(draft.summary, /still has not been done — due today\./);
-    assert.doesNotMatch(draft.summary, /— today\./);
+    assert.match(draft.summary, /still has not been done, due today\./);
+    assert.doesNotMatch(draft.summary, /done, today\./);
   });
 
   test('a due card that nobody has called about IS an offer', () => {

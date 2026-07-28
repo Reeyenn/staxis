@@ -113,7 +113,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
     // If the load never succeeded, the inputs are all blank — saving would
     // clear every role default and per-person override. Block it.
     if (!data) {
-      setError(es ? 'No se pudieron cargar los salarios — recarga la página antes de guardar.' : 'Wages didn’t load — refresh the page before saving.');
+      setError(es ? 'No se pudieron cargar los salarios. Recarga la página antes de guardar.' : 'Wages didn’t load. Refresh the page before saving.');
       return;
     }
     setError(null);
@@ -170,7 +170,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
       // A network throw used to skip setSaving(false), freezing the button on
       // "Saving…" with no error and no way to retry.
       console.error('[wages:settings] save failed', err);
-      setError(es ? 'No se pudo guardar — revisa tu conexión e intenta de nuevo' : 'Couldn’t save — check your connection and try again');
+      setError(es ? 'No se pudo guardar. Revisa tu conexión e intenta de nuevo' : 'Couldn’t save. Check your connection and try again');
     } finally {
       setSaving(false);
     }
@@ -199,7 +199,7 @@ function WagesBody({ pid, lang }: { pid: string; lang: 'en' | 'es' }) {
           <p style={{ fontFamily: fonts.sans, fontSize: 13, color: T.ink2, marginTop: 6, maxWidth: 600, lineHeight: 1.5 }}>
             {es
               ? 'Se usan para calcular el costo laboral de hoy como % de los ingresos en el panel. No registran tiempo nuevo: solo cuestan el horario publicado.'
-              : "Used to cost today's published schedule into the Labor Cost % tile on the dashboard. No new time tracking — these just price the schedule you already publish."}
+              : "Used to cost today's published schedule into the Labor Cost % tile on the dashboard. No new time tracking: these only price the schedule you already publish."}
           </p>
         </div>
 

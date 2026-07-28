@@ -78,14 +78,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return capabilityUnavailableResponse(requestId);
   }
   if (capabilityDecision === 'denied') {
-    return err('forbidden — assigning work is restricted for your role at this property', { requestId, status: 403, code: 'forbidden' });
+    return err('forbidden: assigning work is restricted for your role at this property', { requestId, status: 403, code: 'forbidden' });
   }
   const hasAccess = await userHasPropertyAccess(auth.userId, propertyId);
   if (!hasAccess) {
     log.warn('auto-assign: forbidden — user lacks property access', {
       requestId, userId: auth.userId, propertyId,
     });
-    return err('forbidden — no access to this property', {
+    return err('forbidden: no access to this property', {
       requestId, status: 403, code: 'forbidden',
     });
   }

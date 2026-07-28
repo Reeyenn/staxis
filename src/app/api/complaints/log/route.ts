@@ -92,7 +92,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return capabilityUnavailableResponse(requestId);
   }
   if (capabilityDecision === 'denied') {
-    return err('forbidden — complaints are restricted for your role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
+    return err('forbidden: complaints are restricted for your role at this property', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers });
   }
 
   // Rate-limit per PROPERTY. The key MUST be a real properties.id — api_limits

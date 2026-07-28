@@ -108,7 +108,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
       // server-side (the route has no idempotency key). Warn the admin to check
       // the fleet before retrying rather than implying a clean failure.
       setError(
-        `Couldn't confirm the result${e instanceof Error && e.message ? ` (${e.message})` : ''} — the hotel may or may not have been created. Check the fleet below before trying again.`,
+        `Couldn't confirm the result${e instanceof Error && e.message ? ` (${e.message})` : ''}. The hotel may or may not have been created. Check the fleet below before trying again.`,
       );
     } finally {
       setSubmitting(false);
@@ -151,7 +151,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
               <span style={{ fontStyle: 'italic' }}>{created.name}</span> is in your fleet
             </h3>
             <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 16px', lineHeight: 1.5 }}>
-              It&apos;s now in your fleet with no PMS connected — set its sections right from its card.
+              It&apos;s now in your fleet with no PMS connected. Set its sections right from its card.
               The owner signup link below is optional: hand it to an outside owner, or ignore it and
               manage the hotel yourself.
             </p>
@@ -184,7 +184,7 @@ export function AddHotelModal({ onClose, onCreated }: AddHotelModalProps) {
               New <span style={{ fontStyle: 'italic' }}>hotel</span>
             </h3>
             <p style={{ fontSize: 13, color: 'var(--dim)', margin: '0 0 18px', lineHeight: 1.5 }}>
-              Put in as much or as little as you want — you can fill the rest in later. It joins the
+              Put in as much or as little as you want. You can fill the rest in later. It joins the
               fleet right away with no PMS connected.
             </p>
 

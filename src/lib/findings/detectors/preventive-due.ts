@@ -227,7 +227,7 @@ function neverDoneDraft(task: PreventiveScheduleEntry): FindingDraft {
   return {
     key: `task:${task.id}:never_started`,
     summary:
-      `${taskName}${where} is on this hotel's upkeep schedule — every ${cadence} — but has never `
+      `${taskName}${where} is on this hotel's upkeep schedule, every ${cadence}, but has never `
       + 'been marked done, so Staxis cannot tell when it is next due. Record when it was last done '
       + 'and it starts counting.',
     severity: 'info',
@@ -301,10 +301,10 @@ function draftFor(task: PreventiveScheduleEntry, today: string): FindingDraft | 
     // this schedule's last-done date silently disappeared from the product.
     // The buttons are where the asking belongs; the prose states what is true.
     summary: isFollowUp
-      ? `${taskName}${where} still has not been done — ${lateness(state.daysOverdue)}. ` +
+      ? `${taskName}${where} still has not been done, ${lateness(state.daysOverdue)}. ` +
         `Somebody was called about it ${plural(state.daysSinceCalled, 'day')} ago.`
-      : `${taskName}${where} is ${lateness(state.daysOverdue)}` +
-        `${lastDoneAgo ? ` — last done ${lastDoneAgo},` : ' —'} and this hotel does it every ${cadence}.`,
+      : `${taskName}${where} is ${lateness(state.daysOverdue)}.` +
+        `${lastDoneAgo ? ` Last done ${lastDoneAgo}.` : ''} This hotel does it every ${cadence}.`,
     // A full extra cycle late is a different kind of late: the hotel has not
     // merely slipped a date, it has skipped a whole round. Self-scaling off the
     // hotel's own cadence rather than off a number invented here — 30 days late

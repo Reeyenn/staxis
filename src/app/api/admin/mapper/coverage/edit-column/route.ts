@@ -131,7 +131,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   if (!sessionRow) return err('This property has no CUA session.', { requestId, status: 404, code: 'not_found' });
   const pmsFamily = sessionRow.pms_family as string;
   if (typeof body.pmsFamily === 'string' && body.pmsFamily && body.pmsFamily !== pmsFamily) {
-    return err('This map changed since you opened it — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+    return err('This map changed since you opened it. Refresh and try again.', { requestId, status: 409, code: 'conflict' });
   }
 
   // Resolve the recipe source: a parked DRAFT (draftId) or the family's ACTIVE map.
@@ -146,10 +146,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (e) return err(`draft lookup failed: ${e.message}`, { requestId, status: 500, code: 'db_error' });
     if (!data) return err('The map no longer exists.', { requestId, status: 404, code: 'not_found' });
     if (data.pms_family !== pmsFamily) {
-      return err('This map changed since you opened it — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+      return err('This map changed since you opened it. Refresh and try again.', { requestId, status: 409, code: 'conflict' });
     }
     if (data.status === 'active') {
-      return err('This map is already live — edit it from the live map instead.', { requestId, status: 409, code: 'conflict' });
+      return err('This map is already live. Edit it from the live map instead.', { requestId, status: 409, code: 'conflict' });
     }
     sourceRow = data;
   } else {
@@ -161,7 +161,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       .is('deleted_at', null)
       .maybeSingle<KnowledgeRow>();
     if (e) return err(`could not load active map: ${e.message}`, { requestId, status: 500, code: 'db_error' });
-    if (!data) return err(`no active map for ${pmsFamily} — there's nothing to edit yet.`, { requestId, status: 404, code: 'not_found' });
+    if (!data) return err(`no active map for ${pmsFamily}. There's nothing to edit yet.`, { requestId, status: 404, code: 'not_found' });
     sourceRow = data;
   }
 
@@ -190,7 +190,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       });
     }
     if (Object.keys(knownColumns).length + Object.keys(customColumns).length <= 1) {
-      return err('This is the only column left — remove the whole feed instead.', {
+      return err('This is the only column left. Remove the whole feed instead.', {
         requestId, status: 409, code: 'conflict',
       });
     }
@@ -231,7 +231,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     const dragSel = typeof body.selector === 'string' ? body.selector.trim() : '';
     if (dragSel) {
       if (!/^[a-z]{1,12}:nth-child\(\d{1,3}\)$/.test(dragSel)) {
-        return err('That column selection wasn’t understood — pick it again.', { requestId, status: 400, code: 'bad_request' });
+        return err('That column selection wasn’t understood. Pick it again.', { requestId, status: 400, code: 'bad_request' });
       }
       selector = dragSel;
     } else if (typeof body.headerIndex === 'number' && Number.isInteger(body.headerIndex) && body.headerIndex >= 1 && body.headerIndex <= 999) {
@@ -291,19 +291,19 @@ export async function POST(req: NextRequest): Promise<Response> {
     // allowlist accepts every real value selector while blocking pathological /
     // expensive CSS (`:has()`, `*`, attribute traversals) — no O(n²) query.
     if (!isSafeValueSelector(dragSel)) {
-      return err('That selection wasn’t understood — try dragging it again.', { requestId, status: 400, code: 'bad_request' });
+      return err('That selection wasn’t understood. Try dragging it again.', { requestId, status: 400, code: 'bad_request' });
     }
     // CORRECTNESS: it must also be one the worker actually captured for this feed.
     const trusted = await fetchFeedValueSelectors(body.propertyId, feedKey);
     if (!trusted.has(dragSel)) {
-      return err('That selection wasn’t recognized — re-map this feed or try dragging it again.', { requestId, status: 409, code: 'conflict' });
+      return err('That selection wasn’t recognized. Re-map this feed or try dragging it again.', { requestId, status: 409, code: 'conflict' });
     }
     selector = dragSel;
   } else if (dragSel) {
     // A per-row column drag: tight allowlist — a tag + :nth-child(1..999). Bounds
     // are intentional (0 / >=1000 match no cell) and block selector injection.
     if (!/^[a-z]{1,12}:nth-child\(\d{1,3}\)$/.test(dragSel)) {
-      return err('That column selection wasn’t understood — try dragging it again.', { requestId, status: 400, code: 'bad_request' });
+      return err('That column selection wasn’t understood. Try dragging it again.', { requestId, status: 400, code: 'bad_request' });
     }
     selector = dragSel;
   } else {
@@ -313,12 +313,12 @@ export async function POST(req: NextRequest): Promise<Response> {
     // The chosen header must be one the robot actually saw on the page.
     const detected = detectedColumnsFromAction(action);
     if (detected.length === 0) {
-      return err('The robot hasn’t listed this page’s columns yet — re-map this feed once, then add a column.', {
+      return err('The robot hasn’t listed this page’s columns yet. Re-map this feed once, then add a column.', {
         requestId, status: 409, code: 'no_detected_columns',
       });
     }
     if (!detected.some((d) => d.index === body.headerIndex)) {
-      return err('That column is no longer on the page — refresh and try again.', { requestId, status: 409, code: 'conflict' });
+      return err('That column is no longer on the page. Refresh and try again.', { requestId, status: 409, code: 'conflict' });
     }
     // Author the positional selector by templating off ANY existing clean
     // positional column (known OR custom — custom ones are authored this way too).

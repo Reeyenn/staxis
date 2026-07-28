@@ -780,7 +780,7 @@ export function AIControlCenter() {
     if (failures.length === 0) {
       toast('success', `${groupName}: ${plan.successNoun} for ${applied} feature${applied === 1 ? '' : 's'}${skipped.length > 0 ? ` (${skipped.length} skipped: ${skipped[0]})` : ''}.`);
     } else {
-      toast('error', `${groupName}: ${failures.length} of ${targets.length} didn't apply — ${failures[0]}`);
+      toast('error', `${groupName}: ${failures.length} of ${targets.length} didn't apply. ${failures[0]}`);
     }
   }, [loadAll, setFeatureAction, toast]);
 
@@ -1403,7 +1403,7 @@ function FeatureEditor({
   // feature that can run on everything says nothing.
   const singleProviderNote = feature.modelSwitchable && feature.runtimeProviders.length === 1
     && feature.requiredCapabilities.length > 0
-    ? `Only ${providerLabel(feature.runtimeProviders[0])} models can run this feature — it needs ${feature.requiredCapabilities.map(capabilityLabel).join(' + ')}.`
+    ? `Only ${providerLabel(feature.runtimeProviders[0])} models can run this feature. It needs ${feature.requiredCapabilities.map(capabilityLabel).join(' + ')}.`
     : null;
   const busyLabel = action === 'creating'
     ? 'Saving…'
@@ -1506,9 +1506,9 @@ function FeatureEditor({
                 <CheckCircle2 size={15} aria-hidden="true" />
                 <span>
                   {pendingActivation.probeCount > 0 ? (
-                    <><strong>Test passed.</strong> The model answered correctly. This proves it responds — not how smart it is. Click “Make it live” to switch.</>
+                    <><strong>Test passed.</strong> The model answered correctly. This proves it responds, not how smart it is. Click “Make it live” to switch.</>
                   ) : (
-                    <><strong>Ready.</strong> No test needed — this change turns the feature off. Click “Make it live” to switch.</>
+                    <><strong>Ready.</strong> No test needed. This change turns the feature off. Click “Make it live” to switch.</>
                   )}
                   {pendingActivation.warnings.length > 0 && (
                     <span className={styles.validationWarnings}> Worth knowing first: {pendingActivation.warnings.join(' ')}</span>
@@ -1884,9 +1884,9 @@ function ModelCard({
   if (conservativePricing) {
     notices.push('The price shown is a safe overestimate, not the confirmed rate.');
   } else if (model.pricing === null) {
-    notices.push('No confirmed price on file — check the provider\'s price list before switching anything to it.');
+    notices.push('No confirmed price on file. Check the provider\'s price list before switching anything to it.');
   } else if (model.source === 'provider') {
-    notices.push('Newly discovered — some details may still be missing.');
+    notices.push('Newly discovered. Some details may still be missing.');
   }
 
   const prices: Array<{ label: string; value: string }> = [];
@@ -2036,7 +2036,7 @@ function RecommendationsPanel({
     >
       <div className={styles.toolbar}>
         <span className={styles.summaryText}>
-          Every run is saved below with its date — open any of them to reread the full advice.
+          Every run is saved below with its date. Open any of them to reread the full advice.
         </span>
         <button type="button" className={styles.secondaryButton} disabled={state.status === 'generating'} onClick={onGenerate}>
           {state.status === 'generating' ? <span className={styles.spinner} aria-hidden="true" /> : <Lightbulb size={14} />}
@@ -2053,7 +2053,7 @@ function RecommendationsPanel({
       {state.status === 'ready' && state.reports.length === 0 && (
         <div className={styles.emptyState}>
           <Lightbulb size={22} />
-          No saved runs yet. Click “Get recommendations” to have the AI look over your setup — costs a few cents per run and changes nothing by itself.
+          No saved runs yet. Click “Get recommendations” to have the AI look over your setup. Costs a few cents per run and changes nothing by itself.
         </div>
       )}
 
@@ -2079,7 +2079,7 @@ function RecommendationsPanel({
                 </button>
                 {expanded && (
                   report.recommendations.length === 0 ? (
-                    <p className={styles.featureDescription}>Nothing worth changing at that time — the setup already looked sensible.</p>
+                    <p className={styles.featureDescription}>Nothing worth changing at that time. The setup already looked sensible.</p>
                   ) : (
                     <div className={styles.reportBody}>
                       {report.recommendations.map((rec, index) => {
@@ -2137,7 +2137,7 @@ function RecommendationsPanel({
           })}
         </div>
       )}
-      <p className={styles.summaryText}>Suggestions never apply themselves — every switch is tested first.</p>
+      <p className={styles.summaryText}>Suggestions never apply themselves. Every switch is tested first.</p>
     </section>
   );
 }

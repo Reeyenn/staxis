@@ -103,7 +103,7 @@ function draftFor(
   const pricing = priceFromBand(
     costBand ? { low: costBand.low * entry.total, high: costBand.high * entry.total } : null,
     costBand
-      ? `${plural(entry.total, 'work order')} at ${formatCentsBand(costBand)} each — the range of ` +
+      ? `${plural(entry.total, 'work order')} at ${formatCentsBand(costBand)} each, the range of ` +
         `the ${plural(history.repairCostCentsSamples.length, 'repair cost')} this hotel has recorded`
       : '',
     history.repairCostCentsSamples.length < MIN_COST_SAMPLES
@@ -124,7 +124,7 @@ function draftFor(
     key: `location:${entry.location}`,
     summary:
       `${entry.location} has had ${plural(entry.total, 'work order')} in the last ` +
-      `${windowDays} days — ${stillOpen === 0 ? 'all of them closed' : `${stillOpen} still open`}.`,
+      `${windowDays} days. ${stillOpen === 0 ? 'All of them closed' : `${stillOpen} still open`}.`,
     severity: entry.total >= MIN_WORK_ORDERS * 2 ? 'critical' : 'attention',
     // Nothing left open means nothing for Staxis to add: the team is evidently
     // on it. Worth saying, not worth a button.

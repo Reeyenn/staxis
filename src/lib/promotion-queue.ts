@@ -147,8 +147,8 @@ export function meetsEvidenceBar(claim: EvidenceClaim): BarResult {
       ok: false,
       code: 'aggregate_group',
       reason:
-        `Comparing hotels needs at least ${AGGREGATE_MIN_GROUP_SIZE} other hotels backing it — ` +
-        `this has ${hotels}. Staxis says "not enough hotels to say" rather than guessing.`,
+        `Comparing hotels needs at least ${AGGREGATE_MIN_GROUP_SIZE} other hotels backing it. ` +
+        `This has ${hotels}. Staxis says "not enough hotels to say" rather than guessing.`,
     };
   }
 
@@ -163,7 +163,7 @@ export function meetsEvidenceBar(claim: EvidenceClaim): BarResult {
       code: 'not_enough_hotels',
       reason:
         `${tierLabel(claim.target_tier, null)} needs at least ${bar.minSupportingHotels} hotels ` +
-        `backing it — this has ${hotels}.`,
+        `backing it. This has ${hotels}.`,
     };
   }
   if (bar.requiresHoldout && !claim.holdout_validated) {
@@ -272,7 +272,7 @@ export function unmetPreconditions(
   return unmetPreconditionKeys(row, facts).map((key) =>
     key === 'family_row_exists'
       ? 'No PMS-family instructions are switched on yet, so this would describe a section that never appears.'
-      : `Unrecognised requirement "${key}" — nothing checks it, so this stays blocked.`,
+      : `Unrecognised requirement "${key}". Nothing checks it, so this stays blocked.`,
   );
 }
 

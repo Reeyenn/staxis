@@ -45,11 +45,11 @@ const STRINGS = {
     q1DirectLabel: 'The housekeepers enter it themselves',
     q1DirectHint: 'A code on the room phone, or their own login',
     q1UnsureLabel: "I'm not sure",
-    q1UnsureHint: "That's fine — we'll work it out with you later",
+    q1UnsureHint: "That's fine. We'll work it out with you later",
 
     // ── Q2 — standard room times ────────────────────────────────────────
     q2Title: 'How long should a room take?',
-    q2Sub: 'These are your standard times. Every hour and every dollar we show you is built on these two numbers — you can change them later.',
+    q2Sub: 'These are your standard times. Every hour and every dollar we show you is built on these two numbers. You can change them later.',
     q2CheckoutLabel: 'Checkout room',
     q2CheckoutHint: 'The guest has left',
     q2StayoverLabel: 'Stayover room',
@@ -70,8 +70,8 @@ const STRINGS = {
     // Grey, not red: an empty row the manager just added is unfinished, not
     // wrong. It still holds Continue, so it has to say what to do about it.
     q2RoomIncomplete: 'Give this one a name and a time, or remove it.',
-    q2RoomReserved: 'Checkout and stayover already have their own times above — give this one a different name.',
-    q2RoomDuplicate: 'is already on your list — each kind of room needs its own name.',
+    q2RoomReserved: 'Checkout and stayover already have their own times above. Give this one a different name.',
+    q2RoomDuplicate: 'is already on your list. Each kind of room needs its own name.',
     // Printed with the shared cap so the sentence can't drift from the rule.
     q2CapLead: 'You can add up to',
     q2CapTail: 'kinds of room.',
@@ -89,22 +89,22 @@ const STRINGS = {
 
     // ── Q3 — photo of the paper board (always skippable) ────────────────
     q3Title: 'Show us your board',
-    q3Sub: "Take a picture of today's paper board so we have it on file. Completely optional — skipping costs you nothing.",
+    q3Sub: "Take a picture of today's paper board so we have it on file. Completely optional. Skipping costs you nothing.",
     q3Take: 'Take or choose a photo',
     q3Retake: 'Use a different photo',
     q3Uploading: 'Reading your board…',
     // HONESTY: nothing downstream reads the photo yet, so this must not promise
     // that it pre-fills anything. It says what is true — the board is saved.
-    q3Generic: 'Got it — your board is saved.',
+    q3Generic: 'Got it. Your board is saved.',
     q3ReadLead: 'Looks like',
-    q3ReadTail: "— that's your board saved.",
+    q3ReadTail: "That's your board saved.",
     // Shown ONLY when the file itself can't be read (HEIC from an iPhone
     // library). Neutral, not an error: the step is optional either way.
-    q3FormatNote: "That photo format can't be read — try a JPEG, or just skip this step.",
+    q3FormatNote: "That photo format can't be read. Try a JPEG, or skip this step.",
     // Any other photo failure. Grey and calm, never red: the step is optional.
     // It exists because the screen no longer moves on by itself when an upload
     // fails — without a word here, their tap would look like it missed.
-    q3ReadFailNote: "We couldn't read that photo — try another one, or skip this step.",
+    q3ReadFailNote: "We couldn't read that photo. Try another one, or skip this step.",
     // Singular + plural kept apart: the sentence is built from counts the photo
     // produced, and "1 sections" on a small hotel's board undercuts the one
     // moment where we are showing them we read their handwriting correctly.
@@ -124,7 +124,7 @@ const STRINGS = {
     q4HeadHint: 'She decides who cleans what',
     q4GmLabel: 'The manager',
     q4GmHint: 'You or another manager',
-    q4NobodyLabel: 'Nobody really — people just start',
+    q4NobodyLabel: 'Nobody really, people just start',
     q4NobodyHint: 'It sorts itself out each morning',
     q4UnsureLabel: "I'm not sure",
     q4UnsureHint: 'It changes from day to day',
@@ -174,20 +174,20 @@ const STRINGS = {
     // line reuses an existing bad-bullet key (l1Bad2 / l2Bad1 / l3Bad0) so the
     // sentence can never drift from the full list behind "The full picture".
     q7Title: 'How much of Staxis do you want to use?',
-    q7Sub: 'The difference is who at your hotel opens Staxis. Start small — you can move up whenever you want.',
+    q7Sub: 'The difference is who at your hotel opens Staxis. Start small. You can move up whenever you want.',
     recommended: 'Recommended for you',
-    reasonHeadHousekeeper: 'You told us your head housekeeper builds the board — she is the person this pays off for first.',
+    reasonHeadHousekeeper: 'You told us your head housekeeper builds the board. She is the person this pays off for first.',
     reasonSafeStart: 'Nothing changes for your team on day one, and you see the numbers straight away.',
     goodLabel: 'What you get',
     badLabel: 'What it asks of you',
     detailsLabel: 'The full picture',
     lockedLabel: "You don't need this one",
-    lockedBody: 'Your housekeepers already mark their own rooms clean in your system — doing it in Staxis too would mean entering the same room twice.',
+    lockedBody: 'Your housekeepers already mark their own rooms clean in your system. Doing it in Staxis too would mean entering the same room twice.',
 
     l1Name: 'Staxis plans it',
     l1Who: 'Just you',
-    l1Get: 'The morning board, built overnight and ready to print — and earned hours against paid hours, in dollars.',
-    l1Good1: "Your board is built overnight and ready to print each morning — on the same paper your team already carries.",
+    l1Get: 'The morning board, built overnight and ready to print. Plus earned hours against paid hours, in dollars.',
+    l1Good1: "Your board is built overnight and ready to print each morning, on the same paper your team already carries.",
     l1Good2: 'You see the hours the work earned against the hours you paid for, in dollars.',
     l1Good3: 'Nothing changes for a single person on your team.',
     l1Bad1: "If the board gets changed on paper during the day, Staxis won't know about it.",
@@ -198,8 +198,8 @@ const STRINGS = {
 
     l2Name: 'Your head housekeeper runs her day in it',
     l2Who: 'You and your head housekeeper',
-    l2Get: "Her notebook moves into Staxis — board changes, deep cleans, linen, lost and found. Paper she already keeps, not new work.",
-    l2Good1: 'Her notebook moves into Staxis — board changes, deep cleans, linen counts, lost and found.',
+    l2Get: "Her notebook moves into Staxis: board changes, deep cleans, linen, lost and found. Paper she already keeps, not new work.",
+    l2Good1: 'Her notebook moves into Staxis: board changes, deep cleans, linen counts, lost and found.',
     l2Good2: "It replaces paper she already keeps, so it isn't extra work on top of her day.",
     l2Good3: 'Your numbers stay honest, because her changes land where they get counted.',
     l2Bad1: 'One more person has to open Staxis every day.',
@@ -207,25 +207,25 @@ const STRINGS = {
 
     l3Name: 'Your housekeepers carry it',
     l3Who: 'Your whole housekeeping team',
-    l3Get: 'One tap from each housekeeper when a room is done — real minutes per room, per person.',
+    l3Get: 'One tap from each housekeeper when a room is done. Real minutes per room, per person.',
     l3Good1: 'Each housekeeper sees their rooms on their phone and taps once when a room is done.',
     l3Good2: 'You get real minutes per room, and you can see where the day stands right now.',
     // THE most important line on this screen. Staxis is read-only into the
     // hotel's own system, forever. Without saying so, "taps once when a room is
     // done" reads as replacing the radio call to the front desk — and a hotel
     // that buys this level believing that feels lied to in week one.
-    l3Bad0: "It doesn't mark the room clean in your own system — whoever does that today still does it.",
+    l3Bad0: "It doesn't mark the room clean in your own system. Whoever does that today still does it.",
     l3Bad1: 'Every housekeeper needs a phone and a few minutes of showing.',
-    l3Bad2: "It's one new tap in their day — small, but it's still new.",
+    l3Bad2: "It's one new tap in their day. Small, but still new.",
 
     // ── Saving ──────────────────────────────────────────────────────────
     finish: 'Finish setup',
     saving: 'Saving…',
-    saveError: "We couldn't save your answers. Nothing was lost — try again.",
+    saveError: "We couldn't save your answers. Nothing was lost. Try again.",
     // A LOCAL problem (an answer was cleared), not a network one. It must never
     // share the wording above: "try again" on a bad answer is an infinite loop
     // with no clue where the problem is. We also jump back to the question.
-    answerCheck: 'One answer needs another look — we’ve taken you back to it.',
+    answerCheck: 'One answer needs another look. We’ve taken you back to it.',
     // A 403. "Try again" would be a lie: retrying can never succeed.
     noPermission: "You don't have permission to finish this setup. Ask your owner or general manager to do it.",
     retry: 'Try again',
@@ -255,11 +255,11 @@ const STRINGS = {
     // Gender-neutral on purpose: most of the people answering this are women,
     // and 'No estoy seguro' is masculine.
     q1UnsureLabel: 'No sabría decir',
-    q1UnsureHint: 'No hay problema — lo vemos contigo más adelante',
+    q1UnsureHint: 'No hay problema. Lo vemos contigo más adelante',
 
     // ── Q2 ──────────────────────────────────────────────────────────────
     q2Title: '¿Cuánto debe tomar una habitación?',
-    q2Sub: 'Estos son tus tiempos estándar. Cada hora y cada dólar que te mostramos sale de estos dos números — puedes cambiarlos después.',
+    q2Sub: 'Estos son tus tiempos estándar. Cada hora y cada dólar que te mostramos sale de estos dos números. Puedes cambiarlos después.',
     q2CheckoutLabel: 'Habitación de salida',
     q2CheckoutHint: 'El huésped ya se fue',
     q2StayoverLabel: 'Habitación ocupada',
@@ -274,23 +274,23 @@ const STRINGS = {
     q2CustomTimeLabel: 'Tiempo',
     q2RemoveRoom: 'Quitar',
     q2RoomIncomplete: 'Ponle un nombre y un tiempo, o quítalo.',
-    q2RoomReserved: 'Las habitaciones de salida y las ocupadas ya tienen su tiempo arriba — ponle otro nombre a esta.',
-    q2RoomDuplicate: 'ya está en tu lista — cada tipo de habitación necesita su propio nombre.',
+    q2RoomReserved: 'Las habitaciones de salida y las ocupadas ya tienen su tiempo arriba. Ponle otro nombre a esta.',
+    q2RoomDuplicate: 'ya está en tu lista. Cada tipo de habitación necesita su propio nombre.',
     q2CapLead: 'Puedes agregar hasta',
     q2CapTail: 'tipos de habitación.',
     q2CustomNote: 'Guardamos esto para saber cómo funciona tu hotel de verdad. Tus horas y dólares siguen saliendo de los dos tiempos de arriba.',
 
     // ── Q3 ──────────────────────────────────────────────────────────────
     q3Title: 'Muéstranos tu tablero',
-    q3Sub: 'Toma una foto del tablero de papel de hoy para que lo tengamos guardado. Es totalmente opcional — omitirlo no te cuesta nada.',
+    q3Sub: 'Toma una foto del tablero de papel de hoy para que lo tengamos guardado. Es totalmente opcional. Omitirlo no te cuesta nada.',
     q3Take: 'Tomar o elegir una foto',
     q3Retake: 'Usar otra foto',
     q3Uploading: 'Leyendo tu tablero…',
-    q3Generic: 'Listo — tu tablero quedó guardado.',
+    q3Generic: 'Listo. Tu tablero quedó guardado.',
     q3ReadLead: 'Parece que hay',
-    q3ReadTail: '— tu tablero quedó guardado.',
-    q3FormatNote: 'No podemos leer ese formato de foto — prueba con un JPEG, o simplemente omite este paso.',
-    q3ReadFailNote: 'No pudimos leer esa foto — prueba con otra u omite este paso.',
+    q3ReadTail: 'Tu tablero quedó guardado.',
+    q3FormatNote: 'No podemos leer ese formato de foto. Prueba con un JPEG, u omite este paso.',
+    q3ReadFailNote: 'No pudimos leer esa foto. Prueba con otra u omite este paso.',
     q3Section: 'sección',
     q3Sections: 'secciones',
     q3Floor: 'piso',
@@ -307,7 +307,7 @@ const STRINGS = {
     q4HeadHint: 'Ella decide quién limpia qué',
     q4GmLabel: 'El gerente',
     q4GmHint: 'Tú u otro gerente',
-    q4NobodyLabel: 'Nadie en realidad — cada quien empieza',
+    q4NobodyLabel: 'Nadie en realidad, cada quien empieza',
     q4NobodyHint: 'Se va acomodando cada mañana',
     q4UnsureLabel: 'No sabría decir',
     q4UnsureHint: 'Cambia de un día a otro',
@@ -351,20 +351,20 @@ const STRINGS = {
     // ── Q7 ──────────────────────────────────────────────────────────────
     q7Title: '¿Cuánto de Staxis quieres usar?',
     // 'subir de nivel' is avoided on purpose — EN never says "level" either.
-    q7Sub: 'La diferencia está en quién de tu hotel abre Staxis. Empieza con poco — puedes avanzar cuando quieras.',
+    q7Sub: 'La diferencia está en quién de tu hotel abre Staxis. Empieza con poco. Puedes avanzar cuando quieras.',
     recommended: 'Recomendado para ti',
-    reasonHeadHousekeeper: 'Nos dijiste que tu ama de llaves arma el tablero — ella es la primera persona a la que esto le rinde.',
+    reasonHeadHousekeeper: 'Nos dijiste que tu ama de llaves arma el tablero. Ella es la primera persona a la que esto le rinde.',
     reasonSafeStart: 'Nada cambia para tu equipo el primer día, y tú ves los números de inmediato.',
     goodLabel: 'Lo que ganas',
     badLabel: 'Lo que te pide',
     detailsLabel: 'El panorama completo',
     lockedLabel: 'Esto no te hace falta',
-    lockedBody: 'Tus camaristas ya marcan sus propias habitaciones como limpias en tu sistema — hacerlo también en Staxis significaría capturar la misma habitación dos veces.',
+    lockedBody: 'Tus camaristas ya marcan sus propias habitaciones como limpias en tu sistema. Hacerlo también en Staxis significaría capturar la misma habitación dos veces.',
 
     l1Name: 'Staxis lo planea',
     l1Who: 'Solo tú',
-    l1Get: 'El tablero de la mañana, armado durante la noche y listo para imprimir — y las horas ganadas frente a las horas pagadas, en dólares.',
-    l1Good1: 'Tu tablero se arma durante la noche y queda listo para imprimir cada mañana — en el mismo papel que tu equipo ya usa.',
+    l1Get: 'El tablero de la mañana, armado durante la noche y listo para imprimir. Además, las horas ganadas frente a las horas pagadas, en dólares.',
+    l1Good1: 'Tu tablero se arma durante la noche y queda listo para imprimir cada mañana, en el mismo papel que tu equipo ya usa.',
     l1Good2: 'Ves las horas que el trabajo generó frente a las horas que pagaste, en dólares.',
     l1Good3: 'No cambia nada para ninguna persona de tu equipo.',
     l1Bad1: 'Si el tablero se cambia en papel durante el día, Staxis no se entera.',
@@ -372,8 +372,8 @@ const STRINGS = {
 
     l2Name: 'Tu ama de llaves lleva su día aquí',
     l2Who: 'Tú y tu ama de llaves',
-    l2Get: 'Su libreta se muda a Staxis — cambios del tablero, limpiezas profundas, blancos, objetos olvidados. Papel que ya lleva, no trabajo nuevo.',
-    l2Good1: 'Su libreta se muda a Staxis — cambios del tablero, limpiezas profundas, conteo de blancos, objetos olvidados.',
+    l2Get: 'Su libreta se muda a Staxis: cambios del tablero, limpiezas profundas, blancos, objetos olvidados. Papel que ya lleva, no trabajo nuevo.',
+    l2Good1: 'Su libreta se muda a Staxis: cambios del tablero, limpiezas profundas, conteo de blancos, objetos olvidados.',
     l2Good2: 'Reemplaza el papel que ya lleva, así que no es trabajo extra encima de su día.',
     l2Good3: 'Tus números se mantienen honestos, porque sus cambios quedan registrados donde sí se cuentan.',
     l2Bad1: 'Una persona más tiene que abrir Staxis todos los días.',
@@ -381,18 +381,18 @@ const STRINGS = {
 
     l3Name: 'Tus camaristas lo llevan en la mano',
     l3Who: 'Todo tu equipo de limpieza',
-    l3Get: 'Un toque de cada camarista al terminar una habitación — minutos reales por habitación y por persona.',
+    l3Get: 'Un toque de cada camarista al terminar una habitación. Minutos reales por habitación y por persona.',
     l3Good1: 'Cada camarista ve sus habitaciones en su teléfono y toca una vez cuando termina una.',
     l3Good2: 'Obtienes los minutos reales por habitación y ves cómo va el día en este momento.',
-    l3Bad0: 'No marca la habitación como limpia en tu propio sistema — quien lo hace hoy lo sigue haciendo.',
+    l3Bad0: 'No marca la habitación como limpia en tu propio sistema. Quien lo hace hoy lo sigue haciendo.',
     l3Bad1: 'Cada camarista necesita un teléfono y unos minutos de explicación.',
-    l3Bad2: 'Es un toque nuevo en su día — pequeño, pero sigue siendo nuevo.',
+    l3Bad2: 'Es un toque nuevo en su día. Pequeño, pero nuevo.',
 
     // ── Guardado ────────────────────────────────────────────────────────
     finish: 'Terminar configuración',
     saving: 'Guardando…',
-    saveError: 'No pudimos guardar tus respuestas. No se perdió nada — inténtalo de nuevo.',
-    answerCheck: 'Hay una respuesta que revisar antes de guardar — te llevamos de vuelta a ella.',
+    saveError: 'No pudimos guardar tus respuestas. No se perdió nada. Inténtalo de nuevo.',
+    answerCheck: 'Hay una respuesta que revisar antes de guardar. Te llevamos de vuelta a ella.',
     noPermission: 'No tienes permiso para terminar esta configuración. Pídele a tu dueño o gerente general que la haga.',
     retry: 'Intentar de nuevo',
   },

@@ -80,7 +80,7 @@ async function authorize(
   }
   const propertyId = pidCheck.value!;
   if (!(await userHasPropertyAccess(userId, propertyId))) {
-    return { ok: false, response: err('forbidden — no access to this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+    return { ok: false, response: err('forbidden: no access to this property', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
   const { data: accountRow, error: accountErr } = await supabaseAdmin
     .from('accounts')
@@ -100,7 +100,7 @@ async function authorize(
     return { ok: false, response: capabilityUnavailableResponse(requestId) };
   }
   if (capabilityDecision === 'denied') {
-    return { ok: false, response: err('forbidden — role does not have wage access', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
+    return { ok: false, response: err('forbidden: role does not have wage access', { requestId, status: 403, code: ApiErrorCode.Forbidden }) };
   }
   return { ok: true, propertyId };
 }

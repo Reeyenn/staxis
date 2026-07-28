@@ -185,7 +185,7 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
               }}>
                 Generate a one-time link and send it to the hotel. They enter their
                 hotel name, room count, and connect their PMS themselves during
-                onboarding — you don&apos;t fill any of that in here.
+                onboarding. You don&apos;t fill any of that in here.
               </p>
 
               <Caps style={{ marginBottom: 12, display: 'block' }}>
@@ -224,7 +224,7 @@ export function CreateHotelModal({ open, onClose, onCreated }: Props) {
                 </div>
               </Field>
 
-              <Field label={deliveryMode === 'email' ? 'Their email * (we\'ll send the invite here)' : 'Their email (optional — for the audit log)'}>
+              <Field label={deliveryMode === 'email' ? 'Their email * (we\'ll send the invite here)' : 'Their email (optional, for the audit log)'}>
                 <input
                   type="email" value={ownerEmail} onChange={(e) => setOwnerEmail(e.target.value)}
                   className="input" placeholder="owner@hotel.com"
@@ -285,8 +285,8 @@ function SuccessView({
       }}>
         <Check size={16} />
         {result.emailSent
-          ? 'Invite emailed. Link below is a copyable backup — expires in 7 days.'
-          : 'Onboarding link ready. Send it to the hotel — it expires in 7 days.'}
+          ? 'Invite emailed. Link below is a copyable backup. It expires in 7 days.'
+          : 'Onboarding link ready. Send it to the hotel. It expires in 7 days.'}
       </div>
 
       {result.emailSent === false && result.emailError && (
@@ -296,7 +296,7 @@ function SuccessView({
           border: `1px solid rgba(140,106,51,0.25)`,
           color: T.caramelDeep, fontSize: 12,
         }}>
-          ⚠ Email send failed ({result.emailError}). The link below still works — copy and send it manually.
+          ⚠ Email send failed ({result.emailError}). The link below still works. Copy and send it manually.
         </div>
       )}
 

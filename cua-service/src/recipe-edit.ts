@@ -954,10 +954,10 @@ function mutateAddCustomColumn(
     return { ok: false, error: `"${columnKey}" isn't a valid column name (use letters, numbers and underscores).` };
   }
   if (RESERVED_CUSTOM_KEYS.has(columnKey)) {
-    return { ok: false, error: `"${columnKey}" is a reserved name — pick another.` };
+    return { ok: false, error: `"${columnKey}" is a reserved name. Pick another.` };
   }
   if (contractColumnsFor(feedKey).has(columnKey)) {
-    return { ok: false, error: `"${columnKey}" is a standard field the robot already captures — no need to add it.` };
+    return { ok: false, error: `"${columnKey}" is a standard field the robot already captures. No need to add it.` };
   }
   if (!(feedKey in actions)) {
     return { ok: false, error: `"${feedKey}" isn't a feed in the map for ${pmsFamily}` };

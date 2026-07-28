@@ -96,7 +96,7 @@ export async function POST(req: NextRequest) {
 
   if (!creds || !creds.is_active) {
     return err(
-      'Property has no active credentials — cannot regenerate without something to log into.',
+      'Property has no active credentials. Cannot regenerate without something to log into.',
       { requestId, status: 400, code: ApiErrorCode.ValidationFailed },
     );
   }

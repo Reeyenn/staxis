@@ -388,7 +388,7 @@ export function PreventiveTab() {
         equipmentId: null,
       });
     } catch (err) {
-      flash(es ? 'No se pudo agregar la tarea — revisa la conexión e inténtalo de nuevo.' : "Couldn't add the task — check your connection and try again.");
+      flash(es ? 'No se pudo agregar la tarea. Revisa la conexión e inténtalo de nuevo.' : "Couldn't add the task. Check your connection and try again.");
       throw err;
     }
   };
@@ -405,7 +405,7 @@ export function PreventiveTab() {
     try {
       await updatePreventiveTask(user.uid, activePropertyId, id, patch);
     } catch (err) {
-      flash(es ? 'No se pudieron guardar los cambios — revisa la conexión e inténtalo de nuevo.' : "Couldn't save the changes — check your connection and try again.");
+      flash(es ? 'No se pudieron guardar los cambios. Revisa la conexión e inténtalo de nuevo.' : "Couldn't save the changes. Check your connection and try again.");
       throw err;
     }
   };
@@ -421,7 +421,7 @@ export function PreventiveTab() {
       }
       await completePreventiveTask(id, { completedISO: new Date().toISOString(), completedByName: user.displayName });
     } catch (err) {
-      flash(es ? 'No se pudo marcar como hecha — revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done — check your connection and try again.");
+      flash(es ? 'No se pudo marcar como hecha. Revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done. Check your connection and try again.");
       throw err;
     }
   };
@@ -437,8 +437,8 @@ export function PreventiveTab() {
       });
     } catch (err) {
       flash(es
-        ? 'No se pudo guardar — revisa la conexión e inténtalo de nuevo.'
-        : "Couldn't save that — check your connection and try again.");
+        ? 'No se pudo guardar. Revisa la conexión e inténtalo de nuevo.'
+        : "Couldn't save that. Check your connection and try again.");
       throw err;
     }
   };
@@ -476,7 +476,7 @@ export function PreventiveTab() {
       ) : tasks.length === 0 ? (
         <MtEmptyCard
           title={es ? 'Sin tareas preventivas aún.' : 'No preventive tasks yet.'}
-          body={es ? 'Inspecciones, cambios de filtro, revisiones de extintores — todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks — anything on a recurring schedule.'}
+          body={es ? 'Inspecciones, cambios de filtro, revisiones de extintores, todo lo que vuelve según un calendario.' : 'Inspections, filter swaps, fire-extinguisher checks, anything on a recurring schedule.'}
           action={<Btn variant="primary" onClick={() => setNewOpen(true)}>＋ {es ? 'Agrega tu primera tarea' : 'Add your first task'}</Btn>}
         />
       ) : (

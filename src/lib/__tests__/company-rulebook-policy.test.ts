@@ -216,7 +216,7 @@ describe('settings contradictions', () => {
     assert.equal(found[0].hotelValue, '07:00');
     assert.equal(found[0].companyValue, '08:00');
     assert.match(found[0].line.en, /Lufkin Inn/);
-    assert.match(found[0].line.en, /the company book says 08:00/);
+    assert.match(found[0].line.en, /[Tt]he company book says 08:00/);
     assert.equal(
       found[0].line.es,
       'En Lufkin Inn, la hora de inicio de limpieza está en 07:00: el libro de la empresa dice 08:00.',

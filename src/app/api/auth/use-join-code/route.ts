@@ -150,7 +150,7 @@ export async function POST(req: NextRequest) {
         },
       });
       return err(
-        'Owner and General Manager roles cannot be assigned via shared join codes — ask your admin for an emailed invite instead.',
+        'Owner and General Manager roles cannot be assigned via shared join codes. Ask your admin for an emailed invite instead.',
         { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
       );
     }
@@ -196,7 +196,7 @@ export async function POST(req: NextRequest) {
     .maybeSingle();
   if (casErr || !cas) {
     return err(
-      'Code is being used by another signup — refresh and try again',
+      'Code is being used by another signup. Refresh and try again',
       { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
     );
   }
@@ -255,7 +255,7 @@ export async function POST(req: NextRequest) {
   if (authResult.alreadyHasAccount) {
     await releaseSlot();
     return err(
-      'An account with this email already exists — please sign in instead.',
+      'An account with this email already exists. Please sign in instead.',
       { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
     );
   }

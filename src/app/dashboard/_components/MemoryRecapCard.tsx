@@ -193,14 +193,14 @@ export function MemoryRecapCard() {
         <div style={{ marginTop: 10, fontSize: 12, color: CARD.attn }}>
           {es
             ? 'No se pudo quitar la nota. Revisa tu conexión e inténtalo de nuevo.'
-            : 'Couldn’t remove that note — check your connection and try again.'}
+            : 'Couldn’t remove that note. Check your connection and try again.'}
         </div>
       )}
 
       <div style={{ marginTop: 12, fontSize: 11, color: CARD.ink3, fontFamily: CARD_MONO, lineHeight: 1.5 }}>
         {es
           ? 'Staxis observa tus operaciones y conversaciones y aprende cada noche. Quita cualquier nota incorrecta.'
-          : 'Staxis watches your operations and conversations and learns each night — remove anything that’s off.'}
+          : 'Staxis watches your operations and conversations and learns each night. Remove anything that’s off.'}
       </div>
     </GlassCard>
   );

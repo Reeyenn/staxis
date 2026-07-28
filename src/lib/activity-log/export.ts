@@ -84,7 +84,7 @@ export function renderCsv(rows: ActivityLogRow[], truncated: boolean): ExportPay
     lines.push(toRowArray(r).map(csvEscape).join(','));
   }
   if (truncated) {
-    lines.push(`# Truncated at ${EXPORT_MAX_ROWS} rows — narrow your filters to see the rest.`);
+    lines.push(`# Truncated at ${EXPORT_MAX_ROWS} rows. Narrow your filters to see the rest.`);
   }
   // Prepend a UTF-8 BOM so Excel (Windows + Mac) correctly detects the
   // encoding and renders accented characters. Without the BOM, Excel
@@ -122,7 +122,7 @@ export function renderXlsx(rows: ActivityLogRow[], truncated: boolean): ExportPa
     .join('');
 
   const truncatedRow = truncated
-    ? `<Row><Cell><Data ss:Type="String">${xmlEscape(`Truncated at ${EXPORT_MAX_ROWS} rows — narrow your filters to see the rest.`)}</Data></Cell></Row>`
+    ? `<Row><Cell><Data ss:Type="String">${xmlEscape(`Truncated at ${EXPORT_MAX_ROWS} rows. Narrow your filters to see the rest.`)}</Data></Cell></Row>`
     : '';
 
   const xml =
@@ -204,7 +204,7 @@ function buildSimplePdf(rows: ActivityLogRow[], truncated: boolean): Buffer {
     lines.push(`${arr[0]} | ${arr[1]} | ${arr[2]} | ${arr[3]} | ${arr[5]} | ${arr[6]} | ${arr[7]}`);
   }
   if (truncated) {
-    lines.push(`Truncated at ${EXPORT_MAX_ROWS} rows — narrow your filters to see the rest.`);
+    lines.push(`Truncated at ${EXPORT_MAX_ROWS} rows. Narrow your filters to see the rest.`);
   }
 
   const pages: string[][] = [];

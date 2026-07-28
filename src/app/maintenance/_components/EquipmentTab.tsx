@@ -100,7 +100,7 @@ function AddItemModal({
       </>}
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-        <Field label={es ? 'Artículo' : 'Item'} required><TextInput value={name} onChange={setName} placeholder={es ? 'ej. "Filtro HVAC — 20×25×1 MERV 8"' : 'e.g. "HVAC filter — 20×25×1 MERV 8"'} /></Field>
+        <Field label={es ? 'Artículo' : 'Item'} required><TextInput value={name} onChange={setName} placeholder={es ? 'ej. "Filtro HVAC, 20×25×1 MERV 8"' : 'e.g. "HVAC filter, 20×25×1 MERV 8"'} /></Field>
         <Field label={es ? 'Dónde se guarda' : "Where it's kept"} required><TextInput value={bin} onChange={setBin} placeholder={es ? 'ej. "Cuarto de máquinas · A2"' : 'e.g. "Mechanical · A2"'} /></Field>
         <Field label={es ? 'Reordenar en' : 'Reorder at'}>
           <TextInput value={reorderAt} onChange={setReorderAt} type="number" min={0} placeholder="1" />
@@ -304,7 +304,7 @@ export function EquipmentTab() {
       }
       state.promise = null;
       if (!ok) {
-        flash(es ? 'No se pudo guardar el conteo — revisa la conexión e inténtalo de nuevo.' : "Couldn't save the count — check your connection and try again.");
+        flash(es ? 'No se pudo guardar el conteo. Revisa la conexión e inténtalo de nuevo.' : "Couldn't save the count. Check your connection and try again.");
       }
       return ok;
     })();
@@ -331,7 +331,7 @@ export function EquipmentTab() {
         notes: args.bin,
       });
     } catch (err) {
-      flash(es ? 'No se pudo agregar el artículo — revisa la conexión e inténtalo de nuevo.' : "Couldn't add the item — check your connection and try again.");
+      flash(es ? 'No se pudo agregar el artículo. Revisa la conexión e inténtalo de nuevo.' : "Couldn't add the item. Check your connection and try again.");
       throw err;
     }
   };
@@ -359,7 +359,7 @@ export function EquipmentTab() {
         <MtEmptyCard
           titleSize={20}
           title={es ? 'Almacén vacío aún.' : 'Storeroom is empty.'}
-          body={es ? 'Agrega filtros, focos, piezas — lo que guardes para reparaciones.' : 'Add filters, bulbs, parts — anything you keep on hand for repairs.'}
+          body={es ? 'Agrega filtros, focos, piezas, lo que guardes para reparaciones.' : 'Add filters, bulbs, parts, anything you keep on hand for repairs.'}
           action={<Btn variant="primary" onClick={() => setAddOpen(true)}>＋ {es ? 'Agregar tu primer artículo' : 'Add your first item'}</Btn>}
         />
       ) : (

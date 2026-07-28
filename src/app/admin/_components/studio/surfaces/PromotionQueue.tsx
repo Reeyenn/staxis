@@ -47,6 +47,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { withoutEmDash } from '@/lib/findings/template-phrasing';
 import { Btn, Dot, Pill, age, type DotTone } from '../kit';
 import { DarkCard, DarkEmpty, DarkSpinner, dimWhite } from '../surface-kit';
 
@@ -253,7 +254,10 @@ function StatusLine({ tone, lead, body }: { tone: Extract<DotTone, 'gold' | 'for
       <Dot tone={tone} size={6} style={{ marginTop: 4 }} />
       <div style={{ fontSize: 11, lineHeight: 1.45, color: dimWhite(.66) }}>
         <span style={{ color: ACCENT[tone].fg, fontWeight: 600 }}>{lead}</span>
-        {body ? ` — ${body}` : null}
+        {/* One joiner for all four statuses. It was an em dash until the
+            founder's 2026-07-28 copy ruling; changing it here restyles
+            "Your call", "Locked", "Live" and "Needs a look" at once. */}
+        {body ? `. ${body}` : null}
       </div>
     </div>
   );
@@ -280,13 +284,15 @@ export function PromotionSummary({ p, live = false }: { p: PromotionView; live?:
 
       {/* Clamped in CSS as well as cut on the server: a stored claim with no
           spaces in it would defeat the server-side cut, and nothing on this
-          card is allowed to overflow. */}
+          card is allowed to overflow. The headline is STORED prose, so the
+          dash strip runs on read here for the same reason it does on a
+          finding card: claims written before the ruling are still on screen. */}
       <div style={{
         fontSize: 13, fontWeight: 600, color: '#fff', lineHeight: 1.4, marginTop: 4,
         display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         overflow: 'hidden', overflowWrap: 'anywhere',
       }}>
-        {p.headline}
+        {withoutEmDash(p.headline)}
       </div>
 
       <TierJourney from={p.journey.from} to={p.journey.to} tone={live ? 'forest' : 'gold'} />
@@ -338,8 +344,8 @@ function DetailBlock({ label, children }: { label: string; children: React.React
 
 function reachDetail(p: PromotionView) {
   return p.blastRadius.count === 0
-    ? `${p.audience} — no hotels yet.`
-    : `${p.audience} — ${p.blastRadius.hotels.map((h) => h.name).join(', ')}`;
+    ? `${p.audience}. No hotels yet.`
+    : `${p.audience}: ${p.blastRadius.hotels.map((h) => h.name).join(', ')}`;
 }
 
 const WORDING: React.CSSProperties = {
@@ -527,7 +533,7 @@ export function PromotedCard({ p, busy, onDecide }: {
             ? { fontSize: 9.5, padding: '3px 10px', ...FOREST_ON_DARK }
             : { fontSize: 9.5, padding: '3px 10px', color: '#fff', borderColor: dimWhite(.25) }}
         >
-          {busy ? 'Working…' : 'Still true — keep it'}
+          {busy ? 'Working…' : 'Still true, keep it'}
         </Btn>
         <Btn
           size="sm" variant="ghost" disabled={busy}

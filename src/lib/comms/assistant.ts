@@ -95,7 +95,7 @@ type AssistantFallbackKind = 'unavailable' | 'exhausted' | 'error';
 const ASSISTANT_FALLBACKS: Record<CommsLang, Record<AssistantFallbackKind, string>> = {
   en: {
     unavailable: 'The assistant is unavailable right now. Please try again later.',
-    exhausted: 'I did what I could — check the chat for the result.',
+    exhausted: 'I did what I could. Check the chat for the result.',
     error: 'Sorry, I hit an error. Please try again.',
   },
   es: {
@@ -110,7 +110,7 @@ const ASSISTANT_FALLBACKS: Record<CommsLang, Record<AssistantFallbackKind, strin
   },
   tl: {
     unavailable: 'Hindi available ang assistant ngayon. Pakisubukang muli mamaya.',
-    exhausted: 'Ginawa ko ang kaya ko—tingnan ang chat para sa resulta.',
+    exhausted: 'Ginawa ko ang kaya ko. Tingnan ang chat para sa resulta.',
     error: 'Paumanhin, nagkaroon ng error. Pakisubukang muli.',
   },
   vi: {

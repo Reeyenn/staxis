@@ -329,7 +329,7 @@ export async function POST(req: NextRequest) {
   // A switch on an employee that does not exist would be a control over
   // nothing, and a row in the table nothing ever reads.
   if (!employee.hired) {
-    return err('That one is not hired yet — there is nothing to switch off.', {
+    return err('That one is not hired yet. There is nothing to switch off.', {
       requestId,
       status: 409,
       code: ApiErrorCode.ValidationFailed,

@@ -1777,7 +1777,7 @@ function DeleteHotelModal({ h, onClose, onDeleted }: {
           Permanently delete <span style={{ fontStyle: 'italic' }}>{h.name ?? '(unnamed)'}</span>?
         </h3>
         <p id="delete-hotel-description" style={{ fontSize: 13, color: 'var(--ink)', lineHeight: 1.5, marginBottom: 12 }}>
-          This erases the hotel and <strong>all</strong> its data — rooms, staff, schedules, messages, coverage — and frees the owner’s login. It <strong>cannot be undone</strong>. Type the hotel’s name to confirm.
+          This erases the hotel and <strong>all</strong> its data (rooms, staff, schedules, messages, coverage) and frees the owner’s login. It <strong>cannot be undone</strong>. Type the hotel’s name to confirm.
         </p>
         <input
           autoFocus

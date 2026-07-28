@@ -118,7 +118,7 @@ const US_TIMEZONES = [
   { value: 'America/New_York', label: 'Eastern (New York)' },
   { value: 'America/Chicago', label: 'Central (Chicago)' },
   { value: 'America/Denver', label: 'Mountain (Denver)' },
-  { value: 'America/Phoenix', label: 'Mountain — no DST (Phoenix)' },
+  { value: 'America/Phoenix', label: 'Mountain, no DST (Phoenix)' },
   { value: 'America/Los_Angeles', label: 'Pacific (Los Angeles)' },
   { value: 'America/Anchorage', label: 'Alaska (Anchorage)' },
   { value: 'Pacific/Honolulu', label: 'Hawaii (Honolulu)' },
@@ -501,7 +501,7 @@ function WizardBackButton({ code, clearKeys, onNext }: {
       </button>
       {failed && (
         <span style={{ marginLeft: '8px', fontSize: '12px', color: '#B85C3D' }}>
-          Couldn&apos;t go back — try again.
+          Couldn&apos;t go back. Try again.
         </span>
       )}
     </div>
@@ -555,7 +555,7 @@ function Step1Welcome({ code, wizard, reviewing = false, onNext }: {
         You&apos;re invited to set up {wizard.propertyName}
       </h2>
       <p style={{ color: '#5C625C', marginBottom: '24px', lineHeight: 1.5 }}>
-        You&apos;ve been added as the <strong>{role}</strong> for {wizard.propertyName} on Staxis — the AI-powered operations platform that runs your housekeeping, inventory, and labor planning in the background.
+        You&apos;ve been added as the <strong>{role}</strong> for {wizard.propertyName} on Staxis, the AI-powered operations platform that runs your housekeeping, inventory, and labor planning in the background.
       </p>
       <p style={{ color: '#5C625C', marginBottom: '32px', lineHeight: 1.5, fontSize: '13px' }}>
         {o.welcomeSteps}
@@ -777,11 +777,11 @@ function Step3VerifyEmail({ code, onNext, onBack }: {
     setErr(null);
     setShowSignIn(false);
     if (otp.length < 6) { setErr('Enter the 6-digit code from your email.'); return; }
-    if (!pendingEmail) { setErr('Missing email — refresh and try again.'); return; }
+    if (!pendingEmail) { setErr('Missing email. Refresh and try again.'); return; }
     setSubmitting(true);
     try {
       const { data, error } = await supabase.auth.verifyOtp({ email: pendingEmail, token: otp, type: 'email' });
-      if (error || !data.session) { setErr(error?.message ?? 'Verification failed — try the code again.'); return; }
+      if (error || !data.session) { setErr(error?.message ?? 'Verification failed. Try the code again.'); return; }
 
       // CRITICAL: trust this device, exactly like /signin/verify does.
       // The OTP gives a valid session, but the server's 2FA layer
@@ -972,7 +972,7 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
       </Field>
       <Field label="Region (helps the AI learn from similar hotels)">
         <select className="input" value={region} onChange={(e) => setRegion(e.target.value)}>
-          <option value="">— Select —</option>
+          <option value="">Select…</option>
           {REGION_OPTIONS.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
       </Field>
@@ -983,8 +983,8 @@ function Step4HotelDetails({ code, wizard, onNext }: { code: string; wizard: Wiz
         </label>
         <p style={{ color: '#5C625C', fontSize: '12px', margin: '2px 0 12px' }}>
           {lang === 'es'
-            ? 'Todas están activas por defecto. Desactiva las que no necesites — puedes cambiarlo después.'
-            : 'All are on by default. Turn off any you don’t need — you can change this anytime later.'}
+            ? 'Todas están activas por defecto. Desactiva las que no necesites. Puedes cambiarlo después.'
+            : 'All are on by default. Turn off any you don’t need. You can change this anytime later.'}
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {SECTION_LIST.map((m) => {
@@ -1146,7 +1146,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       // be a silent dead-click — surface it and stay on the step, like submit().
       if (!res.ok) {
         const j = await res.json().catch(() => null);
-        setErr(j?.error || 'Could not skip — please try again.');
+        setErr(j?.error || 'Could not skip. Please try again.');
         return;
       }
       await onNext();
@@ -1164,7 +1164,7 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       <KeyRound size={28} color="#C99644" style={{ marginBottom: '12px' }} />
       <h2 style={{ fontSize: '20px', marginBottom: '4px' }}>Connect your PMS</h2>
       <p style={{ color: '#5C625C', marginBottom: '20px', fontSize: '13px' }}>
-        We&apos;ll log into your PMS in a remote browser to learn your room layout. Read-only — we never make changes there.
+        We&apos;ll log into your PMS in a remote browser to learn your room layout. Read-only. We never make changes there.
       </p>
       {err && <ErrorBox msg={err} />}
       <Field label={o.pmsLabel}>
@@ -1202,12 +1202,12 @@ function Step6ConnectPms({ code, wizard, onNext }: { code: string; wizard: Wizar
       {!pmsAlreadyEntered && (
         <>
           <button className="btn btn-secondary" onClick={skipPms} disabled={submitting} style={{ width: '100%', justifyContent: 'center', marginTop: '8px' }}>
-            {lang === 'es' ? 'Omitir — este hotel no usa un PMS' : "Skip — this hotel doesn't use a PMS"}
+            {lang === 'es' ? 'Omitir: este hotel no usa un PMS' : "Skip: this hotel doesn't use a PMS"}
           </button>
           <p style={{ fontSize: '12px', color: '#5C625C', marginTop: '8px', textAlign: 'center', lineHeight: 1.5 }}>
             {lang === 'es'
               ? 'Se activa sin PMS ni robot. Puedes conectarlo después en Configuración.'
-              : 'Goes live with no PMS or robot — you can connect one later in Settings.'}
+              : 'Goes live with no PMS or robot. You can connect one later in Settings.'}
           </p>
         </>
       )}

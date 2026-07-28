@@ -72,7 +72,7 @@ export class WalkthroughErrorBoundary extends Component<Props, State> {
         }}
       >
         <div style={{ flex: 1 }}>
-          Walkthrough crashed — refresh the page to retry.
+          Walkthrough crashed. Refresh the page to retry.
         </div>
         <button
           onClick={this.reset}

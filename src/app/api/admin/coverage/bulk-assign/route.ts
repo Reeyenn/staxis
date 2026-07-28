@@ -72,7 +72,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     return err('could not check coverage', { requestId, status: 500, code: ApiErrorCode.UpstreamFailure });
   }
   if (!activeKf) {
-    return err(`No learned coverage for ${pmsFamily} yet — onboard it once before assigning hotels to it.`, {
+    return err(`No learned coverage for ${pmsFamily} yet. Onboard it once before assigning hotels to it.`, {
       requestId, status: 409, code: 'no_active_map',
     });
   }

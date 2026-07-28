@@ -373,7 +373,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       {
         ok: false,
         code: 'property_mismatch',
-        error: 'You switched properties — restart the walkthrough on the new one.',
+        error: 'You switched properties. Restart the walkthrough on the new one.',
         requestId,
       },
       { status: 400 },
@@ -406,7 +406,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       {
         ok: false,
         code: 'step_cap',
-        error: "I got a bit lost after several steps — try rephrasing your question and I'll start over.",
+        error: "I got a bit lost after several steps. Try rephrasing your question and I'll start over.",
         requestId,
       },
       { status: 429 },

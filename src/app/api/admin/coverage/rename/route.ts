@@ -99,7 +99,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   if (renamedCount === 0) {
-    return err(`no coverage for ${pmsFamily} yet — learn or map it first, then rename`, {
+    return err(`no coverage for ${pmsFamily} yet. Learn or map it first, then rename`, {
       requestId, status: 404, code: ApiErrorCode.NotFound,
     });
   }

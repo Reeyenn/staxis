@@ -328,7 +328,7 @@ function SubmitModal({
         <Field label={es ? '¿Qué pasa?' : "What's wrong?"} required hint={es ? 'En tus palabras. Como lo anotarías en el cuaderno.' : "Plain words. The way you'd write it in the book."}>
           <TextArea value={desc} onChange={setDesc} placeholder={es ? 'ej. El aire sopla caliente. El filtro se veía sucio.' : 'e.g. AC blowing warm air. Filter looked dirty.'} rows={3} />
         </Field>
-        <Field label={es ? 'Prioridad' : 'Priority'} hint={es ? 'Elige un carril — o pásala a un profesional externo.' : 'Pick a lane — or hand it to an outside professional.'}>
+        <Field label={es ? 'Prioridad' : 'Priority'} hint={es ? 'Elige un carril, o pásala a un profesional externo.' : 'Pick a lane, or hand it to an outside professional.'}>
           <PlacementChips value={placement} onChange={setPlacement} es={es} />
         </Field>
         <Field label={es ? 'Equipo (opcional)' : 'Equipment (optional)'} hint={es ? 'El activo afectado' : 'The asset this is about'}>
@@ -471,7 +471,7 @@ function DetailModal({
           <p style={{ fontFamily: FONT_SANS, fontSize: 16, color: T.ink, margin: '8px 0 0', lineHeight: 1.5, fontWeight: 500 }}>{w.description}</p>
         </div>
 
-        <Field label={es ? 'Foto' : 'Photo'} hint={w.submitterPhotoPath ? undefined : (es ? 'Tómala o arrastra una — opcional.' : 'Snap or drag one in — optional.')}>
+        <Field label={es ? 'Foto' : 'Photo'} hint={w.submitterPhotoPath ? undefined : (es ? 'Tómala o arrastra una. Opcional.' : 'Snap or drag one in. Optional.')}>
           {w.submitterPhotoPath
             ? <StorageImage path={w.submitterPhotoPath} alt="work order photo" />
             : <DropPhoto value={null} onChange={attach} busy={attaching} es={es} />}
@@ -629,7 +629,7 @@ export function WorkOrdersTab() {
       if (!p) {
         // Don't silently create a photoless order — the fixer would walk in
         // blind. Surface it and keep the modal open (throw → modal stays).
-        flash(es ? 'No se pudo subir la foto — inténtalo de nuevo o quítala.' : "Couldn't upload the photo — try again or remove it.");
+        flash(es ? 'No se pudo subir la foto. Inténtalo de nuevo o quítala.' : "Couldn't upload the photo. Try again or remove it.");
         throw new Error('photo upload failed');
       }
       submitterPhotoPath = p;
@@ -653,7 +653,7 @@ export function WorkOrdersTab() {
         needsPro: isPro,
       });
     } catch (err) {
-      flash(es ? 'No se pudo enviar la orden — revisa la conexión e inténtalo de nuevo.' : "Couldn't submit the work order — check your connection and try again.");
+      flash(es ? 'No se pudo enviar la orden. Revisa la conexión e inténtalo de nuevo.' : "Couldn't submit the work order. Check your connection and try again.");
       throw err;
     }
     // Trigger the "arrive & glow" once the new card mounts from the subscription.
@@ -671,7 +671,7 @@ export function WorkOrdersTab() {
         completionNote: note || undefined,
       });
     } catch (err) {
-      flash(es ? 'No se pudo marcar como lista — revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done — check your connection and try again.");
+      flash(es ? 'No se pudo marcar como lista. Revisa la conexión e inténtalo de nuevo.' : "Couldn't mark it done. Check your connection and try again.");
       throw err;
     }
     setDetailId(null);
@@ -702,7 +702,7 @@ export function WorkOrdersTab() {
     updateWorkOrder(user.uid, activePropertyId, w.id, patch).catch(() => {
       // Fire-and-forget no more: the card won't move (realtime never fires on
       // a failed write), so tell the user why.
-      flash(es ? 'No se pudo mover la orden — revisa la conexión e inténtalo de nuevo.' : "Couldn't move the work order — check your connection and try again.");
+      flash(es ? 'No se pudo mover la orden. Revisa la conexión e inténtalo de nuevo.' : "Couldn't move the work order. Check your connection and try again.");
     });
   };
 
@@ -710,13 +710,13 @@ export function WorkOrdersTab() {
     if (!user || !activePropertyId) return;
     const path = await uploadPhoto(file);
     if (!path) {
-      flash(es ? 'No se pudo subir la foto — inténtalo de nuevo.' : "Couldn't upload the photo — try again.");
+      flash(es ? 'No se pudo subir la foto. Inténtalo de nuevo.' : "Couldn't upload the photo. Try again.");
       return;
     }
     try {
       await updateWorkOrder(user.uid, activePropertyId, id, { submitterPhotoPath: path });
     } catch {
-      flash(es ? 'No se pudo adjuntar la foto — inténtalo de nuevo.' : "Couldn't attach the photo — try again.");
+      flash(es ? 'No se pudo adjuntar la foto. Inténtalo de nuevo.' : "Couldn't attach the photo. Try again.");
     }
   };
 
@@ -731,7 +731,7 @@ export function WorkOrdersTab() {
         proCalledAt: new Date(),
       });
     } catch (err) {
-      flash(es ? 'No se pudo guardar el contratista — revisa la conexión e inténtalo de nuevo.' : "Couldn't save the contractor — check your connection and try again.");
+      flash(es ? 'No se pudo guardar el contratista. Revisa la conexión e inténtalo de nuevo.' : "Couldn't save the contractor. Check your connection and try again.");
       throw err;
     }
   };

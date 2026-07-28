@@ -237,7 +237,7 @@ export function buildBaseline(
       ok: false,
       because:
         `only ${baseline.nonZeroWindows} of the last ${gate.baselineWeeks} weeks had any ` +
-        `${gate.subject} at all — too sporadic for "normal" to mean anything here`,
+        `${gate.subject} at all. Too sporadic for "normal" to mean anything here`,
     };
   }
 

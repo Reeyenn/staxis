@@ -354,8 +354,8 @@ export function ScheduleBoard({
         }}>
           {crewSource === 'unscheduled_fallback'
             ? (lang === 'es'
-              ? 'Nadie está programado para hoy — mostrando a todos. Pon el horario en Personal para ver solo quién trabaja.'
-              : "Nobody's scheduled for today — showing everyone. Set the schedule in Staff to see just who's working.")
+              ? 'Nadie está programado para hoy, así que mostramos a todos. Pon el horario en Personal para ver solo quién trabaja.'
+              : "Nobody's scheduled for today, so we're showing everyone. Set the schedule in Staff to see only who's working.")
             : (lang === 'es'
               ? 'Mostrando a quienes tienen turno hoy según el horario en Personal.'
               : "Showing who's on shift today, from the schedule in Staff.")}

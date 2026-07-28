@@ -48,8 +48,8 @@ export function AskHero() {
   return (
     <AskHeroView
       placeholder={lang === 'es'
-        ? 'Pregunta o da una orden — “¿quién limpia la 204?”'
-        : 'Ask or command — “who’s cleaning 204?”'}
+        ? 'Pregunta o da una orden: “¿quién limpia la 204?”'
+        : 'Ask or command: “who’s cleaning 204?”'}
       onSubmit={(text) => { dispatchAskCommand(text); }}
     />
   );

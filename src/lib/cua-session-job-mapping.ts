@@ -53,17 +53,17 @@ export function mapPropertySessionStatusToJobShape(
     case 'starting':
       return { status: 'running', step: 'Logging into PMS…', progressPct: 30 };
     case 'alive':
-      return { status: 'complete', step: 'Connected — polling every ~30s.', progressPct: 100 };
+      return { status: 'complete', step: 'Connected. Polling every ~30s.', progressPct: 100 };
     case 'paused_mfa':
-      return { status: 'mapping', step: 'Waiting for MFA — click to resolve.', progressPct: 70 };
+      return { status: 'mapping', step: 'Waiting for MFA. Click to resolve.', progressPct: 70 };
     case 'paused_no_knowledge_file':
-      return { status: 'mapping', step: 'Awaiting mapper — PMS not learned yet.', progressPct: 50 };
+      return { status: 'mapping', step: 'Awaiting mapper. PMS not learned yet.', progressPct: 50 };
     case 'paused_cost_cap':
-      return { status: 'running', step: 'Cost cap tripped — auto-resumes at midnight.', progressPct: 90 };
+      return { status: 'running', step: 'Cost cap tripped. Auto-resumes at midnight.', progressPct: 90 };
     case 'paused_circuit_breaker':
-      return { status: 'failed', step: 'Repeated read failures — paused for triage.', progressPct: null };
+      return { status: 'failed', step: 'Repeated read failures. Paused for triage.', progressPct: null };
     case 'failed_restart':
-      return { status: 'failed', step: 'Login failing — verify credentials.', progressPct: null };
+      return { status: 'failed', step: 'Login failing. Verify credentials.', progressPct: null };
     case 'stopped':
       return { status: 'cancelled', step: 'Stopped by admin.', progressPct: null };
     default:

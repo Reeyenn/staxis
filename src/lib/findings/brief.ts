@@ -282,14 +282,19 @@ export function buildBrief(input: BriefInput): MorningBrief | null {
   return finish(input, 'report', lines);
 }
 
-/** "Room 214 has had 4 HVAC work orders in the last 30 days. — $600–1,400" */
+/** "Room 214 has had 4 HVAC work orders in the last 30 days. Estimated $600–1,400." */
 function highlightLine(card: QueueFinding): BriefLine {
   const price = formatPriceRange(card.price);
-  const suffix = price ? ` — ${price}` : '';
   // 'en' explicitly. The card below the brief is still bilingual and a Spanish
   // reader still sees its Spanish there; the brief's copy of the sentence is
   // English because the brief is English.
-  return line(`${cardPhrasing(card, 'en')}${suffix}`, card.id);
+  const sentence = cardPhrasing(card, 'en').trim();
+  // The price used to hang off an em dash. It is its own short sentence now, so
+  // the line reads as two facts rather than one long one, and the money keeps
+  // the word that says what it is.
+  const closed = /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+  const suffix = price ? ` Estimated ${price}.` : '';
+  return line(`${closed}${suffix}`, card.id);
 }
 
 /**

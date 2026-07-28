@@ -16,6 +16,7 @@ import type {
   FeedId,
   FeedOutcome,
   FeedShapes,
+  FindingDraft,
 } from './types';
 
 /** The date every eval case runs on unless it names its own. */
@@ -31,6 +32,17 @@ export interface EvalCaseResult {
   actual: string[];
   /** Why it failed, when it did. */
   detail: string | null;
+  /**
+   * What the detector actually produced, so a caller can check the DRAFTS and
+   * not only their keys.
+   *
+   * Added for the copy guard (findings-copy-rules.test.ts): every detector
+   * already ships fixture feeds that make it fire, which makes this the one
+   * place the product can read every detector's real prose without inventing a
+   * second set of fixtures that would drift from these. Empty when the case
+   * threw.
+   */
+  drafts: FindingDraft[];
 }
 
 function feedOutcome(value: FeedShapes[FeedId]): FeedOutcome {
@@ -62,8 +74,10 @@ export function runDetectorEvalCases(detector: AnyDetector): EvalCaseResult[] {
     const expected = [...testCase.expectKeys].sort();
     let actual: string[] = [];
     let detail: string | null = null;
+    let produced: FindingDraft[] = [];
     try {
       const drafts = detector.detect(ctx, testCase.params ?? detector.declaration.params ?? {});
+      produced = drafts;
       actual = drafts.map((d) => d.key).sort();
 
       if (JSON.stringify(actual) !== JSON.stringify(expected)) {
@@ -89,6 +103,7 @@ export function runDetectorEvalCases(detector: AnyDetector): EvalCaseResult[] {
       expected,
       actual,
       detail,
+      drafts: produced,
     };
   });
 }

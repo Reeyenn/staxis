@@ -615,7 +615,7 @@ export async function updateDocumentAccess(
     .eq('property_id', pid);
   if (visErr) {
     log.error('knowledge.updateDocumentAccess chunk-scope sync failed', { err: visErr.message });
-    return { error: 'Saved who can see it, but search may lag a moment — please try again.' };
+    return { error: 'Saved who can see it, but search may lag a moment. Please try again.' };
   }
   return { ok: true };
 }

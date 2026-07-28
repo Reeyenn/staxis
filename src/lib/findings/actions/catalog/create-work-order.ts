@@ -125,8 +125,8 @@ export function createWorkOrderParams(location: string): CreateWorkOrderParams {
   return {
     location: where,
     description:
-      `Full inspection of ${where}. Staxis noticed repeat maintenance here — ` +
-      'worth looking at the location as a whole rather than one fault at a time.',
+      `Full inspection of ${where}. Staxis noticed repeat maintenance here. ` +
+      'Worth looking at the location as a whole rather than one fault at a time.',
     severity: 'medium',
     submitted_by_name: 'Staxis',
     submitter_role: 'Staxis',
@@ -170,7 +170,7 @@ export function createPreventiveWorkOrderParams(args: {
   return {
     location: where,
     description:
-      `${name} — preventive maintenance, due ${args.dueDate}. ` +
+      `${name}: preventive maintenance, due ${args.dueDate}. ` +
       `This hotel's upkeep schedule says ${cadence}. ${lastDone}`.trim().slice(0, MAX_DESCRIPTION),
     // Upkeep that has slipped its date is not an emergency. 'medium' keeps it on
     // the board's normal lane rather than shouting past a genuinely urgent
@@ -251,12 +251,12 @@ export const createWorkOrderAction: ActionDefinition<CreateWorkOrderParams> = {
       // restarts this schedule's clock (migration 0366), and a manager who does
       // not know that will mark the same job done twice.
       return {
-        en: `Work order created for ${task} — it is on the maintenance board. Closing it marks this upkeep task done.`,
+        en: `Work order created for ${task}. It is on the maintenance board. Closing it marks this upkeep task done.`,
         es: `Orden de trabajo creada para ${task}: ya está en el tablero. Al cerrarla, esta tarea de mantenimiento queda marcada como hecha.`,
       };
     }
     return {
-      en: `Work order created for ${where} — it is on the maintenance board now.`,
+      en: `Work order created for ${where}. It is on the maintenance board now.`,
       es: `Orden de trabajo creada para ${where}: ya está en el tablero de mantenimiento.`,
     };
   },

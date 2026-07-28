@@ -380,8 +380,8 @@ export function MissionControlSurface() {
     const detail = worst === 'green'
       ? 'Website and database are both healthy.'
       : worst === 'yellow'
-      ? 'Something is a little slow — the app is still up.'
-      : 'A core service is down — the app may be affected.';
+      ? 'Something is a little slow. The app is still up.'
+      : 'A core service is down. The app may be affected.';
     return { tone, detail };
   })();
 
@@ -403,7 +403,7 @@ export function MissionControlSurface() {
       .filter((s) => robotSeverity(robotView(s.status).tone) >= 2)
       .slice(0, 2)
       // Lowercase the label mid-sentence but keep acronyms like 2FA intact.
-      .map((s) => `${s.display_name ?? 'A hotel'} — ${robotView(s.status).label.toLowerCase().replace('2fa', '2FA')}`);
+      .map((s) => `${s.display_name ?? 'A hotel'}: ${robotView(s.status).label.toLowerCase().replace('2fa', '2FA')}`);
     return { tone, detail: trouble.join('; ') || 'One or more robots need attention.' };
   })();
 
@@ -503,7 +503,7 @@ export function MissionControlSurface() {
           eyebrow="Prediction engine"
           count={predictionWorkers.length}
           eyebrowColor={dimWhite(.46)}
-          subtitle="Classic forecasting math — learns from numbers, doesn't think."
+          subtitle="Classic forecasting math. Learns from numbers, doesn't think."
           last
         >
           {workers === null ? (
@@ -725,7 +725,7 @@ export function AiStaffColumn({ metrics, employees, robots, l, busyKey, onAction
       eyebrow="AI staff"
       count={1 /* copilot */ + employees.length + robots.length}
       eyebrowColor={dimWhite(.62)}
-      subtitle="Thinks with a language model — couldn't exist before AI."
+      subtitle="Thinks with a language model. Couldn't exist before AI."
       last
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -775,7 +775,7 @@ export function AiEmployeeRow({ e, l }: { e: StaffMember; l: Lang }) {
   return (
     <Link
       href="/admin/ai-staff"
-      aria-label={`${e.name[l]} — ${AI_STAFF_COPY.openRoster[l]}`}
+      aria-label={`${e.name[l]}. ${AI_STAFF_COPY.openRoster[l]}`}
       style={{ textDecoration: 'none', display: 'block' }}
     >
       <DarkCard style={{ padding: '13px 15px', cursor: 'pointer' }}>
@@ -904,7 +904,7 @@ function RobotRow({ s, busyKey, onAction }: {
 
       {(needsHelp || s.pms_family) && (
         <div className="mono" style={{ fontSize: 9.5, color: needsHelp ? 'var(--terracotta)' : dimWhite(.4), marginTop: 6 }}>
-          {needsHelp ? 'Stuck — it needs your help to keep learning' : s.pms_family}
+          {needsHelp ? 'Stuck. It needs your help to keep learning' : s.pms_family}
         </div>
       )}
 

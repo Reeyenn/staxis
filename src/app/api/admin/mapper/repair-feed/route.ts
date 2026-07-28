@@ -92,7 +92,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
   if (!activeRow) {
     return err(
-      `no active knowledge file for ${body.pmsFamily} — repair only works on existing recipes`,
+      `no active knowledge file for ${body.pmsFamily}. Repair only works on existing recipes`,
       { requestId, status: 404, code: 'not_found' },
     );
   }
@@ -174,7 +174,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     fromVersion: activeRow.version,
     estimatedCostDollars: isAbsentTarget ? 4 : 1.5,
     note: isAbsentTarget
-      ? `Learning a feed this recipe never had — other unlearned targets may consume budget first, so it can take a couple of runs. Watch live at /admin/properties/mapper/${inserted.id}`
+      ? `Learning a feed this recipe never had. Other unlearned targets may consume budget first, so it can take a couple of runs. Watch live at /admin/properties/mapper/${inserted.id}`
       : 'Watch live at /admin/properties/mapper/' + inserted.id,
   }, { requestId });
 }

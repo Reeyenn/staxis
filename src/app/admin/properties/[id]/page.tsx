@@ -107,7 +107,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
       // of crashing on .map() of undefined.
       const d = json.data as HealthData | undefined;
       if (!d || !d.property || !Array.isArray(d.jobs) || !d.staff) {
-        setError('Server returned an unexpected response shape — please refresh.');
+        setError('Server returned an unexpected response shape. Please refresh.');
         setLoading(false);
         return;
       }
@@ -139,7 +139,7 @@ export default function AdminPropertyDetailPage(props: { params: Promise<{ id: s
       if (!res.ok || !json.ok) {
         setRegenerateMsg(`Error: ${json.error ?? 'unknown'}`);
       } else {
-        setRegenerateMsg(`Queued — job ${json.data.jobId.slice(0, 8)}…`);
+        setRegenerateMsg(`Queued. Job ${json.data.jobId.slice(0, 8)}…`);
         // Refresh after a beat so the new job appears in the list
         setTimeout(load, 2000);
       }
@@ -358,7 +358,7 @@ function PeopleWithAccessSection({ propertyId }: { propertyId: string }) {
     if (acct.role === 'admin') return;
     const hotelCount = acct.propertyAccess.length;
     const scopeNote = hotelCount > 1
-      ? `\n\nThis account currently has access to ${hotelCount} hotels — all of that access will be removed.`
+      ? `\n\nThis account currently has access to ${hotelCount} hotels. All of that access will be removed.`
       : '';
     if (!confirm(
       `Delete ${acct.displayName} entirely?${scopeNote}\n\n`
@@ -533,7 +533,7 @@ function AddPersonModal({
       ) : (
         <FieldSelect label="Account" value={pickId} onChange={setPickId} options={[
           { value: '', label: 'Pick an account…' },
-          ...eligibleToAttach.map(a => ({ value: a.accountId, label: `${a.displayName} — ${roleLabel(a.role)} (${a.email})` })),
+          ...eligibleToAttach.map(a => ({ value: a.accountId, label: `${a.displayName} · ${roleLabel(a.role)} (${a.email})` })),
         ]} />
       )}
 

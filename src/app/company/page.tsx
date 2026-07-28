@@ -1089,7 +1089,7 @@ function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, on
             : localized(lang, 'Effective access', 'Acceso efectivo')}
           title={adminPreview
             ? localized(lang, 'Customer access records', 'Registros de acceso del cliente')
-            : localized(lang, 'What you can reach—and why', 'A qué puedes acceder y por qué')}
+            : localized(lang, 'What you can reach and why', 'A qué puedes acceder y por qué')}
           description={adminPreview
             ? localized(lang, 'Review this scope without changing customer access.', 'Revisa este alcance sin cambiar el acceso del cliente.')
             : localized(

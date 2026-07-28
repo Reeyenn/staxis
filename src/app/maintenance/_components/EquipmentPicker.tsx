@@ -42,7 +42,7 @@ export function EquipmentPicker({
         boxSizing: 'border-box', outline: 'none', cursor: 'pointer',
       }}
     >
-      <option value="">{tr(lang, '— No asset —', '— Sin equipo —')}</option>
+      <option value="">{tr(lang, '(No asset)', '(Sin equipo)')}</option>
       {items.map((eq) => (
         <option key={eq.id} value={eq.id}>
           {eq.name}{eq.location ? ` · ${eq.location}` : ''}

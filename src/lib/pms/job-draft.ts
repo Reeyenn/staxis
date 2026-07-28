@@ -44,7 +44,7 @@ export async function resolveDraftForJob(jobId: string): Promise<ResolveDraftRes
   const result = (job.result ?? {}) as Record<string, unknown>;
   const knowledgeFileId = typeof result.knowledge_file_id === 'string' ? result.knowledge_file_id : null;
   if (!knowledgeFileId) {
-    return { ok: false, status: 400, message: "Nothing to save — this run didn't produce a map yet." };
+    return { ok: false, status: 400, message: "Nothing to save. This run didn't produce a map yet." };
   }
 
   const { data } = await supabaseAdmin

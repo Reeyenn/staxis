@@ -553,12 +553,12 @@ export function aiFeatureRuntimeProviderLabel(featureKey: AiFeatureKey): string 
 export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinition>> = {
   'admin.model_recommendations': defineFeature(
     'admin.model_recommendations', 'Admin', 'Model recommendations',
-    'Writes the suggestions on the Recommendations tab — reads your model prices, spend, and any newly available models. Runs only when you click refresh.',
+    'Writes the suggestions on the Recommendations tab. Reads your model prices, spend, and any newly available models. Runs only when you click refresh.',
     ['text'], SONNET,
   ),
   'agent.ask_staxis': defineFeature(
     'agent.ask_staxis', 'Agent', 'Ask Staxis',
-    'The main AI helper — the box at the bottom of the screen where you ask questions and it can take actions for you.',
+    'The main AI helper: the box at the bottom of the screen where you ask questions and it can take actions for you.',
     ['text', 'tool_use'], SONNET,
   ),
   // Cross-hotel chat. Its own row rather than a share of Ask Staxis: a company
@@ -568,7 +568,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   // every day.
   'agent.portfolio_chat': defineFeature(
     'agent.portfolio_chat', 'Agent', 'Company-wide questions',
-    'Lets an owner or VP ask the helper about all of their company\'s hotels at once — comparing spend, maintenance and open problems across the group. Off unless the company turns it on.',
+    'Lets an owner or VP ask the helper about all of their company\'s hotels at once, comparing spend, maintenance and open problems across the group. Off unless the company turns it on.',
     ['text', 'tool_use'], SONNET,
   ),
   'agent.conversation_summary': defineFeature(
@@ -587,7 +587,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   // would not be allowed to author anything this one cannot.
   'findings.judge': defineFeature(
     'findings.judge', 'Agent', 'Nightly findings sorter',
-    'Puts the problems Staxis noticed overnight in the order a manager should read them and writes each one in plain English and Spanish. It never decides what is wrong — only how to say it and what to show first.',
+    'Puts the problems Staxis noticed overnight in the order a manager should read them and writes each one in plain English and Spanish. It never decides what is wrong, only how to say it and what to show first.',
     ['text'], HAIKU,
   ),
   // Discovery, not decision. It picks from a fixed list of checks against a
@@ -607,7 +607,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   // costs polish and nothing else.
   'findings.brief': defineFeature(
     'findings.brief', 'Agent', 'Morning brief wording',
-    'Rewrites the morning summary at the top of the Staxis tab so it reads like a person wrote it. The brief is written in English only. It cannot change any number or add anything to the summary — if it tries, the plain version is used instead.',
+    'Rewrites the morning summary at the top of the Staxis tab so it reads like a person wrote it. The brief is written in English only. It cannot change any number or add anything to the summary. If it tries, the plain version is used instead.',
     ['text'], HAIKU,
   ),
   'walkthrough.step_generation': defineFeature(
@@ -627,7 +627,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'financials.invoice_scan': defineFeature(
     'financials.invoice_scan', 'Financials', 'Financial invoice scanning',
-    'Reads a vendor invoice photo and pre-fills the expense — who, how much, what for.',
+    'Reads a vendor invoice photo and pre-fills the expense: who, how much, what for.',
     ['text', 'image_input'], SONNET,
   ),
   'financials.quote_scan': defineFeature(
@@ -637,7 +637,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'communications.staxis_assistant': defineFeature(
     'communications.staxis_assistant', 'Communications', 'Messaging assistant',
-    'Answers when staff type @Staxis in team chat — can check rooms, create work orders, and more.',
+    'Answers when staff type @Staxis in team chat. Can check rooms, create work orders, and more.',
     ['text', 'tool_use'], SONNET,
   ),
   'communications.action_detection': defineFeature(
@@ -697,7 +697,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'knowledge.embeddings': defineFeature(
     'knowledge.embeddings', 'Knowledge', 'Knowledge embeddings',
-    'Powers document search in the Knowledge hub. Shown for information only — its model cannot be changed here.',
+    'Powers document search in the Knowledge hub. Shown for information only. Its model cannot be changed here.',
     ['embeddings'], EMBEDDING,
     {
       editable: false,
@@ -709,7 +709,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'knowledge.fact_extraction': defineFeature(
     'knowledge.fact_extraction', 'Knowledge', 'Learning from what you tell it',
-    'Turns a note you type — or a file you drop in — into the short facts about your hotel that show up on the Knows screen for you to confirm.',
+    'Turns a note you type, or a file you drop in, into the short facts about your hotel that show up on the Knows screen for you to confirm.',
     ['text', 'pdf_input'], SONNET,
   ),
   // Declaring pdf_input pins this to Anthropic (runtimeProvidersFor): a scanned
@@ -726,7 +726,7 @@ export const AI_FEATURE_REGISTRY: Readonly<Record<AiFeatureKey, AiFeatureDefinit
   ),
   'speech.ask_staxis_dictation': defineFeature(
     'speech.ask_staxis_dictation', 'Speech & input', 'Ask Staxis dictation',
-    'The free talk-to-type used when dictating into Ask Staxis. Runs in the browser — costs nothing, nothing to configure.',
+    'The free talk-to-type used when dictating into Ask Staxis. Runs in the browser. Costs nothing, nothing to configure.',
     ['speech_recognition'],
     {
       provider: 'browser', modelId: 'web-speech-recognition',

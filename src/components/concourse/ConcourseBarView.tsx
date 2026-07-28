@@ -76,7 +76,7 @@ export function ConcourseBarView({
             type="button"
             className={`cx-pill${it.active ? ' cx-active' : ''}`}
             onClick={it.onClick}
-            title={it.badgeLabel ? `${it.label} — ${it.badgeLabel}` : it.label}
+            title={it.badgeLabel ? `${it.label}, ${it.badgeLabel}` : it.label}
             aria-label={it.badgeLabel ? `${it.label}, ${it.badgeLabel}` : it.label}
             aria-current={it.active ? 'page' : undefined}
           >

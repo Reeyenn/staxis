@@ -123,7 +123,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       log.warn('board: forbidden — user lacks property access', {
         requestId, userId: auth.userId, propertyId,
       });
-      return err('forbidden — no access to this property', {
+      return err('forbidden: no access to this property', {
         requestId, status: 403, code: 'forbidden',
       });
     }

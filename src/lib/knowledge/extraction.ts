@@ -126,7 +126,7 @@ function ok(text: string, pageCount: number | null): ExtractionOutcome {
   return {
     status: truncated ? 'partial' : 'ready',
     text: capped,
-    error: truncated ? 'Document is large — only the first part is searchable.' : null,
+    error: truncated ? 'Document is large. Only the first part is searchable.' : null,
     pageCount,
     truncated,
   };
@@ -163,7 +163,7 @@ export async function extractDocumentText(
   // Uploaded photo / scan image (jpg/png/webp) — no text layer to parse here.
   // Hand it to the vision reader, which transcribes it.
   if (isImageMime(mime)) {
-    return needsOcr('Reading this photo with AI — text search will be ready shortly.');
+    return needsOcr('Reading this photo with AI. Text search will be ready shortly.');
   }
 
   // Plain text / markdown / csv — decode UTF-8.
@@ -212,7 +212,7 @@ export async function extractDocumentText(
     // rather than dead-ending as `unsupported`. (A PDF whose
     // text layer reads as junk — not empty — is still `failed`, below.)
     if (meaningfulCharCount(text) < 16) {
-      return needsOcr('This looks like a scanned PDF — reading it with AI, text search will be ready shortly.', totalPages);
+      return needsOcr('This looks like a scanned PDF. Reading it with AI, text search will be ready shortly.', totalPages);
     }
     if (!isMostlyReadable(text)) return fail('The PDF\'s text couldn\'t be read cleanly.');
     return ok(text, totalPages);

@@ -135,7 +135,7 @@ export const AI_EMPLOYEES: readonly AiEmployee[] = [
       crons: [],
       surfaces: [
         {
-          en: 'The Ordering screen on the inventory page — what is worth ordering, grouped by supplier',
+          en: 'The Ordering screen on the inventory page: what is worth ordering, grouped by supplier',
           es: 'La pantalla Pedidos en la página de inventario: lo que vale la pena pedir, agrupado por proveedor',
         },
         {
@@ -171,7 +171,7 @@ export const AI_EMPLOYEES: readonly AiEmployee[] = [
     id: MORNING_BRIEFER_ID,
     name: { en: 'Morning Briefer', es: 'Informante de la mañana' },
     job: {
-      en: 'Writes each manager\'s morning brief — what happened overnight, in a few lines, before anyone asks.',
+      en: 'Writes each manager\'s morning brief: what happened overnight, in a few lines, before anyone asks.',
       es: 'Escribe el resumen de la mañana de cada gerente: lo que pasó durante la noche, en pocas líneas, antes de que alguien pregunte.',
     },
     hired: true,
@@ -270,7 +270,7 @@ export const AI_EMPLOYEES: readonly AiEmployee[] = [
     'floor_interpreter',
     { en: 'Floor Interpreter', es: 'Intérprete de planta' },
     {
-      en: 'Lets a housekeeper say a room is done out loud, in their own language, with their hands full — and the front desk sees it in English.',
+      en: 'Lets a housekeeper say a room is done out loud, in their own language, with their hands full. The front desk sees it in English.',
       es: 'Deja que una camarera diga en voz alta que una habitación está lista, en su idioma y con las manos ocupadas, y la recepción lo ve en inglés.',
     },
   ),
@@ -297,8 +297,8 @@ export const BUNDLE_LABELS: Readonly<Record<string, Bilingual>> = {
   // the page is chrome and the house rule applies to it. What changed is what the
   // line claims, because it used to promise a Spanish brief that no longer exists.
   'findings.brief': {
-    en: 'Rewrites the morning summary so it reads like a person wrote it — in English',
-    es: 'Reescribe el resumen de la mañana para que suene a persona — en inglés',
+    en: 'Rewrites the morning summary in English so it reads like a person wrote it',
+    es: 'Reescribe el resumen de la mañana en inglés para que suene a persona',
   },
   // Scheduled jobs
   'run-findings': {
@@ -369,7 +369,7 @@ export function deriveEmployeeStatus(input: EmployeeStatusInput): AiEmployeeStat
 export const EMPLOYEE_STATUS_LABEL: Readonly<Record<AiEmployeeStatus, Bilingual>> = {
   not_hired: { en: 'Not hired yet', es: 'Aún no contratado' },
   switched_off: { en: 'Switched off by you', es: 'Apagado por ti' },
-  waiting_for_master: { en: 'Ready — waiting for the master switch', es: 'Listo — esperando el interruptor principal' },
+  waiting_for_master: { en: 'Ready. Waiting for the master switch', es: 'Listo. Esperando el interruptor principal' },
   on: { en: 'On', es: 'Encendido' },
 };
 

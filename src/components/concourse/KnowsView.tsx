@@ -108,11 +108,11 @@ const S = {
   },
   boxEyebrow: { en: 'Tell Staxis about your hotel', es: 'Cuéntale a Staxis sobre tu hotel' },
   boxPlaceholder: {
-    en: 'Anything at all — how things run, who to call, what keeps breaking.',
+    en: 'Anything at all: how things run, who to call, what keeps breaking.',
     es: 'Lo que sea: cómo funciona todo, a quién llamar, qué se rompe siempre.',
   },
   boxHint: {
-    en: 'Optional. Or drop in a file you already have — a vendor list, a house rules sheet, an SOP.',
+    en: 'Optional. Or drop in a file you already have: a vendor list, a house rules sheet, an SOP.',
     es: 'Opcional. O sube un archivo que ya tengas: lista de proveedores, reglas de la casa, un procedimiento.',
   },
   addFile: { en: 'Add a file', es: 'Agregar archivo' },
@@ -120,25 +120,25 @@ const S = {
   submit: { en: 'Add this', es: 'Agregar esto' },
   submitting: { en: 'Reading…', es: 'Leyendo…' },
   intakeDoneOne: {
-    en: '1 fact added below — check it before Staxis uses it.',
+    en: '1 fact added below. Check it before Staxis uses it.',
     es: '1 dato agregado abajo: revísalo antes de que Staxis lo use.',
   },
   intakeDoneMany: {
-    en: 'facts added below — check each one before Staxis uses it.',
+    en: 'facts added below. Check each one before Staxis uses it.',
     es: 'datos agregados abajo: revisa cada uno antes de que Staxis lo use.',
   },
   intakeNothing: {
-    en: 'Nothing lasting in that one — nothing was saved.',
+    en: 'Nothing lasting in that one. Nothing was saved.',
     es: 'Nada duradero en eso: no se guardó nada.',
   },
-  fileTooBig: { en: 'That file is too big — keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
+  fileTooBig: { en: 'That file is too big. Keep it under 4MB.', es: 'Ese archivo es muy grande: máximo 4MB.' },
   fileWrongType: {
     en: 'Staxis can read PDF, Word, and plain text files.',
     es: 'Staxis puede leer archivos PDF, Word y de texto.',
   },
   emptyTitle: { en: 'Staxis does not know anything about your hotel yet', es: 'Staxis aún no sabe nada de tu hotel' },
   emptyBody: {
-    en: 'That is expected on day one. Tell it something above — one sentence is enough to start. It also learns on its own from what your team logs.',
+    en: 'That is expected on day one. Tell it something above. One sentence is enough to start. It also learns on its own from what your team logs.',
     es: 'Es normal el primer día. Cuéntale algo arriba: una frase basta para empezar. También aprende solo de lo que registra tu equipo.',
   },
   confirm: { en: 'Confirm', es: 'Confirmar' },
@@ -155,8 +155,8 @@ const S = {
   // Scoped to the LEARNED half only. The told half beside it is open to
   // everyone, so this points there rather than dead-ending the reader.
   managerOnly: {
-    en: 'What Staxis has figured out on its own is a manager view. Ask your manager to open it — the contacts, procedures, and documents next door are open to you.',
-    es: 'Lo que Staxis dedujo por su cuenta es una vista de gerencia. Pídele a tu gerente que la abra — los contactos, procedimientos y documentos de al lado sí puedes verlos.',
+    en: 'What Staxis has figured out on its own is a manager view. Ask your manager to open it. The contacts, procedures, and documents next door are open to you.',
+    es: 'Lo que Staxis dedujo por su cuenta es una vista de gerencia. Pídele a tu gerente que la abra. Los contactos, procedimientos y documentos de al lado sí puedes verlos.',
   },
   loadFailed: {
     en: 'Could not load what Staxis knows right now. Do not read this as "it knows nothing".',
@@ -170,7 +170,7 @@ const S = {
   // the log line. The SENTENCE is this screen's job, because the person reading
   // it may only read Spanish. One entry per code the Knows routes can return.
   bannerGeneric: {
-    en: 'That did not work. Nothing changed — try again in a moment.',
+    en: 'That did not work. Nothing changed. Try again in a moment.',
     es: 'No funcionó. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errAccountNotFound: {
@@ -182,7 +182,7 @@ const S = {
     es: 'No tienes acceso a este hotel.',
   },
   errInvalidBody: {
-    en: 'Staxis could not read that. Nothing changed — try again.',
+    en: 'Staxis could not read that. Nothing changed. Try again.',
     es: 'Staxis no pudo leer eso. Nada cambió: inténtalo de nuevo.',
   },
   errUnknownAction: {
@@ -194,23 +194,23 @@ const S = {
     es: 'Elige uno de los grupos de la lista.',
   },
   errContentRequired: {
-    en: 'Write something first — a fact cannot be empty.',
+    en: 'Write something first. A fact cannot be empty.',
     es: 'Escribe algo primero: un dato no puede quedar vacío.',
   },
   errConfirmFailed: {
-    en: 'Could not confirm that. Nothing changed — try again in a moment.',
+    en: 'Could not confirm that. Nothing changed. Try again in a moment.',
     es: 'No se pudo confirmar. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errFactGone: {
-    en: 'That one is not here anymore — somebody may have removed it.',
+    en: 'That one is not here anymore. Somebody may have removed it.',
     es: 'Ese ya no está: puede que alguien lo haya quitado.',
   },
   errRemoveFailed: {
-    en: 'Could not remove that. Nothing changed — try again in a moment.',
+    en: 'Could not remove that. Nothing changed. Try again in a moment.',
     es: 'No se pudo quitar. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errSaveFailed: {
-    en: 'Could not save that. Nothing changed — try again in a moment.',
+    en: 'Could not save that. Nothing changed. Try again in a moment.',
     es: 'No se guardó. Nada cambió: inténtalo de nuevo en un momento.',
   },
   errNothingToRead: {
@@ -230,7 +230,7 @@ const S = {
     es: 'Ese archivo no llegó completo. Agrégalo de nuevo.',
   },
   errNothingReadable: {
-    en: 'There was nothing readable in that — nothing was saved.',
+    en: 'There was nothing readable in that. Nothing was saved.',
     es: 'No había nada legible en eso: no se guardó nada.',
   },
   errAiDisabled: {
@@ -238,7 +238,7 @@ const S = {
     es: 'La lectura con IA está desactivada ahora mismo. No se guardó nada.',
   },
   errAiUnavailable: {
-    en: 'Staxis could not read that just now. Nothing was saved — try again in a moment.',
+    en: 'Staxis could not read that just now. Nothing was saved. Try again in a moment.',
     es: 'Staxis no pudo leerlo ahora mismo. No se guardó nada: inténtalo de nuevo en un momento.',
   },
   errBudget: {
@@ -254,11 +254,11 @@ const S = {
     es: 'Staxis no pudo conectarse. Revisa tu conexión e inténtalo de nuevo.',
   },
   readNoteTruncated: {
-    en: 'That file is long — Staxis read the first part of it.',
+    en: 'That file is long. Staxis read the first part of it.',
     es: 'Ese archivo es largo: Staxis leyó solo la primera parte.',
   },
   readNoteVision: {
-    en: 'That looked like a scan, so Staxis read it with AI — double-check the wording.',
+    en: 'That looked like a scan, so Staxis read it with AI. Double-check the wording.',
     es: 'Parecía un escaneo, así que Staxis lo leyó con IA: revisa bien el texto.',
   },
 } as const;

@@ -119,7 +119,7 @@ async function embedAndStoreChunks(opts: {
   const spent = await embeddingSpendTodayUsd(opts.propertyId);
   if (spent >= EMBEDDING_PROPERTY_DAILY_USD) {
     partial = true;
-    error = 'Daily embedding budget reached for this property — searchable by keyword for now.';
+    error = 'Daily embedding budget reached for this property. Searchable by keyword for now.';
   } else {
     try {
       // Construct the embedder INSIDE the try so a missing OPENAI_API_KEY (or any
@@ -132,7 +132,7 @@ async function embedAndStoreChunks(opts: {
         vectors = res.vectors;
       } else {
         partial = true;
-        error = 'Embedding returned an unexpected count — keyword-only for now.';
+        error = 'Embedding returned an unexpected count. Keyword-only for now.';
       }
       await meterEmbeddingCost({
         accountId: opts.accountId, propertyId: opts.propertyId,
@@ -140,7 +140,7 @@ async function embedAndStoreChunks(opts: {
       });
     } catch (e) {
       partial = true;
-      error = 'Embedding service was unavailable — searchable by keyword for now.';
+      error = 'Embedding service was unavailable. Searchable by keyword for now.';
       log.warn('knowledge.embed failed', { err: e instanceof Error ? e.message : String(e) });
     }
   }
@@ -342,7 +342,7 @@ export async function indexDocument(input: IndexDocumentInput): Promise<Extracti
     // (don't show a green "ready" badge the doc didn't earn).
     const hitChunkCap = chunks.length >= DEFAULT_MAX_CHUNKS;
     const finalStatus: ExtractionStatus = outcome.status === 'partial' || emb.partial || hitChunkCap ? 'partial' : 'ready';
-    const finalError = outcome.error ?? emb.error ?? (hitChunkCap ? 'Document is very large — only the first part is indexed for search.' : null);
+    const finalError = outcome.error ?? emb.error ?? (hitChunkCap ? 'Document is very large. Only the first part is indexed for search.' : null);
     await setDocStatus(propertyId, docId, finalStatus, { extractedText: outcome.text, error: finalError });
     return finalStatus;
   } catch (e) {
@@ -413,9 +413,9 @@ export async function indexOcrText(input: IndexOcrTextInput): Promise<Extraction
       truncated, pageCapped, embedPartial: emb.partial, hitChunkCap,
     });
     const finalError = pageCapped
-      ? 'This scan is long — only the first pages are searchable.'
+      ? 'This scan is long. Only the first pages are searchable.'
       : truncated || hitChunkCap
-        ? 'This scan is large — only the first part is searchable.'
+        ? 'This scan is large. Only the first part is searchable.'
         : emb.error;
     await setDocStatus(propertyId, docId, finalStatus, { extractedText: text, error: finalError });
     return finalStatus;

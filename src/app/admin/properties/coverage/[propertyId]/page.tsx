@@ -147,19 +147,19 @@ const captureReason = (reason: string): string => {
   if (reason === 'no_table' || reason === 'timeout') return reason;
   if (reason.startsWith('unsafe_url')) return "Couldn't safely open this feed's page.";
   switch (reason) {
-    case 'no_stored_session': return "The robot hasn't finished logging into this hotel yet — Re-map this feed first.";
-    case 'relogin_needed': return "The robot's login expired and it couldn't get back in (it may need a 2FA code) — Re-map this feed to refresh it.";
+    case 'no_stored_session': return "The robot hasn't finished logging into this hotel yet. Re-map this feed first.";
+    case 'relogin_needed': return "The robot's login expired and it couldn't get back in (it may need a 2FA code). Re-map this feed to refresh it.";
     case 'no_credentials': return 'This hotel has no saved PMS login yet.';
-    case 'no_recipe': return "There's no map for this hotel yet — Re-map first.";
+    case 'no_recipe': return "There's no map for this hotel yet. Re-map first.";
     case 'no_pms_family': return "This hotel's PMS isn't set up yet.";
     case 'feed_incomplete':
-    case 'feed_not_in_recipe': return "The robot doesn't fully know this feed yet — Re-map it.";
-    case 'multi_source_unsupported': return "This feed has several sources, so drag-capture isn't supported — use Re-map.";
-    case 'daily_cap': return "The robot's hit its daily limit for reading pages — try again tomorrow, or Re-map.";
-    case 'aborted': return 'The capture was cancelled — try again.';
+    case 'feed_not_in_recipe': return "The robot doesn't fully know this feed yet. Re-map it.";
+    case 'multi_source_unsupported': return "This feed has several sources, so drag-capture isn't supported. Use Re-map.";
+    case 'daily_cap': return "The robot's hit its daily limit for reading pages. Try again tomorrow, or Re-map.";
+    case 'aborted': return 'The capture was cancelled. Try again.';
     // Route-level errors arrive as full human sentences (cooldown, no PMS set up,
     // etc.) — show them as-is. An unknown single-token code → the generic line.
-    default: return /\s/.test(reason) ? reason : "Couldn't capture this page — try Re-map above.";
+    default: return /\s/.test(reason) ? reason : "Couldn't capture this page. Try Re-map above.";
   }
 };
 
@@ -281,7 +281,7 @@ export default function CoveragePage() {
           return;
         }
       }
-      setToast({ tone: 'warn', text: "Still reading — check back in a moment." });
+      setToast({ tone: 'warn', text: "Still reading. Check back in a moment." });
     } catch { setToast({ tone: 'bad', text: "Couldn't re-read this feed." }); }
     finally { setRecapturing((prev) => ({ ...prev, [feedKey]: false })); }
   }, [propertyId, recapturing, samples, loadOneSample, data, load]);
@@ -443,7 +443,7 @@ export default function CoveragePage() {
       void (async () => {
         const r = await pollJob(jobId, 1200);
         if (!r.ok && r.timedOut) {
-          setToast({ tone: 'warn', text: 'Re-map still running — keep watching here, or open it in Manage maps.' });
+          setToast({ tone: 'warn', text: 'Re-map still running. Keep watching here, or open it in Manage maps.' });
           return;
         }
         setLiveJobId(null);
@@ -522,7 +522,7 @@ export default function CoveragePage() {
       if (outcome.ok) {
         const decision = (outcome.result?.promotion_decision as string | undefined) ?? '';
         if (decision === 'auto_promote') {
-          setToast({ tone: 'good', text: `Removed “${pendingDelete.label}” — the map is live without it.` });
+          setToast({ tone: 'good', text: `Removed “${pendingDelete.label}”. The map is live without it.` });
         } else {
           setToast({ tone: 'warn', text: (outcome.result?.promotion_reason as string | undefined) ?? 'Saved as a draft to review in Manage maps.' });
         }
@@ -566,7 +566,7 @@ export default function CoveragePage() {
       setToast({
         tone: 'good',
         text: disabled.length > 0
-          ? `Map v${map.version} is live for every ${data?.familyLabel} hotel — collecting ${collecting} of ${totalMapped} feeds (Re-read a feed to turn on the rest).`
+          ? `Map v${map.version} is live for every ${data?.familyLabel} hotel. Collecting ${collecting} of ${totalMapped} feeds (Re-read a feed to turn on the rest).`
           : `Map v${map.version} is now live for every ${data?.familyLabel} hotel.`,
       });
       await load();
@@ -589,7 +589,7 @@ export default function CoveragePage() {
         if (job?.status === 'failed' || job?.status === 'cancelled') return { ok: false, error: job.error ?? 'The edit run failed.' };
       } catch { /* keep polling */ }
     }
-    return { ok: false, error: 'Timed out waiting for the edit to finish — check Manage maps.', timedOut: true };
+    return { ok: false, error: 'Timed out waiting for the edit to finish. Check Manage maps.', timedOut: true };
   };
 
   // feature/cua-column-editor — "Rate Plan" → "rate_plan" default custom name.
@@ -665,7 +665,7 @@ export default function CoveragePage() {
     void runColumnEdit(`set:${feed.key}:${columnName}`,
       { feedKey: feed.actionKey ?? feed.key, op: 'set-selector', columnName, selector: `td:nth-child(${geometryIndex})` },
       data?.activeMap?.isDraft
-        ? `Pointed “${columnName}” at the right column — saved to your draft (re-read to preview).`
+        ? `Pointed “${columnName}” at the right column. Saved to your draft (re-read to preview).`
         : `Pointed “${columnName}” at the right column.`)
       .then((okFlag) => { if (okFlag) void loadSamples(); });
 
@@ -683,7 +683,7 @@ export default function CoveragePage() {
     // Honest confirmation: on a PARKED DRAFT nothing collects until the map is
     // made live, so don't claim "now capturing" — say it's saved to the draft.
     const okText = data?.activeMap?.isDraft
-      ? `Saved “${columnKey}” to your draft map — it'll start collecting once you make this map live.`
+      ? `Saved “${columnKey}” to your draft map. It'll start collecting once you make this map live.`
       : `Now capturing “${columnKey}” into this feed.`;
     void runColumnEdit(`add:${feed.key}`, payload, okText)
       .then((okFlag) => {
@@ -752,7 +752,7 @@ export default function CoveragePage() {
     }
     // Live map.
     return feedIsDisabledLive(f)
-      ? { tone: 'gold', label: 'Off — hit Re-read to turn on' }
+      ? { tone: 'gold', label: 'Off. Hit Re-read to turn on' }
       : { tone: 'forest', label: '● Collecting' };
   };
 
@@ -846,10 +846,10 @@ export default function CoveragePage() {
                       <AlertTriangle size={18} color="var(--gold)" style={{ flexShrink: 0, marginTop: 2 }} />
                       <div style={{ flex: 1, minWidth: 240 }}>
                         <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--gold)' }}>
-                          Parked draft v{map.version} — review before it goes live
+                          Parked draft v{map.version}. Review before it goes live
                         </div>
                         <div style={{ fontSize: 12.5, color: dimWhite(.72), marginTop: 4, lineHeight: 1.55 }}>
-                          The robot learned this map but parked it for you to check. Nothing is live for {data.familyLabel} yet — review every feed below, then make it live.
+                          The robot learned this map but parked it for you to check. Nothing is live for {data.familyLabel} yet. Review every feed below, then make it live.
                           {(typeof map.review?.score === 'number' && typeof map.review?.threshold === 'number') && (
                             <span style={{ display: 'block', fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.6), marginTop: 5 }}>
                               confidence {map.review!.score}/{map.review!.threshold}
@@ -898,7 +898,7 @@ export default function CoveragePage() {
                       display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8,
                     }}>
                       <MousePointerClick size={12} color="var(--teal)" />
-                      Re-map pauses for you to guide it — watch here, or Take over to drive it.
+                      Re-map pauses for you to guide it. Watch here, or Take over to drive it.
                     </div>
                     <LiveRobotView
                       jobId={liveJobId}
@@ -953,7 +953,7 @@ export default function CoveragePage() {
                             {f.source === 'actions' && f.canTakeover && (
                               <Btn variant="ghost" size="sm" onClick={() => {
                                 if (!window.confirm(isDraft
-                                  ? `Re-mapping re-runs this feed on the parked draft — it won't go live until you publish it.\n\nThe robot will pause for you to guide it to the right page. Continue?`
+                                  ? `Re-mapping re-runs this feed on the parked draft. It won't go live until you publish it.\n\nThe robot will pause for you to guide it to the right page. Continue?`
                                   : `Re-mapping this feed affects every ${data.familyLabel} hotel.\n\nThe robot will pause for you to guide it to the right page. Continue?`)) return;
                                 void startEditOrAdd(f.actionKey!, 'edit');
                               }} disabled={!!busy || !!liveJobId} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
@@ -1001,13 +1001,13 @@ export default function CoveragePage() {
                                   onClick={() => {
                                     if (busyThis || liveJobId || !editable) return;
                                     if (locked) {
-                                      setToast({ tone: 'warn', text: `“${c}” is a required column — the robot needs it to save this feed, so it can’t be removed.` });
+                                      setToast({ tone: 'warn', text: `“${c}” is a required column. The robot needs it to save this feed, so it can’t be removed.` });
                                       return;
                                     }
                                     void deleteColumn(f, c);
                                   }}
                                   disabled={!editable || busyThis || !!liveJobId}
-                                  title={locked ? 'Required — can’t be removed' : 'Remove this column'}
+                                  title={locked ? 'Required. Can’t be removed' : 'Remove this column'}
                                   aria-label={locked ? `${c} is required` : `Remove ${c}`}
                                   style={{
                                     flexShrink: 0, marginTop: 1, width: 16, height: 16, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
@@ -1022,7 +1022,7 @@ export default function CoveragePage() {
                                   {c}
                                   {custom && <Caps size={8} c="var(--gold)" style={{ letterSpacing: '.1em' }}>custom</Caps>}
                                 </span>
-                                <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: (selector && selector.trim()) ? dimWhite(.5) : 'var(--gold)', wordBreak: 'break-all' }}>{(selector && selector.trim()) ? selector : '— unassigned'}</span>
+                                <span style={{ flex: 1, fontFamily: FONT_MONO, fontSize: 10.5, color: (selector && selector.trim()) ? dimWhite(.5) : 'var(--gold)', wordBreak: 'break-all' }}>{(selector && selector.trim()) ? selector : 'unassigned'}</span>
                                 {/* fix/cua-repoint-column — point a BUILT-IN field at the right
                                     page column. Options = ALL captured page columns (the geometry),
                                     not just unassigned ones. */}
@@ -1112,16 +1112,16 @@ export default function CoveragePage() {
                                       {capturing ? (
                                         <>
                                           <Loader2 size={11} style={{ animation: 'spin 1s linear infinite', color: 'var(--gold)' }} />
-                                          The robot is reading this page so you can drag on it — a few seconds…
+                                          The robot is reading this page so you can drag on it. A few seconds…
                                         </>
                                       ) : capErr === 'no_table' ? (
-                                        <>Couldn&apos;t find a table to drag on this page — it may not be an on-screen table, or the robot&apos;s login expired.{remap && <>{' '}{remap}.</>}</>
+                                        <>Couldn&apos;t find a table to drag on this page. It may not be an on-screen table, or the robot&apos;s login expired.{remap && <>{' '}{remap}.</>}</>
                                       ) : capErr === 'timeout' ? (
                                         <>This took too long.{' '}<button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} style={linkStyle}>try again</button>{remap && <>, or {remap}</>}.</>
                                       ) : capErr ? (
                                         <>{capErr}{remap && <>{' '}{remap}.</>}</>
                                       ) : (
-                                        <>No drag-map yet —{' '}<button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} style={linkStyle}>capture this page</button> so you can drag on it.</>
+                                        <>No drag-map yet.{' '}<button onClick={() => { captureReqRef.current.delete(capKey); void requestLiveCapture(capKey); }} style={linkStyle}>capture this page</button> so you can drag on it.</>
                                       )}
                                       {' '}<button onClick={cancel} style={{ ...linkStyle, color: dimWhite(.5) }}>cancel</button>
                                     </div>
@@ -1147,7 +1147,7 @@ export default function CoveragePage() {
                                     )}
                                     {hasDrag && (
                                       <Btn variant="ghost" size="sm" onClick={() => setDragColFeed(f.key)} style={{ color: '#fff', borderColor: dimWhite(.25) }}>
-                                        <MousePointerClick size={11} /> {hasDropdown ? 'Other — pick on the screenshot' : 'Pick anywhere on the screenshot'}
+                                        <MousePointerClick size={11} /> {hasDropdown ? 'Other: pick on the screenshot' : 'Pick anywhere on the screenshot'}
                                       </Btn>
                                     )}
                                     {addColSelector && <Caps size={8} c="var(--forest)" style={{ letterSpacing: '.08em' }}>{addColScope === 'page' ? 'value' : 'column'}</Caps>}
@@ -1239,8 +1239,8 @@ export default function CoveragePage() {
           <div style={{ marginTop: 18, padding: '18px 20px', background: dimWhite(.03), border: `1px solid ${dimWhite(.08)}`, borderRadius: 14 }}>
             <Caps size={11} c="var(--gold)" style={{ letterSpacing: '.14em' }}>Captured</Caps>
             <div style={{ fontFamily: FONT_SANS, fontSize: 12, color: dimWhite(.5), margin: '5px 0 16px' }}>
-              What the robot last read off each feed — field name and its current value.{' '}
-              {data.activeMap?.isDraft && <span style={{ color: dimWhite(.62) }}>This map isn’t live yet, so these are one-time previews — make it live to keep collecting.</span>}
+              What the robot last read off each feed: field name and its current value.{' '}
+              {data.activeMap?.isDraft && <span style={{ color: dimWhite(.62) }}>This map isn’t live yet, so these are one-time previews. Make it live to keep collecting.</span>}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
               {data.feeds.map((f) => {
@@ -1275,7 +1275,7 @@ export default function CoveragePage() {
                           {s.pageValues.map((pv, i) => (
                             <div key={i} style={{ display: 'flex', gap: 8, fontFamily: FONT_MONO, fontSize: 11.5, minWidth: 0 }}>
                               <span style={{ color: dimWhite(.55), whiteSpace: 'nowrap' }}>{pv.name}</span>
-                              <span title={pv.value} style={{ color: pv.value ? '#fff' : 'var(--gold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pv.value || '— blank'}</span>
+                              <span title={pv.value} style={{ color: pv.value ? '#fff' : 'var(--gold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pv.value || 'blank'}</span>
                             </div>
                           ))}
                         </div>
@@ -1286,13 +1286,13 @@ export default function CoveragePage() {
                         {s.fields.map((fld, i) => (
                           <div key={i} style={{ display: 'flex', gap: 8, fontFamily: FONT_MONO, fontSize: 11.5, minWidth: 0 }}>
                             <span style={{ color: dimWhite(.5), whiteSpace: 'nowrap' }}>{fld.name}</span>
-                            <span title={fld.value} style={{ color: fld.value ? '#fff' : 'var(--gold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fld.value || '— blank'}</span>
+                            <span title={fld.value} style={{ color: fld.value ? '#fff' : 'var(--gold)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{fld.value || 'blank'}</span>
                           </div>
                         ))}
                       </div>
                     ) : (!s || !s.pageValues || s.pageValues.length === 0) ? (
                       <div style={{ fontFamily: FONT_MONO, fontSize: 11, color: dimWhite(.4) }}>
-                        {busy ? 'Reading the page…' : 'Not read yet — hit Re-read to pull the live values.'}
+                        {busy ? 'Reading the page…' : 'Not read yet. Hit Re-read to pull the live values.'}
                       </div>
                     ) : null}
                   </div>
@@ -1311,9 +1311,9 @@ export default function CoveragePage() {
               </h3>
               <div style={{ fontSize: 13.5, color: 'var(--ink-soft)', lineHeight: 1.6 }}>
                 {isDraft ? (
-                  <>Drop <b>{pendingDelete.label}</b> from this draft so it isn’t carried in when you make the map live. Nothing is live yet — you can re-learn it later.</>
+                  <>Drop <b>{pendingDelete.label}</b> from this draft so it isn’t carried in when you make the map live. Nothing is live yet. You can re-learn it later.</>
                 ) : (
-                  <>The robot will stop capturing <b>{pendingDelete.label}</b> for every {data?.familyLabel} hotel. The map is re-published without it — you can re-add it later.
+                  <>The robot will stop capturing <b>{pendingDelete.label}</b> for every {data?.familyLabel} hotel. The map is re-published without it. You can re-add it later.
                     <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(194,86,46,.08)', border: '1px solid rgba(194,86,46,.3)', color: 'var(--terracotta-deep)', fontSize: 12.5 }}>
                       <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
                       <span>This affects all {data?.hotelsOnFamily} hotel{data?.hotelsOnFamily === 1 ? '' : 's'} on this PMS.</span>
@@ -1352,7 +1352,7 @@ export default function CoveragePage() {
                   {willCollect.length > 0 && <>: {willCollect.map((f) => f.label).join(', ')}</>}.
                   {willStayOff.length > 0 && (
                     <span style={{ display: 'block', marginTop: 6, color: 'var(--ink-soft)' }}>
-                      The other <b>{willStayOff.length}</b> ({willStayOff.map((f) => f.label).join(', ')}) stay off until you preview them working — Re-read any feed to turn it on later.
+                      The other <b>{willStayOff.length}</b> ({willStayOff.map((f) => f.label).join(', ')}) stay off until you preview them working. Re-read any feed to turn it on later.
                     </span>
                   )}
                 </span>

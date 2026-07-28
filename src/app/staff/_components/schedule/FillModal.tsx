@@ -342,7 +342,7 @@ export function FillModal({
                       value={name}
                       onChange={e => setName(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') save(); }}
-                      placeholder={es ? 'Ponle nombre — ej. Día estándar' : 'Name it — e.g. Standard weekday'}
+                      placeholder={es ? 'Ponle nombre, ej. Día estándar' : 'Name it, e.g. Standard weekday'}
                       style={{
                         flex: 1, boxSizing: 'border-box', padding: '9px 12px', borderRadius: 10,
                         border: `1px solid ${T.rule}`, background: T.paper,
@@ -527,7 +527,7 @@ function SaveBar({
             value={nm}
             onChange={e => setNm(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') go(); }}
-            placeholder={es ? 'Ponle nombre — ej. Día estándar' : 'Name it — e.g. Standard weekday'}
+            placeholder={es ? 'Ponle nombre, ej. Día estándar' : 'Name it, e.g. Standard weekday'}
             style={{
               flex: 1, boxSizing: 'border-box', padding: '9px 12px', borderRadius: 10,
               border: `1px solid ${T.rule}`, background: T.paper,

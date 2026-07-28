@@ -70,18 +70,18 @@ const S = {
   dismiss: { en: 'Dismiss', es: 'Cerrar' },
   retry: { en: 'Try again', es: 'Reintentar' },
   uploadHint: {
-    en: 'PDF, Word, Text, Markdown, CSV, and photos (JPG, PNG, WebP) up to 10 MB. Staxis reads the full text — including scanned PDFs and photos, which it transcribes with AI. That takes a moment; the file says “Reading scan…” until it is ready.',
-    es: 'PDF, Word, Texto, Markdown, CSV y fotos (JPG, PNG, WebP) hasta 10 MB. Staxis lee el texto completo — incluidos los PDF escaneados y las fotos, que transcribe con IA. Tarda un momento; el archivo dice “Leyendo el escaneo…” hasta que esté listo.',
+    en: 'PDF, Word, Text, Markdown, CSV, and photos (JPG, PNG, WebP) up to 10 MB. Staxis reads the full text, including scanned PDFs and photos, which it transcribes with AI. That takes a moment; the file says “Reading scan…” until it is ready.',
+    es: 'PDF, Word, Texto, Markdown, CSV y fotos (JPG, PNG, WebP) hasta 10 MB. Staxis lee el texto completo, incluidos los PDF escaneados y las fotos, que transcribe con IA. Tarda un momento; el archivo dice “Leyendo el escaneo…” hasta que esté listo.',
   },
   sopsEmpty: {
-    en: 'No procedures yet. Write down the first how-to so the team — and Staxis — can find it.',
+    en: 'No procedures yet. Write down the first how-to so the team and Staxis can find it.',
     es: 'Aún no hay procedimientos. Escribe el primero para que el equipo y Staxis lo encuentren.',
   },
   sopsEmptyStaff: { en: 'No procedures have been published yet.', es: 'Aún no hay procedimientos publicados.' },
   docsEmpty: { en: 'No documents yet.', es: 'Aún no hay documentos.' },
   docsEmptyFolder: { en: 'No documents in this folder yet.', es: 'Aún no hay documentos en esta carpeta.' },
   sopsLoadFailed: {
-    en: 'The procedures could not load. Do not read this as "there are none" — check your connection and try again.',
+    en: 'The procedures could not load. Do not read this as "there are none". Check your connection and try again.',
     es: 'No se pudieron cargar los procedimientos. No lo tomes como "no hay": revisa tu conexión e inténtalo de nuevo.',
   },
   sopsRefreshFailed: {
@@ -89,7 +89,7 @@ const S = {
     es: 'No se pudieron actualizar los procedimientos. Se muestran los últimos resultados.',
   },
   docsLoadFailed: {
-    en: 'The documents could not load. Do not read this as "there are none" — check your connection and try again.',
+    en: 'The documents could not load. Do not read this as "there are none". Check your connection and try again.',
     es: 'No se pudieron cargar los documentos. No lo tomes como "no hay": revisa tu conexión e inténtalo de nuevo.',
   },
   docsRefreshFailed: {
@@ -109,8 +109,8 @@ const S = {
   confirmDeleteSop: { en: 'Delete this procedure?', es: '¿Eliminar este procedimiento?' },
   confirmDeleteDoc: { en: 'Delete this document?', es: '¿Eliminar este documento?' },
   confirmDeleteFolder: {
-    en: 'Delete this folder? The files inside are kept — they just move out of the folder.',
-    es: '¿Eliminar esta carpeta? Los archivos se conservan — solo salen de la carpeta.',
+    en: 'Delete this folder? The files inside are kept. They just move out of the folder.',
+    es: '¿Eliminar esta carpeta? Los archivos se conservan. Solo salen de la carpeta.',
   },
   fTitle: { en: 'Title', es: 'Título' },
   fTitlePh: { en: 'e.g. Breakfast bar setup', es: 'ej. Montaje del desayuno' },

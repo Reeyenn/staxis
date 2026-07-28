@@ -295,7 +295,7 @@ function LiveMfaBox({ propertyId, sinceIso }: { propertyId: string; sinceIso: st
       const json = await res.json();
       if (json.ok) {
         setCode('');
-        setNote({ tone: 'ok', text: 'Handed to the robot — it types it in within a few seconds.' });
+        setNote({ tone: 'ok', text: 'Handed to the robot. It types it in within a few seconds.' });
       } else {
         setNote({ tone: 'err', text: json.error ?? 'Could not send the code.' });
       }
@@ -312,7 +312,7 @@ function LiveMfaBox({ propertyId, sinceIso }: { propertyId: string; sinceIso: st
       <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: '#fff', margin: '6px 0 12px' }}>
         The PMS sent a verification code{sinceIso ? ` (sent ${new Date(sinceIso).toLocaleTimeString()})` : ''}.
         If it went to your phone, type it here and the robot enters it within a few seconds.
-        Emailed codes are read automatically — you can ignore this if one lands.
+        Emailed codes are read automatically. You can ignore this if one lands.
       </p>
       <div style={{ display: 'flex', gap: 8, maxWidth: 440 }}>
         <input
@@ -695,7 +695,7 @@ export default function LiveMappingPage() {
       if (!json.ok) {
         alert(`Failed: ${json.error ?? 'unknown'}`);
       } else if (json.data?.accepted === false) {
-        alert('This request was already answered (or expired) — refreshing.');
+        alert('This request was already answered (or expired). Refreshing.');
         void load();
       } else {
         setGuidanceText('');
@@ -905,7 +905,7 @@ export default function LiveMappingPage() {
             }
           } catch { /* keep polling */ }
         }
-        if (!done) { alert('Still removing the feed — check Manage maps in a moment.'); return; }
+        if (!done) { alert('Still removing the feed. Check Manage maps in a moment.'); return; }
       }
       // Clear any cached column/capture state for the removed feed.
       feedDetailReqRef.current.delete(feedKey);
@@ -1124,7 +1124,7 @@ export default function LiveMappingPage() {
                 padding: '20px 24px', marginBottom: 16,
                 border: `2px solid ${draftMap.status === 'active' || saveState === 'saved' ? 'var(--forest)' : dimWhite(.18)}`,
               }}>
-                <Caps c={dimWhite(.5)}>This run is done — your call</Caps>
+                <Caps c={dimWhite(.5)}>This run is done. Your call</Caps>
                 {/* feature/cua-report-handling — completion verdict, built from
                     the best-class verification telemetry. The decision is
                     derived board-side from the draft's status (active/saved =
@@ -1148,9 +1148,9 @@ export default function LiveMappingPage() {
                         : <AlertTriangle size={16} color="var(--gold)" style={{ flexShrink: 0 }} />}
                       <span style={{ fontFamily: FONT_SANS, fontSize: 14, color: '#fff' }}>
                         {live ? (
-                          <>Auto-promoted{scoreStr ? <> <span style={{ fontFamily: FONT_MONO, color: 'var(--forest)' }}>({scoreStr})</span></> : ''} — <strong>live</strong></>
+                          <>Auto-promoted{scoreStr ? <> <span style={{ fontFamily: FONT_MONO, color: 'var(--forest)' }}>({scoreStr})</span></> : ''}. <strong>Live</strong></>
                         ) : (
-                          <>Parked{scoreStr ? <> — confidence <span style={{ fontFamily: FONT_MONO, color: 'var(--gold)' }}>{scoreStr}</span></> : ''}, review in <strong>Manage maps</strong></>
+                          <>Parked{scoreStr ? <>, confidence <span style={{ fontFamily: FONT_MONO, color: 'var(--gold)' }}>{scoreStr}</span></> : ''}, review in <strong>Manage maps</strong></>
                         )}
                       </span>
                       {typeof verification?.threshold === 'number' && scoreStr && (
@@ -1183,7 +1183,7 @@ export default function LiveMappingPage() {
                   <div>
                     <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: 'var(--forest)' }}>
                       <CheckCircle2 size={14} style={{ verticalAlign: 'middle', marginRight: 6 }} />
-                      It&rsquo;s live — this hotel&rsquo;s robot is starting to use it. It shows in the PMS coverage list.
+                      It&rsquo;s live. This hotel&rsquo;s robot is starting to use it. It shows in the PMS coverage list.
                     </div>
                     {/* B5 — jump to the Coverage Editor for this hotel to tweak
                         the now-live map feed-by-feed. job.property_id is the
@@ -1246,7 +1246,7 @@ export default function LiveMappingPage() {
                     )}
                     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                       <Btn variant="forest" onClick={() => setConfirmSave(true)} disabled={saveState === 'saving' || saveState === 'discarding'}>
-                        <CheckCircle2 size={13} /> {saveState === 'saving' ? 'Making it live…' : 'Save & Finish — make this live'}
+                        <CheckCircle2 size={13} /> {saveState === 'saving' ? 'Making it live…' : 'Save & Finish: make this live'}
                       </Btn>
                       <Btn variant="terracotta" onClick={() => void discardMap()} disabled={saveState === 'saving' || saveState === 'discarding'}>
                         {saveState === 'discarding' ? 'Discarding…' : 'Discard & Cancel'}
@@ -1270,7 +1270,7 @@ export default function LiveMappingPage() {
                     <DarkCard style={{ padding: '22px 26px', maxWidth: 440, width: '100%', border: '2px solid var(--forest)' }}>
                       <Caps c="var(--forest)">Make this live?</Caps>
                       <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: '#fff', margin: '8px 0 6px' }}>
-                        This makes the {draftMap.actionsFound}-feed map this hotel&rsquo;s live PMS recipe — the robot starts using it right away.
+                        This makes the {draftMap.actionsFound}-feed map this hotel&rsquo;s live PMS recipe. The robot starts using it right away.
                       </p>
                       {draftMap.missingRequired.length > 0 && (
                         <p style={{ fontFamily: FONT_MONO, fontSize: 11, color: 'var(--terracotta)', margin: '0 0 8px' }}>
@@ -1347,7 +1347,7 @@ export default function LiveMappingPage() {
                           )}
                           {row.glyph === 'failed' && row.reason && (
                             <span style={{ fontSize: 11.5, color: dimWhite(.5), marginLeft: 8 }} title={row.reason}>
-                              — {row.reason.length > 90 ? `${row.reason.slice(0, 89)}…` : row.reason}
+                              {row.reason.length > 90 ? `${row.reason.slice(0, 89)}…` : row.reason}
                             </span>
                           )}
                           {/* feature/cua-admin-mapper-visibility — finer live
@@ -1488,7 +1488,7 @@ export default function LiveMappingPage() {
               <DarkCard style={{ padding: '14px 20px', marginBottom: 16 }}>
                 <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5) }}>
                   <CheckCircle2 size={14} style={{ verticalAlign: 'middle', marginRight: 6, color: 'var(--forest)' }} />
-                  The robot already found “{pendingHelp.target_key}” — this old help request will clear itself. No action needed.
+                  The robot already found “{pendingHelp.target_key}”. This old help request will clear itself. No action needed.
                 </div>
               </DarkCard>
             )}
@@ -1496,7 +1496,7 @@ export default function LiveMappingPage() {
               <DarkCard style={{
                 padding: '20px 24px', marginBottom: 16, border: '2px solid var(--terracotta)',
               }}>
-                <Caps c="var(--terracotta)">It&rsquo;s stuck — show it where to go</Caps>
+                <Caps c="var(--terracotta)">It&rsquo;s stuck. Show it where to go</Caps>
                 <h2 style={{
                   fontFamily: FONT_SERIF, fontSize: 20, fontWeight: 400,
                   fontStyle: 'italic', margin: '4px 0 10px', color: '#fff',
@@ -1576,7 +1576,7 @@ export default function LiveMappingPage() {
                     margin: '12px 0', padding: 10, borderRadius: 6,
                     background: 'var(--terracotta-dim)', fontFamily: FONT_MONO, fontSize: 11, color: 'var(--terracotta)',
                   }}>
-                    No screenshot available for this request — use a text hint below.
+                    No screenshot available for this request. Use a text hint below.
                   </div>
                 )}
 
@@ -1602,7 +1602,7 @@ export default function LiveMappingPage() {
                   </Btn>
                   <Btn
                     variant="terracotta"
-                    onClick={() => void submitAssist('unavailable', 'Skipping — admin marked unavailable.')}
+                    onClick={() => void submitAssist('unavailable', 'Skipping. Admin marked unavailable.')}
                     disabled={submitting}
                   >
                     My PMS doesn&rsquo;t have this
@@ -1633,7 +1633,7 @@ export default function LiveMappingPage() {
                 dangling 'active' row, and a finished run has no robot to drive. */}
             {takeover && takeover.status !== 'ended' && !jobTerminal && (
               <DarkCard style={{ padding: '20px 24px', marginBottom: 16, border: '2px solid var(--forest)' }}>
-                <Caps c="var(--forest)">You&rsquo;re driving — point and click</Caps>
+                <Caps c="var(--forest)">You&rsquo;re driving. Point and click</Caps>
                 <h2 style={{ fontFamily: FONT_SERIF, fontSize: 20, fontWeight: 400, fontStyle: 'italic', margin: '4px 0 10px', color: '#fff' }}>
                   {feedRows.find((r) => r.key === takeover.target_key)?.label ??
                     (takeover.target_key ? prettifyTargetKey(takeover.target_key) : 'this feed')}
@@ -1641,7 +1641,7 @@ export default function LiveMappingPage() {
                 {takeoverPending ? (
                   <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.7), display: 'flex', alignItems: 'center', gap: 8 }}>
                     <Loader2 size={14} style={{ animation: 'spin 1.2s linear infinite' }} />
-                    Pausing the robot — it finishes its current step, then hands you the wheel…
+                    Pausing the robot. It finishes its current step, then hands you the wheel…
                   </div>
                 ) : (
                   <>
@@ -1662,7 +1662,7 @@ export default function LiveMappingPage() {
                         {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img
                           src={takeoverFrame.url}
-                          alt="The robot's current screen — click where it should click (sensitive fields redacted)"
+                          alt="The robot's current screen. Click where it should click (sensitive fields redacted)"
                           onClick={onTakeoverFrameClick}
                           style={{ width: '100%', height: 'auto', display: 'block', cursor: (robotIdle && takeoverFrameFresh) ? 'crosshair' : 'wait' }}
                         />
@@ -1699,14 +1699,14 @@ export default function LiveMappingPage() {
                       {/* Finish/Cancel only when the painted frame is current
                           (robotIdle + fresh) — never decide against a stale view. */}
                       <Btn variant="forest" onClick={() => void sendTakeoverCommand('finish')} disabled={takeoverBusy || !robotIdle || !takeoverFrameFresh}>
-                        <CheckCircle2 size={13} /> Finish — this is the page
+                        <CheckCircle2 size={13} /> Finish: this is the page
                       </Btn>
                       <Btn variant="terracotta" onClick={() => void sendTakeoverCommand('cancel')} disabled={takeoverBusy || !robotIdle || !takeoverFrameFresh}>
                         <XCircle size={13} /> Couldn&rsquo;t find it
                       </Btn>
                     </div>
                     <p style={{ fontFamily: FONT_MONO, fontSize: 10, color: dimWhite(.5), marginTop: 8, lineHeight: 1.5 }}>
-                      <strong>Finish</strong> tells the robot this is the right page — it reads the columns and saves this feed.
+                      <strong>Finish</strong> tells the robot this is the right page. It reads the columns and saves this feed.
                       <strong> Couldn&rsquo;t find it</strong> marks the feed not-found and moves on.
                     </p>
                   </>

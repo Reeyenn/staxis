@@ -845,7 +845,7 @@ export function findSettingContradictions(
         hotelValue,
         factId: fact.id,
         line: {
-          en: `${hotel.propertyName}'s ${POLICY_LABELS[key].en} is set to ${hotelValue} — the company book says ${fact.policyValue}.`,
+          en: `${hotel.propertyName}'s ${POLICY_LABELS[key].en} is set to ${hotelValue}. The company book says ${fact.policyValue}.`,
           es: `En ${hotel.propertyName}, ${POLICY_LABELS[key].es} está en ${hotelValue}: el libro de la empresa dice ${fact.policyValue}.`,
         },
       });

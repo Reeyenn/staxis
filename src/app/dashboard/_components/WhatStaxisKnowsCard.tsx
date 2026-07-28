@@ -83,8 +83,8 @@ export function WhatStaxisKnowsCard() {
       <div style={{ marginTop: 8, fontSize: 10.5, color: CARD.ink3, lineHeight: 1.45 }}>
         {empty
           ? es
-            ? 'Listo — se llena a medida que tu equipo registra actividad.'
-            : 'Ready — fills in as your team logs activity.'
+            ? 'Listo. Se llena a medida que tu equipo registra actividad.'
+            : 'Ready. Fills in as your team logs activity.'
           : es
             ? 'El impacto en dólares aparece cuando se conecten los datos de ingresos y nómina.'
             : 'Dollar impact appears once your live revenue & labor data is connected.'}

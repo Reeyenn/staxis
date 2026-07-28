@@ -338,13 +338,13 @@ export function LiveRobotView({ jobId, canStartTakeover, onStartTakeover }: Live
           </div>
           <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: dimWhite(.5), marginTop: 8 }}>
             {frameIsFresh
-              ? 'This is what the robot sees right now — it updates with every step. (Passwords and payment details are blacked out automatically.)'
-              : 'Paused — the robot is thinking. The picture updates with its next step. (Passwords and payment details are blacked out automatically.)'}
+              ? 'This is what the robot sees right now. It updates with every step. (Passwords and payment details are blacked out automatically.)'
+              : 'Paused. The robot is thinking. The picture updates with its next step. (Passwords and payment details are blacked out automatically.)'}
           </div>
         </>
       ) : (
         <div style={{ fontFamily: FONT_MONO, fontSize: 12, color: dimWhite(.5), marginTop: 8 }}>
-          The robot&rsquo;s screen appears here as it works — the first picture can take a
+          The robot&rsquo;s screen appears here as it works. The first picture can take a
           minute while it thinks.
         </div>
       )}

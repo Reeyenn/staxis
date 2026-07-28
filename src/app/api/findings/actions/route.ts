@@ -246,7 +246,7 @@ export async function POST(req: NextRequest) {
           propertyId,
           because: gate.because,
         });
-        return err('Could not check your company\'s rules just now — try again in a moment', {
+        return err('Could not check your company\'s rules just now. Try again in a moment', {
           requestId,
           status: 503,
           code: ApiErrorCode.InternalError,

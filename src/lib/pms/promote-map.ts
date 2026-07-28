@@ -125,7 +125,7 @@ export async function promoteMap(args: {
   if (!hasSignature && !allowUnsigned) {
     return {
       ok: false, status: 409, code: ApiErrorCode.ValidationFailed,
-      message: 'This map is missing its tamper seal — open its editor and re-save it (any small edit re-seals it), then try again.',
+      message: 'This map is missing its tamper seal. Open its editor and re-save it (any small edit re-seals it), then try again.',
     };
   }
   if (target.status === 'active') {
@@ -207,7 +207,7 @@ export async function promoteMap(args: {
       log.warn('promoteMap: promote failed — restored previous live map', {
         id, family, restored: previousActive.id, reason: promoteErr?.message ?? 'target row no longer promotable',
       });
-      return { ok: false, status: 409, code: ApiErrorCode.ValidationFailed, message: 'Could not switch to that map — the previous live map was kept. Refresh and try again.' };
+      return { ok: false, status: 409, code: ApiErrorCode.ValidationFailed, message: 'Could not switch to that map. The previous live map was kept. Refresh and try again.' };
     }
     log.error('promoteMap: promote matched no row (no previous active to restore)', {
       id, family, promoteErr: promoteErr?.message ?? null,

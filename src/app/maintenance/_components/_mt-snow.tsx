@@ -555,7 +555,7 @@ export function BoardLoadError({ es, onRetry }: { es: boolean; onRetry: () => vo
   return (
     <MtEmptyCard
       title={es ? 'No se pudo cargar.' : "Couldn't load this."}
-      body={es ? 'Tus datos están a salvo — revisa la conexión e inténtalo de nuevo.' : 'Your data is safe — check your connection and try again.'}
+      body={es ? 'Tus datos están a salvo. Revisa la conexión e inténtalo de nuevo.' : 'Your data is safe. Check your connection and try again.'}
       action={<Btn variant="primary" onClick={onRetry}>↻ {es ? 'Reintentar' : 'Retry'}</Btn>}
     />
   );
@@ -579,7 +579,7 @@ export class MaintenanceErrorBoundary extends React.Component<
           <div style={{ maxWidth: 420, textAlign: 'center', background: '#FFFFFF', border: `1px solid ${T.rule}`, borderRadius: 18, padding: '32px 28px', boxShadow: CX_CARD_SHADOW }}>
             <div style={{ fontFamily: FONT_SANS, fontSize: 21, fontWeight: 600, color: T.ink, letterSpacing: '-0.02em' }}>Something hiccuped.</div>
             <p style={{ fontFamily: FONT_SANS, fontSize: 14, color: T.ink2, lineHeight: 1.5, margin: '10px 0 18px' }}>
-              The page hit a snag — your data is safe. Reload to pick back up.
+              The page hit a snag. Your data is safe. Reload to pick back up.
             </p>
             <Btn variant="primary" onClick={() => location.reload()}>↻ Reload</Btn>
           </div>

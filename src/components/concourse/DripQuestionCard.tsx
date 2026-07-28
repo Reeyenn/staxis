@@ -152,8 +152,8 @@ export function DripQuestionCard({ lang }: { lang: 'en' | 'es' }) {
         <div className="cx-dec-t">{es ? question.es : question.en}</div>
         <div className="cx-dec-s">
           {es
-            ? 'Una pregunta, un toque. Puedes ignorarla — desaparece sola.'
-            : 'One question, one tap. Ignore it if you like — it goes away on its own.'}
+            ? 'Una pregunta, un toque. Puedes ignorarla. Desaparece sola.'
+            : 'One question, one tap. Ignore it if you like. It goes away on its own.'}
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
           <button

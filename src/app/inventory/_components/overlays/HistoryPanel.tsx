@@ -59,7 +59,7 @@ function hpStrings(lang: Lang) {
       italic: 'Inventory activity',
       event: 'action',
       events: 'actions',
-      noHistory: 'Nothing yet — counts, deliveries and new items will show up here.',
+      noHistory: 'Nothing yet. Counts, deliveries and new items will show up here.',
       // Event titles
       startedCount: 'Started a count',
       quickCount: (item: string) => `Quick count · ${item}`,
@@ -158,7 +158,7 @@ function hpStrings(lang: Lang) {
       italic: 'Actividad de inventario',
       event: 'acción',
       events: 'acciones',
-      noHistory: 'Nada aún — los conteos, entregas y artículos nuevos aparecerán aquí.',
+      noHistory: 'Nada aún. Los conteos, entregas y artículos nuevos aparecerán aquí.',
       startedCount: 'Conteo iniciado',
       quickCount: (item: string) => `Conteo rápido · ${item}`,
       scannedInvoice: 'Factura escaneada',

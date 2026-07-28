@@ -650,18 +650,18 @@ export function PersonEmploymentForm({
             >
               <option value="priority">{copy(
                 lang,
-                'First — give them rooms before the others',
-                'Primero — dale cuartos antes que a los demás',
+                'First: give them rooms before the others',
+                'Primero: dale cuartos antes que a los demás',
               )}</option>
               <option value="normal">{copy(
                 lang,
-                'Normal — share the work evenly',
-                'Normal — reparto parejo',
+                'Normal: share the work evenly',
+                'Normal: reparto parejo',
               )}</option>
               <option value="excluded">{copy(
                 lang,
-                'Never — don’t hand them rooms automatically',
-                'Nunca — no le repartas cuartos automáticamente',
+                'Never: don’t hand them rooms automatically',
+                'Nunca: no le repartas cuartos automáticamente',
               )}</option>
             </select>
             <small id={priorityHintId}>{copy(

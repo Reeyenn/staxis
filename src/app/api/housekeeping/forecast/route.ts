@@ -175,7 +175,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       log.warn('forecast: forbidden — user lacks property access', {
         requestId, userId: auth.userId, propertyId,
       });
-      return err('forbidden — no access to this property', {
+      return err('forbidden: no access to this property', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
     }
@@ -199,7 +199,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
       log.warn('forecast: forbidden — role not permitted', {
         requestId, userId: auth.userId, role,
       });
-      return err('forbidden — role does not have forecast access', {
+      return err('forbidden: role does not have forecast access', {
         requestId, status: 403, code: ApiErrorCode.Forbidden,
       });
     }

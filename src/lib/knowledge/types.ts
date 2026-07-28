@@ -134,7 +134,7 @@ export const DOC_ISSUE_MESSAGE: Record<DocIssueReason, string> = {
   scan_empty: 'The scan didn\'t contain any readable text.',
   scan_busy: 'Reading this scan timed out. Upload it again to retry.',
   scan_budget: 'This hotel has reached its daily limit for reading scans. Try again tomorrow.',
-  legacy_doc: 'Legacy .doc files can\'t be read — re-save as .docx or PDF and re-upload.',
+  legacy_doc: 'Legacy .doc files can\'t be read. Re-save as .docx or PDF and re-upload.',
 };
 
 const ISSUE_BY_MESSAGE: ReadonlyMap<string, DocIssueReason> = new Map(

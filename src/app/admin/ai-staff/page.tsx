@@ -88,15 +88,15 @@ const COPY = {
   working: { en: 'Working here', es: 'Trabajando aquí' },
   planned: { en: 'The plan', es: 'El plan' },
   plannedNote: {
-    en: 'Not built. No status, no numbers — these do not exist yet.',
+    en: 'Not built. No status, no numbers. These do not exist yet.',
     es: 'Sin construir. Sin estado ni cifras: aún no existen.',
   },
   whatItRuns: { en: 'What it runs', es: 'Lo que ejecuta' },
   writesTo: { en: 'Where its work shows up', es: 'Dónde aparece su trabajo' },
   spend: { en: 'Model spend, last 30 days', es: 'Gasto de modelo, últimos 30 días' },
   spendUnknown: {
-    en: 'No separate bill for this one yet — see the Money tab for the whole AI bill.',
-    es: 'Todavía no hay factura aparte para este — mira la pestaña Money para la factura completa de IA.',
+    en: 'No separate bill for this one yet. See the Money tab for the whole AI bill.',
+    es: 'Todavía no hay factura aparte para este. Mira la pestaña Money para la factura completa de IA.',
   },
   moneyTab: { en: 'Money tab', es: 'Pestaña Money' },
   switchOff: { en: 'Switch off', es: 'Apagar' },
@@ -122,8 +122,8 @@ const COPY = {
     es: 'El dinero solo se separa por trabajo desde el',
   },
   spendSinceTwo: {
-    en: '— anything spent before that is on the whole AI bill, not on a card here.',
-    es: '— lo gastado antes está en la factura de IA completa, no en una tarjeta de aquí.',
+    en: 'Anything spent before that is on the whole AI bill, not on a card here.',
+    es: 'Lo gastado antes está en la factura de IA completa, no en una tarjeta de aquí.',
   },
   spendSinceNone: {
     en: 'No spend has been split up by job yet. The figures below start at zero and fill in as work runs.',
@@ -311,7 +311,7 @@ export default function AiStaffPage() {
                       {new Date(note.since).toLocaleDateString(l === 'es' ? 'es-ES' : 'en-US', {
                         year: 'numeric', month: 'short', day: 'numeric',
                       })}
-                    </span>{' '}
+                    </span>{'. '}
                     {COPY.spendSinceTwo[l]}
                   </>
                 )}

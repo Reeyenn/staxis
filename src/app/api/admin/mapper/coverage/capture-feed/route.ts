@@ -81,7 +81,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     if (typeof fam === 'string' && PMS_FAMILY.test(fam)) pmsFamily = fam;
   }
   if (!pmsFamily) {
-    return err('This hotel has no PMS family configured yet — finish onboarding its PMS first.', {
+    return err('This hotel has no PMS family configured yet. Finish onboarding its PMS first.', {
       requestId, status: 409, code: 'no_pms_family',
     });
   }
@@ -108,7 +108,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
     const ageMs = Date.now() - new Date(latest.created_at as string).getTime();
     if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < CAPTURE_COOLDOWN_MS) {
-      return err('The robot just tried reading this page — give it a few seconds, or use Re-map.', {
+      return err('The robot just tried reading this page. Give it a few seconds, or use Re-map.', {
         requestId, status: 429, code: 'cooldown',
       });
     }

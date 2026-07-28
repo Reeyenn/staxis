@@ -198,7 +198,7 @@ export async function draftServiceRecovery(input: {
     guestMessage:
       `${greeting} thank you for letting us know about the issue with your stay` +
       `${input.roomNumber ? ` in room ${input.roomNumber}` : ''}. ` +
-      `I'm sorry for the inconvenience — we're addressing it right away and will follow up to make sure it's fully resolved.`,
+      `I'm sorry for the inconvenience. We're addressing it right away and will follow up to make sure it's fully resolved.`,
     makeGood: input.severity === 'high' ? 'Offer a sincere apology and a meaningful gesture (e.g. comp a night or loyalty points).'
       : input.severity === 'medium' ? 'Offer a small gesture (e.g. comp breakfast or late checkout).'
       : 'A sincere apology is likely sufficient.',

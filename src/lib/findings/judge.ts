@@ -108,7 +108,7 @@ import {
   type ProseViolation,
 } from './prose-guard';
 import { formatMoneyRange } from './pricing';
-import { spanishTemplateSentence, templatePriceSentence } from './template-phrasing';
+import { spanishTemplateSentence, templatePriceSentence, withoutEmDash } from './template-phrasing';
 import {
   cancelFindingsSpend,
   deriveJudgeReservationUsd,
@@ -449,13 +449,19 @@ export function parseJudgeReplyStrict(
 export function templateJudgment(candidate: JudgeCandidate): Omit<JudgeItem, 'id'> {
   return {
     disposition: candidate.disposition,
-    en: `${candidate.summary}${templatePriceSentence(candidate.price, 'en')}`.trim().slice(0, 400),
+    // `withoutEmDash` because this line is COPIED FROM THE DETECTOR and then
+    // PERSISTED to judged_summary_en. The detector templates are clean now, but
+    // a finding first written before the 2026-07-28 copy ruling still carries
+    // its summary forward every time the judge falls back, which would quietly
+    // reintroduce a dash into a fresh row. Cleaning at the copy is the only
+    // place that catches it before it is stored.
+    en: withoutEmDash(`${candidate.summary}${templatePriceSentence(candidate.price, 'en')}`.trim()).slice(0, 400),
     es: spanishTemplateSentence({
       severity: candidate.severity,
       evidence: candidate.evidence,
       price: candidate.price,
     }).slice(0, 400),
-    why: 'Deterministic phrasing — no model judgement was applied.',
+    why: 'Deterministic phrasing. No model judgement was applied.',
   };
 }
 

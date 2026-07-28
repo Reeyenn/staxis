@@ -615,7 +615,7 @@ function MobileSubmitBar({
             WebkitTapHighlightColor: 'transparent', touchAction: 'manipulation',
           }}
         >
-          {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, '✓ Pass — room ready', '✓ Aprobar — habitación lista')}
+          {submitting ? tr(lang, 'Saving…', 'Guardando…') : tr(lang, '✓ Pass, room ready', '✓ Aprobar, habitación lista')}
         </button>
       )}
       {anyFail && (

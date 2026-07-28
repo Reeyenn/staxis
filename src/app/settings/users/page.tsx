@@ -116,7 +116,7 @@ export default function UsersPage() {
       // A network throw used to escape as an unhandled rejection, rendering a
       // silently empty user list with no error.
       console.error('[users:settings] load failed', err);
-      setError(lang === 'es' ? 'No se pudieron cargar los usuarios — revisa tu conexión' : 'Failed to load users — check your connection');
+      setError(lang === 'es' ? 'No se pudieron cargar los usuarios. Revisa tu conexión' : 'Failed to load users. Check your connection');
     } finally {
       if (requestId === loadRequestRef.current && activeScopeRef.current === requestedPropertyId) setLoading(false);
     }
@@ -185,8 +185,8 @@ export default function UsersPage() {
       if (activeScopeRef.current !== requestedPropertyId) return;
       console.error('[users:settings] ownership transfer failed', err);
       setError(lang === 'es'
-        ? 'La transferencia de propiedad falló — revisa tu conexión e intenta de nuevo'
-        : 'Ownership transfer failed — check your connection and try again');
+        ? 'La transferencia de propiedad falló. Revisa tu conexión e intenta de nuevo'
+        : 'Ownership transfer failed. Check your connection and try again');
     } finally {
       setBusyAccountId(null);
     }
@@ -428,8 +428,8 @@ function TransferOwnershipModal({ target, onClose, onConfirm }: {
         </div>
         <p style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.5 }}>
           {lang === 'es'
-            ? `Vas a hacer a ${target.displayName} el nuevo propietario de este hotel. Tu propio rol pasará a Gerente General. Esto NO se puede deshacer desde la app — necesitarás pedirle al nuevo propietario que te promueva de vuelta.`
-            : `You're about to make ${target.displayName} the new owner of this hotel. Your own role will drop to General Manager. This canNOT be undone from the app — you'll need to ask the new owner to promote you back.`}
+            ? `Vas a hacer a ${target.displayName} el nuevo propietario de este hotel. Tu propio rol pasará a Gerente General. Esto NO se puede deshacer desde la app. Necesitarás pedirle al nuevo propietario que te promueva de vuelta.`
+            : `You're about to make ${target.displayName} the new owner of this hotel. Your own role will drop to General Manager. This canNOT be undone from the app. You'll need to ask the new owner to promote you back.`}
         </p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <label style={labelStyle}>{lang === 'es' ? 'Razón (opcional)' : 'Reason (optional)'}</label>

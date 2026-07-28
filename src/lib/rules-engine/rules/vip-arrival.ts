@@ -35,8 +35,8 @@ export const vipArrivalRule: Rule = {
     return {
       id: RULE_ID,
       summary: tier
-        ? `VIP ${tier} arrival — supervisor inspection + amenity setup`
-        : 'VIP arrival — supervisor inspection + amenity setup',
+        ? `VIP ${tier} arrival: supervisor inspection + amenity setup`
+        : 'VIP arrival: supervisor inspection + amenity setup',
       partial: {
         cleaning_type: 'inspection_only',
         estimated_minutes_base: ctx.is_suite ? tbl.suite : tbl.standard,

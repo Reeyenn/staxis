@@ -100,7 +100,7 @@ const WORKER_META: Record<string, { description: string; group: WorkerGroup }> =
   // expire-help-requests were unscheduled — each one swept a table nothing
   // writes to any more. Their rows are gone from here so the list only shows
   // chores that actually run. Restore a line here when re-scheduling one.
-  'pms-auth-codes-purge':                { description: 'Deletes old PMS emails, login codes, and report files — and shreds any report that arrived with a card number on it.', group: 'Cleanup' },
+  'pms-auth-codes-purge':                { description: 'Deletes old PMS emails, login codes, and report files, and shreds any report that arrived with a card number on it.', group: 'Cleanup' },
   'agent-costs-rollup':                  { description: 'Keeps a permanent monthly summary of what the AI cost, so old detail can be tidied away without changing any total.', group: 'Cleanup' },
   'pms-observations-purge':              { description: 'Tidies away PMS readings older than five years.',           group: 'Cleanup' },
   'vercel-watchdog':                     { description: 'Health-checks the app every few minutes.',                  group: 'Other' },

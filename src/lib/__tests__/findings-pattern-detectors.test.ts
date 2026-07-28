@@ -311,7 +311,7 @@ describe('the baseline is robust to the hotel own strangeness', () => {
       subject: 'supply deliveries',
     });
     assert.equal(refusal.ok, false);
-    assert.match(refusal.ok ? '' : refusal.because, /too sporadic/);
+    assert.match(refusal.ok ? '' : refusal.because, /too sporadic/i);
   });
 });
 

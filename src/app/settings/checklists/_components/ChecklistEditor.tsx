@@ -141,7 +141,7 @@ export function StatusRow({ lang, isOverride }: { lang: Lang; isOverride: boolea
         <>
           <Pill tone="neutral">{lang === 'es' ? 'Sin configurar' : 'Not set up yet'}</Pill>
           <span style={{ fontFamily: fonts.sans, fontSize: 12, color: T.ink3 }}>
-            {lang === 'es' ? 'Empieza desde cero — sin pasos predeterminados.' : 'Start from scratch — no built-in steps.'}
+            {lang === 'es' ? 'Empieza desde cero. Sin pasos predeterminados.' : 'Start from scratch. No built-in steps.'}
           </span>
         </>
       )}

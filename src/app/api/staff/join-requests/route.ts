@@ -171,7 +171,7 @@ export async function PUT(req: NextRequest) {
       hotelId,
       metadata: { name: request.name, reason: 'account no longer exists' },
     });
-    return err('That signup no longer exists — the account was deleted.', { requestId, status: 410, code: ApiErrorCode.NotFound });
+    return err('That signup no longer exists. The account was deleted.', { requestId, status: 410, code: ApiErrorCode.NotFound });
   }
   if (account.staff_id) {
     await revertClaim();
@@ -202,7 +202,7 @@ export async function PUT(req: NextRequest) {
   if (staffErr || !staffIns) {
     log.error('[join-requests:PUT] staff insert failed', { requestId, msg: errToString(staffErr) });
     await revertClaim();
-    return err('Failed to add them to the hotel roster — try again.', { requestId, status: 500, code: ApiErrorCode.InternalError });
+    return err('Failed to add them to the hotel roster. Try again.', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
   const staffId = String(staffIns.id);
 
@@ -231,7 +231,7 @@ export async function PUT(req: NextRequest) {
     await revertClaim();
     return err(
       linkErr
-        ? 'Failed to link their login — try again.'
+        ? 'Failed to link their login. Try again.'
         : 'That login was linked to another staff member. Refresh and try again.',
       {
         requestId,

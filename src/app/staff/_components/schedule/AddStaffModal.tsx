@@ -195,8 +195,8 @@ export function AddStaffModal({
           }}>
             <span style={{ fontSize: 12.5, color: T.ink, lineHeight: 1.5 }}>
               {es
-                ? <>Aprobaste tiempo libre para <strong>{confirmFor.name}</strong> el <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <> — “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. ¿Agendarle de todos modos?</>
-                : <>You approved time off for <strong>{confirmFor.name}</strong> on <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <> — “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. Schedule them anyway?</>}
+                ? <>Aprobaste tiempo libre para <strong>{confirmFor.name}</strong> el <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <>, “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. ¿Agendarle de todos modos?</>
+                : <>You approved time off for <strong>{confirmFor.name}</strong> on <strong>{dayPhrase}</strong>{approvedTorByStaff.get(confirmFor.id)?.reason ? <>, “{approvedTorByStaff.get(confirmFor.id)!.reason}”</> : null}. Schedule them anyway?</>}
             </span>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <Btn variant="ghost" size="sm" onClick={() => setConfirmFor(null)}>{es ? 'Cancelar' : 'Cancel'}</Btn>

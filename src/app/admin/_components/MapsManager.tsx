@@ -89,7 +89,7 @@ function whyParked(v: VerificationView | undefined): string | null {
   const parts: string[] = [`confidence ${v.score.toFixed(2)} / ${v.threshold.toFixed(2)}`];
   if (passesShort) parts.push(`${v.consistentPasses}/${v.requiredPasses} repeat checks`);
   if (failed.length) parts.push(`failed: ${failed.join(', ')}`);
-  return `Held for review — ${parts.join('; ')}.`;
+  return `Held for review. ${parts.join('; ')}.`;
 }
 
 interface FamilyGroup {
@@ -284,7 +284,7 @@ function ConfirmDialog({ action, busy, error, onCancel, onConfirm }: {
         {parkedReason && (
           <span style={{ display: 'flex', gap: 7, alignItems: 'flex-start', marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(201,154,46,.12)', border: '1px solid rgba(201,154,46,.4)', color: 'var(--gold-deep)', fontSize: 12.5 }}>
             <AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 1 }} />
-            <span>The robot held this map for review — {parkedReason.replace(/^Held for review — /, '')} Make sure you’ve checked what it captured before going live.</span>
+            <span>The robot held this map for review. {parkedReason.replace(/^Held for review\. /, '')} Make sure you’ve checked what it captured before going live.</span>
           </span>
         )}
         {!map.signed && (
@@ -353,7 +353,7 @@ function DeleteFeedDialog({ feed, familyLabel, busy, error, onCancel, onConfirm 
         <div style={{ fontSize: 13.5, color: 'var(--ink-soft)', lineHeight: 1.6 }}>
           This map is shared by <b>every {familyLabel} hotel</b>. Removing this feed
           re-publishes the map and the robot will <b>stop capturing {feed.label}</b> for{' '}
-          <b>all {familyLabel} hotels</b> — not just one. The robot keeps every other feed.
+          <b>all {familyLabel} hotels</b>, not just one. The robot keeps every other feed.
           You can add it back later with Edit.
         </div>
 
@@ -462,7 +462,7 @@ function FeedsPanel({ familyLabel, state, onView, onEdit, onDelete }: {
   if (data.feeds.length === 0) {
     return (
       <div style={{ padding: '14px 16px', fontSize: 12.5, color: dim(.5), fontStyle: 'italic' }}>
-        This family has no live map yet — there are no feeds to manage.
+        This family has no live map yet. There are no feeds to manage.
       </div>
     );
   }
@@ -675,7 +675,7 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
         await loadFeeds(family);
         await load(); // refresh the version list (a new version was published)
       } else if (finalState === 'timeout') {
-        patchFeeds(family, { deleteBusy: false, deleteError: 'Still working — the map is taking longer than expected. Close and reopen feeds in a moment to check.' });
+        patchFeeds(family, { deleteBusy: false, deleteError: 'Still working. The map is taking longer than expected. Close and reopen feeds in a moment to check.' });
       } else {
         patchFeeds(family, { deleteBusy: false, deleteError: jobErr ?? `The map could not be re-published (${finalState}).` });
       }
@@ -715,7 +715,7 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
                 <MapIcon size={22} style={{ color: 'var(--forest)' }} /> The maps the robot <span style={{ fontStyle: 'italic' }}>has learned</span>
               </h2>
               <p style={{ fontSize: 12.5, color: dim(.55), margin: '8px 0 0', maxWidth: 560, lineHeight: 1.55 }}>
-                One map per PMS brand drives every hotel on it. Promote a draft to go live, roll back, take a brand offline, or delete an old map. The live map can’t be deleted — take it offline first.
+                One map per PMS brand drives every hotel on it. Promote a draft to go live, roll back, take a brand offline, or delete an old map. The live map can’t be deleted. Take it offline first.
               </p>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -737,7 +737,7 @@ export function MapsManagerModal({ open, onClose }: { open: boolean; onClose: ()
           {initialLoading ? (
             <MapsLoadingState />
           ) : totalMaps === 0 && !loading && !error ? (
-            <Empty text="No maps learned yet — the robot writes one here the first time it maps a PMS." />
+            <Empty text="No maps learned yet. The robot writes one here the first time it maps a PMS." />
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {families.map((fam) => {
