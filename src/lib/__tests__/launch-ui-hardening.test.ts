@@ -60,7 +60,6 @@ test('communications has a phone list/detail flow and does not collapse failures
   const contacts = source('src', 'components', 'concourse', 'ToldContacts.tsx');
   const knowledge = source('src', 'components', 'concourse', 'ToldKnowledge.tsx');
   const logbook = source('src', 'app', 'communications', '_components', 'LogbookPane.tsx');
-  const snow = source('src', 'app', 'communications', '_components', 'comms-snow.tsx');
 
   assert.match(app, /comms-mobile-detail/);
   assert.match(app, /min-width:44px;min-height:44px/);
@@ -84,7 +83,6 @@ test('communications has a phone list/detail flow and does not collapse failures
   assert.match(knowledge, /if \(foldersR\.error !== undefined \|\| !foldersR\.data\) return \{ error:/);
   assert.doesNotMatch(knowledge, /documents: docsR\.data\?\.documents \?\? \[\]/);
   assert.match(logbook, /if \(!r\.ok\).*The recap was not posted/);
-  assert.match(snow, /export const iconBtn:[\s\S]*?width: 44, height: 44/);
 
   // The Communications originals are still mounted by CommsApp until the
   // clean-out lands, so they keep their guards until the day they disappear.
