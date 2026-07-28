@@ -12,6 +12,7 @@ import { toWorkOrderRow, fromWorkOrderRow } from '../db-mappers';
 export function subscribeToWorkOrders(
   _uid: string, pid: string,
   callback: (orders: WorkOrder[]) => void,
+  onError?: (error: unknown) => void,
 ): () => void {
   return subscribeTable<WorkOrder>(
     `work_orders:${pid}`, 'work_orders', `property_id=eq.${pid}`,
@@ -24,6 +25,9 @@ export function subscribeToWorkOrders(
       return (data ?? []).map(fromWorkOrderRow);
     },
     callback,
+    undefined,
+    undefined,
+    onError,
   );
 }
 

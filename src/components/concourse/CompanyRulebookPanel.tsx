@@ -32,7 +32,11 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+  SessionEndedError,
+} from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
 import {
   COMPANY_CATEGORIES,
@@ -584,6 +588,7 @@ export function CompanyRulebookPanel({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
         });
         return await readEnvelope<T>(res);
       } catch (e) {

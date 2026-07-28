@@ -23,10 +23,11 @@ export const dynamic = 'force-dynamic';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import {
   FONT_SANS, FONT_MONO, FONT_SERIF, Btn, Pill, Caps, type PillTone,
 } from '@/app/admin/_components/studio/kit';
@@ -167,7 +168,7 @@ export default function CoveragePage() {
   const params = useParams<{ propertyId: string }>();
   const propertyId = params?.propertyId ?? '';
   const { user, loading: authLoading } = useAuth();
-  const router = useRouter();
+  const { push } = useReliableNavigation();
 
   const [data, setData] = useState<CoverageResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -704,7 +705,7 @@ export default function CoveragePage() {
         setToast({ tone: 'bad', text: json.error ?? 'Could not start re-learning.' });
         return;
       }
-      router.push(`/admin/properties/mapper/${json.data.jobId}`);
+      push(`/admin/properties/mapper/${json.data.jobId}`);
     } catch (err) {
       setToast({ tone: 'bad', text: (err as Error).message });
     } finally {

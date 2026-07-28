@@ -3,7 +3,7 @@
 export const dynamic = 'force-dynamic';
 
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import React from 'react';
 import { CheckCircle2, KeyRound, ShieldCheck } from 'lucide-react';
 
@@ -11,6 +11,8 @@ import AuthShell, { AuthError, AuthLabel, AuthPanel, authLinkStyle } from '@/com
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { notifyAuthorizationChanged } from '@/lib/hooks/use-authorization-refresh-key';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   clearCompanyInvitationHandoff,
@@ -61,7 +63,7 @@ export default function CompanyInvitationPage() {
   const routeToken = params?.token ?? '';
   const { user, loading } = useAuth();
   const { lang } = useLang();
-  const router = useRouter();
+  const { replace } = useReliableNavigation();
   const [token, setToken] = React.useState('');
   const [tokenReady, setTokenReady] = React.useState(false);
   const [preview, setPreview] = React.useState<CompanyInvitationPreview | null>(null);
@@ -157,7 +159,8 @@ export default function CompanyInvitationPage() {
         throw new Error(responseError(body, copy(lang, 'Could not accept invitation.', 'No se pudo aceptar la invitación.')));
       }
       clearCompanyInvitationHandoff();
-      router.replace('/company');
+      notifyAuthorizationChanged();
+      replace('/company');
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : copy(lang, 'Could not accept invitation.', 'No se pudo aceptar la invitación.'));
       setSubmitting(false);

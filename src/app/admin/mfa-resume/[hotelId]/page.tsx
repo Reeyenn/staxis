@@ -23,11 +23,12 @@ export const dynamic = 'force-dynamic';
 
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useParams, useRouter } from 'next/navigation';
+import { useParams } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { ChevronLeft, ShieldAlert, ExternalLink, RefreshCw } from 'lucide-react';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 interface SessionRow {
   property_id: string;
@@ -40,7 +41,7 @@ interface SessionRow {
 
 export default function MfaResumePage() {
   const params = useParams<{ hotelId: string }>();
-  const router = useRouter();
+  const { push } = useReliableNavigation();
   const { user, loading: authLoading } = useAuth();
   const [session, setSession] = useState<SessionRow | null>(null);
   const [loading, setLoading] = useState(true);
@@ -85,7 +86,7 @@ export default function MfaResumePage() {
         return;
       }
       alert('Resume requested. The supervisor will respawn the driver within 30 seconds.');
-      router.push('/admin/properties#system');
+      push('/admin/properties#system');
     } catch (err) {
       alert(`Resume failed: ${(err as Error).message}`);
       setResuming(false);

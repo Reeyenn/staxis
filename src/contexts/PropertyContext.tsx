@@ -1,6 +1,7 @@
 'use client';
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { useAuth } from './AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
 import { supabase } from '@/lib/supabase';
@@ -9,29 +10,28 @@ import {
   getProperties,
   getProperty,
   getStaff,
-  getPublicAreas,
-  getLaundryConfig,
-  bulkSetPublicAreas,
-  setLaundryCategory,
   subscribeToStaff,
 } from '@/lib/db';
-import { getDefaultPublicAreas, getDefaultLaundryCategories } from '@/lib/defaults';
 import { isOnboardingInProgress } from '@/lib/onboarding/state';
-import type { Property, StaffMember, PublicArea, LaundryCategory } from '@/types';
-import { generateId } from '@/lib/utils';
+import type { Property, StaffMember } from '@/types';
 import { propertyChangeAllowed } from '@/lib/property-change-guard';
+import { RequestTimeoutError, withPromiseDeadline } from '@/lib/fetch-deadline';
+import { useAuthorizationRefreshKey } from '@/lib/hooks/use-authorization-refresh-key';
+
+export type CapabilityOverridesStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 interface PropertyContextType {
   properties: Property[];
   activeProperty: Property | null;
   activePropertyId: string | null;
+  /** Canonical signed-in account + resolved hotel identity for all scoped
+   *  client snapshots. Consumers must not rebuild this key independently. */
+  activePropertyViewerKey: string | null;
   staff: StaffMember[];
   staffLoaded: boolean;
   staffLoadFailed: boolean;
   /** Identity + hotel key for the currently exposed staff snapshot. */
   staffViewerKey: string | null;
-  publicAreas: PublicArea[];
-  laundryConfig: LaundryCategory[];
   /** The active hotel's capability restrictions (admin's Access-tab toggles).
    *  Empty = everyone-everything (the default). Drives useCan(). */
   capabilityOverrides: CapabilityOverrideMap;
@@ -41,12 +41,16 @@ interface PropertyContextType {
   /** Hotel id carried by the exposed capability snapshot. Kept separately from
    *  the viewer key so consumers can make property readiness explicit. */
   capabilityOverridesPropertyId: string | null;
+  /** Terminal state for the exact signed-in viewer + resolved hotel. */
+  capabilityOverridesStatus: CapabilityOverridesStatus;
+  /** Safe user-facing copy when the exact capability snapshot failed. */
+  capabilityOverridesError: string | null;
   loading: boolean;
+  propertiesError: string | null;
   setActivePropertyId: (id: string) => void;
+  retryProperties: () => void;
   refreshProperty: () => Promise<void>;
   refreshStaff: () => Promise<void>;
-  refreshPublicAreas: () => Promise<void>;
-  refreshLaundryConfig: () => Promise<void>;
   refreshCapabilities: () => Promise<void>;
 }
 
@@ -54,90 +58,153 @@ const PropertyContext = createContext<PropertyContextType>({
   properties: [],
   activeProperty: null,
   activePropertyId: null,
+  activePropertyViewerKey: null,
   staff: [],
   staffLoaded: false,
   staffLoadFailed: false,
   staffViewerKey: null,
-  publicAreas: [],
-  laundryConfig: [],
   capabilityOverrides: {},
   capabilityOverridesViewerKey: null,
   capabilityOverridesPropertyId: null,
+  capabilityOverridesStatus: 'idle',
+  capabilityOverridesError: null,
   loading: true,
+  propertiesError: null,
   setActivePropertyId: () => {},
+  retryProperties: () => {},
   refreshProperty: async () => {},
   refreshStaff: async () => {},
-  refreshPublicAreas: async () => {},
-  refreshLaundryConfig: async () => {},
   refreshCapabilities: async () => {},
 });
 
 const EMPTY_CAPABILITY_OVERRIDES: CapabilityOverrideMap = {};
+const PROPERTY_CONTEXT_TIMEOUT_MS = 10_000;
 
 interface CapabilityOverrideSnapshot {
   viewerKey: string;
   propertyId: string;
   overrides: CapabilityOverrideMap;
+  status: Exclude<CapabilityOverridesStatus, 'idle'>;
+  error: string | null;
 }
 
 /** Read one hotel's capability override map via the service-role-backed route
  *  (the table is deny-all RLS, so a direct browser read would return []). A
- *  failure falls back to {} = everyone-everything (the existing UI-hint
- *  behavior). The provider still tags that settled fallback to its identity +
- *  hotel so consumers can wait without ever pairing it with stale permissions.
+ *  Failure is surfaced as a retryable terminal state. It must never be
+ *  converted into {}: that value means "the server confirmed no overrides",
+ *  while a timeout means the server has not made an access decision at all.
  *
  *  CRITICAL — this MUST fail soft, never force a logout. We pass our OWN
  *  Authorization header, which makes fetchWithAuth treat the call as "caller
  *  opted out of 401 recovery" and RETURN the 401 instead of running its
  *  signOut + redirect-to-/signin path (see api-fetch.ts). Reason: this is a
- *  non-critical UI hint that auto-fires the instant a single-property owner is
+ *  scoped UI access read that auto-fires the instant a single-property owner is
  *  authenticated — including the 2FA-trust window during onboarding / a fresh
  *  login, where it transiently 401s `requires_2fa`. With the default
  *  fetchWithAuth recovery, that 401 nuked the session and bounced the owner to
  *  /signin the moment they entered their 2FA code (the access-control feature,
- *  2026-06-14, introduced this call and the regression). Now it just yields {}.
+ *  2026-06-14, introduced this call and the regression). A transient failure
+ *  now stays on-page with an explicit retry instead of logging out or allowing.
  */
 async function fetchOverridesFor(pid: string): Promise<CapabilityOverrideMap> {
-  let token: string | null = null;
-  try {
-    const { data } = await supabase.auth.getSession();
-    token = data.session?.access_token ?? null;
-  } catch { /* no session → fall through to {} */ }
-  if (!token) return {};
-  try {
-    const res = await fetchWithAuth(`/api/capabilities/overrides?propertyId=${encodeURIComponent(pid)}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) return {};
-    const json = await res.json().catch(() => null);
-    return (json?.data?.overrides ?? {}) as CapabilityOverrideMap;
-  } catch {
-    // SessionEndedError or network — never propagate into a logout.
-    return {};
+  const { data, error } = await supabase.auth.getSession();
+  if (error) throw error;
+  const token = data.session?.access_token ?? null;
+  if (!token) throw new Error('The signed-in session is not ready.');
+
+  const res = await fetchWithAuth(`/api/capabilities/overrides?propertyId=${encodeURIComponent(pid)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Capability access check failed (${res.status}).`);
+  const json = await res.json().catch(() => null);
+  if (!json?.data || typeof json.data.overrides !== 'object' || json.data.overrides === null) {
+    throw new Error('Capability access check returned an invalid response.');
   }
+  return json.data.overrides as CapabilityOverrideMap;
 }
 
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user } = useAuth();
+  const pathname = usePathname();
+  const authFlowActive = pathname === '/signin' || pathname.startsWith('/signin/');
   const [properties, setProperties] = useState<Property[]>([]);
+  const [propertiesViewerUid, setPropertiesViewerUid] = useState<string | null>(null);
+  const [propertiesAuthorizationViewerKey, setPropertiesAuthorizationViewerKey] = useState<string | null>(null);
   const [activePropertyId, setActivePropertyIdState] = useState<string | null>(() => {
-    if (typeof window !== 'undefined') return localStorage.getItem('hotelops-active-property');
+    if (typeof window !== 'undefined') {
+      try { return localStorage.getItem('hotelops-active-property'); } catch { return null; }
+    }
     return null;
   });
   const [staff, setStaff] = useState<StaffMember[]>([]);
   const [staffLoaded, setStaffLoaded] = useState(false);
   const [staffLoadFailed, setStaffLoadFailed] = useState(false);
   const [staffViewerKey, setStaffViewerKey] = useState<string | null>(null);
-  const [publicAreas, setPublicAreas] = useState<PublicArea[]>([]);
-  const [laundryConfig, setLaundryConfig] = useState<LaundryCategory[]>([]);
   const [capabilitySnapshot, setCapabilitySnapshot] = useState<CapabilityOverrideSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
+  const [propertiesError, setPropertiesError] = useState<string | null>(null);
+  const [propertiesErrorViewerUid, setPropertiesErrorViewerUid] = useState<string | null>(null);
+  const [propertiesErrorAuthorizationViewerKey, setPropertiesErrorAuthorizationViewerKey] = useState<string | null>(null);
+  const [propertiesRetryKey, setPropertiesRetryKey] = useState(0);
 
-  // Derived from properties list - no async needed, always in sync
-  const activeProperty = useMemo(
-    () => properties.find(p => p.id === activePropertyId) ?? null,
-    [properties, activePropertyId]
+  const userUid = user?.uid;
+  const userAccountId = user?.accountId;
+  const userRole = user?.role;
+  // Canonicalize the legacy access array so a harmless ordering difference on
+  // token refresh does not reload the shell, while any actual grant/revocation
+  // changes the authorization identity immediately. Company-hat coverage is
+  // still resolved exclusively by /api/properties; this key never filters it.
+  const userPropertyAccessKey = [...(user?.propertyAccess ?? [])].sort().join(',');
+  const propertyAuthorizationIdentityKey = userUid && userAccountId
+    ? `${userUid}:${userAccountId}:${userRole ?? 'unknown'}:${userPropertyAccessKey}`
+    : null;
+  const propertyAuthorizationViewerKey = useAuthorizationRefreshKey(
+    propertyAuthorizationIdentityKey,
+    Boolean(propertyAuthorizationIdentityKey) && !authFlowActive,
   );
+  const propertyAuthorizationViewerKeyRef = useRef(propertyAuthorizationViewerKey);
+  propertyAuthorizationViewerKeyRef.current = propertyAuthorizationViewerKey;
+  // A same-tab account switch can render once before the loading effect runs.
+  // Stamp the hotel list with both the account and its authorization identity
+  // so same-UID role/grant changes mask old coverage during that render too.
+  const exposedProperties = propertiesViewerUid === userUid
+    && propertiesAuthorizationViewerKey === propertyAuthorizationViewerKey
+    && propertyAuthorizationViewerKey !== null
+    ? properties
+    : [];
+  const exposedPropertiesError = propertiesErrorViewerUid === userUid
+    && propertiesErrorAuthorizationViewerKey === propertyAuthorizationViewerKey
+    && propertyAuthorizationViewerKey !== null
+    ? propertiesError
+    : null;
+  // Effects run after render. During an Account A -> Account B switch, the raw
+  // `loading` bit can therefore still be false for one render while the
+  // viewer-stamped rows are already masked. Treat that identity gap as
+  // loading unless the new viewer owns a terminal error snapshot.
+  const exposedPropertiesLoading = loading || Boolean(
+    userUid
+    && propertiesViewerUid !== userUid
+    && propertiesErrorViewerUid !== userUid,
+  ) || Boolean(
+    propertyAuthorizationViewerKey
+    && propertiesAuthorizationViewerKey !== propertyAuthorizationViewerKey
+    && propertiesErrorAuthorizationViewerKey !== propertyAuthorizationViewerKey,
+  );
+  // Derived from the viewer-stamped list — never from a stale selected id.
+  const activeProperty = exposedProperties.find(p => p.id === activePropertyId) ?? null;
+  const resolvedPropertyId = activeProperty?.id ?? null;
+  const activePropertyViewerKey = userUid && userAccountId && resolvedPropertyId
+    ? `${userUid}:${userAccountId}:${resolvedPropertyId}`
+    : null;
+  // Auth pages deliberately establish a short-lived password/OTP session
+  // before device trust is complete. Protected property reads during that
+  // window can receive requires_2fa and must not persist a false hotel-access
+  // error. Keep the provider quiescent until navigation leaves the auth flow;
+  // pathname is an explicit dependency, so the real load starts immediately
+  // after verification succeeds.
+  const staffRosterNeeded = pathname.startsWith('/staff')
+    || pathname.startsWith('/company')
+    || pathname.startsWith('/housekeeping');
 
   // Is the active property still in the PRISTINE wizard phase — mid-onboarding
   // AND the wizard has never been left for the app (onboardingPromptShownAt
@@ -152,7 +219,17 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       && !activeProperty.onboardingPromptShownAt
     : false;
 
-  const setActivePropertyId = (id: string) => {
+  const setActivePropertyId = useCallback((id: string) => {
+    // The selector also calls this for one-hotel auto-entry and when a user
+    // explicitly chooses the hotel that is already active. That is not a
+    // property transition: clearing the capability snapshot here would leave
+    // it at `idle`, because the capability effect keys on the unchanged
+    // resolved id and therefore has no reason to run again. Preserve the
+    // terminal/loading snapshot so gated pages cannot hang until hard refresh.
+    if (id === activePropertyId) {
+      try { localStorage.setItem('hotelops-active-property', id); } catch { /* storage unavailable */ }
+      return;
+    }
     if (activePropertyId && !propertyChangeAllowed({
       fromPropertyId: activePropertyId,
       toPropertyId: id,
@@ -162,8 +239,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     // hotel with the previous hotel's capability map.
     setCapabilitySnapshot(null);
     setActivePropertyIdState(id);
-    localStorage.setItem('hotelops-active-property', id);
-  };
+    try { localStorage.setItem('hotelops-active-property', id); } catch { /* storage unavailable */ }
+  }, [activePropertyId]);
 
   // Cross-tab sync (audit/concurrency #13). Without this, swapping the
   // active property in Tab A leaves Tab B's dashboard/rooms/staff list
@@ -199,7 +276,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // attempt fails that way, retry with a short backoff so the user isn't
   // greeted by a spurious "No properties found" screen.
   //
-  // ⚠️ The dependency below is INTENTIONALLY narrow (uid + role + access)
+  // ⚠️ The dependency below is INTENTIONALLY narrow (uid + account row +
+  // role + access + the explicit live-authorization revision)
   // rather than the full `user` object. Reason: AuthContext's
   // onAuthStateChange handler fires on every Supabase token refresh
   // (~hourly, plus on tab focus/visibility). Each fire creates a NEW
@@ -211,26 +289,50 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // bearing primitives makes this effect idempotent across refreshes.
   // The full user object is still in scope inside the effect; we just
   // don't react to its reference identity.
-  const userUid           = user?.uid;
-  const userRole          = user?.role;
-  const userPropertyAccessKey = (user?.propertyAccess ?? []).join(',');
-  const expectedStaffViewerKey = userUid && activePropertyId
-    ? `${userUid}:${activePropertyId}`
-    : null;
+  const expectedStaffViewerKey = activePropertyViewerKey;
   const expectedStaffViewerKeyRef = useRef(expectedStaffViewerKey);
   expectedStaffViewerKeyRef.current = expectedStaffViewerKey;
+  // Like capabilities and properties, roster state is identity-owned. Hotel B
+  // must see an empty/not-yet-loaded roster on the render where selection
+  // changes, never Hotel A's staff until the clearing effect runs.
+  const exposedStaffSnapshot = staffViewerKey === expectedStaffViewerKey && expectedStaffViewerKey !== null;
+  const exposedStaff = exposedStaffSnapshot ? staff : [];
+  const exposedStaffLoaded = exposedStaffSnapshot ? staffLoaded : false;
+  const exposedStaffLoadFailed = exposedStaffSnapshot ? staffLoadFailed : false;
+  const exposedStaffViewerKey = exposedStaffSnapshot ? staffViewerKey : null;
   const staffSubscriptionRef = useRef<{
     viewerKey: string;
     refresh: () => Promise<void>;
   } | null>(null);
   useEffect(() => {
-    if (!user) {
+    if (!userUid || !propertyAuthorizationViewerKey || authFlowActive) {
+      setProperties([]);
+      setPropertiesViewerUid(null);
+      setPropertiesAuthorizationViewerKey(null);
+      setActivePropertyIdState(null);
+      setCapabilitySnapshot(null);
+      setPropertiesError(null);
+      setPropertiesErrorViewerUid(null);
+      setPropertiesErrorAuthorizationViewerKey(null);
       setLoading(false);
       return;
     }
     let cancelled = false;
+    const loadUserUid = userUid;
+    const loadViewerKey = propertyAuthorizationViewerKey;
+    // One deadline belongs to the WHOLE load, including permission-race
+    // retries and their backoff. Recursive attempts may spend only what is
+    // left; none receives a fresh ten seconds.
+    const loadDeadlineAt = Date.now() + PROPERTY_CONTEXT_TIMEOUT_MS;
+    const remainingPropertyLoadBudgetMs = (): number => {
+      const remainingMs = Math.floor(loadDeadlineAt - Date.now());
+      if (remainingMs <= 0) {
+        throw new RequestTimeoutError('Hotel access', PROPERTY_CONTEXT_TIMEOUT_MS);
+      }
+      return remainingMs;
+    };
 
-    const loadProps = async (retries = 3): Promise<void> => {
+    const loadProps = async (retries = 3): Promise<Property[]> => {
       try {
         // THE WALL IS THE SERVER'S, NOT THIS FILTER'S.
         //
@@ -245,16 +347,12 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         // `/api/properties` now resolves coverage once, with service-role, as
         // the legacy array UNION every live hat. Re-filtering the result here
         // would only be able to take hotels back away.
-        const props = await getProperties(user.uid);
-        if (cancelled) return;
-        setProperties(props);
-
-        const stored = localStorage.getItem('hotelops-active-property');
-        const pid = stored && props.find(p => p.id === stored) ? stored : props[0]?.id ?? null;
-        setCapabilitySnapshot(null);
-        setActivePropertyIdState(pid);
+        return await withPromiseDeadline(getProperties(loadUserUid), {
+          timeoutMs: remainingPropertyLoadBudgetMs(),
+          label: 'Hotel access',
+        });
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled) throw err;
         // Detect Supabase/PostgREST permission errors.
         //   - PGRST301 = JWT-related (missing/invalid/expired auth)
         //   - PGRST116 = no rows returned where one expected (not really perm,
@@ -272,7 +370,9 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         // real and short (the account row lookup, or device-trust settling
         // right after an OTP verify) and blanking the shell for it would look
         // exactly like "you have no hotels" — the failure this whole change
-        // exists to stop. A 5xx gets the same benefit of the doubt.
+        // exists to stop. A 5xx or timeout settles to the visible retry state;
+        // replaying a nearly-timed-out request three times would violate the
+        // route's terminal-state budget.
         //
         // NOT retried: SessionEndedError. fetchWithAuth has already signed the
         // user out and started the redirect; retrying would fight a navigation.
@@ -284,7 +384,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
             code === 'PGRST301' ||
             code === 'PGRST116' ||
             code === '42501' ||
-            /\/api\/properties (401|403|5\d\d)\b/.test(errStr) ||
+            /\/api\/properties (401|403)\b/.test(errStr) ||
             errStr.includes('policy') ||
             errStr.includes('jwt') ||
             errStr.includes('permission') ||
@@ -294,23 +394,71 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         // Retry with short backoff: 200ms, 500ms, 1s.
         if (retries > 0 && isPermErr) {
           const delay = retries === 3 ? 200 : retries === 2 ? 500 : 1000;
-          await new Promise(r => setTimeout(r, delay));
-          if (!cancelled) return loadProps(retries - 1);
+          await withPromiseDeadline(
+            new Promise<void>((resolve) => setTimeout(resolve, delay)),
+            {
+              timeoutMs: remainingPropertyLoadBudgetMs(),
+              label: 'Hotel access',
+            },
+          );
+          if (cancelled) throw err;
+          return loadProps(retries - 1);
         }
-        console.error('PropertyContext: failed to load properties', err);
+        throw err;
       }
     };
 
     void (async () => {
       setLoading(true);
-      await loadProps();
-      if (!cancelled) setLoading(false);
+      setPropertiesError(null);
+      setPropertiesErrorViewerUid(null);
+      setPropertiesErrorAuthorizationViewerKey(null);
+      try {
+        const props = await loadProps();
+        if (cancelled) return;
+        setProperties(props);
+        setPropertiesViewerUid(loadUserUid);
+        setPropertiesAuthorizationViewerKey(loadViewerKey);
+        setPropertiesError(null);
+        setPropertiesErrorViewerUid(null);
+        setPropertiesErrorAuthorizationViewerKey(null);
+
+        let stored: string | null = null;
+        try { stored = localStorage.getItem('hotelops-active-property'); } catch { /* storage unavailable */ }
+        const pid = stored && props.find(p => p.id === stored) ? stored : props[0]?.id ?? null;
+        setCapabilitySnapshot(null);
+        setActivePropertyIdState(pid);
+      } catch (err) {
+        if (cancelled) return;
+        console.error('PropertyContext: failed to load properties', err);
+        setProperties([]);
+        setPropertiesViewerUid(null);
+        setPropertiesAuthorizationViewerKey(null);
+        setActivePropertyIdState(null);
+        setCapabilitySnapshot(null);
+        setPropertiesError('We could not load the hotels available to this account.');
+        setPropertiesErrorViewerUid(loadUserUid);
+        setPropertiesErrorAuthorizationViewerKey(loadViewerKey);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
 
     return () => { cancelled = true; };
     // See note above for why we depend on identity primitives, not `user`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, userRole, userPropertyAccessKey]);
+  }, [propertyAuthorizationViewerKey, propertiesRetryKey, authFlowActive]);
+
+  const retryProperties = useCallback(() => {
+    // Set loading in the click event, before the retry effect gets a chance to
+    // run. Pages must never see "signed in + no hotel + not loading" and fire
+    // a redirect during that render gap.
+    setLoading(true);
+    setPropertiesError(null);
+    setPropertiesErrorViewerUid(null);
+    setPropertiesErrorAuthorizationViewerKey(null);
+    setPropertiesRetryKey((key) => key + 1);
+  }, []);
 
   // Load active property data.
   // Staff uses a safe projected snapshot rather than postgres_changes. The
@@ -319,9 +467,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
   // helper fetches immediately, retries transient auth races, polls while the
   // page is visible, and catches up on foreground/online.
   // ── Staff roster snapshot listener ───────────────────────────────────────
-  // Keyed on the raw activePropertyId so staff load immediately.
+  // Only routes that render roster data subscribe. Key to the RESOLVED hotel,
+  // never the raw localStorage value, so a new account cannot query a stale
+  // property id before its authorized property list has loaded.
   useEffect(() => {
-    if (!user || !activePropertyId) {
+    if (!userUid || !resolvedPropertyId || !expectedStaffViewerKey || !staffRosterNeeded) {
       setStaff([]);
       setStaffLoaded(false);
       setStaffLoadFailed(false);
@@ -329,14 +479,14 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     let cancelled = false;
-    const subscriptionViewerKey = `${user.uid}:${activePropertyId}`;
+    const subscriptionViewerKey = expectedStaffViewerKey;
     // Never carry one hotel's roster through the transition to another hotel
     // or account while the new real-time snapshot is connecting.
     setStaff([]);
     setStaffLoaded(false);
     setStaffLoadFailed(false);
     setStaffViewerKey(null);
-    const staffSubscription = subscribeToStaff(user.uid, activePropertyId, staffList => {
+    const staffSubscription = subscribeToStaff(userUid, resolvedPropertyId, staffList => {
       if (!cancelled) {
         setStaff(staffList);
         setStaffLoaded(true);
@@ -364,24 +514,14 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     };
     // Depend on the stable uid (not the object ref) so a token refresh doesn't
     // tear down + recreate the subscription every hour.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, activePropertyId]);
+  }, [userUid, resolvedPropertyId, expectedStaffViewerKey, staffRosterNeeded]);
 
-  // ── Areas + laundry config (with first-time seed) ────────────────────────
-  // Keyed on the RESOLVED active property — i.e. only once the active id is
-  // confirmed to exist in the user's loaded `properties` list — NOT the raw
-  // remembered id. Why: `activePropertyId` initializes straight from
-  // localStorage, so on first paint (before the properties list re-validates it)
-  // it can be a STALE/deleted property id. The zero-rows seed path below would
-  // then try to INSERT public_areas for a property that no longer exists and
-  // FK-violate (`public_areas_property_id_fkey`, 23503) — a harmless-but-noisy
-  // console error. Gating on the resolved property means a seed only ever fires
-  // for a real property the user has access to, and it still re-runs (and seeds)
-  // the moment a genuinely new property resolves. (Fix 2026-06-18.)
-  const resolvedPropertyId = activeProperty?.id ?? null;
-  const expectedCapabilityViewerKey = userUid && resolvedPropertyId
-    ? `${userUid}:${resolvedPropertyId}`
-    : null;
+  // Public laundry screens have their own scoped bootstrap route. The prior
+  // provider eagerly read and even INSERT-seeded public-area/laundry rows on
+  // every authenticated route although no authenticated consumer used them.
+  // Keeping that work out of the root provider removes a navigation-wide
+  // request/write waterfall.
+  const expectedCapabilityViewerKey = activePropertyViewerKey;
   const expectedCapabilityViewerKeyRef = useRef(expectedCapabilityViewerKey);
   expectedCapabilityViewerKeyRef.current = expectedCapabilityViewerKey;
   // Never expose a snapshot from a previous identity/property while the next
@@ -391,45 +531,17 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     && capabilitySnapshot.propertyId === resolvedPropertyId
     ? capabilitySnapshot
     : null;
-  const capabilityOverrides = exposedCapabilitySnapshot?.overrides ?? EMPTY_CAPABILITY_OVERRIDES;
-  const capabilityOverridesViewerKey = exposedCapabilitySnapshot?.viewerKey ?? null;
-  const capabilityOverridesPropertyId = exposedCapabilitySnapshot?.propertyId ?? null;
-  useEffect(() => {
-    if (!user || !resolvedPropertyId) return;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const [areas, laundry] = await Promise.all([
-          getPublicAreas(user.uid, resolvedPropertyId),
-          getLaundryConfig(user.uid, resolvedPropertyId),
-        ]);
-        if (cancelled) return;
-
-        // First-time seed only (brand-new property with zero rows). Otherwise we
-        // trust the DB. (Initial seeding normally happens server-side in
-        // scripts/seed-supabase.js / onboarding; this is the client fallback.)
-        if (areas.length === 0) {
-          const defaults = getDefaultPublicAreas().map(a => ({ ...a, id: generateId() }));
-          await bulkSetPublicAreas(user.uid, resolvedPropertyId, defaults);
-          if (!cancelled) setPublicAreas(defaults);
-        } else {
-          if (!cancelled) setPublicAreas(areas);
-        }
-
-        if (laundry.length === 0) {
-          const defaults = getDefaultLaundryCategories().map(c => ({ ...c, id: generateId() }));
-          await Promise.all(defaults.map(c => setLaundryCategory(user.uid, resolvedPropertyId, c)));
-          if (!cancelled) setLaundryConfig(defaults);
-        } else {
-          if (!cancelled) setLaundryConfig(laundry);
-        }
-      } catch (err) {
-        console.error('PropertyContext: failed to load areas/laundry config', err);
-      }
-    })();
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, resolvedPropertyId]);
+  const capabilityOverrides = exposedCapabilitySnapshot?.status === 'ready'
+    ? exposedCapabilitySnapshot.overrides
+    : EMPTY_CAPABILITY_OVERRIDES;
+  const capabilityOverridesViewerKey = exposedCapabilitySnapshot?.status === 'ready'
+    ? exposedCapabilitySnapshot.viewerKey
+    : null;
+  const capabilityOverridesPropertyId = exposedCapabilitySnapshot?.status === 'ready'
+    ? exposedCapabilitySnapshot.propertyId
+    : null;
+  const capabilityOverridesStatus = exposedCapabilitySnapshot?.status ?? 'idle';
+  const capabilityOverridesError = exposedCapabilitySnapshot?.error ?? null;
 
   // Load the active hotel's capability overrides whenever the hotel (or the
   // signed-in user) changes, so useCan() resolves from the same restrictions the
@@ -450,55 +562,121 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         viewerKey: expectedCapabilityViewerKey,
         propertyId: resolvedPropertyId,
         overrides: EMPTY_CAPABILITY_OVERRIDES,
+        status: 'ready',
+        error: null,
       });
       return;
     }
     let cancelled = false;
-    setCapabilitySnapshot(null);
+    setCapabilitySnapshot({
+      viewerKey: expectedCapabilityViewerKey,
+      propertyId: resolvedPropertyId,
+      overrides: EMPTY_CAPABILITY_OVERRIDES,
+      status: 'loading',
+      error: null,
+    });
     void (async () => {
-      const map = await fetchOverridesFor(resolvedPropertyId);
-      if (
-        !cancelled
-        && expectedCapabilityViewerKeyRef.current === expectedCapabilityViewerKey
-      ) {
-        setCapabilitySnapshot({
-          viewerKey: expectedCapabilityViewerKey,
-          propertyId: resolvedPropertyId,
-          overrides: map,
+      try {
+        const map = await withPromiseDeadline(fetchOverridesFor(resolvedPropertyId), {
+          timeoutMs: PROPERTY_CONTEXT_TIMEOUT_MS,
+          label: 'Capability access check',
         });
+        if (
+          !cancelled
+          && expectedCapabilityViewerKeyRef.current === expectedCapabilityViewerKey
+        ) {
+          setCapabilitySnapshot({
+            viewerKey: expectedCapabilityViewerKey,
+            propertyId: resolvedPropertyId,
+            overrides: map,
+            status: 'ready',
+            error: null,
+          });
+        }
+      } catch (err) {
+        console.error('PropertyContext: failed to load capability access', err);
+        if (
+          !cancelled
+          && expectedCapabilityViewerKeyRef.current === expectedCapabilityViewerKey
+        ) {
+          setCapabilitySnapshot({
+            viewerKey: expectedCapabilityViewerKey,
+            propertyId: resolvedPropertyId,
+            overrides: EMPTY_CAPABILITY_OVERRIDES,
+            status: 'error',
+            error: 'We could not confirm access for this hotel.',
+          });
+        }
       }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userUid, resolvedPropertyId, activeOnboardingInProgress]);
+  }, [resolvedPropertyId, expectedCapabilityViewerKey, activeOnboardingInProgress]);
 
   const refreshCapabilities = useCallback(async () => {
     const viewerKey = expectedCapabilityViewerKey;
     const propertyId = resolvedPropertyId;
     setCapabilitySnapshot(null);
     if (!viewerKey || !propertyId) return;
-    const map = await fetchOverridesFor(propertyId);
-    if (expectedCapabilityViewerKeyRef.current !== viewerKey) return;
-    setCapabilitySnapshot({ viewerKey, propertyId, overrides: map });
+    setCapabilitySnapshot({
+      viewerKey,
+      propertyId,
+      overrides: EMPTY_CAPABILITY_OVERRIDES,
+      status: 'loading',
+      error: null,
+    });
+    try {
+      const map = await withPromiseDeadline(fetchOverridesFor(propertyId), {
+        timeoutMs: PROPERTY_CONTEXT_TIMEOUT_MS,
+        label: 'Capability access check',
+      });
+      if (expectedCapabilityViewerKeyRef.current !== viewerKey) return;
+      setCapabilitySnapshot({
+        viewerKey,
+        propertyId,
+        overrides: map,
+        status: 'ready',
+        error: null,
+      });
+    } catch (err) {
+      console.error('PropertyContext: failed to refresh capability access', err);
+      if (expectedCapabilityViewerKeyRef.current !== viewerKey) return;
+      setCapabilitySnapshot({
+        viewerKey,
+        propertyId,
+        overrides: EMPTY_CAPABILITY_OVERRIDES,
+        status: 'error',
+        error: 'We could not confirm access for this hotel.',
+      });
+    }
   }, [expectedCapabilityViewerKey, resolvedPropertyId]);
 
   const refreshProperty = async () => {
-    if (!user || !activePropertyId) return;
-    const prop = await getProperty(user.uid, activePropertyId);
+    if (!user || !resolvedPropertyId || !propertyAuthorizationViewerKey) return;
+    const refreshViewerUid = user.uid;
+    const refreshViewerKey = propertyAuthorizationViewerKey;
+    const propertyId = resolvedPropertyId;
+    const prop = await getProperty(refreshViewerUid, propertyId);
     if (prop) {
-      setProperties(prev => prev.map(p => p.id === activePropertyId ? prop : p));
+      if (
+        userUid !== refreshViewerUid
+        || resolvedPropertyId !== propertyId
+        || propertyAuthorizationViewerKeyRef.current !== refreshViewerKey
+      ) return;
+      setProperties(prev => prev.map(p => p.id === propertyId ? prop : p));
     }
   };
 
   const refreshStaff = async () => {
-    if (!user || !activePropertyId) return;
-    const refreshViewerKey = `${user.uid}:${activePropertyId}`;
+    if (!user || !resolvedPropertyId) return;
+    const refreshViewerKey = expectedStaffViewerKey;
+    if (!refreshViewerKey) return;
     const subscription = staffSubscriptionRef.current;
     if (subscription?.viewerKey === refreshViewerKey) {
       await subscription.refresh();
       return;
     }
-    const list = await getStaff(user.uid, activePropertyId);
+    const list = await getStaff(user.uid, resolvedPropertyId);
     if (expectedStaffViewerKeyRef.current !== refreshViewerKey) return;
     setStaff(list);
     setStaffLoaded(true);
@@ -506,39 +684,28 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     setStaffViewerKey(refreshViewerKey);
   };
 
-  const refreshPublicAreas = async () => {
-    if (!user || !activePropertyId) return;
-    const areas = await getPublicAreas(user.uid, activePropertyId);
-    setPublicAreas(areas);
-  };
-
-  const refreshLaundryConfig = async () => {
-    if (!user || !activePropertyId) return;
-    const config = await getLaundryConfig(user.uid, activePropertyId);
-    setLaundryConfig(config);
-  };
-
   return (
     <PropertyContext.Provider
       value={{
-        properties,
+        properties: exposedProperties,
         activeProperty,
-        activePropertyId,
-        staff,
-        staffLoaded,
-        staffLoadFailed,
-        staffViewerKey,
-        publicAreas,
-        laundryConfig,
+        activePropertyId: resolvedPropertyId,
+        activePropertyViewerKey,
+        staff: exposedStaff,
+        staffLoaded: exposedStaffLoaded,
+        staffLoadFailed: exposedStaffLoadFailed,
+        staffViewerKey: exposedStaffViewerKey,
         capabilityOverrides,
         capabilityOverridesViewerKey,
         capabilityOverridesPropertyId,
-        loading,
+        capabilityOverridesStatus,
+        capabilityOverridesError,
+        loading: exposedPropertiesLoading,
+        propertiesError: exposedPropertiesError,
         setActivePropertyId,
+        retryProperties,
         refreshProperty,
         refreshStaff,
-        refreshPublicAreas,
-        refreshLaundryConfig,
         refreshCapabilities,
       }}
     >

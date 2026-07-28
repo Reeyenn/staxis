@@ -24,7 +24,6 @@
 export const dynamic = 'force-dynamic';
 
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -34,6 +33,13 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { C, SANS, MONO, LABEL, RING, STATUS_EN, STATUS_ES, type RingKey } from './_components/palette';
 import { attentionText } from './_components/attention-text';
 import { holdLastGoodCounts } from './_components/counts-hold';
+import {
+  beginScopedFeed,
+  emptyScopedFeed,
+  failScopedFeed,
+  publishScopedFeed,
+  scopedFeedView,
+} from './_components/operational-feed-state';
 import { RoomRing, type RingTick } from './_components/RoomRing';
 import { MetricChart } from './_components/MetricChart';
 import { Sparkline } from './_components/Sparkline';
@@ -56,6 +62,8 @@ import { FeedAsOfLabel } from '@/components/FeedAsOfLabel';
 import type { AsOfLabel } from '@/lib/pms/as-of-label';
 import type { FeedKey } from '@/lib/pms/feed-status';
 import type { Room, WorkOrder } from '@/types';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import {
   RANGES, METRIC_DEFS, buildHistory, seriesFor,
   fmtMoney, fmtCompact, fmtVal,
@@ -143,10 +151,18 @@ function OpsTile({ label, value, sub, tone, asOf }: { label: string; value: Reac
 
 // ─── page ─────────────────────────────────────────────────────────────
 export default function DashboardPage() {
+  const { activePropertyId } = useProperty();
+  // Room hover/playback, selected metrics, cached snapshots and subscriptions
+  // all belong to one hotel. A property-keyed workspace makes the switch
+  // atomic: no Hotel A interaction state can survive beneath Hotel B's name.
+  return <DashboardWorkspace key={activePropertyId ?? 'no-property'} />;
+}
+
+function DashboardWorkspace() {
   const { user, loading: authLoading } = useAuth();
   const { activeProperty, activePropertyId, loading: propLoading } = useProperty();
   const { lang } = useLang();
-  const router = useRouter();
+  const { push, replace } = useReliableNavigation();
   const today = useTodayStr();
   const ES = lang === 'es';
 
@@ -164,8 +180,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (authLoading || propLoading) return;
-    if (!user) { router.replace('/signin'); return; }
-    if (!activePropertyId) { router.replace('/property-selector'); return; }
+    if (!user) { replace('/signin'); return; }
+    if (!activePropertyId) { replace('/property-selector'); return; }
     // Backstop for the login-funnel gate: if anything lands a mid-onboarding
     // owner on the dashboard (their hotel has no PMS and an empty board),
     // send them back into the wizard to finish. Legacy/complete hotels have
@@ -173,21 +189,56 @@ export default function DashboardPage() {
     // are never gated (they manage hotels, not own the signup). One-shot via
     // RESUME_GUARD_KEY so a failed resume degrades here instead of looping.
     if (
-      activeProperty &&
-      shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt) &&
-      typeof window !== 'undefined' &&
-      sessionStorage.getItem(RESUME_GUARD_KEY) !== activeProperty.id
+      activeProperty
+      && shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt)
     ) {
-      sessionStorage.setItem(RESUME_GUARD_KEY, activeProperty.id);
-      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`;
+      // Never trade a blocked sessionStorage policy for an automatic redirect
+      // loop. The dashboard remains usable when the one-shot guard is absent.
+      try {
+        if (window.sessionStorage.getItem(RESUME_GUARD_KEY) === activeProperty.id) return;
+        window.sessionStorage.setItem(RESUME_GUARD_KEY, activeProperty.id);
+      } catch { return; }
+      window.location.assign(`/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`);
     }
-  }, [user, authLoading, propLoading, activePropertyId, activeProperty, router]);
+  }, [user, authLoading, propLoading, activePropertyId, activeProperty, replace]);
 
   // ── live data ──────────────────────────────────────────────────────
-  const [rooms, setRooms] = useState<Room[]>([]);
-  const [counts, setCounts] = useState<TodayPropertyCounts | null>(null);
-  const [workOrders, setWorkOrders] = useState<WorkOrder[]>([]);
-  const [complaints, setComplaints] = useState<Complaint[]>([]);
+  const [roomsSnapshot, setRoomsSnapshot] = useState(() => emptyScopedFeed<Room>());
+  const [countsSnapshot, setCountsSnapshot] = useState<{ propertyId: string | null; date: string | null; value: TodayPropertyCounts | null }>({ propertyId: null, date: null, value: null });
+  const [countsErrorSnapshot, setCountsErrorSnapshot] = useState<{ propertyId: string | null; date: string | null; message: string | null }>({ propertyId: null, date: null, message: null });
+  const countsSnapshotRef = useRef(countsSnapshot);
+  countsSnapshotRef.current = countsSnapshot;
+  const [countsRetryKey, setCountsRetryKey] = useState(0);
+  const [operationalRetryKey, setOperationalRetryKey] = useState(0);
+  const [workOrdersSnapshot, setWorkOrdersSnapshot] = useState(() => emptyScopedFeed<WorkOrder>());
+  const [complaintsSnapshot, setComplaintsSnapshot] = useState(() => emptyScopedFeed<Complaint>());
+  // Mask the previous hotel/day synchronously in render; effect cleanup alone
+  // is one paint too late and can flash Hotel A or yesterday's numbers beneath
+  // the current hotel/date. The ref also lets subscription callbacks reject an
+  // obsolete scope even if they arrive around cleanup.
+  const dashboardScopeRef = useRef({ propertyId: activePropertyId, date: today });
+  dashboardScopeRef.current = { propertyId: activePropertyId, date: today };
+  const roomsFeed = useMemo(
+    () => scopedFeedView(roomsSnapshot, activePropertyId, today),
+    [roomsSnapshot, activePropertyId, today],
+  );
+  const rooms = roomsFeed.rows;
+  const counts = countsSnapshot.propertyId === activePropertyId && countsSnapshot.date === today
+    ? countsSnapshot.value
+    : null;
+  const countsError = countsErrorSnapshot.propertyId === activePropertyId && countsErrorSnapshot.date === today
+    ? countsErrorSnapshot.message
+    : null;
+  const workOrdersFeed = useMemo(
+    () => scopedFeedView(workOrdersSnapshot, activePropertyId, today),
+    [workOrdersSnapshot, activePropertyId, today],
+  );
+  const workOrders = workOrdersFeed.rows;
+  const complaintsFeed = useMemo(
+    () => scopedFeedView(complaintsSnapshot, activePropertyId, today),
+    [complaintsSnapshot, activePropertyId, today],
+  );
+  const complaints = complaintsFeed.rows;
 
   // The configured room count is the property's true inventory; the PMS
   // snapshot's total_rooms can be a partial sample, so don't let it shrink
@@ -196,40 +247,141 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!user || !activePropertyId) return;
-    return subscribeToRooms(user.uid, activePropertyId, today, setRooms);
-  }, [user, activePropertyId, today]);
+    const propertyId = activePropertyId;
+    const date = today;
+    let alive = true;
+    setRoomsSnapshot((previous) => beginScopedFeed(previous, propertyId, date));
+    const unsubscribe = subscribeToRooms(user.uid, propertyId, date, (rows) => {
+      const currentScope = dashboardScopeRef.current;
+      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
+      setRoomsSnapshot(publishScopedFeed(propertyId, date, rows));
+    }, (error) => {
+      const currentScope = dashboardScopeRef.current;
+      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
+      console.warn('Dashboard: rooms feed unavailable', error);
+      setRoomsSnapshot((previous) => failScopedFeed(previous, propertyId, date));
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [user, activePropertyId, operationalRetryKey, today]);
   // Property-level room breakdown (sums to total_rooms) — drives the full
   // ring + real occupancy. Polled; the housekeeping feed only carries the
   // cleaning list, not occupied rooms.
   useEffect(() => {
     if (!activePropertyId) return;
     let alive = true;
-    // New property/day scope: drop the previous scope's counts first so the
-    // last-good hold below can never carry one hotel's numbers onto another.
-    setCounts(null);
-    const load = () => {
-      void fetchTodayPropertyCounts(activePropertyId, today).then(c => {
-        // Hold last-good: a transient RPC failure comes back as the all-zero
-        // shape — overwriting real numbers with it made the ring + Departures
-        // tile blink out for 30s on every connectivity blip (see counts-hold).
-        if (alive) setCounts(prev => holdLastGoodCounts(prev, c));
-      });
+    let requestSequence = 0;
+    const propertyId = activePropertyId;
+    const date = today;
+    const previousSnapshot = countsSnapshotRef.current;
+    const hasLastGoodAtStart = previousSnapshot.propertyId === propertyId
+      && previousSnapshot.date === date
+      && previousSnapshot.value !== null;
+    // A hotel/day change must blank synchronously. A same-scope retry keeps
+    // its last-good values and stale verdict until a successful response
+    // lands; pressing Retry must not make old data look current in advance.
+    if (!hasLastGoodAtStart) {
+      setCountsSnapshot({ propertyId, date, value: null });
+      setCountsErrorSnapshot({ propertyId, date, message: null });
+    }
+    const load = async () => {
+      const currentRequest = ++requestSequence;
+      try {
+        const next = await fetchTodayPropertyCounts(propertyId, date, { throwOnError: true });
+        const currentScope = dashboardScopeRef.current;
+        if (
+          !alive
+          || currentRequest !== requestSequence
+          || currentScope.propertyId !== propertyId
+          || currentScope.date !== date
+        ) return;
+        setCountsSnapshot((previous) => ({
+          propertyId,
+          date,
+          value: holdLastGoodCounts(
+            previous.propertyId === propertyId && previous.date === date ? previous.value : null,
+            next,
+          ),
+        }));
+        setCountsErrorSnapshot({ propertyId, date, message: null });
+      } catch (error) {
+        const currentScope = dashboardScopeRef.current;
+        if (
+          !alive
+          || currentRequest !== requestSequence
+          || currentScope.propertyId !== propertyId
+          || currentScope.date !== date
+        ) return;
+        console.warn('Dashboard: today counts unavailable', error);
+        setCountsErrorSnapshot({
+          propertyId,
+          date,
+          message: 'unavailable',
+        });
+      }
     };
-    load();
-    const iv = setInterval(load, 30_000);
-    return () => { alive = false; clearInterval(iv); };
-  }, [activePropertyId, today]);
+    void load();
+    const iv = setInterval(() => { void load(); }, 30_000);
+    return () => {
+      alive = false;
+      requestSequence += 1;
+      clearInterval(iv);
+    };
+  }, [activePropertyId, countsRetryKey, today]);
   useEffect(() => {
     if (!user || !activePropertyId || !maintenanceEnabled) return;
-    return subscribeToWorkOrders(user.uid, activePropertyId, setWorkOrders);
-  }, [user, activePropertyId, maintenanceEnabled]);
+    const propertyId = activePropertyId;
+    const date = today;
+    let alive = true;
+    setWorkOrdersSnapshot((previous) => beginScopedFeed(previous, propertyId, date));
+    const unsubscribe = subscribeToWorkOrders(user.uid, propertyId, (rows) => {
+      const currentScope = dashboardScopeRef.current;
+      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
+      setWorkOrdersSnapshot(publishScopedFeed(propertyId, date, rows));
+    }, (error) => {
+      const currentScope = dashboardScopeRef.current;
+      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
+      console.warn('Dashboard: work orders feed unavailable', error);
+      setWorkOrdersSnapshot((previous) => failScopedFeed(previous, propertyId, date));
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [user, activePropertyId, maintenanceEnabled, operationalRetryKey, today]);
   useEffect(() => {
     if (!user || !activePropertyId || !communicationsEnabled) return;
-    return subscribeToComplaints(user.uid, activePropertyId, setComplaints);
-  }, [user, activePropertyId, communicationsEnabled]);
+    const propertyId = activePropertyId;
+    const date = today;
+    let alive = true;
+    setComplaintsSnapshot((previous) => beginScopedFeed(previous, propertyId, date));
+    const unsubscribe = subscribeToComplaints(user.uid, propertyId, (rows) => {
+      const currentScope = dashboardScopeRef.current;
+      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
+      setComplaintsSnapshot(publishScopedFeed(propertyId, date, rows));
+    }, (error) => {
+      const currentScope = dashboardScopeRef.current;
+      if (!alive || currentScope.propertyId !== propertyId || currentScope.date !== date) return;
+      console.warn('Dashboard: complaints feed unavailable', error);
+      setComplaintsSnapshot((previous) => failScopedFeed(previous, propertyId, date));
+    });
+    return () => {
+      alive = false;
+      unsubscribe();
+    };
+  }, [user, activePropertyId, communicationsEnabled, operationalRetryKey, today]);
   // ── derived live values ──────────────────────────────────────────────
   const openOrders = useMemo(() => workOrders.filter(o => o.status === 'open'), [workOrders]);
   const urgentOrders = useMemo(() => openOrders.filter(o => o.priority === 'urgent'), [openOrders]);
+  const operationalFeedsFailed = roomsFeed.error
+    || (maintenanceEnabled && workOrdersFeed.error)
+    || (communicationsEnabled && complaintsFeed.error);
+  const operationalFeedsCurrent = roomsFeed.hasSnapshot
+    && !roomsFeed.error
+    && (!maintenanceEnabled || (workOrdersFeed.hasSnapshot && !workOrdersFeed.error))
+    && (!communicationsEnabled || (complaintsFeed.hasSnapshot && !complaintsFeed.error));
 
   // feat/cua-partial-promotion — per-feed PMS trust. The robot may be live
   // with only SOME feeds learned; a tile whose source feed is missing must
@@ -259,6 +411,9 @@ export default function DashboardPage() {
   const inHouseState = tileState(['dashboardCounts']);
   const arrivalsState = tileState(['dashboardCounts', 'arrivals']);
   const departuresState = tileState(['departures', 'dashboardCounts']);
+  // Pending and failed are both unknown, never zero. A returned all-zero
+  // snapshot remains a legitimate terminal value because `counts` is present.
+  const countsUnavailable = !counts;
 
   // ── data-age stamps ─────────────────────────────────────────────────
   // PMS numbers now arrive as scheduled report emails, not a 30s poll, so a
@@ -287,27 +442,41 @@ export default function DashboardPage() {
     ).length,
     [rooms, roomStatusLearning],
   );
+  const housekeepingValue: React.ReactNode = !roomsFeed.hasSnapshot || roomStatusLearning
+    ? '—'
+    : dirtyRooms;
+  const housekeepingSub = roomsFeed.error
+    ? (roomsFeed.hasSnapshot
+        ? (ES ? 'la última actualización no se pudo refrescar' : "last update couldn't refresh")
+        : (ES ? 'datos de habitaciones no disponibles' : 'room data unavailable'))
+    : !roomsFeed.hasSnapshot
+      ? (ES ? 'cargando habitaciones actuales…' : 'loading current rooms…')
+      : connPending
+        ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
+        : roomStatusLearning
+          ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
+          : (ES ? 'por limpiar' : 'rooms to clean');
 
   // Tile values. With live feed status the numbers come from the
   // server-derived block (pms_* is deny-all-browser).
   const inHouse: React.ReactNode = !fsLive
-    ? (counts?.in_house ?? 0)
+    ? (countsUnavailable ? '—' : (counts?.in_house ?? 0))
     : inHouseState === 'ok'
-      ? (feedStatus.derived?.snapshotInHouse ?? counts?.in_house ?? 0)
+      ? (feedStatus.derived?.snapshotInHouse ?? counts?.in_house ?? '—')
       : '—';
   const arrivals: React.ReactNode = !fsLive
-    ? 0
+    ? (countsUnavailable ? '—' : 0)
     : arrivalsState !== 'ok'
       ? '—'
       : feedStatus.feeds.dashboardCounts === 'live'
         ? (feedStatus.derived?.snapshotArrivalsRemaining ?? '—')
         : (feedStatus.derived?.arrivalsToday ?? '—');
   const departures: React.ReactNode = !fsLive
-    ? (counts?.checkouts ?? 0)
+    ? (countsUnavailable ? '—' : (counts?.checkouts ?? 0))
     : departuresState !== 'ok'
       ? '—'
       : feedStatus.feeds.departures === 'live'
-        ? (counts?.checkouts ?? 0)
+        ? (counts?.checkouts ?? '—')
         : (feedStatus.derived?.snapshotDeparturesRemaining ?? '—');
 
   // Real occupancy signal (occupied rooms / inventory). Null when the PMS
@@ -450,6 +619,30 @@ export default function DashboardPage() {
     return out.slice(0, 5);
   }, [urgentOrders.length, overdueComplaints, callbacksDueCount, dirtyRooms, ES, maintenanceEnabled, communicationsEnabled, housekeepingEnabled]);
   const attnTotal = attention.reduce((a, x) => a + x.n, 0);
+  const attentionIncomplete = !operationalFeedsCurrent;
+  const attentionTone = attention.length
+    ? C.rust
+    : attentionIncomplete
+      ? C.gold
+      : C.green;
+  const attentionInk = attention.length
+    ? C.rustD
+    : attentionIncomplete
+      ? '#8C6A33'
+      : C.green;
+  const attentionBackground = attention.length
+    ? C.rustBg
+    : attentionIncomplete
+      ? 'rgba(201,150,68,.12)'
+      : 'rgba(158,183,166,.16)';
+  // While any source is unsettled, a known count is only a lower bound and
+  // zero is unknowable. Never render a confident "0 / all clear" verdict
+  // from arrays that merely defaulted empty after a failed first read.
+  const attentionBadge = operationalFeedsCurrent
+    ? String(attnTotal)
+    : attention.length
+      ? `${attnTotal}+`
+      : '—';
 
   // ── chart series ─────────────────────────────────────────────────────
   const [metric, setMetric] = useState<TodayMetricKey>('occ');
@@ -525,8 +718,23 @@ export default function DashboardPage() {
   const monthFull = new Date().toLocaleDateString(ES ? 'es-ES' : 'en-US', { month: 'long' });
   const dateLong = new Date().toLocaleDateString(ES ? 'es-ES' : 'en-US', { weekday: 'long', month: 'long', day: 'numeric' });
 
-  if (authLoading || propLoading || !user || !activePropertyId) {
-    return <AppLayout><div /></AppLayout>;
+  if (authLoading || propLoading) {
+    return <AppLayout><RouteLoadingState title={ES ? 'Cargando Tablero…' : 'Loading Dashboard…'} /></AppLayout>;
+  }
+  if (!user) {
+    return <AppLayout><RouteLoadingState title={ES ? 'Volviendo al inicio de sesión…' : 'Returning to Sign In…'} /></AppLayout>;
+  }
+  if (!activePropertyId) {
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title={ES ? 'No hay ningún hotel seleccionado' : 'No hotel is selected'}
+          message={ES ? 'Elige un hotel antes de abrir el Tablero.' : 'Choose a hotel before opening Dashboard.'}
+          retryLabel={ES ? 'Elegir un hotel' : 'Choose a hotel'}
+          onRetry={() => push('/property-selector')}
+        />
+      </AppLayout>
+    );
   }
 
   const STATUS = ES ? STATUS_ES : STATUS_EN;
@@ -579,6 +787,112 @@ export default function DashboardPage() {
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 16 }}>
             <span style={{ fontFamily: SANS, fontWeight: 600, fontSize: 26, letterSpacing: '-0.02em', color: C.ink, textTransform: 'capitalize' }}>{dateLong}</span>
           </div>
+
+          {(countsUnavailable || countsError) && (
+            <div
+              role={countsError ? 'alert' : 'status'}
+              aria-live="polite"
+              aria-busy={countsUnavailable && !countsError}
+              style={{
+                minHeight: 48,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                flexWrap: 'wrap',
+                padding: '11px 14px',
+                borderRadius: 12,
+                border: `1px solid ${countsError ? 'rgba(184,92,61,.28)' : C.line2}`,
+                background: countsError ? 'rgba(184,92,61,.07)' : 'rgba(255,255,255,.48)',
+                color: countsError ? C.rust : C.ink2,
+                fontSize: 13,
+                lineHeight: 1.45,
+              }}
+            >
+              <span>
+                {countsError
+                  ? (countsUnavailable
+                      ? (ES
+                          ? 'No pudimos cargar el resumen de habitaciones de hoy.'
+                          : "We couldn't load today's room summary.")
+                      : (ES
+                          ? 'No se pudo refrescar el resumen de habitaciones de hoy. Se muestran los últimos valores conocidos.'
+                          : "Today's room summary couldn't refresh. Showing last-known values."))
+                  : (ES ? 'Cargando el resumen de habitaciones…' : 'Loading room summary…')}
+              </span>
+              {countsError && (
+                <button
+                  type="button"
+                  onClick={() => setCountsRetryKey((key) => key + 1)}
+                  style={{
+                    minHeight: 44,
+                    padding: '7px 13px',
+                    borderRadius: 999,
+                    border: `1px solid ${C.rust}`,
+                    background: 'transparent',
+                    color: C.rust,
+                    fontFamily: SANS,
+                    fontSize: 12,
+                    fontWeight: 650,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {ES ? 'Intentar de nuevo' : 'Try again'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {!operationalFeedsCurrent && (
+            <div
+              role={operationalFeedsFailed ? 'alert' : 'status'}
+              aria-live="polite"
+              aria-busy={!operationalFeedsFailed}
+              style={{
+                minHeight: 48,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 16,
+                flexWrap: 'wrap',
+                padding: '11px 14px',
+                borderRadius: 12,
+                border: `1px solid ${operationalFeedsFailed ? 'rgba(184,92,61,.28)' : C.line2}`,
+                background: operationalFeedsFailed ? 'rgba(184,92,61,.07)' : 'rgba(255,255,255,.48)',
+                color: operationalFeedsFailed ? C.rust : C.ink2,
+                fontSize: 13,
+                lineHeight: 1.45,
+              }}
+            >
+              <span>
+                {operationalFeedsFailed
+                  ? (ES
+                      ? 'Algunos detalles operativos en vivo no están disponibles. Los últimos valores conocidos pueden estar incompletos.'
+                      : 'Some live operational details are unavailable. Last-known values may be incomplete.')
+                  : (ES ? 'Cargando detalles operativos en vivo…' : 'Loading live operational details…')}
+              </span>
+              {operationalFeedsFailed && (
+                <button
+                  type="button"
+                  onClick={() => setOperationalRetryKey((key) => key + 1)}
+                  style={{
+                    minHeight: 44,
+                    padding: '7px 13px',
+                    borderRadius: 999,
+                    border: `1px solid ${C.rust}`,
+                    background: 'transparent',
+                    color: C.rust,
+                    fontFamily: SANS,
+                    fontSize: 12,
+                    fontWeight: 650,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {ES ? 'Intentar de nuevo' : 'Try again'}
+                </button>
+              )}
+            </div>
+          )}
 
           {/* hero: ring + chart */}
           <section className="stx-hero">
@@ -705,10 +1019,8 @@ export default function DashboardPage() {
                       : (ES ? 'saliendo' : 'checking out'), C.gold, typeof departures === 'number' ? departuresAsOf : null],
                   // Housekeeping tile is owned by the housekeeping section —
                   // dropped entirely when that section is off for the hotel.
-                  ...(housekeepingEnabled ? [[ES ? 'Limpieza' : 'Housekeeping', roomStatusLearning ? '—' : dirtyRooms,
-                    connPending ? (ES ? 'conectando con el PMS…' : 'connecting to your PMS…')
-                      : roomStatusLearning ? (ES ? 'aprendiendo del PMS' : 'learning from your PMS')
-                      : (ES ? 'por limpiar' : 'rooms to clean'), C.rust, null]] : []),
+                  ...(housekeepingEnabled ? [[ES ? 'Limpieza' : 'Housekeeping', housekeepingValue,
+                    housekeepingSub, C.rust, null]] : []),
                   [ES ? 'Tiempo' : 'Turnover', avgTurnover ?? '—', ES ? 'min / hab.' : 'min / room', C.ink, null],
                 ] as [string, React.ReactNode, string, string, AsOfLabel | null][]).map((o, i) => (
                   <div key={o[0]} style={{ flex: 1, minWidth: 90, paddingLeft: i ? 22 : 0, borderLeft: i ? `1px solid ${C.line}` : 'none' }}>
@@ -718,10 +1030,10 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div style={{ background: attention.length ? C.rustBg : 'rgba(158,183,166,.16)', borderRadius: 16, padding: 22 }}>
+            <div style={{ background: attentionBackground, borderRadius: 16, padding: 22 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-                <span style={{ ...LABEL, color: attention.length ? C.rustD : C.green }}>{ES ? 'Necesita atención' : 'Needs attention'}</span>
-                <span style={{ background: attention.length ? C.rust : C.green, color: '#fff', borderRadius: 999, minWidth: 24, height: 24, padding: '0 7px', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700 }}>{attnTotal}</span>
+                <span style={{ ...LABEL, color: attentionInk }}>{ES ? 'Necesita atención' : 'Needs attention'}</span>
+                <span style={{ background: attentionTone, color: '#fff', borderRadius: 999, minWidth: 24, height: 24, padding: '0 7px', display: 'grid', placeItems: 'center', fontSize: 13, fontWeight: 700 }}>{attentionBadge}</span>
               </div>
               {attention.length ? attention.map((a, i) => (
                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '7px 0', borderTop: i ? '1px solid rgba(184,92,61,.2)' : 'none' }}>
@@ -729,7 +1041,20 @@ export default function DashboardPage() {
                   <span style={{ fontSize: 13, color: C.rustD }}>{a.text}</span>
                 </div>
               )) : (
-                <div style={{ fontSize: 14, color: C.green, paddingTop: 2 }}>{ES ? 'Todo en orden.' : 'All clear — nothing needs you right now.'}</div>
+                <div style={{ fontSize: 14, color: attentionInk, paddingTop: 2 }}>
+                  {operationalFeedsCurrent
+                    ? (ES ? 'Todo en orden.' : 'All clear — nothing needs you right now.')
+                    : operationalFeedsFailed
+                      ? (ES ? 'No se pudieron comprobar algunas alertas.' : "Some alerts couldn't be checked.")
+                      : (ES ? 'Comprobando las operaciones actuales…' : 'Checking current operations…')}
+                </div>
+              )}
+              {attention.length > 0 && attentionIncomplete && (
+                <div style={{ borderTop: '1px solid rgba(184,92,61,.2)', marginTop: 8, paddingTop: 10, fontSize: 12, lineHeight: 1.4, color: C.rustD }}>
+                  {operationalFeedsFailed
+                    ? (ES ? 'No se pudieron refrescar algunas fuentes en vivo.' : "Some live sources couldn't refresh.")
+                    : (ES ? 'Aún se están cargando algunas fuentes en vivo.' : 'Some live sources are still loading.')}
+                </div>
               )}
             </div>
           </section>

@@ -13,17 +13,31 @@ import type { CapabilityKey } from './registry';
 
 /**
  * Returns `(capability) => boolean` for the current user at the active hotel.
- * While the override map is still loading it is undefined → can() falls back to
- * the everyone-everything default (admin-only caps stay closed). The server
- * re-checks on every request, so a brief optimistic "allowed" can never leak
- * data — at worst a button flickers, then the route 403s.
+ * Fails closed until the override map is confirmed for the exact signed-in
+ * viewer and selected hotel. The server re-checks every request, but client
+ * controls must not flicker enabled or remain enabled after a capability read
+ * times out merely because the default map is permissive.
  */
 export function useCan(): (capability: CapabilityKey) => boolean {
+  const {
+    activePropertyId,
+    activePropertyViewerKey,
+    capabilityOverrides,
+    capabilityOverridesPropertyId,
+    capabilityOverridesStatus,
+    capabilityOverridesViewerKey,
+  } = useProperty();
   const { user } = useAuth();
-  const { capabilityOverrides } = useProperty();
   const role = user?.role ?? null;
+  const viewerKey = activePropertyViewerKey;
+  const ready = Boolean(
+    viewerKey
+    && capabilityOverridesStatus === 'ready'
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === viewerKey
+  );
   return useCallback(
-    (capability: CapabilityKey) => can(role ? { role } : null, capability, capabilityOverrides),
-    [role, capabilityOverrides],
+    (capability: CapabilityKey) => ready && can(role ? { role } : null, capability, capabilityOverrides),
+    [role, ready, capabilityOverrides],
   );
 }

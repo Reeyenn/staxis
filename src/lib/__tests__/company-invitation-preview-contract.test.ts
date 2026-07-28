@@ -37,6 +37,6 @@ describe('company invitation preview', () => {
     assert.match(invitationPage, /COMPANY_INVITATION_SIGN_IN_HREF/);
     assert.match(invitationPage, /window\.history\.replaceState\([\s\S]*COMPANY_INVITATION_RESUME_PATH/);
     assert.doesNotMatch(invitationPage, /`\/signin\?redirect=\$\{encodeURIComponent\(invitationPath\)\}`/);
-    assert.match(invitationPage, /clearCompanyInvitationHandoff\(\)[\s\S]*router\.replace\(['"]\/company['"]\)/);
+    assert.match(invitationPage, /clearCompanyInvitationHandoff\(\)[\s\S]*notifyAuthorizationChanged\(\)[\s\S]*replace\(['"]\/company['"]\)/);
   });
 });

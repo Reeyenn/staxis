@@ -44,12 +44,15 @@ async function getDashboardForDate(
     // Plan v4 bridge — read today_property_counts_v1 + latest
     // pms_in_house_snapshot.captured_at so callers see the same shape
     // they always saw.
-    const counts = await fetchTodayPropertyCounts(propertyId, dateStr);
-    const { data: ihs } = await supabase
-      .from('pms_in_house_snapshot')
-      .select('arrivals_remaining_today, departures_remaining_today, captured_at, has_error, last_error')
-      .eq('property_id', propertyId)
-      .maybeSingle();
+    const [counts, { data: ihs, error: ihsError }] = await Promise.all([
+      fetchTodayPropertyCounts(propertyId, dateStr, { throwOnError: true }),
+      supabase
+        .from('pms_in_house_snapshot')
+        .select('arrivals_remaining_today, departures_remaining_today, captured_at, has_error, last_error')
+        .eq('property_id', propertyId)
+        .maybeSingle(),
+    ]);
+    if (ihsError) throw ihsError;
     return {
       inHouse:    counts.in_house,
       arrivals:   typeof ihs?.arrivals_remaining_today === 'number' ? ihs.arrivals_remaining_today : null,
@@ -78,11 +81,20 @@ export function subscribeToDashboardByDate(
   callback: (nums: DashboardNumbers | null) => void,
 ): () => void {
   let active = true;
+  let refreshSequence = 0;
   const refresh = async () => {
+    const requestSequence = ++refreshSequence;
     const nums = await getDashboardForDate(date, pid);
-    if (active) callback(nums);
+    // Realtime/foreground catch-up can start while the initial read is still
+    // in flight. Latest-started wins so a slow pre-event snapshot can never
+    // overwrite the newer result after it publishes.
+    if (active && requestSequence === refreshSequence) callback(nums);
   };
   void refresh();
   const unsub = subscribeTodayRoomWork(pid, () => { void refresh(); });
-  return () => { active = false; unsub(); };
+  return () => {
+    active = false;
+    refreshSequence += 1;
+    unsub();
+  };
 }

@@ -2,8 +2,8 @@
 
 
 export const dynamic = 'force-dynamic';
-import React, { Suspense, useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import React, { Suspense, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -21,6 +21,14 @@ import {
   storeCompanyInvitationHandoff,
 } from '@/lib/company-access/invitation-handoff';
 import AuthShell, { AuthLabel, AuthError, authLinkStyle, AUTH_LINK } from '@/components/AuthShell';
+import { AUTH_OPERATION_TIMEOUT_MS, fetchWithAuth } from '@/lib/api-fetch';
+import { withPromiseDeadline } from '@/lib/fetch-deadline';
+import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
+import {
+  shouldAutoRedirectExistingSession,
+  signInRedirectTarget,
+} from '@/lib/auth/signin-navigation-policy';
+import { useFreshSignInRecovery } from '@/lib/auth/use-fresh-signin-recovery';
 
 /**
  * Banner shown when fetchWithAuth signed the user out and bounced them
@@ -28,11 +36,12 @@ import AuthShell, { AuthLabel, AuthError, authLinkStyle, AUTH_LINK } from '@/com
  * app evicted them. Acknowledging that explicitly is the difference
  * between "weird, why am I here" and "ah, session expired".
  */
-function SessionEndedBanner() {
+function SessionEndedBanner({ freshRetryReady }: { freshRetryReady: boolean }) {
   const params = useSearchParams();
   const reason = params.get('reason');
-  if (reason !== 'session-ended' && reason !== 'config-error') return null;
+  if (reason !== 'session-ended' && reason !== 'config-error' && reason !== 'auth-retry') return null;
   const isConfig = reason === 'config-error';
+  const isFreshRetry = reason === 'auth-retry';
   return (
     <div
       role="status"
@@ -50,7 +59,11 @@ function SessionEndedBanner() {
     >
       {isConfig
         ? 'Sign-in is temporarily unavailable. Our team has been notified — please try again in a few minutes.'
-        : 'Your session ended. Sign in to continue.'}
+        : isFreshRetry
+          ? freshRetryReady
+            ? 'The previous sign-in was safely reset. Enter your credentials to try again.'
+            : 'Resetting the previous sign-in before another attempt…'
+          : 'Your session ended. Sign in to continue.'}
     </div>
   );
 }
@@ -59,10 +72,19 @@ function SessionEndedBanner() {
 // boundary so Next.js's static prerender pass doesn't choke on the hook —
 // matches the same pattern as SessionEndedBanner above.
 function SignInInner() {
-  const { user, loading, signIn } = useAuth();
+  const {
+    user,
+    loading,
+    signIn,
+    isAuthSessionCurrent,
+    discardAuthSession,
+    resetForFreshSignIn,
+  } = useAuth();
   const { lang } = useLang();
-  const router = useRouter();
+  const navigation = useReliableNavigation();
+  const replaceNavigation = navigation.replace;
   const params = useSearchParams();
+  const isFreshRetry = params.get('reason') === 'auth-retry';
 
   const rawRedirect = params.get('redirect');
   const ordinaryRequestedTarget = safeRedirect(rawRedirect, '/home');
@@ -87,13 +109,13 @@ function SignInInner() {
     }
     if (legacyInvitationToken) {
       storeCompanyInvitationHandoff(legacyInvitationToken);
-      router.replace(COMPANY_INVITATION_SIGN_IN_HREF);
+      replaceNavigation(COMPANY_INVITATION_SIGN_IN_HREF);
     }
     setResolvedHandoff({
       identity: handoffIdentity,
       target: readCompanyInvitationHandoff() ? COMPANY_INVITATION_RESUME_PATH : null,
     });
-  }, [handoffIdentity, legacyInvitationToken, router]);
+  }, [handoffIdentity, legacyInvitationToken, replaceNavigation]);
 
   const handoffResolved = handoffIdentity === null || resolvedHandoff?.identity === handoffIdentity;
   const requestedTarget = usesCompanyInvitationHandoff
@@ -106,25 +128,31 @@ function SignInInner() {
   // accounts may open only the Company hub or finish a company invitation.
   const isPropertyIndependentCompanyTarget = requestedTarget === '/company'
     || requestedTarget.startsWith('/company-invite/');
-  const needsPropertySelection = Boolean(
-    user && !isPropertyIndependentCompanyTarget && (
-      user.role === 'admin' ||
-      user.propertyAccess.includes('*') ||
-      user.propertyAccess.length !== 1
-    )
-  );
-  const redirectTarget = needsPropertySelection
-    ? `/property-selector${
-        requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
-          ? ''
-          : `?redirect=${encodeURIComponent(requestedTarget)}`
-      }`
-    : requestedTarget;
+  const redirectTarget = signInRedirectTarget({
+    user,
+    requestedTarget,
+    propertyIndependent: isPropertyIndependentCompanyTarget,
+  });
+  const freshSigninHref = usesCompanyInvitationHandoff
+    ? `${COMPANY_INVITATION_SIGN_IN_HREF}&reason=auth-retry`
+    : rawRedirect
+      ? `/signin?reason=auth-retry&redirect=${encodeURIComponent(rawRedirect)}`
+      : '/signin?reason=auth-retry';
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [signing, setSigning] = useState(false);
+  const [requiresFreshSignin, setRequiresFreshSignin] = useState(false);
+  const submitInFlightRef = useRef(false);
+  const explicitAttemptStartedRef = useRef(false);
+  const freshRecovery = useFreshSignInRecovery({
+    required: isFreshRetry,
+    authLoading: loading,
+    hasUser: Boolean(user),
+    attemptInFlight: signing,
+    resetLocalSession: resetForFreshSignIn,
+  });
 
   // Auto-redirect users with an existing session AWAY from /signin — but
   // skip the redirect while a sign-in is in flight. Without that guard,
@@ -134,48 +162,119 @@ function SignInInner() {
   // /signin/verify). That race produced the "flash dashboard then bounce
   // back to signin" loop reported on 2026-05-10.
   useEffect(() => {
-    if (handoffResolved && !loading && user && !signing) router.replace(redirectTarget);
-  }, [user, loading, router, signing, redirectTarget, handoffResolved]);
+    if (shouldAutoRedirectExistingSession({
+      handoffResolved,
+      explicitAttemptStarted: explicitAttemptStartedRef.current,
+      freshRetry: isFreshRetry,
+      loading,
+      hasUser: Boolean(user),
+      signing,
+    })) {
+      replaceNavigation(redirectTarget);
+    }
+  }, [user, loading, replaceNavigation, signing, redirectTarget, handoffResolved, isFreshRetry]);
 
   // Sign-in flow (Phase 2 + Resend email):
   //   1. signInWithPassword — verifies the password, issues a session.
   //   2. Trust check — if the device has a valid staxis_device cookie +
   //      matching trusted_devices row, skip OTP and go straight in.
-  //   3. Otherwise: signOut() the session, send a 6-digit OTP via
+  //   3. Otherwise: discard only this temporary session, send a 6-digit OTP via
   //      signInWithOtp (delivered by Resend through Supabase custom SMTP),
   //      route to /signin/verify?email=… for code entry.
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!handoffResolved || !email.trim() || !password) return;
+    if (
+      submitInFlightRef.current
+      || !handoffResolved
+      || !freshRecovery.ready
+      || !email.trim()
+      || !password
+    ) return;
 
+    submitInFlightRef.current = true;
     setSigning(true);
     setError('');
 
+    let passwordSession: Awaited<ReturnType<typeof signIn>>['session'] = null;
+    const finish = () => {
+      submitInFlightRef.current = false;
+      setSigning(false);
+    };
+    const clearPasswordSession = () => {
+      if (!passwordSession) return true;
+      const discarded = discardAuthSession(passwordSession);
+      passwordSession = null;
+      return discarded;
+    };
+
     try {
+      if (isFreshRetry) {
+        // Re-run the local reset at the click boundary. A late Session A may
+        // have arrived after the page's initial recovery pass; it must be
+        // discarded before Attempt B is allowed to create another session.
+        const reset = await freshRecovery.resetBeforeSubmit();
+        if (!reset) {
+          setError(
+            freshRecovery.error
+            ?? (lang === 'es'
+              ? 'No pudimos restablecer de forma segura el inicio de sesión anterior. Inténtalo de nuevo.'
+              : 'We could not safely reset the previous sign-in. Try the reset again.'),
+          );
+          finish();
+          return;
+        }
+      }
+      // From this point forward only this attempt's explicit trust/OTP outcome
+      // may navigate. A cross-tab auth event must not turn a failed submit into
+      // an unchecked protected-route redirect. Set the latch only after the
+      // recovery reset, so Attempt B's own SIGNED_IN event is never re-cleared.
+      explicitAttemptStartedRef.current = true;
+
       const trimmed = email.trim().toLowerCase();
       // If the user typed a bare username (no @), treat it as a synthetic
       // ${username}@staxis.local login. Lets the shared "test" investor
       // account sign in by typing just "test"; real-email accounts (jay,
       // reeyen, etc.) keep working because their input already has an @.
       const normalizedEmail = trimmed.includes('@') ? trimmed : `${trimmed}@staxis.local`;
-      const errMsg = await signIn(normalizedEmail, password);
-      if (errMsg) {
-        setError(errMsg);
-        setSigning(false);
+      const result = await signIn(normalizedEmail, password);
+      if (result.error || !result.session || !result.user) {
+        if (result.requiresFreshSignin) {
+          setRequiresFreshSignin(true);
+          // Replace the entire document immediately. GoTrue's original,
+          // uncancellable Promise may still be alive; keeping this App Router
+          // tree would let Back or another auth screen start competing work in
+          // the same Supabase singleton before its exact-session observer runs.
+          try { window.location.replace(freshSigninHref); } catch { /* render the hard-link fallback below */ }
+        }
+        setError(result.error ?? t('invalidCredentials', lang));
+        finish();
         return;
       }
+      passwordSession = result.session;
+      const authenticatedRedirectTarget = signInRedirectTarget({
+        user: result.user,
+        requestedTarget,
+        propertyIndependent: isPropertyIndependentCompanyTarget,
+      });
 
-      // Password verified. Pull session for the trust-check API.
-      const { data: sessionData } = await supabase.auth.getSession();
-      const accessToken = sessionData.session?.access_token;
+      // Use the exact session returned by this attempt. A separate getSession
+      // can observe a different tab's newer login and make this attempt's
+      // trust decision operate on the wrong account.
+      const accessToken = passwordSession.access_token;
 
       let trusted = false;
       if (accessToken) {
         try {
-          const res = await fetch('/api/auth/check-trust', {
+          // This is a read even though the route uses POST. Give both the
+          // request and its JSON body a firm auth-operation deadline so a
+          // dropped connection cannot leave the Sign In form disabled forever.
+          // The explicit bearer token also keeps this pre-session check out of
+          // fetchWithAuth's 401 recovery/sign-out policy.
+          const res = await fetchWithAuth('/api/auth/check-trust', {
             method: 'POST',
             headers: { Authorization: `Bearer ${accessToken}` },
             credentials: 'include',
+            timeoutMs: AUTH_OPERATION_TIMEOUT_MS,
           });
           if (res.ok) {
             const raw = await res.json();
@@ -197,20 +296,42 @@ function SignInInner() {
       }
 
       if (trusted) {
-        // Drop the signing guard so the useEffect can navigate.
-        setSigning(false);
+        if (!isAuthSessionCurrent(passwordSession)) {
+          passwordSession = null;
+          setError(lang === 'es'
+            ? 'El estado de inicio de sesión cambió. Intenta de nuevo.'
+            : 'Sign-in state changed. Please try again.');
+          finish();
+          return;
+        }
+        // Trust was checked for this exact session; navigate explicitly. The
+        // generic existing-session effect remains latched off for this submit.
+        // Keep `signing` true until this page unmounts so fresh-retry recovery
+        // cannot mistake B's expected SIGNED_IN event for another late A while
+        // the reliable navigation is committing.
+        passwordSession = null;
+        replaceNavigation(authenticatedRedirectTarget);
         return;
       }
 
       // Untrusted → send OTP, route to verify screen.
-      await supabase.auth.signOut();
-      const { error: otpErr } = await supabase.auth.signInWithOtp({
-        email: normalizedEmail,
-        options: { shouldCreateUser: false },
-      });
+      if (!clearPasswordSession()) {
+        setError(lang === 'es'
+          ? 'El estado de inicio de sesión cambió. Intenta de nuevo.'
+          : 'Sign-in state changed. Please try again.');
+        finish();
+        return;
+      }
+      const { error: otpErr } = await withPromiseDeadline(
+        supabase.auth.signInWithOtp({
+          email: normalizedEmail,
+          options: { shouldCreateUser: false },
+        }),
+        { timeoutMs: AUTH_OPERATION_TIMEOUT_MS, label: 'Send verification code' },
+      );
       if (otpErr) {
         setError(otpErr.message);
-        setSigning(false);
+        finish();
         return;
       }
       // Preserve a protected deep link through OTP. The verify page routes via
@@ -221,10 +342,11 @@ function SignInInner() {
           ? `&${COMPANY_INVITATION_HANDOFF_PARAM}=${COMPANY_INVITATION_HANDOFF_VALUE}`
           : rawRedirect ? `&redirect=${encodeURIComponent(rawRedirect)}` : ''
       }`;
-      router.replace(verifyUrl);
+      replaceNavigation(verifyUrl);
     } catch {
+      clearPasswordSession();
       setError(t('invalidCredentials', lang));
-      setSigning(false);
+      finish();
     }
   };
 
@@ -236,13 +358,19 @@ function SignInInner() {
     );
   }
 
-  const disabled = !handoffResolved || signing || !email.trim() || !password;
+  const recoveryBusy = isFreshRetry && !freshRecovery.ready && !freshRecovery.error;
+  const disabled = requiresFreshSignin
+    || !handoffResolved
+    || !freshRecovery.ready
+    || signing
+    || !email.trim()
+    || !password;
 
   return (
     <AuthShell subtitle={t('signInPrompt', lang)}>
 
       <Suspense fallback={null}>
-        <SessionEndedBanner />
+        <SessionEndedBanner freshRetryReady={freshRecovery.ready} />
       </Suspense>
 
       <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -260,7 +388,7 @@ function SignInInner() {
             autoComplete="username"
             autoCapitalize="off"
             spellCheck={false}
-            disabled={signing}
+            disabled={signing || requiresFreshSignin || !freshRecovery.ready}
             placeholder="you@hotel.com"
           />
         </div>
@@ -268,9 +396,15 @@ function SignInInner() {
         <div className="si-rise si-d-2" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
             <AuthLabel htmlFor="signin-password">{t('password', lang)}</AuthLabel>
-            <Link href="/signin/forgot" style={authLinkStyle}>
-              {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
-            </Link>
+            {requiresFreshSignin ? (
+              <a href="/signin/forgot" style={authLinkStyle}>
+                {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
+              </a>
+            ) : (
+              <Link href="/signin/forgot" style={authLinkStyle}>
+                {lang === 'es' ? '¿Olvidaste tu contraseña?' : 'Forgot password?'}
+              </Link>
+            )}
           </div>
           <input
             id="signin-password"
@@ -280,12 +414,44 @@ function SignInInner() {
             value={password}
             onChange={e => { setPassword(e.target.value); setError(''); }}
             autoComplete="current-password"
-            disabled={signing}
+            disabled={signing || requiresFreshSignin || !freshRecovery.ready}
             placeholder="••••••••"
           />
         </div>
 
         {error && <AuthError>{error}</AuthError>}
+
+        {recoveryBusy && (
+          <div role="status" aria-live="polite" aria-busy="true" style={{ textAlign: 'center', color: '#5C625C', fontSize: 13 }}>
+            {lang === 'es'
+              ? 'Restableciendo de forma segura el inicio de sesión anterior…'
+              : 'Safely resetting the previous sign-in…'}
+          </div>
+        )}
+
+        {freshRecovery.error && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <AuthError>{lang === 'es'
+              ? 'No pudimos restablecer de forma segura el inicio de sesión anterior.'
+              : freshRecovery.error}</AuthError>
+            <button
+              type="button"
+              onClick={() => void freshRecovery.retry()}
+              style={{ ...authLinkStyle, minHeight: 44, border: 0, background: 'transparent', cursor: 'pointer' }}
+            >
+              {lang === 'es' ? 'Intentar restablecer de nuevo' : 'Try reset again'}
+            </button>
+          </div>
+        )}
+
+        {requiresFreshSignin && (
+          <a
+            href={freshSigninHref}
+            style={{ ...authLinkStyle, minHeight: 44, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            {lang === 'es' ? 'Iniciar sesión de nuevo' : 'Start fresh sign-in'}
+          </a>
+        )}
 
         <button
           type="submit"
@@ -293,7 +459,7 @@ function SignInInner() {
           className={`si-btn si-rise si-d-3 ${disabled ? 'si-btn-off' : 'si-btn-on'}`}
           style={{ marginTop: 6 }}
         >
-          {signing
+          {signing || recoveryBusy
             ? <div className="spinner" style={{ width: 18, height: 18, borderTopColor: '#FFFFFF', borderColor: 'rgba(255,255,255,0.3)' }} />
             : t('signIn', lang)
           }
@@ -303,9 +469,15 @@ function SignInInner() {
             the hotel owner generated. Existing users sign in above. */}
         <p className="si-rise si-d-3" style={{ textAlign: 'center', marginTop: 8, fontSize: 13, color: '#5C625C' }}>
           {lang === 'es' ? '¿No tienes una cuenta? ' : "Don't have an account? "}
-          <Link href="/signup" style={{ color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
-            {lang === 'es' ? 'Crear cuenta' : 'Create account'}
-          </Link>
+          {requiresFreshSignin ? (
+            <a href="/signup" style={{ color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
+              {lang === 'es' ? 'Crear cuenta' : 'Create account'}
+            </a>
+          ) : (
+            <Link href="/signup" style={{ color: AUTH_LINK, textDecoration: 'none', fontWeight: 600 }}>
+              {lang === 'es' ? 'Crear cuenta' : 'Create account'}
+            </Link>
+          )}
         </p>
 
       </form>
@@ -314,6 +486,7 @@ function SignInInner() {
 }
 
 export default function SignInPage() {
+  useNavigationReady();
   return (
     <Suspense fallback={null}>
       <SignInInner />

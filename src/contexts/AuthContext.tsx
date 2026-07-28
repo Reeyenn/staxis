@@ -19,8 +19,19 @@
 // ───────────────────────────────────────────────────────────────────────────
 
 import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { supabase } from '@/lib/supabase';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import type { Session } from '@supabase/supabase-js';
+import { clearSupabaseBrowserSessionCookies, supabase } from '@/lib/supabase';
+import {
+  AUTH_OPERATION_TIMEOUT_MS,
+  AUTH_SESSION_OPERATION_TIMEOUT_MS,
+  fetchWithAuth,
+  markAuthenticatedSessionStarted,
+} from '@/lib/api-fetch';
+import {
+  AmbiguousSessionOperationError,
+  settleSessionOperation,
+} from '@/lib/auth/session-operation';
+import { withPromiseDeadline } from '@/lib/fetch-deadline';
 import { migrateLegacySessionIfPresent } from '@/lib/auth-storage-migration';
 import { subscribeToSessionAuthorizationInvalidations } from '@/lib/auth/session-authorization-invalidation';
 import { RESUME_GUARD_KEY } from '@/lib/onboarding/state';
@@ -36,6 +47,10 @@ export interface AppUser {
   staffId: string | null;    // accounts.staff_id — link to the staff roster row this login represents (null = manager-only login or unlinked)
   isDemo: boolean;           // accounts.skip_2fa — shared demo/investor login; unlocks the Manager⇄Staff view-preview switch on /staff
 }
+
+export type AuthSignInResult =
+  | { error: null; session: Session; user: AppUser; requiresFreshSignin: false }
+  | { error: string; session: null; user: null; requiresFreshSignin: boolean };
 
 interface AuthContextType {
   user: AppUser | null;
@@ -54,8 +69,20 @@ interface AuthContextType {
   /** Opaque server-derived fingerprint for the full current authorization
    * provenance. Consumers use it only to invalidate stale projections. */
   authorizationFingerprint: string | null;
-  /** Returns an error string on failure, or null on success */
-  signIn: (email: string, password: string) => Promise<string | null>;
+  sessionError: string | null;
+  sessionErrorKind: 'transient' | 'ended' | null;
+  retrySession: () => void;
+  /** Returns the exact session created by this password attempt on success. */
+  signIn: (email: string, password: string) => Promise<AuthSignInResult>;
+  /** True only while this exact refresh-token session still owns the browser. */
+  isAuthSessionCurrent: (session: Session) => boolean;
+  /** Locally discard only this exact session; a newer session is untouched. */
+  discardAuthSession: (session: Session) => boolean;
+  /**
+   * Clear every local trace of an ambiguous sign-in before a fresh password
+   * attempt. This never calls the remote/global logout endpoint.
+   */
+  resetForFreshSignIn: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -66,7 +93,18 @@ const AuthContext = createContext<AuthContextType>({
   platformAdmin: false,
   propertyStandings: [],
   authorizationFingerprint: null,
-  signIn: async () => null,
+  sessionError: null,
+  sessionErrorKind: null,
+  retrySession: () => {},
+  signIn: async () => ({
+    error: 'Sign-in is unavailable.',
+    session: null,
+    user: null,
+    requiresFreshSignin: false,
+  }),
+  isAuthSessionCurrent: () => false,
+  discardAuthSession: () => false,
+  resetForFreshSignIn: async () => {},
   signOut: async () => {},
 });
 
@@ -178,12 +216,64 @@ function clearSignedOutBrowserState(): void {
     // The onboarding resume loop-breaker is scoped to one authenticated
     // session. Never let a failed resume suppress a later login.
     sessionStorage.removeItem(RESUME_GUARD_KEY);
-    // Remove any legacy Firebase-era keys so a mixed-state browser doesn't
-    // feed stale data back to AuthContext after migration.
-    localStorage.removeItem('hotelops-account');
   } catch {
     // ignore — private browsing / no storage
   }
+  try {
+    // Remove any legacy Firebase-era keys so a mixed-state browser doesn't
+    // feed stale data back to AuthContext after migration.
+    localStorage.removeItem('hotelops-account');
+    localStorage.removeItem('staxis-auth');
+    // Property selection is account-scoped. Never let the next person on a
+    // shared front-desk browser probe the previous account's remembered hotel.
+    localStorage.removeItem('hotelops-active-property');
+  } catch {
+    // ignore — private browsing / no storage
+  }
+}
+
+/**
+ * End the browser session within a firm budget and always remove its durable
+ * cookie representation. This is reserved for explicit user sign-out and
+ * authoritative account revocation. Temporary password/OTP attempts use the
+ * exact-token local discard inside AuthProvider so they cannot revoke another
+ * browser's session or a newer attempt.
+ */
+async function clearSupabaseSessionBounded(): Promise<void> {
+  let remoteFailure: unknown = null;
+  try {
+    const { error } = await withPromiseDeadline(
+      supabase.auth.signOut(),
+      { timeoutMs: AUTH_OPERATION_TIMEOUT_MS, label: 'Sign out' },
+    );
+    remoteFailure = error;
+  } catch (error) {
+    remoteFailure = error;
+  } finally {
+    clearSupabaseBrowserSessionCookies();
+  }
+
+  if (!remoteFailure) return;
+  console.warn('AuthContext: remote sign-out failed; clearing the local cookie session', remoteFailure);
+  try {
+    await withPromiseDeadline(
+      supabase.auth.signOut({ scope: 'local' }),
+      { timeoutMs: 2_000, label: 'Local sign out' },
+    );
+  } catch {
+    // The cookie removal above is the durable invariant. A full document load
+    // cannot restore this session even if GoTrue's in-memory lock is wedged.
+  }
+}
+
+function isTerminalSessionHydrationError(error: unknown): boolean {
+  const value = error as { code?: unknown; message?: unknown; status?: unknown } | null;
+  const code = String(value?.code ?? '');
+  const message = String(value?.message ?? '');
+  const status = typeof value?.status === 'number' ? value.status : 0;
+  return /refresh_token_not_found|refresh_token_already_used|session_not_found|invalid_grant|flow_state_not_found/i.test(code)
+    || /invalid refresh token|refresh token not found|already used|revoked|session.*(missing|not found|expired)/i.test(message)
+    || status === 400 || status === 401 || status === 403 || status === 404;
 }
 
 // Fetch the accounts row for the current auth user and translate to AppUser.
@@ -201,7 +291,7 @@ function clearSignedOutBrowserState(): void {
 //                account, so it tripped the sign-out path and logged live
 //                users out for real. We retry once, then throw so callers can
 //                keep the still-valid session. 2026-06-03.
-async function loadAppUser(authUid: string): Promise<AppUser | null> {
+async function loadAppUserUncached(authUid: string): Promise<AppUser | null> {
   const fetchRow = () => supabase
     .from('accounts')
     .select('id, username, display_name, role, property_access, data_user_id, staff_id, skip_2fa')
@@ -209,10 +299,11 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
     .maybeSingle();
 
   let result = await fetchRow();
-  if (result.error) {
-    // One short-backoff retry. Most failures here are a single transient
-    // blip; retrying once makes them invisible instead of surfacing as a
-    // spurious logout.
+  if (result.error || !result.data) {
+    // Confirm both failures and an apparently missing row. A transient auth
+    // / RLS race can briefly make a live account invisible immediately after
+    // token refresh, while two successful empty reads are strong evidence the
+    // account was genuinely removed or revoked.
     await new Promise(resolve => setTimeout(resolve, 400));
     result = await fetchRow();
   }
@@ -245,6 +336,23 @@ async function loadAppUser(authUid: string): Promise<AppUser | null> {
   };
 }
 
+// signInWithPassword emits SIGNED_IN before its Promise resolves. The listener
+// and the eager sign-in path therefore request the same account in adjacent
+// tasks. Join that work so one transient result cannot disagree with another
+// and ordinary login never pays for two identical account reads.
+const appUserLoads = new Map<string, Promise<AppUser | null>>();
+
+function loadAppUser(authUid: string): Promise<AppUser | null> {
+  const existing = appUserLoads.get(authUid);
+  if (existing) return existing;
+
+  const pending = loadAppUserUncached(authUid).finally(() => {
+    if (appUserLoads.get(authUid) === pending) appUserLoads.delete(authUid);
+  });
+  appUserLoads.set(authUid, pending);
+  return pending;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
@@ -253,18 +361,36 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [propertyStandings, setPropertyStandings] = useState<SessionPropertyStanding[]>([]);
   const [authorizationFingerprint, setAuthorizationFingerprint] = useState<string | null>(null);
   const authUid = user?.uid ?? null;
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionErrorKind, setSessionErrorKind] = useState<'transient' | 'ended' | null>(null);
+  const [sessionRetryKey, setSessionRetryKey] = useState(0);
 
   // Mirror `user` into a ref so the async token-refresh handler can read the
   // *current* user synchronously without being torn down and rebuilt on every
-  // change. Used to decide whether an empty accounts-row read means a
-  // genuinely orphaned auth user (no established user → sign out) or just a
-  // transient blip on a live session (user already established → keep them).
+  // change. It also prevents a deferred account read from re-installing an
+  // older identity after a sign-out or account switch wins the race.
   const userRef = useRef<AppUser | null>(null);
+  const authSessionUidRef = useRef<string | null>(null);
+  const authSessionRefreshTokenRef = useRef<string | null>(null);
+  const authEventGenerationRef = useRef(0);
+  const signInAttemptGenerationRef = useRef(0);
+  const signInInFlightRef = useRef(false);
+  // Once a session-creating SDK call exceeds its full lock+transport budget,
+  // its outcome is unknowable until the original Promise settles. Keep this
+  // document terminal: retrying here could let late Attempt A overwrite B.
+  // A full document navigation creates a fresh client/provider boundary.
+  const signInRecoveryRequiredRef = useRef(false);
+  const terminalSignOutReasonRef = useRef<string | null>(null);
   useEffect(() => { userRef.current = user; }, [user]);
 
   useEffect(() => {
     let active = true;
     let resolved = false;
+    let legacyMigrationSettled = false;
+    const hydrationGeneration = ++authEventGenerationRef.current;
+    setLoading(true);
+    setSessionError(null);
+    setSessionErrorKind(null);
 
     // Hydrate from the session Supabase restored from cookies on page load.
     // This fires BEFORE the first onAuthStateChange event, so we get an
@@ -276,29 +402,76 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // page load following the deploy it lifts any leftover `staxis-auth`
     // entry into the new SSR cookies so existing users stay signed in.
     void (async () => {
+      let sessionReadCompleted = false;
       try {
-        await migrateLegacySessionIfPresent();
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!active) return;
+        try {
+          await migrateLegacySessionIfPresent();
+        } finally {
+          legacyMigrationSettled = true;
+        }
+        const { data: { session }, error: sessionReadError } = await supabase.auth.getSession();
+        if (sessionReadError) throw sessionReadError;
+        sessionReadCompleted = true;
+        if (!active || resolved || authEventGenerationRef.current !== hydrationGeneration) return;
         if (session?.user) {
+          authSessionUidRef.current = session.user.id;
+          authSessionRefreshTokenRef.current = session.refresh_token;
           const appUser = await loadAppUser(session.user.id);
-          if (!active) return;
+          if (!active || resolved || authEventGenerationRef.current !== hydrationGeneration) return;
           if (appUser) {
+            markAuthenticatedSessionStarted();
+            userRef.current = appUser;
             setUser(appUser);
+            setSessionError(null);
+            setSessionErrorKind(null);
           } else {
             // Auth session exists but no accounts row — orphaned auth user,
             // sign out to avoid a "logged in with no permissions" state.
-            await supabase.auth.signOut();
+            terminalSignOutReasonRef.current = 'This account is no longer available. Sign in with an active account to continue.';
+            let signOutFailed = false;
+            try {
+              const { error: signOutError } = await supabase.auth.signOut();
+              signOutFailed = Boolean(signOutError);
+            } catch {
+              signOutFailed = true;
+            }
+            if (signOutFailed) clearSupabaseBrowserSessionCookies();
+            userRef.current = null;
             setUser(null);
+            setSessionError('This account is no longer available. Sign in with an active account to continue.');
+            setSessionErrorKind('ended');
           }
         } else {
+          clearSignedOutBrowserState();
+          authSessionUidRef.current = null;
+          authSessionRefreshTokenRef.current = null;
+          userRef.current = null;
           setUser(null);
+          setSessionError(null);
+          setSessionErrorKind(null);
         }
       } catch (err) {
         console.error('AuthContext: getSession failed', err);
-        if (active) setUser(null);
+        if (active && !resolved && authEventGenerationRef.current === hydrationGeneration) {
+          // A timeout/outage is not evidence that the session ended. Surface a
+          // retryable state and preserve any established user instead of
+          // redirecting to Sign In or silently rendering a blank route.
+          if (!sessionReadCompleted && isTerminalSessionHydrationError(err)) {
+            clearSignedOutBrowserState();
+            clearSupabaseBrowserSessionCookies();
+            authSessionUidRef.current = null;
+            authSessionRefreshTokenRef.current = null;
+            userRef.current = null;
+            setUser(null);
+            setSessionError('Your session has ended. Sign in again to continue.');
+            setSessionErrorKind('ended');
+          } else {
+            setSessionError('We could not confirm your session. Check your connection and try again.');
+            setSessionErrorKind('transient');
+          }
+        }
       } finally {
-        if (active) {
+        if (active && !resolved && authEventGenerationRef.current === hydrationGeneration) {
           resolved = true;
           setLoading(false);
         }
@@ -336,16 +509,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // re-entrant call path is gone.
     const { data: listener } = supabase.auth.onAuthStateChange((event, session) => {
       if (!active) return;
+      // Supabase can publish INITIAL_SESSION(null) before the one-time legacy
+      // localStorage→cookie migration finishes. That event is not authoritative:
+      // clearing storage here would destroy the only recoverable session when
+      // setSession is still pending or transiently fails.
+      if (event === 'INITIAL_SESSION' && !session?.user && !legacyMigrationSettled) return;
+      const eventGeneration = ++authEventGenerationRef.current;
       // Synchronous bookkeeping is fine here; only DEFER the supabase calls.
       if (event === 'SIGNED_OUT') {
+        const endedDuringHydration = !resolved && !userRef.current;
+        const terminalReason = terminalSignOutReasonRef.current;
+        terminalSignOutReasonRef.current = null;
         // Covers wrapper sign-out AND terminal 401/session-expiry paths that
         // call supabase.auth.signOut() directly.
         clearSignedOutBrowserState();
+        authSessionUidRef.current = null;
+        authSessionRefreshTokenRef.current = null;
+        userRef.current = null;
         setUser(null);
         setAuthorizationChecked(false);
         setPlatformAdmin(false);
         setPropertyStandings([]);
         setAuthorizationFingerprint(null);
+        setSessionError(terminalReason ?? (endedDuringHydration
+          ? 'Your session has ended. Sign in again to continue.'
+          : null));
+        setSessionErrorKind(terminalReason || endedDuringHydration ? 'ended' : null);
+        resolved = true;
+        setLoading(false);
         return;
       }
       if (!session?.user) {
@@ -355,23 +546,45 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // blip — nulling here rippled a fake "signed out" through every
         // context and remounted half the app. A genuinely dead session still
         // signs out via SIGNED_OUT or api-fetch's terminal-401 policy.
+        if (event === 'INITIAL_SESSION' && !resolved) {
+          clearSignedOutBrowserState();
+          authSessionUidRef.current = null;
+          authSessionRefreshTokenRef.current = null;
+          userRef.current = null;
+          setUser(null);
+          setSessionError(null);
+          setSessionErrorKind(null);
+          resolved = true;
+          setLoading(false);
+        }
         return;
       }
       const uid = session.user.id;
+      authSessionUidRef.current = uid;
+      authSessionRefreshTokenRef.current = session.refresh_token;
+      // A shared browser can change accounts without a full page teardown.
+      // Drop Account A synchronously before any Account B query starts, and
+      // invalidate every deferred load queued for the older identity.
+      if (userRef.current && userRef.current.uid !== uid) {
+        clearSignedOutBrowserState();
+        userRef.current = null;
+        setUser(null);
+      }
+      if (!userRef.current) setLoading(true);
       // Dispatched into the next tick so the auth lock is released before
       // we touch any supabase.* method. See deadlock warning above.
       //
       // We also race loadAppUser against a 6-second timeout. If the
       // accounts-table query hangs (RLS bug, Supabase outage, dropped
       // websocket), we don't want the user stuck on a loading spinner
-      // indefinitely — the initial-hydration path already has a 4s
+      // indefinitely — the initial-hydration path already has a 10s
       // ceiling (further down), but token-refresh and SIGNED_IN events
       // hit this branch *after* hydration and previously had no bound.
       // 6s is generous (typical query is <300ms) but firm enough that
       // a real hang surfaces as a recoverable signed-out state instead
       // of a frozen UI.
       setTimeout(async () => {
-        if (!active) return;
+        if (!active || authEventGenerationRef.current !== eventGeneration) return;
         try {
           const appUser = await Promise.race([
             loadAppUser(uid),
@@ -379,8 +592,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               setTimeout(() => reject(new Error('loadAppUser timeout (6s)')), 6000),
             ),
           ]);
-          if (!active) return;
+          if (!active || authEventGenerationRef.current !== eventGeneration) return;
           if (appUser) {
+            markAuthenticatedSessionStarted();
             // Stable-reference setUser: if the data is identical to what's
             // already in state, keep the same object reference. Reason:
             // onAuthStateChange fires on every Supabase token refresh
@@ -391,6 +605,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             // 'spinner over the dashboard every time I come back to the
             // tab' UX bug. Comparing the load-bearing fields here keeps
             // the reference stable across no-op refreshes.
+            userRef.current = appUser;
             setUser(prev => {
               if (prev
                 && prev.uid === appUser.uid
@@ -399,28 +614,44 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 && prev.username === appUser.username
                 && prev.displayName === appUser.displayName
                 && prev.staffId === appUser.staffId
+                && prev.isDemo === appUser.isDemo
                 && JSON.stringify(prev.propertyAccess ?? []) === JSON.stringify(appUser.propertyAccess ?? [])
               ) {
                 return prev;
               }
               return appUser;
             });
-          } else if (!userRef.current) {
-            // Valid session, no accounts row, and no user was ever established
-            // this session → genuinely orphaned auth user (e.g. a half-finished
-            // signup). Signing out to avoid a "logged in with no permissions"
-            // limbo is correct here.
-            await supabase.auth.signOut();
-            setUser(null);
+            setSessionError(null);
+            setSessionErrorKind(null);
+            resolved = true;
+            setLoading(false);
           } else {
-            // We already had a signed-in user and this token-refresh read came
-            // back empty. An account doesn't vanish mid-session — treat the
-            // empty result as a transient RLS / auth.uid() race during the
-            // refresh and KEEP the user signed in instead of bouncing them to
-            // /signin. 2026-06-03.
-            console.warn('AuthContext: empty accounts row on refresh for an established user — keeping session');
+            // `loadAppUser` already confirmed the successful empty lookup.
+            // This is an orphaned or revoked account, regardless of whether a
+            // previous user snapshot existed. Fail closed and make the local
+            // logout durable even if the remote revoke endpoint is offline.
+            const unavailableMessage = 'This account is no longer available. Sign in with an active account to continue.';
+            terminalSignOutReasonRef.current = unavailableMessage;
+            let signOutFailed = false;
+            try {
+              const { error: signOutError } = await supabase.auth.signOut();
+              signOutFailed = Boolean(signOutError);
+            } catch {
+              signOutFailed = true;
+            }
+            if (signOutFailed) clearSupabaseBrowserSessionCookies();
+            if (!active || authEventGenerationRef.current !== eventGeneration) return;
+            authSessionUidRef.current = null;
+            authSessionRefreshTokenRef.current = null;
+            userRef.current = null;
+            setUser(null);
+            setSessionError(unavailableMessage);
+            setSessionErrorKind('ended');
+            resolved = true;
+            setLoading(false);
           }
         } catch (err) {
+          if (!active || authEventGenerationRef.current !== eventGeneration) return;
           // Transient failure (network blip, the 6s timeout, a momentary
           // Supabase error) during a token refresh. The event that triggered
           // this handler was a SUCCESSFUL refresh, so the session itself is
@@ -430,27 +661,56 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // the dominant cause of "I keep getting randomly logged out." Keep
           // what we have; the next auth event or user action retries.
           console.error('AuthContext: onAuthStateChange deferred handler error — keeping current session', err);
+          if (!userRef.current) {
+            setSessionError('We could not load your account. Check your connection and try again.');
+            setSessionErrorKind('transient');
+            resolved = true;
+            setLoading(false);
+          }
         }
       }, 0);
     });
 
-    // Safety timeout: if getSession() never resolves (broken localStorage,
-    // network hang), force loading to false after 4s so the sign-in form is
-    // still usable.
+    // Belt-and-suspenders around auth + account hydration. The Supabase fetch
+    // itself has a firm deadline, but this also covers a regression in code
+    // around it. It yields a real retryable error; it never pretends the user
+    // signed out merely because the network did not answer.
     const timeout = setTimeout(() => {
       if (!resolved && active) {
-        console.warn('AuthContext: session hydration did not resolve within 4s — forcing loading=false');
-        setUser(null);
+        console.warn('AuthContext: session hydration did not resolve within 10s');
+        resolved = true;
+        setSessionError('We could not confirm your session. Check your connection and try again.');
+        setSessionErrorKind('transient');
         setLoading(false);
       }
-    }, 4000);
+    }, 10_000);
 
     return () => {
       active = false;
+      authEventGenerationRef.current += 1;
       listener.subscription.unsubscribe();
       clearTimeout(timeout);
     };
-  }, []);
+  }, [sessionRetryKey]);
+
+  const retrySession = React.useCallback(() => {
+    if (sessionErrorKind === 'ended' && typeof window !== 'undefined') {
+      clearSignedOutBrowserState();
+      clearSupabaseBrowserSessionCookies();
+      void supabase.auth.signOut({ scope: 'local' });
+      window.location.assign('/signin?reason=session-ended');
+      return;
+    }
+    setLoading(true);
+    setSessionError(null);
+    setSessionErrorKind(null);
+    setSessionRetryKey((key) => key + 1);
+  }, [sessionErrorKind]);
+
+  const isAuthSessionCurrent = React.useCallback((expectedSession: Session): boolean => (
+    authSessionUidRef.current === expectedSession.user.id
+    && authSessionRefreshTokenRef.current === expectedSession.refresh_token
+  ), []);
 
   // `loadAppUser` is the browser's account projection and remains useful for
   // initial rendering, but it is not enough for a privilege-bearing global
@@ -520,6 +780,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           // A successful service-role lookup confirmed that the account is no
           // longer usable. Clear client authority and end the auth session;
           // unlike an empty browser RLS read, this is not a transient race.
+          terminalSignOutReasonRef.current = 'This account is no longer available. Sign in with an active account to continue.';
+          userRef.current = null;
           setUser((previous) => previous?.uid === authUid ? null : previous);
           void supabase.auth.signOut();
           return;
@@ -581,42 +843,213 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     };
   }, [authUid]);
 
-  const signIn = async (email: string, password: string): Promise<string | null> => {
+  const discardAuthSession = React.useCallback((expectedSession: Session): boolean => {
+    // Refresh-token equality makes cleanup attempt-owned even when the same
+    // account signs in again. UID-only cleanup can destroy a newer winning
+    // session for that account.
+    if (!isAuthSessionCurrent(expectedSession)) return false;
+
+    signInAttemptGenerationRef.current += 1;
+    authEventGenerationRef.current += 1;
+    authSessionUidRef.current = null;
+    authSessionRefreshTokenRef.current = null;
+    terminalSignOutReasonRef.current = null;
+    userRef.current = null;
+    clearSignedOutBrowserState();
+    // This synchronous cookie removal is the local, durable discard. Do not
+    // call auth.signOut() here: that async method signs out whichever session
+    // is current when it later acquires the auth lock, which may be a newer
+    // attempt. Explicit user sign-out retains the bounded remote revoke below.
+    clearSupabaseBrowserSessionCookies();
+    setUser(null);
+    setAuthorizationChecked(false);
+    setPlatformAdmin(false);
+    setPropertyStandings([]);
+    setAuthorizationFingerprint(null);
+    setLoading(false);
+    setSessionError(null);
+    setSessionErrorKind(null);
+    return true;
+  }, [isAuthSessionCurrent]);
+
+  const resetForFreshSignIn = React.useCallback(async (): Promise<void> => {
+    // This runs only on the explicit `/signin?reason=auth-retry` boundary.
+    // Do not call auth.signOut() here: even `scope:'local'` first acquires the
+    // shared GoTrue lock and calls the logout endpoint. If that Promise times
+    // out, its late completion could erase the next password attempt. The
+    // browser client stores its session entirely in these cookies; clearing
+    // them synchronously is the bounded local reset, while generation bumps
+    // make every hydration/account task already queued for Session A stale.
+    signInAttemptGenerationRef.current += 1;
+    authEventGenerationRef.current += 1;
+    signInRecoveryRequiredRef.current = false;
+    authSessionUidRef.current = null;
+    authSessionRefreshTokenRef.current = null;
+    terminalSignOutReasonRef.current = null;
+    userRef.current = null;
+    clearSignedOutBrowserState();
+    clearSupabaseBrowserSessionCookies();
+    setUser(null);
+    setAuthorizationChecked(false);
+    setPlatformAdmin(false);
+    setPropertyStandings([]);
+    setAuthorizationFingerprint(null);
+    setLoading(false);
+    setSessionError(null);
+    setSessionErrorKind(null);
+  }, []);
+
+  const signIn = async (email: string, password: string): Promise<AuthSignInResult> => {
+    if (signInRecoveryRequiredRef.current) {
+      return {
+        error: 'We could not confirm the previous sign-in. Start a fresh sign-in to continue.',
+        session: null,
+        user: null,
+        requiresFreshSignin: true,
+      };
+    }
+    if (signInInFlightRef.current) {
+      return {
+        error: 'A sign-in is already in progress. Please wait.',
+        session: null,
+        user: null,
+        requiresFreshSignin: false,
+      };
+    }
+    signInInFlightRef.current = true;
+    const attemptGeneration = ++signInAttemptGenerationRef.current;
+    let establishedSession: Session | null = null;
     try {
       const normalizedEmail = email.trim().toLowerCase();
-      const { data, error } = await supabase.auth.signInWithPassword({ email: normalizedEmail, password });
+      const { data, error } = await settleSessionOperation(
+        supabase.auth.signInWithPassword({ email: normalizedEmail, password }),
+        {
+          timeoutMs: AUTH_SESSION_OPERATION_TIMEOUT_MS,
+          label: 'Sign in',
+          discardLateSession: discardAuthSession,
+        },
+      );
 
       if (error) {
         // Supabase returns "Invalid login credentials" for both bad email
         // and bad password — surface that as a generic message to avoid
         // leaking whether an email exists.
         if (error.message.toLowerCase().includes('invalid')) {
-          return 'Invalid email or password';
+          return { error: 'Invalid email or password', session: null, user: null, requiresFreshSignin: false };
         }
-        return error.message;
+        return { error: error.message, session: null, user: null, requiresFreshSignin: false };
       }
 
       if (!data.session || !data.user) {
-        return 'Login failed';
+        return { error: 'Login failed', session: null, user: null, requiresFreshSignin: false };
       }
+      establishedSession = data.session;
+      if (signInAttemptGenerationRef.current !== attemptGeneration) {
+        discardAuthSession(data.session);
+        return {
+          error: 'Another sign-in or sign-out completed first. Please try again.',
+          session: null,
+          user: null,
+          requiresFreshSignin: false,
+        };
+      }
+      // The SDK's SIGNED_IN callback normally stamps these first. Stamping
+      // again makes ownership explicit and keeps the contract correct in test
+      // environments where the auth callback is mocked independently.
+      authSessionUidRef.current = data.user.id;
+      authSessionRefreshTokenRef.current = data.session.refresh_token;
 
       // onAuthStateChange will fire and populate `user`. We also eagerly
       // load and set here so the caller can navigate immediately after
       // signIn() resolves without waiting for the listener round-trip.
-      const appUser = await loadAppUser(data.user.id);
+      const accountLoadGeneration = authEventGenerationRef.current;
+      const appUser = await withPromiseDeadline(
+        loadAppUser(data.user.id),
+        { timeoutMs: 10_000, label: 'Account load' },
+      );
+      if (
+        signInAttemptGenerationRef.current !== attemptGeneration
+        || authSessionUidRef.current !== data.user.id
+        || authSessionRefreshTokenRef.current !== data.session.refresh_token
+      ) {
+        return {
+          error: authEventGenerationRef.current === accountLoadGeneration
+            ? 'Login state changed. Please try again.'
+            : 'Another sign-in or sign-out completed first. Please try again.',
+          session: null,
+          user: null,
+          requiresFreshSignin: false,
+        };
+      }
       if (!appUser) {
-        await supabase.auth.signOut();
-        return 'No account record found for this user. Contact an administrator.';
+        discardAuthSession(data.session);
+        return {
+          error: 'No account record found for this user. Contact an administrator.',
+          session: null,
+          user: null,
+          requiresFreshSignin: false,
+        };
       }
       setUser(appUser);
-      return null; // success
+      userRef.current = appUser;
+      markAuthenticatedSessionStarted();
+      setSessionError(null);
+      setSessionErrorKind(null);
+      setLoading(false);
+      return { error: null, session: data.session, user: appUser, requiresFreshSignin: false };
     } catch (err) {
       console.error('signIn error:', err);
-      return 'An error occurred. Please try again.';
+      if (err instanceof AmbiguousSessionOperationError) {
+        // The original GoTrue operation remains alive and can still publish a
+        // SIGNED_IN event before the exact-session observer discards it. Do
+        // not permit another password attempt inside this provider lifetime.
+        signInRecoveryRequiredRef.current = true;
+        return {
+          error: 'We could not confirm the sign-in result. Start a fresh sign-in to continue.',
+          session: null,
+          user: null,
+          requiresFreshSignin: true,
+        };
+      }
+      if (establishedSession) {
+        // The SIGNED_IN listener and this eager path intentionally converge on
+        // one identity. If the listener already committed the exact session,
+        // an eager read timeout is not a failed login and must not tear it down.
+        if (
+          userRef.current?.uid === establishedSession.user.id
+          && authSessionRefreshTokenRef.current === establishedSession.refresh_token
+          && signInAttemptGenerationRef.current === attemptGeneration
+        ) {
+          return {
+            error: null,
+            session: establishedSession,
+            user: userRef.current,
+            requiresFreshSignin: false,
+          };
+        }
+        discardAuthSession(establishedSession);
+      }
+      return {
+        error: 'An error occurred. Please try again.',
+        session: null,
+        user: null,
+        requiresFreshSignin: false,
+      };
+    } finally {
+      signInInFlightRef.current = false;
     }
   };
 
   const signOut = async () => {
+    signInAttemptGenerationRef.current += 1;
+    authEventGenerationRef.current += 1;
+    authSessionUidRef.current = null;
+    authSessionRefreshTokenRef.current = null;
+    terminalSignOutReasonRef.current = null;
+    // Invalidate deferred account hydration immediately. React state is
+    // cleared only after local session removal below so the app never
+    // pretends a still-persisted cookie was removed.
+    userRef.current = null;
     clearSignedOutBrowserState();
     setAuthorizationChecked(false);
     setPlatformAdmin(false);
@@ -632,7 +1065,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // device just stays trusted until its own expires_at; that's the
     // same posture as before this commit, so we're never worse off.
     try {
-      const { data: { session } } = await supabase.auth.getSession();
+      const { data: { session } } = await withPromiseDeadline(
+        supabase.auth.getSession(),
+        { timeoutMs: 2_000, label: 'Session check before sign out' },
+      );
       const accessToken = session?.access_token;
       if (accessToken) {
         const controller = new AbortController();
@@ -659,8 +1095,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // getSession failure (broken localStorage, etc). Continue.
     }
 
-    await supabase.auth.signOut();
+    await clearSupabaseSessionBounded();
+    userRef.current = null;
     setUser(null);
+    setSessionError(null);
+    setSessionErrorKind(null);
   };
 
   return (
@@ -671,7 +1110,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       platformAdmin,
       propertyStandings,
       authorizationFingerprint,
+      sessionError,
+      sessionErrorKind,
+      retrySession,
       signIn,
+      isAuthSessionCurrent,
+      discardAuthSession,
+      resetForFreshSignIn,
       signOut,
     }}>
       {children}

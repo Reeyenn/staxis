@@ -28,6 +28,68 @@ import { KnowledgePane } from './KnowledgePane';
 import { LogbookMode } from './LogbookPane';
 import { ContactsMode } from './ContactsPane';
 
+/**
+ * Coalesce concurrent attempts to run the same read into one request. The
+ * active promise is released only after it settles, so a poll interval shorter
+ * than the server response time cannot build an overlapping request train or
+ * invalidate the slow-but-successful response that started first.
+ */
+export function createSingleFlightRequest<T>(request: () => Promise<T>): (ensureFresh?: boolean) => Promise<T> {
+  let tail: Promise<T> | null = null;
+  let trailingFresh: Promise<T> | null = null;
+  let freshAgain = false;
+
+  const release = (pending: Promise<T>) => {
+    if (tail === pending) tail = null;
+    if (trailingFresh === pending) trailingFresh = null;
+  };
+
+  return (ensureFresh = false) => {
+    // Ordinary polls join the current/queued request. A mutation or explicit
+    // retry can request one trailing read that begins only after the current
+    // transport settles. Further fresh requests coalesce behind it; if one
+    // arrives while that trailing read is already running, the loop performs
+    // exactly one more read afterward so its caller cannot adopt an older
+    // snapshot. Poll ticks never increase the queue.
+    if (!tail) {
+      const pending = Promise.resolve().then(request);
+      tail = pending;
+      void pending.then(() => release(pending), () => release(pending));
+      return pending;
+    }
+    if (!ensureFresh) return tail;
+
+    if (trailingFresh) {
+      freshAgain = true;
+      return trailingFresh;
+    }
+
+    const active = tail;
+    const pending = (async () => {
+      try { await active; } catch { /* the fresh read can recover */ }
+      let result!: T;
+      let lastError: unknown;
+      do {
+        freshAgain = false;
+        try {
+          result = await request();
+          lastError = undefined;
+        } catch (error) {
+          lastError = error;
+        }
+      } while (freshAgain);
+      if (lastError !== undefined) throw lastError;
+      return result;
+    })();
+    trailingFresh = pending;
+    tail = pending;
+    // Both handlers return normally, so the housekeeping promise cannot create
+    // an unhandled rejection when the request itself fails.
+    void pending.then(() => release(pending), () => release(pending));
+    return pending;
+  };
+}
+
 export function CommsApp() {
   const { activePropertyId } = useProperty();
   // A hotel switch is a resource-boundary change, not an ordinary refresh.
@@ -58,6 +120,11 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const [mutationError, setMutationError] = React.useState<string | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const threadRequestRef = React.useRef(0);
+  const threadLoadRef = React.useRef<{
+    scope: string;
+    token: object;
+    run: (ensureFresh?: boolean) => Promise<void>;
+  } | null>(null);
   // `pid` comes from a client-only context (reads localStorage), so it's null
   // during SSR but already set on the first client render. Branching the render
   // on it directly made the server HTML ("Select a property…") disagree with the
@@ -95,14 +162,21 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     `/api/comms/bootstrap?pid=${encodeURIComponent(pid ?? '')}`,
     { pollMs: 8000, keepDataOnError: true, enabled: !!pid },
   );
-  // Worklist: fetched up-front for the sidebar badge; 15s poll only while the
-  // worklist is actually on screen (plus a refresh on entry, below). To-do's
-  // calendar view doesn't render it, so it doesn't poll for it either.
-  const { data: worklistData, loading: worklistLoading, error: worklistError, reload: loadWorklist } = useCommsResource<{ items: WorklistItem[] }>(
+  // The full worklist is substantially heavier than the Communications
+  // bootstrap. Fetch it only when the To-do list is actually visible; a
+  // sidebar badge is not worth putting it on every cold navigation's blocking
+  // request graph. The To-do calendar is an independent resource.
+  const worklistEnabled = !!pid && mode === 'todo' && todoView === 'list';
+  const { data: worklistData, loading: worklistRequestLoading, error: worklistError, reload: loadWorklist } = useCommsResource<{ items: WorklistItem[] }>(
     `/api/worklist?pid=${encodeURIComponent(pid ?? '')}`,
-    { pollMs: mode === 'todo' && todoView === 'list' ? 15000 : undefined, keepDataOnError: true, enabled: !!pid },
+    { pollMs: worklistEnabled ? 15000 : undefined, keepDataOnError: true, enabled: worklistEnabled },
   );
   const worklist = worklistData?.items ?? [];
+  // `enabled` flips in an effect inside the resource hook. Cover the render
+  // before that effect starts the request so To-do never flashes a false
+  // empty state while its first lazy read is pending.
+  const worklistLoading = worklistRequestLoading
+    || (worklistEnabled && worklistData == null && worklistError == null);
 
   const selConvo = boot?.conversations.find((c) => c.id === selId) ?? null;
   const online = React.useMemo(() => new Set(boot?.onlineStaffIds ?? []), [boot?.onlineStaffIds]);
@@ -111,20 +185,56 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   // (not hold the previous thread's messages), and every successful fetch —
   // polls included — re-pins the scroll to the bottom. Neither survives
   // useCommsResource's silent keep-last-good source switches.
-  const loadThread = React.useCallback(async (showLoading = false) => {
-    if (!pid || !selId) return;
-    const requestId = ++threadRequestRef.current;
+  const loadThread = React.useCallback((showLoading = false, ensureFresh = false): Promise<void> => {
+    if (!pid || !selId) return Promise.resolve();
     if (showLoading) setMessagesLoading(true);
-    const r = await apiGet<{ messages: MessageDTO[] }>(`/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}`);
-    if (requestId !== threadRequestRef.current) return;
-    if (r.ok && r.data) {
-      setMessages(r.data.messages);
-      setMessagesError(null);
-      setTimeout(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight }); }, 30);
-    } else {
-      setMessagesError(r.error || L('Could not load messages.', 'No se pudieron cargar los mensajes.'));
+    const scope = `${pid}\u0000${selId}`;
+    let loader = threadLoadRef.current;
+    if (!loader || loader.scope !== scope) {
+      const url = `/api/comms/messages?pid=${encodeURIComponent(pid)}&conversationId=${encodeURIComponent(selId)}`;
+      const token = {};
+      const nextLoader = {
+        scope,
+        token,
+        run: createSingleFlightRequest(async () => {
+          // A trailing request queued for an old conversation must evaporate
+          // before it reaches the transport or advances the shared ticket.
+          if (threadLoadRef.current?.token !== token) return;
+          // Increment only when a transport actually starts. Poll ticks that
+          // join this promise do not supersede its response.
+          const requestId = ++threadRequestRef.current;
+          const r = await apiGet<{ messages: MessageDTO[] }>(url);
+          if (threadLoadRef.current?.token !== token || requestId !== threadRequestRef.current) return;
+          if (r.ok && r.data) {
+            setMessages(r.data.messages);
+            setMessagesError(null);
+            setTimeout(() => {
+              if (threadLoadRef.current?.token === token && requestId === threadRequestRef.current) {
+                scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+              }
+            }, 30);
+          } else {
+            setMessagesError(r.error || L('Could not load messages.', 'No se pudieron cargar los mensajes.'));
+          }
+        }),
+      };
+      loader = nextLoader;
+      threadLoadRef.current = nextLoader;
     }
-    setMessagesLoading(false);
+    if (ensureFresh) {
+      // A poll that began before the mutation/manual retry is no longer an
+      // acceptable UI snapshot. Invalidate its commit immediately; the queued
+      // trailing transport takes its own newer ticket when it actually starts.
+      threadRequestRef.current += 1;
+    }
+    const pending = loader.run(ensureFresh);
+    if (showLoading) {
+      const finishLoading = () => {
+        if (threadLoadRef.current === loader) setMessagesLoading(false);
+      };
+      void pending.then(finishLoading, finishLoading);
+    }
+    return pending;
   }, [pid, selId, L]);
 
   React.useEffect(() => {
@@ -133,15 +243,16 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     setMessagesError(null);
     setMessagesLoading(!!selId);
     if (selId) void loadThread(true);
-    return () => { threadRequestRef.current += 1; };
+    return () => {
+      threadRequestRef.current += 1;
+      threadLoadRef.current = null;
+    };
   }, [selId, loadThread]);
   React.useEffect(() => {
     if (!selId || mode !== 'chats') return;
     const iv = setInterval(() => { if (!document.hidden) void loadThread(); }, 3000);
     return () => clearInterval(iv);
   }, [selId, mode, loadThread]);
-  React.useEffect(() => { if (mode === 'todo' && todoView === 'list') void loadWorklist(); }, [mode, todoView, loadWorklist]);
-
   // Member count for the selected conversation header.
   React.useEffect(() => {
     setMemberCount(null);
@@ -168,22 +279,24 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
     setMutationError(null);
     const r = await apiPost('/api/comms/react', { pid, messageId: m.id });
     if (!r.ok) { actionFailed('Could not update the acknowledgement. Please try again.', 'No se pudo actualizar la confirmación. Inténtalo de nuevo.'); return; }
-    await loadThread();
+    await loadThread(false, true);
   };
   const pinToggle = async (m: MessageDTO) => {
     if (!pid) return;
     setMutationError(null);
     const r = await apiPost('/api/comms/pin', { pid, messageId: m.id, pinned: !m.pinned });
     if (!r.ok) { actionFailed('Could not update the pinned message. Please try again.', 'No se pudo actualizar el mensaje fijado. Inténtalo de nuevo.'); return; }
-    await loadThread();
+    await loadThread(false, true);
   };
   const turnIntoTask = async (m: MessageDTO) => {
     if (!pid) return;
     setMutationError(null);
     const r = await apiPost('/api/comms/tasks', { pid, title: (m.originalBody || m.body).slice(0, 200) || L('Message task', 'Tarea de mensaje'), sourceMessageId: m.id });
     if (!r.ok) { actionFailed('Could not turn this message into a task. Please try again.', 'No se pudo convertir este mensaje en una tarea. Inténtalo de nuevo.'); return; }
-    setMode('todo'); setThreadParent(null); setPanel(null);
-    await loadWorklist();
+    // Enabling the list resource starts exactly one initial load. Calling its
+    // reload callback while it is still disabled is a no-op and used to pair
+    // with an eager request; select the list and let the resource own loading.
+    setMode('todo'); setTodoView('list'); setThreadParent(null); setPanel(null);
   };
   const openDm = async (staffId: string) => {
     if (!pid) return;
@@ -220,11 +333,11 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
   const channels = conversations.filter((c) => c.kind === 'channel');
   const dms = conversations.filter((c) => c.kind === 'dm');
   const onShiftCount = (boot?.onlineStaffIds ?? []).filter((id) => id !== boot?.me.staffId).length;
-  const openItems = worklist.length;
+  const openItems = worklistEnabled && worklistData ? worklist.length : undefined;
 
   const right = mode === 'chats'
     ? (threadParent && selConvo
-        ? <ThreadPanel key={`${selConvo.id}:${threadParent.id}`} pid={pid} conversation={selConvo} parent={threadParent} L={L} onClose={() => setThreadParent(null)} onReload={loadThread} />
+        ? <ThreadPanel key={`${selConvo.id}:${threadParent.id}`} pid={pid} conversation={selConvo} parent={threadParent} L={L} onClose={() => setThreadParent(null)} onReload={() => loadThread(false, true)} />
         : panel === 'pinned' && selConvo
         ? <PinnedPanel pid={pid} conversation={selConvo} L={L} onClose={() => setPanel(null)} />
         : panel === 'members' && selConvo
@@ -282,9 +395,9 @@ function CommsPropertyApp({ pid }: { pid: string | null }) {
               {selConvo
                 ? <MessagePane
                     pid={pid} me={boot.me} conversation={selConvo} messages={messages} online={online} memberCount={memberCount} L={L}
-                    messagesLoading={messagesLoading} messagesError={messagesError} onRetryMessages={() => void loadThread(true)}
+                    messagesLoading={messagesLoading} messagesError={messagesError} onRetryMessages={() => void loadThread(true, true)}
                     activeThreadId={threadParent?.id ?? null} activePanel={panel} scrollRef={scrollRef}
-                    onReloadThread={loadThread} onReloadBoot={loadBoot} onOpenThread={openThread} onTogglePanel={togglePanel}
+                    onReloadThread={() => loadThread(false, true)} onReloadBoot={loadBoot} onOpenThread={openThread} onTogglePanel={togglePanel}
                     onReactToggle={reactToggle} onPinToggle={pinToggle} onTurnIntoTask={turnIntoTask} onOpenSearch={() => setSearchOpen(true)} />
                 : <EmptyHint text={L('Pick a conversation, or start a new message.', 'Elige una conversación o inicia un mensaje nuevo.')} />}
               {right}

@@ -7,6 +7,8 @@ import { PropertyProvider } from '@/contexts/PropertyContext';
 import { SyncProvider } from '@/contexts/SyncContext';
 import { InstallStaxisProvider } from '@/contexts/InstallStaxisContext';
 import { WalkthroughOverlay } from '@/components/walkthrough/WalkthroughOverlay';
+import { AuthenticatedRuntimeBoundary } from '@/components/layout/AuthenticatedRuntimeBoundary';
+import { ReliableNavigationProvider } from '@/lib/hooks/use-reliable-navigation';
 
 // Snow design system — typography from the locked Dashboard Explorations
 // design. Geist for body, Geist Mono for small caps / numeric callouts,
@@ -120,13 +122,17 @@ export default function RootLayout({
           <SyncProvider>
             <AuthProvider>
               <LanguageProvider>
-                <PropertyProvider>
-                  {children}
-                  {/* Mounted at the root so the loop survives page navigations
-                      (AppLayout is per-page and unmounts when the URL changes,
-                      which would kill an in-flight multi-step walkthrough). */}
-                  <WalkthroughOverlay />
-                </PropertyProvider>
+                <ReliableNavigationProvider>
+                  <PropertyProvider>
+                    <AuthenticatedRuntimeBoundary>
+                      {children}
+                      {/* Mounted at the root so the loop survives page navigations
+                          (AppLayout is per-page and unmounts when the URL changes,
+                          which would kill an in-flight multi-step walkthrough). */}
+                      <WalkthroughOverlay />
+                    </AuthenticatedRuntimeBoundary>
+                  </PropertyProvider>
+                </ReliableNavigationProvider>
               </LanguageProvider>
             </AuthProvider>
           </SyncProvider>

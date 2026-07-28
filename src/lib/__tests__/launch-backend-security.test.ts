@@ -196,14 +196,20 @@ describe('section gates fail closed and cover high-risk routes', () => {
 
   test('every authenticated comms route inherits the central communications gate', () => {
     const helper = source('src/lib/comms/route-helpers.ts');
-    const gate = helper.indexOf("requireSectionEnabled(req, pid, 'communications')");
+    const session = helper.indexOf('const session = await requireSession(');
+    const tenant = helper.indexOf('userHasPropertyAccess(', session);
+    const gate = helper.indexOf("requirePropertySectionEnabled(pid, 'communications'", tenant);
     const localStandingGate = helper.lastIndexOf('resolvePrivateHotelCommsStaffId(');
     const identity = helper.indexOf('resolveStaffIdForAccount(');
-    assert.ok(gate >= 0 && identity > gate, 'section gate must precede identity creation');
     assert.ok(
-      localStandingGate > gate && identity > localStandingGate,
-      'private hotel comms must require local operational standing before identity creation',
+      session >= 0
+        && tenant > session
+        && gate > tenant
+        && localStandingGate > gate
+        && identity > localStandingGate,
+      'session, tenant, section, and local standing must all precede identity creation',
     );
+    assert.equal((helper.match(/requireSession\(/g) ?? []).length, 1, 'comms context must validate the session once');
     for (const file of routeFilesBelow('src/app/api/comms')) {
       if (file.endsWith('/language/route.ts')) {
         const language = readFileSync(file, 'utf8');
@@ -213,6 +219,16 @@ describe('section gates fail closed and cover high-risk routes', () => {
       }
       assert.match(readFileSync(file, 'utf8'), /commsContext/, `${file} must use commsContext`);
     }
+  });
+
+  test('communications bootstrap does not repeat auth or block reads on presence', () => {
+    const bootstrap = source('src/app/api/comms/bootstrap/route.ts');
+    const context = bootstrap.indexOf('await commsContext(');
+    const presence = bootstrap.indexOf('after(() => touchPresence(', context);
+    const parallelReads = bootstrap.indexOf('await Promise.all([', presence);
+    assert.ok(context >= 0 && presence > context && parallelReads > presence);
+    assert.doesNotMatch(bootstrap, /requireSectionEnabled|await touchPresence/);
+    assert.match(bootstrap, /online\.add\(ctx\.staffId\)/);
   });
 
   test('all five housekeeper message endpoints explicitly gate Communications', () => {

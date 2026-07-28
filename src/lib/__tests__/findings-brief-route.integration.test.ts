@@ -85,6 +85,11 @@ const LATE_NIGHT = new Date('2026-07-26T03:00:00.000Z');
 const NEXT_DAY = new Date('2026-07-26T06:00:00.000Z');
 const RAN_AT = '2026-07-25T08:00:00.000Z';
 
+/** Route tests use the real clock, so content fixtures must stay inside the
+ * liveness window instead of silently expiring as the calendar advances. */
+const hoursAgo = (hours: number): string =>
+  new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function getReq(propertyId: string | null): NextRequest {
@@ -315,17 +320,20 @@ describe('/api/findings/brief — the morning brief', () => {
     });
 
     test('leads with the biggest dollars and ends with the liveness line', async () => {
+      await pg.query(
+        'update public.finding_runs set run_at = $2::timestamptz where property_id = $1',
+        [PID_A, hoursAgo(6)],
+      );
       const { body } = await readBrief(PID_A);
       const brief = body.data!.brief!;
       const highlights = brief.lines.filter((line) => line.findingId).map((line) => line.text);
       assert.ok(highlights[0].startsWith('The ice machine has had 3 service calls.'), highlights[0]);
       assert.match(highlights[0], /\$2,100–\$3,800/);
       assert.ok(highlights[1].startsWith('Room 214'), highlights[1]);
-      // The framing line is intentionally absent when the run has gone stale;
-      // highlights keep their order and the final line still discloses the
-      // run's honest freshness instead of pinning this test to wall-clock day.
+      // The run is refreshed relative to the real test clock above. Identify
+      // highlights by findingId, then independently assert the framing line.
       assert.equal(brief.lines.at(-1)?.findingId, undefined);
-      assert.match(brief.lines.at(-1)?.text ?? '', /^(?:Checked 34 things last night|Last checked )/);
+      assert.match(brief.lines.at(-1)?.text ?? '', /^Checked 34 things last night/);
       assert.ok(brief.lines.length <= 8);
     });
 

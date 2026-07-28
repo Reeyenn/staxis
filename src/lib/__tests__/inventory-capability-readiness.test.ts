@@ -24,7 +24,7 @@ test('capability readiness is tagged to the resolved identity and hotel', () => 
   );
   assert.match(
     propertyContext,
-    /const resolvedPropertyId = activeProperty\?\.id \?\? null;[\s\S]*?const expectedCapabilityViewerKey = userUid && resolvedPropertyId/,
+    /const resolvedPropertyId = activeProperty\?\.id \?\? null;[\s\S]*?const activePropertyViewerKey = userUid && userAccountId && resolvedPropertyId[\s\S]*?const expectedCapabilityViewerKey = activePropertyViewerKey/,
   );
   assert.match(
     propertyContext,
@@ -32,7 +32,7 @@ test('capability readiness is tagged to the resolved identity and hotel', () => 
   );
   assert.match(
     propertyContext,
-    /const map = await fetchOverridesFor\(resolvedPropertyId\);[\s\S]*?expectedCapabilityViewerKeyRef\.current === expectedCapabilityViewerKey[\s\S]*?setCapabilitySnapshot\(\{[\s\S]*?propertyId: resolvedPropertyId,[\s\S]*?overrides: map/,
+    /const map = await withPromiseDeadline\(fetchOverridesFor\(resolvedPropertyId\), \{[\s\S]*?PROPERTY_CONTEXT_TIMEOUT_MS[\s\S]*?expectedCapabilityViewerKeyRef\.current === expectedCapabilityViewerKey[\s\S]*?setCapabilitySnapshot\(\{[\s\S]*?propertyId: resolvedPropertyId,[\s\S]*?overrides: map/,
   );
   assert.match(
     propertyContext,
@@ -59,7 +59,7 @@ test('inventory waits for the matching capability snapshot and masks stale hotel
   );
   assert.match(
     inventoryShell,
-    /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded\) \{/,
+    /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\) \{/,
   );
 });
 

@@ -13,7 +13,7 @@
 
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { useRouter, usePathname } from 'next/navigation';
+import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -35,12 +35,7 @@ import { shouldShowMobileInstallReminder } from '@/lib/pwa-install';
 import { Download, Smartphone } from 'lucide-react';
 import { roleLabel } from '@/lib/roles';
 import { MobileConcourseNav } from './MobileConcourseNav';
-
-// Session-wide guard: the bar remounts on every route (each page renders its
-// own AppLayout), and an unguarded prefetch effect re-fired the whole batch
-// on every mount/re-render — ~25 concurrent server renders racing the page's
-// own data load. Prefetch must run ONCE per browser session, on idle.
-let PREFETCHED_THIS_SESSION = false;
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 // ── The decisions badge, across remounts ────────────────────────────────────
 // Same remount problem, same shape of fix. The bar is torn down and rebuilt on
@@ -63,6 +58,13 @@ let PREFETCHED_THIS_SESSION = false;
 let SESSION_BADGE: { pid: string; count: number } | null = null;
 let LAST_SHELL_PATH: string | null = null;
 
+function markHotelSelectedThisTab(): void {
+  try { window.sessionStorage.setItem('hotelops-session-selected', '1'); } catch {
+    // Selection itself is held by PropertyContext. This optional funnel hint
+    // must never break hotel switching in privacy-mode browsers.
+  }
+}
+
 export function ConcourseBar() {
   const {
     user,
@@ -74,8 +76,12 @@ export function ConcourseBar() {
   const { properties, activeProperty, loading: propertyLoading, setActivePropertyId } = useProperty();
   const can = useCan();
   const { lang, locale, setLocale } = useLang();
-  const router = useRouter();
   const pathname = usePathname();
+  const navigation = useReliableNavigation();
+  const router = React.useMemo(
+    () => ({ replace: navigation.replace }),
+    [navigation.replace],
+  );
   const enabled = useEnabledSections();
   const { platform, installed } = useInstallStaxis();
   const companyOnly = !propertyLoading && !!user && properties.length === 0 && user.role !== 'admin';
@@ -105,26 +111,12 @@ export function ConcourseBar() {
     setMenuOpen((v) => !v);
   };
 
-  // Navigation feel: (1) prefetch every section's route payload once per
-  // session, 2.5s after the bar settles — warm pill clicks WITHOUT racing the
-  // current page's own data load; (2) light the clicked pill green immediately
-  // (optimistic active) instead of waiting for the new pathname to arrive.
-  const [pendingHref, setPendingHref] = React.useState<string | null>(null);
-  React.useEffect(() => { setPendingHref(null); }, [pathname]);
-  React.useEffect(() => {
-    if (PREFETCHED_THIS_SESSION) return;
-    const idle = window.setTimeout(() => {
-      PREFETCHED_THIS_SESSION = true;
-      const hrefs = companyOnly
-        ? ['/company', '/settings']
-        : [...SECTION_LIST.map((m) => m.navHref), '/home', '/settings'];
-      if (!hrefs.includes('/company')) hrefs.push('/company');
-      if (verifiedPlatformAdmin) hrefs.push('/admin/properties');
-      hrefs.forEach((h) => router.prefetch(h));
-    }, 2500);
-    return () => window.clearTimeout(idle);
-  }, [companyOnly, router, verifiedPlatformAdmin]);
-  const go = (href: string) => { setPendingHref(href); router.push(href); };
+  // Navigation feel: prefetch only on real pointer/focus intent. The clicked
+  // pill still lights immediately, while the shared navigation watchdog makes
+  // every attempted destination terminal and retryable.
+  const pendingHref = navigation.pendingHref;
+  const prefetch = navigation.prefetch;
+  const go = navigation.push;
   const adminLabel = 'Admin';
   const adminDestination: AdminDestinationAction | undefined = verifiedPlatformAdmin
     ? {
@@ -133,6 +125,7 @@ export function ConcourseBar() {
           ? 'Abrir administración de Staxis'
           : 'Open Staxis Admin',
         active: adminWorkspaceActive,
+        onIntent: () => prefetch('/admin/properties#live'),
         onClick: () => go('/admin/properties#live'),
       }
     : undefined;
@@ -251,6 +244,7 @@ export function ConcourseBar() {
         : pathname === m.navHref || pathname.startsWith(m.navHref + '/'),
       badge: m.key === 'staxis' ? decisionBadge?.count : undefined,
       badgeLabel: m.key === 'staxis' ? decisionBadge?.label : undefined,
+      onIntent: () => prefetch(m.navHref),
       onClick: () => go(m.navHref),
     }));
 
@@ -312,7 +306,7 @@ export function ConcourseBar() {
                     className={`cx-menu-item${p.id === activeProperty?.id ? ' cx-on' : ''}`}
                     onClick={() => {
                       setActivePropertyId(p.id);
-                      sessionStorage.setItem('hotelops-session-selected', '1');
+                      markHotelSelectedThisTab();
                       setMenuOpen(false);
                     }}
                   >
@@ -421,10 +415,13 @@ export function ConcourseBar() {
         onHome={() => go(homeHref)}
         onCompany={() => go('/company')}
         onSettings={() => go('/settings')}
+        onHomeIntent={() => prefetch(homeHref)}
+        onCompanyIntent={() => prefetch('/company')}
+        onSettingsIntent={() => prefetch('/settings')}
         onSignOut={() => { void signOut(); }}
         onPropertyChange={(propertyId) => {
           setActivePropertyId(propertyId);
-          sessionStorage.setItem('hotelops-session-selected', '1');
+          markHotelSelectedThisTab();
         }}
         onLanguageChange={(nextLocale) => {
           const supportedLocale = SUPPORTED_LOCALES.find((candidate) => candidate === nextLocale);
@@ -441,6 +438,8 @@ export function ConcourseBar() {
         gearActive={pathname.startsWith('/settings')}
         onGear={() => go('/settings')}
         onLogo={() => go(homeHref)}
+        onGearIntent={() => prefetch('/settings')}
+        onLogoIntent={() => prefetch(homeHref)}
         homeLabel={homeLabel}
         settingsLabel={lang === 'es' ? 'Configuración' : 'Settings'}
         avatar={avatar}

@@ -6,7 +6,7 @@
 // line items right after the create). Split out of CapexTab so the board
 // file keeps only the list + workflow orchestration. Money is integer cents.
 
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Field, TextInput, TextArea } from '@/app/maintenance/_components/_mt-snow';
 import { useApiAction } from '@/lib/hooks/use-api-resource';
 import {
@@ -16,12 +16,14 @@ import {
   type CapexCategory,
   type RequestType,
 } from '@/lib/financials/shared';
-import { finSend, Btn, DollarInput, T, FONT_SANS } from './fin-ui';
+import { finSend, newFinancialCreateOperationId, Btn, DollarInput, T, FONT_SANS } from './fin-ui';
 import { ft, capexCategoryLabel } from './fin-i18n';
 
 type Lang = 'en' | 'es';
 
 export interface RequestForm {
+  /** Frozen for this create form so a lost response can be retried exactly. */
+  operationId: string;
   name: string;
   description: string;
   category: CapexCategory | '';
@@ -29,13 +31,24 @@ export interface RequestForm {
   requestType: RequestType;
   targetDate: string;
   vendor: string;
-  pendingLines: Array<{ label: string; amountCents: number | null }>;
+  pendingLines: Array<{ operationId: string; label: string; amountCents: number | null }>;
 }
 export function blankRequest(): RequestForm {
-  return { name: '', description: '', category: '', estimate: '', requestType: 'budgeted', targetDate: '', vendor: '', pendingLines: [] };
+  return {
+    operationId: newFinancialCreateOperationId(),
+    name: '',
+    description: '',
+    category: '',
+    estimate: '',
+    requestType: 'budgeted',
+    targetDate: '',
+    vendor: '',
+    pendingLines: [],
+  };
 }
 
 export function RequestModal({
+  scopeKey,
   pid,
   lang,
   form,
@@ -43,6 +56,7 @@ export function RequestModal({
   onClose,
   onCreated,
 }: {
+  scopeKey: string;
   pid: string;
   lang: Lang;
   form: RequestForm;
@@ -51,14 +65,29 @@ export function RequestModal({
   onCreated: () => void;
 }) {
   const S = ft(lang);
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  const submitAttemptRef = useRef(0);
+  useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      activeScopeRef.current = null;
+      submitAttemptRef.current += 1;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
   const [submitError, setSubmitError] = useState<string | null>(null);
   // One action = create + (on success) the scanned line items, sequentially.
   // Returns an error result when the CREATE fails (the modal must stay open —
   // closing would silently discard everything typed); line-item failures are
   // counted so a partial add is surfaced, not swallowed.
-  const create = useApiAction(async (f: RequestForm) => {
+  const create = useApiAction(async (input: { propertyId: string; draft: RequestForm }) => {
+    const f = input.draft;
     const res = await finSend<{ project: CapexProject }>('/api/financials/capex', 'POST', {
-      pid,
+      pid: input.propertyId,
+      operationId: f.operationId,
       name: f.name.trim(),
       description: f.description.trim() || null,
       category: f.category || null,
@@ -68,18 +97,40 @@ export function RequestModal({
       vendor: f.vendor.trim() || null,
     });
     if (res.error !== undefined) return res;
+    if (!ownsScope()) return { error: 'Financial scope changed' };
     const newId = res.data.project.id;
     let failedLines = 0;
     for (const l of f.pendingLines) {
-      const lineRes = await finSend('/api/financials/capex/line-items', 'POST', { pid, projectId: newId, label: l.label, amountCents: l.amountCents ?? 0, source: 'invoice_scan' });
+      if (!ownsScope()) return { error: 'Financial scope changed' };
+      const lineRes = await finSend('/api/financials/capex/line-items', 'POST', {
+        pid: input.propertyId,
+        operationId: l.operationId,
+        projectId: newId,
+        label: l.label,
+        amountCents: l.amountCents ?? 0,
+        source: 'invoice_scan',
+      });
       if (lineRes.error) failedLines += 1;
     }
     return { data: { project: res.data.project, failedLines } };
+  }, {
+    // This is a finite composite action: every finSend has its own 30-second
+    // transport/body deadline. Do not race the whole workflow at 30 seconds;
+    // the project may already exist while scanned lines are still settling,
+    // and reporting total failure here would let a retry create a duplicate.
+    timeoutMs: null,
   });
   const submit = async () => {
     if (!form.name.trim()) return;
     setSubmitError(null);
-    const res = await create.run(form);
+    const requestedPropertyId = pid;
+    const attempt = ++submitAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && submitAttemptRef.current === attempt;
+    const res = await create.run({
+      propertyId: requestedPropertyId,
+      draft: { ...form, pendingLines: form.pendingLines.map((line) => ({ ...line })) },
+    });
+    if (!ownsAttempt()) return;
     if (res.error) {
       setSubmitError(S.couldNotSave);
       return;

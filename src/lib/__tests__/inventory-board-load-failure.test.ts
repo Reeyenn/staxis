@@ -32,3 +32,18 @@ test('initial loads and refreshes expose partial failure without cross-hotel rep
   );
   assert.match(shell, /setBundleLoadError\(data\.partialFailure\)/);
 });
+
+test('the board bundle has a firm terminal deadline and no cosmetic reveal failsafe', () => {
+  assert.match(shell, /const INVENTORY_BOARD_LOAD_TIMEOUT_MS = 12_000/);
+  assert.equal(
+    (shell.match(/withPromiseDeadline\(fetchBoardData\(/g) ?? []).length,
+    2,
+    'both the initial load and manual refresh must share the board deadline',
+  );
+  assert.match(shell, /label: 'Inventory details'/);
+  assert.doesNotMatch(shell, /setTimeout\(\(\) => setRevealed\(true\), 3500\)/);
+  assert.match(
+    shell,
+    /if \(!inventoryDataMatchesViewer \|\| !revealed \|\| !itemsLoaded \|\| !bundleLoaded\)/,
+  );
+});
