@@ -21,7 +21,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { normalizeBoardExtraction } from '@/app/api/housekeeping/setup/board-photo/route';
+import { normalizeBoardExtraction } from '@/lib/housekeeping-board-extraction';
 
 describe('normalizeBoardExtraction', () => {
   test('throws on any top level that is not the object we asked for', () => {
