@@ -21,10 +21,14 @@ import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { T, FONT_SANS, MTSubTabBar, MaintenanceErrorBoundary, type MaintenanceTabKey } from './_components/_mt-snow';
+import { useLang } from '@/contexts/LanguageContext';
+import { canManageTeam } from '@/lib/roles';
+import { T, FONT_SANS, Btn, MTSubTabBar, MaintenanceErrorBoundary, type MaintenanceTabKey } from './_components/_mt-snow';
 import { WorkOrdersTab } from './_components/WorkOrdersTab';
 import { PreventiveTab } from './_components/PreventiveTab';
 import { EquipmentTab } from './_components/EquipmentTab';
+import { PatternsModal } from './_components/PatternsModal';
+import { panelText } from './_components/PatternsPanel';
 
 // Storage can throw in privacy-mode / sandboxed / SSR contexts — guard both
 // get and set so a blocked localStorage never blanks the whole screen.
@@ -37,9 +41,12 @@ const safeStore = {
 
 export default function MaintenancePage() {
   const [tab, setTabState] = useState<MaintenanceTabKey>('work');
+  const [patternsOpen, setPatternsOpen] = useState(false);
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, loading: propLoading } = useProperty();
+  const { lang } = useLang();
   const router = useRouter();
+  const canSeePatterns = !!user && canManageTeam(user.role);
 
   // Auth guard — redirect if not logged in or no property selected.
   useEffect(() => {
@@ -79,7 +86,22 @@ export default function MaintenancePage() {
 
   return (
     <AppLayout>
-      <MTSubTabBar tab={tab} onTab={setTab} />
+      <MTSubTabBar
+        tab={tab}
+        onTab={setTab}
+        actions={
+          // Managers only. /maintenance itself is open to the maintenance role,
+          // but the findings read behind this popup is manager-gated
+          // (loadManagerCaller + managerManagesHotel), so anyone else would get
+          // a button that can only ever answer "couldn't check just now". Same
+          // predicate the Staxis queue gates its own fetch on.
+          canSeePatterns ? (
+            <Btn variant="ghost" onClick={() => setPatternsOpen(true)}>
+              {panelText('button', lang === 'es' ? 'es' : 'en')}
+            </Btn>
+          ) : undefined
+        }
+      />
       <MaintenanceErrorBoundary>
         <div key={tab} className="animate-in stagger-1">
           {tab === 'work'       && <WorkOrdersTab />}
@@ -87,6 +109,9 @@ export default function MaintenancePage() {
           {tab === 'equipment'  && <EquipmentTab />}
         </div>
       </MaintenanceErrorBoundary>
+      {canSeePatterns && (
+        <PatternsModal open={patternsOpen} onClose={() => setPatternsOpen(false)} />
+      )}
     </AppLayout>
   );
 }

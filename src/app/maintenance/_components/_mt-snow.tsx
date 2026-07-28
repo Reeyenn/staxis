@@ -594,10 +594,18 @@ export class MaintenanceErrorBoundary extends React.Component<
 export type MaintenanceTabKey = 'work' | 'preventive' | 'equipment';
 
 export function MTSubTabBar({
-  tab, onTab,
+  tab, onTab, actions,
 }: {
   tab: MaintenanceTabKey;
   onTab: (t: MaintenanceTabKey) => void;
+  /**
+   * Controls that belong to the whole section rather than one board — today
+   * just the patterns popup. It lives here rather than in each board's
+   * PageHead because what Staxis has spotted spans work orders, preventive and
+   * equipment alike, and three copies of one button is three things to keep in
+   * step.
+   */
+  actions?: React.ReactNode;
 }) {
   const { lang } = useLang();
   const es = lang === 'es';
@@ -615,6 +623,10 @@ export function MTSubTabBar({
       borderBottom: `1px solid ${T.rule}`,
       position: 'sticky', top: 64, zIndex: 10,
     }}>
+      <div style={{
+        display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+        gap: 20, flexWrap: 'wrap',
+      }}>
       <nav style={{ display: 'flex', gap: 28 }}>
         {tabs.map(t => {
           const active = tab === t.key;
@@ -637,6 +649,12 @@ export function MTSubTabBar({
           );
         })}
       </nav>
+        {actions && (
+          <div style={{ display: 'flex', gap: 8, paddingBottom: 8, flexWrap: 'wrap' }}>
+            {actions}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
