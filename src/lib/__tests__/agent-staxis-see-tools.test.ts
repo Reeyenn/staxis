@@ -423,7 +423,14 @@ describe('staxis_pending_decisions', () => {
 // ─── staxis_preventive ──────────────────────────────────────────────────────
 
 describe('staxis_preventive', () => {
-  const today = new Date().toISOString().slice(0, 10);
+  // Match the hotel-local calendar used by the tool. Using UTC here made this
+  // suite fail only between Chicago midnight and UTC midnight.
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
   const daysAgo = (n: number): string => {
     const d = new Date(`${today}T00:00:00.000Z`);
     d.setUTCDate(d.getUTCDate() - n);
