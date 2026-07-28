@@ -112,8 +112,8 @@ export interface PlanSnapshot {
  */
 async function buildSnapshot(pid: string, date: string): Promise<PlanSnapshot> {
   const [workRows, counts, propRow] = await Promise.all([
-    fetchTodayRoomWork(pid, date),
-    fetchTodayPropertyCounts(pid, date),
+    fetchTodayRoomWork(pid, date, { throwOnError: true }),
+    fetchTodayPropertyCounts(pid, date, { throwOnError: true }),
     supabase
       .from('properties')
       .select('checkout_minutes, stayover_day1_minutes, stayover_day2_minutes, shift_minutes')
@@ -121,6 +121,8 @@ async function buildSnapshot(pid: string, date: string): Promise<PlanSnapshot> {
       .maybeSingle(),
   ]);
 
+  if (propRow.error) throw propRow.error;
+  if (!propRow.data) throw new Error('Property cleaning settings are unavailable.');
   const prop = (propRow.data ?? {}) as Record<string, unknown>;
   const checkoutMinutes = numOr(prop.checkout_minutes, DEFAULT_CHECKOUT_MINUTES);
   const stayoverDay1Minutes = numOr(prop.stayover_day1_minutes, DEFAULT_STAYOVER_DAY1_MINUTES);
@@ -237,17 +239,23 @@ export function subscribeToPlanSnapshot(
   callback: (snapshot: PlanSnapshot | null) => void,
 ): () => void {
   let active = true;
+  let refreshSequence = 0;
   const refresh = async () => {
+    const requestSequence = ++refreshSequence;
     try {
       const snap = await buildSnapshot(pid, date);
-      if (active) callback(snap);
+      if (active && requestSequence === refreshSequence) callback(snap);
     } catch {
-      if (active) callback(null);
+      if (active && requestSequence === refreshSequence) callback(null);
     }
   };
   void refresh();
   const unsub = subscribeTodayRoomWork(pid, () => { void refresh(); });
-  return () => { active = false; unsub(); };
+  return () => {
+    active = false;
+    refreshSequence += 1;
+    unsub();
+  };
 }
 
 // Tiny re-export shim — TodayRoomWorkRow + the wrappers stay accessible

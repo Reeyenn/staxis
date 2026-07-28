@@ -13,7 +13,6 @@
 export const dynamic = 'force-dynamic';
 
 import React from 'react';
-import { useRouter } from 'next/navigation';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
@@ -25,6 +24,8 @@ import { shouldResumeOnboarding, RESUME_GUARD_KEY } from '@/lib/onboarding/state
 import { HomeHubView, type HubTile, type TileTone } from '@/components/concourse/HomeHubView';
 import { AskHero } from '@/components/concourse/AskHero';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 interface TileLine { en: string; es: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
@@ -43,7 +44,7 @@ function HomeHub() {
   const { lang } = useLang();
   const can = useCan();
   const enabled = useEnabledSections();
-  const router = useRouter();
+  const navigation = useReliableNavigation();
   const [summaryState, setSummaryState] = React.useState<{
     propertyId: string | null;
     tiles: Summary;
@@ -62,14 +63,14 @@ function HomeHub() {
   // Home hub. Admins are never routed into a hotel's owner wizard.
   React.useEffect(() => {
     if (propertyLoading || !user || !activeProperty) return;
-    if (
-      shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt) &&
-      typeof window !== 'undefined' &&
-      sessionStorage.getItem(RESUME_GUARD_KEY) !== activeProperty.id
-    ) {
-      sessionStorage.setItem(RESUME_GUARD_KEY, activeProperty.id);
-      window.location.href = `/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`;
-    }
+    if (!shouldResumeOnboarding(user.role, activeProperty.onboardingCompletedAt, activeProperty.onboardingState, activeProperty.onboardingPromptShownAt)) return;
+    // Automatic resume needs a durable one-shot guard. If storage is blocked,
+    // stay on the terminal Home surface instead of risking a redirect loop.
+    try {
+      if (window.sessionStorage.getItem(RESUME_GUARD_KEY) === activeProperty.id) return;
+      window.sessionStorage.setItem(RESUME_GUARD_KEY, activeProperty.id);
+    } catch { return; }
+    window.location.assign(`/api/onboard/resume?propertyId=${encodeURIComponent(activeProperty.id)}`);
   }, [user, propertyLoading, activeProperty]);
 
   React.useEffect(() => {
@@ -119,30 +120,36 @@ function HomeHub() {
         status: line ? (lang === 'es' ? line.es : line.en) : '· · ·',
         tone: line?.tone ?? 'muted',
         hot: m.key === 'staxis',
-        onClick: () => router.push(m.navHref),
+        onIntent: () => navigation.prefetch(m.navHref),
+        onClick: () => navigation.push(m.navHref),
       };
     });
 
   return (
-    <HomeHubView
-      greeting={greetingFor(lang, firstName, now.getHours())}
-      dateline={dateline}
-      tiles={tiles}
-      ask={<AskHero />}
-      management={user && managementContext ? {
-        label: managementContext === 'company'
-          ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
-          : (lang === 'es' ? 'Mi hotel' : 'My Hotel'),
-        href: '/company',
-      } : undefined}
-    />
+    <>
+      <HomeHubView
+        greeting={greetingFor(lang, firstName, now.getHours())}
+        dateline={dateline}
+        tiles={tiles}
+        ask={<AskHero />}
+        management={user && managementContext ? {
+          label: managementContext === 'company'
+            ? (lang === 'es' ? 'Centro de empresa' : 'Company Hub')
+            : (lang === 'es' ? 'Mi hotel' : 'My Hotel'),
+          href: '/company',
+          onIntent: () => navigation.prefetch('/company'),
+          onClick: () => navigation.push('/company'),
+        } : undefined}
+      />
+    </>
   );
 }
 
 export default function HomePage() {
   const { user, loading: authLoading } = useAuth();
   const { properties, activeProperty, loading: propertyLoading } = useProperty();
-  const router = useRouter();
+  const navigation = useReliableNavigation();
+  const replaceNavigation = navigation.replace;
 
   // Middleware protects full-page requests, but sign-out happens client-side.
   // Unmount the entire app shell immediately so cached hotel details are never
@@ -152,12 +159,12 @@ export default function HomePage() {
   React.useEffect(() => {
     if (authLoading || propertyLoading) return;
     if (!user) {
-      router.replace('/signin');
+      replaceNavigation('/signin');
       return;
     }
     if (activeProperty) return;
     if (user.role === 'admin' || properties.length > 0) {
-      router.replace('/property-selector');
+      replaceNavigation('/property-selector');
       return;
     }
 
@@ -172,16 +179,36 @@ export default function HomePage() {
         const hasCustomerOrganization = response.ok
           && body.ok === true
           && body.data?.organizations?.some((organization) => organization.type !== 'single_hotel') === true;
-        if (!cancelled) router.replace(hasCustomerOrganization ? '/company' : '/property-selector');
+        if (!cancelled) replaceNavigation(hasCustomerOrganization ? '/company' : '/property-selector');
       } catch {
-        if (!cancelled) router.replace('/property-selector');
+        if (!cancelled) replaceNavigation('/property-selector');
       }
     })();
 
     return () => { cancelled = true; };
-  }, [user, authLoading, properties.length, activeProperty, propertyLoading, router]);
+  }, [user, authLoading, properties.length, activeProperty, propertyLoading, replaceNavigation]);
 
-  if (authLoading || propertyLoading || !user || !activeProperty) return null;
+  if (authLoading || propertyLoading) {
+    return <AppLayout><RouteLoadingState title="Opening Home…" /></AppLayout>;
+  }
+  if (!user) {
+    return <AppLayout><RouteLoadingState title="Returning to Sign In…" /></AppLayout>;
+  }
+  if (!activeProperty) {
+    if (properties.length === 0) {
+      return <AppLayout><RouteLoadingState title="Opening your workspace…" message="Checking company and hotel access." /></AppLayout>;
+    }
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title="No hotel is selected"
+          message="Choose a hotel before opening Home."
+          retryLabel="Choose a hotel"
+          onRetry={() => navigation.push('/property-selector')}
+        />
+      </AppLayout>
+    );
+  }
 
   return (
     <AppLayout>

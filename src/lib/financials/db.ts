@@ -34,6 +34,11 @@ import {
   monthStartISO,
   nextMonthStartISO,
 } from './shared';
+import {
+  isFinancialCreateConflict,
+  sameFinancialCreateFields,
+  settleFinancialCreateInsert,
+} from './idempotent-create';
 import { getMonthRevenue } from './revenue';
 
 // ── Row mappers (snake_case DB → camelCase domain) ──────────────────────────
@@ -191,30 +196,48 @@ export async function createExpense(
   createdBy: string | null,
   createdByName: string | null,
   e: NewExpense,
+  operationId: string,
 ): Promise<FinancialExpense> {
-  const { data, error } = await supabaseAdmin
-    .from('financial_expenses')
-    .insert({
-      property_id: pid,
-      expense_date: e.expenseDate,
-      amount_cents: Math.max(0, Math.round(e.amountCents)),
-      vendor: e.vendor ?? null,
-      department: e.department,
-      category: e.category ?? null,
-      source: e.source ?? 'manual',
-      notes: e.notes ?? null,
-      invoice_number: e.invoiceNumber ?? null,
-      invoice_date: e.invoiceDate ?? null,
-      created_by: createdBy,
-      created_by_name: createdByName,
-    })
-    .select('*')
-    .single();
-  if (error || !data) {
-    log.error('[financials/db] createExpense failed', { pid, err: new Error(error?.message ?? 'no row') });
+  const row = {
+    id: operationId,
+    property_id: pid,
+    expense_date: e.expenseDate,
+    amount_cents: Math.max(0, Math.round(e.amountCents)),
+    vendor: e.vendor ?? null,
+    department: e.department,
+    category: e.category ?? null,
+    source: e.source ?? 'manual',
+    notes: e.notes ?? null,
+    invoice_number: e.invoiceNumber ?? null,
+    invoice_date: e.invoiceDate ?? null,
+    created_by: createdBy,
+    created_by_name: createdByName,
+  };
+  try {
+    const result = await settleFinancialCreateInsert({
+      operationId,
+      insert: () => supabaseAdmin.from('financial_expenses').insert(row).select('*').single(),
+      lookup: () => supabaseAdmin
+        .from('financial_expenses')
+        .select('*')
+        .eq('property_id', pid)
+        .eq('id', operationId)
+        .maybeSingle(),
+      matches: (existing) => sameFinancialCreateFields(existing as Row, row as Row, [
+        'property_id', 'expense_date', 'amount_cents', 'vendor', 'department',
+        'category', 'source', 'notes', 'invoice_number', 'invoice_date',
+        'created_by', 'created_by_name',
+      ]),
+    });
+    return mapExpense(result.row as Row);
+  } catch (error) {
+    if (isFinancialCreateConflict(error)) throw error;
+    log.error('[financials/db] createExpense failed', {
+      pid,
+      err: new Error(error instanceof Error ? error.message : 'no row'),
+    });
     throw new Error('createExpense failed');
   }
-  return mapExpense(data);
 }
 
 export interface ExpensePatch {
@@ -564,31 +587,51 @@ export async function createCapexProject(
   submittedBy: string | null,
   submittedByName: string | null,
   p: NewCapexProject,
+  operationId: string,
 ): Promise<CapexProject> {
-  const { data, error } = await supabaseAdmin
-    .from('capex_projects')
-    .insert({
-      property_id: pid,
-      name: p.name,
-      description: p.description ?? null,
-      estimated_cost_cents: Math.max(0, Math.round(p.estimatedCostCents ?? 0)),
-      quote_cents: Math.max(0, Math.round(p.quoteCents ?? 0)),
-      request_type: p.requestType ?? 'budgeted',
-      category: p.category ?? null,
-      status: 'requested',
-      vendor: p.vendor ?? null,
-      start_date: p.startDate ?? null,
-      target_date: p.targetDate ?? null,
-      attachment_path: p.attachmentPath ?? null,
-      submitted_by: submittedBy,
-      submitted_by_name: submittedByName,
-      created_by: submittedBy,
-      created_by_name: submittedByName,
-    })
-    .select('*')
-    .single();
-  if (error || !data) {
-    log.error('[financials/db] createCapexProject failed', { pid, err: new Error(error?.message ?? 'no row') });
+  const row = {
+    id: operationId,
+    property_id: pid,
+    name: p.name,
+    description: p.description ?? null,
+    estimated_cost_cents: Math.max(0, Math.round(p.estimatedCostCents ?? 0)),
+    quote_cents: Math.max(0, Math.round(p.quoteCents ?? 0)),
+    request_type: p.requestType ?? 'budgeted',
+    category: p.category ?? null,
+    status: 'requested',
+    vendor: p.vendor ?? null,
+    start_date: p.startDate ?? null,
+    target_date: p.targetDate ?? null,
+    attachment_path: p.attachmentPath ?? null,
+    submitted_by: submittedBy,
+    submitted_by_name: submittedByName,
+    created_by: submittedBy,
+    created_by_name: submittedByName,
+  };
+  let data: Row;
+  try {
+    const result = await settleFinancialCreateInsert({
+      operationId,
+      insert: () => supabaseAdmin.from('capex_projects').insert(row).select('*').single(),
+      lookup: () => supabaseAdmin
+        .from('capex_projects')
+        .select('*')
+        .eq('property_id', pid)
+        .eq('id', operationId)
+        .maybeSingle(),
+      matches: (existing) => sameFinancialCreateFields(existing as Row, row as Row, [
+        'property_id', 'name', 'description', 'estimated_cost_cents',
+        'quote_cents', 'request_type', 'category', 'vendor', 'start_date',
+        'target_date', 'attachment_path', 'submitted_by', 'created_by',
+      ]),
+    });
+    data = result.row as Row;
+  } catch (error) {
+    if (isFinancialCreateConflict(error)) throw error;
+    log.error('[financials/db] createCapexProject failed', {
+      pid,
+      err: new Error(error instanceof Error ? error.message : 'no row'),
+    });
     throw new Error('createCapexProject failed');
   }
   const project = mapProject(data);
@@ -764,6 +807,7 @@ export async function addCapexLineItem(
   pid: string,
   projectId: string,
   item: NewCapexLineItem,
+  operationId: string,
 ): Promise<CapexLineItem | null> {
   const owner = await supabaseAdmin
     .from('capex_projects')
@@ -773,24 +817,41 @@ export async function addCapexLineItem(
     .maybeSingle();
   if (owner.error || !owner.data) return null;
 
-  const { data, error } = await supabaseAdmin
-    .from('capex_line_items')
-    .insert({
-      capex_project_id: projectId,
-      property_id: pid,
-      label: item.label,
-      amount_cents: Math.max(0, Math.round(item.amountCents)),
-      vendor: item.vendor ?? null,
-      incurred_date: item.incurredDate ?? null,
-      source: item.source ?? 'manual',
-    })
-    .select('*')
-    .single();
-  if (error || !data) {
-    log.error('[financials/db] addCapexLineItem failed', { pid, err: new Error(error?.message ?? 'no row') });
+  const row = {
+    id: operationId,
+    capex_project_id: projectId,
+    property_id: pid,
+    label: item.label,
+    amount_cents: Math.max(0, Math.round(item.amountCents)),
+    vendor: item.vendor ?? null,
+    incurred_date: item.incurredDate ?? null,
+    source: item.source ?? 'manual',
+  };
+  try {
+    const result = await settleFinancialCreateInsert({
+      operationId,
+      insert: () => supabaseAdmin.from('capex_line_items').insert(row).select('*').single(),
+      lookup: () => supabaseAdmin
+        .from('capex_line_items')
+        .select('*')
+        .eq('property_id', pid)
+        .eq('capex_project_id', projectId)
+        .eq('id', operationId)
+        .maybeSingle(),
+      matches: (existing) => sameFinancialCreateFields(existing as Row, row as Row, [
+        'capex_project_id', 'property_id', 'label', 'amount_cents', 'vendor',
+        'incurred_date', 'source',
+      ]),
+    });
+    return mapLineItem(result.row as Row);
+  } catch (error) {
+    if (isFinancialCreateConflict(error)) throw error;
+    log.error('[financials/db] addCapexLineItem failed', {
+      pid,
+      err: new Error(error instanceof Error ? error.message : 'no row'),
+    });
     throw new Error('addCapexLineItem failed');
   }
-  return mapLineItem(data);
 }
 
 export async function deleteCapexLineItem(pid: string, id: string): Promise<boolean> {

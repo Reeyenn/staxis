@@ -12,7 +12,7 @@ import { err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
 import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
-import { requireSectionEnabled } from '@/lib/sections/server';
+import { requirePropertySectionEnabled } from '@/lib/sections/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { resolveAccount, resolveStaffIdForAccount, getStaffRow, isManagerRole } from './core';
 import type { CommsLang } from './types';
@@ -117,10 +117,12 @@ export async function commsContext(
     return { ok: false, response: err('property access denied', { requestId, status: 403, code: ApiErrorCode.Forbidden, headers }) };
   }
 
-  // Central policy boundary for every authenticated /api/comms route. Keep it
-  // before account/staff resolution because that resolution can create a
-  // caller-bound staff identity on first use.
-  const sectionGate = await requireSectionEnabled(req, pid, 'communications');
+  // Central policy boundary for every authenticated /api/comms route. The
+  // session and tenant guard above are already authoritative, so use the
+  // section-only gate instead of validating the same session a second time.
+  // Keep it before staff resolution because that can create a caller-bound
+  // staff identity on first use.
+  const sectionGate = await requirePropertySectionEnabled(pid, 'communications', { requestId, headers });
   if (!sectionGate.ok) return { ok: false, response: sectionGate.response };
 
   const account = await resolveAccount(session.userId);

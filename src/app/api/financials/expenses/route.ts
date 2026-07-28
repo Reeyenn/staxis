@@ -2,7 +2,7 @@
  * /api/financials/expenses — the Checkbook register.
  *
  *   GET    ?pid=&month=YYYY-MM&department=  → list + month totals (per dept)
- *   POST   { pid, expenseDate, amountCents|amountDollars, vendor, department,
+ *   POST   { pid, operationId, expenseDate, amountCents|amountDollars, vendor, department,
  *            category?, notes?, source? }   → create one expense
  *   PATCH  { pid, id, ...patch }            → edit one expense
  *   DELETE { pid, id }                      → delete one expense
@@ -14,8 +14,8 @@
 
 import type { NextRequest } from 'next/server';
 import { requireFinanceAccess } from '@/lib/financials/api-gate';
-import { ok, err } from '@/lib/api-response';
-import { validateString, validateInt } from '@/lib/api-validate';
+import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { validateString, validateInt, validateUuid } from '@/lib/api-validate';
 import {
   isDepartment,
   isMonthKey,
@@ -30,6 +30,7 @@ import {
   updateExpense,
   deleteExpense,
 } from '@/lib/financials/db';
+import { isFinancialCreateConflict } from '@/lib/financials/idempotent-create';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -74,6 +75,11 @@ export async function POST(req: NextRequest): Promise<Response> {
   const gate = await requireFinanceAccess(req, body.pid as string | undefined);
   if (!gate.ok) return gate.response;
 
+  const operationCheck = validateUuid(body.operationId, 'operationId');
+  if (operationCheck.error || !operationCheck.value) {
+    return err('operationId is required', { requestId: gate.requestId, status: 400, code: 'invalid_operation' });
+  }
+
   // expense_date
   const expenseDate = body.expenseDate;
   if (typeof expenseDate !== 'string' || !YMD_RX.test(expenseDate)) {
@@ -110,9 +116,16 @@ export async function POST(req: NextRequest): Promise<Response> {
       source,
       invoiceNumber: invoiceNumber || null,
       invoiceDate,
-    });
+    }, operationCheck.value);
     return ok({ expense }, { requestId: gate.requestId });
-  } catch {
+  } catch (error) {
+    if (isFinancialCreateConflict(error)) {
+      return err('This create operation was already used with different expense data', {
+        requestId: gate.requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
     return err('failed to create expense', { requestId: gate.requestId, status: 500, code: 'create_failed' });
   }
 }

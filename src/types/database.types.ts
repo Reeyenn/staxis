@@ -6727,6 +6727,50 @@ export type Database = {
           },
         ]
       }
+      inventory_tab_layout_operations: {
+        Row: {
+          actor_id: string
+          applied_layout: Json
+          applied_revision: number
+          created_at: string
+          expected_revision: number
+          operation_id: string
+          property_id: string
+          requested_budget_mode: string | null
+          requested_layout: Json
+        }
+        Insert: {
+          actor_id: string
+          applied_layout: Json
+          applied_revision: number
+          created_at?: string
+          expected_revision: number
+          operation_id: string
+          property_id: string
+          requested_budget_mode?: string | null
+          requested_layout: Json
+        }
+        Update: {
+          actor_id?: string
+          applied_layout?: Json
+          applied_revision?: number
+          created_at?: string
+          expected_revision?: number
+          operation_id?: string
+          property_id?: string
+          requested_budget_mode?: string | null
+          requested_layout?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "inventory_tab_layout_operations_property_id_fkey"
+            columns: ["property_id"]
+            isOneToOne: false
+            referencedRelation: "properties"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       inventory_write_receipts: {
         Row: {
           created_at: string
@@ -16854,6 +16898,18 @@ export type Database = {
           p_tab_layout: Json
         }
         Returns: boolean
+      }
+      staxis_write_inventory_tab_layout_ordered: {
+        Args: {
+          p_actor_id: string
+          p_actor_name: string
+          p_budget_mode: string | null
+          p_expected_revision: number
+          p_operation_id: string
+          p_property_id: string
+          p_tab_layout: Json
+        }
+        Returns: Json
       }
       staxis_update_inventory_vendor: {
         Args: {

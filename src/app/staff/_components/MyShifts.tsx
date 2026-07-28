@@ -16,7 +16,8 @@ import React, { useId, useMemo, useState } from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
+import { RequestTimeoutError } from '@/lib/fetch-deadline';
 import type { ScheduledShift, TimeOffRequest } from '@/types';
 import { T, fonts, deptMeta, asDeptKey, Btn, Caps } from './_tokens';
 import { Avatar } from './_people';
@@ -27,6 +28,29 @@ import { useStaffDialog } from './useStaffDialog';
 import dialogStyles from './StaffDialog.module.css';
 
 export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } = {}) {
+  const { user } = useAuth();
+  const { activePropertyId } = useProperty();
+  const scopeKey = `${user?.uid ?? 'signed-out'}:${activePropertyId ?? 'no-property'}`;
+
+  // Time-off drafts and action state are hotel-owned. A property or account
+  // switch remounts the whole staff workspace so an open Hotel A dialog cannot
+  // silently retarget itself to Hotel B through updated context props.
+  return (
+    <MyShiftsPropertyView
+      key={scopeKey}
+      previewStaffId={previewStaffId}
+      scopeKey={scopeKey}
+    />
+  );
+}
+
+function MyShiftsPropertyView({
+  previewStaffId,
+  scopeKey,
+}: {
+  previewStaffId?: string | null;
+  scopeKey: string;
+}) {
   const { user } = useAuth();
   const {
     activeProperty, activePropertyId, staff, staffLoaded, staffLoadFailed,
@@ -236,6 +260,8 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
             shifts={myOpenShifts}
             myDept={myDeptLabel}
             hotelId={activePropertyId ?? ''}
+            scopeKey={scopeKey}
+            onReconcile={retryShifts}
             es={es}
           />
           <TimeOffCard
@@ -249,6 +275,7 @@ export function MyShifts({ previewStaffId }: { previewStaffId?: string | null } 
       {requestOpen && (
         <RequestTimeOffModal
           hotelId={activePropertyId ?? ''}
+          scopeKey={scopeKey}
           onClose={() => setRequestOpen(false)}
           es={es}
         />
@@ -332,29 +359,78 @@ function hoursBetween(start: string, end: string): number {
 
 // ── Open shifts card ──────────────────────────────────────────────────────
 function OpenShiftsCard({
-  shifts, myDept, hotelId, es,
-}: { shifts: ScheduledShift[]; myDept: string; hotelId: string; es: boolean }) {
+  shifts, myDept, hotelId, scopeKey, onReconcile, es,
+}: {
+  shifts: ScheduledShift[];
+  myDept: string;
+  hotelId: string;
+  scopeKey: string;
+  onReconcile: () => void;
+  es: boolean;
+}) {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const actionScopeRef = React.useRef<string | null>(scopeKey);
+  const actionAttemptRef = React.useRef(0);
+  const actionInFlightRef = React.useRef(false);
+  React.useEffect(() => {
+    actionScopeRef.current = scopeKey;
+    return () => {
+      if (actionScopeRef.current === scopeKey) actionScopeRef.current = null;
+      actionAttemptRef.current += 1;
+      actionInFlightRef.current = false;
+    };
+  }, [scopeKey]);
 
   const pickUp = async (shiftId: string) => {
-    setBusyId(shiftId);
+    if (actionInFlightRef.current) return;
+    const requestedHotelId = hotelId;
+    const requestedShiftId = shiftId;
+    const attempt = ++actionAttemptRef.current;
+    const ownsAttempt = () => (
+      actionScopeRef.current === scopeKey
+      && actionAttemptRef.current === attempt
+    );
+    actionInFlightRef.current = true;
+    setBusyId(requestedShiftId);
     setErrorMsg(null);
+    let responseReceived = false;
     try {
       const res = await fetchWithAuth('/api/staff-schedule/pickup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hotelId, shiftId }),
+        body: JSON.stringify({ hotelId: requestedHotelId, shiftId: requestedShiftId }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
+      if (!ownsAttempt()) return;
+      responseReceived = true;
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
+        if (!ownsAttempt()) return;
         throw new Error(b?.error || (es ? 'No se pudo tomar el turno' : 'Pick up failed'));
       }
-      // Realtime sub will refresh.
+      // Realtime normally pushes this update, but a fresh scoped snapshot is
+      // the source of truth if the subscription was reconnecting or delayed.
+      onReconcile();
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : (es ? 'No se pudo tomar el turno' : 'Pick up failed'));
+      if (!ownsAttempt()) return;
+      if (!responseReceived) {
+        // A timeout or network failure can lose the response after the server
+        // committed the compare-and-set. Never tell the employee it failed or
+        // leave the open row stale: reread this exact viewer+hotel week first.
+        onReconcile();
+        if (!ownsAttempt()) return;
+        setErrorMsg(es
+          ? 'No pudimos confirmar si tomaste el turno. Estamos actualizando tu horario antes de que lo intentes de nuevo.'
+          : "We couldn't confirm whether you got the shift. We're refreshing your schedule before you try again.");
+      } else {
+        setErrorMsg(e instanceof Error ? e.message : (es ? 'No se pudo tomar el turno' : 'Pick up failed'));
+      }
     } finally {
-      setBusyId(null);
+      if (ownsAttempt()) {
+        actionInFlightRef.current = false;
+        setBusyId(null);
+      }
     }
   };
 
@@ -533,8 +609,8 @@ function TorRow({ r, es }: { r: TimeOffRequest; es: boolean }) {
 
 // ── Request modal ─────────────────────────────────────────────────────────
 function RequestTimeOffModal({
-  hotelId, onClose, es,
-}: { hotelId: string; onClose: () => void; es: boolean }) {
+  hotelId, scopeKey, onClose, es,
+}: { hotelId: string; scopeKey: string; onClose: () => void; es: boolean }) {
   const today = new Date().toLocaleDateString('en-CA');
   const [requestDate, setRequestDate] = useState<string>(today);
   const [reason, setReason] = useState<string>('');
@@ -546,25 +622,49 @@ function RequestTimeOffModal({
   const reasonId = useId();
   const errorId = useId();
   const dialogRef = useStaffDialog(onClose);
+  const actionScopeRef = React.useRef<string | null>(scopeKey);
+  const actionAttemptRef = React.useRef(0);
+  React.useEffect(() => {
+    actionScopeRef.current = scopeKey;
+    return () => {
+      if (actionScopeRef.current === scopeKey) actionScopeRef.current = null;
+      actionAttemptRef.current += 1;
+    };
+  }, [scopeKey]);
 
   const submit = async () => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(requestDate)) { setErrorMsg(es ? 'Elige una fecha.' : 'Pick a date.'); return; }
+    const requestedHotelId = hotelId;
+    const attempt = ++actionAttemptRef.current;
+    const ownsAttempt = () => (
+      actionScopeRef.current === scopeKey
+      && actionAttemptRef.current === attempt
+    );
     setBusy(true);
     setErrorMsg(null);
     try {
       const res = await fetchWithAuth('/api/staff-schedule/time-off', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hotelId, requestDate, reason: reason || undefined }),
+        body: JSON.stringify({ hotelId: requestedHotelId, requestDate, reason: reason || undefined }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
+      if (!ownsAttempt()) return;
       if (!res.ok) {
         const b = await res.json().catch(() => ({}));
         throw new Error(b?.error || (es ? 'No se pudo enviar' : 'Failed to submit'));
       }
       onClose();
     } catch (e) {
-      setErrorMsg(e instanceof Error ? e.message : (es ? 'No se pudo enviar' : 'Failed to submit'));
-    } finally { setBusy(false); }
+      if (!ownsAttempt()) return;
+      setErrorMsg(e instanceof RequestTimeoutError
+        ? (es
+          ? 'La confirmación tardó demasiado. Revisa tus solicitudes antes de intentarlo de nuevo.'
+          : 'Confirmation took too long. Check your requests before trying again.')
+        : e instanceof Error ? e.message : (es ? 'No se pudo enviar' : 'Failed to submit'));
+    } finally {
+      if (ownsAttempt()) setBusy(false);
+    }
   };
 
   return (

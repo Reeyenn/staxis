@@ -8,7 +8,7 @@
 // display/input.
 
 import React from 'react';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
 import { EmptyState } from '@/app/_components/ui/EmptyState';
 import { formatCents, type BudgetStatus } from '@/lib/financials/shared';
@@ -76,11 +76,24 @@ export async function finSend<T = unknown>(
         method,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       }),
     );
   } catch (e) {
     return { error: e instanceof Error && e.message ? e.message : 'network' };
   }
+}
+
+/** Stable UUID for one create-form lifetime; retries must reuse it. */
+export function newFinancialCreateOperationId(): string {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 // ── Money display ───────────────────────────────────────────────────────────

@@ -28,7 +28,11 @@
 import React from 'react';
 
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+  SessionEndedError,
+} from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
 import { climbReasonLine, drillDownHref, type PortfolioCard } from '@/lib/company/vp-queue';
 import type { PortfolioBrief } from '@/lib/company/vp-brief';
@@ -38,6 +42,10 @@ import { CxStyle } from './concourse-css';
 import { FindingCardsView } from './FindingCards';
 import { MorningBriefView } from './MorningBriefCard';
 import { DAILY_CARD_CAP, type ClosureVerdict, type Lang, type QueueFinding } from './finding-cards';
+import {
+  portfolioRequestState,
+  readWithPortfolioDeadline,
+} from './portfolio-queue-request';
 
 export interface PortfolioScope {
   organizationId: string;
@@ -98,6 +106,16 @@ const S = {
     en: 'Staxis could not read your hotels just now. Do not read this as "nothing is wrong".',
     es: 'Staxis no pudo leer tus hoteles ahora. No lo tomes como "no pasa nada".',
   },
+  loading: {
+    en: 'Loading your Staxis queue…',
+    es: 'Cargando tu cola de Staxis…',
+  },
+  errorTitle: {
+    en: 'Your queue did not open',
+    es: 'Tu cola no se abrió',
+  },
+  retry: { en: 'Try again', es: 'Intentar de nuevo' },
+  retrying: { en: 'Trying again…', es: 'Intentando de nuevo…' },
 } as const;
 
 const PQ_CSS = `
@@ -106,7 +124,69 @@ const PQ_CSS = `
   padding:12px 14px;font-size:12.5px;line-height:1.55;color:#5C4B2E;}
 .pq-empty{margin-top:20px;border-radius:16px;border:1px solid rgba(31,35,28,.08);background:#FAFBF9;
   padding:16px 17px;font-size:13px;line-height:1.6;color:#5C625C;}
+.pq-request{margin-top:20px;border-radius:16px;border:1px solid rgba(31,35,28,.08);background:#FAFBF9;
+  padding:16px 17px;color:#5C625C;}
+.pq-request-load{display:flex;align-items:center;gap:10px;font-family:var(--font-geist-mono),ui-monospace,monospace;
+  font-size:12.5px;color:#8A9187;}
+.pq-spinner{width:16px;height:16px;box-sizing:border-box;border:2px solid rgba(62,92,72,.2);
+  border-top-color:#3E5C48;border-radius:50%;animation:pq-spin .75s linear infinite;flex:none;}
+.pq-request-title{font-size:14px;font-weight:600;color:#1F231C;}
+.pq-request-body{font-size:12.5px;line-height:1.6;margin-top:4px;max-width:620px;}
+.pq-retry{min-width:44px;min-height:44px;margin-top:14px;padding:0 18px;border:0;border-radius:10px;
+  background:#3E5C48;color:#fff;font-family:var(--font-geist),-apple-system,BlinkMacSystemFont,sans-serif;
+  font-size:13px;font-weight:600;cursor:pointer;transition:background 150ms ease-out,transform 150ms ease-out;}
+.pq-retry:hover{background:#356B4C;}.pq-retry:active{transform:scale(.98);}
+.pq-retry:focus-visible{outline:2px solid #3E5C48;outline-offset:2px;}
+.pq-retry:disabled{opacity:.5;cursor:wait;transform:none;}
+@keyframes pq-spin{to{transform:rotate(360deg);}}
+@media (prefers-reduced-motion:reduce){.pq-spinner{animation:none;}.pq-retry{transition:none;}.pq-retry:active{transform:none;}}
 `;
+
+function PortfolioRequestNotice({
+  lang,
+  kind,
+  retrying = false,
+  onRetry,
+}: {
+  lang: Lang;
+  kind: 'loading' | 'error';
+  retrying?: boolean;
+  onRetry?: () => void;
+}) {
+  const es = lang === 'es';
+  if (kind === 'loading') {
+    return (
+      <div className="cx-page cx-swap" data-feed-state="loading">
+        <CxStyle />
+        <style dangerouslySetInnerHTML={{ __html: PQ_CSS }} />
+        <div className="pq-request pq-request-load" role="status" aria-live="polite" aria-busy="true">
+          <span className="pq-spinner" aria-hidden="true" />
+          <span>{es ? S.loading.es : S.loading.en}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cx-page cx-swap" data-feed-state="error">
+      <CxStyle />
+      <style dangerouslySetInnerHTML={{ __html: PQ_CSS }} />
+      <div className="pq-request" role="alert">
+        <div className="pq-request-title">{es ? S.errorTitle.es : S.errorTitle.en}</div>
+        <div className="pq-request-body">{es ? S.loadFailed.es : S.loadFailed.en}</div>
+        <button
+          type="button"
+          className="pq-retry"
+          disabled={retrying}
+          aria-busy={retrying}
+          onClick={onRetry}
+        >
+          {retrying ? (es ? S.retrying.es : S.retrying.en) : (es ? S.retry.es : S.retry.en)}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * The screen, given data. Split from the fetching wrapper so the hotel labels,
@@ -175,7 +255,10 @@ export function PortfolioQueueBody({
   );
 
   return (
-    <div className="cx-page cx-swap">
+    <div
+      className="cx-page cx-swap"
+      data-feed-state={readFailed ? 'error' : cards.length === 0 ? 'empty' : 'ready'}
+    >
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: PQ_CSS }} />
 
@@ -292,44 +375,55 @@ export function PortfolioQueueBody({
 export function PortfolioQueueView({
   lang,
   organizationId,
+  authorizationKey,
   onScope,
 }: {
   lang: Lang;
   /** Explicit picker selection. Null is allowed only for single-company fallback. */
   organizationId: string | null;
-  onScope?: (scope: PortfolioScope | null | undefined) => void;
+  /** Exact viewer + selected-company authorization identity for this request. */
+  authorizationKey: string;
+  onScope?: (scope: PortfolioScope | null) => void;
 }) {
   const queueUrl = organizationId === null
     ? '/api/company/queue'
     : `/api/company/queue?organizationId=${encodeURIComponent(organizationId)}`;
-  const { data, error, reload } = useApiResource<PortfolioPayload>(
-    queueUrl,
-    // Authorization is rechecked by every response. If that check fails, do
-    // not keep a prior company's cards rendered under a stale receipt.
-    { keepDataOnError: false },
+  const readPortfolio = React.useCallback(
+    () => readWithPortfolioDeadline<PortfolioPayload>((signal) =>
+      fetchWithAuth(queueUrl, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+        signal,
+      }).then((response) => readEnvelope<PortfolioPayload>(response))),
+    [queueUrl],
+  );
+  const { data, loading, error, reload } = useApiResource<PortfolioPayload>(
+    readPortfolio,
+    // A failed authorization refresh must blank the prior tenant's cards.
+    { identityKey: authorizationKey, keepDataOnError: false },
   );
 
   const scope = data?.scope ?? null;
   const resolvedOrganizationId = scope?.organizationId ?? null;
-  // A URL company change invalidates the previous scope synchronously from the
-  // parent's point of view. Never leave a prior company's successful probe in
-  // place while the replacement receipt is loading.
   React.useEffect(() => {
-    onScope?.(undefined);
-  }, [organizationId, onScope]);
-  React.useEffect(() => {
-    if (error) onScope?.(undefined);
-    else if (data) onScope?.(scope);
-  }, [data, error, scope, onScope]);
+    if (data) onScope?.(scope);
+  }, [data, scope, onScope]);
 
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [saveFailed, setSaveFailed] = React.useState(false);
   const [settled, setSettled] = React.useState<Set<string>>(new Set());
+  const [retrying, setRetrying] = React.useState(false);
 
   const cards = React.useMemo(
     () => (data?.cards ?? []).filter((c) => !settled.has(c.id)),
     [data, settled],
   );
+
+  const retry = React.useCallback(() => {
+    if (retrying) return;
+    setRetrying(true);
+    void reload().finally(() => setRetrying(false));
+  }, [reload, retrying]);
 
   /**
    * A verdict, routed to whichever ledger the card actually lives in.
@@ -358,6 +452,7 @@ export function PortfolioQueueView({
                 findingId,
                 action: verdict,
               }),
+              timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
             })
             : await fetchWithAuth('/api/company/queue', {
               method: 'POST',
@@ -367,6 +462,7 @@ export function PortfolioQueueView({
                 findingId,
                 action: verdict,
               }),
+              timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
             });
           const body = await readEnvelope<{ status: string }>(res);
           if (body.error !== undefined) {
@@ -407,6 +503,7 @@ export function PortfolioQueueView({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ propertyId: card.hotel!.propertyId, actionId, intent }),
+            timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
           });
           const body = await readEnvelope<{ state: string }>(res);
           if (body.error !== undefined) setSaveFailed(true);
@@ -422,35 +519,49 @@ export function PortfolioQueueView({
     [data, reload],
   );
 
-  if (!scope) {
-    if (!error) return null;
+  const request = portfolioRequestState({ data, loading, error });
+  if (request.kind === 'loading') {
+    return <PortfolioRequestNotice lang={lang} kind="loading" />;
+  }
+  if (request.kind === 'error') {
     return (
-      <div className="cx-page cx-swap">
-        <CxStyle />
-        <style dangerouslySetInnerHTML={{ __html: PQ_CSS }} />
-        <div className="pq-empty">{lang === 'es' ? S.loadFailed.es : S.loadFailed.en}</div>
-      </div>
+      <PortfolioRequestNotice
+        lang={lang}
+        kind="error"
+        retrying={retrying}
+        onRetry={retry}
+      />
     );
+  }
+  // The parent learns this is a hotel-scoped account in an effect. Keep a
+  // visible handoff state for that one render instead of briefly blanking Feed.
+  if (request.kind === 'hotel') {
+    return <PortfolioRequestNotice lang={lang} kind="loading" />;
+  }
+
+  const portfolio = request.data;
+  if (!portfolio.scope) {
+    return <PortfolioRequestNotice lang={lang} kind="error" onRetry={retry} />;
   }
 
   return (
     <PortfolioQueueBody
-      scope={scope}
+      scope={portfolio.scope}
       cards={cards}
-      brief={data?.brief ?? null}
-      run={data?.run ?? null}
-      coverage={data?.coverage ?? {
-        authorizedHotelCount: scope.hotelCount,
+      brief={portfolio.brief ?? null}
+      run={portfolio.run ?? null}
+      coverage={portfolio.coverage ?? {
+        authorizedHotelCount: portfolio.scope.hotelCount,
         attemptedHotelCount: 0,
         processedHotelCount: 0,
-        omittedHotelCount: scope.hotelCount,
+        omittedHotelCount: portfolio.scope.hotelCount,
         unavailableHotelCount: 0,
         portfolioChecksStatus: 'unavailable',
         complete: false,
       }}
-      cap={data?.cap ?? DAILY_CARD_CAP}
+      cap={portfolio.cap ?? DAILY_CARD_CAP}
       lang={lang}
-      canAct={data?.canAct ?? true}
+      canAct={portfolio.canAct ?? true}
       readFailed={!!error}
       saveFailed={saveFailed}
       busyId={busyId}

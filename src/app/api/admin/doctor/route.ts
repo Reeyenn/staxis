@@ -800,13 +800,12 @@ export const EXPECTED_MIGRATIONS_STATIC: ReadonlyArray<string> = [
   '0351', '0352', '0353', '0354', '0355', '0356', '0357', '0358',
   '0359', '0360', '0361', '0362', '0363', '0364', '0365', '0366',
   '0367', '0368', '0369', '0370', '0371', '0372', '0373', '0374',
-  // Portfolio Intelligence / authoritative access. 0387 + 0390 are owned by
-  // Finding Patterns and 0402 by Navigation; their later integration commits
-  // add those files and the parity test will then require these entries too.
+  // Portfolio Intelligence / authoritative access, Finding Patterns, and
+  // Navigation. Keep the combined release chain exactly aligned with disk.
   '0376', '0377', '0378', '0379', '0380', '0381', '0382', '0383',
-  '0384', '0385', '0386', '0388', '0389', '0391', '0392', '0393',
+  '0384', '0385', '0386', '0387', '0388', '0389', '0390', '0391', '0392', '0393',
   '0394', '0395', '0396', '0397', '0398', '0399', '0400', '0401',
-  '0403',
+  '0402', '0403',
 ];
 
 /**

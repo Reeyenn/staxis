@@ -9,7 +9,7 @@
 // finance gate). Money is integer cents; the dollar input is parsed once on
 // save.
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
   Field,
@@ -25,7 +25,7 @@ import {
   type Department,
   type FinancialExpense,
 } from '@/lib/financials/shared';
-import { finSend, Btn, Money, Notice, DollarInput, T, FONT_SANS } from './fin-ui';
+import { finSend, newFinancialCreateOperationId, Btn, Money, Notice, DollarInput, T, FONT_SANS } from './fin-ui';
 import { ExpenseSourceTag, FinColumn, FlipExpenseCard, BoardScroller, deptColor } from './fin-board';
 import { ft, deptLabel } from './fin-i18n';
 import { ScanButton, type InvoiceDraft } from './ScanButton';
@@ -34,6 +34,8 @@ type Lang = 'en' | 'es';
 
 interface FormState {
   id: string | null;
+  /** Frozen for this create form so a lost response can be retried exactly. */
+  operationId: string | null;
   vendor: string;
   amount: string; // dollar text
   department: Department;
@@ -52,16 +54,28 @@ function todayYmd(): string {
 }
 
 function blankForm(): FormState {
-  return { id: null, vendor: '', amount: '', department: 'other', category: '', date: todayYmd(), notes: '', source: 'manual' };
+  return {
+    id: null,
+    operationId: newFinancialCreateOperationId(),
+    vendor: '',
+    amount: '',
+    department: 'other',
+    category: '',
+    date: todayYmd(),
+    notes: '',
+    source: 'manual',
+  };
 }
 
 export function CheckbookTab({
+  scopeKey,
   pid,
   lang,
   month,
   onChanged,
   readOnly = false,
 }: {
+  scopeKey: string;
   pid: string;
   lang: Lang;
   month: string;
@@ -69,6 +83,21 @@ export function CheckbookTab({
   readOnly?: boolean;
 }) {
   const S = ft(lang);
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  const saveAttemptRef = useRef(0);
+  const deleteAttemptRef = useRef(0);
+  useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      activeScopeRef.current = null;
+      saveAttemptRef.current += 1;
+      deleteAttemptRef.current += 1;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
   const [deptFilter, setDeptFilter] = useState<Department | 'all'>('all');
   // Mutation/retry counter — rides the URLs as a fragment (never sent over
   // HTTP) so a refetch replays the full "Loading…" flash like the old load().
@@ -112,6 +141,7 @@ export function CheckbookTab({
     setAnomalyWarning(null);
     setForm({
       id: e.id,
+      operationId: null,
       vendor: e.vendor ?? '',
       amount: (e.amountCents / 100).toFixed(2),
       department: e.department,
@@ -127,6 +157,7 @@ export function CheckbookTab({
     setAnomalyWarning(warn);
     setForm({
       id: null,
+      operationId: newFinancialCreateOperationId(),
       vendor: draft.vendor ?? '',
       amount: draft.amountCents != null ? (draft.amountCents / 100).toFixed(2) : '',
       department: (DEPARTMENTS as readonly string[]).includes(draft.department) ? (draft.department as Department) : 'other',
@@ -137,17 +168,22 @@ export function CheckbookTab({
     });
   };
 
-  const saveAction = useApiAction((f: FormState & { amountCents: number }) =>
-    finSend('/api/financials/expenses', f.id ? 'PATCH' : 'POST', {
-      pid,
-      id: f.id ?? undefined,
-      expenseDate: f.date,
-      amountCents: f.amountCents,
-      vendor: f.vendor.trim() || null,
-      department: f.department,
-      category: f.category.trim() || null,
-      notes: f.notes.trim() || null,
-      source: f.source,
+  const saveAction = useApiAction((input: {
+    propertyId: string;
+    draft: FormState;
+    amountCents: number;
+  }) =>
+    finSend('/api/financials/expenses', input.draft.id ? 'PATCH' : 'POST', {
+      pid: input.propertyId,
+      id: input.draft.id ?? undefined,
+      operationId: input.draft.id ? undefined : input.draft.operationId,
+      expenseDate: input.draft.date,
+      amountCents: input.amountCents,
+      vendor: input.draft.vendor.trim() || null,
+      department: input.draft.department,
+      category: input.draft.category.trim() || null,
+      notes: input.draft.notes.trim() || null,
+      source: input.draft.source,
     }),
   );
 
@@ -163,7 +199,15 @@ export function CheckbookTab({
       return;
     }
     setFormError(null);
-    const res = await saveAction.run({ ...form, amountCents: cents });
+    const requestedPropertyId = pid;
+    const attempt = ++saveAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && saveAttemptRef.current === attempt;
+    const res = await saveAction.run({
+      propertyId: requestedPropertyId,
+      draft: { ...form },
+      amountCents: cents,
+    });
+    if (!ownsAttempt()) return;
     if (res.error) {
       setFormError(lang === 'es' ? 'No se pudo guardar.' : 'Could not save.');
       return;
@@ -175,7 +219,16 @@ export function CheckbookTab({
 
   const del = async (id: string) => {
     if (!window.confirm(S.confirmDelete)) return;
-    const res = await finSend('/api/financials/expenses', 'DELETE', { pid, id, month });
+    const requestedPropertyId = pid;
+    const requestedMonth = month;
+    const attempt = ++deleteAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && deleteAttemptRef.current === attempt;
+    const res = await finSend('/api/financials/expenses', 'DELETE', {
+      pid: requestedPropertyId,
+      id,
+      month: requestedMonth,
+    });
+    if (!ownsAttempt()) return;
     if (res.error) {
       // The card lives outside any modal, and the delete was confirmed via a
       // native dialog — surface the failure the same native way rather than

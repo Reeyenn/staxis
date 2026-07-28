@@ -152,6 +152,7 @@ function subscribeViaPolling(
   channelKey: string,
   doFetch: () => Promise<RoomsFetchResult>,
   callback: (rooms: Room[], feedStatus?: PropertyFeedStatus) => void,
+  onError?: (error: unknown) => void,
 ): () => void {
   let cancelled = false;
 
@@ -183,21 +184,36 @@ function subscribeViaPolling(
     doFetch()
       .then(result => {
         if (cancelled) return;
-        if (myReq <= lastPublishedSeq) return;
+        // A newer request owns both success and failure. Without this
+        // latest-started check, B could fail visibly and then a slower A
+        // success could publish afterward, falsely clearing the stale/error
+        // verdict that the newest request established.
+        if (myReq !== requestSeq || myReq <= lastPublishedSeq) return;
         lastPublishedSeq = myReq;
         callback(result.rooms, result.feedStatus);
       })
       .catch(err => {
+        // A failed older request is irrelevant once a newer poll has started;
+        // its successor owns the visible freshness verdict. The newest
+        // failure, however, must reach consumers so an initial failure is not
+        // misrepresented as an empty room list.
+        const ownsLatestRequest = myReq === requestSeq;
         // M6 — 403/404 means this session can't read this anymore.
         // Stop polling instead of hammering the API every 6s forever.
-        // The UI keeps showing the last good snapshot; the user finding
-        // out their access was revoked is a follow-up UI concern.
+        // Consumers keep a last-good snapshot when one exists, but still get
+        // an explicit stale/error signal and retry path.
         if (err instanceof RoomsAccessLostError) {
           logErr(`${channelKey} access lost (${err.statusCode}) — polling stopped`, err);
+          // This terminal failure cancels every successor too. Even when an
+          // older request discovers the access loss while a newer poll is in
+          // flight, the consumer must receive a terminal verdict before we
+          // stop; otherwise its first-load state can remain busy forever.
+          if (!cancelled) onError?.(err);
           stopAll();
           return;
         }
         logErr(channelKey, err);
+        if (ownsLatestRequest && !cancelled) onError?.(err);
       });
   };
 
@@ -241,10 +257,12 @@ function subscribeViaPolling(
 export function subscribeToRooms(
   _uid: string, pid: string, date: string,
   callback: (rooms: Room[], feedStatus?: PropertyFeedStatus) => void,
+  onError?: (error: unknown) => void,
 ): () => void {
   return subscribeViaPolling(
     `rooms:${pid}:${date}`,
     () => fetchRoomsForDate(pid, date),
     callback,
+    onError,
   );
 }

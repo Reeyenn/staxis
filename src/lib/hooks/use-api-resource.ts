@@ -28,8 +28,19 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+  NAVIGATION_FETCH_TIMEOUT_MS,
+  SessionEndedError,
+} from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
+import {
+  createDeadlineAbortScope,
+  raceWithAbortSignal,
+  withPromiseDeadline,
+  type DeadlineAbortScope,
+} from '@/lib/fetch-deadline';
 import {
   applyOutcome,
   createRequestGate,
@@ -40,9 +51,15 @@ import {
 
 /** Custom fetcher: anything that resolves to an EnvelopeResult. Use when
  *  the request needs a method/body/params beyond a plain authed GET. */
-export type ApiFetcher<T> = () => Promise<EnvelopeResult<T>>;
+export type ApiFetcher<T> = (signal?: AbortSignal) => Promise<EnvelopeResult<T>>;
 
 export interface UseApiResourceOptions {
+  /**
+   * Additional authorization/scope identity for resources whose URL is
+   * intentionally stable. Changing it aborts the old request, masks old data,
+   * and performs a fresh initial load.
+   */
+  identityKey?: string | number | null;
   /**
    * Refetch every pollMs milliseconds. Ticks are SKIPPED while the tab is
    * hidden and while a previous request is still in flight — both built in,
@@ -65,11 +82,18 @@ export interface UseApiResourceOptions {
    * loading spinner — the previous resource's last-good data stays visible
    * until the new fetch resolves (tab switches, filter changes). The
    * stale-drop guard still applies: a late response for the OLD URL can
-   * never land after the switch. Default false: a URL switch drops the old
-   * data and shows the loading state (property switches must never render
-   * one property's rows under another's spinner).
+   * never land after the switch. This hold is allowed only while identityKey
+   * is unchanged; role/grant changes always mask old data. Default false: a
+   * URL switch drops the old data and shows the loading state (property
+   * switches must never render one property's rows under another's spinner).
    */
   keepDataOnSourceChange?: boolean;
+  /**
+   * End-to-end budget including response-body parsing. Defaults to the shared
+   * navigation-read budget. Pass null only for a deliberate long read whose
+   * custom fetcher implements its own terminal timeout/error state.
+   */
+  timeoutMs?: number | null;
 }
 
 export interface UseApiResourceResult<T> {
@@ -87,21 +111,61 @@ export interface UseApiResourceResult<T> {
   reload: () => Promise<void>;
 }
 
+type ResourceAuthorizationIdentity = string | number | null;
+
+interface ResourceIdentity {
+  /** `null` preserves the hook's existing function-source semantics: an
+   * inline/custom fetcher is not itself a refetch key. */
+  sourceKey: string | null;
+  authorizationKey: ResourceAuthorizationIdentity;
+}
+
+interface ResourceIdentityState {
+  /** Exact identity that produced the retained data. */
+  data: ResourceIdentity | null;
+  /** Exact identity that produced the retained error. */
+  error: ResourceIdentity | null;
+  /** Identity whose initial/reload status the loading flag describes. */
+  status: ResourceIdentity | null;
+}
+
+function sameAuthorizationIdentity(
+  left: ResourceIdentity | null,
+  right: ResourceIdentity,
+): boolean {
+  return left !== null && Object.is(left.authorizationKey, right.authorizationKey);
+}
+
+function sameResourceIdentity(
+  left: ResourceIdentity | null,
+  right: ResourceIdentity,
+): boolean {
+  return sameAuthorizationIdentity(left, right) && left?.sourceKey === right.sourceKey;
+}
+
 function isDocumentHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
 }
 
-async function settle<T>(source: string | ApiFetcher<T>): Promise<ResourceOutcome<T>> {
+async function settle<T>(
+  source: string | ApiFetcher<T>,
+  signal: AbortSignal,
+): Promise<ResourceOutcome<T>> {
   try {
-    const result: EnvelopeResult<T> =
+    const pending: Promise<EnvelopeResult<T>> =
       typeof source === 'string'
-        ? await readEnvelope<T>(
+        ? (async () => readEnvelope<T>(
             await fetchWithAuth(source, {
               method: 'GET',
               headers: { 'Content-Type': 'application/json' },
+              signal,
+              // The hook's scope spans BOTH fetch and response JSON parsing.
+              // Avoid a second independent timer inside fetchWithAuth.
+              timeoutMs: null,
             }),
-          )
-        : await source();
+          ))()
+        : source(signal);
+    const result = await raceWithAbortSignal(pending, signal);
     if (result.error !== undefined) {
       return { kind: 'error', message: result.error };
     }
@@ -137,47 +201,111 @@ export function useApiResource<T>(
   source: string | ApiFetcher<T>,
   opts: UseApiResourceOptions = {},
 ): UseApiResourceResult<T> {
-  const { pollMs, keepDataOnError = false, enabled = true, keepDataOnSourceChange = false } = opts;
+  const {
+    identityKey = null,
+    pollMs,
+    keepDataOnError = false,
+    enabled = true,
+    keepDataOnSourceChange = false,
+    timeoutMs = NAVIGATION_FETCH_TIMEOUT_MS,
+  } = opts;
+
+  // String sources are resource identities: switching URL (e.g. property
+  // change) drops the old resource's data instead of showing it under the
+  // new one's spinner. Function sources have no comparable identity.
+  const sourceKey = typeof source === 'string' ? source : null;
+  const currentIdentity: ResourceIdentity = {
+    sourceKey,
+    authorizationKey: identityKey,
+  };
 
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState<boolean>(enabled);
   const [error, setError] = useState<string | null>(null);
+  const [identityState, setIdentityState] = useState<ResourceIdentityState>({
+    data: null,
+    error: null,
+    status: null,
+  });
 
   const gateRef = useRef(createRequestGate());
   const inFlightRef = useRef(false);
+  const activeRequestRef = useRef<DeadlineAbortScope | null>(null);
 
   // Latest values readable from a stable load() without re-running effects.
   const sourceRef = useRef(source);
   sourceRef.current = source;
+  const currentIdentityRef = useRef(currentIdentity);
+  currentIdentityRef.current = currentIdentity;
   const keepRef = useRef(keepDataOnError);
   keepRef.current = keepDataOnError;
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   const keepOnSourceChangeRef = useRef(keepDataOnSourceChange);
   keepOnSourceChangeRef.current = keepDataOnSourceChange;
+  const timeoutRef = useRef(timeoutMs);
+  timeoutRef.current = timeoutMs;
   const dataRef = useRef<T | null>(null);
+  const identityStateRef = useRef(identityState);
+  identityStateRef.current = identityState;
   // False until the identity effect has run once while enabled — the first
   // (initial) load must always show the loading state, opt-in or not.
   const hadIdentityRef = useRef(false);
 
-  // String sources are resource identities: switching URL (e.g. property
-  // change) drops the old resource's data instead of showing it under the
-  // new one's spinner. Function sources have no comparable identity.
-  const sourceKey = typeof source === 'string' ? source : null;
+  const commitIdentityState = useCallback((next: ResourceIdentityState) => {
+    identityStateRef.current = next;
+    setIdentityState(next);
+  }, []);
 
   const load = useCallback(async (mode: 'initial' | 'poll' | 'reload') => {
     if (!enabledRef.current) return;
+    // Capture the exact producer identity. Refs can change during an async
+    // request when a parent switches role/grants or property; a response may
+    // only ever be stamped with the identity under which it was requested.
+    const requestIdentity = { ...currentIdentityRef.current };
     const ticket = gateRef.current.begin();
+    const previousRequest = activeRequestRef.current;
+    const request = createDeadlineAbortScope({
+      timeoutMs: timeoutRef.current,
+      label: 'Request',
+    });
+    activeRequestRef.current = request;
+    // A reload/source change supersedes the older request. Abort the actual
+    // transport as well as invalidating its state ticket.
+    previousRequest?.abort();
     inFlightRef.current = true;
+    commitIdentityState({
+      ...identityStateRef.current,
+      status: requestIdentity,
+    });
     if (mode === 'initial') setLoading(true);
 
     let outcome: ResourceOutcome<T>;
     try {
-      outcome = await settle(sourceRef.current);
-    } catch {
-      // SessionEndedError: signed out mid-request, redirect already firing.
-      if (gateRef.current.isCurrent(ticket)) inFlightRef.current = false;
+      outcome = await settle(sourceRef.current, request.signal);
+    } catch (error) {
+      // Usually a redirect is already tearing the page down. Still settle the
+      // resource so a sign-in-owned request or a blocked navigation can never
+      // leave an immortal loading state.
+      if (gateRef.current.isCurrent(ticket)) {
+        inFlightRef.current = false;
+        dataRef.current = keepRef.current ? dataRef.current : null;
+        setData(dataRef.current);
+        const message = error instanceof SessionEndedError
+          ? 'Your session ended. Sign in again to continue.'
+          : 'Request failed';
+        setError(message);
+        commitIdentityState({
+          data: dataRef.current === null ? null : identityStateRef.current.data,
+          error: requestIdentity,
+          status: requestIdentity,
+        });
+        setLoading(false);
+      }
       return;
+    } finally {
+      request.dispose();
+      if (activeRequestRef.current === request) activeRequestRef.current = null;
     }
 
     // Stale ticket = a newer request started, or we unmounted/disabled/
@@ -190,8 +318,17 @@ export function useApiResource<T>(
     dataRef.current = next.data;
     setData(next.data);
     setError(next.error);
+    commitIdentityState({
+      data: outcome.kind === 'success'
+        ? requestIdentity
+        : next.data === null
+          ? null
+          : identityStateRef.current.data,
+      error: next.error === null ? null : requestIdentity,
+      status: requestIdentity,
+    });
     setLoading(false);
-  }, []);
+  }, [commitIdentityState]);
 
   // Resource identity: first mount, enabled flip, or URL change. Deliberately
   // NOT keyed on pollMs — adjusting polling cadence at runtime must never
@@ -204,20 +341,29 @@ export function useApiResource<T>(
       // Cancel anything in flight; clear state so a gated section never
       // shows another capability's leftovers. Re-enabling later counts as a
       // fresh first identity (loading state shows again).
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
       gate.invalidate();
       inFlightRef.current = false;
       dataRef.current = null;
       hadIdentityRef.current = false;
       setData(null);
       setError(null);
+      commitIdentityState({ data: null, error: null, status: null });
       setLoading(false);
       return;
     }
 
+    const previousDataIdentity = identityStateRef.current.data;
+    const hasDataForCurrentAuthorization = dataRef.current !== null
+      && sameAuthorizationIdentity(previousDataIdentity, currentIdentityRef.current);
     const hold = shouldHoldDataOnSourceChange({
       keepDataOnSourceChange: keepOnSourceChangeRef.current,
       isFirstIdentity: !hadIdentityRef.current,
-      hasData: dataRef.current !== null,
+      // Authorization changes are never an eligible "source change". This
+      // remains false even when the same uid receives a different role or
+      // property grant set via identityKey.
+      hasData: hasDataForCurrentAuthorization,
     });
     hadIdentityRef.current = true;
 
@@ -232,14 +378,17 @@ export function useApiResource<T>(
       dataRef.current = null;
       setData(null);
       setError(null);
+      commitIdentityState({ data: null, error: null, status: currentIdentityRef.current });
       void load('initial');
     }
 
     return () => {
+      activeRequestRef.current?.abort();
+      activeRequestRef.current = null;
       gate.invalidate();
       inFlightRef.current = false;
     };
-  }, [enabled, sourceKey, load]);
+  }, [enabled, sourceKey, identityKey, load, commitIdentityState]);
 
   // Polling timer, managed separately so a pollMs change only re-arms the
   // interval. Any in-flight request keeps running (the tick skips while one
@@ -260,11 +409,44 @@ export function useApiResource<T>(
       void load('poll');
     }, pollMs);
     return () => clearInterval(timer);
-  }, [enabled, pollMs, sourceKey, load]);
+  }, [enabled, pollMs, sourceKey, identityKey, load]);
 
   const reload = useCallback(() => load('reload'), [load]);
 
-  return { data, loading, error, reload };
+  // Effects only clear old state after a render commits. Masking here closes
+  // that render-sized gap: a role/grant/property change cannot expose the
+  // previous identity's rows or error while React waits to run the effect.
+  const dataMatchesCurrent = sameResourceIdentity(identityState.data, currentIdentity);
+  const canHoldDataAcrossSource = enabled
+    && data !== null
+    && keepDataOnSourceChange
+    && sameAuthorizationIdentity(identityState.data, currentIdentity);
+  const visibleData = enabled && (dataMatchesCurrent || canHoldDataAcrossSource)
+    ? data
+    : null;
+  const visibleError = enabled && sameResourceIdentity(identityState.error, currentIdentity)
+    ? error
+    : null;
+
+  let visibleLoading = false;
+  if (enabled) {
+    if (!sameAuthorizationIdentity(identityState.status, currentIdentity)) {
+      visibleLoading = true;
+    } else if (!sameResourceIdentity(identityState.status, currentIdentity)) {
+      // The opt-in hold is intentionally limited to a source switch inside
+      // the exact same authorization identity. It never spans identityKey.
+      visibleLoading = !canHoldDataAcrossSource;
+    } else {
+      visibleLoading = loading;
+    }
+  }
+
+  return {
+    data: visibleData,
+    loading: visibleLoading,
+    error: visibleError,
+    reload,
+  };
 }
 
 export interface UseApiActionResult<TIn, TOut> {
@@ -277,6 +459,17 @@ export interface UseApiActionResult<TIn, TOut> {
   run: (input: TIn) => Promise<EnvelopeResult<TOut>>;
   saving: boolean;
   error: string | null;
+}
+
+export interface UseApiActionOptions {
+  /**
+   * Outer UI-settlement deadline. The default protects ordinary one-request
+   * actions. Pass null only for a finite composite workflow whose individual
+   * requests already have deadlines; racing such a workflow can report total
+   * failure after an early non-idempotent step committed and invite a
+   * duplicate retry while later steps are still running.
+   */
+  timeoutMs?: number | null;
 }
 
 /**
@@ -300,6 +493,7 @@ export interface UseApiActionResult<TIn, TOut> {
  */
 export function useApiAction<TIn, TOut>(
   fn: (input: TIn) => Promise<EnvelopeResult<TOut>>,
+  options: UseApiActionOptions = {},
 ): UseApiActionResult<TIn, TOut> {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -307,6 +501,10 @@ export function useApiAction<TIn, TOut>(
   const gateRef = useRef(createRequestGate());
   const fnRef = useRef(fn);
   fnRef.current = fn;
+  const timeoutRef = useRef<number | null>(INTERACTIVE_ACTION_TIMEOUT_MS);
+  timeoutRef.current = options.timeoutMs === undefined
+    ? INTERACTIVE_ACTION_TIMEOUT_MS
+    : options.timeoutMs;
 
   useEffect(() => {
     const gate = gateRef.current;
@@ -322,15 +520,26 @@ export function useApiAction<TIn, TOut>(
 
     let result: EnvelopeResult<TOut>;
     try {
-      result = await fnRef.current(input);
+      // The shared action adapter must always release `saving`. The underlying
+      // write is never auto-retried because the server may have committed even
+      // when its response was lost; callers can reconcile on their next read.
+      const pending = fnRef.current(input);
+      result = timeoutRef.current === null
+        ? await pending
+        : await withPromiseDeadline(pending, {
+          timeoutMs: timeoutRef.current,
+          label: 'Action confirmation',
+        });
     } catch (e) {
       if (e instanceof SessionEndedError) {
-        // Redirect to /signin already firing — leave state alone.
-        return { error: 'Session ended' };
+        // A redirect normally tears this state down, but settling is harmless
+        // and prevents a blocked/in-page auth flow from retaining `saving`.
+        result = { error: 'Your session ended. Sign in again to continue.' };
+      } else {
+        result = {
+          error: e instanceof Error && e.message ? e.message : 'Request failed',
+        };
       }
-      result = {
-        error: e instanceof Error && e.message ? e.message : 'Request failed',
-      };
     }
 
     if (gateRef.current.isCurrent(ticket)) {

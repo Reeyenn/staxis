@@ -30,7 +30,7 @@
 import React from 'react';
 import { CxIcon } from './icons';
 import { useProperty } from '@/contexts/PropertyContext';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
 import {
   alreadyAskedThisSession,
@@ -50,15 +50,23 @@ type Phase = 'idle' | 'showing' | 'saving' | 'thanks' | 'gone';
 /** How long the "saved" confirmation lingers before the card removes itself. */
 const THANKS_MS = 2200;
 
-export function DripQuestionCard({ lang }: { lang: 'en' | 'es' }) {
+export function DripQuestionCard({
+  lang,
+  propertyId,
+}: {
+  lang: 'en' | 'es';
+  /** Explicit during a portfolio drill-down; otherwise the active hotel. */
+  propertyId?: string | null;
+}) {
   const es = lang === 'es';
   const { activePropertyId } = useProperty();
+  const resolvedPropertyId = propertyId ?? activePropertyId;
   const [question, setQuestion] = React.useState<Question | null>(null);
   const [phase, setPhase] = React.useState<Phase>('idle');
 
   // Ask the server for this session's single question, once.
   React.useEffect(() => {
-    const pid = activePropertyId;
+    const pid = resolvedPropertyId;
     if (!pid) return;
     const store = browserSessionStore();
     if (alreadyAskedThisSession(store, pid)) return;
@@ -83,7 +91,7 @@ export function DripQuestionCard({ lang }: { lang: 'en' | 'es' }) {
     return () => {
       cancelled = true;
     };
-  }, [activePropertyId]);
+  }, [resolvedPropertyId]);
 
   // Held so the confirmation timer is cleared if the manager navigates away.
   const timer = React.useRef<number | null>(null);
@@ -93,7 +101,7 @@ export function DripQuestionCard({ lang }: { lang: 'en' | 'es' }) {
 
   const answer = React.useCallback(
     async (verdict: 'yes' | 'no') => {
-      const pid = activePropertyId;
+      const pid = resolvedPropertyId;
       if (!pid || !question) return;
       setPhase('saving');
       let saved = false;
@@ -102,6 +110,7 @@ export function DripQuestionCard({ lang }: { lang: 'en' | 'es' }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ propertyId: pid, topic: question.topic, answer: verdict }),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
         });
         saved = res.ok;
       } catch {
@@ -117,7 +126,7 @@ export function DripQuestionCard({ lang }: { lang: 'en' | 'es' }) {
       setPhase('thanks');
       timer.current = window.setTimeout(() => setPhase('gone'), THANKS_MS);
     },
-    [activePropertyId, question],
+    [resolvedPropertyId, question],
   );
 
   if (!question || phase === 'idle' || phase === 'gone') return null;

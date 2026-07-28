@@ -85,6 +85,11 @@ const LATE_NIGHT = new Date('2026-07-26T03:00:00.000Z');
 const NEXT_DAY = new Date('2026-07-26T06:00:00.000Z');
 const RAN_AT = '2026-07-25T08:00:00.000Z';
 
+/** Route tests use the real clock, so content fixtures must stay inside the
+ * liveness window instead of silently expiring as the calendar advances. */
+const hoursAgo = (hours: number): string =>
+  new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 function getReq(propertyId: string | null): NextRequest {
@@ -315,6 +320,10 @@ describe('/api/findings/brief — the morning brief', () => {
     });
 
     test('leads with the biggest dollars and ends with the liveness line', async () => {
+      await pg.query(
+        'update public.finding_runs set run_at = $2::timestamptz where property_id = $1',
+        [PID_A, hoursAgo(6)],
+      );
       const { body } = await readBrief(PID_A);
       const brief = body.data!.brief!;
       const highlights = brief.lines.filter((line) => line.findingId).map((line) => line.text);
