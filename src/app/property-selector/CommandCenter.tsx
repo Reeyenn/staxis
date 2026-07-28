@@ -747,7 +747,10 @@ export function CommandCenterView({
                 reader who opens it gets PortfolioQueueView rather than a
                 hotel's feed, resolved server-side from their own hats. */}
             {company.queueAvailable === true && (
-              <a className="cc-portfolio" href="/feed">
+              <a
+                className="cc-portfolio"
+                href={`/feed?organizationId=${encodeURIComponent(company.organizationId)}`}
+              >
                 <span className="cc-pf-mark" aria-hidden><CxIcon name="staxis" size={17} /></span>
                 <span className="cc-pf-body">
                   <span className="cc-pf-title" style={{ display: 'block' }}>

@@ -27,7 +27,10 @@ import 'server-only';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { log } from '@/lib/log';
 import { propertyLocalToday } from '@/lib/schedule/local-date';
-import { propertiesOfOrganization } from '@/lib/company/access';
+import {
+  resolveOrganizationPropertyTopology,
+  type OrganizationPropertyTopology,
+} from '@/lib/company/access';
 import { loadFeeds, resolveLoadEnv } from '@/lib/findings/feeds';
 import { dedupeKeyFor, dedupeDrafts, capDrafts, evidenceMoved, shouldEscalate } from '@/lib/findings/silencer';
 import { isFeedFailure } from '@/lib/findings/types';
@@ -39,6 +42,11 @@ import {
   type PortfolioDetector,
   type PortfolioHotel,
 } from './portfolio-checks';
+import {
+  classifyPortfolioDayClaim,
+  type PortfolioClaimRow,
+  type PortfolioDayClaim,
+} from './portfolio-run-claim';
 import {
   escalateCompanyFinding,
   expireStaleCompanyFindings,
@@ -64,9 +72,25 @@ export interface PortfolioRunSummary {
   suppressed: number;
   escalated: number;
   expired: number;
+  /** Hotels excluded because at least one required comparison feed failed. */
+  sourceUnavailableHotels: number;
   /** True when this call is the one that did the work. */
   ran: boolean;
+  /** Whether this call proved a complete current run, reused one, or abstained. */
+  completion: PortfolioRunCompletion;
   errors: Array<{ detectorId: string; error: string }>;
+}
+
+export type PortfolioRunCompletion =
+  | 'completed'
+  | 'held'
+  | 'in_progress'
+  | 'incomplete'
+  | 'unavailable';
+
+interface PortfolioGatherReceipt {
+  context: PortfolioContext;
+  sourceUnavailableHotels: number;
 }
 
 // ─── Gathering ──────────────────────────────────────────────────────────────
@@ -82,14 +106,28 @@ export async function gatherPortfolio(
   organizationId: string,
   now: Date,
 ): Promise<PortfolioContext> {
-  const propertyIds = await propertiesOfOrganization(organizationId);
+  const topology = await requireOrganizationTopology(organizationId, now);
+  return (await gatherPortfolioWithReceipt(topology, now)).context;
+}
+
+async function gatherPortfolioWithReceipt(
+  topology: OrganizationPropertyTopology,
+  now: Date,
+): Promise<PortfolioGatherReceipt> {
+  const { organizationId, propertyIds } = topology;
   if (propertyIds.length === 0) {
-    return { organizationId, hotels: [], now };
+    return {
+      context: { organizationId, hotels: [], now },
+      sourceUnavailableHotels: 0,
+    };
   }
 
   const names = await hotelNames(propertyIds);
 
-  const hotels = await Promise.all(propertyIds.map(async (propertyId): Promise<PortfolioHotel> => {
+  const gathered = await Promise.all(propertyIds.map(async (propertyId): Promise<{
+    hotel: PortfolioHotel;
+    complete: boolean;
+  }> => {
     const fallback: PortfolioHotel = {
       propertyId,
       name: names.get(propertyId) ?? 'this hotel',
@@ -102,16 +140,17 @@ export async function gatherPortfolio(
       const feeds = await loadFeeds(['supply_spend_history', 'operating_rhythm'], env);
       const supply = feeds.supply_spend_history;
       const rhythm = feeds.operating_rhythm;
+      const supplyComplete = !!supply && !isFeedFailure(supply);
+      const rhythmComplete = !!rhythm && !isFeedFailure(rhythm);
       return {
-        propertyId,
-        name: names.get(propertyId) ?? 'this hotel',
-        businessDate: env.businessDate,
-        supplySpend: supply && !isFeedFailure(supply)
-          ? (supply.value as SupplySpendHistory)
-          : null,
-        rhythm: rhythm && !isFeedFailure(rhythm)
-          ? (rhythm.value as OperatingRhythmHistory)
-          : null,
+        hotel: {
+          propertyId,
+          name: names.get(propertyId) ?? 'this hotel',
+          businessDate: env.businessDate,
+          supplySpend: supplyComplete ? (supply.value as SupplySpendHistory) : null,
+          rhythm: rhythmComplete ? (rhythm.value as OperatingRhythmHistory) : null,
+        },
+        complete: supplyComplete && rhythmComplete,
       };
     } catch (e) {
       log.warn('[portfolio] a hotel could not be read; it sits out this comparison', {
@@ -119,11 +158,14 @@ export async function gatherPortfolio(
         propertyId,
         err: e instanceof Error ? e.message : String(e),
       });
-      return fallback;
+      return { hotel: fallback, complete: false };
     }
   }));
 
-  return { organizationId, hotels, now };
+  return {
+    context: { organizationId, hotels: gathered.map((item) => item.hotel), now },
+    sourceUnavailableHotels: gathered.filter((item) => !item.complete).length,
+  };
 }
 
 async function hotelNames(propertyIds: readonly string[]): Promise<Map<string, string>> {
@@ -148,14 +190,38 @@ export async function companyLocalToday(
   organizationId: string,
   now: Date,
 ): Promise<{ localDate: string; timezone: string | null }> {
-  const propertyIds = await propertiesOfOrganization(organizationId);
+  const topology = await requireOrganizationTopology(organizationId, now);
+  return companyLocalTodayForTopology(topology, now);
+}
+
+async function companyLocalTodayForTopology(
+  topology: OrganizationPropertyTopology,
+  now: Date,
+): Promise<{ localDate: string; timezone: string | null }> {
+  const { propertyIds } = topology;
   if (propertyIds.length === 0) return { localDate: propertyLocalToday(now, null), timezone: null };
 
-  const { data } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from('properties')
     .select('id, timezone')
     .in('id', [...propertyIds]);
-  const rows = ((data ?? []) as Array<{ id: string; timezone: string | null }>)
+  if (error || !Array.isArray(data)) {
+    throw new Error('company property timezones are unavailable');
+  }
+
+  const propertyIdSet = new Set(propertyIds);
+  const returnedIds = new Set(
+    (data as Array<{ id: string; timezone: string | null }>).map((row) => row.id),
+  );
+  if (returnedIds.size !== propertyIdSet.size
+    || [...propertyIdSet].some((propertyId) => !returnedIds.has(propertyId))) {
+    // The relationship snapshot and property metadata crossed a concurrent
+    // topology change. Do not claim a calendar key from one set and compare a
+    // different set under it; the next request can resolve a fresh snapshot.
+    throw new Error('company topology changed while resolving its calendar');
+  }
+
+  const rows = (data as Array<{ id: string; timezone: string | null }>)
     .filter((row) => !!row.timezone)
     .sort((a, b) => (a.id < b.id ? -1 : 1));
 
@@ -169,6 +235,17 @@ export async function companyLocalToday(
     if (count > best) { best = count; winner = row.timezone!; }
   }
   return { localDate: propertyLocalToday(now, winner), timezone: winner };
+}
+
+async function requireOrganizationTopology(
+  organizationId: string,
+  now: Date,
+): Promise<OrganizationPropertyTopology> {
+  const resolved = await resolveOrganizationPropertyTopology(organizationId, now);
+  if (!resolved.ok) {
+    throw new Error(`company topology is unavailable (${resolved.reason})`);
+  }
+  return resolved.topology;
 }
 
 // ─── Running ────────────────────────────────────────────────────────────────
@@ -187,11 +264,12 @@ export async function runPortfolioChecks(opts: {
 }): Promise<PortfolioRunSummary> {
   const now = opts.now ?? new Date();
   const organizationId = opts.organizationId;
-  const { localDate } = await companyLocalToday(organizationId, now);
 
   const summary: PortfolioRunSummary = {
     organizationId,
-    localDate,
+    // Diagnostic only until the strict company clock below succeeds. No claim
+    // is made with this UTC fallback when topology or property metadata fails.
+    localDate: propertyLocalToday(now, null),
     hotels: 0,
     detectorsChecked: 0,
     opened: 0,
@@ -199,16 +277,54 @@ export async function runPortfolioChecks(opts: {
     suppressed: 0,
     escalated: 0,
     expired: 0,
+    sourceUnavailableHotels: 0,
     ran: false,
+    completion: 'unavailable',
     errors: [],
   };
 
-  if (!opts.force && !(await claimTheDay(organizationId, localDate))) return summary;
+  let topology: OrganizationPropertyTopology;
+  try {
+    topology = await requireOrganizationTopology(organizationId, now);
+    const companyClock = await companyLocalTodayForTopology(topology, now);
+    summary.localDate = companyClock.localDate;
+  } catch (e) {
+    summary.errors.push({
+      detectorId: 'topology',
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return summary;
+  }
+
+  if (!opts.force) {
+    const claim = await claimTheDay(organizationId, summary.localDate);
+    if (claim !== 'claimed') {
+      summary.completion = claim === 'held_complete'
+        ? 'held'
+        : claim === 'held_incomplete'
+          ? 'incomplete'
+          : claim === 'in_progress'
+            ? 'in_progress'
+            : 'unavailable';
+      return summary;
+    }
+  }
 
   try {
-    const ctx = await gatherPortfolio(organizationId, now);
+    // Use the exact relationship snapshot that chose the company calendar and
+    // claim key. Never re-query topology between the clock and comparison.
+    const gathered = await gatherPortfolioWithReceipt(topology, now);
+    const ctx = gathered.context;
     summary.hotels = ctx.hotels.length;
+    summary.sourceUnavailableHotels = gathered.sourceUnavailableHotels;
     summary.ran = true;
+
+    if (gathered.sourceUnavailableHotels > 0) {
+      summary.errors.push({
+        detectorId: 'source_coverage',
+        error: `${gathered.sourceUnavailableHotels} hotel comparison source(s) were unavailable`,
+      });
+    }
 
     for (const detector of PORTFOLIO_DETECTORS) {
       try {
@@ -227,6 +343,9 @@ export async function runPortfolioChecks(opts: {
       error: e instanceof Error ? e.message : String(e),
     });
   }
+  summary.completion = summary.ran && summary.errors.length === 0
+    ? 'completed'
+    : 'incomplete';
   return summary;
 }
 
@@ -297,28 +416,38 @@ async function runOne(
 // ─── The once-a-day claim ───────────────────────────────────────────────────
 
 /**
- * Take the day's run slot, atomically. Returns true only for the caller that
- * won it; a claim that FAILS (database trouble) is treated as lost, so the
- * failure mode is "the portfolio checks did not run today" rather than "twelve
- * tabs each ran them".
+ * Take the day's run slot atomically and distinguish a new claim, a verified
+ * completed hold, an in-progress claim, and an unavailable store. Database
+ * trouble is never treated as a completed day, so the failure mode is an
+ * explicit incomplete receipt rather than twelve tabs each running checks.
  *
  * `p_pid` is deliberately null: a company-scope run belongs to no one hotel,
  * and filing the row under an arbitrary one of its hotels would make it look
  * like that hotel's. The KEY carries the organization id and is the tenant
  * boundary of the claim, exactly as the morning brief's key is.
  */
-async function claimTheDay(organizationId: string, localDate: string): Promise<boolean> {
+async function claimTheDay(
+  organizationId: string,
+  localDate: string,
+): Promise<PortfolioDayClaim> {
   try {
     const { data, error } = await supabaseAdmin.rpc('claim_idempotency_key', {
       p_key: `${CLAIM_ROUTE}-v${RUN_VERSION}-${organizationId}-${localDate}`,
       p_route: CLAIM_ROUTE,
       p_pid: null,
     });
-    if (error) return false;
-    const row = (Array.isArray(data) ? data[0] : data) as { claimed?: boolean } | null | undefined;
-    return row?.claimed === true;
+    if (error) return 'unavailable';
+    return classifyPortfolioDayClaim(
+      (Array.isArray(data) ? data[0] : data) as PortfolioClaimRow | null | undefined,
+      {
+        route: CLAIM_ROUTE,
+        runVersion: RUN_VERSION,
+        organizationId,
+        localDate,
+      },
+    );
   } catch {
-    return false;
+    return 'unavailable';
   }
 }
 
@@ -326,9 +455,10 @@ async function claimTheDay(organizationId: string, localDate: string): Promise<b
  * Hold the day's slot open for a full day once the run finished.
  *
  * The claim RPC writes a 5-minute pending row; without this the checks would
- * re-run every five minutes all day. Called after `runPortfolioChecks` returns
- * `ran: true`. Best-effort: the worst case is an extra run, not a wrong one,
- * because every write goes through the one-row-per-problem index either way.
+ * re-run every five minutes all day. Call only after `runPortfolioChecks`
+ * returns `completion: 'completed'`; an incomplete run must remain retryable.
+ * Best-effort: the worst case is an extra run, not a wrong one, because every
+ * write goes through the one-row-per-problem index either way.
  */
 export async function holdPortfolioDay(
   organizationId: string,

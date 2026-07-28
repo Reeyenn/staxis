@@ -98,6 +98,33 @@ function useRequestedHotel(): string | null {
   return pid;
 }
 
+/**
+ * The company selected by the command centre, including an intentionally
+ * empty/invalid value. Validation belongs to the server; collapsing a bad
+ * explicit selection to "omitted" here could make the server fall back to a
+ * different company. `undefined` is only the pre-hydration state, so the
+ * company probe cannot race ahead without the selection carried in the URL.
+ */
+function useRequestedOrganization(): string | null | undefined {
+  const [organizationId, setOrganizationId] = React.useState<string | null | undefined>(undefined);
+
+  React.useEffect(() => {
+    const read = () => {
+      const params = new URLSearchParams(window.location.search);
+      const values = params.getAll('organizationId');
+      // Keep an explicit invalid sentinel for duplicate selection rather than
+      // collapsing it to the first value. Both the queue and drill-down
+      // coverage routes will then reject it instead of silently choosing one.
+      setOrganizationId(values.length === 0 ? null : values.length === 1 ? values[0]! : '');
+    };
+    read();
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
+  }, []);
+
+  return organizationId;
+}
+
 /** Only the part of the picker payload this screen needs. */
 interface CoveragePayload {
   hotels: Array<{ propertyId: string; name: string }>;
@@ -153,6 +180,13 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
 
   const [focusId, setFocusId] = useFocusedFinding();
   const requestedPid = useRequestedHotel();
+  const requestedOrganizationId = useRequestedOrganization();
+  const portfolioHref = requestedOrganizationId === null || requestedOrganizationId === undefined
+    ? '/feed'
+    : `/feed?organizationId=${encodeURIComponent(requestedOrganizationId)}`;
+  const coverageUrl = requestedOrganizationId === null || requestedOrganizationId === undefined
+    ? '/api/property-selector/bootstrap'
+    : `/api/property-selector/bootstrap?organizationId=${encodeURIComponent(requestedOrganizationId)}`;
 
   const { user } = useAuth();
   const { activePropertyId, properties, setActivePropertyId } = useProperty();
@@ -183,8 +217,8 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // and asking the manager gate here would put her back in front of a screen
   // that cannot explain itself.
   const { data: coverage, error: coverageError } = useApiResource<CoveragePayload>(
-    '/api/property-selector/bootstrap',
-    { enabled: !!user && !!requestedPid },
+    coverageUrl,
+    { enabled: !!user && !!requestedPid && requestedOrganizationId !== undefined },
   );
 
   // Two independent questions, asked in one place: does this reader COVER the
@@ -271,7 +305,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           <div className="qv-stops">{refused ? L('refusedBody') : L('unavailableBody')}</div>
         </div>
         <div style={{ marginTop: 14 }}>
-          <a className="qv-back" href="/feed">← {L('backToPortfolio')}</a>
+          <a className="qv-back" href={portfolioHref}>← {L('backToPortfolio')}</a>
         </div>
       </div>
     );
@@ -290,7 +324,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           <div className="qv-stops">{L('readerOnlyBody')}</div>
         </div>
         <div style={{ marginTop: 14 }}>
-          <a className="qv-back" href="/feed">
+          <a className="qv-back" href={portfolioHref}>
             ← {hotelBrand ? `${L('backTo')} ${hotelBrand}` : L('backToPortfolio')}
           </a>
         </div>
@@ -309,6 +343,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
         readFailed={!!error}
         focusId={focusId}
         setFocusId={setFocusId}
+        backHref={portfolioHref}
       />
     );
   }
@@ -320,7 +355,13 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // endpoint, and no way for the two screens to both be on the page.
   return (
     <>
-      {!!user && <PortfolioQueueView lang={lang} onScope={setCompanyScope} />}
+      {!!user && requestedOrganizationId !== undefined && (
+        <PortfolioQueueView
+          lang={lang}
+          organizationId={requestedOrganizationId}
+          onScope={setCompanyScope}
+        />
+      )}
       {isHotelPerson && (
         <HotelQueue
           lang={lang}
@@ -361,6 +402,7 @@ function HotelQueue({
   readFailed,
   focusId,
   setFocusId,
+  backHref = '/feed',
 }: {
   lang: 'en' | 'es';
   /** Set only on a portfolio drill-down. Absent = the hotel the app is in. */
@@ -371,6 +413,7 @@ function HotelQueue({
   readFailed: boolean;
   focusId: string | null;
   setFocusId: (id: string | null) => void;
+  backHref?: string;
 }) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
@@ -386,7 +429,7 @@ function HotelQueue({
           must be able to get back to it without the browser button. */}
       {backLabel && (
         <div style={{ marginBottom: 6 }}>
-          <a className="qv-back" href="/feed">← {backLabel}</a>
+          <a className="qv-back" href={backHref}>← {backLabel}</a>
         </div>
       )}
 
