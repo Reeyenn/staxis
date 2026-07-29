@@ -1,7 +1,6 @@
 const STALE_CHUNK_PATTERN = /chunkloaderror|loading (?:css )?chunk [\w-]+ failed|failed to fetch dynamically imported module|error loading dynamically imported module|failed to load module script|importing a module script failed|module script.*mime type/i;
 
 export const STALE_CHUNK_RECOVERY_PARAM = '__staxis_chunk_recovery';
-export const LEGACY_WORKER_RECOVERY_PARAM = '__staxis_worker_recovery';
 export const STALE_CHUNK_RECOVERY_GUARD_KEY = 'staxis-chunk-recovery:active-incident';
 
 /**
