@@ -13,7 +13,7 @@ import { useSyncContext } from '@/contexts/SyncContext';
 import { t } from '@/lib/translations';
 import { WifiOff } from 'lucide-react';
 import { sectionForPath, isSectionEnabled } from '@/lib/sections/registry';
-import { RouteErrorState, RouteLoadingState } from './RouteResourceState';
+import { RouteErrorState } from './RouteResourceState';
 import {
   clearStaleChunkRecoveryIncident,
   LEGACY_WORKER_RECOVERY_PARAM,
@@ -49,7 +49,6 @@ export function AppLayout({
   const {
     activeProperty,
     capabilityOverridesStatus,
-    capabilityOverridesError,
     propertiesError,
     refreshCapabilities,
     retryProperties,
@@ -166,6 +165,37 @@ export function AppLayout({
         </div>
       )}
 
+      {activeProperty && capabilityOverridesStatus === 'error' && (
+        <div
+          role="alert"
+          aria-live="assertive"
+          style={{
+            borderBottom: '1px solid var(--snow-warm, rgba(184,92,61,0.3))',
+            background: 'var(--snow-warm-dim, rgba(184,92,61,0.1))',
+            padding: '8px 16px',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+            flexWrap: 'wrap',
+          }}
+        >
+          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--snow-ink, var(--fg))' }}>
+            {lang === 'es'
+              ? 'Algunas acciones no están disponibles mientras se actualizan los ajustes de acceso.'
+              : 'Some actions are unavailable while hotel access settings are refreshed.'}
+          </span>
+          <button
+            type="button"
+            onClick={() => void refreshCapabilities()}
+            style={{
+              border: '1px solid currentColor', borderRadius: '8px', background: 'transparent',
+              padding: '4px 10px', font: 'inherit', fontSize: '12px', fontWeight: 650,
+              color: 'var(--snow-ink, var(--fg))', cursor: 'pointer',
+            }}
+          >
+            {lang === 'es' ? 'Reintentar' : 'Try again'}
+          </button>
+        </div>
+      )}
+
       <main className="cx-swap" style={{
         flex: 1,
         width: '100%',
@@ -187,20 +217,6 @@ export function AppLayout({
               : 'No data was changed. Check your connection and try again.'}
             retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
             onRetry={retryProperties}
-          />
-        ) : activeProperty && capabilityOverridesStatus === 'error' ? (
-          <RouteErrorState
-            title={lang === 'es' ? 'No pudimos confirmar el acceso' : 'We could not confirm hotel access'}
-            message={capabilityOverridesError ?? (lang === 'es'
-              ? 'Revisa tu conexión e inténtalo de nuevo.'
-              : 'Check your connection and try again.')}
-            retryLabel={lang === 'es' ? 'Reintentar' : 'Try again'}
-            onRetry={() => void refreshCapabilities()}
-          />
-        ) : activeProperty && capabilityOverridesStatus !== 'ready' ? (
-          <RouteLoadingState
-            title={lang === 'es' ? 'Comprobando el acceso al hotel…' : 'Checking hotel access…'}
-            message={lang === 'es' ? 'Abriendo el espacio de trabajo actual.' : 'Opening the current hotel workspace.'}
           />
         ) : sectionOff ? (
           <div style={{
