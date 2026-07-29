@@ -154,7 +154,7 @@ describe('hotel drilldown and return contract', () => {
     assert.ok(homePageStart >= 0, 'HomePage must remain an explicit portfolio-routing boundary');
     const homePage = home.slice(homePageStart);
     assert.match(homePage, /const hotelDrilldown = acting\?\.request\.kind === 'hotel'/);
-    assert.match(homePage, /const portfolioEntryPending = !hotelDrilldown/);
+    assert.match(homePage, /const portfolioEntryPending = shouldWaitForPortfolioEntry\(\{[\s\S]{0,100}?hotelDrilldown,[\s\S]{0,100}?portfolioLoading: portfolio\.loading/);
     assert.match(homePage, /const portfolioDestination = !hotelDrilldown && portfolio\.data/);
     assert.match(homePage, /if \(portfolioDestination\) \{[\s\S]{0,120}?replaceNavigation\(portfolioDestination\)/);
   });

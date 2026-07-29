@@ -28,6 +28,7 @@ import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteRes
 import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useOptionalHotelActingContext } from '@/contexts/HotelActingContext';
+import { shouldWaitForPortfolioEntry } from '@/lib/portfolio-ui/entry-routing';
 
 interface TileLine { en: string; es: string; tone: TileTone }
 type Summary = Partial<Record<string, TileLine>>;
@@ -155,9 +156,10 @@ export default function HomePage() {
   const navigation = useReliableNavigation();
   const replaceNavigation = navigation.replace;
   const hotelDrilldown = acting?.request.kind === 'hotel';
-  const portfolioEntryPending = !hotelDrilldown
-    && !portfolio.error
-    && (portfolio.loading || (!portfolio.data && Boolean(user)));
+  const portfolioEntryPending = shouldWaitForPortfolioEntry({
+    hotelDrilldown,
+    portfolioLoading: portfolio.loading,
+  });
   const portfolioDestination = !hotelDrilldown && portfolio.data
     ? portfolio.data.selection.state === 'selected'
       ? `/portfolio?organizationId=${encodeURIComponent(
