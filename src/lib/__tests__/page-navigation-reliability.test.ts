@@ -24,6 +24,7 @@ function section(contents: string, start: string, end: string): string {
 }
 
 const propertyContext = source('src', 'contexts', 'PropertyContext.tsx');
+const capabilityHook = source('src', 'lib', 'capabilities', 'useCan.ts');
 const inventoryPage = source('src', 'app', 'inventory', 'page.tsx');
 const appLoading = source('src', 'app', 'loading.tsx');
 const appError = source('src', 'app', 'error.tsx');
@@ -140,6 +141,68 @@ describe('property and capability readiness', () => {
     );
     assert.match(refresh, /status: 'ready',[\s\S]*?error: null/);
     assert.match(refresh, /catch \(err\)[\s\S]*?status: 'error'/);
+  });
+
+  test('the app shell never blocks confirmed hotel content on the optional capability request', () => {
+    const main = section(
+      appLayout,
+      '<main className="cx-swap"',
+      '<div className="staxis-feedback-slot">',
+    );
+    assert.match(main, /propertiesError[\s\S]*?<RouteErrorState/);
+    assert.match(main, /sectionOff[\s\S]*?children/);
+    assert.doesNotMatch(main, /capabilityOverridesStatus/);
+    assert.doesNotMatch(appLayout, /Checking hotel access/);
+
+    const capabilityNotice = section(
+      appLayout,
+      "activeProperty && capabilityOverridesStatus === 'error'",
+      '<main className="cx-swap"',
+    );
+    assert.match(capabilityNotice, /role="alert"/);
+    assert.match(capabilityNotice, /Some actions are unavailable/);
+    assert.match(capabilityNotice, /onClick=\{\(\) => void refreshCapabilities\(\)\}/);
+  });
+
+  test('delayed, failed, revoked, and retry states remain fail-closed for restricted actions', () => {
+    assert.match(
+      capabilityHook,
+      /capabilityOverridesStatus === 'ready'[\s\S]*?capabilityOverridesPropertyId === activePropertyId[\s\S]*?capabilityOverridesViewerKey === viewerKey/,
+    );
+    assert.match(
+      capabilityHook,
+      /ready[\s\S]*?standing\.ready[\s\S]*?can\(role \? \{ role \} : null, capability, capabilityOverrides\)/,
+    );
+
+    const capabilityEffect = section(
+      propertyContext,
+      '// Load the active hotel\'s capability overrides',
+      'const refreshCapabilities = useCallback(',
+    );
+    assert.match(
+      capabilityEffect,
+      /withPromiseDeadline\(fetchOverridesFor\(resolvedPropertyId\), \{[\s\S]*?timeoutMs: PROPERTY_CONTEXT_TIMEOUT_MS/,
+    );
+    assert.match(capabilityEffect, /catch \(err\)[\s\S]*?status: 'error'/);
+
+    const refresh = section(
+      propertyContext,
+      'const refreshCapabilities = useCallback(',
+      'const refreshProperty = async',
+    );
+    assert.match(refresh, /status: 'loading'[\s\S]*?withPromiseDeadline\(fetchOverridesFor\(propertyId\)/);
+    assert.match(refresh, /status: 'ready'[\s\S]*?catch \(err\)[\s\S]*?status: 'error'/);
+
+    assert.match(
+      propertyContext,
+      /const exposedProperties = propertiesViewerUid === userUid[\s\S]*?propertiesAuthorizationViewerKey === propertyAuthorizationViewerKey[\s\S]*?\? properties[\s\S]*?: \[\]/,
+      'revoked or replaced authorization must mask retained hotel reach immediately',
+    );
+    assert.match(
+      propertyContext,
+      /const activeProperty = exposedProperties\.find\(p => p\.id === activePropertyId\) \?\? null/,
+      'protected hotel content must derive only from the viewer-stamped reach snapshot',
+    );
   });
 
   test('Inventory terminates no-property and capability failures instead of waiting forever', () => {
