@@ -110,6 +110,12 @@ const UNSEEDABLE_TABLES = new Set([
   'admin_hotel_relationship_mutation_requests', // actor/relationship lifecycle request shape
   'company_structure_mutation_requests', // actor/company structure request shape
   'inventory_delivery_reentries',  // NOT NULL key onto a replacement-request row
+  'management_pattern_candidate_local_instances', // immutable candidate/run lineage
+  'management_pattern_candidate_properties', // immutable candidate/run lineage
+  'management_pattern_cohort_members', // immutable cohort/run lineage
+  'management_pattern_metric_observations', // immutable run/query/source lineage
+  'management_pattern_property_profiles', // immutable run/profile lineage
+  'management_pattern_run_properties', // immutable run/topology snapshot lineage
   'organization_access_grants',    // NOT NULL key onto an unseedable membership
   'organization_access_requests',  // NOT NULL key onto an unseedable membership
   'organization_invitations',      // scope-shape XOR over four nullable columns

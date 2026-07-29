@@ -698,6 +698,8 @@ export interface FindingCardsViewProps {
   hideLiveness?: boolean;
   /** Draw every card as readable-but-not-decidable. See FindingCard.readOnly. */
   readOnly?: boolean;
+  /** Optional per-card deny used by mixed-scope portfolio views. */
+  readOnlyFor?: (finding: QueueFinding) => boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Told when a manager opens a card's numbers. Counted as engagement, which
    *  is what keeps a check somebody reads from demoting itself (0362). */
@@ -797,6 +799,7 @@ export function FindingCardsView({
   focusId = null,
   hideLiveness = false,
   readOnly = false,
+  readOnlyFor,
   onVerdict,
   onEngage,
   onAction,
@@ -864,7 +867,7 @@ export function FindingCardsView({
           lang={lang}
           busy={busyId === f.id}
           focused={focusId === f.id}
-          readOnly={readOnly}
+          readOnly={readOnly || readOnlyFor?.(f) === true}
           onVerdict={onVerdict}
           onEngage={onEngage}
           onAction={onAction}

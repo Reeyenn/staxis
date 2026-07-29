@@ -42,6 +42,7 @@ import { loadActionsForFindings } from '@/lib/findings/actions/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
 import { hotelBasisSpanish } from '@/lib/findings/basis-spanish';
 import type { Finding } from '@/lib/findings/types';
+import { mapWithConcurrency } from '@/lib/agent/portfolio/hotels';
 
 import { listCompanyFindings, type CompanyFinding } from './company-findings';
 import { portfolioSpanish } from './portfolio-checks';
@@ -66,11 +67,12 @@ import {
 // ─── Bounds ─────────────────────────────────────────────────────────────────
 
 /**
- * How many hotels one portfolio load will read. A twenty-hotel company is a
- * real customer; a two-hundred-hotel one is a different product, and quietly
- * taking four seconds to render would be a worse answer than a bounded one.
+ * How many hotels one portfolio load will read. This is a disclosed work bound,
+ * not an authorization bound: 31/61-hotel companies are processed completely,
+ * while very large companies receive explicit coverage/omission metadata.
  */
-export const MAX_HOTELS_PER_LOAD = 30;
+export const MAX_HOTELS_PER_LOAD = 250;
+export const PORTFOLIO_QUEUE_READ_CONCURRENCY = 8;
 
 /** Findings read per hotel before the climbing filter. */
 const MAX_FINDINGS_PER_HOTEL = 100;
@@ -132,7 +134,7 @@ const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * Hydrate the bounded queue scope from one authoritative receipt.
  *
  * The resolver has already failed closed for ambiguous omitted selection and
- * proven every id belongs to this account at this company. The 30-hotel work
+ * proven every id belongs to this account at this company. The 250-hotel work
  * budget is deliberately retained, but it is no longer a hidden authorization
  * truncation: the exact total and omission count travel with every response.
  */
@@ -224,7 +226,10 @@ async function loadPortfolioRun(
   authorizedHotelCount = propertyIds.length,
 ): Promise<PortfolioRunLoad> {
   if (propertyIds.length === 0) return { run: null, unavailablePropertyIds: [] };
-  const results = await Promise.all(propertyIds.map(async (propertyId) => {
+  const results = await mapWithConcurrency(
+    propertyIds,
+    PORTFOLIO_QUEUE_READ_CONCURRENCY,
+    async (propertyId) => {
     try {
       return { propertyId, available: true as const, run: await latestRunFacts(propertyId) };
     } catch (error) {
@@ -234,7 +239,8 @@ async function loadPortfolioRun(
       });
       return { propertyId, available: false as const, run: null };
     }
-  }));
+    },
+  );
   const unavailablePropertyIds = results
     .filter((result) => !result.available)
     .map((result) => result.propertyId);
@@ -310,7 +316,10 @@ export async function hotelHealthChips(
   if (propertyIds.length === 0) return out;
 
   const bounded = propertyIds.slice(0, MAX_HOTELS_PER_LOAD);
-  const results = await Promise.all(bounded.map(async (propertyId): Promise<HotelHealth> => {
+  const results = await mapWithConcurrency(
+    bounded,
+    PORTFOLIO_QUEUE_READ_CONCURRENCY,
+    async (propertyId): Promise<HotelHealth> => {
     try {
       const [rows, run] = await Promise.all([
         listFindings(propertyId, {
@@ -362,7 +371,8 @@ export async function hotelHealthChips(
       });
       return { propertyId, chip: null };
     }
-  }));
+    },
+  );
 
   for (const { propertyId, chip } of results) out.set(propertyId, chip);
   return out;
@@ -404,14 +414,22 @@ function liveFeedCounts(
  * `known_problem` has always meant. It is a GM's tap that must not reach up
  * here, and a GM has no way to touch a company card at all.
  */
-async function companyCards(scope: CompanyScope, now: Date): Promise<PortfolioCard[]> {
+async function companyCards(
+  scope: CompanyScope,
+  now: Date,
+  canActOnFinding?: (finding: CompanyFinding) => Promise<boolean>,
+): Promise<PortfolioCard[]> {
   const rows = await listCompanyFindings(scope.organizationId, {
     statuses: ['open', 'updated'],
     limit: 100,
   });
-  return rows
-    .filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }))
-    .map((f: CompanyFinding) => {
+  return mapWithConcurrency(
+    rows.filter((f) => isCardRenderable({
+      disposition: effectiveDisposition(f),
+      detectorId: f.detectorId,
+    })),
+    PORTFOLIO_QUEUE_READ_CONCURRENCY,
+    async (f: CompanyFinding) => {
       // Spanish, rebuilt from this row's own receipt. `company_findings` has no
       // judged_* columns, so without this a company card is English on every
       // screen — including a Spanish-reading VP's, which is the only screen it
@@ -428,8 +446,10 @@ async function companyCards(scope: CompanyScope, now: Date): Promise<PortfolioCa
         hotel: null,
         climbReason: 'portfolio' as const,
         daysOpen: daysOpen(f.firstSeenAt, now),
+        canAct: canActOnFinding ? await canActOnFinding(f).catch(() => false) : false,
       };
-    });
+    },
+  );
 }
 
 // ─── Feed 2: what climbed from the hotels ───────────────────────────────────
@@ -455,7 +475,10 @@ async function climbedCards(
   busyHotelIds: string[];
   unavailablePropertyIds: string[];
 }> {
-  const perHotel = await Promise.all(scope.propertyIds.map(async (propertyId) => {
+  const perHotel = await mapWithConcurrency(
+    scope.propertyIds,
+    PORTFOLIO_QUEUE_READ_CONCURRENCY,
+    async (propertyId) => {
     try {
       return {
         ...await climbedAtHotel(propertyId, scope, caller, directory, now),
@@ -474,7 +497,8 @@ async function climbedCards(
       // explicitly and the route suppresses the whole-company brief.
       return { cards: [] as PortfolioCard[], hasLiveWork: false, available: false as const };
     }
-  }));
+    },
+  );
   return {
     cards: perHotel.flatMap((h) => h.cards),
     busyHotelIds: scope.propertyIds.filter((_, i) => (
@@ -606,6 +630,11 @@ export interface PortfolioQueue {
   busyHotelIds: string[];
 }
 
+export interface PortfolioQueueActionability {
+  canActAtHotel?: (propertyId: string) => boolean;
+  canActOnCompanyFinding?: (finding: CompanyFinding) => Promise<boolean>;
+}
+
 /**
  * Everything a company-scope person's queue shows, ranked.
  *
@@ -617,6 +646,7 @@ export async function buildPortfolioQueue(
   caller: ManagerCaller,
   scope: CompanyScope,
   now: Date = new Date(),
+  actionability: PortfolioQueueActionability = {},
 ): Promise<PortfolioQueue> {
   // The portfolio checks run on the first load of the company's day, cached
   // against it. No cron to flip — see portfolio-runner.ts.
@@ -637,7 +667,7 @@ export async function buildPortfolioQueue(
 
   const directory = await loadApproverDirectory(scope.organizationId);
   const [company, climbed, runLoad] = await Promise.all([
-    companyCards(scope, now),
+    companyCards(scope, now, actionability.canActOnCompanyFinding),
     climbedCards(scope, caller, directory, now),
     loadPortfolioRun(scope.propertyIds, scope.coverage.authorizedHotelCount),
   ]);
@@ -664,7 +694,15 @@ export async function buildPortfolioQueue(
     companyRole: scope.companyRole,
     hotelCount: scope.coverage.authorizedHotelCount,
     coverage,
-    cards: rankPortfolio([...company, ...climbed.cards]),
+    cards: rankPortfolio([
+      ...company,
+      ...climbed.cards.map((card) => ({
+        ...card,
+        canAct: card.hotel
+          ? actionability.canActAtHotel?.(card.hotel.propertyId) === true
+          : false,
+      })),
+    ]),
     run: runLoad.run,
     cap: DAILY_CARD_CAP,
     busyHotelIds: climbed.busyHotelIds,

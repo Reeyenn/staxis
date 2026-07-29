@@ -79,3 +79,24 @@ test('the self-only invalidation row is still protected by the repository MFA bo
     /create policy account_authorization_notifications_self_select[\s\S]*?data_user_id = auth\.uid\(\)[\s\S]*?mfa_verified_or_grace\(\)/,
   );
 });
+
+test('realtime teardown failures are contained during account switches', async () => {
+  const fakeChannel = {
+    on: () => fakeChannel,
+    subscribe: () => fakeChannel,
+  };
+  const client = {
+    channel: () => fakeChannel,
+    removeChannel: async () => {
+      throw new TypeError('socket already closed');
+    },
+  };
+  const unsubscribe = subscribeToSessionAuthorizationInvalidations({
+    client: client as never,
+    authUid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    onInvalidate: () => undefined,
+  });
+
+  unsubscribe();
+  await new Promise((resolve) => setImmediate(resolve));
+});

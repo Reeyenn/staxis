@@ -51,17 +51,11 @@
  * queue, and its authoritative receipt decides what it opens — never a degraded
  * legacy word or an unverified URL id.
  *
- *   owner / vp   read the queue AND cast verdicts.
- *   finance      READ-ONLY. She sees the same cards, the same brief, the same
- *                money — the whole reason her job exists — and no verdict
- *                buttons. `canAct: false` in the payload is what tells the
- *                screen to draw it that way, so she never taps a control that
- *                403s. Silencing a hotel's problem is an operating decision;
- *                `hatCanManageTeam` and `canGrantHat` already say finance makes
- *                none, and this is the same answer on this surface.
- *
- * POST requires a verdict-capable authoritative company role and rechecks the
- * same receipt immediately before the write.
+ * Company authority is READ authority here. A company Owner/VP/finance hat can
+ * never stand in for permission to change a hotel's private operating state.
+ * POST resolves the finding's exact affected hotels, then requires current
+ * hotel mutation standing and the action/finding capabilities at every one of
+ * them. The final check and row CAS happen together in PostgreSQL.
  *
  * loadSessionAccount is the shared, schema-pinned account lookup. Do not
  * hand-roll another one: the last three times a route did, it selected a column
@@ -77,7 +71,12 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
 import { loadSessionAccount } from '@/lib/team-auth';
-import { assertAuthorizationScopeReceipt } from '@/lib/authorization/server';
+import {
+  assertAuthorizationScopeReceipt,
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+  resolveAuthorizationScope,
+} from '@/lib/authorization/server';
 import {
   resolveManagementCompanyScopeUncached,
   type ManagementCompanyScopeResult,
@@ -87,12 +86,20 @@ import {
   buildPortfolioQueue,
   companyQueueScopeFromAuthorization,
   companyLocalToday,
-  type CompanyRole,
 } from '@/lib/company/vp-queue-server';
 import { getPortfolioBrief } from '@/lib/company/vp-brief-server';
 import type { PortfolioBrief } from '@/lib/company/vp-brief';
-import { setCompanyFindingStatus } from '@/lib/company/company-findings';
-import type { FindingStatus } from '@/lib/findings/types';
+import {
+  commitCompanyFindingVerdict,
+  companyFindingVerdictRequirements,
+  CompanyFindingVerdictScopeError,
+  loadCompanyFindingVerdictSnapshot,
+  type CompanyFinding,
+} from '@/lib/company/company-findings';
+import { can } from '@/lib/capabilities/can';
+import { loadOverridesForPropertyFresh } from '@/lib/capabilities/server';
+import { getEnabledSectionsFresh } from '@/lib/sections/server';
+import { isSectionEnabled } from '@/lib/sections/registry';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -104,25 +111,6 @@ type ManagementCompanyScopeRefusal = Extract<
   ManagementCompanyScopeResult,
   { ok: false }
 >['reason'];
-
-/**
- * MAY THIS COMPANY JOB CAST A VERDICT? The ONE predicate both halves of this
- * route use, so what the GET draws and what the POST accepts cannot drift.
- *
- * Asked of the HAT and of nothing else. Reading it off the degraded
- * `accounts.role` instead is what made this route 403 a company's finance lead
- * whom the picker had just admitted; it would equally have refused a VP whose
- * legacy word happened not to be a manager one, which is the same bug wearing
- * the other shoe.
- *
- * Finance is excluded because silencing a hotel's problem is an OPERATING
- * decision and finance makes none — the same answer `hatCanManageTeam` and
- * `canGrantHat` already give. She reads everything, including the money, which
- * is the entire reason her job exists.
- */
-function verdictsAllowed(companyRole: CompanyRole): boolean {
-  return companyRole === 'owner' || companyRole === 'vp';
-}
 
 /**
  * The company queue contains organization-wide findings. A portfolio- or
@@ -261,7 +249,54 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const queue = await buildPortfolioQueue(caller, scope);
+    const standingByProperty = new Map(
+      resolved.access.propertyStandings.map((standing) => [standing.propertyId, standing]),
+    );
+    const propertyPolicy = new Map<string, Promise<{
+      overrides: Awaited<ReturnType<typeof loadOverridesForPropertyFresh>>;
+      sections: Awaited<ReturnType<typeof getEnabledSectionsFresh>>;
+    } | null>>();
+    const loadPropertyPolicy = (propertyId: string) => {
+      let pending = propertyPolicy.get(propertyId);
+      if (!pending) {
+        pending = Promise.all([
+          loadOverridesForPropertyFresh(propertyId),
+          getEnabledSectionsFresh(propertyId),
+        ]).then(([overrides, sections]) => ({ overrides, sections })).catch(() => null);
+        propertyPolicy.set(propertyId, pending);
+      }
+      return pending;
+    };
+    const canActOnCompanyFinding = async (finding: CompanyFinding): Promise<boolean> => {
+      const requirements = companyFindingVerdictRequirements({
+        detectorId: finding.detectorId,
+        semanticFamily: finding.semanticFamily,
+        activityStream: finding.activityStream,
+      });
+      if (!requirements
+          || finding.affectedPropertyIds.length === 0
+          || finding.affectedPropertyIds.some((id) => !standingByProperty.has(id))) return false;
+      for (const propertyId of finding.affectedPropertyIds) {
+        const standing = standingByProperty.get(propertyId);
+        if (!standing?.canManageHotel || !standing.operationalRole) return false;
+        const policy = await loadPropertyPolicy(propertyId);
+        if (!policy) return false;
+        if (requirements.requiredSections.some((section) => (
+          !isSectionEnabled(policy.sections, section)
+        ))) return false;
+        if (requirements.requiredCapabilities.some((capability) => (
+          !can({ role: standing.operationalRole }, capability, policy.overrides)
+        ))) return false;
+      }
+      return true;
+    };
+
+    const queue = await buildPortfolioQueue(caller, scope, new Date(), {
+      // Climbed hotel cards stay read-only in the company queue until the
+      // hotel-local verdict endpoint has its own in-transaction receipt fence.
+      // Company-card verdicts below already commit through 0405's exact CAS.
+      canActOnCompanyFinding,
+    });
 
     let brief: PortfolioBrief | null = null;
     let briefStopped = false;
@@ -289,7 +324,7 @@ export async function GET(req: NextRequest) {
       briefStopped = briefResult.stopped === true;
     }
 
-    // Authorization may be revoked while 30 hotel ledgers are being read.
+    // Authorization may be revoked while the bounded hotel ledgers are read.
     // Re-assert the immutable receipt immediately before data egress so stale
     // scope never becomes a successful response.
     const asserted = await assertAuthorizationScopeReceipt({
@@ -331,7 +366,7 @@ export async function GET(req: NextRequest) {
         // What the screen draws its controls from. False for finance: the same
         // cards, the same numbers, no verdict buttons. A button that 403s is a
         // worse answer than a button that is not there.
-        canAct: verdictsAllowed(queue.companyRole),
+        canAct: queue.cards.some((card) => card.canAct === true),
       },
       { requestId },
     );
@@ -367,18 +402,22 @@ export async function POST(req: NextRequest) {
     return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  let organizationId: string | null = null;
-  if (body.organizationId !== undefined) {
-    const organizationV = validateUuid(body.organizationId, 'organizationId');
-    if (organizationV.error) {
-      return err(organizationV.error, {
-        requestId,
-        status: 400,
-        code: ApiErrorCode.ValidationFailed,
-      });
-    }
-    organizationId = organizationV.value!.toLowerCase();
+  if (body.organizationId === undefined) {
+    return err('organizationId is required', {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
   }
+  const organizationV = validateUuid(body.organizationId, 'organizationId');
+  if (organizationV.error) {
+    return err(organizationV.error, {
+      requestId,
+      status: 400,
+      code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const organizationId = organizationV.value!.toLowerCase();
 
   const idV = validateUuid(body.findingId, 'findingId');
   if (idV.error) {
@@ -389,12 +428,10 @@ export async function POST(req: NextRequest) {
     return err(actionV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  // The same loader and the same predicate the GET renders from, so a verdict
-  // button that appears is a verdict this route will take, and one that does not
-  // appear is one it refuses. Previously the two sides disagreed: the manager
-  // gate here refused whoever `accounts.role` said was not a manager, which is
-  // not the question — the question is what job this person holds at this
-  // company.
+  // Company queue reach admits this aggregate read surface only. A card action
+  // has a narrower trust boundary: after locating the tenant-filtered finding,
+  // the route and final SQL transaction separately require current hotel-level
+  // standing for every property that action would affect.
   const caller = await loadSessionAccount(session.userId);
   if (!caller) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
@@ -402,54 +439,121 @@ export async function POST(req: NextRequest) {
   const resolved = await resolveManagementCompanyScopeUncached(caller.accountId, organizationId);
   if (!resolved.ok) {
     return scopeRefusalResponse(resolved.reason, requestId, {
-      explicitSelection: organizationId !== null,
+      explicitSelection: true,
       allowNoCompanyFallback: false,
     });
   }
-  if (!companyQueueAvailableFromAuthorization(resolved.access)
-    || !verdictsAllowed(resolved.access.companyRole)) {
+  if (!companyQueueAvailableFromAuthorization(resolved.access)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
   try {
-    const asserted = await assertAuthorizationScopeReceipt({
-      receiptId: resolved.access.authorizationReceipt.id,
+    // Tenant-filter before inspecting scope. Bogus and foreign ids are the same
+    // 404, so finding ids cannot be used as a cross-company existence oracle.
+    const snapshot = await loadCompanyFindingVerdictSnapshot(
+      resolved.access.organizationId,
+      idV.value!,
+    );
+    if (!snapshot) {
+      return err('No such finding', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+
+    const broadAuthorized = new Set(resolved.access.authorizationReceipt.authorizedPropertyIds);
+    if (snapshot.affectedPropertyIds.some((propertyId) => !broadAuthorized.has(propertyId))) {
+      return err('That finding does not have an actionable hotel scope', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+
+    // Re-read the authoritative hotel standing at this tool boundary. Company-
+    // only reach deliberately has hotelMutationAllowed=false even for Owner/VP.
+    const currentPropertyAccess = await listAuthoritativePropertyAccess(caller.accountId);
+    if (!currentPropertyAccess) {
+      return err('Could not verify current hotel access', {
+        requestId,
+        status: 503,
+        code: ApiErrorCode.UpstreamFailure,
+        headers: { 'Retry-After': '5' },
+      });
+    }
+    if (snapshot.affectedPropertyIds.some((propertyId) => (
+      authoritativeStandingForProperty(currentPropertyAccess, propertyId)
+        ?.hotelMutationAllowed !== true
+    ))) {
+      return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
+    }
+
+    // Mint an exact property-subset receipt. The all-authorized company receipt
+    // admits the aggregate GET; this one proves only the hotels this verdict
+    // would affect and is the receipt the transactional CAS reasserts.
+    const actionScope = await resolveAuthorizationScope({
       accountId: caller.accountId,
+      organizationId: resolved.access.organizationId,
+      selector: {
+        type: 'property_subset',
+        propertyIds: snapshot.affectedPropertyIds,
+      },
+      ttlSeconds: 60,
     });
-    if (!asserted.ok) {
-      const unavailable = asserted.reason === 'store_unavailable';
-      return err(unavailable ? 'Could not re-verify your current company access' : 'Forbidden', {
+    if (!actionScope.ok) {
+      const unavailable = actionScope.reason === 'store_unavailable';
+      return err(unavailable ? 'Could not verify current hotel access' : 'Forbidden', {
         requestId,
         status: unavailable ? 503 : 403,
         code: unavailable ? ApiErrorCode.UpstreamFailure : ApiErrorCode.Forbidden,
         ...(unavailable ? { headers: { 'Retry-After': '5' } } : {}),
       });
     }
-    // The organization filter is the tenant wall — `company_findings` is
-    // deny-all RLS and the id came from the caller's OWN hats, never from the
-    // body. A company B finding id sent by a company A owner matches no row.
-    const updated = await setCompanyFindingStatus(
-      resolved.access.organizationId,
-      idV.value!,
-      actionV.value! as FindingStatus,
-      caller.accountId,
-    );
-    // Null means the filter matched nothing: either the id is bogus or it
-    // belongs to another company. Same answer either way, so the response
-    // cannot be used to probe another company's ids.
-    if (!updated) {
-      return err('No such finding', { requestId, status: 404, code: ApiErrorCode.NotFound });
+
+    const committed = await commitCompanyFindingVerdict({
+      accountId: caller.accountId,
+      organizationId: resolved.access.organizationId,
+      authorizationReceiptId: actionScope.receipt.id,
+      snapshot,
+      action: actionV.value!,
+    });
+    if (!committed.ok) {
+      if (committed.reason === 'conflict') {
+        return err('That finding changed before your action could be saved', {
+          requestId,
+          status: 409,
+          code: ApiErrorCode.IdempotencyConflict,
+        });
+      }
+      if (committed.reason === 'unavailable') {
+        return err('Could not re-verify access or save that action', {
+          requestId,
+          status: 503,
+          code: ApiErrorCode.UpstreamFailure,
+          headers: { 'Retry-After': '5' },
+        });
+      }
+      return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
     }
-    return ok({ status: updated.status }, { requestId });
+    return ok({
+      status: committed.status,
+      outcome: committed.outcome,
+      revision: committed.revision,
+    }, { requestId });
   } catch (e) {
+    if (e instanceof CompanyFindingVerdictScopeError) {
+      return err('That finding does not have an actionable hotel scope', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
     log.error('[company:queue:POST] status change failed', {
       requestId,
       err: e instanceof Error ? e.message : String(e),
     });
-    return err('Could not save that', {
+    return err('Could not verify or save that action', {
       requestId,
-      status: 500,
-      code: ApiErrorCode.InternalError,
+      status: 503,
+      code: ApiErrorCode.UpstreamFailure,
+      headers: { 'Retry-After': '5' },
     });
   }
 }

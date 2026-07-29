@@ -3,7 +3,9 @@ import 'server-only';
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import { loadManagementPatternPortfolioFindings } from '@/lib/company/management-patterns/portfolio-findings';
 
+import { createPortfolioQueryAbortContext } from './cancellation';
 import {
+  PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES,
   PORTFOLIO_FINDING_MAX_PROMPT_ITEMS,
   adaptManagementPatternPortfolioLoadArtifact,
   type ManagementPatternPortfolioLoadAdapterResult,
@@ -19,6 +21,16 @@ const PORTFOLIO_FINDING_MOUNT_DEPENDENCIES: PortfolioFindingMountDependencies = 
   loadFindings: portfolioFindingLoader,
 });
 
+export class PortfolioFindingScopeTooLargeError extends Error {
+  readonly selectedPropertyCount: number;
+
+  constructor(selectedPropertyCount: number) {
+    super(`portfolio finding scope exceeds ${PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES} hotels`);
+    this.name = 'PortfolioFindingScopeTooLargeError';
+    this.selectedPropertyCount = selectedPropertyCount;
+  }
+}
+
 /**
  * The only route-facing bridge from the independently owned Finding Patterns
  * producer into Portfolio Intelligence. The raw loader artifact is kept local
@@ -33,18 +45,31 @@ export async function loadAndConsumePortfolioFindings(
   input: {
     receipt: AuthorizationScopeReceipt;
     now: Date;
+    deadlineAt: number;
     signal?: AbortSignal;
   },
   dependencies: PortfolioFindingMountDependencies = PORTFOLIO_FINDING_MOUNT_DEPENDENCIES,
 ): Promise<ManagementPatternPortfolioLoadAdapterResult> {
-  const artifact = await dependencies.loadFindings({
-    accountId: input.receipt.accountId,
-    scopeReceiptId: input.receipt.id,
-    selectedPropertyIds: [...input.receipt.propertyIds],
-    asOf: input.now,
-    maxFindings: PORTFOLIO_FINDING_MAX_PROMPT_ITEMS,
-    signal: input.signal,
+  if (input.receipt.propertyIds.length > PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES) {
+    throw new PortfolioFindingScopeTooLargeError(input.receipt.propertyIds.length);
+  }
+  const abortContext = createPortfolioQueryAbortContext({
+    deadlineAt: input.deadlineAt,
+    parentSignal: input.signal,
   });
+  let artifact;
+  try {
+    artifact = await dependencies.loadFindings({
+      accountId: input.receipt.accountId,
+      scopeReceiptId: input.receipt.id,
+      selectedPropertyIds: [...input.receipt.propertyIds],
+      asOf: input.now,
+      maxFindings: PORTFOLIO_FINDING_MAX_PROMPT_ITEMS,
+      signal: abortContext.signal,
+    });
+  } finally {
+    abortContext.cleanup();
+  }
   return adaptManagementPatternPortfolioLoadArtifact({
     artifact,
     accountId: input.receipt.accountId,

@@ -13,6 +13,7 @@ export const PORTFOLIO_FINDING_PROMPT_VERSION = 'portfolio-finding-prompt.v1' as
 export const PORTFOLIO_FINDING_LOAD_VERSION = 'management-pattern-portfolio-load.v1' as const;
 export const PORTFOLIO_FINDING_MAX_INPUTS = 100;
 export const PORTFOLIO_FINDING_MAX_AUTHORIZED_PROPERTIES = 5_000;
+export const PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES = 250;
 export const PORTFOLIO_FINDING_MAX_PROMPT_ITEMS = 40;
 export const PORTFOLIO_FINDING_MAX_PROMPT_CHARS = 12_000;
 export const PORTFOLIO_FINDING_MIN_ANONYMOUS_COHORT = 5;
@@ -37,7 +38,9 @@ function uniqueUuidArraySchema(max: number) {
     }
   });
 }
-const selectedUuidArraySchema = uniqueUuidArraySchema(250);
+const selectedUuidArraySchema = uniqueUuidArraySchema(
+  PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES,
+);
 const authorizedUuidArraySchema = uniqueUuidArraySchema(
   PORTFOLIO_FINDING_MAX_AUTHORIZED_PROPERTIES,
 );
@@ -1678,6 +1681,9 @@ export function buildPortfolioFindingProjection(input: {
   authorizationHash: string;
   scopeHash: string;
   maxProjectedItems: number;
+  /** Claims already admitted by the item budget but excluded because the
+   * downstream deterministic presentation would exceed its byte budget. */
+  presentationCharacterOmittedClaimIds?: readonly string[];
   status?: PortfolioFindingProjectionStatus;
   producer: PortfolioFindingProducerMetadataV1;
 }): PortfolioFindingProjectionV1 {
@@ -1758,6 +1764,12 @@ export function buildPortfolioFindingProjection(input: {
   if (!unique(acceptedClaimIds)) {
     throw new TypeError('accepted finding presentation claim ids collided');
   }
+  const forcedCharacterOmissions = input.presentationCharacterOmittedClaimIds ?? [];
+  const forcedCharacterOmissionSet = new Set(forcedCharacterOmissions);
+  if (forcedCharacterOmissionSet.size !== forcedCharacterOmissions.length
+      || forcedCharacterOmissions.some((id) => !acceptedClaimIds.includes(id))) {
+    throw new TypeError('presentation character omissions are not an exact accepted subset');
+  }
   const projectedRows: typeof acceptedRows = [];
   const itemOmittedClaimIds: string[] = [];
   const characterOmittedClaimIds: string[] = [];
@@ -1773,6 +1785,10 @@ export function buildPortfolioFindingProjection(input: {
         continue;
       }
       itemBudgetConsumed += 1;
+      if (forcedCharacterOmissionSet.has(row.claimId)) {
+        characterOmittedClaimIds.push(row.claimId);
+        continue;
+      }
       const line = formatFindingLine(row.finding, row.claimId);
       const lineBytes = Buffer.byteLength(`${line}\n`, 'utf8');
       if (used + lineBytes > PORTFOLIO_FINDING_MAX_PROMPT_CHARS) {
@@ -1782,6 +1798,9 @@ export function buildPortfolioFindingProjection(input: {
       projectedRows.push(row);
       used += lineBytes;
     }
+  }
+  if (forcedCharacterOmissions.some((id) => !characterOmittedClaimIds.includes(id))) {
+    throw new TypeError('presentation character omission falls outside the item budget');
   }
 
   const promptText = findingPromptText(

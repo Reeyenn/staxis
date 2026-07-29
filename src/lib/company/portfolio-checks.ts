@@ -260,6 +260,11 @@ function detectSupplySpendGap(ctx: PortfolioContext): FindingDraft[] {
       params: {
         week_start: top.startDate,
         week_end: top.endDate,
+        // `hotel_ids` is the evaluated comparison set. Only the current high
+        // spender is affected by this finding. Keep those concepts separate so
+        // a verdict never requires (or implies) mutation authority over the
+        // peer hotels used only as evidence.
+        affected_hotel_ids: [top.hotel.propertyId],
         // The comparison set, named. A side-by-side claim a VP cannot check
         // against the actual hotels is a rumour.
         hotels: ranked.map((w) => w.hotel.name),
@@ -380,7 +385,13 @@ function detectPortfolioActivityStopped(ctx: PortfolioContext): FindingDraft[] {
       magnitude: stopped.length,
       evidence: {
         queryId: STOPPED_RECEIPT,
-        params: { stream: streamId, hotels: names },
+        params: {
+          stream: streamId,
+          hotels: names,
+          // Exact machine scope for the verdict boundary. Names remain display
+          // text and are never reverse-resolved into authorization.
+          affected_hotel_ids: stopped.map((item) => item.hotel.propertyId).sort(),
+        },
         values: {
           hotels_stopped: stopped.length,
           hotels_checked: ctx.hotels.length,

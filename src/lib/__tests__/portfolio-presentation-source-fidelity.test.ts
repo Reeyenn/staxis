@@ -11,6 +11,7 @@ import {
   formatPortfolioPresentationPlanContract,
   portfolioFindingNumberReceiptPayloads,
   renderPortfolioAnswer,
+  renderPortfolioFindingSection,
   validatePortfolioPresentationPlan,
 } from '@/lib/agent/portfolio-intelligence/presentation';
 import {
@@ -578,6 +579,112 @@ describe('accepted Finding presentation seam', () => {
     assert.deepEqual(unselected.violations.map((item) => item.token), ['4242']);
   });
 
+  test('anonymous cohorts stay count-only and hostile labels cannot create Markdown links', () => {
+    const base = evidence();
+    const propertyIds = [
+      HOTEL_A,
+      HOTEL_B,
+      '20000000-0000-4000-8000-000000000003',
+      '20000000-0000-4000-8000-000000000004',
+      '20000000-0000-4000-8000-000000000005',
+    ];
+    const facts = propertyIds.map((propertyId, index) => ({
+      ...base.facts[index % base.facts.length]!,
+      propertyId,
+      propertyName: index === 0
+        ? '![Secret Hotel](https://evil.example/image)'
+        : `Anonymous Hotel ${index + 1}`,
+      numerator: 20 + index,
+      source: base.facts[0]!.source ? {
+        ...base.facts[0]!.source,
+        sourceRecordId: `${propertyId}:2026-07-27`,
+      } : null,
+    }));
+    const evidenceValue: PortfolioEvidencePackageV1 = {
+      ...base,
+      organizationName: '# [Hostile Company](https://evil.example/company)',
+      authorizedPropertyIds: propertyIds,
+      selectedPropertyIds: propertyIds,
+      facts,
+      aggregates: [{
+        ...base.aggregates[0]!,
+        numerator: facts.reduce((sum, fact) => sum + fact.numerator, 0),
+        denominator: facts.reduce((sum, fact) => sum + (fact.denominator ?? 0), 0),
+        includedPropertyIds: propertyIds,
+        denominatorPropertyIds: propertyIds,
+      }],
+      metricCoverage: [{
+        metricId: 'rooms_booked_otb',
+        reported: propertyIds.length,
+        excluded: 0,
+        excludedHotels: [],
+      }],
+      coverage: {
+        authorized: propertyIds.length,
+        selected: propertyIds.length,
+        reported: propertyIds.length,
+        excluded: 0,
+        excludedHotels: [],
+      },
+    };
+    const anonymous = findingEnvelope({
+      findingId: 'dddddddd-0000-4000-8000-000000000119',
+      kind: 'pattern',
+      statement: 'Review [this finding](https://evil.example/finding) now!',
+    });
+    anonymous.scope = {
+      ...(anonymous.scope as Record<string, unknown>),
+      kind: 'peer_cohort',
+      evaluatedPropertyIds: propertyIds,
+      affectedPropertyIds: [HOTEL_A],
+    };
+    anonymous.evidence = {
+      ...(anonymous.evidence as Record<string, unknown>),
+      coverage: { eligible: propertyIds.length, evaluated: propertyIds.length, affected: 1 },
+    };
+    anonymous.privacy = {
+      mode: 'anonymous_cohort',
+      cohortSize: propertyIds.length,
+      minimumCohortSize: 5,
+      smallCohortSuppressed: false,
+      suppressionReason: null,
+    };
+
+    const projection = findingsProjection(evidenceValue, [anonymous]);
+    const catalog = buildPortfolioPresentationClaimCatalog(evidenceValue, projection);
+    const verdict = validatePortfolioPresentationPlan({
+      candidate: candidateFor(evidenceValue, undefined, projection),
+      evidence: evidenceValue,
+      findingsProjection: projection,
+    });
+    assert.equal(verdict.ok, true);
+    if (!verdict.ok) return;
+    const findingText = renderPortfolioFindingSection({
+      evidence: evidenceValue,
+      findingsProjection: projection,
+      plan: verdict.plan,
+    }).lines.join('\n');
+    assert.match(findingText, /1 authorized hotels \(names withheld by anonymous cohort policy\)/);
+    assert.doesNotMatch(findingText, /Secret Hotel|Anonymous Hotel/);
+
+    const answer = renderPortfolioAnswer({
+      evidence: evidenceValue,
+      findingsProjection: projection,
+      plan: verdict.plan,
+      selectorLabel: '[All hotels](https://evil.example/scope)',
+    });
+    assert.doesNotMatch(answer, /!\[|\]\(/, 'untrusted data created live Markdown');
+    assert.ok(Buffer.byteLength(findingText, 'utf8') <= 12_000);
+    assert.deepEqual(
+      renderPortfolioFindingSection({
+        evidence: evidenceValue,
+        findingsProjection: projection,
+        plan: verdict.plan,
+      }).displayedClaimIds,
+      [...catalog.optionalClaimIds].filter((id) => projection.projectedClaimIds.includes(id)).sort(),
+    );
+  });
+
   test('adds one terminal mark without doubling period, question or exclamation punctuation', () => {
     const evidenceValue = evidence();
     const hypothesis = findingEnvelope({
@@ -678,8 +785,12 @@ describe('accepted Finding presentation seam', () => {
     const backward = findingsProjection(evidenceValue, [...inputs].reverse());
     assert.deepEqual(backward, forward, 'producer input order must not change the projection');
     assert.ok(forward.projectedClaimIds.length < 40);
-    assert.ok(forward.truncation.characterLimitOmittedCount > 0);
-    assert.equal(forward.truncation.itemLimitOmittedCount, 0);
+    assert.ok(forward.truncation.itemLimitOmittedCount > 0);
+    assert.equal(
+      forward.truncation.itemLimitOmittedCount
+        + forward.truncation.characterLimitOmittedCount,
+      40 - forward.projectedClaimIds.length,
+    );
 
     const prompt = formatPortfolioFindingProjectionForPrompt(forward);
     const contract = formatPortfolioPresentationPlanContract(evidenceValue, forward);

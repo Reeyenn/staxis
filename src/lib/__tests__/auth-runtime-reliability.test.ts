@@ -216,7 +216,7 @@ describe('auth-event ordering and account isolation', () => {
     const ownership = section(auth, 'const isAuthSessionCurrent =', 'const discardAuthSession =');
     assert.match(ownership, /authSessionUidRef\.current === expectedSession\.user\.id/);
     assert.match(ownership, /authSessionRefreshTokenRef\.current === expectedSession\.refresh_token/);
-    const discard = section(auth, 'const discardAuthSession =', 'const signIn = async');
+    const discard = section(auth, 'const discardAuthSession =', 'const resetForFreshSignIn =');
     assert.match(discard, /if \(!isAuthSessionCurrent\(expectedSession\)\) return false/);
     assert.match(discard, /clearSupabaseBrowserSessionCookies\(\)/);
     assert.doesNotMatch(discard, /clearSupabaseSessionBounded|revoke-trust|supabase\.auth\.signOut\(/);

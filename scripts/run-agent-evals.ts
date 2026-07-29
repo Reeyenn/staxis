@@ -36,17 +36,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Pick any admin account to attribute the run to (their cap won't be hit —
-  // we mark kind=eval so it doesn't count against request caps).
+  // Pick an ACTIVE admin explicitly assigned to this sandbox. Selecting an
+  // arbitrary admin made an otherwise valid test property produce access-
+  // verifier errors, which the live bank then misreported as model failures.
+  // The cap still is not hit: eval requests are recorded as kind=eval.
   const { data: admin } = await supabase
     .from('accounts')
     .select('id, data_user_id')
     .eq('role', 'admin')
+    .eq('active', true)
+    .contains('property_access', [propertyId])
     .not('data_user_id', 'is', null)
     .limit(1)
     .maybeSingle();
   if (!admin?.data_user_id) {
-    console.error('No admin account found. Cannot run evals.');
+    console.error('No active admin assigned to STAXIS_EVAL_PROPERTY_ID. Cannot run valid evals.');
     process.exit(1);
   }
 

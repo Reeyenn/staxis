@@ -74,6 +74,7 @@ import {
   type PortfolioPostDependencies,
 } from '@/app/api/agent/portfolio/route';
 import {
+  assertAuthorizationScopeReceipt,
   loadAuthorizedPropertyMetadata,
   resolveAuthorizationScope,
 } from '@/lib/authorization/server';
@@ -96,6 +97,11 @@ import {
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import type { PlannerScopeCatalog, PortfolioKnowledgeQuery } from '@/lib/agent/portfolio-intelligence/schemas';
 import { portfolioFindingLoader } from '@/lib/agent/portfolio-intelligence/finding-mount';
+import type {
+  ManagementPatternPortfolioFindingV1,
+  ManagementPatternPortfolioLoadReceipt,
+} from '@/lib/company/management-patterns/portfolio-findings';
+import { stableFingerprint } from '@/lib/company/management-patterns/canonical';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import {
@@ -333,6 +339,149 @@ function deterministicRouteDependencies(
     releaseAdmission: overrides.releaseAdmission ?? (async () => {}),
   };
 }
+
+const ACTIVE_FINDING_RUN_ID = 'fa000000-0000-4000-8000-000000000001';
+const ACTIVE_FINDING_ID = 'fa000000-0000-4000-8000-000000000002';
+const REJECTED_FINDING_ID = 'fa000000-0000-4000-8000-000000000003';
+const ACTIVE_FINDING_RUN_FINGERPRINT = 'c'.repeat(64);
+const ACTIVE_FINDING_COMPLETED_AT = '2026-07-29T12:00:00.000Z';
+const ACTIVE_FINDING_SOURCE_AS_OF = '2026-07-29T11:55:00.000Z';
+const ACTIVE_FINDING_VALID_THROUGH = '2026-08-06T11:55:00.000Z';
+
+/** A malicious-producer route fixture: one exact accepted finding plus one
+ * foreign-hotel numeric poison. The production consumer must discard the
+ * poison before prompt, number receipt, renderer and durable receipt. */
+const activeFindingLoader: PortfolioPostDependencies['loadPortfolioFindings'] = async (input) => {
+  const asserted = await assertAuthorizationScopeReceipt({
+    receiptId: input.scopeReceiptId,
+    accountId: input.accountId,
+  });
+  assert.equal(asserted.ok, true, 'active finding fixture could not re-read the live scope');
+  if (!asserted.ok) throw new Error('active finding fixture scope unavailable');
+  const selectedPropertyIds = [...input.selectedPropertyIds];
+  const selectedPropertyId = selectedPropertyIds[0]!;
+  const finding = (
+    findingId: string,
+    propertyId: string,
+    statement: string,
+  ): ManagementPatternPortfolioFindingV1 => ({
+    version: 'portfolio-finding.v1',
+    findingId,
+    organizationId: asserted.receipt.organizationId,
+    producer: {
+      engineId: 'management-patterns',
+      engineVersion: 'management-pattern-engine.v2',
+      runId: ACTIVE_FINDING_RUN_ID,
+      runFingerprint: ACTIVE_FINDING_RUN_FINGERPRINT,
+      producedAt: ACTIVE_FINDING_COMPLETED_AT,
+    },
+    lifecycle: { status: 'active', validThrough: ACTIVE_FINDING_VALID_THROUGH },
+    scope: {
+      organizationId: asserted.receipt.organizationId,
+      kind: 'property_local',
+      evaluatedPropertyIds: [propertyId],
+      affectedPropertyIds: [propertyId],
+      groupId: null,
+      scopeFingerprint: `active-route-${findingId}`,
+    },
+    claim: {
+      kind: 'pattern',
+      statement,
+      patternKey: `active-route-pattern-${findingId}`,
+      assertion: 'issue_present',
+      direction: 'high',
+      support: 'supported',
+    },
+    evidence: {
+      evidenceFingerprint: `active-route-evidence-${findingId}`,
+      queryId: 'management-pattern-source-snapshot',
+      queryVersion: 'management-pattern-source-snapshot.v2',
+      metricIds: ['rooms_booked_otb'],
+      asOf: ACTIVE_FINDING_SOURCE_AS_OF,
+      analysisWindowKey: 'hotel-business-date:2026-07-29',
+      sourceVersions: [{
+        component: 'management-pattern-engine',
+        version: 'management-pattern-engine.v2',
+      }],
+      coverage: { eligible: 1, evaluated: 1, affected: 1 },
+    },
+    privacy: { mode: 'named_authorized_properties', propertyCount: 1 },
+  });
+  const payload: Omit<ManagementPatternPortfolioLoadReceipt, 'fingerprint'> = {
+    version: 'management-pattern-portfolio-load.v1',
+    accountId: input.accountId,
+    organizationId: asserted.receipt.organizationId,
+    scopeReceiptId: input.scopeReceiptId,
+    selectedPropertyIds,
+    authorizationHash: asserted.receipt.authorizationHash,
+    scopeHash: asserted.receipt.scopeHash,
+    loadedAt: (input.asOf ?? new Date('2026-07-29T16:00:00.000Z')).toISOString(),
+    status: 'loaded',
+    projectionMode: 'active',
+    run: {
+      runId: ACTIVE_FINDING_RUN_ID,
+      runFingerprint: ACTIVE_FINDING_RUN_FINGERPRINT,
+      portfolioSnapshotFingerprint: 'd'.repeat(64),
+      projectionMode: 'active',
+      engineVersion: 'management-pattern-engine.v2',
+      evidenceSchemaVersion: 2,
+      cohortPolicyVersion: 'management-metric-cohort.v2',
+      normalizationPolicyVersion: 'management-normalization.v1',
+      dedupePolicyVersion: 'management-pattern-dedupe.v1',
+      scopePolicyVersion: 'management-scope-classifier.v1',
+      sourceQueryId: 'management-pattern-source-snapshot',
+      sourceQueryVersion: 'management-pattern-source-snapshot.v2',
+      evaluationAt: ACTIVE_FINDING_SOURCE_AS_OF,
+      sourceAsOf: ACTIVE_FINDING_SOURCE_AS_OF,
+      windowStart: '2026-07-22T11:55:00.000Z',
+      windowEnd: ACTIVE_FINDING_SOURCE_AS_OF,
+      completedAt: ACTIVE_FINDING_COMPLETED_AT,
+      validThrough: ACTIVE_FINDING_VALID_THROUGH,
+      terminalStatus: 'succeeded',
+      coverage: {
+        selectedPropertyCount: selectedPropertyIds.length,
+        snapshotPropertyCount: selectedPropertyIds.length,
+        includedPropertyCount: selectedPropertyIds.length,
+        excludedPropertyCount: 0,
+        missingFromRunCount: 0,
+        exclusionReasons: [],
+        exclusionReasonCodeCount: 0,
+        exclusionReasonsTruncated: false,
+      },
+    },
+    sourceAvailableCandidateCount: 2,
+    omittedByLimitCount: 0,
+    selectionWasTruncated: false,
+    coverage: {
+      authorizedPropertyCount: asserted.receipt.authorizedPropertyIds.length,
+      selectedPropertyCount: selectedPropertyIds.length,
+      evaluatedPropertyCount: 1,
+      affectedPropertyCount: 1,
+      sourceCandidateCount: 2,
+      findingCount: 2,
+    },
+    truncation: { occurred: false, limit: 40, omittedCount: 0 },
+    outage: { occurred: false, stage: null, reason: null },
+    exclusions: [],
+    rejectedCandidates: [],
+    findings: [
+      finding(
+        ACTIVE_FINDING_ID,
+        selectedPropertyId,
+        'The selected hotel has 17 rooms requiring verified follow-up.',
+      ),
+      finding(
+        REJECTED_FINDING_ID,
+        PID_B1,
+        'OUT_OF_SCOPE_NUMERIC_POISON reports 9999 rooms.',
+      ),
+    ],
+  };
+  return {
+    ...payload,
+    fingerprint: stableFingerprint(payload, 'management-pattern-portfolio-load'),
+  };
+};
 
 /**
  * Build the tool context EXACTLY as the route builds it, by going through the
@@ -1907,7 +2056,9 @@ describe('Portfolio Intelligence acceptance path', () => {
     clearPortfolioAccessCache();
     clearPortfolioHotelCache();
     signedInAs = UID_MARIA;
-    const dependencies = deterministicRouteDependencies(today, observedAt);
+    const dependencies = deterministicRouteDependencies(today, observedAt, {
+      loadPortfolioFindings: activeFindingLoader,
+    });
     const aggregateResponse = await handlePortfolioPost(
       authorizedRequest('https://staxis.test/api/agent/portfolio', {
         method: 'POST',
@@ -1920,6 +2071,11 @@ describe('Portfolio Intelligence acceptance path', () => {
     );
     assert.equal(aggregateResponse.status, 200, await aggregateResponse.clone().text());
     const aggregateEvents = parseSse(await aggregateResponse.text());
+    const aggregateAnswer = String(
+      aggregateEvents.find((event) => event.type === 'done')?.finalText ?? '',
+    );
+    assert.match(aggregateAnswer, /17 rooms requiring verified follow-up/i);
+    assert.doesNotMatch(aggregateAnswer, /9999|OUT_OF_SCOPE_NUMERIC_POISON/);
     const aggregateScope = aggregateEvents.find((event) => event.type === 'active_scope')?.scope as {
       selectedHotelCount: number;
       authorizedHotelCount: number;
@@ -1983,6 +2139,7 @@ describe('Portfolio Intelligence acceptance path', () => {
     assert.equal(aggregateReceipt.rows[0].model_id, 'claude-sonnet-4-6');
     assert.equal(aggregateReceipt.rows[0].knowledge_versions.status, 'included');
     assert.notEqual(aggregateReceipt.rows[0].finding_versions.status, 'not_mounted');
+    assert.equal(aggregateReceipt.rows[0].finding_versions.status, 'loaded');
     assert.equal(
       aggregateReceipt.rows[0].finding_versions.coverage.authorizedPropertyCount,
       20,
@@ -1994,6 +2151,13 @@ describe('Portfolio Intelligence acceptance path', () => {
     assert.ok(aggregateReceipt.rows[0].finding_versions.displayedClaimIds.every(
       (claimId) => aggregateReceipt.rows[0].finding_versions.projectedClaimIds.includes(claimId),
     ));
+    assert.equal(aggregateReceipt.rows[0].finding_versions.acceptedClaimIds.length, 1);
+    assert.equal(aggregateReceipt.rows[0].finding_versions.projectedClaimIds.length, 1);
+    assert.equal(aggregateReceipt.rows[0].finding_versions.displayedClaimIds.length, 1);
+    assert.equal(
+      JSON.stringify(aggregateReceipt.rows[0].finding_versions).includes(REJECTED_FINDING_ID),
+      false,
+    );
     assert.equal(
       propertyIds.some((propertyId) => (
         JSON.stringify(aggregateReceipt.rows[0].finding_versions).includes(propertyId)
@@ -2085,6 +2249,7 @@ describe('Portfolio Intelligence acceptance path', () => {
       }),
       deterministicRouteDependencies(today, observedAt, {
         answerText: 'Across all 20 hotels, 9,999 rooms are booked today.',
+        loadPortfolioFindings: activeFindingLoader,
       }),
     );
     assert.equal(unbackedResponse.status, 502);

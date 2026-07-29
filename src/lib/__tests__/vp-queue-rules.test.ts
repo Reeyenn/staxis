@@ -1484,6 +1484,11 @@ describe('the selected company survives every portfolio-feed UI boundary', () =>
       /fetchWithAuth\('\/api\/company\/queue',[\s\S]*?organizationId: resolvedOrganizationId,[\s\S]*?findingId,[\s\S]*?action: verdict/,
       'the company verdict body is not bound to the resolved company',
     );
+    assert.ok(view.includes('canAct = false'));
+    assert.ok(
+      view.includes('canAct={portfolio.canAct ?? false}'),
+      'missing or stale action metadata must render read-only',
+    );
     assert.ok(
       view.includes('|| coverage.unavailableHotelCount > 0'),
     );

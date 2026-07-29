@@ -23,17 +23,17 @@ This branch is an Access candidate rooted at `24d330cc228c261c3e674425fcffc16602
 4. Navigation/Loading `5eda8012e22029bad1b32d1cd49327328f085090`;
 5. the separately certified `0404` company-knowledge revision-ledger commit,
    cherry-picked after Navigation while retaining its certified Access parent;
-6. VP semantic merge and the full combined release gates.
+6. the combined-only `0405` company-finding verdict CAS migration and route/UI wiring;
+7. VP semantic merge and the full combined release gates.
 
-Do not copy files between dirty worktrees or deploy an intermediate hash. The semantic merge must preserve both the compatibility branch's extracted `normalizeBoardExtraction` helper and this branch's fresh, exact-hotel capability checks around board-photo processing. It must also preserve the authoritative scope/property-standing APIs while adding Finding Patterns' strict topology and queue helpers, then regenerate cumulative database types and the Admin Doctor migration catalog through `0403`.
+Do not copy files between dirty worktrees or deploy an intermediate hash. The semantic merge must preserve both the compatibility branch's extracted `normalizeBoardExtraction` helper and this branch's fresh, exact-hotel capability checks around board-photo processing. It must also preserve the authoritative scope/property-standing APIs while adding Finding Patterns' strict topology and queue helpers, then regenerate cumulative database types and the Admin Doctor migration catalog through `0405`.
 
-Migration `0404` (knowledge revision ledger) belongs to a separately reviewed
-follow-on commit whose parent is the certified Access commit. It is not part of
-the current Access hash and must not appear in this candidate's migration
-catalog or certification claim. Publish and certify that child independently,
-then cherry-pick it at step 5 so the final doctor/static catalog and combined
-release gates include `0404` without weakening the locked Access → Finding
-Patterns → compatibility → Navigation sequence.
+Migration `0404` (knowledge revision ledger) remains a separately certified
+child of the Access commit. In the combined release it is cherry-picked after
+Navigation so its independent parentage remains auditable without weakening
+the locked Access → Finding Patterns → compatibility → Navigation sequence.
+Migration `0405` exists only at the final combined boundary because it depends
+on both authoritative Access and the Finding Patterns company-finding shape.
 
 After the final merge, run a fresh clean install and the default Turbopack production build, not only a webpack compatibility build or a build against a shared `node_modules` symlink. Re-run the combined migration chain, browser/RLS/security audits, API and integration suites, AI evaluations, and the multi-tenant browser smoke before any merge or deploy.
 
@@ -66,8 +66,10 @@ Apply in one release window:
 23. `0400_company_structure_manager_entitlement_boundary.sql` — structure preview/commit requires the actor's own managerial entitlement for every affected hotel; disjoint viewer reach cannot be combined with a manager grant.
 24. `0401_recursive_portfolio_access_scope.sql` — cycle-safe recursive descendant expansion for region/portfolio reach and delegation.
 25. `0403_deterministic_portfolio_knowledge_artifacts.sql` — exact no-provider company-knowledge reproduction artifacts, XOR-bound to query receipts and atomic conversation replay without fabricating a model attempt.
+26. `0404_company_knowledge_revision_ledger.sql` — append-only hash-chained organization knowledge revisions, optimistic current-revision/CAS mutation, safe compatibility/finalization phases, and genesis backfill.
+27. `0405_company_finding_verdict_cas.sql` — exact affected-hotel authority, action capability/section checks, row CAS, rolling old-writer denial, and immutable company-finding verdict audit.
 
-The combined release also places the independently owned Finding Patterns source migration at `0387` and evidence migration at `0390`. Those files are not part of this branch. Migration `0402` is reserved by Navigation/Loading for the Inventory ordered-write/CAS boundary and sorts immediately before this branch's `0403`; it is not allocated here. The active-only findings loader must be integrated after a final selected-scope reassertion before findings are considered mounted.
+The combined release also places the independently owned Finding Patterns source migration at `0387` and evidence migration at `0390`. Migration `0402` belongs to Navigation/Loading and sorts immediately before `0403`. The active-only findings loader is mounted only after a selector-specific receipt is prepared; every accepted package is rebound to that exact scope, and a final receipt assertion still occurs before provider egress and response release.
 
 The v2 Finding Patterns candidate supersedes its earlier standalone candidate.
 Before applying its amended `0387`/`0390` SQL, verify those versions have not
@@ -98,12 +100,31 @@ A database-first rollout against an old application is intentionally fail-closed
 4. Compare the post-migration legacy IDs, byte lengths, and digests with the preflight output. The sets and bytes must match exactly. Confirm every new model/deterministic artifact and query receipt cross-bind account, organization, authorization receipt/hash, scope hash, authorized/selected hotel arrays, finding receipt, and the appropriate XOR artifact ID.
 5. If step 2 required disabling the feature gate, keep it disabled until the current writer is deployed and one validated model turn plus one validated deterministic-knowledge turn commit successfully. Continue monitoring the `legacy_unbound` count; it may decline only through the approved retention purge, never through mutation or silent reprojection.
 
+## 0404 knowledge-ledger cutover
+
+0404 starts in `compat` mode so either application/database deployment order is safe. Existing rows receive genesis revisions without rewriting the active projection, and legacy service writers are trigger-journaled during the transition.
+
+1. Apply 0404 and verify `staxis_company_knowledge_ledger_capability()` reports the expected schema and `compat` mode.
+2. Deploy the ledger-aware writer and smoke intake, confirmed insert, confirm, edit, remove, merge, and structured authority-rule changes. Every response must carry the current optimistic revision; a stale revision must leave both facts and rule projection unchanged.
+3. Verify browser denial, cross-tenant/actor denial, append-only revision/head behavior, and the organization hash chain from each genesis entry to the newest revision.
+4. Call `staxis_finalize_company_knowledge_revision_ledger()` with the exact schema version. This one-way step revokes legacy projection/authority writes and the old mutation RPC. Confirm only the receipt-bound v1 mutation RPC can write afterward.
+5. After finalization, roll back only to another 0404-aware application. Never re-enable direct legacy writes to recover an old build.
+
+## 0405 company-finding verdict cutover
+
+0405 is DB-first safe: old direct service-role verdict updates are rejected while detector refresh/escalation/expiry updates continue and advance the revision token. The new application must use only `staxis_set_company_finding_verdict_cas` for company-card verdicts.
+
+1. Apply 0405 and verify existing legacy rows have either a current, topology-validated affected-hotel set or an empty set that is visibly non-actionable. Never resolve a hotel name back to an ID during backfill.
+2. Deploy the route/UI writer that sends the exact organization, finding ID, current status/timestamp/revision, action, actor, and fresh prepared property-subset receipt.
+3. Verify company Owner/VP read access separately from hotel mutation. A company title alone, finance role, partial hotel standing, transferred hotel, stale receipt, and stale CAS token must all leave the row unchanged.
+4. Verify the immutable event binds the exact affected hotels, receipt/hash/epochs, required capabilities/sections, detector/semantic family, old/new status, and old/new revision. Browser roles cannot read it and ordinary service paths cannot update or delete it.
+
 ## Rollout
 
 1. Follow the staged `0396` exception above; otherwise apply database migrations before their consuming application and confirm all entries exist in `applied_migrations`.
 2. Verify normalized resolver RPC access is granted only to `service_role` and SECURITY DEFINER functions have fixed search paths.
 3. Run the access shadow/drift report. Investigate every unexpected lost or added hotel. Create only explicit, attributable migration bridges; do not copy a broad legacy array without review.
-4. Integrate the separately reviewed active-only Finding Patterns loader, rerun the combined migration/test gates, and confirm its load receipt is rebound to the current account, organization, authorization hash, scope receipt/hash, and exact selected hotel IDs before any envelope is projected. Confirm `loaded` can persist zero displayed claims when all candidates are producer- or consumer-rejected, every non-loaded status is claim-free, and shadow candidates never appear. Prove one shared content-addressed projection feeds prompt, presentation catalog, plan validation, deterministic rendering, numeric allowlisting, both artifact kinds, and the query receipt: at most 40 Finding claims, at most 64 total presentation claims, at most 12,000 UTF-8 bytes independently for the Finding prompt and plan contract, and at most 65,536 bytes for the durable projection receipt. Run rejected, truncated, multibyte, projected-but-unselected, scope/hash transplant, and mounted-zero numeric poison cases.
+4. Verify the mounted active-only Finding Patterns loader rebinds its load receipt to the current account, organization, authorization hash, scope receipt/hash, and exact selected hotel IDs before any envelope is projected. Confirm `loaded` can persist zero displayed claims when all candidates are producer- or consumer-rejected, every non-loaded status is claim-free, and shadow candidates never appear. Prove one shared content-addressed projection feeds prompt, presentation catalog, plan validation, deterministic rendering, numeric allowlisting, both artifact kinds, and the query receipt: no more than 40 producer candidates, 10 displayed Finding claims, 64 total presentation claims, 12,000 UTF-8 bytes for each Finding prompt/plan/render boundary, and 65,536 bytes for the durable projection receipt. Run rejected, truncated, multibyte, projected-but-unselected, scope/hash transplant, mounted-zero, and out-of-scope numeric poison cases.
 5. Deploy the application.
 6. Enable Portfolio Intelligence only for the intended organizations through the existing company setting.
 7. Test from a real 20-hotel manager account:
@@ -117,7 +138,7 @@ A database-first rollout against an old application is intentionally fail-closed
 8. Test one property-only GM and one user in another company. Both must receive generic denial for direct-ID, reused-conversation, and sister-hotel attempts.
 9. In My Hotel → People, create and preview one invitation at each supported scope used by the release fixture, then exercise cancellation, existing-account acceptance, new-account registration, and membership suspend/resume/remove. Verify email/single-use/idempotency behavior, exact normalized scope, immediate epoch/receipt invalidation, least-privileged registration (`staff`, no legacy hotel IDs), compensation or reconciliation after a failed registration, and immutable audit events.
 10. In My Hotel → Access, preview and confirm one scoped grant change, then verify immediate resolver output and the immutable audit event. In My Hotel → Hotels as a verified platform admin, preview a test relationship lifecycle change and verify its exact revocation impact; do not exercise a production transfer without an approved target and change window.
-11. Do not mount a `/feed` mutation from this Access candidate alone. The downstream Finding Patterns semantic integration owns that route. When it is integrated, verify organization-wide reads require `queueAvailable`, narrow/mixed grants cannot expose opaque company cards, finance remains read-only, and every hotel-level write freshly resolves the target hotel's `AuthoritativePropertyStanding`, requires `hotelMutationAllowed`, and rechecks its section/capability after revocation and transfer.
+11. Verify `/feed` organization-wide reads require `queueAvailable`, narrow/mixed grants cannot expose opaque company cards, finance remains read-only, and every company-card verdict goes only through `staxis_set_company_finding_verdict_cas`. Exercise a 61-hotel read; a mixed-authority multi-hotel finding; stale status/timestamp/revision; hotel transfer and revocation immediately before commit; direct service-role/GUC bypass; and cross-tenant IDs. Every denial must leave the row unchanged and remain anti-enumerating. Keep climbed hotel-local cards read-only in the company UI.
 12. In a production-equivalent staging account, verify portfolio synthesis reserves against the configured primary/fallback price plan, cap refusals fail closed, pre-provider aborts cancel the hold, and completed/fallback calls reconcile to actual tokens and cost. Do not exhaust production customer or global budgets to perform this check.
 
 ## Runtime signals

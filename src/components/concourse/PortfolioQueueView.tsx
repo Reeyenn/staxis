@@ -201,7 +201,7 @@ export function PortfolioQueueBody({
   coverage,
   cap = DAILY_CARD_CAP,
   lang,
-  canAct = true,
+  canAct = false,
   readFailed = false,
   saveFailed = false,
   busyId = null,
@@ -216,7 +216,7 @@ export function PortfolioQueueBody({
   coverage: PortfolioCoverage;
   cap?: number;
   lang: Lang;
-  /** False for a finance hat: every card, every number, no verdict controls. */
+  /** Must be proven by a fresh receipt; absent or false stays read-only. */
   canAct?: boolean;
   readFailed?: boolean;
   saveFailed?: boolean;
@@ -321,6 +321,7 @@ export function PortfolioQueueBody({
         busyId={busyId}
         focusId={focusId}
         readOnly={!canAct}
+        readOnlyFor={(finding) => byId.get(finding.id)?.canAct !== true}
         hideLiveness
         // The founder's rule at the top of vp-queue.ts: a GM tap must not add
         // to, hide from, or DRESS UP the VP's view. "Seen 6 times since Jul 9"
@@ -561,7 +562,7 @@ export function PortfolioQueueView({
       }}
       cap={portfolio.cap ?? DAILY_CARD_CAP}
       lang={lang}
-      canAct={portfolio.canAct ?? true}
+      canAct={portfolio.canAct ?? false}
       readFailed={!!error}
       saveFailed={saveFailed}
       busyId={busyId}

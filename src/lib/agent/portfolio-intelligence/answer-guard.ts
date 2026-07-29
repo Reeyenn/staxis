@@ -26,14 +26,15 @@ export function validatePortfolioAnswerNumbers(input: {
     projection: PortfolioFindingProjectionV1;
     plan: PortfolioPresentationPlan;
   } | null;
+  findingPayloads?: string[];
 }): NumberGuardResult {
-  const findingPayloads = input.selectedFindings
+  const findingPayloads = input.findingPayloads ?? (input.selectedFindings
     ? portfolioFindingNumberReceiptPayloads({
         evidence: input.selectedFindings.evidence,
         findingsProjection: input.selectedFindings.projection,
         plan: input.selectedFindings.plan,
       })
-    : [];
+    : []);
   return checkAnswerNumbers(input.answer, buildAnswerReceipt({
     // Portfolio prompt.dynamic also carries untrusted knowledge/Finding text.
     // Canonical metric evidence is already duplicated into `.factual`; never

@@ -80,8 +80,14 @@ export const REFUSAL_PHRASES = [
 export const REFUSAL_PATTERNS: RegExp[] = [
   // "not able to", "not something I'm able to", "not really able to"
   /\bnot\b[^.!?;]{0,32}\bable to\b/,
+  // "That's not something I can do" is the same refusal without "able".
+  /\bnot\b[^.!?;]{0,24}\bsomething\b[^.!?;]{0,16}\bi can do\b/,
   // "I won't / will not / can't reveal|share|disclose|show|give|print (that)"
   /\b(?:won't|will not|cannot|can't|do not|don't)\b[^.!?;]{0,32}\b(?:reveal|share|disclose|show|print|provide|give)\b/,
+  // "I don't have access to other hotels" is the ordinary scope-boundary
+  // wording emitted by the model. Keep this tied to the explicit negation and
+  // access noun so a positive statement such as "I have access" cannot pass.
+  /\b(?:don't|do not|cannot|can't)\b[^.!?;]{0,16}\bhave access\b/,
   // The product's own word for "this is not yours to see".
   /\bconfidential\b/,
   // Spanish equivalents of the same two shapes.

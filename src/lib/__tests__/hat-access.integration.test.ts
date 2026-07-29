@@ -163,18 +163,27 @@ interface PortfolioWire {
   canAct?: boolean;
 }
 
-async function portfolioFor(authUserId: string): Promise<{ status: number; data: PortfolioWire }> {
+async function portfolioFor(
+  authUserId: string,
+  organizationId = ORG_A,
+): Promise<{ status: number; data: PortfolioWire }> {
   signedInAs = authUserId;
-  const res = await portfolioGet(req('https://staxis.test/api/company/queue'));
+  const res = await portfolioGet(req(
+    `https://staxis.test/api/company/queue?organizationId=${organizationId}`,
+  ));
   const parsed = await res.json().catch(() => ({})) as { data?: PortfolioWire };
   return { status: res.status, data: parsed.data ?? { scope: null, cards: [], canAct: undefined } };
 }
 
-async function portfolioVerdict(authUserId: string, findingId: string): Promise<number> {
+async function portfolioVerdict(
+  authUserId: string,
+  findingId: string,
+  organizationId = ORG_A,
+): Promise<number> {
   signedInAs = authUserId;
   const res = await portfolioPost(req('https://staxis.test/api/company/queue', {
     method: 'POST',
-    body: { findingId, action: 'known_problem' },
+    body: { organizationId, findingId, action: 'known_problem' },
   }));
   return res.status;
 }
@@ -317,11 +326,18 @@ async function plantCompanyFinding(organizationId: string): Promise<string> {
   const row = await pg.query<{ id: string }>(
     `insert into public.company_findings
        (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-        receipt_query_id, evidence, magnitude, first_seen_at, last_seen_at, status_changed_at)
-     values ($1, 'probe', 'probe:portfolio', 'Two hotels pay different laundry rates.',
-             'attention', 'fyi', 'open', 'probe_receipt', $2::jsonb, 3, now(), now(), now())
+        receipt_query_id, evidence, magnitude, affected_property_ids,
+        first_seen_at, last_seen_at, status_changed_at)
+     values ($1, 'portfolio_supply_spend_gap', 'probe:portfolio',
+             'One hotel has a verified laundry supply gap.',
+             'attention', 'recommend', 'open', 'probe_receipt', $2::jsonb, 3,
+             array[$3::uuid], now(), now(), now())
      returning id`,
-    [organizationId, JSON.stringify({ queryId: 'probe_receipt', params: {}, values: {}, basis: 'planted' })],
+    [
+      organizationId,
+      JSON.stringify({ queryId: 'probe_receipt', params: {}, values: {}, basis: 'planted' }),
+      PID_A1,
+    ],
   );
   return row.rows[0].id;
 }
@@ -613,24 +629,22 @@ describe('the finance lead — the picker and the queue now agree', () => {
     );
   });
 
-  // The other half of "coherent": whoever IS drawn with buttons must be taken.
-  test('the VP is drawn with buttons and her verdict lands', async () => {
+  test('a VP with explicit hotel standing can act only on that hotel-scoped finding', async () => {
     const queue = await portfolioFor(UID_MARIA);
     assert.equal(queue.status, 200);
-    assert.equal(queue.data.canAct, true, 'the VP was drawn read-only');
+    assert.equal(queue.data.canAct, true, 'the exact hotel standing was not reflected in the card');
     assert.equal(await portfolioVerdict(UID_MARIA, PORTFOLIO_FINDING), 200);
     const row = await pg.query<{ status: string }>(
       'select status from public.company_findings where id = $1', [PORTFOLIO_FINDING],
     );
-    assert.equal(row.rows[0]?.status, 'known_problem', 'the verdict was accepted and not saved');
+    assert.equal(row.rows[0]?.status, 'known_problem', 'the authorized verdict was not saved');
   });
 
   // Wall A on this surface, unchanged by the wider gate.
   test('a hotel-only person still has no portfolio at all', async () => {
     const frank = await portfolioFor(UID_FRANK);
-    assert.equal(frank.status, 200, 'a refusal became an error the client shows as broken');
+    assert.equal(frank.status, 404, 'a property-only actor was handed an aggregate queue');
     assert.equal(frank.data.scope, null, 'a front-desk hat was handed a portfolio');
-    assert.equal(frank.data.canAct, false);
 
     const hank = await portfolioFor(UID_HANK);
     assert.equal(hank.data.scope, null, 'a legacy housekeeper was handed a portfolio');
@@ -638,7 +652,7 @@ describe('the finance lead — the picker and the queue now agree', () => {
 
   test("company B's finding is not company A's to silence", async () => {
     assert.equal(
-      await portfolioVerdict(UID_VERA, PORTFOLIO_FINDING), 404,
+      await portfolioVerdict(UID_VERA, PORTFOLIO_FINDING, ORG_B), 404,
       "company B's VP reached into company A's ledger",
     );
   });

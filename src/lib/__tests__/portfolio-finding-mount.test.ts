@@ -8,6 +8,7 @@ import { test } from 'node:test';
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import {
   loadAndConsumePortfolioFindings,
+  PortfolioFindingScopeTooLargeError,
 } from '@/lib/agent/portfolio-intelligence/finding-mount';
 import {
   buildPortfolioFindingProjection,
@@ -205,6 +206,7 @@ test('route mount keeps the full authorization universe separate and projects ac
   const mounted = await loadAndConsumePortfolioFindings({
     receipt: receipt(),
     now: NOW,
+    deadlineAt: Date.now() + 5_000,
   }, {
     loadFindings: async (input) => {
       loaderSelectedPropertyIds = input.selectedPropertyIds;
@@ -273,4 +275,34 @@ test('route mount keeps the full authorization universe separate and projects ac
   ]) {
     assert.equal(durableJson.includes(forbidden), false, `durable receipt leaked ${forbidden}`);
   }
+});
+
+test('a 251-hotel exact scope is refused before the bounded producer is called', async () => {
+  const propertyIds = Array.from({ length: 251 }, (_, index) => (
+    `dddddddd-0000-4000-8000-${String(index + 1).padStart(12, '0')}`
+  ));
+  let loaderCalls = 0;
+  await assert.rejects(
+    loadAndConsumePortfolioFindings({
+      receipt: {
+        ...receipt(),
+        selectorType: 'all_authorized',
+        requestedPropertyIds: [],
+        authorizedPropertyIds: propertyIds,
+        propertyIds,
+        authorizedPropertyCount: propertyIds.length,
+        selectedPropertyCount: propertyIds.length,
+      },
+      now: NOW,
+      deadlineAt: Date.now() + 5_000,
+    }, {
+      loadFindings: async () => {
+        loaderCalls += 1;
+        return loaderArtifact(NOW.toISOString());
+      },
+    }),
+    (error: unknown) => error instanceof PortfolioFindingScopeTooLargeError
+      && error.selectedPropertyCount === 251,
+  );
+  assert.equal(loaderCalls, 0, 'the producer must not receive a silently truncated scope');
 });

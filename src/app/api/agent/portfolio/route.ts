@@ -87,9 +87,7 @@ import {
 } from '@/lib/agent/portfolio-intelligence/receipts';
 import {
   buildPortfolioFindingPresentationProjection,
-  buildPortfolioPresentationClaimCatalog,
-  displayedPortfolioFindingClaimIds,
-  renderPortfolioAnswer,
+  renderPortfolioAnswerArtifact,
   validatePortfolioPresentationPlan,
 } from '@/lib/agent/portfolio-intelligence/presentation';
 import {
@@ -101,9 +99,11 @@ import {
   type PortfolioActiveScopeEvent,
 } from '@/lib/agent/portfolio-intelligence/route-contract';
 import type { PlannerScopeCatalog, PortfolioQueryPlan } from '@/lib/agent/portfolio-intelligence/schemas';
+import { PORTFOLIO_FINDING_LOAD_TIMEOUT_MS } from '@/lib/agent/portfolio-intelligence/versions';
 import {
   buildPortfolioFindingProjection,
   buildPortfolioFindingProjectionReceipt,
+  PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES,
   type PortfolioFindingReceiptV1,
 } from '@/lib/agent/portfolio-intelligence/pattern-contract';
 import {
@@ -689,6 +689,25 @@ export async function handlePortfolioPost(
     omitted: receipt.selectedPropertyCount,
   });
 
+  // Finding/evidence queries are deliberately bounded to one exact, named set
+  // of at most 250 hotels. A larger all-authorized receipt is valid authority,
+  // but it is not silently truncated or converted into a peer cohort. Ask the
+  // manager to choose an explicit portfolio/region/subset before any hotel
+  // operational data or pattern candidate is read.
+  if (receipt.selectedPropertyCount > PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES) {
+    await releaseAdmissionOnce();
+    if (!await exactReceiptStillCurrent(receipt)) {
+      return err('Your portfolio access changed before the scope limit could be shown.', {
+        requestId, status: 409, code: 'scope_changed',
+      });
+    }
+    return staticAnswer(
+      `This exact scope contains ${receipt.selectedPropertyCount} hotels. Portfolio answers are limited to ${PORTFOLIO_FINDING_MAX_SELECTED_PROPERTIES} hotels at a time, so I did not omit or substitute any hotel. Choose a portfolio, region, or selected-hotel subset and ask again.`,
+      requestId,
+      preQueryScope,
+    );
+  }
+
   if (plan.intent === 'knowledge_lookup') {
     const now = new Date();
     // The all-authorized plan reuses the base receipt minted before admission
@@ -705,6 +724,10 @@ export async function handlePortfolioPost(
       const mountedFindings = await loadAndConsumePortfolioFindings({
         receipt,
         now,
+        deadlineAt: Math.min(
+          executionDeadlineAt - ASK_STAXIS_FALLBACK_RESERVE_MS,
+          Date.now() + PORTFOLIO_FINDING_LOAD_TIMEOUT_MS,
+        ),
         signal: req.signal,
       }, { loadFindings: dependencies.loadPortfolioFindings });
       const projection = buildPortfolioFindingProjection({
@@ -1059,6 +1082,10 @@ export async function handlePortfolioPost(
     const mountedFindings = await loadAndConsumePortfolioFindings({
       receipt,
       now,
+      deadlineAt: Math.min(
+        executionDeadlineAt - ASK_STAXIS_FALLBACK_RESERVE_MS,
+        Date.now() + PORTFOLIO_FINDING_LOAD_TIMEOUT_MS,
+      ),
       signal: req.signal,
     }, { loadFindings: dependencies.loadPortfolioFindings });
     findingsProjection = buildPortfolioFindingPresentationProjection({
@@ -1078,10 +1105,6 @@ export async function handlePortfolioPost(
       requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
     });
   }
-  const presentationCatalog = buildPortfolioPresentationClaimCatalog(
-    evidence,
-    findingsProjection,
-  );
   const knowledgeContext = await companyKnowledgeBlock({
     organizationId: receipt.organizationId,
     propertyIds: receipt.propertyIds,
@@ -1305,30 +1328,23 @@ export async function handlePortfolioPost(
     evidence,
     findingsProjection,
   });
-  const renderedAnswer = presentationVerdict.ok
-    ? renderPortfolioAnswer({
+  const renderedArtifact = presentationVerdict.ok
+    ? renderPortfolioAnswerArtifact({
         evidence,
         plan: presentationVerdict.plan,
         selectorLabel,
         findingsProjection,
       })
     : null;
+  const renderedAnswer = renderedArtifact?.text ?? null;
   const numberVerdict = renderedAnswer
     ? validatePortfolioAnswerNumbers({
         answer: renderedAnswer,
         systemPrompt,
-        selectedFindings: presentationVerdict.ok
-          ? {
-              evidence,
-              projection: findingsProjection,
-              plan: presentationVerdict.plan,
-            }
-          : null,
+        findingPayloads: renderedArtifact?.findingNumberReceiptPayloads,
       })
     : { ok: false as const, violations: [] };
-  const displayedFindingClaimIds = presentationVerdict.ok
-    ? displayedPortfolioFindingClaimIds(presentationCatalog, presentationVerdict.plan)
-    : [];
+  const displayedFindingClaimIds = renderedArtifact?.displayedFindingClaimIds ?? [];
   const findingVersions = buildPortfolioFindingProjectionReceipt({
     projection: findingsProjection,
     displayedClaimIds: displayedFindingClaimIds,

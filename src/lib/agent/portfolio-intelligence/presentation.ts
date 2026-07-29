@@ -22,6 +22,10 @@ import {
 
 export const PORTFOLIO_PRESENTATION_PLAN_VERSION = 'portfolio-presentation-plan.v1' as const;
 export const PORTFOLIO_DETERMINISTIC_RENDERER_VERSION = 'portfolio-renderer.v1' as const;
+export const MAX_PORTFOLIO_DISPLAYED_FINDINGS = 10;
+export const MAX_PORTFOLIO_FINDING_RENDER_BYTES = 12_000;
+const MAX_FINDING_PROVENANCE_SOURCES = 2;
+const MAX_FINDING_AFFECTED_HOTEL_NAMES = 5;
 
 const CLAIM_ID_RX = /^pc_[0-9a-f]{24}$/;
 export const MAX_PORTFOLIO_PRESENTATION_CLAIMS = 64;
@@ -194,24 +198,56 @@ export function buildPortfolioFindingPresentationProjection(input: {
   status?: PortfolioFindingProjectionStatus;
   producer: PortfolioFindingProducerMetadataV1;
 }): PortfolioFindingProjectionV1 {
-  let itemBudget = maxPortfolioFindingProjectionItems(input.evidence);
-  while (itemBudget >= 0) {
+  const itemBudget = Math.min(
+    maxPortfolioFindingProjectionItems(input.evidence),
+    MAX_PORTFOLIO_DISPLAYED_FINDINGS,
+  );
+  const presentationCharacterOmittedClaimIds: string[] = [];
+  while (true) {
     const projection = buildPortfolioFindingProjection({
       packageValue: input.packageValue,
       accountId: input.accountId,
       authorizationHash: input.authorizationHash,
       scopeHash: input.evidence.scopeHash,
       maxProjectedItems: itemBudget,
+      presentationCharacterOmittedClaimIds,
       status: input.status,
       producer: input.producer,
     });
     const contract = portfolioPresentationPlanContractText(input.evidence, projection);
-    if (Buffer.byteLength(contract, 'utf8') <= PORTFOLIO_FINDING_MAX_PROMPT_CHARS) {
+    const catalog = buildPortfolioPresentationClaimCatalog(input.evidence, projection);
+    const allProjectedPlan: PortfolioPresentationPlan = {
+      version: PORTFOLIO_PRESENTATION_PLAN_VERSION,
+      lead: 'scope_first',
+      orderedClaimIds: catalog.claims.map((claim) => claim.id),
+    };
+    let rendererFits = false;
+    try {
+      const worstCaseSection = renderPortfolioFindingSection({
+        evidence: input.evidence,
+        plan: allProjectedPlan,
+        findingsProjection: projection,
+      });
+      rendererFits = worstCaseSection.displayedClaimIds.length
+          === projection.projectedClaimIds.length
+        && Buffer.byteLength(worstCaseSection.lines.join('\n'), 'utf8')
+          <= MAX_PORTFOLIO_FINDING_RENDER_BYTES;
+    } catch (error) {
+      if (!(error instanceof TypeError)
+          || error.message !== 'bounded finding renderer exceeded its hard UTF-8 budget') {
+        throw error;
+      }
+    }
+    if (Buffer.byteLength(contract, 'utf8') <= PORTFOLIO_FINDING_MAX_PROMPT_CHARS
+        && rendererFits) {
       return projection;
     }
-    itemBudget -= 1;
+    const lastProjectedClaimId = projection.projectedClaimIds.at(-1);
+    if (!lastProjectedClaimId) {
+      throw new TypeError('non-finding presentation contract exceeds its 12k byte budget');
+    }
+    presentationCharacterOmittedClaimIds.push(lastProjectedClaimId);
   }
-  throw new TypeError('non-finding presentation contract exceeds its 12k byte budget');
 }
 
 export function buildPortfolioPresentationClaimCatalog(
@@ -308,11 +344,15 @@ function safeLabel(value: string, max = 140): string {
     .replace(/[<>\r\n]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, max);
+    .slice(0, max)
+    // Brackets plus emphasis/code delimiters are sufficient to neutralize
+    // inline Markdown after newlines and angle brackets have been removed.
+    // Preserve ordinary terminal punctuation so sentences stay readable.
+    .replace(/([\\`*_{}\[\]()])/g, '\\$1');
 }
 
 function safeFindingText(value: string, max = 500): string {
-  return safeLabel(value, max).replace(/([\\`*_{}\[\]()#+>|])/g, '\\$1');
+  return safeLabel(value, max);
 }
 
 /**
@@ -566,19 +606,53 @@ function orderedFindings(input: {
     .map((claim) => claim.finding as PortfolioFindingEnvelopeV1);
 }
 
-function findingProvenance(finding: PortfolioFindingEnvelopeV1): string {
-  const sources = finding.evidence.sourceVersions
+function findingHotelNames(
+  evidence: PortfolioEvidencePackageV1,
+  propertyIds: readonly string[],
+): string {
+  const names = new Map<string, string>();
+  for (const fact of evidence.facts) names.set(fact.propertyId, fact.propertyName);
+  for (const coverage of evidence.metricCoverage) {
+    for (const hotel of coverage.excludedHotels) names.set(hotel.propertyId, hotel.propertyName);
+  }
+  for (const hotel of evidence.coverage.excludedHotels) {
+    names.set(hotel.propertyId, hotel.propertyName);
+  }
+  const resolved = propertyIds
+    .map((propertyId) => names.get(propertyId) ?? null)
+    .filter((name): name is string => name !== null)
+    .map((name) => safeLabel(name));
+  const shown = resolved.slice(0, MAX_FINDING_AFFECTED_HOTEL_NAMES);
+  const omitted = propertyIds.length - shown.length;
+  return shown.length === 0
+    ? `${propertyIds.length} authorized hotels (names unavailable in current metric evidence)`
+    : `${shown.join(', ')}${omitted > 0 ? ` (+${omitted} more authorized hotels)` : ''}`;
+}
+
+function findingProvenance(
+  finding: PortfolioFindingEnvelopeV1,
+  evidence: PortfolioEvidencePackageV1,
+): string {
+  const shownSources = finding.evidence.sourceVersions
+    .slice(0, MAX_FINDING_PROVENANCE_SOURCES);
+  const sources = shownSources
     .map((source) => `${safeLabel(source.component)}@${safeLabel(source.version)}`)
     .join(', ');
+  const omittedSources = finding.evidence.sourceVersions.length - shownSources.length;
+  const affectedHotels = finding.privacy.mode === 'named_authorized_properties'
+      || (finding.privacy.mode === 'not_a_cohort' && finding.scope.kind === 'property_local')
+    ? findingHotelNames(evidence, finding.scope.affectedPropertyIds)
+    : `${finding.scope.affectedPropertyIds.length} authorized hotels (names withheld by anonymous cohort policy)`;
   return [
     `accepted ${safeLabel(finding.scope.kind.replaceAll('_', ' '))} finding`,
+    `affected hotels ${affectedHotels}`,
     `producer ${safeLabel(finding.producer.engineId)}@${safeLabel(finding.producer.engineVersion)}`,
     `produced ${safeLabel(finding.producer.producedAt)}`,
     `evidence ${safeLabel(finding.evidence.queryId)}@${safeLabel(finding.evidence.queryVersion)}`,
     `as of ${safeLabel(finding.evidence.asOf)}`,
     `window ${safeLabel(finding.evidence.analysisWindowKey)}`,
     `coverage ${finding.evidence.coverage.evaluated} evaluated, ${finding.evidence.coverage.affected} affected of ${finding.evidence.coverage.eligible} eligible`,
-    `sources ${sources || 'unavailable'}`,
+    `sources ${sources || 'unavailable'}${omittedSources > 0 ? ` (+${omittedSources} source versions omitted)` : ''}`,
     `privacy ${safeLabel(finding.privacy.mode.replaceAll('_', ' '))}`,
     finding.lifecycle.validThrough
       ? `valid through ${safeLabel(finding.lifecycle.validThrough)}`
@@ -586,7 +660,10 @@ function findingProvenance(finding: PortfolioFindingEnvelopeV1): string {
   ].filter((value): value is string => value !== null).join('; ');
 }
 
-function renderFinding(finding: PortfolioFindingEnvelopeV1): string[] {
+function renderFinding(
+  finding: PortfolioFindingEnvelopeV1,
+  evidence: PortfolioEvidencePackageV1,
+): string[] {
   const sentence = (value: string) => {
     const text = safeFindingText(value);
     return /[.!?]$/.test(text) ? text : `${text}.`;
@@ -596,18 +673,18 @@ function renderFinding(finding: PortfolioFindingEnvelopeV1): string[] {
     case 'fact':
       return [
         `- **Accepted finding — ${safeLabel(finding.claim.factType)} fact**: ${statement}`,
-        `  Provenance: ${findingProvenance(finding)}.`,
+        `  Provenance: ${findingProvenance(finding, evidence)}.`,
       ];
     case 'pattern':
       return [
         `- **Accepted finding — supported pattern** (${safeLabel(finding.claim.assertion.replaceAll('_', ' '))}; ${safeLabel(finding.claim.direction)}): ${statement}`,
-        `  Provenance: ${findingProvenance(finding)}.`,
+        `  Provenance: ${findingProvenance(finding, evidence)}.`,
       ];
     case 'hypothesis':
       return [
         `- **UNVERIFIED HYPOTHESIS**: ${statement}`,
         `  Basis: ${sentence(finding.claim.basis)} Verification needed: ${sentence(finding.claim.verificationNeeded)}`,
-        `  Provenance: ${findingProvenance(finding)}.`,
+        `  Provenance: ${findingProvenance(finding, evidence)}.`,
       ];
     default: {
       const neverClaim: never = finding.claim;
@@ -624,19 +701,85 @@ export function portfolioFindingNumberReceiptPayloads(input: {
   plan: PortfolioPresentationPlan;
   findingsProjection?: PortfolioFindingProjectionV1 | null;
 }): string[] {
-  return orderedFindings(input).map((finding) => renderFinding(finding).join('\n'));
+  return renderPortfolioFindingSection(input).numberReceiptPayloads;
+}
+
+export interface PortfolioFindingRenderSection {
+  lines: string[];
+  displayedClaimIds: string[];
+  numberReceiptPayloads: string[];
+}
+
+/**
+ * Deterministically turn the model's selected finding IDs into a bounded user
+ * section. The shared presentation projection is already bounded for this
+ * renderer, so every model-selected finding is displayed whole. A second
+ * renderer-only omission partition would make the durable receipt untruthful.
+ */
+export function renderPortfolioFindingSection(input: {
+  evidence: PortfolioEvidencePackageV1;
+  plan: PortfolioPresentationPlan;
+  findingsProjection?: PortfolioFindingProjectionV1 | null;
+}): PortfolioFindingRenderSection {
+  if (!input.findingsProjection) {
+    return { lines: [], displayedClaimIds: [], numberReceiptPayloads: [] };
+  }
+  const projection = validatePortfolioFindingProjection(input.findingsProjection);
+  const catalog = buildPortfolioPresentationClaimCatalog(input.evidence, projection);
+  const byId = new Map(catalog.claims.map((claim) => [claim.id, claim]));
+  const selected = input.plan.orderedClaimIds
+    .map((id) => byId.get(id))
+    .filter((claim): claim is PortfolioPresentationClaim => (
+      claim?.kind === 'finding' && claim.finding !== null
+    ));
+  if (selected.length > MAX_PORTFOLIO_DISPLAYED_FINDINGS) {
+    throw new TypeError('finding presentation plan exceeds the shared item projection');
+  }
+  const rendered: Array<{ id: string; text: string; lines: string[] }> = [];
+  for (const claim of selected) {
+    const lines = renderFinding(claim.finding as PortfolioFindingEnvelopeV1, input.evidence);
+    const text = lines.join('\n');
+    rendered.push({ id: claim.id, text, lines });
+  }
+  const outputOmitted = 0;
+  const statusLine = `Finding evidence status: ${projection.status}; displayed ${rendered.length} of ${selected.length} model-selected, ${projection.counts.projected} projected, and ${projection.counts.accepted} consumer-accepted claims from ${projection.source.availableCandidateCount} source candidates; producer/query-limit omissions ${projection.source.loaderOmittedCount}; prompt item/character omissions ${projection.truncation.itemLimitOmittedCount + projection.truncation.characterLimitOmittedCount}; display-limit/byte-budget omissions ${outputOmitted}; accepted coverage ${projection.coverage.acceptedAffectedPropertyCount} affected and ${projection.coverage.acceptedEvaluatedPropertyCount} evaluated of ${projection.coverage.selectedPropertyCount} selected hotels; outage ${projection.outage.status}${projection.outage.code ? ` (${safeLabel(projection.outage.code)})` : ''}.`;
+  const header = '**Structured finding evidence**';
+  const lines = [
+    header,
+    statusLine,
+    ...(rendered.length > 0
+      ? [
+          'Canonical metric evidence remains authoritative; hypotheses below are not facts.',
+          ...rendered.flatMap((item) => item.lines),
+        ]
+      : []),
+  ];
+  if (Buffer.byteLength(lines.join('\n'), 'utf8') > MAX_PORTFOLIO_FINDING_RENDER_BYTES) {
+    throw new TypeError('bounded finding renderer exceeded its hard UTF-8 budget');
+  }
+  return {
+    lines,
+    displayedClaimIds: rendered.map((item) => item.id).sort(),
+    numberReceiptPayloads: [statusLine, ...rendered.map((item) => item.text)],
+  };
+}
+
+export interface PortfolioRenderedAnswerArtifact {
+  text: string;
+  displayedFindingClaimIds: string[];
+  findingNumberReceiptPayloads: string[];
 }
 
 /**
  * Deterministic rendering boundary. The model contributes only enum/claim-ID
  * ordering. Every visible fact is copied from the evidence package here.
  */
-export function renderPortfolioAnswer(input: {
+export function renderPortfolioAnswerArtifact(input: {
   evidence: PortfolioEvidencePackageV1;
   plan: PortfolioPresentationPlan;
   selectorLabel: string;
   findingsProjection?: PortfolioFindingProjectionV1 | null;
-}): string {
+}): PortfolioRenderedAnswerArtifact {
   const { evidence } = input;
   const organization = safeLabel(evidence.organizationName ?? 'Management company');
   const scopeLine = `**Active scope** — ${organization}; ${safeLabel(input.selectorLabel)}; ${evidence.coverage.selected} selected of ${evidence.coverage.authorized} currently authorized hotels.`;
@@ -650,14 +793,7 @@ export function renderPortfolioAnswer(input: {
   const details = detailFacts.length > 0
     ? ['**Hotel-level evidence**', ...detailFacts.map((fact) => `- ${renderFact(fact, metrics.get(fact.metricId), evidence.plan.comparison === 'none')}`)]
     : [];
-  const selectedFindings = orderedFindings(input);
-  const findingLines = selectedFindings.length > 0
-    ? [
-        '**Accepted structured findings**',
-        'Canonical metric evidence above remains authoritative; hypotheses below are not facts.',
-        ...selectedFindings.flatMap(renderFinding),
-      ]
-    : [];
+  const findingSection = renderPortfolioFindingSection(input);
   const exclusions = evidence.coverage.excludedHotels.length > 0
     ? [
         '**Omissions**',
@@ -674,15 +810,29 @@ export function renderPortfolioAnswer(input: {
       ? [scopeLine, coverageLine, ...exclusions]
       : [scopeLine, coverageLine];
   const remainingExclusions = input.plan.lead === 'exceptions_first' ? [] : exclusions;
-  return [
+  const text = [
     ...orderedLead,
     '',
     ...summary,
     ...(comparisons.length > 0 ? ['', ...comparisons] : []),
-    ...(findingLines.length > 0 ? ['', ...findingLines] : []),
+    ...(findingSection.lines.length > 0 ? ['', ...findingSection.lines] : []),
     ...(details.length > 0 ? ['', ...details] : []),
     ...(remainingExclusions.length > 0 ? ['', ...remainingExclusions] : []),
     '',
     `Metric registry and query versions: ${evidence.metrics.map((metric) => `${safeLabel(metric.id)}@${safeLabel(metric.version)}`).join(', ')}; plan ${safeLabel(evidence.plan.version)}; evidence ${safeLabel(evidence.version)}.`,
   ].join('\n');
+  return {
+    text,
+    displayedFindingClaimIds: findingSection.displayedClaimIds,
+    findingNumberReceiptPayloads: findingSection.numberReceiptPayloads,
+  };
+}
+
+export function renderPortfolioAnswer(input: {
+  evidence: PortfolioEvidencePackageV1;
+  plan: PortfolioPresentationPlan;
+  selectorLabel: string;
+  findingsProjection?: PortfolioFindingProjectionV1 | null;
+}): string {
+  return renderPortfolioAnswerArtifact(input).text;
 }

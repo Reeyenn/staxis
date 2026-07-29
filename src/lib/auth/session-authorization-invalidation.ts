@@ -26,6 +26,9 @@ export function subscribeToSessionAuthorizationInvalidations(input: {
     });
 
   return () => {
-    void input.client.removeChannel(channel as RealtimeChannel);
+    // Realtime teardown is best-effort. A socket adapter can reject while the
+    // browser is closing or switching accounts; cleanup must never become an
+    // unhandled rejection that destabilizes the next authenticated session.
+    void input.client.removeChannel(channel as RealtimeChannel).catch(() => undefined);
   };
 }

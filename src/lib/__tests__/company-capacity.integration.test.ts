@@ -485,13 +485,14 @@ describe('a hotel two companies both claim has NO company, not the lower UUID', 
         'a raw company hat kept cross-company coverage after authoritative reach denied it',
       );
 
-      // The old company queue and rulebook remain in the shell while the new
-      // portfolio layer is integrated. They must consume the same strict
-      // topology rather than service-reading the ambiguous hotel's data.
+      // The company queue and rulebook consume the same strict topology rather
+      // than service-reading the ambiguous hotel's data. The authoritative
+      // queue now fails the whole request closed instead of returning a
+      // successful empty scope that could hide an authorization outage.
       clearPortfolioAccessCache();
       signedInAs = UID_MARIA;
       const queue = await portfolioGet(req('https://staxis.test/api/company/queue'));
-      assert.equal(queue.status, 200);
+      assert.equal(queue.status, 503);
       const queueBody = await queue.json() as {
         data?: { scope?: unknown; cards?: unknown[] };
       };

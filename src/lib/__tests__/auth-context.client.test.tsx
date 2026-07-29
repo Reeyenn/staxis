@@ -85,6 +85,10 @@ type Deferred<T> = {
 
 const auth = supabase.auth as unknown as AuthSurface;
 const database = supabase as unknown as DatabaseSurface;
+const realtime = supabase as unknown as {
+  channel: (name: string) => unknown;
+  removeChannel: (channel: unknown) => Promise<'ok'>;
+};
 
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void;
@@ -229,6 +233,16 @@ async function mountProvider(context: TestContext, fakeTimers = false): Promise<
 }> {
   const restoreBrowser = installBrowser();
   if (fakeTimers) context.mock.timers.enable({ apis: ['setTimeout'] });
+
+  // AuthProvider now listens for authorization-version invalidations. These
+  // reliability tests exercise auth ordering, not a real socket, so keep the
+  // Realtime lifecycle deterministic and network-free.
+  const fakeChannel = {
+    on: () => fakeChannel,
+    subscribe: () => fakeChannel,
+  };
+  context.mock.method(realtime, 'channel', () => fakeChannel);
+  context.mock.method(realtime, 'removeChannel', async () => 'ok' as const);
 
   const container = document.createElement('div');
   document.body.append(container);
