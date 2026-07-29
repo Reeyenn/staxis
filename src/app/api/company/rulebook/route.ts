@@ -26,12 +26,11 @@
  *                                    restates (see findNearDuplicate).
  *   'settings'                     — the setup choices.
  *
- * Auth: requireSession + loadSessionAccount + a HAT at the company that operates
- * `propertyId`. company_knowledge is deny-all RLS and every read/write goes
- * through supabaseAdmin, so the organization filter in
- * src/lib/company/rulebook.ts is the tenant boundary — not defence in depth,
- * THE boundary. Wall B holds because the only organization id this route ever
- * uses comes from `companyForProperty(propertyId)`.
+ * Auth: requireSession + loadSessionAccount + a company standing at the company
+ * that operates `propertyId`. Reads retain the exact organization filter.
+ * Every fact mutation also mints a fresh all-authorized receipt and 0404
+ * reasserts company-wide editor authority, organization and CAS inside the DB
+ * transaction. The UI gate is not the mutation authority.
  */
 
 import { NextRequest } from 'next/server';
@@ -186,6 +185,7 @@ function factPayload(fact: CompanyFact, confirmed: readonly CompanyFact[] = []) 
     policyValue: fact.policyValue,
     createdByName: fact.createdByName,
     updatedAt: fact.updatedAt,
+    currentRevision: fact.currentRevision,
     // What confirming this fact would freeze, in both languages, so the panel
     // shows the reading without a second round trip and the person approving
     // sees exactly what gets stored.
@@ -307,9 +307,46 @@ interface PostBody {
   action?: unknown;
   id?: unknown;
   intoId?: unknown;
+  expectedRevision?: unknown;
+  intoExpectedRevision?: unknown;
   content?: unknown;
   category?: unknown;
   settings?: unknown;
+}
+
+function expectedRevision(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+function mutationFailure(
+  reason: string | undefined,
+  fallback: string,
+  fallbackCode: string,
+  requestId: string,
+) {
+  if (reason === 'conflict') {
+    return err('That line changed. Reload it before trying again.', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (reason === 'not_found') {
+    return err('That line is no longer there', {
+      requestId, status: 404, code: ApiErrorCode.FactGone,
+    });
+  }
+  if (reason === 'forbidden') {
+    return err('Only company leadership can change the rulebook', {
+      requestId, status: 403, code: ApiErrorCode.CompanyLeadershipOnly,
+    });
+  }
+  if (reason === 'upgrade_required' || reason === 'store_unavailable') {
+    return err('The company rulebook is temporarily read-only.', {
+      requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+    });
+  }
+  return err(fallback, { requestId, status: 400, code: fallbackCode });
 }
 
 export async function POST(req: NextRequest) {
@@ -369,12 +406,22 @@ export async function POST(req: NextRequest) {
 
   const idV = validateUuid(body.id, 'id');
   if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const revision = expectedRevision(body.expectedRevision);
+  if (revision === null) {
+    return err('expectedRevision is required', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
 
   if (action === 'confirm') {
-    const res = await confirmCompanyFact(g.organizationId, idV.value!, actor);
+    const res = await confirmCompanyFact(
+      g.organizationId, idV.value!, actor, revision, requestId,
+    );
     if (!res.ok) {
       log.error('[company/rulebook:POST] confirm failed', { requestId, err: res.error });
-      return err('Could not confirm that', { requestId, status: 500, code: ApiErrorCode.ConfirmFailed });
+      return mutationFailure(
+        res.reason, 'Could not confirm that', ApiErrorCode.ConfirmFailed, requestId,
+      );
     }
     if (!res.confirmed) {
       return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
@@ -382,7 +429,7 @@ export async function POST(req: NextRequest) {
     // The company tier is cached per hotel for ten minutes. A VP who just
     // confirmed a policy should not have to wonder whether the copilot has it.
     clearCompanyRulebookCache();
-    return ok({ action, id: idV.value }, { requestId });
+    return ok({ action, id: idV.value, currentRevision: res.currentRevision }, { requestId });
   }
 
   if (action === 'merge') {
@@ -392,29 +439,55 @@ export async function POST(req: NextRequest) {
     if (intoV.error) {
       return err(intoV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
-    const res = await mergeCompanyFact(g.organizationId, intoV.value!, idV.value!, actor);
+    const intoRevision = expectedRevision(body.intoExpectedRevision);
+    if (intoRevision === null) {
+      return err('intoExpectedRevision is required', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    const res = await mergeCompanyFact(
+      g.organizationId,
+      intoV.value!,
+      idV.value!,
+      actor,
+      intoRevision,
+      revision,
+      requestId,
+    );
     if (!res.ok) {
       log.error('[company/rulebook:POST] merge failed', { requestId, err: res.error });
-      return err('Could not combine those', { requestId, status: 500, code: ApiErrorCode.MergeFailed });
+      return mutationFailure(
+        res.reason, 'Could not combine those', ApiErrorCode.MergeFailed, requestId,
+      );
     }
     if (!res.merged) {
       return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     clearCompanyRulebookCache();
-    return ok({ action, id: idV.value, intoId: intoV.value }, { requestId });
+    return ok({
+      action,
+      id: idV.value,
+      intoId: intoV.value,
+      currentRevision: res.relatedCurrentRevision,
+      intoCurrentRevision: res.currentRevision,
+    }, { requestId });
   }
 
   if (action === 'remove') {
-    const res = await removeCompanyFact(g.organizationId, idV.value!);
+    const res = await removeCompanyFact(
+      g.organizationId, idV.value!, actor, revision, requestId,
+    );
     if (!res.ok) {
       log.error('[company/rulebook:POST] remove failed', { requestId, err: res.error });
-      return err('Could not remove that', { requestId, status: 500, code: ApiErrorCode.RemoveFailed });
+      return mutationFailure(
+        res.reason, 'Could not remove that', ApiErrorCode.RemoveFailed, requestId,
+      );
     }
     if (!res.removed) {
       return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     clearCompanyRulebookCache();
-    return ok({ action, id: idV.value }, { requestId });
+    return ok({ action, id: idV.value, currentRevision: res.currentRevision }, { requestId });
   }
 
   // ── edit ──────────────────────────────────────────────────────────────────
@@ -437,14 +510,20 @@ export async function POST(req: NextRequest) {
     idV.value!,
     { content, ...(body.category !== undefined ? { category: body.category } : {}) },
     actor,
+    revision,
+    requestId,
   );
   if (!res.ok) {
     log.error('[company/rulebook:POST] edit failed', { requestId, err: res.error });
-    return err('Could not save that', { requestId, status: 500, code: ApiErrorCode.SaveFailed });
+    return mutationFailure(
+      res.reason, 'Could not save that', ApiErrorCode.SaveFailed, requestId,
+    );
   }
   if (!res.updated) {
     return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
   }
   clearCompanyRulebookCache();
-  return ok({ action, id: idV.value, content }, { requestId });
+  return ok({
+    action, id: idV.value, content, currentRevision: res.currentRevision,
+  }, { requestId });
 }
