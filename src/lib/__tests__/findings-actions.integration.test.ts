@@ -972,14 +972,14 @@ describe('the hands, proven against a real database', () => {
     //
     // MUTATION PROOF: swap `resolveCompanyForProperty` back for
     // `companyForProperty` in the route and both taps below execute.
-    test('a company read that fails refuses the tap rather than calling the hotel independent', async () => {
+    test('an authority/topology read failure refuses the tap before treating the hotel as independent', async () => {
       const { actionId } = await pricedOffer('Room 803');
       await pg.query(
         'alter table public.organization_property_relationships rename to opr_hidden',
       );
       try {
         const result = await tap(PID_A, actionId);
-        assert.equal(result.status, 503);
+        assert.equal(result.status, 403, 'the authoritative hotel gate fails closed without enumerating topology state');
         assert.equal(await workOrderCount(PID_A, 'Room 803'), 2, 'the two originals, and no third');
       } finally {
         await pg.query('alter table public.opr_hidden rename to organization_property_relationships');
@@ -1000,6 +1000,10 @@ describe('the hands, proven against a real database', () => {
       // index comes off for the length of this test rather than the assertion
       // being skipped.
       await pg.query('drop index if exists organization_property_one_open_primary_idx');
+      await pg.query(
+        `alter table public.organization_property_relationships
+           disable trigger trg_organization_property_relationships_primary_window_guard`,
+      );
       try {
         await pg.query(
           `insert into public.organization_property_relationships
@@ -1008,11 +1012,19 @@ describe('the hands, proven against a real database', () => {
           [OTHER, PID_A],
         );
         const result = await tap(PID_A, actionId);
-        assert.equal(result.status, 503, 'a hotel claimed twice is not a hotel claimed by nobody');
+        assert.equal(
+          result.status,
+          403,
+          'the authoritative hotel gate refuses ambiguous topology before action lookup',
+        );
         assert.equal(await workOrderCount(PID_A, 'Room 804'), 2, 'nothing was booked');
       } finally {
         await pg.query('delete from public.organization_property_relationships where organization_id=$1', [OTHER]);
         await pg.query('delete from public.organizations where id=$1', [OTHER]);
+        await pg.query(
+          `alter table public.organization_property_relationships
+             enable trigger trg_organization_property_relationships_primary_window_guard`,
+        );
         await pg.query(
           `create unique index if not exists organization_property_one_open_primary_idx
              on public.organization_property_relationships (property_id)

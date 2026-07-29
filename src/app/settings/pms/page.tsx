@@ -9,7 +9,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
 import { useCan } from '@/lib/capabilities/useCan';
 import { t } from '@/lib/translations';
-import { fetchWithAuth } from '@/lib/api-fetch';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
 import { parsePmsOnboardResult } from '@/lib/api-validate';
 import { PMS_DROPDOWN_OPTIONS } from '@/lib/pms';
 import { Wifi, WifiOff, Shield, Zap, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
@@ -27,30 +27,66 @@ const PMS_SYSTEMS = PMS_DROPDOWN_OPTIONS.map((d) => ({
 
 export default function PMSPage() {
   const { user } = useAuth();
-  const { activePropertyId, activeProperty, refreshProperty } = useProperty();
+  const { activePropertyId } = useProperty();
+  const scopeKey = `${user?.uid ?? 'signed-out'}:${activePropertyId ?? 'no-property'}`;
+
+  return (
+    <PMSPropertyEditor
+      key={scopeKey}
+      scopeKey={scopeKey}
+      propertyId={activePropertyId ?? null}
+    />
+  );
+}
+
+function PMSPropertyEditor({
+  scopeKey,
+  propertyId,
+}: {
+  scopeKey: string;
+  propertyId: string | null;
+}) {
+  const { user } = useAuth();
+  const { activeProperty, refreshProperty } = useProperty();
   const { lang } = useLang();
   const can = useCan();
 
-  const [pmsType, setPmsType] = useState(activeProperty?.pmsType ?? '');
-  const [pmsUrl, setPmsUrl] = useState(activeProperty?.pmsUrl ?? '');
+  const scopedProperty = activeProperty?.id === propertyId ? activeProperty : null;
+  const [pmsType, setPmsType] = useState(scopedProperty?.pmsType ?? '');
+  const [pmsUrl, setPmsUrl] = useState(scopedProperty?.pmsUrl ?? '');
 
   // On a hard page load (refresh/bookmark) the property context resolves
   // AFTER first mount, so the useState initializers above ran with
   // activeProperty === null and the form rendered blank under a green
   // "Connected" banner. Re-seed once per property when it resolves — but
   // never clobber text the user has already typed.
-  const seededPropertyRef = useRef<string | null>(activeProperty?.id ?? null);
+  const seededPropertyRef = useRef<string | null>(scopedProperty?.id ?? null);
   useEffect(() => {
-    if (!activeProperty || seededPropertyRef.current === activeProperty.id) return;
-    seededPropertyRef.current = activeProperty.id;
-    setPmsType(prev => prev || (activeProperty.pmsType ?? ''));
-    setPmsUrl(prev => prev || (activeProperty.pmsUrl ?? ''));
-  }, [activeProperty]);
+    if (!propertyId || activeProperty?.id !== propertyId || seededPropertyRef.current === propertyId) return;
+    seededPropertyRef.current = propertyId;
+    setPmsType(activeProperty.pmsType ?? '');
+    setPmsUrl(activeProperty.pmsUrl ?? '');
+  }, [activeProperty, propertyId]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [testMessage, setTestMessage] = useState('');
   const [saving, setSaving] = useState(false);
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  const testAttemptRef = useRef(0);
+  const saveAttemptRef = useRef(0);
+  useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      activeScopeRef.current = null;
+      testAttemptRef.current += 1;
+      saveAttemptRef.current += 1;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
 
   // Onboarding job state machine — populated when the user clicks
   // "Save & Onboard" and we kick off a CUA mapping/extraction job on the
@@ -58,17 +94,25 @@ export default function PMSPage() {
   // is in flight (stalled-state tracking + offline counter + Sentry report
   // — see use-pms-onboard-job.ts); this page renders the progress widget.
   const { jobStatus, pollState, pollNetworkFailures, userStopped, start: startOnboardJob, stop: stopOnboardPolling } = usePmsOnboardJob({
-    propertyId: activePropertyId ?? null,
+    propertyId,
     onFinished: useCallback(async () => {
+      if (!ownsScope()) return;
       setSaving(false);
       await refreshProperty();
-    }, [refreshProperty]),
+    }, [ownsScope, refreshProperty]),
   });
+
+  const invalidateTest = useCallback(() => {
+    testAttemptRef.current += 1;
+    setTestStatus('idle');
+    setTestMessage('');
+  }, []);
 
   // When the user picks a PMS, prefill the login URL with the registry's
   // default — saves typing for the 95% case where they use the standard
   // login URL. They can still edit it after.
   const handlePmsTypeChange = (value: string) => {
+    invalidateTest();
     setPmsType(value);
     const def = PMS_SYSTEMS.find(p => p.value === value);
     if (def?.defaultLoginUrl && !pmsUrl) {
@@ -88,11 +132,20 @@ export default function PMSPage() {
         : 'Please fill in all fields before testing.');
       return;
     }
-    if (!activePropertyId) {
+    if (!propertyId) {
       setTestStatus('error');
       setTestMessage(lang === 'es' ? 'Propiedad no seleccionada.' : 'No property selected.');
       return;
     }
+    const requestedPropertyId = propertyId;
+    const requestedCredentials = {
+      pmsType,
+      loginUrl: pmsUrl,
+      username,
+      password,
+    };
+    const attempt = ++testAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && testAttemptRef.current === attempt;
     setTestStatus('testing');
     setTestMessage('');
 
@@ -101,14 +154,13 @@ export default function PMSPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          propertyId: activePropertyId,
-          pmsType,
-          loginUrl: pmsUrl,
-          username,
-          password,
+          propertyId: requestedPropertyId,
+          ...requestedCredentials,
         }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const json = await res.json();
+      if (!ownsAttempt()) return;
       if (!res.ok || !json.ok) {
         setTestStatus('error');
         setTestMessage(json.error ?? (lang === 'es'
@@ -116,12 +168,13 @@ export default function PMSPage() {
           : 'Could not save your credentials.'));
         return;
       }
-      const label = PMS_SYSTEMS.find(p => p.value === pmsType)?.label ?? pmsType;
+      const label = PMS_SYSTEMS.find(p => p.value === requestedCredentials.pmsType)?.label ?? requestedCredentials.pmsType;
       setTestStatus('success');
       setTestMessage(lang === 'es'
         ? `Credenciales guardadas para ${label}. Haz clic en Guardar para iniciar la sincronización.`
         : `Credentials saved for ${label}. Click Save & Onboard to start the first sync.`);
-    } catch (err) {
+    } catch {
+      if (!ownsAttempt()) return;
       setTestStatus('error');
       setTestMessage(lang === 'es'
         ? 'Problema de red. Revisa tu conexión y vuelve a intentar.'
@@ -134,7 +187,7 @@ export default function PMSPage() {
   // extraction) on the Fly worker, then polls /api/pms/job-status until
   // it reaches 'complete' or 'failed'.
   const handleSave = async () => {
-    if (!user || !activePropertyId) return;
+    if (!user || !propertyId) return;
     if (testStatus !== 'success') {
       setTestStatus('error');
       setTestMessage(lang === 'es'
@@ -142,6 +195,9 @@ export default function PMSPage() {
         : 'Please Save Credentials first so we can use them.');
       return;
     }
+    const requestedPropertyId = propertyId;
+    const attempt = ++saveAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && saveAttemptRef.current === attempt;
     setSaving(true);
 
     try {
@@ -155,14 +211,17 @@ export default function PMSPage() {
       // single source of truth. Just refresh the local state so the
       // header card reflects the new connection.
       await refreshProperty();
+      if (!ownsAttempt()) return;
 
       // Queue the onboarding job.
       const res = await fetchWithAuth('/api/pms/onboard', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ propertyId: activePropertyId }),
+        body: JSON.stringify({ propertyId: requestedPropertyId }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       });
       const json = await res.json();
+      if (!ownsAttempt()) return;
       if (!res.ok || !json.ok) {
         setSaving(false);
         setTestStatus('error');
@@ -179,7 +238,8 @@ export default function PMSPage() {
         error: null,
         result: null,
       });
-    } catch (err) {
+    } catch {
+      if (!ownsAttempt()) return;
       setSaving(false);
       setTestStatus('error');
       setTestMessage(lang === 'es'
@@ -271,7 +331,7 @@ export default function PMSPage() {
         </div>
 
         {/* Connection status */}
-        {activeProperty?.pmsConnected && (
+        {scopedProperty?.pmsConnected && (
           <div
             style={{
               padding: '14px 16px',
@@ -288,9 +348,9 @@ export default function PMSPage() {
             <div>
               <p style={{ fontWeight: 600, fontSize: '14px', color: 'var(--green)' }}>{lang === 'es' ? 'Conectado' : 'Connected'}</p>
               <p style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                {PMS_SYSTEMS.find(p => p.value === activeProperty.pmsType)?.label ?? activeProperty.pmsType}
-                {activeProperty.lastSyncedAt && (() => {
-                  const ts = activeProperty.lastSyncedAt as any;
+                {PMS_SYSTEMS.find(p => p.value === scopedProperty.pmsType)?.label ?? scopedProperty.pmsType}
+                {scopedProperty.lastSyncedAt && (() => {
+                  const ts = scopedProperty.lastSyncedAt as any;
                   const d = ts?.toDate ? ts.toDate() : new Date(ts);
                   return isNaN(d.getTime()) ? '' : ` · ${lang === 'es' ? 'Última sinc.' : 'Last synced'} ${d.toLocaleTimeString()}`;
                 })()}
@@ -316,7 +376,10 @@ export default function PMSPage() {
             <input
               type="url"
               value={pmsUrl}
-              onChange={e => setPmsUrl(e.target.value)}
+              onChange={e => {
+                invalidateTest();
+                setPmsUrl(e.target.value);
+              }}
               className="input"
               placeholder="https://login.choiceadvantage.com"
             />
@@ -328,7 +391,10 @@ export default function PMSPage() {
             <input
               type="text"
               value={username}
-              onChange={e => setUsername(e.target.value)}
+              onChange={e => {
+                invalidateTest();
+                setUsername(e.target.value);
+              }}
               className="input"
               placeholder={lang === 'es' ? 'tu login del PMS' : 'your PMS login'}
               autoComplete="off"
@@ -340,7 +406,10 @@ export default function PMSPage() {
             <input
               type="password"
               value={password}
-              onChange={e => setPassword(e.target.value)}
+              onChange={e => {
+                invalidateTest();
+                setPassword(e.target.value);
+              }}
               className="input"
               placeholder="••••••••"
               autoComplete="new-password"

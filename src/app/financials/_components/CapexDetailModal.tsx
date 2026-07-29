@@ -7,7 +7,7 @@
 // list + workflow orchestration. All writes go through /api/financials/capex*
 // behind the owner/GM finance gate. Money is integer cents.
 
-import React, { useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Field, TextInput, TextArea } from '@/app/maintenance/_components/_mt-snow';
 import { useApiAction } from '@/lib/hooks/use-api-resource';
 import { resizeImageForVision } from '@/lib/image-resize';
@@ -20,7 +20,7 @@ import {
   type CapexStatus,
   type CapexLineItem,
 } from '@/lib/financials/shared';
-import { finGet, finSend, Btn, Money, Pill, Card, Notice, BudgetBar, DollarInput, T, FONT_SANS } from './fin-ui';
+import { finGet, finSend, newFinancialCreateOperationId, Btn, Money, Pill, Card, Notice, BudgetBar, DollarInput, T, FONT_SANS } from './fin-ui';
 import { ft, capexStatusLabel, capexCategoryLabel, requestTypeLabel } from './fin-i18n';
 
 type Lang = 'en' | 'es';
@@ -28,6 +28,7 @@ export type DecisionAction = 'approve' | 'reject' | 'revisions';
 
 // ─── Decision modal ──────────────────────────────────────────────────────
 export function DecisionModal({
+  scopeKey,
   pid,
   lang,
   project,
@@ -35,6 +36,7 @@ export function DecisionModal({
   onClose,
   onDone,
 }: {
+  scopeKey: string;
   pid: string;
   lang: Lang;
   project: CapexProject;
@@ -43,15 +45,46 @@ export function DecisionModal({
   onDone: () => void;
 }) {
   const S = ft(lang);
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  const decisionAttemptRef = useRef(0);
+  useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      activeScopeRef.current = null;
+      decisionAttemptRef.current += 1;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
   const [notes, setNotes] = useState('');
-  const decide = useApiAction((n: string | null) =>
-    finSend('/api/financials/capex/decision', 'POST', { pid, id: project.id, action, notes: n }),
+  const decide = useApiAction((input: {
+    propertyId: string;
+    projectId: string;
+    action: DecisionAction;
+    notes: string | null;
+  }) =>
+    finSend('/api/financials/capex/decision', 'POST', {
+      pid: input.propertyId,
+      id: input.projectId,
+      action: input.action,
+      notes: input.notes,
+    }),
   );
   const title = action === 'approve' ? S.approve : action === 'reject' ? S.reject : S.requestRevisions;
   const submit = async () => {
     // A failed decision (offline, or someone else already decided → 404)
     // must not close the modal as if it were recorded.
-    const res = await decide.run(notes.trim() || null);
+    const attempt = ++decisionAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && decisionAttemptRef.current === attempt;
+    const res = await decide.run({
+      propertyId: pid,
+      projectId: project.id,
+      action,
+      notes: notes.trim() || null,
+    });
+    if (!ownsAttempt()) return;
     if (res.error) return; // decide.error renders below
     onDone();
   };
@@ -76,13 +109,37 @@ export function DecisionModal({
 }
 
 // ─── Progress controls (active projects, inside the binder) ────────────────
-function ProgressControls({ pid, project, lang, onChanged }: { pid: string; project: CapexProject; lang: Lang; onChanged: () => void }) {
+function ProgressControls({
+  pid,
+  project,
+  lang,
+  ownsScope,
+  onChanged,
+}: {
+  pid: string;
+  project: CapexProject;
+  lang: Lang;
+  ownsScope: () => boolean;
+  onChanged: () => void;
+}) {
   const S = ft(lang);
-  const progress = useApiAction((patch: { status?: CapexStatus; pctComplete?: number }) =>
-    finSend('/api/financials/capex/progress', 'POST', { pid, id: project.id, ...patch }),
+  const progressAttemptRef = useRef(0);
+  const progress = useApiAction((input: {
+    propertyId: string;
+    projectId: string;
+    patch: { status?: CapexStatus; pctComplete?: number };
+  }) =>
+    finSend('/api/financials/capex/progress', 'POST', {
+      pid: input.propertyId,
+      id: input.projectId,
+      ...input.patch,
+    }),
   );
   const send = async (patch: { status?: CapexStatus; pctComplete?: number }) => {
-    const res = await progress.run(patch);
+    const attempt = ++progressAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && progressAttemptRef.current === attempt;
+    const res = await progress.run({ propertyId: pid, projectId: project.id, patch });
+    if (!ownsAttempt()) return;
     if (res.error) return; // progress.error renders below — don't pretend it saved
     onChanged();
   };
@@ -93,7 +150,14 @@ function ProgressControls({ pid, project, lang, onChanged }: { pid: string; proj
     const v = Number(el.value);
     if (v === lastSentPctRef.current) return;
     lastSentPctRef.current = v;
-    const res = await progress.run({ pctComplete: v });
+    const attempt = ++progressAttemptRef.current;
+    const ownsAttempt = () => ownsScope() && progressAttemptRef.current === attempt;
+    const res = await progress.run({
+      propertyId: pid,
+      projectId: project.id,
+      patch: { pctComplete: v },
+    });
+    if (!ownsAttempt()) return;
     if (res.error) {
       // Reset so the same value can be retried after the failure.
       lastSentPctRef.current = project.pctComplete;
@@ -129,6 +193,7 @@ function ProgressControls({ pid, project, lang, onChanged }: { pid: string; proj
 
 // ─── Detail / binder modal ──────────────────────────────────────────────────
 export function DetailModal({
+  scopeKey,
   pid,
   lang,
   project,
@@ -138,7 +203,9 @@ export function DetailModal({
   onClose,
   onDecision,
   onChanged,
+  readOnly = false,
 }: {
+  scopeKey: string;
   pid: string;
   lang: Lang;
   project: CapexProject | null;
@@ -150,18 +217,37 @@ export function DetailModal({
   onClose: () => void;
   onDecision: (project: CapexProject, action: DecisionAction) => void;
   onChanged: () => void;
+  readOnly?: boolean;
 }) {
   const S = ft(lang);
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      activeScopeRef.current = null;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
   const [addLabel, setAddLabel] = useState('');
   const [addAmount, setAddAmount] = useState('');
+  const addLineOperationIdRef = useRef<string | null>(null);
   const [lineError, setLineError] = useState<string | null>(null);
   // Failures from binder actions that have no field of their own
   // (delete line / delete project / attachment view & upload).
   const [actionError, setActionError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
-  const addLineAction = useApiAction((input: { projectId: string; label: string; amountCents: number }) =>
-    finSend('/api/financials/capex/line-items', 'POST', { pid, ...input }),
+  const addLineAction = useApiAction((input: { propertyId: string; projectId: string; operationId: string; label: string; amountCents: number }) =>
+    finSend('/api/financials/capex/line-items', 'POST', {
+      pid: input.propertyId,
+      projectId: input.projectId,
+      operationId: input.operationId,
+      label: input.label,
+      amountCents: input.amountCents,
+    }),
   );
 
   if (!project) {
@@ -201,23 +287,36 @@ export function DetailModal({
       return;
     }
     setLineError(null);
+    const operationId = addLineOperationIdRef.current ?? newFinancialCreateOperationId();
+    addLineOperationIdRef.current = operationId;
     const res = await addLineAction.run({
+      propertyId: pid,
       projectId: project.id,
+      operationId,
       label: addLabel.trim(),
       amountCents: cents,
     });
+    if (!ownsScope()) return;
     if (res.error) {
       // Keep what was typed; the error renders under the add row.
       setLineError(S.couldNotSave);
       return;
     }
+    if (addLineOperationIdRef.current === operationId) addLineOperationIdRef.current = null;
     setAddLabel('');
     setAddAmount('');
     onChanged();
   };
   const delLine = async (id: string) => {
     setActionError(null);
-    const res = await finSend('/api/financials/capex/line-items', 'DELETE', { pid, id, projectId: project.id });
+    const requestedPropertyId = pid;
+    const requestedProjectId = project.id;
+    const res = await finSend('/api/financials/capex/line-items', 'DELETE', {
+      pid: requestedPropertyId,
+      id,
+      projectId: requestedProjectId,
+    });
+    if (!ownsScope()) return;
     if (res.error) {
       setActionError(S.couldNotDelete);
       return;
@@ -227,7 +326,13 @@ export function DetailModal({
   const delProject = async () => {
     if (!window.confirm(S.confirmDeleteProject)) return;
     setActionError(null);
-    const res = await finSend('/api/financials/capex', 'DELETE', { pid, id: project.id });
+    const requestedPropertyId = pid;
+    const requestedProjectId = project.id;
+    const res = await finSend('/api/financials/capex', 'DELETE', {
+      pid: requestedPropertyId,
+      id: requestedProjectId,
+    });
+    if (!ownsScope()) return;
     if (res.error) {
       setActionError(S.couldNotDelete);
       return;
@@ -239,17 +344,26 @@ export function DetailModal({
     setUploading(true);
     setActionError(null);
     try {
+      const requestedPropertyId = pid;
+      const requestedProjectId = project.id;
       const resized = await resizeImageForVision(file);
-      const res = await finSend('/api/financials/capex/attachment', 'POST', { pid, projectId: project.id, imageBase64: resized.base64, mediaType: resized.mediaType });
+      if (!ownsScope()) return;
+      const res = await finSend('/api/financials/capex/attachment', 'POST', {
+        pid: requestedPropertyId,
+        projectId: requestedProjectId,
+        imageBase64: resized.base64,
+        mediaType: resized.mediaType,
+      });
+      if (!ownsScope()) return;
       if (res.error) {
         setActionError(S.couldNotSave);
         return;
       }
       onChanged();
     } catch {
-      setActionError(S.couldNotSave);
+      if (ownsScope()) setActionError(S.couldNotSave);
     } finally {
-      setUploading(false);
+      if (ownsScope()) setUploading(false);
     }
   };
   const viewAttachment = async () => {
@@ -259,7 +373,13 @@ export function DetailModal({
     // URL arrives; close it (and say so) if the fetch fails.
     const win = window.open('about:blank', '_blank');
     if (win) win.opener = null;
-    const res = await finGet<{ url: string | null }>(`/api/financials/capex/attachment?pid=${pid}&projectId=${project.id}`);
+    const requestedPropertyId = pid;
+    const requestedProjectId = project.id;
+    const res = await finGet<{ url: string | null }>(`/api/financials/capex/attachment?pid=${requestedPropertyId}&projectId=${requestedProjectId}`);
+    if (!ownsScope()) {
+      win?.close();
+      return;
+    }
     if (res.data?.url) {
       if (win) win.location.href = res.data.url;
       else window.open(res.data.url, '_blank', 'noopener');
@@ -279,7 +399,7 @@ export function DetailModal({
         subtitle={`${capexStatusLabel(lang, project.status)}${project.vendor ? ` · ${project.vendor}` : ''}`}
         footer={
           <>
-            <Btn variant="danger" onClick={() => void delProject()}>{S.deleteProject}</Btn>
+            {!readOnly && <Btn variant="danger" onClick={() => void delProject()}>{S.deleteProject}</Btn>}
             <Btn variant="ghost" onClick={onClose}>{S.close}</Btn>
           </>
         }
@@ -287,16 +407,16 @@ export function DetailModal({
         <CapexDetailViewport busy={refreshing}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         {/* Workflow actions */}
-        {isPending && (
+        {!readOnly && isPending && (
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', paddingBottom: 4 }}>
             <Btn onClick={() => onDecision(project, 'approve')}>{S.approve}</Btn>
             <Btn variant="ghost" onClick={() => onDecision(project, 'revisions')}>{S.requestRevisions}</Btn>
             <Btn variant="danger" onClick={() => onDecision(project, 'reject')}>{S.reject}</Btn>
           </div>
         )}
-        {isActive && (
+        {!readOnly && isActive && (
           <div style={{ paddingBottom: 4 }}>
-            <ProgressControls pid={pid} project={project} lang={lang} onChanged={onChanged} />
+            <ProgressControls pid={pid} project={project} lang={lang} ownsScope={ownsScope} onChanged={onChanged} />
           </div>
         )}
 
@@ -339,20 +459,24 @@ export function DetailModal({
             ) : (
               <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3 }}>{S.noAttachment}</span>
             )}
-            <Btn variant="ghost" disabled={uploading} onClick={() => fileRef.current?.click()}>
-              {uploading ? S.saving : S.addAttachment}
-            </Btn>
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/jpeg,image/png,image/webp"
-              style={{ display: 'none' }}
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) void uploadAttachment(f);
-                if (e.target) e.target.value = '';
-              }}
-            />
+            {!readOnly && (
+              <>
+                <Btn variant="ghost" disabled={uploading} onClick={() => fileRef.current?.click()}>
+                  {uploading ? S.saving : S.addAttachment}
+                </Btn>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void uploadAttachment(f);
+                    if (e.target) e.target.value = '';
+                  }}
+                />
+              </>
+            )}
           </div>
         </Section>
 
@@ -363,16 +487,16 @@ export function DetailModal({
               <div key={l.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: `1px solid ${T.ruleSoft}` }}>
                 <span style={{ flex: 1, fontFamily: FONT_SANS, fontSize: 13, color: T.ink }}>{l.label}</span>
                 <Money cents={l.amountCents} size={13} />
-                <button onClick={() => void delLine(l.id)} style={{ background: 'transparent', border: 'none', color: T.warm, cursor: 'pointer', fontSize: 13 }} aria-label={S.delete}>✕</button>
+                {!readOnly && <button onClick={() => void delLine(l.id)} style={{ background: 'transparent', border: 'none', color: T.warm, cursor: 'pointer', fontSize: 13 }} aria-label={S.delete}>✕</button>}
               </div>
             ))}
             {(project.lineItems ?? []).length === 0 && <span style={{ fontFamily: FONT_SANS, fontSize: 13, color: T.ink3 }}>—</span>}
           </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
+          {!readOnly && <div style={{ display: 'flex', gap: 8, marginTop: 12, alignItems: 'center' }}>
             <div style={{ flex: 1 }}><TextInput value={addLabel} onChange={setAddLabel} placeholder={S.label} /></div>
             <div style={{ width: 120 }}><DollarInput value={addAmount} onChange={setAddAmount} /></div>
             <Btn onClick={() => void addLine()} disabled={addLineAction.saving || !addLabel.trim()}>+</Btn>
-          </div>
+          </div>}
           {lineError && <span style={{ display: 'block', marginTop: 8, fontFamily: FONT_SANS, fontSize: 12, color: T.warm }}>{lineError}</span>}
         </Section>
 

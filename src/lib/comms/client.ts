@@ -4,19 +4,16 @@
 // access token (+ same-origin cookies for 2FA) to every call. All reads/writes
 // go through /api/comms/* (server, supabaseAdmin) — never the browser DB client.
 
-import { supabase } from '@/lib/supabase';
+import { fetchWithAuth, INTERACTIVE_ACTION_TIMEOUT_MS } from '@/lib/api-fetch';
+import { fetchWithDeadline } from '@/lib/fetch-deadline';
 
-async function authHeaders(): Promise<Record<string, string>> {
-  let token: string | undefined;
-  try { token = (await supabase.auth.getSession()).data.session?.access_token; } catch { /* */ }
-  return { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) };
-}
+const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 
 export interface ApiResult<T> { ok: boolean; status: number; data?: T; error?: string }
 
 export async function apiGet<T>(url: string): Promise<ApiResult<T>> {
   try {
-    const res = await fetch(url, { headers: await authHeaders() });
+    const res = await fetchWithAuth(url, { headers: JSON_HEADERS });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: T; error?: string };
     return { ok: !!json.ok, status: res.status, data: json.data, error: json.error };
   } catch (e) {
@@ -26,7 +23,12 @@ export async function apiGet<T>(url: string): Promise<ApiResult<T>> {
 
 export async function apiPost<T>(url: string, body: unknown): Promise<ApiResult<T>> {
   try {
-    const res = await fetch(url, { method: 'POST', headers: await authHeaders(), body: JSON.stringify(body) });
+    const res = await fetchWithAuth(url, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+      timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+    });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: T; error?: string };
     return { ok: !!json.ok, status: res.status, data: json.data, error: json.error };
   } catch (e) {
@@ -36,7 +38,12 @@ export async function apiPost<T>(url: string, body: unknown): Promise<ApiResult<
 
 export async function apiPatch<T>(url: string, body: unknown): Promise<ApiResult<T>> {
   try {
-    const res = await fetch(url, { method: 'PATCH', headers: await authHeaders(), body: JSON.stringify(body) });
+    const res = await fetchWithAuth(url, {
+      method: 'PATCH',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+      timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+    });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: T; error?: string };
     return { ok: !!json.ok, status: res.status, data: json.data, error: json.error };
   } catch (e) {
@@ -46,7 +53,11 @@ export async function apiPatch<T>(url: string, body: unknown): Promise<ApiResult
 
 export async function apiDelete<T>(url: string): Promise<ApiResult<T>> {
   try {
-    const res = await fetch(url, { method: 'DELETE', headers: await authHeaders() });
+    const res = await fetchWithAuth(url, {
+      method: 'DELETE',
+      headers: JSON_HEADERS,
+      timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
+    });
     const json = (await res.json().catch(() => ({}))) as { ok?: boolean; data?: T; error?: string };
     return { ok: !!json.ok, status: res.status, data: json.data, error: json.error };
   } catch (e) {
@@ -55,9 +66,17 @@ export async function apiDelete<T>(url: string): Promise<ApiResult<T>> {
 }
 
 /** Upload a file to a signed-upload URL from presignAttachment. */
-export async function uploadToSignedUrl(signedUrl: string, file: Blob): Promise<boolean> {
+export async function uploadToSignedUrl(
+  signedUrl: string,
+  file: Blob,
+  contentType = file.type || 'application/octet-stream',
+): Promise<boolean> {
   try {
-    const res = await fetch(signedUrl, { method: 'PUT', body: file, headers: { 'Content-Type': file.type || 'application/octet-stream' } });
+    const res = await fetchWithDeadline(
+      signedUrl,
+      { method: 'PUT', body: file, headers: { 'Content-Type': contentType } },
+      { timeoutMs: 60_000, label: 'Attachment upload' },
+    );
     return res.ok;
   } catch {
     return false;

@@ -34,9 +34,10 @@ export const dynamic = 'force-dynamic';
  */
 
 import React, { useEffect, useRef, useState, useCallback, Suspense } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { Loader2, Check, CheckCircle2, AlertCircle, Building2, Mail, KeyRound, Users, Sparkles, ChevronLeft } from 'lucide-react';
 import {
   PLACEHOLDER_HOTEL_NAME,
@@ -147,7 +148,7 @@ export default function OnboardPage() {
 }
 
 function OnboardWizard() {
-  const router = useRouter();
+  const { push } = useReliableNavigation();
   const sp = useSearchParams();
   const code = sp.get('code')?.toUpperCase().trim() ?? '';
 
@@ -178,7 +179,7 @@ function OnboardWizard() {
       if (typeof window !== 'undefined') sessionStorage.removeItem(RESUME_GUARD_KEY);
       if (data.completed) {
         // Already done — Home is always available even when Dashboard is off.
-        router.push('/home');
+        push('/home');
         return;
       }
       // The lean admin flow creates hotels with a placeholder name the
@@ -197,7 +198,7 @@ function OnboardWizard() {
     } finally {
       setLoading(false);
     }
-  }, [code, router]);
+  }, [code, push]);
 
   useEffect(() => { void loadState(); }, [loadState]);
 

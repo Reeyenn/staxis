@@ -278,7 +278,7 @@ describe('Maria wears two hats', () => {
     const atLufkin = await effectiveRole(ACCOUNT_MARIA, PID_A2);
     assert.equal(atLufkin.hatRole, 'vp', 'at the others she oversees');
     assert.equal(atLufkin.scope, 'company');
-    assert.equal(atLufkin.role, 'general_manager', 'oversight degrades to a GM\'s hotel authority');
+    assert.equal(atLufkin.role, 'front_desk', 'company oversight remains hotel read-only');
   });
 
   test('at the other company\'s hotel she is nobody', async () => {
@@ -375,10 +375,11 @@ describe('WALL B — nothing crosses between companies, ever', () => {
 
   test('Piney Woods\' VP cannot manage a Gulf Coast hotel', async () => {
     const caller = await loadManagerCaller(UID_VERA);
-    assert.ok(caller);
-    assert.equal(managerManagesHotel(caller, PID_B1), true);
-    assert.equal(managerManagesHotel(caller, PID_A1), false);
-    assert.equal(managerManagesHotel(caller, PID_L1), false);
+    // Hotel mutation callers deliberately exclude oversight-only company jobs.
+    // People/Access uses the authoritative organization-plane resolver instead
+    // (covered by the route tests below), so a VP is not translated into a
+    // synthetic hotel GM just to make this legacy helper return true.
+    assert.equal(caller, null);
   });
 
   test('each company\'s hotel list contains only its own hotels', async () => {
@@ -724,7 +725,7 @@ describe('the database refuses what the routes refuse', () => {
         `select public.staxis_set_membership_hat($1, $2, $3, 'property', 'front_desk', $4, null)`,
         [ACCOUNT_ADMIN, ORG_A, ACCOUNT_FRANK, JSON.stringify([PID_B1])],
       ),
-      /not operated by this company/i,
+      /not (?:operated|governed) by this company/i,
     );
   });
 
@@ -740,7 +741,7 @@ describe('the database refuses what the routes refuse', () => {
          values ($1, $2, 'hotel_employee', 'active', 'property', 'front_desk', $3)`,
         [anchor.rows[0].id, ACCOUNT_WANDA, `{${PID_L1}}`],
       ),
-      /single-hotel compatibility anchor/i,
+      /single-hotel compatibility anchor|active customer organization/i,
     );
   });
 

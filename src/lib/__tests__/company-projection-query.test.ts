@@ -25,6 +25,29 @@ describe('complete Company Hub projection queries', () => {
     assert.deepEqual(starts, [0, 2, 4]);
   });
 
+  test('loads more than 1,000 rows exactly while enforcing an explicit bound', async () => {
+    const source = Array.from({ length: 1_205 }, (_, index) => `invite-${index}`);
+    const starts: number[] = [];
+    const result = await readCompleteCompanyPages<string>((from) => {
+      starts.push(from);
+      return Promise.resolve({
+        data: source.slice(from, from + 237),
+        error: null,
+        count: source.length,
+      });
+    }, { maxRows: 5_000 });
+    assert.deepEqual(result, source);
+    assert.deepEqual(starts, [0, 237, 474, 711, 948, 1185]);
+
+    await assert.rejects(
+      readCompleteCompanyPages(
+        () => Promise.resolve({ data: [], error: null, count: 5_001 }),
+        { maxRows: 5_000 },
+      ),
+      /5000-row safety bound/,
+    );
+  });
+
   test('deduplicates and bounds every id filter', async () => {
     const ids = Array.from({ length: 123 }, (_, index) => `id-${index}`);
     const observedChunkSizes: number[] = [];

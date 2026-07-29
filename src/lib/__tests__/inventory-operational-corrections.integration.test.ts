@@ -1095,7 +1095,7 @@ describe('inventory operational corrections migration 0324', () => {
             }]),
           ],
         ),
-        /not authorized to correct inventory deliveries|42501/i,
+        /not authorized to correct inventory deliver(?:y|ies)|42501/i,
       );
 
       await pg.query('set role authenticated');

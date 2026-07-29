@@ -25,6 +25,7 @@ import assert from 'node:assert/strict';
 import { executeTool, getTool, type ToolContext } from '@/lib/agent/tools';
 import '@/lib/agent/tools/index';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { installAgentToolAuthorityTestStore } from './helpers/agent-tool-authority';
 
 const PID = '00000000-0000-0000-0000-0000000000c1';
 const UID = '00000000-0000-0000-0000-0000000000c0';
@@ -47,6 +48,7 @@ const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
 
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
 const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+let restoreAuthority: (() => void) | null = null;
 
 beforeEach(() => {
   staffRows = [
@@ -68,8 +70,17 @@ beforeEach(() => {
     rpcCalls.push({ fn, args });
     return { data: { replayed: false, saved: 1 }, error: null };
   };
+  restoreAuthority = installAgentToolAuthorityTestStore(() => [{
+    accountId: ACCT,
+    authUserId: UID,
+    role: 'general_manager',
+    propertyIds: [PID],
+    displayName: 'Reeyen Boss',
+  }]);
 });
 afterEach(() => {
+  restoreAuthority?.();
+  restoreAuthority = null;
   supabaseAdmin.from = originalFrom;
   supabaseAdmin.rpc = originalRpc;
 });
@@ -149,9 +160,17 @@ function ctx(overrides: Partial<ToolContext> = {}): ToolContext {
     user: {
       uid: UID, accountId: ACCT, username: 'reeyen', displayName: 'Reeyen Boss',
       role: 'general_manager', propertyAccess: [PID], dept: 'front_desk',
+      hotelMutationAllowed: true,
+      seesFinancials: true,
+      capabilitySnapshot: {
+        view_financials: true,
+        view_wages: true,
+        manage_inventory_orders: true,
+      },
     },
     propertyId: PID, staffId: CALLER_STAFF, requestId: 'req-1', surface: 'chat',
     conversationId: 'conv-1',
+    enabledSections: null,
     ...overrides,
   };
 }

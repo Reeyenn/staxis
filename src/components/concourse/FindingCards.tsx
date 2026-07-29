@@ -47,8 +47,13 @@ import React from 'react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+  SessionEndedError,
+} from '@/lib/api-fetch';
 import { readEnvelope } from '@/lib/api-envelope';
 
 import { CxIcon } from './icons';
@@ -706,6 +711,8 @@ export interface FindingCardsViewProps {
   hideLiveness?: boolean;
   /** Draw every card as readable-but-not-decidable. See FindingCard.readOnly. */
   readOnly?: boolean;
+  /** Optional per-card deny used by mixed-scope portfolio views. */
+  readOnlyFor?: (finding: QueueFinding) => boolean;
   onVerdict: (findingId: string, verdict: Verdict) => void;
   /** Told when a manager opens a card's numbers. Counted as engagement, which
    *  is what keeps a check somebody reads from demoting itself (0362). */
@@ -805,6 +812,7 @@ export function FindingCardsView({
   focusId = null,
   hideLiveness = false,
   readOnly = false,
+  readOnlyFor,
   onVerdict,
   onEngage,
   onAction,
@@ -872,7 +880,7 @@ export function FindingCardsView({
           lang={lang}
           busy={busyId === f.id}
           focused={focusId === f.id}
-          readOnly={readOnly}
+          readOnly={readOnly || readOnlyFor?.(f) === true}
           onVerdict={onVerdict}
           onEngage={onEngage}
           onAction={onAction}
@@ -937,10 +945,14 @@ export function FindingCards({
 }) {
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
+  const hotelStanding = useActiveHotelStanding();
   const hotelId = propertyId ?? activePropertyId;
   // Gate at the FETCH, not the render: a housekeeper who opens this tab never
   // asks for findings at all, so a 403 in the logs always means something real.
-  const canSee = !!user && canManageTeam(user.role);
+  const canSee = !!user
+    && hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
 
   const { data, error, reload } = useApiResource<QueuePayload>(
     `/api/findings?propertyId=${hotelId}`,
@@ -976,6 +988,7 @@ export function FindingCards({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ propertyId: hotelId, findingId, action: verdict }),
+            timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
           });
           const body = await readEnvelope<{ status: string }>(res);
           if (body.error !== undefined) {
@@ -1020,6 +1033,7 @@ export function FindingCards({
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ propertyId: hotelId, actionId, intent }),
+            timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
           });
           const body = await readEnvelope<{ state: string }>(res);
           if (body.error !== undefined) setSaveFailed(true);
@@ -1055,6 +1069,7 @@ export function FindingCards({
           findingId,
           action: 'receipt_opened',
         }),
+        timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
       }).catch(() => {});
     },
     [hotelId],

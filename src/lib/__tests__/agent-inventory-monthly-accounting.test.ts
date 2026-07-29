@@ -30,6 +30,10 @@ function toolContext(role: ToolContext['user']['role'], propertyAccess: string[]
       displayName: 'Manager',
       role,
       propertyAccess,
+      // Production captures the capability floor before exposing the tool
+      // catalog. Supplying it here lets this test reach the separate stale
+      // property-scope gate it is intended to exercise.
+      capabilitySnapshot: { view_financials: true },
     },
     propertyId: PID,
     staffId: null,

@@ -45,7 +45,9 @@ describe('app-wide async modal layout stability', () => {
   });
 
   test('hotel invitation loading sections cannot collapse the wide dialog', () => {
-    assert.match(hotelInvites, /className=\{styles\.inviteBody\} aria-busy=\{codeLoading \|\| invitesLoading\}/);
+    // Join-code loading exists only for managers of the selected hotel; email
+    // invitation loading applies to every authorized invite surface.
+    assert.match(hotelInvites, /className=\{styles\.inviteBody\} aria-busy=\{\(canManageHotelRoster && codeLoading\) \|\| invitesLoading\}/);
     assert.equal((hotelInvites.match(/<InviteSectionSkeleton/g) ?? []).length, 2);
     assert.match(hotelInvites, /className=\{styles\.inviteSkeletonVisual\} aria-hidden="true"/);
     assert.match(hotelTeamCss, /\.inviteBody\s*\{[\s\S]*?min-height:\s*min\(610px, calc\(100dvh - 190px\)\)/);

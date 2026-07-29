@@ -21,6 +21,7 @@ import {
 
 import type { AppUser } from '@/contexts/AuthContext';
 import { fetchWithAuth } from '@/lib/api-fetch';
+import { HAT_ROLE_LABELS, isHatRole } from '@/lib/company/roles';
 import { ASSIGNABLE_ROLES, type AppRole, type AssignableRole } from '@/lib/roles';
 
 import type {
@@ -70,9 +71,14 @@ interface JoinCode {
 interface ManagerInvite {
   id: string;
   email: string;
-  role: AssignableRole;
+  role: string;
   expires_at: string;
   created_at?: string;
+  organizationId: string | null;
+  scope: 'hotel' | 'company' | 'property';
+  propertyIds: string[];
+  propertyNames: string[];
+  canRevoke: boolean;
 }
 
 interface InvitePostData {
@@ -82,15 +88,19 @@ interface InvitePostData {
 }
 
 /**
- * What the invite form should ask (company spine). For an independent hotel
- * this arrives empty and the form asks the two questions it always has: who,
- * and what job. For somebody who runs a management company it also carries the
- * hotels their THIRD question is chosen from.
+ * What the invite form may ask, projected from current server authority. An
+ * independent hotel receives only roles its local manager may grant; a
+ * management-company caller also receives the exact per-role hotel choices.
  */
 interface InviteOptions {
   choosesHotels: boolean;
   organizationId: string | null;
-  jobs: Array<{ value: string; scope: 'company' | 'property'; label: { en: string; es: string } }>;
+  jobs: Array<{
+    value: string;
+    scope: 'company' | 'property';
+    label: { en: string; es: string };
+    allowedPropertyIds: string[];
+  }>;
   hotels: Array<{ id: string; name: string }>;
 }
 
@@ -100,6 +110,17 @@ const NO_INVITE_OPTIONS: InviteOptions = {
 
 function copy(lang: HotelTeamLang, en: string, es: string): string {
   return lang === 'es' ? es : en;
+}
+
+function pendingInviteScopeLabel(invite: ManagerInvite, lang: HotelTeamLang): string {
+  const role = isHatRole(invite.role)
+    ? HAT_ROLE_LABELS[invite.role][lang]
+    : invite.role;
+  if (invite.scope === 'company') {
+    return `${role} · ${copy(lang, 'Whole company', 'Toda la empresa')}`;
+  }
+  const properties = invite.propertyNames.join(', ');
+  return properties ? `${role} · ${properties}` : role;
 }
 
 function mutationSignal(): AbortSignal {
@@ -1352,6 +1373,7 @@ export function HotelInviteDialog({
   hotelName,
   lang,
   canInviteManager,
+  canManageHotelRoster = true,
   onClose,
   onChanged,
 }: {
@@ -1359,11 +1381,12 @@ export function HotelInviteDialog({
   hotelName: string;
   lang: HotelTeamLang;
   canInviteManager: boolean;
+  canManageHotelRoster?: boolean;
   onClose: () => void;
   onChanged?: () => void | Promise<void>;
 }) {
   const [code, setCode] = React.useState<JoinCode | null>(null);
-  const [codeLoading, setCodeLoading] = React.useState(true);
+  const [codeLoading, setCodeLoading] = React.useState(canManageHotelRoster);
   const [codeError, setCodeError] = React.useState('');
   const [codeBusy, setCodeBusy] = React.useState(false);
   const [confirmReplace, setConfirmReplace] = React.useState(false);
@@ -1376,7 +1399,7 @@ export function HotelInviteDialog({
   const [invitesError, setInvitesError] = React.useState('');
   const [inviteEmail, setInviteEmail] = React.useState('');
   const [inviteOptions, setInviteOptions] = React.useState<InviteOptions>(NO_INVITE_OPTIONS);
-  const [inviteJob, setInviteJob] = React.useState('general_manager');
+  const [inviteJob, setInviteJob] = React.useState('');
   const [inviteHotelIds, setInviteHotelIds] = React.useState<string[]>([]);
   const [inviteAllHotels, setInviteAllHotels] = React.useState(true);
   const [inviteBusy, setInviteBusy] = React.useState(false);
@@ -1393,8 +1416,20 @@ export function HotelInviteDialog({
   const invitesAbortRef = React.useRef<AbortController | null>(null);
   const codeSequenceRef = React.useRef(0);
   const invitesSequenceRef = React.useRef(0);
+  const selectedInviteJob = inviteOptions.jobs.find((job) => job.value === inviteJob) ?? null;
+  const allowedInviteHotelIds = new Set(selectedInviteJob?.allowedPropertyIds ?? []);
+  const allowedInviteHotels = inviteOptions.hotels.filter(
+    (hotel) => allowedInviteHotelIds.has(hotel.id),
+  );
 
   const loadCode = React.useCallback(async () => {
+    if (!canManageHotelRoster) {
+      codeAbortRef.current?.abort();
+      setCode(null);
+      setCodeLoading(false);
+      setCodeError('');
+      return;
+    }
     codeAbortRef.current?.abort();
     const controller = new AbortController();
     codeAbortRef.current = controller;
@@ -1421,12 +1456,15 @@ export function HotelInviteDialog({
     } finally {
       if (!controller.signal.aborted && sequence === codeSequenceRef.current) setCodeLoading(false);
     }
-  }, [hotelId, lang]);
+  }, [canManageHotelRoster, hotelId, lang]);
 
   const loadInvites = React.useCallback(async () => {
     if (!canInviteManager) {
       invitesAbortRef.current?.abort();
       setInvites([]);
+      setInviteOptions(NO_INVITE_OPTIONS);
+      setInviteJob('');
+      setInviteHotelIds([]);
       setInvitesLoading(false);
       setInvitesError('');
       return;
@@ -1449,11 +1487,23 @@ export function HotelInviteDialog({
       }
       if (controller.signal.aborted || sequence !== invitesSequenceRef.current) return;
       setInvites(body.data?.invites ?? []);
-      setInviteOptions(body.data?.options ?? NO_INVITE_OPTIONS);
+      const nextOptions = body.data?.options ?? NO_INVITE_OPTIONS;
+      setInviteOptions(nextOptions);
+      setInviteJob((current) => (
+        nextOptions.jobs.some((job) => job.value === current)
+          ? current
+          : nextOptions.jobs[0]?.value ?? ''
+      ));
+      setInviteHotelIds([]);
+      setInviteAllHotels(true);
+      setRevokeInviteId(null);
     } catch (loadError) {
       if (controller.signal.aborted || sequence !== invitesSequenceRef.current) return;
       console.error('[HotelInviteDialog] invite load failed', loadError);
       setInvites([]);
+      setInviteOptions(NO_INVITE_OPTIONS);
+      setInviteJob('');
+      setInviteHotelIds([]);
       setInvitesError(loadError instanceof Error && loadError.message
         ? loadError.message
         : copy(lang, "Couldn't load manager invitations.", 'No se pudieron cargar las invitaciones de gerentes.'));
@@ -1556,27 +1606,39 @@ export function HotelInviteDialog({
       setInviteError(copy(lang, 'Enter a valid email address.', 'Ingresa un correo electrónico válido.'));
       return;
     }
-    // The third question, when it was asked. A company job covers the whole
-    // company; a hotel job covers the boxes that are ticked — and when nothing
-    // was asked at all, the body is byte-identical to the one this form has
-    // always sent.
+    // Role and scope come exclusively from the latest server-derived options.
+    // This prevents a hard-coded default (or stale browser state) from asking
+    // for a role the current caller cannot delegate.
     const selectedJob = inviteOptions.jobs.find((job) => job.value === inviteJob) ?? null;
-    let scoped: { role: string; scope?: string; propertyIds?: string[] } = { role: 'general_manager' };
-    if (selectedJob) {
-      if (!inviteOptions.choosesHotels) {
-        scoped = { role: selectedJob.value };
-      } else if (selectedJob.scope === 'company') {
-        scoped = { role: selectedJob.value, scope: 'company' };
-      } else {
-        const chosen = inviteAllHotels
-          ? inviteOptions.hotels.map((hotel) => hotel.id)
-          : inviteHotelIds;
-        if (chosen.length === 0) {
-          setInviteError(copy(lang, 'Choose at least one hotel.', 'Elige al menos un hotel.'));
-          return;
-        }
-        scoped = { role: selectedJob.value, scope: 'property', propertyIds: chosen };
+    if (!selectedJob) {
+      setInviteError(copy(
+        lang,
+        'Invitation roles are unavailable. Reload and try again.',
+        'Los puestos de invitación no están disponibles. Recarga e inténtalo de nuevo.',
+      ));
+      return;
+    }
+    let scoped: { role: string; scope?: string; propertyIds?: string[] };
+    if (selectedJob.scope === 'company') {
+      scoped = { role: selectedJob.value, scope: 'company' };
+    } else if (inviteOptions.organizationId === null) {
+      if (!selectedJob.allowedPropertyIds.includes(hotelId)) {
+        setInviteError(copy(lang, 'Your hotel access changed. Reload and try again.', 'Tu acceso al hotel cambió. Recarga e inténtalo de nuevo.'));
+        return;
       }
+      scoped = { role: selectedJob.value };
+    } else {
+      const allowed = new Set(selectedJob.allowedPropertyIds);
+      const chosen = inviteOptions.choosesHotels
+        ? inviteAllHotels
+          ? selectedJob.allowedPropertyIds
+          : inviteHotelIds.filter((propertyId) => allowed.has(propertyId))
+        : allowed.has(hotelId) ? [hotelId] : [];
+      if (chosen.length === 0) {
+        setInviteError(copy(lang, 'Choose at least one hotel.', 'Elige al menos un hotel.'));
+        return;
+      }
+      scoped = { role: selectedJob.value, scope: 'property', propertyIds: chosen };
     }
 
     setInviteBusy(true);
@@ -1610,7 +1672,7 @@ export function HotelInviteDialog({
   };
 
   const revokeInvite = async (invite: ManagerInvite) => {
-    if (!canInviteManager) return;
+    if (!canInviteManager || !invite.canRevoke) return;
     if (revokingInviteId) return;
     setRevokingInviteId(invite.id);
     setInvitesError('');
@@ -1640,14 +1702,22 @@ export function HotelInviteDialog({
 
   return (
     <DialogShell
-      title={copy(lang, 'Invite hotel staff', 'Invitar personal del hotel')}
+      title={copy(
+        lang,
+        canManageHotelRoster ? 'Invite hotel staff' : 'Invite a company member',
+        canManageHotelRoster ? 'Invitar personal del hotel' : 'Invitar a un miembro de la empresa',
+      )}
       eyebrow={hotelName}
       description={copy(
         lang,
-        canInviteManager
+        !canManageHotelRoster
+          ? 'Choose the person’s job and the exact company or hotels they may access.'
+          : canInviteManager
           ? 'Staff use the shared link or QR code. General Managers receive an email-specific invitation.'
           : 'Staff use the shared link, signup code, or QR code.',
-        canInviteManager
+        !canManageHotelRoster
+          ? 'Elige el puesto de la persona y la empresa o los hoteles exactos a los que puede acceder.'
+          : canInviteManager
           ? 'El personal usa el enlace compartido o el código QR. Los gerentes generales reciben una invitación específica por correo.'
           : 'El personal usa el enlace compartido, el código de registro o el código QR.',
       )}
@@ -1657,7 +1727,8 @@ export function HotelInviteDialog({
       busy={busy}
       wide
     >
-      <div className={styles.inviteBody} aria-busy={codeLoading || invitesLoading}>
+      <div className={styles.inviteBody} aria-busy={(canManageHotelRoster && codeLoading) || invitesLoading}>
+        {canManageHotelRoster ? (
         <section className={styles.inviteSection} aria-labelledby="staff-invite-heading">
           <div className={styles.inviteSectionHeading}>
             <span className={styles.sectionIcon}><Link2 size={18} aria-hidden="true" /></span>
@@ -1738,22 +1809,30 @@ export function HotelInviteDialog({
             </div>
           )}
           {codeError && code ? <ErrorBanner message={codeError} /> : null}
-          {copyError ? <p className={styles.copyError} role="alert">{copyError}</p> : null}
         </section>
+        ) : null}
 
         {canInviteManager ? (
         <section className={styles.inviteSection} aria-labelledby="manager-invite-heading">
           <div className={styles.inviteSectionHeading}>
             <span className={styles.sectionIcon}><Mail size={18} aria-hidden="true" /></span>
             <div>
-              <h3 id="manager-invite-heading">{copy(lang, 'Invite a General Manager', 'Invitar a un gerente general')}</h3>
-              <p>{copy(lang, 'Use this only for a manager. Operational staff use the shared link above.', 'Usa esto solo para un gerente. El personal operativo usa el enlace compartido de arriba.')}</p>
+              <h3 id="manager-invite-heading">{copy(lang, 'Invite by email', 'Invitar por correo')}</h3>
+              <p>{copy(
+                lang,
+                canManageHotelRoster
+                  ? 'Choose the job and hotel scope. Operational staff can also use the shared link above.'
+                  : 'Choose the job and exact company or hotel scope shown below.',
+                canManageHotelRoster
+                  ? 'Elige el puesto y el alcance del hotel. El personal operativo también puede usar el enlace compartido de arriba.'
+                  : 'Elige el puesto y el alcance exacto de empresa u hotel que se muestra abajo.',
+              )}</p>
             </div>
           </div>
 
           <form className={styles.managerInviteForm} onSubmit={sendManagerInvite}>
             <label className={styles.field}>
-              <span>{copy(lang, 'Manager email', 'Correo del gerente')}</span>
+              <span>{copy(lang, 'Email', 'Correo')}</span>
               <input
                 type="email"
                 value={inviteEmail}
@@ -1764,8 +1843,9 @@ export function HotelInviteDialog({
               />
             </label>
 
-            {/* Question two: what job. Absent for an independent hotel, where
-                this form has only ever created a General Manager. */}
+            {/* Question two: what job. The first current server-authorized job
+                is selected after every options refresh; there is no privileged
+                client-side fallback. */}
             {inviteOptions.jobs.length > 0 ? (
               <label className={styles.field}>
                 <span>{copy(lang, 'What job', 'Qué puesto')}</span>
@@ -1773,6 +1853,8 @@ export function HotelInviteDialog({
                   value={inviteJob}
                   onChange={(event) => {
                     setInviteJob(event.target.value);
+                    setInviteHotelIds([]);
+                    setInviteAllHotels(true);
                     setInviteError('');
                     setLastInvite(null);
                   }}
@@ -1790,8 +1872,8 @@ export function HotelInviteDialog({
             {/* Question three: which hotels. Only somebody who runs a company is
                 ever asked — a General Manager's hotel is implied. */}
             {inviteOptions.choosesHotels
-              && inviteOptions.hotels.length > 0
-              && (inviteOptions.jobs.find((job) => job.value === inviteJob)?.scope ?? 'property') === 'property'
+              && allowedInviteHotels.length > 0
+              && selectedInviteJob?.scope === 'property'
               ? (
                 <fieldset className={styles.hotelChoices} disabled={inviteBusy}>
                   <legend>{copy(lang, 'Which hotels', 'Qué hoteles')}</legend>
@@ -1801,9 +1883,9 @@ export function HotelInviteDialog({
                       checked={inviteAllHotels}
                       onChange={(event) => { setInviteAllHotels(event.target.checked); setInviteError(''); }}
                     />
-                    {copy(lang, 'All hotels', 'Todos los hoteles')}
+                    {copy(lang, 'All allowed hotels', 'Todos los hoteles permitidos')}
                   </label>
-                  {inviteAllHotels ? null : inviteOptions.hotels.map((hotel) => (
+                  {inviteAllHotels ? null : allowedInviteHotels.map((hotel) => (
                     <label key={hotel.id}>
                       <input
                         type="checkbox"
@@ -1823,12 +1905,23 @@ export function HotelInviteDialog({
                 </fieldset>
               ) : null}
 
-            <button type="submit" className={styles.primaryButton} disabled={!inviteEmail.trim() || inviteBusy}>
+            <button
+              type="submit"
+              className={styles.primaryButton}
+              disabled={!inviteEmail.trim() || inviteBusy || !selectedInviteJob}
+            >
               {inviteBusy
                 ? <BusyLabel lang={lang} en="Creating…" es="Creando…" />
                 : <><Mail size={15} aria-hidden="true" />{copy(lang, 'Create invitation', 'Crear invitación')}</>}
             </button>
           </form>
+          {!invitesLoading && inviteOptions.jobs.length === 0 && !invitesError ? (
+            <ErrorBanner message={copy(
+              lang,
+              'Invitation roles are unavailable. Reload this list before inviting someone.',
+              'Los puestos de invitación no están disponibles. Recarga esta lista antes de invitar a alguien.',
+            )} />
+          ) : null}
           {inviteError ? <ErrorBanner message={inviteError} /> : null}
 
           {lastInvite ? (
@@ -1852,7 +1945,7 @@ export function HotelInviteDialog({
           ) : null}
 
           <div className={styles.inviteListHeading}>
-            <h4>{copy(lang, 'Manager invitations', 'Invitaciones de gerentes')}</h4>
+            <h4>{copy(lang, 'Email invitations', 'Invitaciones por correo')}</h4>
             {!invitesLoading && !invitesError ? <span>{invites.length}</span> : null}
           </div>
           {invitesLoading ? (
@@ -1866,12 +1959,13 @@ export function HotelInviteDialog({
             <div className={styles.inviteList} role="list">
               {invites.map((invite) => {
                 const expired = new Date(invite.expires_at).getTime() <= Date.now();
-                const confirming = revokeInviteId === invite.id;
+                const confirming = invite.canRevoke && revokeInviteId === invite.id;
                 return (
                   <div key={invite.id} className={styles.inviteRow} role="listitem">
                     <span className={expired ? styles.expiredInviteIcon : styles.pendingInviteIcon}><Mail size={15} aria-hidden="true" /></span>
                     <div>
                       <strong>{invite.email}</strong>
+                      <span>{pendingInviteScopeLabel(invite, lang)}</span>
                       <span>{expired
                         ? copy(lang, `Expired ${formatDate(invite.expires_at, lang)}`, `Venció el ${formatDate(invite.expires_at, lang)}`)
                         : copy(lang, `Pending · expires ${formatDate(invite.expires_at, lang)}`, `Pendiente · vence el ${formatDate(invite.expires_at, lang)}`)}</span>
@@ -1884,26 +1978,31 @@ export function HotelInviteDialog({
                           {revokingInviteId === invite.id ? <span className={styles.buttonSpinner} aria-hidden="true" /> : copy(lang, 'Yes', 'Sí')}
                         </button>
                       </div>
-                    ) : (
+                    ) : invite.canRevoke ? (
                       <button
                         type="button"
                         className={styles.revokeButton}
                         onClick={() => setRevokeInviteId(invite.id)}
                         disabled={Boolean(revokingInviteId)}
-                        aria-label={copy(lang, `Revoke invitation for ${invite.email}`, `Revocar invitación para ${invite.email}`)}
+                        aria-label={copy(
+                          lang,
+                          `Revoke ${pendingInviteScopeLabel(invite, lang)} invitation for ${invite.email}`,
+                          `Revocar invitación ${pendingInviteScopeLabel(invite, lang)} para ${invite.email}`,
+                        )}
                       >
                         <Trash2 size={15} aria-hidden="true" />
                       </button>
-                    )}
+                    ) : null}
                   </div>
                 );
               })}
             </div>
           ) : (
-            <div className={styles.allCaughtUp}><CheckCircle2 size={18} aria-hidden="true" /><span>{copy(lang, 'No pending or expired manager invitations.', 'No hay invitaciones de gerentes pendientes o vencidas.')}</span></div>
+            <div className={styles.allCaughtUp}><CheckCircle2 size={18} aria-hidden="true" /><span>{copy(lang, 'No pending or expired email invitations.', 'No hay invitaciones por correo pendientes o vencidas.')}</span></div>
           )}
         </section>
         ) : null}
+        {copyError ? <p className={styles.copyError} role="alert">{copyError}</p> : null}
       </div>
 
       <div className={styles.dialogFooter}>

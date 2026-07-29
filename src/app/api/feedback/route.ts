@@ -10,7 +10,7 @@
 
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireSession } from '@/lib/api-auth';
+import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
@@ -80,29 +80,27 @@ export async function POST(req: NextRequest) {
     rating = n;
   }
 
-  // Pull user display name + email AND property_access in one round-trip
-  // so we can both denormalize identity onto the feedback row AND verify
-  // the caller has access to whatever propertyId they're claiming. Without
+  // Pull the cosmetic identity fields used on the feedback row. Property
+  // authority is resolved separately through the canonical current resolver;
+  // the legacy property_access array is rollback material after cutover. Without
   // the capability check, a signed-in team member of Hotel A could submit
   // feedback tagged with Hotel B's id (admin's "feedback by hotel" view
   // would attribute the complaint to the wrong property).
   const { data: account } = await supabaseAdmin
     .from('accounts')
-    .select('display_name, email, role, property_access')
+    .select('display_name, email')
     .eq('data_user_id', session.userId)
     .maybeSingle();
 
   // propertyId is optional — feedback CAN be untagged (a generic "love this
   // app" from a multi-property owner). But when supplied it must be a valid
-  // UUID and within the caller's property_access (admins bypass).
+  // UUID and within the caller's current authoritative property set.
   let propertyId: string | null = null;
   if (body.propertyId !== undefined && body.propertyId !== null && body.propertyId !== '') {
     const pidCheck = validateUuid(body.propertyId, 'propertyId');
     if (pidCheck.error) return err(pidCheck.error, { requestId, status: 400 });
     const claimedPid = pidCheck.value!;
-    const isAdmin = account?.role === 'admin';
-    const access = Array.isArray(account?.property_access) ? account!.property_access : [];
-    if (!isAdmin && !access.includes(claimedPid)) {
+    if (!(await userHasPropertyAccess(session.userId, claimedPid))) {
       return err('You do not have access to that property', { requestId, status: 403 });
     }
     propertyId = claimedPid;

@@ -256,13 +256,14 @@ describe('the portfolio prompt', () => {
     assert.ok(stable.indexOf('Company rulebook') < stable.indexOf('The hotels you are being asked about'));
   });
 
-  it('states that it cannot act, and that hotels outside the list do not exist here', async () => {
+  it('states that it cannot act and distinguishes active scope from outside authorization', async () => {
     const { stable } = await buildPortfolioSystemPrompt({
       identity: IDENTITY, companyRole: 'vp', snapshot: portfolioSnapshot(5),
       conversationId: 'conv-portfolio', now: NOW,
     });
     assert.match(stable, /There are no action tools here/);
     assert.match(stable, /Never say a thing was done/);
+    assert.match(stable, /may simply be outside this turn's selected subset/);
     assert.match(stable, /is another company's hotel/);
   });
 });
@@ -318,7 +319,7 @@ describe('portfolio cache purity', () => {
       companyRole: 'vp', snapshot: portfolioSnapshot(5),
       conversationId: 'conv-portfolio', now: NOW,
     });
-    assert.match(two.versionLabel, /portfolio-mode-v2/);
+    assert.match(two.versionLabel, /portfolio-mode-v3/);
     assert.match(two.versionLabel, new RegExp(`org:${ORG_ID}`));
     assert.notEqual(two.versionLabel, one.versionLabel, 'the reach digest moved with the reach');
     // The PRINTED stamp must not: it is inside the cached block, so a per-turn

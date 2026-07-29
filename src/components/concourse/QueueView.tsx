@@ -58,7 +58,9 @@ import React from 'react';
 
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
 
 import { CxStyle } from './concourse-css';
@@ -67,6 +69,12 @@ import { FindingCards, type QueueReadState } from './FindingCards';
 import { MorningBriefView, type BriefPayload } from './MorningBriefCard';
 import { PortfolioQueueView, type PortfolioScope } from './PortfolioQueueView';
 import { parseFocusParam, parsePidParam, resolveDrillDown } from './finding-cards';
+import {
+  hotelFallbackState,
+  portfolioScopeForViewer,
+  shouldRenderQueueIdentityLoading,
+  shouldRenderPortfolioProbe,
+} from './portfolio-queue-request';
 
 /** A finding id from `?focus=`, or null. Read from the URL rather than taken as
  *  a prop so any tab can deep-link here without this component knowing it
@@ -96,6 +104,33 @@ function useRequestedHotel(): string | null {
   }, []);
 
   return pid;
+}
+
+/**
+ * The company selected by the command centre, including an intentionally
+ * empty/invalid value. Validation belongs to the server; collapsing a bad
+ * explicit selection to "omitted" here could make the server fall back to a
+ * different company. `undefined` is only the pre-hydration state, so the
+ * company probe cannot race ahead without the selection carried in the URL.
+ */
+function useRequestedOrganization(): string | null | undefined {
+  const [organizationId, setOrganizationId] = React.useState<string | null | undefined>(undefined);
+
+  React.useEffect(() => {
+    const read = () => {
+      const params = new URLSearchParams(window.location.search);
+      const values = params.getAll('organizationId');
+      // Keep an explicit invalid sentinel for duplicate selection rather than
+      // collapsing it to the first value. Both the queue and drill-down
+      // coverage routes will then reject it instead of silently choosing one.
+      setOrganizationId(values.length === 0 ? null : values.length === 1 ? values[0]! : '');
+    };
+    read();
+    window.addEventListener('popstate', read);
+    return () => window.removeEventListener('popstate', read);
+  }, []);
+
+  return organizationId;
 }
 
 /** Only the part of the picker payload this screen needs. */
@@ -132,6 +167,14 @@ const S = {
     en: 'This hotel’s own queue belongs to the people who run it. Everything that reached you about it is on your company queue.',
     es: 'La cola de este hotel es de las personas que lo operan. Todo lo que llegó hasta ti sobre él está en la cola de tu empresa.',
   },
+  noHotelQueueTitle: {
+    en: 'The hotel findings queue is for managers',
+    es: 'La cola de hallazgos del hotel es para gerentes',
+  },
+  noHotelQueueBody: {
+    en: 'This account has no company queue and does not manage this hotel’s findings. Your assigned hotel sections are still available above.',
+    es: 'Esta cuenta no tiene una cola de empresa y no administra los hallazgos de este hotel. Tus secciones asignadas siguen disponibles arriba.',
+  },
 } as const;
 
 const QV_CSS = `
@@ -143,6 +186,8 @@ const QV_CSS = `
   font-family:var(--font-geist-mono),ui-monospace,monospace;}
 .qv-stop{margin-top:20px;border-radius:16px;border:1px solid rgba(201,150,68,.35);background:#FDFAF4;
   padding:16px 17px;}
+.qv-empty{margin-top:20px;border-radius:16px;border:1px solid rgba(31,35,28,.08);background:#FAFBF9;
+  padding:16px 17px;}
 .qv-stopt{font-size:14px;font-weight:600;color:#1F231C;}
 .qv-stops{font-size:12.5px;color:#5C625C;line-height:1.6;margin-top:4px;}
 `;
@@ -153,9 +198,42 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
 
   const [focusId, setFocusId] = useFocusedFinding();
   const requestedPid = useRequestedHotel();
+  const requestedOrganizationId = useRequestedOrganization();
+  const portfolioHref = requestedOrganizationId === null || requestedOrganizationId === undefined
+    ? '/feed'
+    : `/feed?organizationId=${encodeURIComponent(requestedOrganizationId)}`;
+  const coverageUrl = requestedOrganizationId === null || requestedOrganizationId === undefined
+    ? '/api/property-selector/bootstrap'
+    : `/api/property-selector/bootstrap?organizationId=${encodeURIComponent(requestedOrganizationId)}`;
 
   const { user } = useAuth();
-  const { activePropertyId, properties, setActivePropertyId } = useProperty();
+  const hotelStanding = useActiveHotelStanding();
+  const {
+    activePropertyId,
+    properties,
+    loading: propertiesLoading,
+    setActivePropertyId,
+  } = useProperty();
+
+  // Stable endpoints below are still authorization-scoped resources. Include
+  // both the legacy explicit grants and the server-resolved hotel set: company
+  // hats can grant hotels that are absent from accounts.property_access. The
+  // active hotel is part of an admin's viewer identity because their hotel
+  // surfaces are an explicit preview target.
+  const resolvedPropertyKey = properties.map((property) => property.id).sort().join(',');
+  const viewerAuthorizationKey = user && !propertiesLoading
+    ? buildCompanyAccessViewerKey({
+        uid: user.uid,
+        accountId: user.accountId,
+        role: user.role,
+        propertyAccess: user.propertyAccess,
+        resolvedPropertyKey,
+        adminTargetPropertyId: user.role === 'admin' ? activePropertyId : null,
+      })
+    : null;
+  const portfolioAuthorizationKey = viewerAuthorizationKey && requestedOrganizationId !== undefined
+    ? `${viewerAuthorizationKey}|organization:${requestedOrganizationId ?? 'auto'}`
+    : null;
 
   // Gate at the FETCH, not the render: a housekeeper who opens this tab never
   // asks for a HOTEL brief at all, so a 403 in the logs always means something
@@ -169,7 +247,10 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // picker let her in, this screen showed her nothing, and nothing on it said
   // why. The probe now runs for everybody and answers from the person's hats;
   // only the hotel brief stays manager-gated.
-  const canSeeHotelBrief = !!user && canManageTeam(user.role);
+  const canSeeHotelBrief = !!user
+    && hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
 
   // ── who may open which hotel: asked ONLY when a link named one ────────────
   // The same read the hotel picker uses, so "which hotels do I cover" has one
@@ -183,8 +264,11 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // and asking the manager gate here would put her back in front of a screen
   // that cannot explain itself.
   const { data: coverage, error: coverageError } = useApiResource<CoveragePayload>(
-    '/api/property-selector/bootstrap',
-    { enabled: !!user && !!requestedPid },
+    coverageUrl,
+    {
+      enabled: !!portfolioAuthorizationKey && !!requestedPid,
+      identityKey: portfolioAuthorizationKey,
+    },
   );
 
   // Two independent questions, asked in one place: does this reader COVER the
@@ -223,11 +307,21 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // the product today — and those people fall straight through to the hotel
   // queue below with nothing changed.
   //
-  // `undefined` means the probe has not answered yet, and it renders NOTHING
-  // rather than flashing the hotel feed and swapping it out from under a VP.
-  const [companyScope, setCompanyScope] = React.useState<PortfolioScope | null | undefined>(
-    undefined,
+  // `undefined` means the probe has not answered yet. PortfolioQueueView owns
+  // an explicit loading state during that interval rather than rendering a
+  // blank page or flashing the hotel feed and swapping it out from under a VP.
+  const [companyScopeSnapshot, setCompanyScopeSnapshot] = React.useState<{
+    viewerKey: string;
+    scope: PortfolioScope | null;
+  } | null>(null);
+  const companyScope = portfolioScopeForViewer(
+    companyScopeSnapshot,
+    portfolioAuthorizationKey,
   );
+  const setCurrentCompanyScope = React.useCallback((scope: PortfolioScope | null) => {
+    if (!portfolioAuthorizationKey) return;
+    setCompanyScopeSnapshot({ viewerKey: portfolioAuthorizationKey, scope });
+  }, [portfolioAuthorizationKey]);
   // A drill-down skips the portfolio probe entirely: the expensive half of
   // /api/company/queue (the day's checks, the approver directory, sign-off per
   // proposal, judged phrasing) exists to render a screen we are not rendering.
@@ -236,16 +330,38 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   const hotelBrand = drilling ? (coverage?.company?.organizationName ?? null) : null;
 
   // Not fetched until the probe has said this is a hotel person. A VP would
-  // otherwise pull one arbitrary hotel's morning brief on every load — a wasted
-  // read, and one that can make a model call.
-  const isHotelPerson = !drilling && canSeeHotelBrief && companyScope === null;
+  // otherwise pull one arbitrary hotel's morning brief on every load. The GET
+  // is deterministic, but it is still work for a screen the VP does not use.
+  const fallback = hotelFallbackState(companyScope, canSeeHotelBrief);
+  const showPortfolioProbe = shouldRenderPortfolioProbe(companyScope);
+  const isHotelPerson = !drilling && fallback === 'hotel';
   const briefFor = drill.state === 'open' ? drill.propertyId : (isHotelPerson ? activePropertyId : null);
 
   const { data, error } = useApiResource<BriefPayload>(
     `/api/findings/brief?propertyId=${briefFor}`,
-    { enabled: canSeeHotelBrief && !!briefFor },
+    {
+      enabled: canSeeHotelBrief && !!briefFor && !!viewerAuthorizationKey,
+      identityKey: viewerAuthorizationKey,
+    },
   );
   const brief = briefFor ? data?.brief ?? null : null;
+
+  // PropertyContext intentionally masks its old hotel set before its passive
+  // load effect runs. Keep that safe interval visible: mounting the portfolio
+  // probe without an exact identity would risk stale tenant data, while
+  // rendering nothing made a healthy bounded property load look like a stuck
+  // navigation.
+  if (shouldRenderQueueIdentityLoading(!!user, portfolioAuthorizationKey)) {
+    return (
+      <div className="cx-page cx-swap" data-feed-state="loading">
+        <CxStyle />
+        <style dangerouslySetInnerHTML={{ __html: QV_CSS }} />
+        <div className="qv-wait" role="status" aria-live="polite" aria-busy="true">
+          {L('loading')}
+        </div>
+      </div>
+    );
+  }
 
   if (drill.state === 'checking') {
     // Deliberately not the portfolio queue and not the hotel queue: we do not
@@ -271,7 +387,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           <div className="qv-stops">{refused ? L('refusedBody') : L('unavailableBody')}</div>
         </div>
         <div style={{ marginTop: 14 }}>
-          <a className="qv-back" href="/feed">← {L('backToPortfolio')}</a>
+          <a className="qv-back" href={portfolioHref}>← {L('backToPortfolio')}</a>
         </div>
       </div>
     );
@@ -290,7 +406,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
           <div className="qv-stops">{L('readerOnlyBody')}</div>
         </div>
         <div style={{ marginTop: 14 }}>
-          <a className="qv-back" href="/feed">
+          <a className="qv-back" href={portfolioHref}>
             ← {hotelBrand ? `${L('backTo')} ${hotelBrand}` : L('backToPortfolio')}
           </a>
         </div>
@@ -309,6 +425,7 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
         readFailed={!!error}
         focusId={focusId}
         setFocusId={setFocusId}
+        backHref={portfolioHref}
       />
     );
   }
@@ -320,15 +437,34 @@ export function QueueView({ lang }: { lang: 'en' | 'es' }) {
   // endpoint, and no way for the two screens to both be on the page.
   return (
     <>
-      {!!user && <PortfolioQueueView lang={lang} onScope={setCompanyScope} />}
+      {!!portfolioAuthorizationKey && showPortfolioProbe && (
+        <PortfolioQueueView
+          key={portfolioAuthorizationKey}
+          lang={lang}
+          organizationId={requestedOrganizationId ?? null}
+          authorizationKey={portfolioAuthorizationKey}
+          onScope={setCurrentCompanyScope}
+        />
+      )}
       {isHotelPerson && (
         <HotelQueue
           lang={lang}
+          propertyId={activePropertyId ?? undefined}
           brief={brief}
           readFailed={!!error}
           focusId={focusId}
           setFocusId={setFocusId}
         />
+      )}
+      {!drilling && fallback === 'empty' && (
+        <div className="cx-page cx-swap" data-feed-state="empty">
+          <CxStyle />
+          <style dangerouslySetInnerHTML={{ __html: QV_CSS }} />
+          <div className="qv-empty" role="status">
+            <div className="qv-stopt">{L('noHotelQueueTitle')}</div>
+            <div className="qv-stops">{L('noHotelQueueBody')}</div>
+          </div>
+        </div>
       )}
     </>
   );
@@ -361,6 +497,7 @@ function HotelQueue({
   readFailed,
   focusId,
   setFocusId,
+  backHref = '/feed',
 }: {
   lang: 'en' | 'es';
   /** Set only on a portfolio drill-down. Absent = the hotel the app is in. */
@@ -371,13 +508,23 @@ function HotelQueue({
   readFailed: boolean;
   focusId: string | null;
   setFocusId: (id: string | null) => void;
+  backHref?: string;
 }) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => (es ? S[k].es : S[k].en);
   const [readState, setReadState] = React.useState<QueueReadState>('idle');
 
   return (
-    <div className="cx-page cx-swap">
+    <div
+      className="cx-page cx-swap"
+      data-feed-state={
+        readState === 'failed'
+          ? 'error'
+          : readState === 'ready'
+            ? 'ready'
+            : 'loading'
+      }
+    >
       <CxStyle />
       <style dangerouslySetInnerHTML={{ __html: QV_CSS }} />
 
@@ -386,7 +533,7 @@ function HotelQueue({
           must be able to get back to it without the browser button. */}
       {backLabel && (
         <div style={{ marginBottom: 6 }}>
-          <a className="qv-back" href="/feed">← {backLabel}</a>
+          <a className="qv-back" href={backHref}>← {backLabel}</a>
         </div>
       )}
 
@@ -402,6 +549,7 @@ function HotelQueue({
       />
 
       <FindingCards
+        key={propertyId ?? 'no-property'}
         lang={lang}
         propertyId={propertyId}
         focusId={focusId}
@@ -416,7 +564,7 @@ function HotelQueue({
           would actually cost somebody money. */}
       {readState === 'loading' && <div className="qv-wait">{L('loading')}</div>}
 
-      <DripQuestionCard lang={lang} />
+      <DripQuestionCard key={propertyId ?? 'no-property'} lang={lang} propertyId={propertyId} />
     </div>
   );
 }

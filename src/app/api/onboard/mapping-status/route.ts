@@ -1,4 +1,4 @@
-// @audit: tenant-scope-not-applicable — code-gated public onboarding status poll. Tenant scope IS enforced, but via the join-code capability check (resolvePropertyId → hotel_join_codes), not a session: the code is the bearer credential, same trust model as GET /api/onboard/wizard. Deliberately not session-gated (polled ~every 3s; fetchWithAuth would sign the user out on a transient 2FA refresh) and returns only aggregate room counts, no guest PII. Invalid-code probes are IP-rate-limited (dedicated bucket) to bound enumeration; valid polling is never limited.
+// @audit: tenant-scope-not-applicable — code-gated public onboarding status poll. Tenant scope IS enforced by the service-only exact-bearer capability RPC, not a session: the code is the bearer credential, same trust model as GET /api/onboard/wizard. Deliberately not session-gated (polled ~every 3s; fetchWithAuth would sign the user out on a transient 2FA refresh) and returns only aggregate room counts, no guest PII. Invalid-code probes are IP-rate-limited (dedicated bucket) to bound enumeration; valid polling is never limited.
 /**
  * GET /api/onboard/mapping-status?code=XXXX
  *
@@ -43,6 +43,11 @@ import { errToString, todayStr } from '@/lib/utils';
 import { PMS_REGISTRY } from '@/lib/pms/registry';
 import type { PMSType } from '@/lib/pms/types';
 import { checkAndIncrementRateLimit, rateLimitedResponse, ipToRateLimitKey, trustedClientIp } from '@/lib/api-ratelimit';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import {
+  isOnboardingJoinCodeCapability,
+  resolveJoinCodeCapability,
+} from '@/lib/join-code-capability';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -76,26 +81,6 @@ interface LiveNumbers {
   guestsInHouse: Metric;
   arrivalsToday: Metric;
   departuresToday: Metric;
-}
-
-/**
- * Resolve a join code → propertyId. Local copy of the canonical lookup in
- * src/app/api/onboard/wizard/route.ts (resolvePropertyByCode) — duplicated,
- * not imported, so this additive route never has to edit the shared wizard
- * route. Keep the two in sync if hotel_join_codes changes.
- */
-async function resolvePropertyId(code: string): Promise<string | null> {
-  const normalized = code.trim().toUpperCase();
-  if (!normalized) return null;
-  const { data, error } = await supabaseAdmin
-    .from('hotel_join_codes')
-    .select('hotel_id, revoked_at, expires_at')
-    .eq('code', normalized)
-    .maybeSingle();
-  if (error || !data) return null;
-  if (data.revoked_at) return null;
-  if (new Date(data.expires_at as string).getTime() <= Date.now()) return null;
-  return data.hotel_id as string;
 }
 
 function num(v: unknown): number | null {
@@ -309,7 +294,18 @@ export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const code = new URL(req.url).searchParams.get('code') ?? '';
 
-  const propertyId = await resolvePropertyId(code);
+  const codeResolution = await resolveJoinCodeCapability(code);
+  if (codeResolution.outcome === 'unavailable') {
+    log.error('[onboard/mapping-status] join-code capability unavailable', {
+      requestId,
+      databaseCode: codeResolution.databaseCode,
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+  const propertyId = codeResolution.outcome === 'resolved'
+    && isOnboardingJoinCodeCapability(codeResolution.receipt)
+    ? codeResolution.receipt.hotelId
+    : null;
   if (!propertyId) {
     // Rate-limit ONLY invalid-code probes (per IP) to bound brute-force
     // enumeration of the join-code space. Valid polling of a real code is

@@ -47,6 +47,8 @@ let fromCalls: FromCall[] = [];
 
 const OWNER_ID = '11111111-1111-1111-1111-111111111111';
 const PROPERTY_ID = '22222222-2222-2222-2222-222222222222';
+const ACCOUNT_ID = '33333333-3333-4333-8333-333333333333';
+const LEGACY_ENTITLEMENT_ID = '44444444-4444-4444-8444-444444444444';
 
 // Default mock outcomes — tests override before calling the route.
 let nextRpcResult: { data: unknown; error: { message: string; code?: string } | null } = {
@@ -79,6 +81,42 @@ beforeEach(() => {
     rpcCalls.push({ fn, args });
     if (fn === 'staxis_api_limit_hit') {
       return { data: 1, error: null };
+    }
+    if (fn === 'staxis_list_account_authorized_properties') {
+      const propertyIds = [...accountPropertyAccess].sort();
+      const manager = accountRole === 'owner'
+        || accountRole === 'general_manager'
+        || accountRole === 'admin';
+      return {
+        data: {
+          ok: true,
+          all: false,
+          authorityMode: 'legacy',
+          authorityVersion: 1,
+          effectiveAccessHash: 'a'.repeat(64),
+          propertyIds,
+          legacyPropertyIds: propertyIds,
+          membershipPropertyIds: [],
+          propertyStandings: propertyIds.map((propertyId) => ({
+            propertyId,
+            operationalRole: accountRole,
+            seesFinancials: manager,
+            hotelMutationAllowed: manager,
+            portfolioIntelligenceRead: false,
+            entitlements: [{
+              kind: 'legacy',
+              entitlementId: LEGACY_ENTITLEMENT_ID,
+              organizationId: null,
+              membershipId: null,
+              accessProfile: null,
+              staxisRole: null,
+              scopeType: null,
+              portfolioId: null,
+            }],
+          })),
+        },
+        error: null,
+      };
     }
     if (fn === 'staxis_upsert_scraper_credentials') {
       return nextRpcResult;
@@ -114,7 +152,13 @@ beforeEach(() => {
         // both reads so the route reaches its actual handler logic.
         if (table === 'accounts') {
           return {
-            data: { id: 'account-id', skip_2fa: false, role: accountRole, property_access: accountPropertyAccess },
+            data: {
+              id: ACCOUNT_ID,
+              active: true,
+              skip_2fa: false,
+              role: accountRole,
+              property_access: accountPropertyAccess,
+            },
             error: null,
           };
         }

@@ -18,10 +18,13 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { canManageTeam, type AppRole } from '@/lib/roles';
-import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getLatestConsolidation, listLearnedMemory, deactivateMemoryById } from '@/lib/db/agent-memory';
 import { insightSeverityFromTopic } from '@/lib/agent/operational-signals';
+import {
+  loadSessionAccount,
+  managerManagesHotel,
+  type ManagerCaller,
+} from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -31,30 +34,10 @@ export const dynamic = 'force-dynamic';
 // (it stays in long-term memory until its 75-day expiry).
 const NOTICED_FRESH_DAYS = 14;
 
-interface Caller {
-  role: AppRole;
-  propertyAccess: string[];
-}
-
-async function loadCaller(authUserId: string): Promise<Caller | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('role, property_access')
-    .eq('data_user_id', authUserId)
-    .maybeSingle();
-  if (error || !data) return null;
-  return {
-    role: (data as { role: string }).role as AppRole,
-    propertyAccess: Array.isArray((data as { property_access?: unknown }).property_access)
-      ? (data as { property_access: string[] }).property_access
-      : [],
-  };
-}
-
-function callerManagesProperty(caller: Caller, propertyId: string): boolean {
-  if (caller.role === 'admin') return true;
-  if (caller.propertyAccess.includes('*')) return true;
-  return caller.propertyAccess.includes(propertyId);
+function canMutateAt(caller: ManagerCaller, propertyId: string): boolean {
+  if (caller.reachesAllProperties) return true;
+  return caller.propertyStandings?.find((standing) => standing.propertyId === propertyId)
+    ?.hotelMutationAllowed === true;
 }
 
 export async function GET(req: NextRequest) {
@@ -62,13 +45,10 @@ export async function GET(req: NextRequest) {
   const session = await requireSession(req, { requestId });
   if (!session.ok) return session.response;
 
-  const caller = await loadCaller(session.userId);
-  if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!canManageTeam(caller.role)) return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-
   const pidV = validateUuid(new URL(req.url).searchParams.get('propertyId'), 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerManagesProperty(caller, pidV.value!)) {
+  const caller = await loadSessionAccount(session.userId);
+  if (!caller || !managerManagesHotel(caller, pidV.value!)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 
@@ -126,13 +106,10 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as PostBody | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
 
-  const caller = await loadCaller(session.userId);
-  if (!caller) return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  if (!canManageTeam(caller.role)) return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
-
   const pidV = validateUuid(body.propertyId, 'propertyId');
   if (pidV.error) return err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  if (!callerManagesProperty(caller, pidV.value!)) {
+  const caller = await loadSessionAccount(session.userId);
+  if (!caller || !managerManagesHotel(caller, pidV.value!) || !canMutateAt(caller, pidV.value!)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

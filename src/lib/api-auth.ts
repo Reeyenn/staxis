@@ -29,6 +29,7 @@ import { env } from '@/lib/env';
 import { hashDeviceToken, readDeviceCookie } from '@/lib/trusted-device';
 import { logSecurityEvent } from '@/lib/audit';
 import { isTwoFactorEnabled } from '@/lib/two-factor';
+import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 
 /**
  * Classification of session-validation failure modes. The client (fetchWithAuth)
@@ -746,43 +747,22 @@ export async function requireSession(
  * Returns true if the caller has access, false otherwise. The caller
  * decides whether to 403 or silently no-op.
  *
- * COMPANY SPINE (0364): the legacy `property_access` array is still the first
- * and fastest answer, and it is never narrowed. When it says no, a second
- * question is asked — does this person hold a job at a company that operates
- * this hotel? That is how a VP who oversees twelve hotels reaches them without
- * twelve rows being stamped into an array, and how a hotel bought next month is
- * reachable the moment it is attached to the company.
- *
- * Both walls live here. Wall A: a property-scope hat covers only the hotels
- * named on its own row, so a front-desk person at hotel #7 is refused #12.
- * Wall B: coverage is only ever drawn from the hat's OWN organization, so no
- * company's people can be handed another company's hotel.
+ * Authority mode is selected in PostgreSQL. Legacy/shadow accounts read only
+ * the old array; normalized accounts read only normalized entitlements and
+ * cutover bridges. Never consult the legacy array first: doing so would let a
+ * revoked or transferred hotel remain reachable after normalized cutover.
  */
 export async function userHasPropertyAccess(userId: string, pid: string): Promise<boolean> {
   try {
     const { data, error } = await supabaseAdmin
       .from('accounts')
-      .select('id, role, property_access, active')
+      .select('id, active')
       .eq('data_user_id', userId)
       .maybeSingle();
-    if (error || !data) return false;
-    // A DEACTIVATED account reaches nothing. Every other account reader in this
-    // codebase says so — `loadSessionAccount`, `verifyTeamManager` and
-    // `readAccount` in company/access.ts all refuse `active === false` — and
-    // this one, the gate the most routes call, did not. Deactivation is
-    // supposed to be the one action that ends somebody's access everywhere;
-    // it cannot have an exception, least of all the widest reader.
-    if ((data as { active?: boolean | null }).active === false) return false;
-    if (data.role === 'admin') return true;  // admins access every property
-    const access = (data.property_access ?? []) as string[];
-    if (access.includes(pid) || access.includes('*')) return true;
-
-    const accountId = (data as { id?: string }).id;
-    if (!accountId) return false;
-    // Additive only. A failure here can never turn a legacy `true` into a
-    // `false` — that branch already returned above.
-    const { accountReachesProperty } = await import('@/lib/company/access');
-    return await accountReachesProperty(accountId, pid);
+    if (error || !data || data.active !== true) return false;
+    const authority = await listAuthoritativePropertyAccess(data.id as string);
+    return authority !== null
+      && (authority.all || authority.propertyIds.includes(pid));
   } catch {
     return false;
   }

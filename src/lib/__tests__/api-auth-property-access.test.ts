@@ -28,6 +28,8 @@ type AccountsRow = {
 
 type FromFn = typeof supabaseAdmin.from;
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
+type RpcFn = typeof supabaseAdmin.rpc;
+const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
 let nextResult: { data: AccountsRow; error: { message: string } | null } = {
   data: null,
@@ -49,16 +51,66 @@ beforeEach(() => {
           maybeSingle: async () => {
             fromCalls.push({ table, uid: val });
             if (throwOnQuery) throw new Error('connection reset');
-            return nextResult;
+            return nextResult.data
+              ? {
+                  data: {
+                    ...nextResult.data,
+                    id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+                    active: true,
+                  },
+                  error: nextResult.error,
+                }
+              : nextResult;
           },
         }),
       }),
     };
   };
+  supabaseAdmin.rpc = (async (fn: string) => {
+    assert.equal(fn, 'staxis_list_account_authorized_properties');
+    const row = nextResult.data;
+    if (!row) return { data: null, error: { message: 'no account' } };
+    const all = row.role === 'admin' || (row.property_access ?? []).includes('*');
+    const propertyIds = all
+      ? []
+      : [...(row.property_access ?? [])].sort();
+    const manager = row.role === 'admin' || row.role === 'owner' || row.role === 'general_manager';
+    return {
+      data: {
+        ok: true,
+        all,
+        authorityMode: 'legacy',
+        authorityVersion: 1,
+        effectiveAccessHash: 'a'.repeat(64),
+        propertyIds,
+        legacyPropertyIds: propertyIds,
+        membershipPropertyIds: [],
+        propertyStandings: propertyIds.map((propertyId) => ({
+          propertyId,
+          operationalRole: row.role,
+          seesFinancials: manager,
+          hotelMutationAllowed: true,
+          portfolioIntelligenceRead: false,
+          entitlements: [{
+            kind: 'legacy',
+            entitlementId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+            organizationId: null,
+            membershipId: null,
+            accessProfile: null,
+            staxisRole: null,
+            scopeType: null,
+            portfolioId: null,
+          }],
+        })),
+      },
+      error: null,
+    };
+  }) as unknown as RpcFn;
 });
 
 afterEach(() => {
   supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
 });
 
 const PID_A = '00000000-0000-0000-0000-0000000000aa';

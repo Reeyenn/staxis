@@ -76,13 +76,16 @@
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { defineRoute, sessionGate } from '@/lib/api-route';
+import { userHasPropertyAccess } from '@/lib/api-auth';
 import { ApiErrorCode } from '@/lib/api-response';
 import { log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { canManageTeam, isValidRole, type AppRole } from '@/lib/roles';
-import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { upsertCleanTimeStandards } from '@/lib/clean-time-standards-server';
+import {
+  accountCapabilityDecisionForProperty,
+  loadSessionAccount,
+} from '@/lib/team-auth';
 import {
   parseHousekeepingSetup,
   isHousekeepingSetupComplete,
@@ -109,32 +112,6 @@ const SETUP_DEFAULTS = {
   minMinutes: HK_MIN_CLEAN_MINUTES,
   maxMinutes: HK_MAX_CLEAN_MINUTES,
 } as const;
-
-interface CallerAccount {
-  id: string;
-  property_access: string[];
-  role: AppRole;
-}
-
-async function resolveCallerAccount(authUserId: string): Promise<CallerAccount | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('id, property_access, role')
-    .eq('data_user_id', authUserId)
-    .maybeSingle();
-  if (error || !data) return null;
-  return {
-    id: data.id,
-    property_access: Array.isArray(data.property_access) ? data.property_access : [],
-    role: (isValidRole(data.role) ? data.role : 'staff') as AppRole,
-  };
-}
-
-function callerHasPropertyAccess(account: CallerAccount, propertyId: string): boolean {
-  if (account.role === 'admin') return true;
-  if (account.property_access.includes('*')) return true;
-  return account.property_access.includes(propertyId);
-}
 
 /** Distinguishes "0337 isn't applied in this environment yet" from a real error. */
 function isMissingColumnError(e: { code?: string | null; message?: string | null } | null): boolean {
@@ -197,9 +174,7 @@ export const GET = defineRoute({
     if (pidV.error) return ctx.err(pidV.error, { status: 400, code: ApiErrorCode.ValidationFailed });
     const propertyId = pidV.value!;
 
-    const account = await resolveCallerAccount(ctx.userId);
-    if (!account) return ctx.err('Account not found', { status: 404, code: ApiErrorCode.NotFound });
-    if (!callerHasPropertyAccess(account, propertyId)) {
+    if (!(await userHasPropertyAccess(ctx.userId, propertyId))) {
       return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
     }
 
@@ -213,10 +188,11 @@ export const GET = defineRoute({
       return ctx.err('Property not found', { status: 404, code: ApiErrorCode.NotFound });
     }
 
-    const capabilityDecision = await capabilityDecisionForProperty(
-      { role: account.role },
+    const capabilityDecision = await accountCapabilityDecisionForProperty(
+      ctx.userId,
       'manage_clean_times',
       propertyId,
+      { requireMutation: true, requireManager: true },
     );
     if (capabilityDecision === 'unavailable') {
       return capabilityUnavailableResponse(ctx.requestId);
@@ -226,7 +202,7 @@ export const GET = defineRoute({
       setup: read.setup,
       defaults: SETUP_DEFAULTS,
       // Exactly the predicate PUT enforces — see the header.
-      canEdit: capabilityDecision === 'allowed' && canManageTeam(account.role),
+      canEdit: capabilityDecision === 'allowed',
     });
   },
 });
@@ -244,22 +220,13 @@ export const PUT = defineRoute({
     if (pidV.error) return ctx.err(pidV.error, { status: 400, code: ApiErrorCode.ValidationFailed });
     const propertyId = pidV.value!;
 
-    const account = await resolveCallerAccount(ctx.userId);
-    if (!account) return ctx.err('Account not found', { status: 404, code: ApiErrorCode.NotFound });
-    if (!callerHasPropertyAccess(account, propertyId)) {
-      return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
-    }
-
-    // Management role AND the capability — see the header for why both.
-    if (!canManageTeam(account.role)) {
-      return ctx.err('Only managers can set up housekeeping', {
-        status: 403, code: ApiErrorCode.Forbidden,
-      });
-    }
-    const capabilityDecision = await capabilityDecisionForProperty(
-      { role: account.role },
+    // One current authoritative decision intersects exact hotel reach,
+    // mutation capacity, manager floor, and the per-hotel capability.
+    const capabilityDecision = await accountCapabilityDecisionForProperty(
+      ctx.userId,
       'manage_clean_times',
       propertyId,
+      { requireMutation: true, requireManager: true },
     );
     if (capabilityDecision === 'unavailable') {
       return capabilityUnavailableResponse(ctx.requestId);
@@ -268,6 +235,10 @@ export const PUT = defineRoute({
       return ctx.err('Only managers can set up housekeeping', {
         status: 403, code: ApiErrorCode.Forbidden,
       });
+    }
+    const account = await loadSessionAccount(ctx.userId);
+    if (!account) {
+      return ctx.err('Forbidden', { status: 403, code: ApiErrorCode.Forbidden });
     }
 
     // Strict validation. The module rejects with a message naming the offending
@@ -301,6 +272,24 @@ export const PUT = defineRoute({
       boardPhotoPath,
       completedAt: new Date().toISOString(),
     };
+
+    // Validation can take place after the first decision. Re-resolve at the
+    // commit boundary so a revoked grant or hotel transfer cannot race into a
+    // service-role update.
+    const commitDecision = await accountCapabilityDecisionForProperty(
+      ctx.userId,
+      'manage_clean_times',
+      propertyId,
+      { requireMutation: true, requireManager: true },
+    );
+    if (commitDecision === 'unavailable') {
+      return capabilityUnavailableResponse(ctx.requestId);
+    }
+    if (commitDecision === 'denied') {
+      return ctx.err('Only managers can set up housekeeping', {
+        status: 403, code: ApiErrorCode.Forbidden,
+      });
+    }
 
     // `.select('id')` is not decoration: PostgREST answers 200 with zero rows
     // when nothing matched, so without it a write against a property that does
@@ -365,7 +354,7 @@ export const PUT = defineRoute({
           { cleaning_type: 'departure', base_minutes: setup.checkoutMinutes },
           { cleaning_type: 'stayover', base_minutes: setup.stayoverMinutes },
         ],
-        account.id,
+        account.accountId,
       );
       if (!sync.ok) {
         cleanTimesSynced = false;

@@ -22,12 +22,15 @@ export interface HubTile {
   tone: TileTone;
   /** The Staxis tile gets the sage "hot" wash. */
   hot?: boolean;
+  onIntent?: () => void;
   onClick: () => void;
 }
 
 export interface HubManagementEntry {
   label: string;
   href: string;
+  onIntent?: () => void;
+  onClick?: () => void;
 }
 
 export interface HomeHubViewProps {
@@ -56,6 +59,9 @@ export function HomeHubView({ greeting, dateline, tiles, ask, management }: Home
               type="button"
               className={`cx-tile${tile.hot ? ' cx-hot' : ''}`}
               onClick={tile.onClick}
+              onPointerEnter={tile.onIntent}
+              onPointerDown={tile.onIntent}
+              onFocus={tile.onIntent}
               style={{ appearance: 'none' }}
             >
               <div className="cx-tile-top">
@@ -72,7 +78,18 @@ export function HomeHubView({ greeting, dateline, tiles, ask, management }: Home
       </div>
       {management ? (
         <div className="cx-management">
-          <Link href={management.href} className="cx-management-link">
+          <Link
+            href={management.href}
+            className="cx-management-link"
+            onPointerEnter={management.onIntent}
+            onPointerDown={management.onIntent}
+            onFocus={management.onIntent}
+            onClick={(event) => {
+              if (!management.onClick) return;
+              event.preventDefault();
+              management.onClick();
+            }}
+          >
             <span className="cx-management-icon"><CxIcon name="company" size={19} /></span>
             <span className="cx-management-title">{management.label}</span>
             <span className="cx-management-arrow" aria-hidden="true">→</span>

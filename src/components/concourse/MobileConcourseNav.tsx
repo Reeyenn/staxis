@@ -3,7 +3,7 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { ChevronRight, Download, LogOut, Menu, X } from 'lucide-react';
-import type { BarItem } from './ConcourseBarView';
+import type { AdminDestinationAction, BarItem } from './ConcourseBarView';
 import { CxIcon, CxLogo, CX_ICON_PATHS } from './icons';
 import styles from './MobileConcourseNav.module.css';
 
@@ -28,6 +28,7 @@ interface MobileConcourseNavProps {
   languageLabel: string;
   accountMenuLabel: string;
   companyLabel: string;
+  adminDestination?: AdminDestinationAction;
   settingsLabel: string;
   signOutLabel: string;
   installLabel: string;
@@ -38,6 +39,9 @@ interface MobileConcourseNavProps {
   onHome: () => void;
   onCompany: () => void;
   onSettings: () => void;
+  onHomeIntent?: () => void;
+  onCompanyIntent?: () => void;
+  onSettingsIntent?: () => void;
   onSignOut: () => void;
   onPropertyChange: (propertyId: string) => void;
   onLanguageChange: (locale: string) => void;
@@ -76,6 +80,7 @@ export function MobileConcourseNav({
   languageLabel,
   accountMenuLabel,
   companyLabel,
+  adminDestination,
   settingsLabel,
   signOutLabel,
   installLabel,
@@ -86,6 +91,9 @@ export function MobileConcourseNav({
   onHome,
   onCompany,
   onSettings,
+  onHomeIntent,
+  onCompanyIntent,
+  onSettingsIntent,
   onSignOut,
   onPropertyChange,
   onLanguageChange,
@@ -194,6 +202,11 @@ export function MobileConcourseNav({
     onCompany();
   };
 
+  const selectAdmin = () => {
+    closeDrawer();
+    adminDestination?.onClick();
+  };
+
   const signOut = () => {
     closeDrawer();
     onSignOut();
@@ -266,6 +279,8 @@ export function MobileConcourseNav({
                 key={item.key}
                 type="button"
                 className={`${styles.navRow}${item.active ? ` ${styles.navRowActive}` : ''}`}
+                onPointerDown={item.onIntent}
+                onFocus={item.onIntent}
                 onClick={() => selectItem(item)}
                 aria-current={item.active ? 'page' : undefined}
               >
@@ -324,10 +339,28 @@ export function MobileConcourseNav({
 
           <div className={styles.divider} aria-hidden="true" />
 
+          {adminDestination ? (
+            <button
+              type="button"
+              className={`${styles.navRow} ${styles.adminDestinationRow}${adminDestination.active ? ` ${styles.navRowActive}` : ''}`}
+              onClick={selectAdmin}
+              aria-label={adminDestination.ariaLabel}
+              aria-current={adminDestination.active ? 'page' : undefined}
+            >
+              <span className={styles.iconChip} aria-hidden="true">
+                <CxIcon name="admin" size={17} />
+              </span>
+              <span className={styles.rowLabel}>{adminDestination.label}</span>
+              <ChevronRight className={styles.chevron} size={14} strokeWidth={2} aria-hidden="true" />
+            </button>
+          ) : null}
+
           {showCompany ? (
             <button
               type="button"
               className={`${styles.navRow}${companyActive ? ` ${styles.navRowActive}` : ''}`}
+              onPointerDown={onCompanyIntent}
+              onFocus={onCompanyIntent}
               onClick={selectCompany}
               aria-current={companyActive ? 'page' : undefined}
             >
@@ -342,6 +375,8 @@ export function MobileConcourseNav({
           <button
             type="button"
             className={`${styles.navRow}${settingsActive ? ` ${styles.navRowActive}` : ''}`}
+            onPointerDown={onSettingsIntent}
+            onFocus={onSettingsIntent}
             onClick={selectSettings}
             aria-current={settingsActive ? 'page' : undefined}
           >
@@ -386,7 +421,14 @@ export function MobileConcourseNav({
         {mobileTitle ? (
           <div className={styles.pageTitle}>{mobileTitle}</div>
         ) : (
-          <button type="button" className={styles.topBrand} onClick={onHome} aria-label={homeLabel}>
+          <button
+            type="button"
+            className={styles.topBrand}
+            onPointerDown={onHomeIntent}
+            onFocus={onHomeIntent}
+            onClick={onHome}
+            aria-label={homeLabel}
+          >
             <CxLogo size={20} color="currentColor" />
             <span>Staxis</span>
           </button>

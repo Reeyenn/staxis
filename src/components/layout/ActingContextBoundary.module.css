@@ -1,0 +1,224 @@
+.page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: max(24px, env(safe-area-inset-top)) max(20px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(20px, env(safe-area-inset-left));
+  background: var(--staxis-shell-wash);
+  color: var(--staxis-text);
+}
+
+.card {
+  width: min(100%, 480px);
+  border: 1px solid var(--staxis-border);
+  border-radius: 16px;
+  background: var(--staxis-surface);
+  box-shadow: var(--staxis-shadow);
+  padding: clamp(24px, 5vw, 36px);
+  text-align: center;
+}
+
+.mark {
+  width: 44px;
+  height: 44px;
+  margin: 0 auto 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--staxis-accent);
+  color: var(--staxis-on-accent);
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 20px;
+  font-weight: 750;
+}
+
+.title {
+  margin: 0;
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: clamp(22px, 4vw, 28px);
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+.detail {
+  max-width: 390px;
+  margin: 12px auto 0;
+  color: var(--staxis-text-secondary);
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.scopeBanner {
+  position: relative;
+  z-index: 40;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding:
+    8px max(16px, env(safe-area-inset-right))
+    8px max(16px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--staxis-border);
+  background: color-mix(in srgb, var(--staxis-surface) 92%, transparent);
+  color: var(--staxis-text);
+  font-family: var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  backdrop-filter: blur(14px);
+}
+
+.scopeCopy {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.scopeCopy strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.scopeEyebrow {
+  color: var(--staxis-text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.readOnly {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 9px;
+  border: 1px solid var(--staxis-border);
+  border-radius: 999px;
+  color: var(--staxis-text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.scopeBack {
+  min-height: 44px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 12px;
+  padding: 0 12px;
+  color: var(--staxis-accent);
+  font-size: 14px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.scopeBack:hover,
+.scopeBack:focus-visible {
+  background: var(--staxis-accent-soft);
+}
+
+.scopeBack:focus-visible {
+  outline: 3px solid var(--staxis-focus);
+  outline-offset: 2px;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.primary,
+.secondary {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  padding: 0 18px;
+  font: 650 14px/1 var(--font-geist), -apple-system, BlinkMacSystemFont, sans-serif;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 160ms ease, border-color 160ms ease, transform 120ms ease;
+}
+
+.primary {
+  border: 1px solid var(--staxis-accent);
+  background: var(--staxis-accent);
+  color: var(--staxis-on-accent);
+}
+
+.secondary {
+  border: 1px solid var(--staxis-border-strong);
+  background: transparent;
+  color: var(--staxis-text);
+}
+
+.primary:hover,
+.primary:focus-visible {
+  background: var(--staxis-accent-hover);
+  border-color: var(--staxis-accent-hover);
+}
+
+.secondary:hover,
+.secondary:focus-visible {
+  background: var(--staxis-accent-soft);
+}
+
+.primary:focus-visible,
+.secondary:focus-visible {
+  outline: 3px solid var(--staxis-focus);
+  outline-offset: 3px;
+}
+
+.primary:active,
+.secondary:active {
+  transform: translateY(1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .primary,
+  .secondary {
+    transition: none;
+  }
+}
+
+@media (max-width: 560px) {
+  .scopeBanner {
+    align-items: flex-start;
+  }
+
+  .scopeCopy {
+    padding-block: 6px;
+  }
+}
+
+@media (forced-colors: active) {
+  .card,
+  .scopeBanner,
+  .readOnly,
+  .primary,
+  .secondary {
+    border: 1px solid CanvasText;
+  }
+
+  .primary:focus-visible,
+  .secondary:focus-visible {
+    outline: 3px solid Highlight;
+  }
+}

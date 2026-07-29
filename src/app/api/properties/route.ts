@@ -28,8 +28,11 @@
  * here, through the spine.
  *
  * ─── THE WALL ─────────────────────────────────────────────────────────────
- * `accessibleProperties` — the legacy array UNION every live hat's coverage.
- * Never a subtraction: an account that could open a hotel yesterday still can.
+ * `accessibleProperties` — the authoritative projection selected by the
+ * account's exclusive authority mode. Legacy/shadow reads the legacy array;
+ * normalized reads only current entitlements plus explicit cutover bridges.
+ * The two sources are never unioned at runtime, so revocation and transfer
+ * cannot resurrect a stale legacy hotel id.
  * Nothing the caller sends names a hotel it does not already reach; the
  * `propertyId` parameter can only ever NARROW the answer, never widen it.
  *
@@ -89,7 +92,7 @@ export async function GET(req: NextRequest) {
   try {
     const access = await accessibleProperties(account.accountId);
 
-    // Admins and legacy `'*'` holders reach the whole fleet — the one case
+    // Platform admins reach the whole fleet — the one case
     // that is not an id list, and exactly what the anon read returned for them
     // before. `null` here means "no `.in()` filter".
     let scopeIds: string[] | null = access.all ? null : access.propertyIds;

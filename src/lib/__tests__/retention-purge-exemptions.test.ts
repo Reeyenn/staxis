@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { EXEMPT_FROM_PURGE } from '@/app/api/cron/ml-retention-purge/route';
+import { EXEMPT_FROM_PURGE } from '@/lib/retention-purge-policy';
 
 const MIGRATIONS = join(process.cwd(), 'supabase', 'migrations');
 

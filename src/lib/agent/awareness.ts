@@ -109,7 +109,6 @@ import type { HotelSnapshot } from './context';
 function canSee(role: AppRole, toolName: string): boolean {
   return lensAllowsTool(role, 'chat', toolName);
 }
-
 // ═══════════════════════════════════════════════════════════════════════════
 // 1. WHERE YOU ARE — the screen, resolved through an allowlist
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1069,4 +1068,3 @@ export function formatAwarenessForPrompt(awareness: Awareness): string {
     '</staxis-awareness>',
   ].join('\n');
 }
-

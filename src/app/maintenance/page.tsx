@@ -17,18 +17,20 @@ export const dynamic = 'force-dynamic';
 // housekeeping/page.tsx — orchestrator only.
 
 import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
-import { AppLayout } from '@/components/layout/AppLayout';
 import { useLang } from '@/contexts/LanguageContext';
+import { AppLayout } from '@/components/layout/AppLayout';
 import { canManageTeam } from '@/lib/roles';
-import { T, FONT_SANS, Btn, MTSubTabBar, MaintenanceErrorBoundary, type MaintenanceTabKey } from './_components/_mt-snow';
+import { Btn, MTSubTabBar, MaintenanceErrorBoundary, type MaintenanceTabKey } from './_components/_mt-snow';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import { WorkOrdersTab } from './_components/WorkOrdersTab';
 import { PreventiveTab } from './_components/PreventiveTab';
 import { EquipmentTab } from './_components/EquipmentTab';
 import { PatternsModal } from './_components/PatternsModal';
 import { panelText } from './_components/PatternsPanel';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 
 // Storage can throw in privacy-mode / sandboxed / SSR contexts — guard both
 // get and set so a blocked localStorage never blanks the whole screen.
@@ -44,15 +46,18 @@ export default function MaintenancePage() {
   const [patternsOpen, setPatternsOpen] = useState(false);
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, loading: propLoading } = useProperty();
+  const { push, replace } = useReliableNavigation();
   const { lang } = useLang();
-  const router = useRouter();
-  const canSeePatterns = !!user && canManageTeam(user.role);
+  const hotelStanding = useActiveHotelStanding();
+  const canSeePatterns = hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
 
   // Auth guard — redirect if not logged in or no property selected.
   useEffect(() => {
-    if (!authLoading && !propLoading && !user) router.replace('/signin');
-    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/property-selector');
-  }, [user, authLoading, propLoading, activePropertyId, router]);
+    if (!authLoading && !propLoading && !user) replace('/signin');
+    if (!authLoading && !propLoading && user && !activePropertyId) replace('/property-selector');
+  }, [user, authLoading, propLoading, activePropertyId, replace]);
 
   // Restore tab choice on mount. A `?tab=` deep-link (e.g. from the worklist)
   // wins over the saved choice; otherwise fall back to localStorage (guarded).
@@ -71,15 +76,22 @@ export default function MaintenancePage() {
   if (authLoading || propLoading) {
     return (
       <AppLayout>
-        <div style={{
-          minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'transparent', fontFamily: FONT_SANS,
-        }}>
-          <div className="animate-spin" style={{
-            width: 28, height: 28,
-            border: `2px solid ${T.rule}`, borderTopColor: '#3E5C48', borderRadius: '50%',
-          }} />
-        </div>
+        <RouteLoadingState title="Loading Maintenance…" />
+      </AppLayout>
+    );
+  }
+  if (!user) {
+    return <AppLayout><RouteLoadingState title="Returning to Sign In…" /></AppLayout>;
+  }
+  if (!activePropertyId) {
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title="No hotel is selected"
+          message="Choose a hotel before opening Maintenance."
+          retryLabel="Choose a hotel"
+          onRetry={() => push('/property-selector')}
+        />
       </AppLayout>
     );
   }
@@ -103,7 +115,7 @@ export default function MaintenancePage() {
         }
       />
       <MaintenanceErrorBoundary>
-        <div key={tab} className="animate-in stagger-1">
+        <div key={`${activePropertyId}:${tab}`} className="animate-in stagger-1">
           {tab === 'work'       && <WorkOrdersTab />}
           {tab === 'preventive' && <PreventiveTab />}
           {tab === 'equipment'  && <EquipmentTab />}

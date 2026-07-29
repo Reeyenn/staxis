@@ -38,7 +38,12 @@ import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, validateEnum } from '@/lib/api-validate';
 import { checkAndIncrementRateLimit } from '@/lib/api-ratelimit';
-import { loadManagerCaller, managerManagesHotel, type ManagerCaller } from '@/lib/team-auth';
+import {
+  callerCanMutateHotel,
+  loadManagerCaller,
+  managerManagesHotel,
+  type ManagerCaller,
+} from '@/lib/team-auth';
 import { executeAction, loadAction, undoAction } from '@/lib/findings/actions/store';
 import { loadFinding, recordFindingActed } from '@/lib/findings/store';
 import type { FindingAction } from '@/lib/findings/actions/types';
@@ -188,7 +193,9 @@ export async function POST(req: NextRequest) {
   const intent = intentV.value!;
 
   const caller = await loadManagerCaller(session.userId);
-  if (!caller || !managerManagesHotel(caller, propertyId)) {
+  if (!caller
+      || !managerManagesHotel(caller, propertyId)
+      || !callerCanMutateHotel(caller, propertyId)) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

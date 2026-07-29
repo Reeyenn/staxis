@@ -67,9 +67,11 @@ import {
   type PglitePostgrest,
 } from '../../../tests/fixtures/postgrest-pglite';
 import {
+  ACCOUNT_ADMIN,
   ACCOUNT_ANA,
   ACCOUNT_GIL,
   ACCOUNT_VERA,
+  ORG_A,
   ORG_B,
   PID_A1,
   PID_B1,
@@ -162,12 +164,20 @@ async function chatCtx(opts: {
       displayName: opts.displayName ?? 'Maria Garcia',
       role: opts.role ?? 'general_manager',
       propertyAccess: [opts.propertyId],
+      hotelMutationAllowed: true,
+      seesFinancials: true,
+      capabilitySnapshot: {
+        view_financials: true,
+        view_wages: true,
+        manage_inventory_orders: true,
+      },
     },
     propertyId: opts.propertyId,
     staffId: null,
     requestId: 'do-wires-test',
     surface: 'chat',
     conversationId,
+    enabledSections: null,
   };
 }
 
@@ -186,6 +196,21 @@ before(async () => {
   // @ts-expect-error installing the pglite-backed client on the singleton
   supabaseAdmin.rpc = shim.rpc;
   await seedTwoCompanies(pg);
+  // Ana's company-owner job grants company reach, not hotel mutation. Pair it
+  // with an explicit property operational job so these DO-tool fixtures test a
+  // person who genuinely has both the company role and hotel write standing.
+  await pg.query(
+    "select public.staxis_set_membership_hat($1, $2, $3, 'property', 'general_manager', $4, 'General Manager')",
+    [ACCOUNT_ADMIN, ORG_A, ACCOUNT_ANA, JSON.stringify([PID_A1])],
+  );
+  // Company-level VP reach is intentionally read-only at a hotel. Vera needs
+  // a real property-scoped operational job for the hotel mutation half of the
+  // rulebook tests; the company VP hat still decides whether she may edit the
+  // company rulebook itself.
+  await pg.query(
+    "select public.staxis_set_membership_hat($1, $2, $3, 'property', 'general_manager', $4, 'General Manager')",
+    [ACCOUNT_ADMIN, ORG_B, ACCOUNT_VERA, JSON.stringify([PID_B1])],
+  );
 });
 
 after(async () => {
@@ -276,7 +301,7 @@ describe('a DO tool cannot write without the person\'s own next message', () => 
 describe('setting up preventive maintenance by talking', () => {
   test('the person says yes in a new message, and the schedule lands attributed', async () => {
     const ctx = await chatCtx({
-      accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner', displayName: 'Ana Ruiz',
+      accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner', displayName: 'Stale Alias',
     });
     const [proposed] = await turn(ctx, 'flush the water heaters every 180 days, last done 15 March 2026', [
       { name: 'staxis_set_up_preventive_task', args: { name: 'Water heater flush', everyDays: 180, lastDone: '2026-03-15', area: 'Boiler room' } },
@@ -304,7 +329,8 @@ describe('setting up preventive maintenance by talking', () => {
     assert.equal(row.area, 'Boiler room');
     assert.match(new Date(row.last_completed_at!).toISOString(), /^2026-03-15/);
     // Who SET IT UP is recorded; who DID the work is not invented.
-    assert.match(String(row.notes), /Ana Ruiz/);
+    assert.match(String(row.notes), /Ana/);
+    assert.doesNotMatch(String(row.notes), /Stale Alias/);
     assert.equal(row.last_completed_by, null);
   });
 
@@ -382,7 +408,7 @@ describe('setting up preventive maintenance by talking', () => {
 describe('putting equipment on the register by talking', () => {
   test('a room range becomes one asset per room, named and placed and attributed', async () => {
     const ctx = await chatCtx({
-      accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner', displayName: 'Ana Ruiz',
+      accountId: ACCOUNT_ANA, uid: UID_ANA, propertyId: PID_A1, role: 'owner', displayName: 'Stale Alias',
     });
     const [proposed] = await turn(ctx, 'track our PTAC units, rooms 201 to 203, installed 2019', [
       { name: 'staxis_set_up_equipment', args: { name: 'PTAC', category: 'hvac', rooms: '201-203', installDate: '2019' } },
@@ -416,7 +442,7 @@ describe('putting equipment on the register by talking', () => {
     assert.deepEqual(rows.map((r) => r.location), ['Room 201', 'Room 202', 'Room 203']);
     assert.ok(rows.every((r) => r.category === 'hvac'));
     assert.ok(rows.every((r) => new Date(r.install_date!).toISOString().startsWith('2019-01-01')));
-    assert.ok(rows.every((r) => r.created_by_name === 'Ana Ruiz'));
+    assert.ok(rows.every((r) => r.created_by_name === 'Ana'));
     assert.ok(rows.every((r) => r.created_from === 'manual'));
   });
 
@@ -478,7 +504,7 @@ describe('writing a company rule by talking', () => {
   });
 
   test('an editor sees the rule Staxis will enforce before it is enforced', async () => {
-    const ctx = await chatCtx({ accountId: ACCOUNT_VERA, uid: UID_VERA, propertyId: PID_B1, displayName: 'Vera Ortiz' });
+    const ctx = await chatCtx({ accountId: ACCOUNT_VERA, uid: UID_VERA, propertyId: PID_B1, displayName: 'Stale Alias' });
     const [proposed] = await turn(ctx, 'orders over $500 need VP approval', [
       { name: 'staxis_write_company_rule', args: { rule: 'Orders over $500 need VP approval.', topic: 'purchase_approval_threshold', category: 'money' } },
     ]);
@@ -506,7 +532,7 @@ describe('writing a company rule by talking', () => {
     assert.ok(fact, 'the rule was not written');
     assert.equal(fact.review_state, 'confirmed');
     assert.equal(fact.source, 'explicit_user');
-    assert.equal(fact.created_by_name, 'Vera Ortiz');
+    assert.equal(fact.created_by_name, 'Vera');
 
     const rule = (await pg.query<{ threshold_cents: string; approver_role: string; action_kind: string }>(
       `select threshold_cents, approver_role, action_kind from company_authority_rules
@@ -552,6 +578,42 @@ describe('writing a company rule by talking', () => {
         [ORG_B],
       );
     }
+  });
+
+  test('a confirmation token cannot overwrite a line created after the read-back', async () => {
+    const ctx = await chatCtx({ accountId: ACCOUNT_VERA, uid: UID_VERA, propertyId: PID_B1 });
+    const [proposed] = await turn(ctx, 'all our hotels use Vendor A', [
+      {
+        name: 'staxis_write_company_rule',
+        args: {
+          rule: 'All our hotels use Vendor A.',
+          topic: 'confirmation_race_vendor',
+          category: 'vendors',
+        },
+      },
+    ]);
+    assert.equal(proposed.ok, true, proposed.error ?? '');
+    await pg.query(
+      `insert into company_knowledge (
+         organization_id, topic, content, category, source, review_state
+       ) values ($1, 'confirmation_race_vendor', 'An owner added Vendor B first.',
+                 'vendors', 'explicit_user', 'confirmed')`,
+      [ORG_B],
+    );
+
+    const [confirmed] = await turn(ctx, 'yes', [
+      { name: 'staxis_write_company_rule', args: { confirmToken: tokenOf(proposed)! } },
+    ]);
+    assert.equal(confirmed.ok, false);
+    assert.match(confirmed.error ?? '', /changed after the read-back|did not overwrite/i);
+    assert.equal(
+      (await pg.query<{ content: string }>(
+        `select content from company_knowledge
+         where organization_id = $1 and topic = 'confirmation_race_vendor' and is_active`,
+        [ORG_B],
+      )).rows[0].content,
+      'An owner added Vendor B first.',
+    );
   });
 
   test('a sentence naming two approvers stores NOTHING and asks', async () => {

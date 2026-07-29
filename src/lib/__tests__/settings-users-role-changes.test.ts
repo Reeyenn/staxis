@@ -1,6 +1,6 @@
 /**
  * Tests for the role-change audit writer (writeRoleChange) used by
- * /api/settings/users and the /api/auth/team mirror.
+ * /api/auth/team and other non-ownership lifecycle writers.
  *
  * The writer is best-effort: a failure does not throw. The asserts:
  *   - Inserts a row into role_changes with the right column shape

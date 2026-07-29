@@ -258,10 +258,22 @@ export async function uploadLiveFeedSample(
   }
 }
 
+export interface FeedValuesLineage {
+  /** Existing pms_ingest_runs receipt for the poll that observed the values. */
+  ingestRunId: string;
+  /** ISO-8601 pms_ingest_runs.source_captured_at for that same observation. */
+  sourceCapturedAt: string;
+}
+
 /** Durably store a feed's PAGE values ONCE per (property, feed) in
  *  pms_feed_values (migration 0291) — the feed-level home for one-off totals
  *  like "Guest Count: 23", instead of stamping them onto every data row.
- *  Best-effort: never throws.
+ *
+ *  Unlike screenshot/sample capture, this is a required database write when a
+ *  feed declares page values. Migration 0341 made its ingest_run_id NOT NULL,
+ *  so a missing receipt or failed upsert throws to the poll runner. Swallowing
+ *  that failure makes the durable page totals look healthy while every write
+ *  is actually being rejected by Postgres.
  *
  *  Three cases (mirrors pms_in_house_snapshot's last-good semantics):
  *   - captured values → upsert them fresh (has_error=false, refresh last_good_at).
@@ -274,45 +286,70 @@ export async function uploadLiveFeedSample(
 export async function upsertFeedValues(
   propertyId: string,
   feedKey: string,
-  feedValues?: Record<string, string>,
-  hasPageColumns?: boolean,
-  deps?: { upsert?: (row: Record<string, unknown>) => Promise<void>; now?: () => string },
+  feedValues: Record<string, string> | undefined,
+  hasPageColumns: boolean | undefined,
+  lineage: FeedValuesLineage,
+  deps?: { upsert?: (row: Record<string, unknown>) => Promise<void> },
 ): Promise<void> {
-  try {
-    const captured = !!feedValues && Object.keys(feedValues).length > 0;
-    if (!captured && !hasPageColumns) return; // no page columns → nothing to store
-    const now = deps?.now ? deps.now() : new Date().toISOString();
-    // Bound the jsonb defensively (the DB path, unlike the sample, isn't clamped
-    // upstream): cap key count + per-value length so a runaway page element can't
-    // bloat the row.
-    let values: Record<string, string> | undefined;
-    if (captured) {
-      values = {};
-      for (const [k, v] of Object.entries(feedValues!)) {
-        if (Object.keys(values).length >= 50) break;
-        const s = typeof v === 'string' ? v : String(v ?? '');
-        values[k] = s.length > 500 ? s.slice(0, 500) : s;
-      }
+  const captured = !!feedValues && Object.keys(feedValues).length > 0;
+  if (!captured && !hasPageColumns) return; // no page columns → nothing to store
+
+  const capturedAtMs = Date.parse(lineage?.sourceCapturedAt ?? '');
+  if (!lineage?.ingestRunId || !Number.isFinite(capturedAtMs)) {
+    const error = new Error(
+      'upsertFeedValues requires an ingestRunId and ISO-8601 sourceCapturedAt',
+    );
+    log.error('feed-capture: refusing unattributed feed-values write', {
+      propertyId,
+      feedKey,
+      err: error.message,
+    });
+    throw error;
+  }
+  const sourceCapturedAt = new Date(capturedAtMs).toISOString();
+
+  // Bound the jsonb defensively (the DB path, unlike the sample, isn't clamped
+  // upstream): cap key count + per-value length so a runaway page element can't
+  // bloat the row.
+  let values: Record<string, string> | undefined;
+  if (captured) {
+    values = {};
+    for (const [k, v] of Object.entries(feedValues!)) {
+      if (Object.keys(values).length >= 50) break;
+      const s = typeof v === 'string' ? v : String(v ?? '');
+      values[k] = s.length > 500 ? s.slice(0, 500) : s;
     }
-    const row: Record<string, unknown> = captured
-      ? {
-          property_id: propertyId, feed_key: feedKey, values,
-          captured_at: now, last_good_at: now,
-          has_error: false, last_error: null, last_error_at: null, last_synced_at: now,
-        }
-      // configured-but-empty → flag error, OMIT values + last_good_at so the
-      // previous good capture is preserved (and just defaults on first insert).
-      : {
-          property_id: propertyId, feed_key: feedKey,
-          captured_at: now,
-          has_error: true, last_error: 'no page values captured', last_error_at: now, last_synced_at: now,
-        };
+  }
+  const row: Record<string, unknown> = captured
+    ? {
+        property_id: propertyId, feed_key: feedKey, values,
+        captured_at: sourceCapturedAt, last_good_at: sourceCapturedAt,
+        has_error: false, last_error: null, last_error_at: null,
+        last_synced_at: sourceCapturedAt, ingest_run_id: lineage.ingestRunId,
+      }
+    // configured-but-empty → flag error, OMIT values + last_good_at so the
+    // previous good capture is preserved (and just defaults on first insert).
+    : {
+        property_id: propertyId, feed_key: feedKey,
+        captured_at: sourceCapturedAt,
+        has_error: true, last_error: 'no page values captured',
+        last_error_at: sourceCapturedAt, last_synced_at: sourceCapturedAt,
+        ingest_run_id: lineage.ingestRunId,
+      };
+
+  try {
     if (deps?.upsert) { await deps.upsert(row); return; }
     const { supabase } = await import('./supabase.js');
     const { error } = await supabase.from('pms_feed_values').upsert(row, { onConflict: 'property_id,feed_key' });
     if (error) throw new Error(error.message);
   } catch (err) {
-    log.warn('feed-capture: feed-values upsert failed (non-fatal)', { propertyId, feedKey, err: (err as Error).message });
+    log.error('feed-capture: feed-values upsert failed', {
+      propertyId,
+      feedKey,
+      ingestRunId: lineage.ingestRunId,
+      err: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
 }
 

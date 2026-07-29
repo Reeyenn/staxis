@@ -23,6 +23,10 @@ const migration = readFileSync(
   join(process.cwd(), 'supabase', 'migrations', '0335_account_lifecycle_intents.sql'),
   'utf8',
 );
+const authoritativeLifecycleMigration = readFileSync(
+  join(process.cwd(), 'supabase', 'migrations', '0395_authoritative_people_lifecycle.sql'),
+  'utf8',
+);
 
 describe('account lifecycle rollout contract', () => {
   test('only promises automatic retry after a durable pending intent exists', () => {
@@ -76,5 +80,31 @@ describe('account lifecycle rollout contract', () => {
     assert.match(migration, /staxis_commit_account_lifecycle_intent/);
     assert.match(migration, /insert into public\.role_changes/i);
     assert.match(migration, /insert into public\.admin_audit_log/i);
+  });
+
+  test('captures and rechecks exact actor and target authority before lifecycle commit', () => {
+    assert.match(authoritativeLifecycleMigration, /actor_authority_version_snapshot bigint/);
+    assert.match(authoritativeLifecycleMigration, /target_authority_version_snapshot bigint/);
+    assert.match(authoritativeLifecycleMigration, /target_authorized_property_ids_snapshot uuid\[\]/);
+    assert.match(authoritativeLifecycleMigration, /_staxis_structural_account_property_ids/);
+    assert.match(authoritativeLifecycleMigration, /invariant_conflict', 'reason', 'authorization_changed/);
+    assert.match(authoritativeLifecycleMigration, /invariant_conflict', 'reason', 'target_scope_changed/);
+    assert.match(authoritativeLifecycleMigration, /invariant_conflict', 'reason', 'actor_scope_changed/);
+    assert.match(authoritativeLifecycleMigration, /invariant_conflict', 'reason', 'actor_hierarchy_changed/);
+  });
+
+  test('makes hotel detach actor-bound, commit-time authorized, and atomically audited', () => {
+    assert.match(teamRoute, /staxis_remove_property_access_guarded_v2/);
+    assert.match(teamRoute, /p_actor_account_id: caller\.accountId/);
+    assert.match(teamRoute, /p_actor_auth_user_id: caller\.authUserId/);
+    assert.match(teamRoute, /guardedResult\.audit_written !== true/);
+    assert.match(authoritativeLifecycleMigration, /create or replace function public\.staxis_remove_property_access_guarded_v2/);
+    assert.match(authoritativeLifecycleMigration, /_staxis_account_can_manage_users_at_property/);
+    assert.match(authoritativeLifecycleMigration, /insert into public\.role_changes/);
+    assert.match(authoritativeLifecycleMigration, /'audit_written', true/);
+    assert.match(
+      authoritativeLifecycleMigration,
+      /revoke execute on function public\.staxis_remove_property_access_guarded\([\s\S]*from service_role/,
+    );
   });
 });

@@ -11,7 +11,6 @@
 'use client';
 
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -25,6 +24,7 @@ import {
   useBoardGate, BoardLoading, BoardLoadError,
 } from './_mt-snow';
 import { useToast, ToastHost } from '@/app/_components/ui/toast';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 type Status = 'out' | 'low' | 'ok';
 const STAT: Record<Status, { color: string; tone: 'warm' | 'caramel' | 'sage'; en: string; es: string }> = {
@@ -203,7 +203,7 @@ function ItemModal({
 
 // ── root ─────────────────────────────────────────────────────────────────────
 export function EquipmentTab() {
-  const router = useRouter();
+  const { push } = useReliableNavigation();
   const { user } = useAuth();
   const { activePropertyId } = useProperty();
   const { lang } = useLang();
@@ -312,7 +312,7 @@ export function EquipmentTab() {
   };
   const restock = (part: Part) => {
     void part;
-    router.push('/inventory?action=scan');
+    push('/inventory?action=scan');
   };
   const create = async (args: { name: string; bin: string; reorderAt: number }) => {
     if (!user || !activePropertyId) return;

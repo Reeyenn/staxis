@@ -15,8 +15,8 @@
  *   Upserts the row for (account_id, property_id).
  *
  * Auth: requireSession (the user editing their own preferences).
- * Property scope: caller must have property_access for the propertyId
- * (admins implicitly do).
+ * Property scope: caller must have a current authoritative standing at the
+ * property (platform admins implicitly do).
  *
  * Why we expose CC editing through here: CC recipients are a per-user
  * setting, not per-property. Two managers at the same property can each
@@ -29,6 +29,7 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid, isValidEmail, validateFutureTimestamp } from '@/lib/api-validate';
+import { callerReachesHotel, loadSessionAccount, type ManagerCaller } from '@/lib/team-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -54,24 +55,12 @@ const DEFAULTS: Omit<PrefRow, 'account_id' | 'property_id'> = {
   weekly_enabled: true,
 };
 
-async function resolveCallerAccount(authUserId: string): Promise<{ id: string; property_access: string[]; role: string } | null> {
-  const { data, error } = await supabaseAdmin
-    .from('accounts')
-    .select('id, property_access, role')
-    .eq('data_user_id', authUserId)
-    .maybeSingle();
-  if (error || !data) return null;
-  return {
-    id: data.id,
-    property_access: Array.isArray(data.property_access) ? data.property_access : [],
-    role: data.role,
-  };
+async function resolveCallerAccount(authUserId: string): Promise<ManagerCaller | null> {
+  return loadSessionAccount(authUserId);
 }
 
-function callerCanManageProperty(account: { property_access: string[]; role: string }, propertyId: string): boolean {
-  if (account.role === 'admin') return true;
-  if (account.property_access.includes('*')) return true;
-  return account.property_access.includes(propertyId);
+function callerCanManageProperty(account: ManagerCaller, propertyId: string): boolean {
+  return callerReachesHotel(account, propertyId);
 }
 
 export async function GET(req: NextRequest) {
@@ -93,7 +82,7 @@ export async function GET(req: NextRequest) {
   const { data, error: qErr } = await supabaseAdmin
     .from('report_preferences')
     .select('account_id, property_id, delivery_time_local, channels, cc_emails, paused_until, weekly_enabled')
-    .eq('account_id', account.id)
+    .eq('account_id', account.accountId)
     .eq('property_id', pidV.value!)
     .maybeSingle();
   if (qErr) {
@@ -101,7 +90,7 @@ export async function GET(req: NextRequest) {
     return err('Failed to load preferences', { requestId, status: 500, code: ApiErrorCode.InternalError });
   }
 
-  const row = data ?? { account_id: account.id, property_id: pidV.value!, ...DEFAULTS };
+  const row = data ?? { account_id: account.accountId, property_id: pidV.value!, ...DEFAULTS };
   return ok({
     preferences: {
       propertyId: row.property_id,
@@ -215,7 +204,7 @@ export async function PUT(req: NextRequest) {
   // Upsert — if no row exists, this creates it with defaults filled in
   // from DEFAULTS for any keys the user didn't provide.
   const row: PrefRow = {
-    account_id: account.id,
+    account_id: account.accountId,
     property_id: pidV.value!,
     delivery_time_local: updates.delivery_time_local ?? DEFAULTS.delivery_time_local,
     channels: updates.channels ?? DEFAULTS.channels,
@@ -229,7 +218,7 @@ export async function PUT(req: NextRequest) {
   const { data: existing } = await supabaseAdmin
     .from('report_preferences')
     .select('delivery_time_local, channels, cc_emails, paused_until, weekly_enabled')
-    .eq('account_id', account.id)
+    .eq('account_id', account.accountId)
     .eq('property_id', pidV.value!)
     .maybeSingle();
   if (existing) {

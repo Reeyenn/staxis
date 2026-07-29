@@ -9,10 +9,30 @@ const panel = source('src/app/company/_components/HotelTeamPanel.tsx');
 const dialogs = source('src/app/company/_components/HotelTeamDialogs.tsx');
 const migration = source('supabase/migrations/0329_guard_hotel_team_detach_snapshot.sql');
 const lifecycleMigration = source('supabase/migrations/0335_account_lifecycle_intents.sql');
+const peopleLifecycleMigration = source(
+  'supabase/migrations/0395_authoritative_people_lifecycle.sql',
+);
 
 describe('hotel team mutation concurrency guards', () => {
   test('profile writes compare the account version and return a conflict when stale', () => {
-    assert.match(route, /\.eq\('updated_at', target\.updated_at\)/);
+    const profileCall = route.slice(
+      route.indexOf("'staxis_update_hotel_team_profile_guarded'"),
+      route.indexOf('if (profileError)'),
+    );
+    assert.match(profileCall, /p_expected_updated_at: target\.updated_at/);
+    assert.match(profileCall, /p_expected_intent_version: target\.lifecycle_intent_version/);
+    assert.doesNotMatch(
+      route,
+      /from\(['"]accounts['"]\)[\s\S]{0,200}\.eq\('updated_at', target\.updated_at\)/,
+    );
+    assert.match(
+      peopleLifecycleMigration,
+      /v_target\.updated_at is distinct from p_expected_updated_at/i,
+    );
+    assert.match(
+      peopleLifecycleMigration,
+      /v_target\.lifecycle_intent_version is distinct from p_expected_intent_version/i,
+    );
     assert.match(route, /This account changed while you were editing it/);
   });
 

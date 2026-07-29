@@ -561,7 +561,7 @@ describe('section-aware browser RLS migration 0334', () => {
     for (const call of calls) {
       await assert.rejects(
         asUser(GM, call.sql, call.params),
-        /inventory section is disabled or unavailable/i,
+        /inventory section is disabled or unavailable|not authorized to (?:count|receive|record|list|correct).*inventory/i,
         call.label,
       );
     }

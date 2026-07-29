@@ -10,18 +10,19 @@ export const dynamic = 'force-dynamic';
 // Flow:
 //   1. /signin signs in with password, sees device is untrusted, signs out
 //      and calls signInWithOtp({email, shouldCreateUser: false}), then
-//      router.replace('/signin/verify?email=…')
+//      reliably replace('/signin/verify?email=…')
 //   2. This page reads `email` from the URL and renders the OTP input.
 //   3. User types code, optionally checks "Trust this device".
 //   4. supabase.auth.verifyOtp({email, token, type:'email'}) → fresh session.
 //   5. If trust-this-device was checked, POST /api/auth/trust-device with
 //      the new bearer token; cookie + DB row land.
-//   6. router.replace('/home') for a normal sign-in
+//   6. reliably replace('/home') for a normal sign-in
 
-import React, { useEffect, useState, Suspense } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import React, { useEffect, useRef, useState, Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
+import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { safeRedirect } from '@/lib/url-redirect';
 import {
@@ -34,10 +35,20 @@ import {
   storeCompanyInvitationHandoff,
 } from '@/lib/company-access/invitation-handoff';
 import AuthShell, { AuthLabel, AuthError, authBackLinkStyle } from '@/components/AuthShell';
+import { useNavigationReady, useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
+import {
+  AUTH_OPERATION_TIMEOUT_MS,
+  AUTH_SESSION_OPERATION_TIMEOUT_MS,
+  fetchWithAuth,
+} from '@/lib/api-fetch';
+import { settleSessionOperation } from '@/lib/auth/session-operation';
+import { fetchWithDeadline, withPromiseDeadline } from '@/lib/fetch-deadline';
 
 function VerifyInner() {
   const { lang } = useLang();
-  const router = useRouter();
+  const { isAuthSessionCurrent, discardAuthSession } = useAuth();
+  const navigation = useReliableNavigation();
+  const replaceNavigation = navigation.replace;
   const params = useSearchParams();
   const email = params.get('email') ?? '';
   // postSignup=1 means the user landed here directly from /signup. They just
@@ -71,7 +82,7 @@ function VerifyInner() {
     }
     if (legacyInvitationToken) {
       storeCompanyInvitationHandoff(legacyInvitationToken);
-      router.replace(`/signin/verify?email=${encodeURIComponent(email)}&${
+      replaceNavigation(`/signin/verify?email=${encodeURIComponent(email)}&${
         COMPANY_INVITATION_HANDOFF_PARAM
       }=${COMPANY_INVITATION_HANDOFF_VALUE}`);
     }
@@ -79,7 +90,7 @@ function VerifyInner() {
       identity: handoffIdentity,
       target: readCompanyInvitationHandoff() ? COMPANY_INVITATION_RESUME_PATH : null,
     });
-  }, [email, handoffIdentity, legacyInvitationToken, router]);
+  }, [email, handoffIdentity, legacyInvitationToken, replaceNavigation]);
 
   const handoffResolved = handoffIdentity === null || resolvedHandoff?.identity === handoffIdentity;
   const requestedTarget = usesCompanyInvitationHandoff
@@ -94,10 +105,16 @@ function VerifyInner() {
     : postSignup || requestedTarget === '/home' || requestedTarget.startsWith('/property-selector')
       ? '/property-selector'
       : `/property-selector?redirect=${encodeURIComponent(requestedTarget)}`;
+  const freshSigninHref = usesCompanyInvitationHandoff
+    ? `${COMPANY_INVITATION_SIGN_IN_HREF}&reason=auth-retry`
+    : rawRedirect
+      ? `/signin?reason=auth-retry&redirect=${encodeURIComponent(rawRedirect)}`
+      : '/signin?reason=auth-retry';
 
   const [code, setCode] = useState('');
   const [trust, setTrust] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [requiresFreshSignin, setRequiresFreshSignin] = useState(false);
   const [error, setError] = useState('');
   const [codeDelivered, setCodeDelivered] = useState(!initialDeliveryFailed);
   const [resending, setResending] = useState(false);
@@ -109,6 +126,17 @@ function VerifyInner() {
       : '',
   );
   const [resendCooldown, setResendCooldown] = useState(0);
+  const submitInFlightRef = useRef(false);
+  const resendInFlightRef = useRef(false);
+  const enterFreshSigninRecovery = (message: string) => {
+    setRequiresFreshSignin(true);
+    setSubmitting(false);
+    setError(message);
+    // verifyOtp/refreshSession cannot be cancelled after their outer deadline.
+    // Replace the document now so Back or another auth route cannot start a
+    // competing session operation in this provider/Supabase singleton.
+    try { window.location.replace(freshSigninHref); } catch { /* hard-link fallback remains rendered */ }
+  };
 
   useEffect(() => {
     if (resendCooldown <= 0) return;
@@ -119,15 +147,19 @@ function VerifyInner() {
   }, [resendCooldown]);
 
   const resendCode = async () => {
-    if (!email || resending || resendCooldown > 0) return;
+    if (!email || requiresFreshSignin || resendInFlightRef.current || resending || resendCooldown > 0) return;
+    resendInFlightRef.current = true;
     setResending(true);
     setResendError('');
     setError('');
     try {
-      const { error: otpErr } = await supabase.auth.signInWithOtp({
-        email: email.trim().toLowerCase(),
-        options: { shouldCreateUser: false },
-      });
+      const { error: otpErr } = await withPromiseDeadline(
+        supabase.auth.signInWithOtp({
+          email: email.trim().toLowerCase(),
+          options: { shouldCreateUser: false },
+        }),
+        { timeoutMs: AUTH_OPERATION_TIMEOUT_MS, label: 'Send verification code' },
+      );
       if (otpErr) throw otpErr;
       setCode('');
       setCodeDelivered(true);
@@ -138,6 +170,7 @@ function VerifyInner() {
         ? 'No se pudo enviar un código nuevo. Intenta de nuevo.'
         : "Couldn't send a new code. Try again.");
     } finally {
+      resendInFlightRef.current = false;
       setResending(false);
     }
   };
@@ -153,21 +186,28 @@ function VerifyInner() {
   useEffect(() => {
     if (!handoffResolved) return;
     if (!email) {
-      router.replace(usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin');
+      replaceNavigation(usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin');
       return;
     }
     let cancelled = false;
     void (async () => {
       try {
-        const res = await fetch('/api/auth/2fa-status', { cache: 'no-store' });
+        const res = await fetchWithDeadline(
+          '/api/auth/2fa-status',
+          { cache: 'no-store' },
+          { timeoutMs: AUTH_OPERATION_TIMEOUT_MS, label: '2FA status' },
+        );
         const body = await res.json().catch(() => null) as {
           ok?: boolean;
           data?: { enabled?: boolean };
         } | null;
         if (cancelled || !body?.ok || body.data?.enabled !== false) return;
-        const { data } = await supabase.auth.getSession();
+        const { data } = await withPromiseDeadline(
+          supabase.auth.getSession(),
+          { timeoutMs: AUTH_OPERATION_TIMEOUT_MS, label: 'Session check' },
+        );
         if (cancelled) return;
-        router.replace(
+        replaceNavigation(
           data.session
             ? redirectTarget
             : usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin',
@@ -177,23 +217,53 @@ function VerifyInner() {
       }
     })();
     return () => { cancelled = true; };
-  }, [email, redirectTarget, router, handoffResolved, usesCompanyInvitationHandoff]);
+  }, [email, redirectTarget, replaceNavigation, handoffResolved, usesCompanyInvitationHandoff]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!handoffResolved || !code.trim()) return;
+    if (submitInFlightRef.current || requiresFreshSignin || !handoffResolved || !code.trim()) return;
+    submitInFlightRef.current = true;
     setSubmitting(true);
     setError('');
 
-    const { data, error: verifyErr } = await supabase.auth.verifyOtp({
+    let verification: Awaited<ReturnType<typeof supabase.auth.verifyOtp>>;
+    const verificationOperation = supabase.auth.verifyOtp({
       email: email.trim().toLowerCase(),
       token: code.trim(),
       type: 'email',
     });
+    try {
+      verification = await settleSessionOperation(verificationOperation, {
+        timeoutMs: AUTH_SESSION_OPERATION_TIMEOUT_MS,
+        label: 'Verify code',
+        discardLateSession: discardAuthSession,
+      });
+    } catch (err) {
+      // The code may have been consumed and the SDK may still settle a session
+      // just after our outer deadline. Never re-enable this OTP form. The
+      // settlement observer above discards an eventual exact-token session;
+      // recovery is a full fresh sign-in.
+      enterFreshSigninRecovery(lang === 'es'
+        ? 'No pudimos confirmar el resultado. Inicia sesión de nuevo.'
+        : "We couldn't confirm the result — please sign in again.");
+      console.warn('verify: code verification failed', err);
+      return;
+    }
+
+    const { data, error: verifyErr } = verification;
 
     if (verifyErr || !data.session) {
+      submitInFlightRef.current = false;
       setSubmitting(false);
       setError(verifyErr?.message ?? (lang === 'es' ? 'Código incorrecto.' : 'Incorrect code.'));
+      return;
+    }
+
+    let ownedSession = data.session;
+    if (!isAuthSessionCurrent(ownedSession)) {
+      enterFreshSigninRecovery(lang === 'es'
+        ? 'El estado de inicio de sesión cambió. Inicia sesión de nuevo.'
+        : 'Sign-in state changed — please sign in again.');
       return;
     }
 
@@ -206,14 +276,15 @@ function VerifyInner() {
     // Audit 2026-06-26 P1 (the unchecked-box → empty-app trap). This mirrors
     // the onboarding OTP path, which always trusts the device.
     try {
-      const res = await fetch('/api/auth/trust-device', {
+      const res = await fetchWithAuth('/api/auth/trust-device', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          Authorization: `Bearer ${data.session.access_token}`,
+          Authorization: `Bearer ${ownedSession.access_token}`,
         },
         credentials: 'include',
         body: JSON.stringify({ remember: trust }),
+        timeoutMs: AUTH_OPERATION_TIMEOUT_MS,
       });
       if (!res.ok) throw new Error(`trust-device responded ${res.status}`);
 
@@ -221,20 +292,50 @@ function VerifyInner() {
       // auth hook reads the freshly-written mfa_verified_sessions row). Without
       // this the first batch of PostgREST/Realtime reads after sign-in is
       // rejected by RLS until the natural ~1h refresh — empty dashboard.
-      const { error: refreshErr } = await supabase.auth.refreshSession();
+      if (!isAuthSessionCurrent(ownedSession)) {
+        throw new Error('The verified session no longer owns this browser');
+      }
+      const refreshOperation = supabase.auth.refreshSession({
+        refresh_token: ownedSession.refresh_token,
+      });
+      const { data: refreshData, error: refreshErr } = await settleSessionOperation(
+        refreshOperation,
+        {
+          timeoutMs: AUTH_SESSION_OPERATION_TIMEOUT_MS,
+          label: 'Secure session refresh',
+          discardLateSession: discardAuthSession,
+        },
+      );
       if (refreshErr) throw refreshErr;
+      if (!refreshData.session) throw new Error('Secure session refresh returned no session');
+      if (
+        refreshData.session.user.id !== ownedSession.user.id
+        || !isAuthSessionCurrent(refreshData.session)
+      ) {
+        // If this exact unexpected result became current, remove it. A newer
+        // winner with another refresh token is left untouched.
+        discardAuthSession(refreshData.session);
+        throw new Error('Secure session refresh lost attempt ownership');
+      }
+      ownedSession = refreshData.session;
     } catch (err) {
       // Fix: do NOT navigate into a half-secured (blank) app. The OTP code
       // is already consumed, so the clean recovery is a fresh sign-in.
-      setSubmitting(false);
-      setError(lang === 'es'
+      discardAuthSession(ownedSession);
+      enterFreshSigninRecovery(lang === 'es'
         ? 'No pudimos terminar de proteger tu sesión. Inicia sesión de nuevo.'
         : "Couldn't finish securing your session. Please sign in again.");
       console.warn('verify: securing session failed', err);
       return;
     }
 
-    router.replace(redirectTarget);
+    if (!isAuthSessionCurrent(ownedSession)) {
+      enterFreshSigninRecovery(lang === 'es'
+        ? 'El estado de inicio de sesión cambió. Inicia sesión de nuevo.'
+        : 'Sign-in state changed — please sign in again.');
+      return;
+    }
+    replaceNavigation(redirectTarget);
   };
 
   return (
@@ -272,7 +373,7 @@ function VerifyInner() {
             onChange={e => { setCode(e.target.value.replace(/\D/g, '').slice(0, 6)); setError(''); }}
             autoFocus
             autoComplete="one-time-code"
-            disabled={submitting}
+            disabled={submitting || requiresFreshSignin}
             style={{ height: 56, fontSize: 24, fontWeight: 600, letterSpacing: '0.32em', textAlign: 'center', fontFamily: 'var(--font-geist-mono), monospace' }}
           />
         </div>
@@ -287,15 +388,15 @@ function VerifyInner() {
             display: 'flex', alignItems: 'center', gap: 10,
             padding: '10px 12px', borderRadius: 12,
             background: 'rgba(255,255,255,0.6)', border: '1px solid rgba(31,35,28,0.1)',
-            cursor: submitting ? 'not-allowed' : 'pointer',
+            cursor: submitting || requiresFreshSignin ? 'not-allowed' : 'pointer',
             fontSize: 13, color: '#3A3F38',
           }}>
             <input
               type="checkbox"
               checked={trust}
               onChange={e => setTrust(e.target.checked)}
-              disabled={submitting}
-              style={{ width: 16, height: 16, accentColor: '#C99644', cursor: submitting ? 'not-allowed' : 'pointer' }}
+              disabled={submitting || requiresFreshSignin}
+              style={{ width: 16, height: 16, accentColor: '#C99644', cursor: submitting || requiresFreshSignin ? 'not-allowed' : 'pointer' }}
             />
             {lang === 'es' ? 'Confiar en este dispositivo' : 'Trust this device'}
           </label>
@@ -305,8 +406,8 @@ function VerifyInner() {
 
         <button
           type="submit"
-          disabled={!handoffResolved || submitting || code.length !== 6}
-          className={`si-btn si-rise si-d-3 ${(!handoffResolved || submitting || code.length !== 6) ? 'si-btn-off' : 'si-btn-on'}`}
+          disabled={!handoffResolved || requiresFreshSignin || submitting || code.length !== 6}
+          className={`si-btn si-rise si-d-3 ${(!handoffResolved || requiresFreshSignin || submitting || code.length !== 6) ? 'si-btn-off' : 'si-btn-on'}`}
           style={{ marginTop: 4 }}
         >
           {submitting
@@ -318,14 +419,14 @@ function VerifyInner() {
         <button
           type="button"
           onClick={() => void resendCode()}
-          disabled={!handoffResolved || !email || submitting || resending || resendCooldown > 0}
+          disabled={!handoffResolved || requiresFreshSignin || !email || submitting || resending || resendCooldown > 0}
           aria-describedby={resendError ? 'otp-resend-error' : undefined}
           style={{
             minHeight: 44, borderRadius: 12, border: '1px solid rgba(31,35,28,0.14)',
             background: 'rgba(255,255,255,0.72)', color: '#3A3F38',
             fontFamily: 'inherit', fontSize: 13, fontWeight: 600,
-            cursor: (!handoffResolved || !email || submitting || resending || resendCooldown > 0) ? 'not-allowed' : 'pointer',
-            opacity: (!handoffResolved || !email || submitting || resending || resendCooldown > 0) ? 0.58 : 1,
+            cursor: (!handoffResolved || requiresFreshSignin || !email || submitting || resending || resendCooldown > 0) ? 'not-allowed' : 'pointer',
+            opacity: (!handoffResolved || requiresFreshSignin || !email || submitting || resending || resendCooldown > 0) ? 0.58 : 1,
           }}
         >
           {resending
@@ -337,18 +438,28 @@ function VerifyInner() {
                 : (lang === 'es' ? 'Enviar un código nuevo' : 'Send a new code')}
         </button>
 
-        <Link
-          href={usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin'}
-          style={authBackLinkStyle}
-        >
-          {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
-        </Link>
+        {requiresFreshSignin ? (
+          <a
+            href={freshSigninHref}
+            style={authBackLinkStyle}
+          >
+            {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
+          </a>
+        ) : (
+          <Link
+            href={usesCompanyInvitationHandoff ? COMPANY_INVITATION_SIGN_IN_HREF : '/signin'}
+            style={authBackLinkStyle}
+          >
+            {lang === 'es' ? '← Volver al inicio de sesión' : '← Back to sign in'}
+          </Link>
+        )}
       </form>
     </AuthShell>
   );
 }
 
 export default function VerifyPage() {
+  useNavigationReady();
   return (
     <Suspense fallback={null}>
       <VerifyInner />

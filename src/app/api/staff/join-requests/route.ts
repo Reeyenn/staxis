@@ -7,10 +7,10 @@
 //
 //   PUT
 //     Body: { hotelId, requestId, decision: 'approve' | 'deny' }
-//     Approve: create the staff row from the request (name/phone/language/
-//     department), link accounts.staff_id, append property_access, mark the
-//     request approved. Deny: mark denied — the account keeps existing but
-//     never gains access to the hotel.
+//     Approve: one database transaction creates the staff identity/link and
+//     grants normalized property authority at a company hotel (or preserves
+//     the legacy array model at an independent hotel), then marks approved and
+//     audits. Deny is transactional too; the account never gains hotel access.
 //
 // join_requests has RLS with no policies (migration 0315) — service-role
 // only, so all reads/writes live here. Rows are written by
@@ -21,27 +21,17 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
+import {
+  verifyTeamManager,
+  callerCapabilityDecision,
+  callerCapabilityDecisionFresh,
+} from '@/lib/team-auth';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { validateUuid } from '@/lib/api-validate';
-import { writeAudit } from '@/lib/audit';
-import { toStaffRow } from '@/lib/db-mappers';
 import { requireSectionEnabled } from '@/lib/sections/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-
-interface JoinRequestRow {
-  id: string;
-  property_id: string;
-  account_id: string;
-  name: string;
-  phone: string | null;
-  language: 'en' | 'es';
-  department: string;
-  status: 'pending' | 'approved' | 'denied';
-  created_at: string;
-}
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
@@ -98,156 +88,73 @@ export async function PUT(req: NextRequest) {
   const sectionGate = await requireSectionEnabled(req, hotelId, 'staff');
   if (!sectionGate.ok) return sectionGate.response;
 
-  const { data: jr, error: jrErr } = await supabaseAdmin
-    .from('join_requests')
-    .select('id, property_id, account_id, name, phone, language, department, status, created_at')
-    .eq('id', joinRequestId)
-    .eq('property_id', hotelId)
-    .maybeSingle();
-  if (jrErr || !jr) return err('Request not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  const request = jr as JoinRequestRow;
-  if (request.status !== 'pending') {
-    return err('Request has already been decided', { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict });
+  // Refresh the override store immediately before entering the database
+  // transaction. The RPC independently recomputes authoritative reach after
+  // taking the same property lock as a company transfer; this route check is a
+  // fast explicit denial, not the commit-time authority source.
+  const commitCapability = await callerCapabilityDecisionFresh(caller, 'manage_team', hotelId);
+  if (commitCapability === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (commitCapability === 'denied') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
 
-  // Claim the request first (pending → decided) with a status guard, so two
-  // managers tapping Approve at once can't double-create the staff row.
-  const decidedAt = new Date().toISOString();
-  const { data: claimed, error: claimErr } = await supabaseAdmin
-    .from('join_requests')
-    .update({
-      status: body.decision === 'approve' ? 'approved' : 'denied',
-      decided_at: decidedAt,
-      decided_by: caller.accountId,
-    })
-    .eq('id', request.id)
-    .eq('status', 'pending')
-    .select('id')
-    .maybeSingle();
-  if (claimErr || !claimed) {
-    return err('Request has already been decided', { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict });
-  }
-
-  if (body.decision === 'deny') {
-    await writeAudit({
-      action: 'join_request.deny',
-      actorUserId: caller.authUserId,
-      targetType: 'join_request',
-      targetId: request.id,
-      hotelId,
-      metadata: { name: request.name, department: request.department },
+  const { data, error: rpcError } = await supabaseAdmin.rpc(
+    'staxis_decide_staff_join_request',
+    {
+      p_actor_account_id: caller.accountId,
+      p_join_request_id: joinRequestId,
+      p_property_id: hotelId,
+      p_decision: body.decision,
+    },
+  );
+  if (rpcError) {
+    log.error('[join-requests:PUT] transactional decision failed', {
+      requestId, joinRequestId, code: rpcError.code, msg: errToString(rpcError),
     });
-    return ok({ decided: 'denied' }, { requestId });
-  }
-
-  // ── Approve ────────────────────────────────────────────────────────────
-  // Order matters for recoverability: staff row → account link+access →
-  // done. If a later step fails we revert the claim to 'pending' so the
-  // manager can simply tap Approve again.
-  const revertClaim = async () => {
-    await supabaseAdmin
-      .from('join_requests')
-      .update({ status: 'pending', decided_at: null, decided_by: null })
-      .eq('id', request.id)
-      .then(({ error: revErr }) => {
-        if (revErr) log.error('[join-requests:PUT] claim revert failed', { requestId, joinRequestId: request.id, msg: errToString(revErr) });
-      });
-  };
-
-  const { data: account, error: accErr } = await supabaseAdmin
-    .from('accounts')
-    .select('id, property_access, staff_id')
-    .eq('id', request.account_id)
-    .maybeSingle();
-  if (accErr || !account) {
-    // Account deleted since signup (e.g. admin cleanup). Nothing to grant —
-    // leave the request denied-equivalent by keeping the claim, but record
-    // what happened.
-    await writeAudit({
-      action: 'join_request.approve_orphaned',
-      actorUserId: caller.authUserId,
-      targetType: 'join_request',
-      targetId: request.id,
-      hotelId,
-      metadata: { name: request.name, reason: 'account no longer exists' },
+    return err('Failed to decide the request — try again.', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
     });
-    return err('That signup no longer exists. The account was deleted.', { requestId, status: 410, code: ApiErrorCode.NotFound });
   }
-  if (account.staff_id) {
-    await revertClaim();
-    return err('That login is already linked to a staff member.', { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict });
-  }
-
-  const staffRow = {
-    ...toStaffRow({
-      name: request.name,
-      phone: request.phone ?? '',
-      language: request.language,
-      department: request.department as never,
-      isSenior: false,
-      isActive: true,
-      maxWeeklyHours: 40,
-      maxDaysPerWeek: 5,
-      // DEPRECATED (2026-07-24): staff.scheduled_today is a non-date-aware
-      // boolean that nothing ever writes. Housekeeping now derives who is
-      // working from scheduled_shifts (src/lib/schedule/active-crew.ts).
-      // Kept only to satisfy the NOT NULL column default.
-      scheduledToday: false,
-      weeklyHours: 0,
-    }),
-    property_id: hotelId,
-  };
-  const { data: staffIns, error: staffErr } = await supabaseAdmin
-    .from('staff').insert(staffRow).select('id').single();
-  if (staffErr || !staffIns) {
-    log.error('[join-requests:PUT] staff insert failed', { requestId, msg: errToString(staffErr) });
-    await revertClaim();
-    return err('Failed to add them to the hotel roster. Try again.', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  const staffId = String(staffIns.id);
-
-  const nextAccess = Array.isArray(account.property_access) && account.property_access.includes(hotelId)
-    ? account.property_access
-    : [...(account.property_access ?? []), hotelId];
-  const { data: linkedAccount, error: linkErr } = await supabaseAdmin
-    .from('accounts')
-    .update({ staff_id: staffId, property_access: nextAccess })
-    .eq('id', request.account_id)
-    .is('staff_id', null)
-    .select('id')
-    .maybeSingle();
-  if (linkErr || !linkedAccount) {
-    if (linkErr) {
-      log.error('[join-requests:PUT] account link failed', { requestId, msg: errToString(linkErr) });
-    } else {
-      log.warn('[join-requests:PUT] account link lost concurrency race', {
-        requestId,
-        accountId: request.account_id,
+  const result = data && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : null;
+  if (!result || result.ok !== true) {
+    const reason = typeof result?.reason === 'string' ? result.reason : 'unavailable';
+    if (reason === 'not_found' || reason === 'property_not_found') {
+      return err('Request not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+    if (reason === 'forbidden' || reason === 'normalized_manager_required') {
+      return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+    }
+    if (reason === 'account_unavailable') {
+      return err('That signup no longer exists — the account was deleted.', {
+        requestId, status: 410, code: ApiErrorCode.NotFound,
       });
     }
-    await supabaseAdmin.from('staff').delete().eq('id', staffId).then(({ error: delErr }) => {
-      if (delErr) log.error('[join-requests:PUT] staff rollback failed', { requestId, staffId, msg: errToString(delErr) });
+    if (reason === 'already_decided' || reason === 'already_linked') {
+      return err('Request has already been decided', {
+        requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    if (reason === 'normalized_independent_grant_unsupported'
+      || reason === 'target_scope_not_empty'
+      || reason === 'role_mismatch'
+      || reason === 'ambiguous_topology'
+      || reason === 'invalid_topology') {
+      return err('This signup cannot be granted safely. Refresh the hotel access setup and try again.', {
+        requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    return err('Failed to decide the request — try again.', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
     });
-    await revertClaim();
-    return err(
-      linkErr
-        ? 'Failed to link their login. Try again.'
-        : 'That login was linked to another staff member. Refresh and try again.',
-      {
-        requestId,
-        status: linkErr ? 500 : 409,
-        code: linkErr ? ApiErrorCode.InternalError : ApiErrorCode.IdempotencyConflict,
-      },
-    );
   }
 
-  await writeAudit({
-    action: 'join_request.approve',
-    actorUserId: caller.authUserId,
-    targetType: 'join_request',
-    targetId: request.id,
-    hotelId,
-    metadata: { name: request.name, department: request.department, staffId, accountId: request.account_id },
-  });
-  return ok({ decided: 'approved', staffId }, { requestId });
+  const decided = result.decided === 'denied' ? 'denied' : 'approved';
+  return ok({
+    decided,
+    ...(decided === 'approved' && typeof result.staffId === 'string'
+      ? { staffId: result.staffId }
+      : {}),
+  }, { requestId });
 }

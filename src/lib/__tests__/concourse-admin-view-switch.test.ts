@@ -12,18 +12,41 @@ const barView = source('src', 'components', 'concourse', 'ConcourseBarView.tsx')
 const mobile = source('src', 'components', 'concourse', 'MobileConcourseNav.tsx');
 const concourseCss = source('src', 'components', 'concourse', 'concourse-css.tsx');
 const mobileCss = source('src', 'components', 'concourse', 'MobileConcourseNav.module.css');
+const authContext = source('src', 'contexts', 'AuthContext.tsx');
+const authorizationRoute = source('src', 'app', 'api', 'auth', 'session-authorization', 'route.ts');
+const authorizationInvalidation = source('src', 'lib', 'auth', 'session-authorization-invalidation.ts');
+const authorizationNotificationMigration = source('supabase', 'migrations', '0387_account_authorization_notifications.sql');
 const company = source('src', 'app', 'company', 'page.tsx');
 const companyCss = source('src', 'app', 'company', 'CompanyAccess.module.css');
 const hotelTeam = source('src', 'app', 'company', '_components', 'HotelTeamPanel.tsx');
 const hotelTeamCss = source('src', 'app', 'company', '_components', 'HotelTeamPanel.module.css');
 
-describe('in-place admin hotel view', () => {
-  test('removes the admin destination action from desktop and phone navigation', () => {
-    assert.doesNotMatch(concourse, /const viewSwitch|viewSwitch=|Switch to Admin View|\/admin\/properties#live['"]\)/);
-    assert.doesNotMatch(barView, /ViewSwitchAction|viewSwitch|cx-view-switch|cx-utility-pill/);
-    assert.doesNotMatch(mobile, /ViewSwitchAction|viewSwitch|selectView|viewSectionLabel|viewSwitchRow/);
-    assert.doesNotMatch(concourseCss, /cx-view-switch|cx-utility-pill/);
-    assert.doesNotMatch(mobileCss, /viewSwitchRow/);
+/**
+ * Regression cause: 057f0f67 correctly moved hotel-level Admin tools into the
+ * `/company` page, but it deleted the unrelated Staxis platform-admin
+ * destination from both shared navigation surfaces and changed this test to
+ * require that deletion. These assertions keep the two concepts independent.
+ */
+describe('platform Admin destination and in-place hotel Admin tools', () => {
+  test('restores one distinct, exact Admin destination on desktop and phone', () => {
+    assert.match(concourse, /onClick: \(\) => go\(['"]\/admin\/properties#live['"]\)/);
+    assert.match(concourse, /adminDestination=\{adminDestination\}/g);
+    assert.match(barView, /interface AdminDestinationAction/);
+    assert.match(barView, /cx-admin-destination/);
+    assert.match(barView, /aria-current=\{adminDestination\.active \? ['"]page['"] : undefined\}/);
+    assert.match(mobile, /adminDestination\?: AdminDestinationAction/);
+    assert.match(mobile, /styles\.adminDestinationRow/);
+    assert.match(mobile, /<CxIcon name="admin" size=\{17\} \/>/);
+    assert.match(concourseCss, /\.cx-pill\.cx-admin-destination:not\(\.cx-active\)/);
+    assert.match(mobileCss, /\.adminDestinationRow \{/);
+    assert.doesNotMatch(concourse, /items\.push\(\{[\s\S]*?key: ['"]admin['"]/);
+  });
+
+  test('shows the destination only after a fresh platform-admin verdict', () => {
+    assert.match(concourse, /authorizationChecked && platformAdmin && user\?\.role === ['"]admin['"]/);
+    assert.match(concourse, /const adminDestination:[\s\S]*?= verifiedPlatformAdmin[\s\S]*?\? \{/);
+    assert.match(concourse, /if \(!authorizationChecked \|\| verifiedPlatformAdmin \|\| !adminWorkspaceActive\) return;[\s\S]*?replace\(['"]\/home['"]\)/);
+    assert.doesNotMatch(concourse, /user\?\.role === ['"]admin['"] \? \{[\s\S]*?\/admin\/properties#live/);
   });
 
   test('keeps the switch inside My Hotel and changes local state without routing', () => {
@@ -33,6 +56,9 @@ describe('in-place admin hotel view', () => {
     const switchMarkup = company.slice(switchIndex, heroEnd);
 
     assert.ok(heroIndex >= 0 && switchIndex > heroIndex && heroEnd > switchIndex);
+    assert.match(company, /const adminPreview = Boolean\(\s*authorizationChecked && platformAdmin && userRole === ['"]admin['"]/);
+    assert.match(company, /if \(!user \|\| authLoading \|\| propertyLoading \|\| !authorizationChecked\) return/);
+    assert.doesNotMatch(company, /const adminPreview = userRole === ['"]admin['"]/);
     assert.match(switchMarkup, /type="checkbox"/);
     assert.match(switchMarkup, /role="switch"/);
     assert.match(switchMarkup, /checked=\{adminToolsActive\}/);
@@ -40,13 +66,52 @@ describe('in-place admin hotel view', () => {
     assert.match(switchMarkup, /onChange=\{\(event\) => setAdminToolsEnabled\(event\.target\.checked\)\}/);
     assert.doesNotMatch(switchMarkup, /router\.(push|replace)|\/admin\/properties/);
     assert.match(company, /setAdminToolsEnabled\(false\);\s*\}, \[activePropertyId, userRole\]\)/);
+    assert.match(company, /\{ id: ['"]overview['"][\s\S]*?\{ id: ['"]hotels['"][\s\S]*?\{ id: ['"]people['"][\s\S]*?\{ id: ['"]access['"]/);
+  });
+
+  test('revalidates open sessions on authorization events, with focus and interval recovery', () => {
+    assert.match(authContext, /fetchWithAuth\(['"]\/api\/auth\/session-authorization['"]/);
+    assert.match(authContext, /subscribeToSessionAuthorizationInvalidations\(\{/);
+    assert.match(authContext, /onInvalidate: \(\) => \{ void revalidateAuthorization\(\); \}/);
+    assert.match(authContext, /if \(inFlight\) \{[\s\S]*?rerunRequested = true/);
+    assert.match(authContext, /if \(active && rerunRequested\)[\s\S]*?void revalidateAuthorization\(\)/);
+    assert.match(authorizationInvalidation, /table: ['"]account_authorization_notifications['"]/);
+    assert.match(authorizationInvalidation, /filter: `data_user_id=eq\.\$\{input\.authUid\}`/);
+    assert.match(authorizationInvalidation, /input\.onInvalidate/);
+    assert.match(authorizationInvalidation, /status === ['"]SUBSCRIBED['"][\s\S]*?input\.onInvalidate\(\)/);
+    assert.match(authorizationNotificationMigration, /after insert or update of authority_version[\s\S]*?account_authorization_state/);
+    assert.match(authorizationNotificationMigration, /account_authorization_notifications_self_select/);
+    assert.match(authContext, /window\.addEventListener\(['"]focus['"], revalidateWhenVisible\)/);
+    assert.match(authContext, /document\.addEventListener\(['"]visibilitychange['"], revalidateWhenVisible\)/);
+    assert.match(authContext, /AUTHORIZATION_REVALIDATE_INTERVAL_MS = 60_000/);
+    assert.match(authContext, /window\.setInterval\([\s\S]*?AUTHORIZATION_REVALIDATE_INTERVAL_MS/);
+    assert.match(authContext, /setAuthorizationChecked\(true\);\s*setPlatformAdmin\(snapshot\.platformAdmin\)/);
+    assert.match(authContext, /catch \{[\s\S]*?Transient by contract[\s\S]*?\}/);
+    const transientCatch = authContext.slice(
+      authContext.indexOf('} catch {', authContext.indexOf('revalidateAuthorization = async')),
+      authContext.indexOf('} finally {', authContext.indexOf('revalidateAuthorization = async')),
+    );
+    assert.doesNotMatch(transientCatch, /setAuthorizationChecked|setPlatformAdmin|setUser/);
+  });
+
+  test('uses a fresh self-session account lookup and forbids caching its verdict', () => {
+    assert.match(authorizationRoute, /requireSession\(req, \{ requestId \}\)/);
+    assert.match(authorizationRoute, /\.from\(['"]accounts['"]\)[\s\S]*?\.select\(['"]id, role, active['"]\)[\s\S]*?\.eq\(['"]data_user_id['"], session\.userId\)/);
+    assert.match(authorizationRoute, /listAuthoritativePropertyAccess\(account\.id as string\)/);
+    assert.doesNotMatch(authorizationRoute, /\.select\(['"][^'"]*property_access/);
+    assert.match(authorizationRoute, /account\.active === true/);
+    assert.match(authorizationRoute, /platformAdmin = active && account\.role === ['"]admin['"]/);
+    assert.match(authorizationRoute, /private, no-store, max-age=0, must-revalidate/);
+    assert.match(authorizationRoute, /Vary: ['"]Cookie, Authorization['"]/);
+    assert.match(authorizationRoute, /if \(error\)[\s\S]*?status: 503[\s\S]*?ApiErrorCode\.UpstreamFailure/);
+    assert.match(authorizationRoute, /if \(!account\)[\s\S]*?active: false[\s\S]*?platformAdmin: false/);
   });
 
   test('unlocks only independently authorized hotel-team tools and remounts dialogs on mode changes', () => {
     assert.match(company, /\/api\/admin\/company-access-preview\?pid=/);
     assert.match(company, /normalized\.viewerContext\?\.kind !== ['"]staxis_admin_preview['"]/);
     assert.match(company, /normalized\.viewerContext\.readOnly !== true/);
-    assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminToolsEnabled \? ['"]admin['"] : ['"]preview['"]\}`\}/);
+    assert.match(company, /key=\{`\$\{activeProperty\.id\}:\$\{adminToolsEnabled \? ['"]admin['"] : ['"]preview['"]\}:\$\{canManageTeam \? ['"]hotel-authorized['"] : ['"]invite-only['"]\}`\}/);
     assert.match(company, /readOnly=\{Boolean\(data\.viewerContext\?\.readOnly\) && !adminToolsEnabled\}/);
     assert.match(company, /allowAdminActions=\{adminToolsEnabled\}/);
     assert.match(company, /const hotelTeamLocked = Boolean\([\s\S]*?\(\(adminPreview \|\| resolved\.viewerContext\?\.readOnly === true\) && !adminToolsActive\)/);

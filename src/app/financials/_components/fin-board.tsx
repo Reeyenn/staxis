@@ -238,8 +238,8 @@ export function FlipExpenseCard({
   deptColorHex: string;
   editLabel: string;
   deleteLabel: string;
-  onEdit: () => void;
-  onDelete: () => void;
+  onEdit?: () => void;
+  onDelete?: () => void;
 }) {
   // Two-phase rotateY flip with the content swapped at the half-turn. Content
   // stays in normal flow (auto height) so a taller "back" never clips its
@@ -299,7 +299,8 @@ export function FlipExpenseCard({
               </div>
             ))}
             <div style={{ fontFamily: FONT_MONO, fontSize: 10.5, color: deptColorHex }}>{deptName.toUpperCase()}</div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+            {(onEdit || onDelete) && <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
+              {onEdit && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -309,6 +310,8 @@ export function FlipExpenseCard({
               >
                 {editLabel}
               </button>
+              )}
+              {onDelete && (
               <button
                 onClick={(e) => {
                   e.stopPropagation();
@@ -318,7 +321,8 @@ export function FlipExpenseCard({
               >
                 {deleteLabel}
               </button>
-            </div>
+              )}
+            </div>}
           </div>
         )}
       </div>

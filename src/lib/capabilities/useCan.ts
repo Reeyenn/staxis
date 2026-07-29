@@ -10,20 +10,79 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { can } from './can';
 import type { CapabilityKey } from './registry';
+import type { AppRole } from '@/lib/roles';
+
+export function useActiveHotelStanding(): {
+  role: AppRole | null;
+  hotelMutationAllowed: boolean;
+  seesFinancials: boolean;
+  ready: boolean;
+} {
+  const { activePropertyId } = useProperty();
+  const {
+    user,
+    authorizationChecked,
+    platformAdmin,
+    propertyStandings,
+  } = useAuth();
+  if (!user || !authorizationChecked || !activePropertyId) {
+    return {
+      role: null,
+      hotelMutationAllowed: false,
+      seesFinancials: false,
+      ready: false,
+    };
+  }
+  if (platformAdmin && user.role === 'admin') {
+    return {
+      role: 'admin',
+      hotelMutationAllowed: true,
+      seesFinancials: true,
+      ready: true,
+    };
+  }
+  const standing = propertyStandings.find(
+    (candidate) => candidate.propertyId === activePropertyId,
+  );
+  return {
+    role: standing?.operationalRole ?? null,
+    hotelMutationAllowed: standing?.hotelMutationAllowed === true,
+    seesFinancials: standing?.seesFinancials === true,
+    ready: Boolean(standing),
+  };
+}
 
 /**
  * Returns `(capability) => boolean` for the current user at the active hotel.
- * While the override map is still loading it is undefined → can() falls back to
- * the everyone-everything default (admin-only caps stay closed). The server
- * re-checks on every request, so a brief optimistic "allowed" can never leak
- * data — at worst a button flickers, then the route 403s.
+ * Fails closed until the override map is confirmed for the exact signed-in
+ * viewer and selected hotel. The server re-checks every request, but client
+ * controls must not flicker enabled or remain enabled after a capability read
+ * times out merely because the default map is permissive.
  */
 export function useCan(): (capability: CapabilityKey) => boolean {
-  const { user } = useAuth();
-  const { capabilityOverrides } = useProperty();
-  const role = user?.role ?? null;
+  const {
+    activePropertyId,
+    activePropertyViewerKey,
+    capabilityOverrides,
+    capabilityOverridesPropertyId,
+    capabilityOverridesStatus,
+    capabilityOverridesViewerKey,
+  } = useProperty();
+  const standing = useActiveHotelStanding();
+  const role = standing.role;
+  const viewerKey = activePropertyViewerKey;
+  const ready = Boolean(
+    viewerKey
+    && capabilityOverridesStatus === 'ready'
+    && capabilityOverridesPropertyId === activePropertyId
+    && capabilityOverridesViewerKey === viewerKey
+  );
   return useCallback(
-    (capability: CapabilityKey) => can(role ? { role } : null, capability, capabilityOverrides),
-    [role, capabilityOverrides],
+    (capability: CapabilityKey) => (
+      ready
+      && standing.ready
+      && can(role ? { role } : null, capability, capabilityOverrides)
+    ),
+    [role, ready, standing.ready, capabilityOverrides],
   );
 }

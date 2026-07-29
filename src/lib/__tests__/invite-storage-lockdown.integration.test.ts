@@ -127,29 +127,65 @@ describe('invite capability storage — real migration integration', () => {
     }
   });
 
-  test('service_role keeps the DML required by the server routes', async () => {
-    for (const table of ['account_invites', 'hotel_join_codes'] as const) {
-      for (const privilege of ['select', 'insert', 'update', 'delete'] as const) {
-        const result = await pg.query<{ allowed: boolean }>(
-          `select has_table_privilege('service_role', $1, $2) as allowed`,
-          [`public.${table}`, privilege],
-        );
-        assert.equal(
-          result.rows[0].allowed,
-          true,
-          `service_role needs ${privilege} on ${table}`,
-        );
-      }
-      await runAsRole(pg, 'service_role', `select * from public.${table} limit 1`);
+  test('service_role keeps invite DML but join-code storage is RPC-only', async () => {
+    for (const privilege of ['select', 'insert', 'update', 'delete'] as const) {
+      const invite = await pg.query<{ allowed: boolean }>(
+        `select has_table_privilege('service_role', 'public.account_invites', $1) as allowed`,
+        [privilege],
+      );
+      assert.equal(invite.rows[0].allowed, true, `service_role needs ${privilege} on account_invites`);
+
+      const joinCode = await pg.query<{ allowed: boolean }>(
+        `select has_table_privilege('service_role', 'public.hotel_join_codes', $1) as allowed`,
+        [privilege],
+      );
+      assert.equal(joinCode.rows[0].allowed, false, `service_role must not have ${privilege} on hotel_join_codes`);
+    }
+    await runAsRole(pg, 'service_role', 'select * from public.account_invites limit 1');
+    await assert.rejects(
+      runAsRole(pg, 'service_role', 'select * from public.hotel_join_codes limit 1'),
+      /permission denied/i,
+    );
+
+    for (const signature of [
+      'staxis_resolve_join_code_capability(text)',
+      'staxis_read_staff_join_code_guarded(uuid,uuid,uuid)',
+      'staxis_get_or_create_staff_join_code_guarded(uuid,uuid,uuid,text,text)',
+      'staxis_revoke_staff_join_code_guarded(uuid,uuid,uuid,text)',
+      'staxis_resolve_or_mint_resume_join_code_guarded(uuid,uuid,uuid,text,text)',
+      'staxis_apply_onboarding_join_code_transition(uuid,uuid,text,text)',
+      'staxis_mint_privileged_onboarding_join_code(uuid,uuid,uuid,text,text,text)',
+      'staxis_finalize_join_code_signup(uuid,text,uuid,integer,uuid,text,text,text,text,text,text)',
+      'staxis_claim_join_code_slot(uuid,integer)',
+      'staxis_release_join_code_slot(uuid)',
+    ]) {
+      const privileges = await pg.query<{
+        service_allowed: boolean;
+        anon_allowed: boolean;
+        authenticated_allowed: boolean;
+      }>(`
+        select
+          has_function_privilege('service_role', $1, 'execute') as service_allowed,
+          has_function_privilege('anon', $1, 'execute') as anon_allowed,
+          has_function_privilege('authenticated', $1, 'execute') as authenticated_allowed
+      `, [`public.${signature}`]);
+      assert.equal(privileges.rows[0].service_allowed, true, signature);
+      assert.equal(privileges.rows[0].anon_allowed, false, signature);
+      assert.equal(privileges.rows[0].authenticated_allowed, false, signature);
     }
   });
 
-  test('is safe to re-run without restoring or duplicating browser policies', async () => {
-    const sql = readFileSync(
+  test('0398 safely reasserts RPC-only storage after a historical 0328 replay', async () => {
+    const legacySql = readFileSync(
       join(process.cwd(), 'supabase', 'migrations', '0328_invite_storage_service_role_only.sql'),
       'utf8',
     );
-    await pg.exec(sql);
+    const boundarySql = readFileSync(
+      join(process.cwd(), 'supabase', 'migrations', '0398_privileged_onboarding_join_codes.sql'),
+      'utf8',
+    );
+    await pg.exec(legacySql);
+    await pg.exec(boundarySql);
 
     const policies = await pg.query<{ tablename: string; policyname: string }>(`
       select tablename, policyname
@@ -162,6 +198,10 @@ describe('invite capability storage — real migration integration', () => {
       { tablename: 'account_invites', policyname: 'account_invites_deny_browser' },
       { tablename: 'hotel_join_codes', policyname: 'hotel_join_codes_deny_browser' },
     ]);
+    const direct = await pg.query<{ allowed: boolean }>(
+      `select has_table_privilege('service_role', 'public.hotel_join_codes', 'select') as allowed`,
+    );
+    assert.equal(direct.rows[0].allowed, false);
   });
 
   test('0329 atomically rejects a stale hotel-team removal snapshot', async () => {
@@ -227,15 +267,27 @@ describe('invite capability storage — real migration integration', () => {
     assert.deepEqual(access.rows[0].property_access, [hotelId]);
   });
 
-  test('0329 guarded removal is callable only by the server role', async () => {
-    const signature = 'public.staxis_remove_property_access_guarded(uuid,uuid,text,timestamp with time zone)';
-    const privileges = await pg.query<{ browser_allowed: boolean; server_allowed: boolean }>(
+  test('identity-free removal is retired and actor-bound v2 is server-only', async () => {
+    const oldSignature = 'public.staxis_remove_property_access_guarded(uuid,uuid,text,timestamp with time zone)';
+    const v2Signature = 'public.staxis_remove_property_access_guarded_v2(uuid,uuid,text,uuid,uuid,text,timestamp with time zone,text)';
+    const privileges = await pg.query<{
+      old_browser_allowed: boolean;
+      old_server_allowed: boolean;
+      v2_browser_allowed: boolean;
+      v2_server_allowed: boolean;
+    }>(
       `select
-         has_function_privilege('authenticated', $1, 'execute') as browser_allowed,
-         has_function_privilege('service_role', $1, 'execute') as server_allowed`,
-      [signature],
+         has_function_privilege('authenticated', $1, 'execute') as old_browser_allowed,
+         has_function_privilege('service_role', $1, 'execute') as old_server_allowed,
+         has_function_privilege('authenticated', $2, 'execute') as v2_browser_allowed,
+         has_function_privilege('service_role', $2, 'execute') as v2_server_allowed`,
+      [oldSignature, v2Signature],
     );
-    assert.equal(privileges.rows[0].browser_allowed, false);
-    assert.equal(privileges.rows[0].server_allowed, true);
+    assert.deepEqual(privileges.rows[0], {
+      old_browser_allowed: false,
+      old_server_allowed: false,
+      v2_browser_allowed: false,
+      v2_server_allowed: true,
+    });
   });
 });

@@ -48,7 +48,15 @@
  * patching ~40 call sites.
  */
 
-import { supabase } from '@/lib/supabase';
+import { clearSupabaseBrowserSessionCookies, supabase } from '@/lib/supabase';
+import {
+  composeAbortSignals,
+  raceWithAbortSignal,
+  requestAbortSignals,
+  RequestTimeoutError,
+  timeoutAbortSignal,
+  withPromiseDeadline,
+} from '@/lib/fetch-deadline';
 
 /** Sentinel error thrown when we've signed the user out and started a
  *  redirect to /signin. Callers should catch this and bail silently — the
@@ -66,6 +74,39 @@ export class SessionEndedError extends Error {
 // window. Picks up the same skew-tolerance Supabase recommends, without
 // hammering the auth endpoint on every request (only triggers near expiry).
 const REFRESH_BUFFER_SEC = 60;
+
+/** Browser auth methods must never keep a navigation waiting indefinitely. */
+export const AUTH_OPERATION_TIMEOUT_MS = 8_000;
+
+/** Supabase Auth's installed default cross-tab lock-acquire budget. */
+export const AUTH_LOCK_ACQUIRE_TIMEOUT_MS = 5_000;
+
+/**
+ * End-to-end budget for SDK methods that can install a browser session.
+ *
+ * The auth transport's 8s deadline does not begin until GoTrue acquires its
+ * cross-tab lock, which may legitimately take up to 5s. Leave another 4s for
+ * response parsing, cookie persistence and synchronous auth listeners. A
+ * shorter outer deadline can incorrectly declare a valid password/OTP failed
+ * while the SDK is still installing the session in the background.
+ */
+export const AUTH_SESSION_OPERATION_TIMEOUT_MS = (
+  AUTH_LOCK_ACQUIRE_TIMEOUT_MS
+  + AUTH_OPERATION_TIMEOUT_MS
+  + 4_000
+);
+
+/** End-to-end budget for ordinary authenticated GET/HEAD navigation reads. */
+export const NAVIGATION_FETCH_TIMEOUT_MS = 10_000;
+
+/** Explicit budget for interactive writes whose UI otherwise stays busy.
+ * Mutations do not auto-retry: a lost response is an ambiguous outcome and
+ * callers must reconcile or reuse their idempotency key before trying again.
+ */
+export const INTERACTIVE_ACTION_TIMEOUT_MS = 30_000;
+
+// Mutable only through the test hook below; production always uses the bound.
+let authOperationTimeoutMs = AUTH_OPERATION_TIMEOUT_MS;
 
 /** Outcome of a refresh attempt. `terminal: true` means Supabase's auth API
  *  DEFINITIVELY rejected the session (refresh token invalid / revoked /
@@ -98,11 +139,14 @@ function isTerminalRefreshError(error: { status?: number; code?: string; message
 // returns 429 / mints multiple tokens in parallel.
 let inFlightRefresh: Promise<RefreshOutcome> | null = null;
 
-async function refreshSessionVerdict(): Promise<RefreshOutcome> {
+async function refreshSessionVerdict(signal?: AbortSignal): Promise<RefreshOutcome> {
   if (!inFlightRefresh) {
     inFlightRefresh = (async (): Promise<RefreshOutcome> => {
       try {
-        const { data, error } = await supabase.auth.refreshSession();
+        const { data, error } = await withPromiseDeadline(
+          supabase.auth.refreshSession(),
+          { timeoutMs: authOperationTimeoutMs, label: 'Session refresh' },
+        );
         if (error) return { token: null, terminal: isTerminalRefreshError(error) };
         if (!data.session?.access_token) return { token: null, terminal: false };
         return { token: data.session.access_token, terminal: false };
@@ -116,20 +160,27 @@ async function refreshSessionVerdict(): Promise<RefreshOutcome> {
       }
     })();
   }
-  return inFlightRefresh;
+  return raceWithAbortSignal(inFlightRefresh, signal);
 }
 
-async function refreshAndGetToken(): Promise<string | null> {
-  return (await refreshSessionVerdict()).token;
+async function refreshAndGetToken(signal?: AbortSignal): Promise<string | null> {
+  return (await refreshSessionVerdict(signal)).token;
 }
 
 /** Return a usable access token, refreshing it first if it's expired or
  *  close to expiring. Returns null when there's no session at all (signed
  *  out) — caller proceeds without an Authorization header.
  */
-async function getFreshAccessToken(): Promise<string | null> {
+async function getFreshAccessToken(signal?: AbortSignal): Promise<string | null> {
   try {
-    const { data: { session } } = await supabase.auth.getSession();
+    const { data: { session } } = await withPromiseDeadline(
+      supabase.auth.getSession(),
+      {
+        timeoutMs: authOperationTimeoutMs,
+        label: 'Session check',
+        signals: [signal],
+      },
+    );
     if (!session?.access_token) return null;
 
     const nowSec = Math.floor(Date.now() / 1000);
@@ -137,9 +188,13 @@ async function getFreshAccessToken(): Promise<string | null> {
     const needsRefresh = expiresAt > 0 && expiresAt - nowSec < REFRESH_BUFFER_SEC;
     if (!needsRefresh) return session.access_token;
 
-    const fresh = await refreshAndGetToken();
+    const fresh = await refreshAndGetToken(signal);
     return fresh ?? session.access_token;  // fall back to the stale one; server will tell us
-  } catch {
+  } catch (error) {
+    // A deadline/caller abort is a terminal outcome for this request. Sending
+    // an unauthenticated retry would only add another waterfall and could turn
+    // a network problem into a misleading 401.
+    if (error instanceof RequestTimeoutError || signal?.aborted) throw error;
     return null;
   }
 }
@@ -148,15 +203,16 @@ async function getFreshAccessToken(): Promise<string | null> {
  *  the original body (so callers that want to read it can). Returns null if
  *  the body isn't JSON or doesn't have a code.
  */
-async function readFailureCode(res: Response): Promise<string | null> {
+async function readFailureCode(res: Response, signal?: AbortSignal): Promise<string | null> {
   try {
     const clone = res.clone();
-    const body = await clone.json();
+    const body = await raceWithAbortSignal(clone.json(), signal);
     if (body && typeof body === 'object' && typeof body.code === 'string') {
       return body.code;
     }
     return null;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     return null;
   }
 }
@@ -170,9 +226,21 @@ async function readFailureCode(res: Response): Promise<string | null> {
  *  signin page. This guard pins the first reason and turns every
  *  subsequent caller into a silent throw of SessionEndedError.
  *
- *  Reset for tests: __resetSessionEndForTesting() below.
+ *  A successful SPA sign-in resets the guard through
+ *  markAuthenticatedSessionStarted(). A full document load naturally resets
+ *  the module too.
  */
 let sessionEndFired = false;
+
+/**
+ * Clear the terminal-session redirect latch after a genuinely new session is
+ * established in this document. This must be called by AuthContext only after
+ * Supabase sign-in plus the account lookup both succeed; clearing it for every
+ * token read would let concurrent terminal 401s defeat the one-shot guard.
+ */
+export function markAuthenticatedSessionStarted(): void {
+  sessionEndFired = false;
+}
 
 export function __resetSessionEndForTesting(): void {
   sessionEndFired = false;
@@ -185,9 +253,17 @@ export function __resetInFlightRefreshForTesting(): void {
   inFlightRefresh = null;
 }
 
-/** Force-signout + redirect to /signin. Fire-and-forget the signOut call
- *  so we don't block on it; the redirect tears the page down anyway. The
- *  throw is what stops the caller's continuation from executing (and from
+/** Tests only: shorten the auth bound without making production configurable. */
+export function __setAuthOperationTimeoutForTesting(timeoutMs?: number): void {
+  const next = timeoutMs ?? AUTH_OPERATION_TIMEOUT_MS;
+  if (!Number.isFinite(next) || next <= 0) throw new RangeError('timeoutMs must be positive');
+  authOperationTimeoutMs = next;
+}
+
+/** Force-signout + redirect to /signin. Clear the browser cookie first so a
+ *  failed remote revoke cannot restore the old account on reload, then
+ *  fire-and-forget GoTrue's local cleanup; the redirect tears the page down.
+ *  The throw is what stops the caller's continuation from executing (and from
  *  rendering "invalid session token" right before the redirect lands).
  *
  *  Preserves the `redirect=<here>` query param so users land back where
@@ -196,25 +272,31 @@ export function __resetInFlightRefreshForTesting(): void {
  *  dropped on /dashboard after re-OTP regardless of where they were.
  */
 function endSessionAndRedirect(reason: 'session-ended' | 'config-error' | '2fa_required'): never {
+  // Sign-in and verification surfaces own their in-page auth error state. Do
+  // not poison the module-wide redirect latch when no redirect/sign-out will
+  // actually happen: this document can subsequently complete an SPA sign-in.
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/signin')) {
+    throw new SessionEndedError();
+  }
+
   // First caller wins. Subsequent concurrent callers throw silently —
   // their continuations stop without firing duplicate signOut/assign.
   if (sessionEndFired) throw new SessionEndedError();
   sessionEndFired = true;
 
   if (typeof window !== 'undefined') {
-    // If we're already on /signin (or /signin/verify, /signin/reset, etc.)
-    // don't redirect to ourselves — let the in-page error handler take over.
     const here = window.location.pathname;
-    if (!here.startsWith('/signin')) {
-      // Don't await — page is being torn down.
-      void supabase.auth.signOut();
-      const params = new URLSearchParams({ reason });
-      // Preserve where the user was so we can return them after re-OTP.
-      // Include search + hash so deep links survive the bounce.
-      const target = here + window.location.search + window.location.hash;
-      if (target && target !== '/') params.set('redirect', target);
-      window.location.assign(`/signin?${params.toString()}`);
-    }
+    // Don't await — page is being torn down. Cookie removal is synchronous
+    // and durable even if the SDK's cleanup encounters the same outage that
+    // caused the terminal auth verdict.
+    clearSupabaseBrowserSessionCookies();
+    void supabase.auth.signOut({ scope: 'local' });
+    const params = new URLSearchParams({ reason });
+    // Preserve where the user was so we can return them after re-OTP.
+    // Include search + hash so deep links survive the bounce.
+    const target = here + window.location.search + window.location.hash;
+    if (target && target !== '/') params.set('redirect', target);
+    window.location.assign(`/signin?${params.toString()}`);
   }
   throw new SessionEndedError();
 }
@@ -223,9 +305,48 @@ function isTransient(code: string | null): boolean {
   return code === 'auth_unavailable';
 }
 
-export async function fetchWithAuth(
+/** Only these codes are authoritative session verdicts from requireSession.
+ * Other routes and intermediaries may also return a JSON `code` with a 401;
+ * those responses must never be mistaken for proof that the login is dead.
+ */
+function isIdentityFailureCode(code: string | null): boolean {
+  return code === 'token_expired'
+    || code === 'token_malformed'
+    || code === 'user_not_found'
+    || code === 'project_mismatch'
+    || code === 'auth_unavailable'
+    || code === 'missing_token'
+    || code === 'requires_2fa'
+    || code === 'unknown';
+}
+
+export interface FetchWithAuthInit extends RequestInit {
+  /**
+   * End-to-end request budget. GET/HEAD default to
+   * NAVIGATION_FETCH_TIMEOUT_MS; mutations are unbounded unless they opt in.
+   * Pass null only for a deliberately long read/stream whose caller owns an
+   * AbortSignal. Auth session checks remain bounded either way.
+   */
+  timeoutMs?: number | null;
+}
+
+function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
+  if (init?.method) return init.method.toUpperCase();
+  if (typeof input === 'object' && input !== null && typeof (input as Request).method === 'string') {
+    return (input as Request).method.toUpperCase();
+  }
+  return 'GET';
+}
+
+function defaultTimeoutFor(input: RequestInfo | URL, init?: RequestInit): number | null {
+  const method = requestMethod(input, init);
+  return method === 'GET' || method === 'HEAD' ? NAVIGATION_FETCH_TIMEOUT_MS : null;
+}
+
+async function fetchWithAuthWithinDeadline(
   input: RequestInfo | URL,
-  init?: RequestInit,
+  init: RequestInit,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const callerHeaders = new Headers(init?.headers ?? {});
   const callerSetAuth = callerHeaders.has('authorization') || callerHeaders.has('Authorization');
@@ -233,10 +354,10 @@ export async function fetchWithAuth(
   async function send(token: string | null): Promise<Response> {
     const headers = new Headers(callerHeaders);
     if (!callerSetAuth && token) headers.set('Authorization', `Bearer ${token}`);
-    return fetch(input, { ...init, headers });
+    return raceWithAbortSignal(fetch(input, { ...init, headers, signal }), signal);
   }
 
-  const token = callerSetAuth ? null : await getFreshAccessToken();
+  const token = callerSetAuth ? null : await getFreshAccessToken(signal);
   const res = await send(token);
 
   // Happy path — no 401, nothing to recover from.
@@ -246,7 +367,7 @@ export async function fetchWithAuth(
   // recovery; let them handle the 401 themselves.
   if (callerSetAuth) return res;
 
-  const code = await readFailureCode(res);
+  const code = await readFailureCode(res, signal);
 
   // Transient Supabase outage. Don't sign the user out. Let the caller
   // surface a "try again" message.
@@ -282,12 +403,39 @@ export async function fetchWithAuth(
   // the load-bearing guard for other surfaces, e.g. AppLayout's WakeWord /
   // feed-status mount calls, that a mid-onboarding owner can transiently hit.)
   if (code === 'requires_2fa') {
-    const outcome = await refreshSessionVerdict();
+    const outcome = await refreshSessionVerdict(signal);
     if (outcome.token) {
       const retryRes = await send(outcome.token);
       if (retryRes.status !== 401) return retryRes;
-      // Retry still says untrusted device → genuine re-auth needed.
-      endSessionAndRedirect('2fa_required');
+
+      // A 401 status alone is not a renewed trust verdict. Supabase or an
+      // intermediary can fail transiently during this retry, and signing out
+      // here would destroy a valid session precisely while recovery is
+      // working. Read the retry envelope before choosing a terminal action.
+      const retryCode = await readFailureCode(retryRes, signal);
+      if (retryCode === 'project_mismatch') {
+        endSessionAndRedirect('config-error');
+      }
+      if (retryCode === null || isTransient(retryCode) || !isIdentityFailureCode(retryCode)) {
+        return retryRes;
+      }
+
+      // A structured identity failure on a freshly minted token—including a
+      // second requires_2fa—gets one short final retry. The trust-device write
+      // and cookie can still be landing while AuthContext's freshly verified
+      // session starts protected root reads; signing out on the first retry
+      // would race and destroy a session that becomes trusted milliseconds
+      // later.
+      await raceWithAbortSignal(new Promise((resolve) => setTimeout(resolve, 450)), signal);
+      const finalRes = await send(outcome.token);
+      if (finalRes.status !== 401) return finalRes;
+      const finalCode = await readFailureCode(finalRes, signal);
+      if (finalCode === 'requires_2fa') endSessionAndRedirect('2fa_required');
+      if (finalCode === 'project_mismatch') endSessionAndRedirect('config-error');
+      if (finalCode !== null && !isTransient(finalCode) && isIdentityFailureCode(finalCode)) {
+        endSessionAndRedirect('session-ended');
+      }
+      return finalRes;
     }
     if (outcome.terminal) endSessionAndRedirect('session-ended');
     // Refresh failed transiently — we can't prove anything either way.
@@ -296,7 +444,7 @@ export async function fetchWithAuth(
   }
 
   // Every other 401: refresh and retry before ANY signout decision.
-  const outcome = await refreshSessionVerdict();
+  const outcome = await refreshSessionVerdict(signal);
 
   // Refresh failed transiently (network blip, 5xx, 429). The old behavior
   // here — hard signout — is exactly what randomly logged the owner out
@@ -313,7 +461,7 @@ export async function fetchWithAuth(
   // Fresh token, still 401. Server-side JWT caches / clock skew can lag a
   // refresh by a beat — give it ONE more try after a short pause before
   // concluding anything.
-  await new Promise((r) => setTimeout(r, 450));
+  await raceWithAbortSignal(new Promise((resolve) => setTimeout(resolve, 450)), signal);
   retryRes = await send(outcome.token);
   if (retryRes.status !== 401) return retryRes;
 
@@ -321,9 +469,42 @@ export async function fetchWithAuth(
   // structured identity verdict, the session is genuinely unrecoverable.
   // A 401 WITHOUT our envelope code (some proxy / non-requireSession layer)
   // is not a session verdict — hand it to the caller instead of signing out.
-  const retryCode = await readFailureCode(retryRes);
-  if (retryCode !== null && !isTransient(retryCode)) {
+  const retryCode = await readFailureCode(retryRes, signal);
+  if (retryCode === 'requires_2fa') endSessionAndRedirect('2fa_required');
+  if (retryCode === 'project_mismatch') endSessionAndRedirect('config-error');
+  if (retryCode !== null && !isTransient(retryCode) && isIdentityFailureCode(retryCode)) {
     endSessionAndRedirect('session-ended');
   }
   return retryRes;
+}
+
+export async function fetchWithAuth(
+  input: RequestInfo | URL,
+  init: FetchWithAuthInit = {},
+): Promise<Response> {
+  const { timeoutMs: requestedTimeoutMs, ...requestInit } = init;
+  const timeoutMs = requestedTimeoutMs === undefined
+    ? defaultTimeoutFor(input, requestInit)
+    : requestedTimeoutMs;
+  if (timeoutMs !== null && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+    throw new RangeError('timeoutMs must be a positive finite number or null');
+  }
+
+  // AbortSignal.timeout stays attached to the fetch Response after headers
+  // arrive, so a stalled JSON body is bounded as well. Request.signal and the
+  // caller's init.signal are both retained rather than one replacing the other.
+  const timeoutSignal = timeoutMs === null ? undefined : timeoutAbortSignal(timeoutMs);
+  const signal = composeAbortSignals([
+    ...requestAbortSignals(input, requestInit),
+    timeoutSignal,
+  ]);
+
+  try {
+    return await fetchWithAuthWithinDeadline(input, requestInit, signal);
+  } catch (error) {
+    if (timeoutSignal?.aborted) {
+      throw new RequestTimeoutError('Request', timeoutMs as number);
+    }
+    throw error;
+  }
 }

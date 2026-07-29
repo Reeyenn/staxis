@@ -29,7 +29,8 @@ describe('Inventory and Staff pilot hardening', () => {
     // but the same manage_team gate still decides whether a manager is offered
     // the jump to People from inside the schedule.
     assert.match(page, /const canManagePeople = isManager && can\('manage_team'\)/);
-    assert.match(page, /onOpenPeople=\{canManagePeople \? \(\) => router\.push\(PEOPLE_HREF\) : undefined\}/);
+    assert.match(page, /const \{ push \} = useReliableNavigation\(\)/);
+    assert.match(page, /onOpenPeople=\{canManagePeople \? \(\) => push\(PEOPLE_HREF\) : undefined\}/);
     assert.match(page, /const PEOPLE_HREF = '\/company\?tab=people'/);
     // Schedule access alone decides whether the manager surface renders at all.
     assert.match(page, /if \(canManageSchedule\) \{/);
@@ -71,9 +72,21 @@ describe('Inventory and Staff pilot hardening', () => {
   test('Inventory tab configuration failures are visible and rollback failed layouts', () => {
     const shell = source('src/app/inventory/_components/InventoryShell.tsx');
     assert.match(shell, /layoutSaveChainRef\.current\.catch\(\(\) => \{\}\)\.then\(save\)/);
-    assert.match(shell, /setTabLayout\(fallback\)/);
-    assert.match(shell, /The previous layout was restored/);
+    assert.match(shell, /timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS/);
+    assert.match(shell, /saveOrderedInventoryTabLayout/);
+    assert.match(shell, /operationId: generateId\(\)/);
+    assert.match(shell, /expectedRevision: layoutRevisionRef\.current/);
+    assert.match(shell, /layoutSaveGenerationRef\.current \+= 1/);
+    assert.match(shell, /The tab change could not be confirmed/);
     assert.match(shell, /if \(!await deleteCustomCategory\(id\)\) return/);
     assert.match(shell, /\{inventoryConfigError && \([\s\S]*role="alert"/);
+
+    const route = source('src/app/api/inventory/property-config/route.ts');
+    assert.match(route, /export async function GET\(req: NextRequest\)/);
+    assert.match(route, /requireOrderingAccess\(req, requestedPid\)/);
+    assert.match(route, /select\('inventory_tab_layout'\)/);
+    assert.match(route, /staxis_write_inventory_tab_layout_ordered/);
+    assert.match(route, /p_expected_revision: body\.expectedRevision/);
+    assert.match(route, /p_operation_id: operationId\.value/);
   });
 });

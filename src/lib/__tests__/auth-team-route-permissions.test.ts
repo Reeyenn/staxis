@@ -14,6 +14,10 @@ import assert from 'node:assert/strict';
 import { NextRequest } from 'next/server';
 
 import { DELETE, GET, PUT } from '@/app/api/auth/team/route';
+import {
+  AUTHORITATIVE_HOTEL_ROSTER_SCHEMA_VERSION,
+  parseAuthoritativeHotelRoster,
+} from '@/lib/authorization/hotel-account-roster';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 const HOTEL_A = '11111111-1111-1111-1111-111111111111';
@@ -25,6 +29,7 @@ const LOCAL_ID = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
 const OWNER_ID = 'dddddddd-dddd-dddd-dddd-dddddddddddd';
 const PEER_GM_ID = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee';
 const CALLER_USER_ID = '10000000-0000-0000-0000-000000000001';
+const ORGANIZATION_ID = '66666666-6666-4666-8666-666666666666';
 
 type TestRole = 'admin' | 'owner' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance' | 'staff';
 
@@ -41,6 +46,8 @@ interface AccountFixture {
   updated_at: string;
   lifecycle_intent_version: number;
   skip_2fa: boolean;
+  authority_mode: 'legacy' | 'shadow' | 'normalized';
+  authority_version: number;
 }
 
 interface TestState {
@@ -60,11 +67,15 @@ interface TestState {
   capabilityOverrides: Array<{ property_id: string; capability: string; role: string; allowed: boolean }>;
   capabilityOverrideError: { message: string } | null;
   staffLinks: Array<{ account_id: string; property_id: string; staff_id: string; is_active: boolean }>;
+  staffRows: Array<{ id: string; property_id: string; is_active: boolean }>;
   pendingLifecycleAccountIds: Set<string>;
   lifecycleIntentQueryError: { message: string } | null;
   ownerProtectedAccountIds: Set<string>;
   ownerProtectionError: { message: string } | null;
   roleRpcError: { message: string } | null;
+  profileRpcError: { message: string; code?: string } | null;
+  profileAuditError: { message: string } | null;
+  beforeProfileCommit: (() => void) | null;
   accountUpdateConflicts: Set<string>;
   accountUpdateErrors: Map<string, { message: string; code?: string }>;
   accountVersion: number;
@@ -73,6 +84,21 @@ interface TestState {
   removalConflicts: Set<string>;
   removalErrors: Map<string, { message: string; code?: string }>;
   removalRpcResults: Map<string, Record<string, unknown>>;
+  callerAuthorityReads: number;
+  beforeFinalCallerAuthorityRead: (() => void) | null;
+  organizationId: string | null;
+  membershipHats: Array<{
+    id: string;
+    organization_id: string;
+    account_id: string;
+    membership_scope: 'company' | 'property';
+    staxis_role: 'owner' | 'vp' | 'finance' | 'general_manager' | 'front_desk' | 'housekeeping' | 'maintenance';
+    job_title: string | null;
+    covered_property_ids: string[] | null;
+    status: 'active';
+    starts_at: string | null;
+    ended_at: string | null;
+  }>;
 }
 
 let state: TestState;
@@ -96,7 +122,7 @@ function fixture(
   role: TestRole,
   propertyAccess: string[],
   displayName: string,
-  dataUserId = `90000000-0000-0000-0000-${id.slice(0, 12)}`,
+  dataUserId = `90000000-0000-0000-0000-${id.replaceAll('-', '').slice(0, 12)}`,
 ): AccountFixture {
   return {
     id,
@@ -111,6 +137,8 @@ function fixture(
     updated_at: '2026-07-01T12:00:00.000Z',
     lifecycle_intent_version: 0,
     skip_2fa: false,
+    authority_mode: 'legacy',
+    authority_version: 1,
   };
 }
 
@@ -138,11 +166,15 @@ function resetState(): void {
     capabilityOverrides: [],
     capabilityOverrideError: null,
     staffLinks: [],
+    staffRows: [],
     pendingLifecycleAccountIds: new Set(),
     lifecycleIntentQueryError: null,
     ownerProtectedAccountIds: new Set(),
     ownerProtectionError: null,
     roleRpcError: null,
+    profileRpcError: null,
+    profileAuditError: null,
+    beforeProfileCommit: null,
     accountUpdateConflicts: new Set(),
     accountUpdateErrors: new Map(),
     accountVersion: 0,
@@ -151,6 +183,102 @@ function resetState(): void {
     removalConflicts: new Set(),
     removalErrors: new Map(),
     removalRpcResults: new Map(),
+    callerAuthorityReads: 0,
+    beforeFinalCallerAuthorityRead: null,
+    organizationId: null,
+    membershipHats: [],
+  };
+}
+
+function authoritativeAccess(accountRow: AccountFixture): Record<string, unknown> {
+  if (accountRow.role === 'admin') {
+    return {
+      ok: true,
+      all: true,
+      authorityMode: accountRow.authority_mode,
+      authorityVersion: accountRow.authority_version,
+      effectiveAccessHash: 'a'.repeat(64),
+      propertyIds: [],
+      legacyPropertyIds: [],
+      membershipPropertyIds: [],
+      propertyStandings: [],
+    };
+  }
+  const propertyIds = [...new Set(accountRow.property_access)].sort();
+  const normalized = accountRow.authority_mode === 'normalized';
+  return {
+    ok: true,
+    all: false,
+    authorityMode: accountRow.authority_mode,
+    authorityVersion: accountRow.authority_version,
+    effectiveAccessHash: 'a'.repeat(64),
+    propertyIds,
+    legacyPropertyIds: normalized ? [] : propertyIds,
+    membershipPropertyIds: normalized ? propertyIds : [],
+    propertyStandings: propertyIds.map((propertyId) => ({
+      propertyId,
+      operationalRole: accountRow.role,
+      seesFinancials: accountRow.role === 'owner' || accountRow.role === 'general_manager',
+      hotelMutationAllowed: true,
+      portfolioIntelligenceRead: normalized,
+      entitlements: [normalized ? {
+        kind: 'access_grant',
+        entitlementId: accountRow.id,
+        organizationId: null,
+        membershipId: accountRow.id,
+        accessProfile: accountRow.role === 'owner' ? 'organization_owner'
+          : accountRow.role === 'general_manager' ? 'property_manager' : 'viewer',
+        staxisRole: null,
+        scopeType: 'property',
+        portfolioId: null,
+      } : {
+        kind: 'legacy',
+        entitlementId: accountRow.id,
+        organizationId: null,
+        membershipId: null,
+        accessProfile: null,
+        staxisRole: null,
+        scopeType: 'property',
+        portfolioId: null,
+      }],
+    })),
+  };
+}
+
+function authoritativeRoster(
+  propertyId: string,
+  includePlatformAdmins: boolean,
+): Record<string, unknown> {
+  const accounts = state.accounts
+    .filter((accountRow) => (
+      (accountRow.role === 'admin' && accountRow.active && includePlatformAdmins)
+      || (accountRow.role !== 'admin' && accountRow.property_access.includes(propertyId))
+    ))
+    .map((accountRow) => ({
+      accountId: accountRow.id,
+      username: accountRow.username,
+      displayName: accountRow.display_name,
+      role: accountRow.role,
+      active: accountRow.active,
+      dataUserId: accountRow.data_user_id,
+      staffId: accountRow.staff_id,
+      createdAt: accountRow.created_at,
+      updatedAt: accountRow.updated_at,
+      authorityMode: accountRow.authority_mode,
+      authorityVersion: accountRow.authority_version,
+      propertyIds: accountRow.role === 'admin'
+        ? []
+        : [...new Set(accountRow.property_access)].sort(),
+      managementSurface: accountRow.authority_mode === 'normalized'
+        ? 'company_access'
+        : 'legacy_hotel',
+    }));
+  return {
+    ok: true,
+    schemaVersion: 'authoritative-hotel-roster-v1',
+    propertyId,
+    generatedAt: '2026-07-27T12:00:00.000Z',
+    accounts,
   };
 }
 
@@ -215,6 +343,49 @@ function installSupabaseStub(): void {
   supabaseAdmin.rpc = (async (fn: string, args?: Record<string, unknown>) => {
     const safeArgs = args ?? {};
     state.rpcCalls.push({ fn, args: safeArgs });
+    if (fn === 'staxis_resolve_organization_property_topology') {
+      const effectiveAt = safeArgs.p_effective_at;
+      if (safeArgs.p_organization_id !== state.organizationId
+          || typeof effectiveAt !== 'string') {
+        return { data: { ok: false, reason: 'invalid_input' }, error: null };
+      }
+      return {
+        data: {
+          ok: true,
+          schemaVersion: 'organization-property-topology-v1',
+          organizationId: state.organizationId,
+          effectiveAt,
+          propertyIds: [HOTEL_A, HOTEL_B],
+        },
+        error: null,
+      };
+    }
+    if (fn === 'staxis_list_account_authorized_properties') {
+      const accountRow = state.accounts.find((row) => row.id === safeArgs.p_account_id);
+      if (safeArgs.p_account_id === CALLER_ID) {
+        state.callerAuthorityReads += 1;
+        if (state.callerAuthorityReads === 2) {
+          const hook = state.beforeFinalCallerAuthorityRead;
+          state.beforeFinalCallerAuthorityRead = null;
+          hook?.();
+        }
+      }
+      return {
+        data: accountRow?.active ? authoritativeAccess(accountRow) : {
+          ok: false, reason: 'no_active_account',
+        },
+        error: null,
+      };
+    }
+    if (fn === 'staxis_list_authoritative_hotel_accounts') {
+      return {
+        data: authoritativeRoster(
+          String(safeArgs.p_property_id),
+          safeArgs.p_include_platform_admins === true,
+        ),
+        error: null,
+      };
+    }
     if (fn === 'staxis_list_normalized_organization_owner_account_ids') {
       return {
         data: state.ownerProtectionError ? null : [...state.ownerProtectedAccountIds],
@@ -267,7 +438,149 @@ function installSupabaseStub(): void {
       });
       return { data: { status: 'ok' }, error: null };
     }
-    if (fn === 'staxis_remove_property_access_guarded') {
+    if (fn === 'staxis_update_hotel_team_profile_guarded') {
+      const hook = state.beforeProfileCommit;
+      state.beforeProfileCommit = null;
+      hook?.();
+      if (state.profileRpcError) return { data: null, error: state.profileRpcError };
+
+      const actor = state.accounts.find((row) => row.id === safeArgs.p_actor_account_id);
+      const target = state.accounts.find((row) => row.id === safeArgs.p_target_account_id);
+      if (!actor || !target) return { data: { status: 'not_found' }, error: null };
+      if (!actor.active || actor.data_user_id !== safeArgs.p_actor_auth_user_id) {
+        return { data: { status: 'forbidden', reason: 'actor' }, error: null };
+      }
+      if (state.pendingLifecycleAccountIds.has(actor.id)
+          || state.pendingLifecycleAccountIds.has(target.id)) {
+        return { data: { status: 'pending_conflict' }, error: null };
+      }
+      const configuredError = state.accountUpdateErrors.get(target.id);
+      if (configuredError) return { data: null, error: configuredError };
+      if (state.accountUpdateConflicts.has(target.id)) {
+        target.updated_at = nextAccountVersion();
+        return { data: { status: 'conflict' }, error: null };
+      }
+
+      const expectedTargetPropertyIds = Array.isArray(safeArgs.p_expected_target_property_ids)
+        ? safeArgs.p_expected_target_property_ids
+        : [];
+      const targetPropertyIds = [...new Set(target.property_access)].sort();
+      const snapshotMatches = target.active === safeArgs.p_expected_active
+        && target.role === safeArgs.p_expected_role
+        && target.data_user_id === safeArgs.p_expected_auth_user_id
+        && JSON.stringify(target.property_access) === JSON.stringify(safeArgs.p_expected_property_access)
+        && JSON.stringify(targetPropertyIds) === JSON.stringify(expectedTargetPropertyIds)
+        && target.display_name === safeArgs.p_expected_display_name
+        && target.staff_id === safeArgs.p_expected_staff_id
+        && target.updated_at === safeArgs.p_expected_updated_at
+        && target.lifecycle_intent_version === safeArgs.p_expected_intent_version;
+      if (!snapshotMatches) return { data: { status: 'conflict' }, error: null };
+      if (!targetPropertyIds.includes(String(safeArgs.p_hotel_id))) {
+        return { data: { status: 'not_found' }, error: null };
+      }
+      const changeDisplay = safeArgs.p_change_display_name === true;
+      const changeStaff = safeArgs.p_change_staff_link === true;
+      if (target.authority_mode === 'normalized'
+          && (changeStaff || actor.id !== target.id)) {
+        return { data: { status: 'forbidden', reason: 'normalized_authority' }, error: null };
+      }
+      if (changeStaff && (target.authority_mode === 'normalized' || targetPropertyIds.length !== 1)) {
+        return { data: { status: 'forbidden', reason: 'staff_scope' }, error: null };
+      }
+
+      const requiredProperties = changeDisplay && actor.id !== target.id
+        ? targetPropertyIds
+        : [String(safeArgs.p_hotel_id)];
+      for (const propertyId of requiredProperties) {
+        const roleCanManage = actor.role === 'admin'
+          || ((actor.role === 'owner' || actor.role === 'general_manager')
+            && actor.property_access.includes(propertyId));
+        const denied = state.capabilityOverrides.some((override) => (
+          override.property_id === propertyId
+          && override.capability === 'manage_team'
+          && override.role === actor.role
+          && override.allowed === false
+        ));
+        if (!roleCanManage || denied) {
+          return { data: { status: 'forbidden', reason: 'manage_team' }, error: null };
+        }
+        if (actor.id !== target.id
+            && (target.role === 'owner' || target.role === 'general_manager')
+            && actor.role !== 'admin' && actor.role !== 'owner') {
+          return { data: { status: 'forbidden', reason: 'hierarchy' }, error: null };
+        }
+      }
+
+      const newStaffId = safeArgs.p_new_staff_id;
+      if (changeStaff && newStaffId !== null) {
+        const staff = state.staffRows.find((row) => row.id === newStaffId
+          && row.property_id === safeArgs.p_hotel_id && row.is_active);
+        if (!staff) return { data: { status: 'not_found' }, error: null };
+        const staffInUse = state.accounts.some((row) => row.id !== target.id
+          && row.staff_id === newStaffId)
+          || state.staffLinks.some((row) => row.account_id !== target.id
+            && row.staff_id === newStaffId && row.is_active);
+        if (staffInUse) {
+          return { data: { status: 'conflict', reason: 'staff_in_use' }, error: null };
+        }
+      }
+
+      const priorTarget = { ...target, property_access: [...target.property_access] };
+      const priorLinks = state.staffLinks.map((row) => ({ ...row }));
+      const priorAuditLength = state.auditRows.length;
+      const nextDisplay = changeDisplay ? String(safeArgs.p_new_display_name) : target.display_name;
+      const displayChanged = nextDisplay !== target.display_name;
+      const staffChanged = changeStaff && target.staff_id !== newStaffId;
+      const currentLink = state.staffLinks.find((row) => row.account_id === target.id
+        && row.property_id === safeArgs.p_hotel_id);
+      const linkChanged = changeStaff && (newStaffId !== null
+        ? !currentLink || !currentLink.is_active || currentLink.staff_id !== newStaffId
+        : !!currentLink?.is_active);
+      if (!displayChanged && !staffChanged && !linkChanged) {
+        return { data: { status: 'noop' }, error: null };
+      }
+
+      target.display_name = nextDisplay;
+      if (changeStaff) target.staff_id = newStaffId as string | null;
+      target.updated_at = nextAccountVersion();
+      if (changeStaff) {
+        if (newStaffId === null) {
+          if (currentLink) currentLink.is_active = false;
+        } else if (currentLink) {
+          currentLink.staff_id = String(newStaffId);
+          currentLink.is_active = true;
+        } else {
+          state.staffLinks.push({
+            account_id: target.id,
+            property_id: String(safeArgs.p_hotel_id),
+            staff_id: String(newStaffId),
+            is_active: true,
+          });
+        }
+      }
+      state.auditRows.push({
+        action: 'account.team_update',
+        target_id: target.id,
+        hotel_id: safeArgs.p_hotel_id,
+        request_id: safeArgs.p_request_id,
+      });
+      if (state.profileAuditError) {
+        Object.assign(target, priorTarget);
+        state.staffLinks.splice(0, state.staffLinks.length, ...priorLinks);
+        state.auditRows.splice(priorAuditLength);
+        return { data: null, error: state.profileAuditError };
+      }
+      return {
+        data: {
+          status: 'ok',
+          audit_written: true,
+          display_name_changed: displayChanged,
+          staff_link_changed: staffChanged || linkChanged,
+        },
+        error: null,
+      };
+    }
+    if (fn === 'staxis_remove_property_access_guarded_v2') {
       const target = state.accounts.find((account) => account.id === safeArgs.p_account_id);
       if (!target) return { data: { status: 'not_found' }, error: null };
       const configuredError = state.removalErrors.get(target.id);
@@ -282,7 +595,20 @@ function installSupabaseStub(): void {
       }
       target.property_access = target.property_access.filter((hotelId) => hotelId !== safeArgs.p_hotel_id);
       target.updated_at = '2026-07-01T12:00:01.000Z';
-      return { data: { status: 'ok', remaining_hotels: target.property_access.length }, error: null };
+      state.auditRows.push({
+        action: 'account.team_detach',
+        target_id: target.id,
+        hotel_id: safeArgs.p_hotel_id,
+        request_id: safeArgs.p_request_id,
+      });
+      return {
+        data: {
+          status: 'ok',
+          remaining_hotels: target.property_access.length,
+          audit_written: true,
+        },
+        error: null,
+      };
     }
     return { data: null, error: null };
   }) as unknown as RpcFn;
@@ -385,6 +711,104 @@ function installSupabaseStub(): void {
           data: state.lifecycleIntentQueryError ? null : rows(),
           error: state.lifecycleIntentQueryError,
         }),
+      };
+      return builder;
+    }
+
+    if (table === 'organization_property_relationships') {
+      const equals = new Map<string, unknown>();
+      let organizationIds: unknown[] | null = null;
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        eq: (column: string, value: unknown) => {
+          equals.set(column, value);
+          return builder;
+        },
+        in: (_column: string, values: unknown[]) => {
+          organizationIds = values;
+          return builder;
+        },
+        then: (resolve: (value: unknown) => unknown) => {
+          const rows = state.organizationId ? [HOTEL_A, HOTEL_B]
+            .map((propertyId) => ({
+              organization_id: state.organizationId!,
+              property_id: propertyId,
+              relationship_type: 'operator',
+              is_primary_grouping: true,
+              starts_at: '2026-01-01T00:00:00.000Z',
+              ends_at: null,
+            }))
+            .filter((row) => (equals.get('property_id') === undefined
+              || equals.get('property_id') === row.property_id)
+              && (equals.get('organization_id') === undefined
+                || equals.get('organization_id') === row.organization_id)
+              && (organizationIds === null || organizationIds.includes(row.organization_id)))
+            : [];
+          return resolve({ data: rows, error: null });
+        },
+      };
+      return builder;
+    }
+
+    if (table === 'organizations') {
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        in: () => builder,
+        then: (resolve: (value: unknown) => unknown) => resolve({
+          data: state.organizationId ? [{
+            id: state.organizationId,
+            status: 'active',
+            organization_type: 'management_company',
+          }] : [],
+          error: null,
+        }),
+      };
+      return builder;
+    }
+
+    if (table === 'organization_memberships') {
+      const equals = new Map<string, unknown>();
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        eq: (column: string, value: unknown) => {
+          equals.set(column, value);
+          return builder;
+        },
+        is: () => builder,
+        then: (resolve: (value: unknown) => unknown) => resolve({
+          data: state.membershipHats.filter((hat) => [...equals].every(
+            ([column, value]) => (hat as unknown as Record<string, unknown>)[column] === value,
+          )),
+          error: null,
+        }),
+      };
+      return builder;
+    }
+
+    if (table === 'properties') {
+      let propertyIds: unknown[] = [];
+      let from = 0;
+      let to = Number.MAX_SAFE_INTEGER;
+      const names = new Map([[HOTEL_A, 'Hotel A'], [HOTEL_B, 'Hotel B'], [HOTEL_C, 'Hotel C']]);
+      const builder: Record<string, unknown> = {
+        select: () => builder,
+        in: (_column: string, values: unknown[]) => {
+          propertyIds = values;
+          return builder;
+        },
+        order: () => builder,
+        range: (nextFrom: number, nextTo: number) => {
+          from = nextFrom;
+          to = nextTo;
+          return builder;
+        },
+        then: (resolve: (value: unknown) => unknown) => {
+          const all = propertyIds.flatMap((id) => {
+            const name = typeof id === 'string' ? names.get(id) : null;
+            return name ? [{ id, name }] : [];
+          });
+          return resolve({ data: all.slice(from, to + 1), error: null, count: all.length });
+        },
       };
       return builder;
     }
@@ -542,8 +966,55 @@ afterEach(() => {
   supabaseAdmin.auth.admin.updateUserById = originalUpdateUser;
 });
 
+describe('authoritative hotel roster response contract', () => {
+  const normalizedAccount = {
+    accountId: LOCAL_ID,
+    username: 'local',
+    displayName: 'Local User',
+    role: 'front_desk',
+    active: false,
+    dataUserId: '90000000-0000-4000-8000-000000000001',
+    staffId: null,
+    createdAt: '2026-07-01T00:00:00.000Z',
+    updatedAt: '2026-07-02T00:00:00.000Z',
+    authorityMode: 'normalized',
+    authorityVersion: 4,
+    propertyIds: [HOTEL_A],
+    managementSurface: 'company_access',
+  };
+  const projection = {
+    ok: true,
+    schemaVersion: AUTHORITATIVE_HOTEL_ROSTER_SCHEMA_VERSION,
+    propertyId: HOTEL_A,
+    generatedAt: '2026-07-27T12:00:00.000Z',
+    accounts: [normalizedAccount],
+  };
+
+  test('retains inactive normalized people at their exact resumable hotel scope', () => {
+    const parsed = parseAuthoritativeHotelRoster(projection);
+    assert.equal(parsed?.accounts[0]?.active, false);
+    assert.deepEqual(parsed?.accounts[0]?.propertyIds, [HOTEL_A]);
+    assert.equal(parsed?.accounts[0]?.managementSurface, 'company_access');
+  });
+
+  test('rejects mixed authority surfaces, duplicate hotels, and rows outside the selected hotel', () => {
+    assert.equal(parseAuthoritativeHotelRoster({
+      ...projection,
+      accounts: [{ ...normalizedAccount, managementSurface: 'legacy_hotel' }],
+    }), null);
+    assert.equal(parseAuthoritativeHotelRoster({
+      ...projection,
+      accounts: [{ ...normalizedAccount, propertyIds: [HOTEL_A, HOTEL_A] }],
+    }), null);
+    assert.equal(parseAuthoritativeHotelRoster({
+      ...projection,
+      accounts: [{ ...normalizedAccount, propertyIds: [HOTEL_B] }],
+    }), null);
+  });
+});
+
 describe('GET /api/auth/team action contract', () => {
-  test('returns truthful row permissions and global-impact metadata', async () => {
+  test('returns truthful actions while redacting target reach outside the caller scope', async () => {
     const hotelAStaff = '44444444-4444-4444-4444-444444444444';
     const hotelBStaff = '55555555-5555-5555-5555-555555555555';
     account(MULTI_ID).staff_id = hotelBStaff;
@@ -598,16 +1069,18 @@ describe('GET /api/auth/team action contract', () => {
       canDeactivate: false,
       canReactivate: false,
     });
-    assert.equal(multi.hotelAccessCount, 2);
-    assert.equal(multi.hasOtherHotelAccess, true);
+    assert.deepEqual(multi.propertyAccess, [HOTEL_A]);
+    assert.equal(multi.hotelAccessCount, 1);
+    assert.equal(multi.hasOtherHotelAccess, false);
     assert.equal(multi.staffId, hotelAStaff, 'staff identity must be scoped to the selected hotel');
     assert.deepEqual(multi.globalImpact, {
       displayNameAffectsAllHotels: true,
       roleAffectsAllHotels: true,
       passwordAffectsAllHotels: true,
-      hotelAccessCount: 2,
-      hasOtherHotelAccess: true,
+      hotelAccessCount: 1,
+      hasOtherHotelAccess: false,
     });
+    assert.doesNotMatch(JSON.stringify(body.data), new RegExp(HOTEL_B, 'i'));
 
     // A GM cannot mutate an owner or a peer GM through this route.
     for (const protectedId of [OWNER_ID, PEER_GM_ID]) {
@@ -642,6 +1115,59 @@ describe('GET /api/auth/team action contract', () => {
     assert.equal(local.actions.canReactivate, false);
   });
 
+  test('intersects arbitrary target hats and names with the caller exact hotel reach', async () => {
+    state.organizationId = ORGANIZATION_ID;
+    state.membershipHats.push({
+      id: '77777777-7777-4777-8777-777777777771',
+      organization_id: ORGANIZATION_ID,
+      account_id: MULTI_ID,
+      membership_scope: 'company',
+      staxis_role: 'vp',
+      job_title: null,
+      covered_property_ids: null,
+      status: 'active',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    }, {
+      id: '77777777-7777-4777-8777-777777777772',
+      organization_id: ORGANIZATION_ID,
+      account_id: MULTI_ID,
+      membership_scope: 'property',
+      staxis_role: 'housekeeping',
+      job_title: null,
+      covered_property_ids: [HOTEL_B],
+      status: 'active',
+      starts_at: '2026-01-01T00:00:00.000Z',
+      ended_at: null,
+    });
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.data.hatsByAccountId[MULTI_ID], [{
+      membershipId: '77777777-7777-4777-8777-777777777771',
+      scope: 'company',
+      role: 'vp',
+      label: { en: 'Oversees', es: 'Supervisa' },
+      propertyIds: [HOTEL_A],
+      propertyNames: ['Hotel A'],
+    }]);
+    assert.doesNotMatch(JSON.stringify(body.data), new RegExp(HOTEL_B, 'i'));
+    assert.doesNotMatch(JSON.stringify(body.data), /coverageRedacted|hiddenPropertyCount/i);
+  });
+
+  test('allows a freshly verified platform admin to retain full target reach', async () => {
+    account(CALLER_ID).role = 'admin';
+    account(CALLER_ID).property_access = [];
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const multi = body.data.team.find((row: { accountId: string }) => row.accountId === MULTI_ID);
+    assert.deepEqual(multi.propertyAccess, [HOTEL_A, HOTEL_B]);
+    assert.equal(multi.hotelAccessCount, 2);
+    assert.equal(multi.hasOtherHotelAccess, true);
+  });
+
   test('inactive accounts must be reactivated before role changes and expose only reactivate', async () => {
     account(LOCAL_ID).active = false;
 
@@ -654,6 +1180,28 @@ describe('GET /api/auth/team action contract', () => {
     assert.equal(local.actions.canChangeRole, false);
     assert.equal(local.actions.canDeactivate, false);
     assert.equal(local.actions.canReactivate, true);
+  });
+
+  test('inactive normalized accounts stay in People but move role and scope management to Access', async () => {
+    account(LOCAL_ID).active = false;
+    account(LOCAL_ID).authority_mode = 'normalized';
+
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    const local = body.data.team.find((row: { accountId: string }) => row.accountId === LOCAL_ID);
+    assert.ok(local);
+    assert.equal(local.active, false);
+    assert.equal(local.managementSurface, 'company_access');
+    assert.equal(local.accessManagementHref, '/company?tab=access');
+    assert.deepEqual(local.actions, {
+      canEditProfile: false,
+      canChangeRole: false,
+      canResetPassword: false,
+      canRemove: false,
+      canDeactivate: false,
+      canReactivate: true,
+    });
   });
 
   test('projects a pending lifecycle change and disables every conflicting action', async () => {
@@ -712,6 +1260,17 @@ describe('GET /api/auth/team action contract', () => {
     account(CALLER_ID).active = false;
     const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
     assert.equal(response.status, 403);
+  });
+
+  test('withholds the roster when selected-hotel authority is revoked before egress', async () => {
+    state.beforeFinalCallerAuthorityRead = () => {
+      account(CALLER_ID).property_access = [];
+      account(CALLER_ID).authority_version += 1;
+    };
+    const response = await GET(request('GET', `/api/auth/team?hotelId=${HOTEL_A}`));
+    assert.equal(response.status, 403);
+    const body = await response.json();
+    assert.equal(body.data, undefined);
   });
 
   test('marks last-sign-in data unknown when Auth listing fails or omits the user', async () => {
@@ -1128,6 +1687,93 @@ describe('PUT /api/auth/team cross-hotel account safety', () => {
     assert.equal(state.accountUpdates.length, 0);
     assert.equal(state.auditRows.length, 0);
   });
+
+  test('profile commit rechecks the actor after route authorization and rolls back on revocation', async () => {
+    state.beforeProfileCommit = () => {
+      account(CALLER_ID).active = false;
+      account(CALLER_ID).authority_version += 1;
+    };
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      displayName: 'Must Not Survive Revocation',
+    }));
+
+    assert.equal(response.status, 403);
+    assert.match((await response.json()).error, /no longer authorized/i);
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Local');
+    assert.equal(state.auditRows.length, 0);
+    assert.equal(state.accountUpdates.length, 0);
+    assert.equal(
+      state.rpcCalls.at(-1)?.fn,
+      'staxis_update_hotel_team_profile_guarded',
+    );
+  });
+
+  test('hotel transfer in the authorization/write gap conflicts without a profile write or audit', async () => {
+    state.beforeProfileCommit = () => {
+      account(LOCAL_ID).property_access = [HOTEL_B];
+      account(LOCAL_ID).authority_version += 1;
+    };
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      displayName: 'Must Not Cross The Transfer',
+    }));
+
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /changed while you were editing/i);
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Local');
+    assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_B]);
+    assert.equal(state.auditRows.length, 0);
+    assert.equal(state.accountUpdates.length, 0);
+  });
+
+  test('audit failure rolls back both account profile and normalized staff-link writes', async () => {
+    const staffId = '44444444-4444-4444-8444-444444444444';
+    state.staffRows.push({ id: staffId, property_id: HOTEL_A, is_active: true });
+    state.profileAuditError = { message: 'simulated atomic audit failure' };
+
+    const response = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      displayName: 'Must Roll Back',
+      staffId,
+    }));
+
+    assert.equal(response.status, 503);
+    assert.equal(account(LOCAL_ID).display_name, 'Leslie Local');
+    assert.equal(account(LOCAL_ID).staff_id, null);
+    assert.equal(state.staffLinks.length, 0);
+    assert.equal(state.auditRows.length, 0);
+    assert.equal(state.accountUpdates.length, 0);
+  });
+
+  test('missing and cross-hotel staff IDs have the same fail-closed response', async () => {
+    const foreignStaffId = '55555555-5555-4555-8555-555555555555';
+    state.staffRows.push({ id: foreignStaffId, property_id: HOTEL_B, is_active: true });
+
+    const foreign = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      staffId: foreignStaffId,
+    }));
+    const missing = await PUT(request('PUT', '/api/auth/team', {
+      hotelId: HOTEL_A,
+      accountId: LOCAL_ID,
+      staffId: '77777777-7777-4777-8777-777777777777',
+    }));
+
+    assert.equal(foreign.status, 404);
+    assert.equal(missing.status, 404);
+    assert.equal((await foreign.json()).error, (await missing.json()).error);
+    assert.equal(account(LOCAL_ID).staff_id, null);
+    assert.equal(state.staffLinks.length, 0);
+    assert.equal(state.auditRows.length, 0);
+    assert.equal(state.accountUpdates.length, 0);
+  });
 });
 
 describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
@@ -1138,7 +1784,7 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     ));
     assert.equal(response.status, 200);
     assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_B]);
-    assert.equal(state.rpcCalls.at(-1)?.fn, 'staxis_remove_property_access_guarded');
+    assert.equal(state.rpcCalls.at(-1)?.fn, 'staxis_remove_property_access_guarded_v2');
     assert.equal(state.auditRows.length, 1);
   });
 
@@ -1163,7 +1809,7 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     assert.equal(response.status, 409);
     assert.match((await response.json()).error, /pending account status change/i);
     assert.deepEqual(account(MULTI_ID).property_access, [HOTEL_A, HOTEL_B]);
-    assert.equal(state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded'), false);
+    assert.equal(state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded_v2'), false);
     assert.equal(state.auditRows.length, 0);
   });
 
@@ -1196,7 +1842,10 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     ));
     assert.equal(response.status, 403);
     assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_A]);
-    assert.equal(state.rpcCalls.length, 0);
+    assert.equal(
+      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded_v2'),
+      false,
+    );
   });
 
   test('an owner account must use ownership transfer before detach', async () => {
@@ -1222,7 +1871,7 @@ describe('DELETE /api/auth/team remains selected-hotel scoped', () => {
     assert.match((await response.json()).error, /organization-owner access is protected/i);
     assert.deepEqual(account(LOCAL_ID).property_access, [HOTEL_A]);
     assert.equal(
-      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded'),
+      state.rpcCalls.some((call) => call.fn === 'staxis_remove_property_access_guarded_v2'),
       false,
     );
   });

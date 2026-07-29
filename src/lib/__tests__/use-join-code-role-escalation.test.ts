@@ -20,8 +20,8 @@
  *      for role='admin'/'owner'/'general_manager' in the body returns 400
  *      without creating an account.
  *
- * Strategy: mock supabaseAdmin.from for the tables the route touches
- * (api_limits, hotel_join_codes, properties, app_events) and mock
+ * Strategy: mock the closed join-code capability RPC plus the other tables the
+ * route touches (api_limits, properties, app_events) and mock
  * auth.admin.createUser so the "allowed" path returns a clean failure past
  * the guard instead of hitting real Supabase. The end-to-end happy path
  * (account actually created + owner_id transferred) is verified live
@@ -36,10 +36,15 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type FromFn = typeof supabaseAdmin.from;
 const originalFrom: FromFn = supabaseAdmin.from.bind(supabaseAdmin);
+const originalRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
 const adminAuth = supabaseAdmin.auth.admin as unknown as {
   createUser: (...args: unknown[]) => Promise<{ data: { user: unknown }; error: unknown }>;
+  listUsers: (...args: unknown[]) => Promise<{ data: { users: unknown[] }; error: unknown }>;
+  deleteUser: (...args: unknown[]) => Promise<{ data: unknown; error: unknown }>;
 };
 const originalCreateUser = adminAuth.createUser.bind(adminAuth);
+const originalListUsers = adminAuth.listUsers.bind(adminAuth);
+const originalDeleteUser = adminAuth.deleteUser.bind(adminAuth);
 
 interface JoinCodeRow {
   id: string;
@@ -53,34 +58,56 @@ interface JoinCodeRow {
 
 interface MockState {
   joinCode: JoinCodeRow | null;
-  casConflict: boolean;
+  capabilityUnavailable: boolean;
+  finalizerUnavailable: boolean;
+  databaseLifecycleConflict: boolean;
+  createAuthUser: boolean;
+  cleanupFindsLinkedAccount: boolean;
   /** Drives the properties.onboarding_completed_at lookup in the F-06 gate. */
   propertyOnboardingCompletedAt: string | null;
   insertedEvents: Array<{ event_type: string; metadata: Record<string, unknown> }>;
-  casUpdateCalls: number;
+  finalizationCalls: number;
+  authDeleteCalls: number;
 }
 
 const state: MockState = {
   joinCode: null,
-  casConflict: false,
+  capabilityUnavailable: false,
+  finalizerUnavailable: false,
+  databaseLifecycleConflict: false,
+  createAuthUser: false,
+  cleanupFindsLinkedAccount: false,
   propertyOnboardingCompletedAt: null,
   insertedEvents: [],
-  casUpdateCalls: 0,
+  finalizationCalls: 0,
+  authDeleteCalls: 0,
 };
 
 beforeEach(() => {
   state.joinCode = null;
-  state.casConflict = false;
+  state.capabilityUnavailable = false;
+  state.finalizerUnavailable = false;
+  state.databaseLifecycleConflict = false;
+  state.createAuthUser = false;
+  state.cleanupFindsLinkedAccount = false;
   state.propertyOnboardingCompletedAt = null;
   state.insertedEvents = [];
-  state.casUpdateCalls = 0;
+  state.finalizationCalls = 0;
+  state.authDeleteCalls = 0;
 
   // Mock createUser so any test that gets PAST the F-06 gate returns a
   // clean "Failed to create account" (400) instead of hitting real auth.
-  adminAuth.createUser = async () => ({
-    data: { user: null },
-    error: { message: 'mocked: no real auth in unit tests' },
-  });
+  adminAuth.createUser = async () => state.createAuthUser
+    ? ({ data: { user: { id: AUTH_USER_ID } }, error: null })
+    : ({
+        data: { user: null },
+        error: { message: 'mocked: no real auth in unit tests' },
+      });
+  adminAuth.listUsers = async () => ({ data: { users: [] }, error: null });
+  adminAuth.deleteUser = async () => {
+    state.authDeleteCalls += 1;
+    return { data: null, error: null };
+  };
 
   // @ts-expect-error monkey-patch
   supabaseAdmin.from = (table: string) => {
@@ -105,35 +132,33 @@ beforeEach(() => {
       };
     }
     if (table === 'hotel_join_codes') {
-      return {
-        select: () => ({
-          eq: () => ({
-            maybeSingle: async () => ({ data: state.joinCode, error: null }),
-          }),
-        }),
-        update: (_vals: Record<string, unknown>) => {
-          state.casUpdateCalls += 1;
-          return ({
-          eq: (_col1: string, _val1: string) => ({
-            eq: (_col2: string, _val2: string) => ({
-              select: () => ({
-                maybeSingle: async () =>
-                  state.casConflict ? { data: null, error: null } : { data: { id: 'code-1' }, error: null },
-              }),
-            }),
-          }),
-          });
-        },
-      };
+      throw new Error('use-join-code must not access hotel_join_codes directly');
     }
     if (table === 'properties') {
       // The F-06 gate reads onboarding_completed_at to tell an unclaimed
       // onboarding hotel from a live, claimed one.
       return {
+        select: (columns: string) => ({
+          eq: () => ({
+            maybeSingle: async () => ({
+              data: columns === 'onboarding_completed_at'
+                ? { onboarding_completed_at: state.propertyOnboardingCompletedAt }
+                : null,
+              error: null,
+            }),
+            limit: () => ({
+              maybeSingle: async () => ({ data: null, error: null }),
+            }),
+          }),
+        }),
+      };
+    }
+    if (table === 'accounts') {
+      return {
         select: () => ({
           eq: () => ({
             maybeSingle: async () => ({
-              data: { onboarding_completed_at: state.propertyOnboardingCompletedAt },
+              data: state.cleanupFindsLinkedAccount ? { id: ACCOUNT_ID } : null,
               error: null,
             }),
           }),
@@ -164,11 +189,78 @@ beforeEach(() => {
       }),
     };
   };
+
+  // @ts-expect-error narrow RPC facade for the serialized 0398 finalizer
+  supabaseAdmin.rpc = async (fn: string, args?: Record<string, unknown>) => {
+    if (fn === 'staxis_api_limit_hit') {
+      return { data: 1, error: null };
+    }
+    if (fn === 'staxis_resolve_join_code_capability') {
+      if (state.capabilityUnavailable) {
+        return { data: null, error: { code: 'PGRST202', message: 'missing function' } };
+      }
+      const row = state.joinCode;
+      if (!row) return { data: { ok: false, status: 'not_found' }, error: null };
+      const expired = Date.parse(row.expires_at) <= Date.now();
+      const status = row.revoked_at
+        ? 'revoked'
+        : expired
+          ? 'expired'
+          : row.used_count >= row.max_uses
+            ? 'used_up'
+            : 'active';
+      return {
+        data: {
+          ok: true,
+          schemaVersion: 'join-code-capability-v1',
+          status,
+          codeId: CODE_ID,
+          hotelId: HOTEL_ID,
+          codeKind: row.role === 'owner' || row.role === 'general_manager'
+            ? 'privileged_onboarding'
+            : 'staff_signup',
+          role: row.role,
+          expiresAt: row.expires_at,
+          maxUses: row.max_uses,
+          usedCount: row.used_count,
+        },
+        error: null,
+      };
+    }
+    if (fn === 'staxis_finalize_join_code_signup') {
+      state.finalizationCalls += 1;
+      if (state.finalizerUnavailable) {
+        return { data: null, error: { code: 'PGRST202', message: 'missing finalizer' } };
+      }
+      if (state.databaseLifecycleConflict) {
+        return { data: { ok: false, status: 'revoked' }, error: null };
+      }
+      return {
+        data: {
+          ok: true,
+          schemaVersion: 'join-code-signup-finalization-v1',
+          status: 'finalized',
+          codeId: CODE_ID,
+          hotelId: HOTEL_ID,
+          accountId: ACCOUNT_ID,
+          finalRole: args?.p_requested_role,
+          username: args?.p_username,
+          pendingApproval: state.joinCode?.role === null,
+          usedCount: Number(args?.p_expected_used_count) + 1,
+        },
+        error: null,
+      };
+    }
+    return { data: null, error: { message: `unexpected RPC ${fn}` } };
+  };
 });
 
 afterEach(() => {
   supabaseAdmin.from = originalFrom;
+  supabaseAdmin.rpc = originalRpc;
   adminAuth.createUser = originalCreateUser;
+  adminAuth.listUsers = originalListUsers;
+  adminAuth.deleteUser = originalDeleteUser;
 });
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
@@ -184,13 +276,16 @@ function mockReq(body: Record<string, unknown>): Request {
   });
 }
 
-const HOTEL_ID = 'hotel-uuid-1';
+const HOTEL_ID = '90000000-0000-4000-8000-000000000001';
+const CODE_ID = '90000000-0000-4000-8000-000000000002';
+const AUTH_USER_ID = '90000000-0000-4000-8000-000000000003';
+const ACCOUNT_ID = '90000000-0000-4000-8000-000000000004';
 const FUTURE_EXP = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 describe('use-join-code — F-06 displacement lock (still enforced)', () => {
-  test('MULTI-USE owner code → 410, security event logged, no account', async () => {
+  test('poisoned multi-use owner receipt fails closed before claim', async () => {
     state.joinCode = {
       id: 'code-multi-owner',
       hotel_id: HOTEL_ID,
@@ -210,13 +305,12 @@ describe('use-join-code — F-06 displacement lock (still enforced)', () => {
         role: 'housekeeping',
       }) as unknown as Parameters<typeof POST>[0],
     );
-    assert.equal(res.status, 410);
+    assert.equal(res.status, 503);
     const refused = state.insertedEvents.find(
       (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
     );
-    assert.ok(refused, 'auth.legacy_privileged_code_rejected must be logged');
-    assert.equal(refused?.metadata.bakedRole, 'owner');
-    assert.equal(refused?.metadata.maxUses, 2);
+    assert.equal(refused, undefined, 'malformed DB capability is not trusted enough to audit as a fact');
+    assert.equal(state.finalizationCalls, 0);
   });
 
   test('single-use owner code on an ALREADY-ONBOARDED hotel → 410 (no hijack of a live hotel)', async () => {
@@ -247,7 +341,7 @@ describe('use-join-code — F-06 displacement lock (still enforced)', () => {
     assert.equal(refused?.metadata.onboardingComplete, true);
   });
 
-  test('MULTI-USE general_manager code → 410, event logged', async () => {
+  test('poisoned multi-use general_manager receipt fails closed before claim', async () => {
     state.joinCode = {
       id: 'code-multi-gm',
       hotel_id: HOTEL_ID,
@@ -266,12 +360,12 @@ describe('use-join-code — F-06 displacement lock (still enforced)', () => {
         password: 'pw_long_enough',
       }) as unknown as Parameters<typeof POST>[0],
     );
-    assert.equal(res.status, 410);
+    assert.equal(res.status, 503);
     const refused = state.insertedEvents.find(
       (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
     );
-    assert.ok(refused);
-    assert.equal(refused?.metadata.bakedRole, 'general_manager');
+    assert.equal(refused, undefined);
+    assert.equal(state.finalizationCalls, 0);
   });
 });
 
@@ -300,14 +394,148 @@ describe('use-join-code — lean single-use owner invite (now allowed)', () => {
     // createUser with 400 — proving it got PAST the gate; the real happy
     // path is verified live.)
     assert.notEqual(res.status, 410);
+    assert.equal(res.status, 400);
+    assert.equal(state.finalizationCalls, 0);
     const refused = state.insertedEvents.find(
       (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
     );
     assert.equal(refused, undefined, 'a legitimate single-use onboarding invite must NOT be F-06-rejected');
   });
+
+  test('database lifecycle recheck can veto a stale unclaimed precheck', async () => {
+    state.joinCode = {
+      id: 'code-stale-owner',
+      hotel_id: HOTEL_ID,
+      role: 'owner',
+      expires_at: FUTURE_EXP,
+      max_uses: 1,
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.propertyOnboardingCompletedAt = null;
+    state.databaseLifecycleConflict = true;
+    state.createAuthUser = true;
+
+    const res = await POST(
+      mockReq({
+        code: 'STALE001',
+        email: 'late@example.com',
+        displayName: 'Late Claim',
+        password: 'pw_long_enough',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+    assert.equal(res.status, 410);
+    assert.equal(state.finalizationCalls, 1);
+    assert.equal(state.authDeleteCalls, 1, 'a refused finalization removes the unlinked Auth identity');
+    const refused = state.insertedEvents.find(
+      (e) => e.event_type === 'auth.legacy_privileged_code_rejected',
+    );
+    assert.equal(refused?.metadata.reason, 'database_finalization_recheck');
+  });
 });
 
 describe('use-join-code — new-flow role gating', () => {
+  test('missing resolver during app-first rollout fails retryably and does not touch the table', async () => {
+    state.capabilityUnavailable = true;
+
+    const res = await POST(
+      mockReq({
+        code: 'ROLL-ABCD234567',
+        email: 'retry@example.com',
+        displayName: 'Retry',
+        password: 'pw_long_enough',
+        role: 'front_desk',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get('retry-after'), '5');
+    assert.equal(state.finalizationCalls, 0);
+  });
+
+  test('missing finalizer after Auth creation retries, cleans the unlinked identity, and never falls back', async () => {
+    state.joinCode = {
+      id: 'code-app-first-staff',
+      hotel_id: HOTEL_ID,
+      role: null,
+      expires_at: FUTURE_EXP,
+      max_uses: 100,
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.createAuthUser = true;
+    state.finalizerUnavailable = true;
+
+    const res = await POST(
+      mockReq({
+        code: 'ROLL-BCDE234567',
+        email: 'retry-finalizer@example.com',
+        displayName: 'Retry Finalizer',
+        password: 'pw_long_enough',
+        role: 'front_desk',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+    assert.equal(res.status, 503);
+    assert.equal(res.headers.get('retry-after'), '5');
+    assert.equal(state.finalizationCalls, 2, 'idempotent finalizer is retried once');
+    assert.equal(state.authDeleteCalls, 1, 'the still-unlinked Auth identity is removed');
+  });
+
+  test('an ambiguous finalizer transport failure never deletes an Auth identity with a committed account edge', async () => {
+    state.joinCode = {
+      id: 'code-ambiguous-staff',
+      hotel_id: HOTEL_ID,
+      role: null,
+      expires_at: FUTURE_EXP,
+      max_uses: 100,
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.createAuthUser = true;
+    state.finalizerUnavailable = true;
+    state.cleanupFindsLinkedAccount = true;
+
+    const res = await POST(
+      mockReq({
+        code: 'ROLL-CDEF234567',
+        email: 'ambiguous@example.com',
+        displayName: 'Ambiguous Commit',
+        password: 'pw_long_enough',
+        role: 'maintenance',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+    assert.equal(res.status, 503);
+    assert.equal(state.finalizationCalls, 2);
+    assert.equal(state.authDeleteCalls, 0, 'deletion would cascade a committed account');
+  });
+
+  test('valid staff signup delegates its only relational write to the atomic finalizer', async () => {
+    state.joinCode = {
+      id: 'code-valid-staff',
+      hotel_id: HOTEL_ID,
+      role: null,
+      expires_at: FUTURE_EXP,
+      max_uses: 100,
+      used_count: 0,
+      revoked_at: null,
+    };
+    state.createAuthUser = true;
+
+    const res = await POST(
+      mockReq({
+        code: 'GOOD-ABCD234567',
+        email: 'new.housekeeper@example.com',
+        displayName: 'New Housekeeper',
+        password: 'pw_long_enough',
+        role: 'housekeeping',
+      }) as unknown as Parameters<typeof POST>[0],
+    );
+    assert.equal(res.status, 200);
+    const body = await res.json() as { data: { pendingApproval: boolean } };
+    assert.equal(body.data.pendingApproval, true);
+    assert.equal(state.finalizationCalls, 1);
+    assert.equal(state.authDeleteCalls, 0);
+  });
+
   test('new-flow code + role=admin in body → 400, role-required error (NOT created as admin)', async () => {
     state.joinCode = {
       id: 'code-new-flow',
@@ -334,7 +562,7 @@ describe('use-join-code — new-flow role gating', () => {
     assert.match(JSON.stringify(body), /front_desk|housekeeping|maintenance/);
     // Critically — body must NOT silently accept role=admin.
     assert.doesNotMatch(JSON.stringify(body), /trusted":\s*true/);
-    assert.equal(state.casUpdateCalls, 0, 'invalid role must not consume a join-code slot');
+    assert.equal(state.finalizationCalls, 0, 'invalid role must not consume a join-code slot');
   });
 
   test('new-flow code + role=owner in body → 400 (no self-promotion to owner)', async () => {
@@ -358,7 +586,7 @@ describe('use-join-code — new-flow role gating', () => {
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 400);
-    assert.equal(state.casUpdateCalls, 0, 'invalid role must not consume a join-code slot');
+    assert.equal(state.finalizationCalls, 0, 'invalid role must not consume a join-code slot');
   });
 
   test('new-flow code + role=general_manager in body → 400 (no self-promotion to GM)', async () => {
@@ -382,7 +610,7 @@ describe('use-join-code — new-flow role gating', () => {
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 400);
-    assert.equal(state.casUpdateCalls, 0, 'invalid role must not consume a join-code slot');
+    assert.equal(state.finalizationCalls, 0, 'invalid role must not consume a join-code slot');
   });
 
   test('new-flow code + missing role in body → 400 (role is required)', async () => {
@@ -406,6 +634,6 @@ describe('use-join-code — new-flow role gating', () => {
       }) as unknown as Parameters<typeof POST>[0],
     );
     assert.equal(res.status, 400);
-    assert.equal(state.casUpdateCalls, 0, 'missing role must not consume a join-code slot');
+    assert.equal(state.finalizationCalls, 0, 'missing role must not consume a join-code slot');
   });
 });

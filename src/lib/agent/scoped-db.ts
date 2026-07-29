@@ -112,6 +112,9 @@ export const PROPERTY_SCOPED_RPCS: ReadonlySet<string> = new Set([
   // the next one, or neither. Takes the hotel as an argument and filters on it,
   // exactly like the two above.
   'staxis_replace_finding_action',
+  // Portfolio Intelligence reads one bounded, receipt-backed current booked-
+  // room point plus exact lead-zero baseline points for this hotel.
+  'staxis_portfolio_booked_room_points',
 ]);
 
 /** The hotel-argument name every PROPERTY_SCOPED_RPCS member uses. */
@@ -141,6 +144,11 @@ export type UnscopedReason =
    *  `pid` argument (e.g. getInventoryAccountingSummary). The helper does its
    *  own scoping; the accessor has nothing to wrap. */
   | 'shared-lib-client-param'
+  /** A bounded SECURITY DEFINER portfolio RPC whose exact hotel set and
+   *  governing organization are validated atomically inside the database.
+   *  It cannot use a one-hotel accessor because its contract is deliberately
+   *  multi-hotel. */
+  | 'portfolio-exact-set-rpc'
   /**
    * A table keyed by `organization_id` rather than `property_id`
    * (`company_findings`). The accessor CANNOT scope it — it would filter on a

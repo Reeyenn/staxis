@@ -1366,6 +1366,7 @@ export class SessionDriver {
     if (!ingestRun) return;
     let rowsWrittenThisCycle = 0;
     let rowsRejectedThisCycle = 0;
+    let ingestRunError: string | null = null;
 
     for (const template of sorted) {
       if (signal.aborted) break;
@@ -1429,10 +1430,30 @@ export class SessionDriver {
         rowsRejectedThisCycle += saveResult.rejected;
         // Feed-level PAGE values (e.g. "Guest Count: 23") — store ONCE per
         // (property, feed) in pms_feed_values, NOT stamped onto every row.
-        // Best-effort, never throws; a poll that captured none preserves the
-        // previous good row (last-good semantics).
+        // This is part of the poll's durable write set, so it uses the SAME
+        // receipt and source observation time as the table rows. A rejected
+        // write is allowed to fail this feed and is recorded on the ingest run;
+        // silently dropping it would leave an apparently-successful run whose
+        // feed-level totals are stale.
         if (template.sourceActionKey) {
-          await upsertFeedValues(this.propertyId, template.sourceActionKey, runResult.feedValues, (template.pageColumns?.length ?? 0) > 0);
+          try {
+            await upsertFeedValues(
+              this.propertyId,
+              template.sourceActionKey,
+              runResult.feedValues,
+              (template.pageColumns?.length ?? 0) > 0,
+              {
+                ingestRunId: ingestRun.ingestRunId,
+                sourceCapturedAt: ingestRun.sourceCapturedAt,
+              },
+            );
+          } catch (err) {
+            rowsRejectedThisCycle += 1;
+            ingestRunError ??=
+              `pms_feed_values/${template.sourceActionKey}: ` +
+              (err instanceof Error ? err.message : String(err));
+            throw err;
+          }
         }
         results.push({
           table: template.tableName,
@@ -1551,6 +1572,7 @@ export class SessionDriver {
     await closeCuaIngestRun(ingestRun.ingestRunId, {
       rowsWritten: rowsWrittenThisCycle,
       rowsRejected: rowsRejectedThisCycle,
+      error: ingestRunError,
     });
   }
 

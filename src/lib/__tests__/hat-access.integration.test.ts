@@ -163,18 +163,27 @@ interface PortfolioWire {
   canAct?: boolean;
 }
 
-async function portfolioFor(authUserId: string): Promise<{ status: number; data: PortfolioWire }> {
+async function portfolioFor(
+  authUserId: string,
+  organizationId = ORG_A,
+): Promise<{ status: number; data: PortfolioWire }> {
   signedInAs = authUserId;
-  const res = await portfolioGet(req('https://staxis.test/api/company/queue'));
+  const res = await portfolioGet(req(
+    `https://staxis.test/api/company/queue?organizationId=${organizationId}`,
+  ));
   const parsed = await res.json().catch(() => ({})) as { data?: PortfolioWire };
   return { status: res.status, data: parsed.data ?? { scope: null, cards: [], canAct: undefined } };
 }
 
-async function portfolioVerdict(authUserId: string, findingId: string): Promise<number> {
+async function portfolioVerdict(
+  authUserId: string,
+  findingId: string,
+  organizationId = ORG_A,
+): Promise<number> {
   signedInAs = authUserId;
   const res = await portfolioPost(req('https://staxis.test/api/company/queue', {
     method: 'POST',
-    body: { findingId, action: 'known_problem' },
+    body: { organizationId, findingId, action: 'known_problem' },
   }));
   return res.status;
 }
@@ -188,11 +197,12 @@ interface RulebookWire {
 
 async function rulebookFor(
   authUserId: string,
-  propertyId: string,
+  scopeId: string,
+  scope: 'organization' | 'property' = 'organization',
 ): Promise<{ status: number; data: RulebookWire | null }> {
   signedInAs = authUserId;
   const res = await rulebookGet(
-    req(`https://staxis.test/api/company/rulebook?propertyId=${propertyId}`),
+    req(`https://staxis.test/api/company/rulebook?${scope === 'organization' ? 'organizationId' : 'propertyId'}=${scopeId}`),
   );
   const parsed = await res.json().catch(() => ({})) as { data?: RulebookWire };
   return { status: res.status, data: parsed.data ?? null };
@@ -200,23 +210,33 @@ async function rulebookFor(
 
 async function flipChatSwitch(
   authUserId: string,
-  propertyId: string,
+  organizationId: string,
   value: 'true' | 'false',
 ): Promise<number> {
   signedInAs = authUserId;
   const res = await rulebookPost(req('https://staxis.test/api/company/rulebook', {
     method: 'POST',
-    body: { propertyId, action: 'settings', settings: { cross_hotel_ai_chat: value } },
+    body: { organizationId, action: 'settings', settings: { cross_hotel_ai_chat: value } },
   }));
   return res.status;
 }
 
 interface HubWire {
   organizations: Array<{ id: string; name: string; type: string }>;
+  portfolios: Array<{ id: string; propertyIds: string[] }>;
   properties: Array<{ id: string; name: string; organizationId?: string | null; operatingCompanyName?: string | null }>;
   memberships: Array<{ accountId: string; status: string; accessProfile: string | null }>;
-  effectiveAccess: Array<{ id: string; accessProfile: string; propertyIds: string[] }>;
-  permissions: { viewHotels: boolean; viewPeople: boolean };
+  effectiveAccess: Array<{ id: string; accessProfile: string; scopeType: string; propertyIds: string[] }>;
+  permissions: {
+    viewHotels: boolean;
+    viewPeople: boolean;
+    manageInvitations?: boolean;
+    accountInvitePropertyIds?: string[];
+    delegationPolicies?: Array<{
+      organizationId: string;
+      profiles: Array<{ accessProfile: string; portfolioIds: string[]; propertyIds: string[] }>;
+    }>;
+  };
 }
 
 async function hubFor(authUserId: string): Promise<{ status: number; data: HubWire | null }> {
@@ -307,11 +327,23 @@ async function plantCompanyFinding(organizationId: string): Promise<string> {
   const row = await pg.query<{ id: string }>(
     `insert into public.company_findings
        (organization_id, detector_id, dedupe_key, summary, severity, disposition, status,
-        receipt_query_id, evidence, magnitude, first_seen_at, last_seen_at, status_changed_at)
-     values ($1, 'probe', 'probe:portfolio', 'Two hotels pay different laundry rates.',
-             'attention', 'fyi', 'open', 'probe_receipt', $2::jsonb, 3, now(), now(), now())
+        receipt_query_id, evidence, magnitude, affected_property_ids,
+        first_seen_at, last_seen_at, status_changed_at)
+     values ($1, 'portfolio_supply_spend_gap', 'probe:portfolio',
+             'One hotel has a verified laundry supply gap.',
+             'attention', 'recommend', 'open', 'probe_receipt', $2::jsonb, 3,
+             array[$3::uuid], now(), now(), now())
      returning id`,
-    [organizationId, JSON.stringify({ queryId: 'probe_receipt', params: {}, values: {}, basis: 'planted' })],
+    [
+      organizationId,
+      JSON.stringify({
+        queryId: 'probe_receipt',
+        params: { hotel_ids: [PID_A1] },
+        values: {},
+        basis: 'planted',
+      }),
+      PID_A1,
+    ],
   );
   return row.rows[0].id;
 }
@@ -540,7 +572,7 @@ describe('the rulebook and the cross-hotel-chat switch', () => {
   // Mutation: gate the rulebook route on loadManagerCaller. Restores the 404
   // that made the panel render null for the only people allowed to edit it.
   test('a hats-only VP reaches her company book and may edit it', async () => {
-    const maria = await rulebookFor(UID_MARIA, PID_A1);
+    const maria = await rulebookFor(UID_MARIA, ORG_A);
     assert.equal(maria.status, 200, 'the person who owns the book could not open it');
     assert.equal(maria.data?.organizationId, ORG_A);
     assert.equal(maria.data?.canEdit, true, 'rulebook_editors names the VP and she was refused');
@@ -549,30 +581,34 @@ describe('the rulebook and the cross-hotel-chat switch', () => {
   // The switch itself — the control the finding said was unreachable.
   test('and the cross-hotel-chat switch actually flips', async () => {
     assert.equal(
-      (await rulebookFor(UID_MARIA, PID_A1)).data?.settings.cross_hotel_ai_chat ?? 'false',
+      (await rulebookFor(UID_MARIA, ORG_A)).data?.settings.cross_hotel_ai_chat ?? 'false',
       'false',
       'fixture drift: chat was already on',
     );
-    assert.equal(await flipChatSwitch(UID_MARIA, PID_A1, 'true'), 200);
-    assert.equal((await rulebookFor(UID_MARIA, PID_A1)).data?.settings.cross_hotel_ai_chat, 'true');
-    assert.equal(await flipChatSwitch(UID_MARIA, PID_A1, 'false'), 200, 'and back off');
+    assert.equal(await flipChatSwitch(UID_MARIA, ORG_A, 'true'), 200);
+    assert.equal((await rulebookFor(UID_MARIA, ORG_A)).data?.settings.cross_hotel_ai_chat, 'true');
+    assert.equal(await flipChatSwitch(UID_MARIA, ORG_A, 'false'), 200, 'and back off');
   });
 
   // Mutation: gate on loadManagerCaller. Fiona's legacy role is `front_desk`,
   // so she was 404'd out of the book her own company governs her by.
   test("a finance hat may READ the book and may not write it", async () => {
-    const fiona = await rulebookFor(UID_FIONA, PID_A1);
+    const fiona = await rulebookFor(UID_FIONA, ORG_A);
     assert.equal(fiona.status, 200, 'the finance lead was refused the company book');
     assert.equal(fiona.data?.companyRole, 'finance');
     assert.equal(fiona.data?.canEdit, false, 'finance was handed the pen');
-    assert.equal(await flipChatSwitch(UID_FIONA, PID_A1, 'true'), 403, 'finance flipped a company switch');
+    assert.equal(await flipChatSwitch(UID_FIONA, ORG_A, 'true'), 403, 'finance flipped a company switch');
   });
 
   // The wall did not move when the gate did.
   test('a legacy account with no hat is still refused, and the other company is still refused', async () => {
-    assert.equal((await rulebookFor(UID_WANDA, PID_L1)).status, 404, 'an independent hotel grew a rulebook');
-    assert.equal((await rulebookFor(UID_VERA, PID_A1)).status, 403, "company B read company A's book");
-    assert.equal((await rulebookFor(UID_DOLORES, PID_A1)).status, 403, 'a hatless legacy account read the book');
+    assert.equal(
+      (await rulebookFor(UID_WANDA, PID_L1, 'property')).status,
+      404,
+      'an independent hotel grew a rulebook',
+    );
+    assert.equal((await rulebookFor(UID_VERA, ORG_A)).status, 404, "company B read company A's book");
+    assert.equal((await rulebookFor(UID_DOLORES, ORG_A)).status, 404, 'a hatless legacy account read the book');
   });
 });
 
@@ -603,24 +639,22 @@ describe('the finance lead — the picker and the queue now agree', () => {
     );
   });
 
-  // The other half of "coherent": whoever IS drawn with buttons must be taken.
-  test('the VP is drawn with buttons and her verdict lands', async () => {
+  test('a VP with explicit hotel standing can act only on that hotel-scoped finding', async () => {
     const queue = await portfolioFor(UID_MARIA);
     assert.equal(queue.status, 200);
-    assert.equal(queue.data.canAct, true, 'the VP was drawn read-only');
+    assert.equal(queue.data.canAct, true, 'the exact hotel standing was not reflected in the card');
     assert.equal(await portfolioVerdict(UID_MARIA, PORTFOLIO_FINDING), 200);
     const row = await pg.query<{ status: string }>(
       'select status from public.company_findings where id = $1', [PORTFOLIO_FINDING],
     );
-    assert.equal(row.rows[0]?.status, 'known_problem', 'the verdict was accepted and not saved');
+    assert.equal(row.rows[0]?.status, 'known_problem', 'the authorized verdict was not saved');
   });
 
   // Wall A on this surface, unchanged by the wider gate.
   test('a hotel-only person still has no portfolio at all', async () => {
     const frank = await portfolioFor(UID_FRANK);
-    assert.equal(frank.status, 200, 'a refusal became an error the client shows as broken');
+    assert.equal(frank.status, 404, 'a property-only actor was handed an aggregate queue');
     assert.equal(frank.data.scope, null, 'a front-desk hat was handed a portfolio');
-    assert.equal(frank.data.canAct, false);
 
     const hank = await portfolioFor(UID_HANK);
     assert.equal(hank.data.scope, null, 'a legacy housekeeper was handed a portfolio');
@@ -628,7 +662,7 @@ describe('the finance lead — the picker and the queue now agree', () => {
 
   test("company B's finding is not company A's to silence", async () => {
     assert.equal(
-      await portfolioVerdict(UID_VERA, PORTFOLIO_FINDING), 404,
+      await portfolioVerdict(UID_VERA, PORTFOLIO_FINDING, ORG_B), 404,
       "company B's VP reached into company A's ledger",
     );
   });
@@ -646,6 +680,12 @@ describe('the Company Hub reads the spine', () => {
     assert.ok(ids.includes(PID_A1) && ids.includes(PID_A2), `the hub found ${ids.length} hotels`);
     assert.equal(hub.data?.permissions.viewHotels, true);
     assert.equal(hub.data?.permissions.viewPeople, true, 'the VP could not see her own people');
+    assert.equal(hub.data?.permissions.manageInvitations, true);
+    assert.deepEqual(
+      hub.data?.permissions.accountInvitePropertyIds,
+      await hotelsGovernedBy(ORG_A),
+      'the company VP was not offered the guarded invitation flow at her exact hotels',
+    );
 
     const active = (hub.data?.memberships ?? []).filter((m) => m.status === 'active');
     assert.ok(active.length > 1, `the people panel found ${active.length} people at a five-person company`);
@@ -673,11 +713,106 @@ describe('the Company Hub reads the spine', () => {
       'a front-desk person was shown the portfolio',
     );
     assert.equal(hub.data?.permissions.viewPeople, false, 'line staff got the company roster');
+    assert.equal(hub.data?.permissions.manageInvitations, false);
+    assert.deepEqual(hub.data?.permissions.accountInvitePropertyIds, []);
     const others = (hub.data?.memberships ?? []).filter((m) => m.accountId !== ACCOUNT_MARIA);
     assert.ok(
       !others.some((m) => m.accountId === ACCOUNT_FIONA),
       "a front-desk person was shown the company's finance lead",
     );
+  });
+
+  test('a stood-down or non-governing company relationship never enters the service projection', async () => {
+    await pg.query(
+      `insert into public.organization_property_relationships
+         (organization_id, property_id, relationship_type, is_primary_grouping)
+       values ($1, $2, 'operator', false), ($1, $3, 'brand', false)`,
+      [ORG_B, PID_A1, PID_A2],
+    );
+    try {
+      const hub = await hubFor(UID_VERA);
+      assert.equal(hub.status, 200);
+      assert.deepEqual(
+        (hub.data?.properties ?? []).map((property) => property.id).sort(),
+        [PID_B1],
+        'the service-role Company Hub exposed a former operator or brand-linked hotel',
+      );
+    } finally {
+      await pg.query(
+        `delete from public.organization_property_relationships
+          where organization_id = $1 and property_id = any($2::uuid[])
+            and not is_primary_grouping`,
+        [ORG_B, [PID_A1, PID_A2]],
+      );
+    }
+  });
+
+  test('a root-region grant projects descendant hotels, receipts, and delegation targets', async () => {
+    const rootPortfolioId = 'a0a0a0a0-0000-4000-8000-000000000001';
+    const childPortfolioId = 'a0a0a0a0-0000-4000-8000-000000000002';
+    const assignmentId = 'a0a0a0a0-0000-4000-8000-000000000003';
+    const grantId = 'a0a0a0a0-0000-4000-8000-000000000004';
+    const membershipId = seed.hats.get(`${ACCOUNT_FRANK}:property:front_desk`);
+    assert.ok(membershipId, 'fixture did not record Frank\'s membership');
+    const relationship = await pg.query<{ id: string }>(
+      `select id from public.organization_property_relationships
+        where organization_id = $1 and property_id = $2
+          and is_primary_grouping and relationship_type in ('owner', 'operator')`,
+      [ORG_A, PID_A2],
+    );
+    assert.ok(relationship.rows[0]?.id, 'fixture did not govern the descendant hotel');
+
+    await pg.query(
+      `insert into public.portfolios
+         (id, organization_id, parent_id, name, portfolio_type, status)
+       values ($1, $3, null, 'East Region', 'region', 'active'),
+              ($2, $3, $1, 'Pine Portfolio', 'portfolio', 'active')`,
+      [rootPortfolioId, childPortfolioId, ORG_A],
+    );
+    await pg.query(
+      `insert into public.portfolio_properties
+         (id, organization_id, portfolio_id, property_relationship_id, property_id)
+       values ($1, $2, $3, $4, $5)`,
+      [assignmentId, ORG_A, childPortfolioId, relationship.rows[0].id, PID_A2],
+    );
+    await pg.query(
+      `insert into public.organization_access_grants
+         (id, organization_id, membership_id, access_profile, scope_type,
+          portfolio_id, source, starts_at)
+       values ($1, $2, $3, 'portfolio_manager', 'portfolio', $4, 'manual', now())`,
+      [grantId, ORG_A, membershipId, rootPortfolioId],
+    );
+    try {
+      const hub = await hubFor(UID_FRANK);
+      assert.equal(hub.status, 200);
+      assert.deepEqual(
+        (hub.data?.properties ?? []).map((property) => property.id).sort(),
+        [PID_A1, PID_A2].sort(),
+        'the nested region grant did not reach its child hotel',
+      );
+      assert.deepEqual(
+        (hub.data?.portfolios ?? []).map((portfolio) => portfolio.id).sort(),
+        [rootPortfolioId, childPortfolioId].sort(),
+        'the route omitted the granted region or its active child',
+      );
+      assert.deepEqual(
+        hub.data?.effectiveAccess.find((receipt) => receipt.id === grantId)?.propertyIds,
+        [PID_A2],
+        'the effective receipt disagreed with the authoritative nested scope',
+      );
+      const propertyManagerPolicy = hub.data?.permissions.delegationPolicies
+        ?.find((policy) => policy.organizationId === ORG_A)
+        ?.profiles.find((profile) => profile.accessProfile === 'property_manager');
+      assert.deepEqual(
+        propertyManagerPolicy?.propertyIds,
+        [PID_A2],
+        'the Access UI could not delegate within the exact descendant scope',
+      );
+    } finally {
+      await pg.query('delete from public.organization_access_grants where id = $1', [grantId]);
+      await pg.query('delete from public.portfolio_properties where id = $1', [assignmentId]);
+      await pg.query('delete from public.portfolios where id = any($1::uuid[])', [[rootPortfolioId, childPortfolioId]]);
+    }
   });
 
   // The MEDIUM finding's second half. Mutation: drop operatingCompanyNames and
@@ -702,11 +837,29 @@ describe('the Company Hub reads the spine', () => {
   // Zero regression: an independent hotel has no operator to name, and saying
   // one would be the same lie in the other direction.
   test('an independent hotel is still independent', async () => {
-    const hub = await hubFor(UID_WANDA);
-    assert.equal(hub.status, 200);
-    const waco = (hub.data?.properties ?? []).find((p) => p.id === PID_L1);
-    assert.ok(waco, 'the legacy owner lost her own hotel');
-    assert.equal(waco?.operatingCompanyName ?? null, null, 'a company was invented for an independent hotel');
+    await pg.query(
+      `insert into public.organization_property_relationships
+         (organization_id, property_id, relationship_type, is_primary_grouping)
+       values ($1, $2, 'brand', false), ($1, $2, 'operator', false)`,
+      [ORG_B, PID_L1],
+    );
+    try {
+      const hub = await hubFor(UID_WANDA);
+      assert.equal(hub.status, 200);
+      const waco = (hub.data?.properties ?? []).find((p) => p.id === PID_L1);
+      assert.ok(waco, 'the legacy owner lost her own hotel');
+      assert.equal(
+        waco?.operatingCompanyName ?? null,
+        null,
+        'a brand or stood-down operator was presented as the hotel manager',
+      );
+    } finally {
+      await pg.query(
+        `delete from public.organization_property_relationships
+          where organization_id = $1 and property_id = $2 and not is_primary_grouping`,
+        [ORG_B, PID_L1],
+      );
+    }
   });
 });
 

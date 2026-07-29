@@ -137,7 +137,12 @@ export async function POST(req: NextRequest) {
   if (!property) {
     return err('Property not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
-  if (!(await accountCanForProperty(session.userId, 'manage_settings', pidV.value!))) {
+  if (!(await accountCanForProperty(
+    session.userId,
+    'manage_settings',
+    pidV.value!,
+    { requireMutation: true },
+  ))) {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden });
   }
 

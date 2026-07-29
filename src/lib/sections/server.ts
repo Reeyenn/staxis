@@ -64,7 +64,7 @@ export function parseStoredEnabledSections(raw: unknown): EnabledSections {
  * gate checks within one request share a single read. Only a real NULL column
  * (and keys absent from a valid map) retain the legacy default-ON behaviour.
  */
-export const getEnabledSections = cache(async (propertyId: string): Promise<EnabledSections> => {
+async function loadEnabledSections(propertyId: string): Promise<EnabledSections> {
   if (!propertyId) throw new SectionLookupError('property id is required', 'property_not_found');
   const { data, error } = await supabaseAdmin
     .from('properties')
@@ -78,7 +78,14 @@ export const getEnabledSections = cache(async (propertyId: string): Promise<Enab
     throw new SectionLookupError('property was not found', 'property_not_found');
   }
   return parseStoredEnabledSections((data as { enabled_sections?: unknown }).enabled_sections);
-});
+}
+
+export const getEnabledSections = cache(loadEnabledSections);
+
+/** Uncached commit-time read for delayed approvals and other TOCTOU fences. */
+export function getEnabledSectionsFresh(propertyId: string): Promise<EnabledSections> {
+  return loadEnabledSections(propertyId);
+}
 
 /** Is `section` on for `pid`? Lookup failures are deliberately propagated. */
 export async function isSectionEnabledForProperty(pid: string, section: AppSection): Promise<boolean> {

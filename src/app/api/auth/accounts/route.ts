@@ -22,7 +22,7 @@ import { getOrMintRequestId, log } from '@/lib/log';
 import { ALL_ROLES, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { captureException } from '@/lib/sentry';
-import { requireSession } from '@/lib/api-auth';
+import { requireAdmin } from '@/lib/admin-auth';
 import { isUuid } from '@/lib/api-validate';
 import { isConfirmedAuthUserNotFound } from '@/lib/auth-account-delete';
 
@@ -52,44 +52,31 @@ async function verifyAdmin(req: NextRequest): Promise<
   | { ok: true; id: string; role: string; data_user_id: string; userId: string; userEmail: string | undefined }
   | { ok: false; response: import('next/server').NextResponse }
 > {
-  // Phase 1: validate JWT + device trust via the shared helper.
-  // requireSession default-enforces 2FA, so a JWT-only attacker is
-  // rejected here with requires_2fa even before we read x-account-id.
-  const session = await requireSession(req);
-  if (!session.ok) {
-    return { ok: false, response: session.response };
-  }
+  // Use the same fresh, active-platform-admin gate as every /api/admin route.
+  // This deliberately re-reads accounts.role + accounts.active on every
+  // request, so a demotion/deactivation invalidates even an otherwise-valid
+  // JWT and trusted-device cookie immediately.
+  const admin = await requireAdmin(req);
+  if (!admin.ok) return { ok: false, response: admin.response };
 
   const accountId = req.headers.get('x-account-id');
   if (!accountId) {
     return { ok: false, response: NextResponse.json({ error: 'missing x-account-id' }, { status: 400 }) };
   }
 
-  // Look up the account row (service role bypasses RLS).
-  const { data: account, error: acctErr } = await supabaseAdmin
-    .from('accounts')
-    .select('id, role, data_user_id')
-    .eq('id', accountId)
-    .maybeSingle();
-
-  if (acctErr || !account || account.role !== 'admin') {
-    return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 403 }) };
-  }
-
-  // Spoofing guard: the x-account-id MUST match the JWT user. Without
-  // this, anyone with any valid session could put another user's
-  // accounts.id in the header and try to inherit admin actions.
-  if (account.data_user_id !== session.userId) {
+  // Preserve the route's explicit anti-spoofing contract: the client-supplied
+  // account id must name the exact active admin resolved from the JWT.
+  if (accountId !== admin.accountId) {
     return { ok: false, response: NextResponse.json({ error: 'Unauthorized' }, { status: 403 }) };
   }
 
   return {
     ok: true,
-    id: account.id as string,
-    role: account.role as string,
-    data_user_id: account.data_user_id as string,
-    userId: session.userId,
-    userEmail: session.email ?? undefined,
+    id: admin.accountId,
+    role: 'admin',
+    data_user_id: admin.userId,
+    userId: admin.userId,
+    userEmail: admin.email ?? undefined,
   };
 }
 

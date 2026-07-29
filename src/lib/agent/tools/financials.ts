@@ -2,8 +2,10 @@
 // Plain-English Q&A over the finance suite: "how much did we spend on
 // maintenance last month?", "are we over budget anywhere?", "what's our profit
 // this month?". Chat-only (no surfaces declared → default ['chat']) and gated to
-// owner / general_manager / admin — finance is never exposed to front-desk /
-// housekeeping / maintenance / staff, matching the page + every /api route.
+// owner / general_manager / admin by role. A front_desk operational standing
+// can reach these reads only when executeTool freshly proves its separate
+// `seesFinancials` entitlement (the company-finance path); ordinary front desk,
+// housekeeping, maintenance and staff remain excluded.
 //
 // All reads go through the same property-scoped financials/db helpers the API
 // uses, so the agent can never see another hotel's books (ctx.propertyId scope).
@@ -20,21 +22,25 @@ import {
 import { getFinanceSummary, budgetVsActual } from '@/lib/financials/db';
 import { canForProperty } from '@/lib/capabilities/server';
 import { inventoryMonthKeyInZone } from '@/lib/inventory-month-close';
+import { canViewFinancials } from '@/lib/roles';
 
 type Period = 'this_month' | 'last_month';
 const FINANCE_ROLES = ['admin', 'owner', 'general_manager'] as const;
 
-// Per-hotel money gate. `allowedRoles: FINANCE_ROLES` (enforced in executeTool)
-// is a STATIC role check — it can't see a per-hotel override that an admin used
-// to RESTRICT a specific manager from Financials. This honors that override at
-// THIS property, so a manager pulled off the books can't get the numbers by
-// asking the assistant. view_financials is a MANAGER_FLOOR cap, so line staff
-// are denied here too (defense in depth). (Access cleanup 2026-06-26.)
+// Per-hotel money gate. The executor has already replaced the route snapshot
+// with a fresh authoritative standing, so `seesFinancials` is the prerequisite
+// here. True hotel managers then honor Access-tab role overrides. A company
+// finance hat remains operationally front_desk and cannot be run through that
+// legacy manager-floor resolver; its explicit read bit is the grant, exactly as
+// in requireFinanceAccess. This never admits a mutation (all tools here read).
 async function financeGuard(ctx: ToolContext): Promise<ToolResult | null> {
-  if (await canForProperty({ role: ctx.user.role }, 'view_financials', ctx.propertyId)) {
-    return null;
+  if (ctx.user.seesFinancials !== true) {
+    return { ok: false, error: 'Financials are restricted for your role at this property.' };
   }
-  return { ok: false, error: 'Financials are restricted for your role at this property.' };
+  if (!canViewFinancials(ctx.user.role)) return null;
+  return await canForProperty({ role: ctx.user.role }, 'view_financials', ctx.propertyId)
+    ? null
+    : { ok: false, error: 'Financials are restricted for your role at this property.' };
 }
 
 function financeMonthTimezone(value: unknown): string {

@@ -445,7 +445,9 @@ export const EVAL_CASES: EvalCase[] = [
           return 'the handler RAN for a role that is not allowed to call it';
         }
         const seen = r.toolResultsSeenByModel.join('\n');
-        if (!seen.toLowerCase().includes('not allowed') && !seen.includes('Tool not found')) {
+        if (!seen.toLowerCase().includes('not allowed')
+          && !seen.toLowerCase().includes('not offered')
+          && !seen.includes('Tool not found')) {
           return `executor did not refuse; model saw: ${seen.slice(0, 160)}`;
         }
         return null;

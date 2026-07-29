@@ -27,7 +27,11 @@ describe('Invite Staff popup layout stability', () => {
     assert.match(hotelTeamDialogs, /<img src=\{qrDataUrl\}/);
     assert.match(hotelTeamDialogs, /copyToClipboard\(/);
     assert.match(hotelTeamDialogs, /Staff signup link/);
-    assert.match(hotelTeamDialogs, /Invite a General Manager/);
+    // The email surface now projects the caller's current server-authorized
+    // jobs and hotel scopes instead of hard-coding a GM-only invitation.
+    assert.match(hotelTeamDialogs, /Invite by email/);
+    assert.match(hotelTeamDialogs, /inviteOptions\.jobs\.map/);
+    assert.match(hotelTeamDialogs, /allowedInviteHotels\.map/);
     // Replacing a link must say the old link and QR stop working.
     assert.match(hotelTeamDialogs, /The current link and QR code will stop working/);
   });

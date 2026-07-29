@@ -107,11 +107,23 @@ function leaksIn(value: unknown): string[] {
  * lost, shrinking means an entry is stale.
  */
 const UNSEEDABLE_TABLES = new Set([
+  'admin_hotel_relationship_mutation_requests', // actor/relationship lifecycle request shape
+  'company_structure_mutation_requests', // actor/company structure request shape
   'inventory_delivery_reentries',  // NOT NULL key onto a replacement-request row
+  'management_pattern_candidate_local_instances', // immutable candidate/run lineage
+  'management_pattern_candidate_properties', // immutable candidate/run lineage
+  'management_pattern_cohort_members', // immutable cohort/run lineage
+  'management_pattern_metric_observations', // immutable run/query/source lineage
+  'management_pattern_property_profiles', // immutable run/profile lineage
+  'management_pattern_run_properties', // immutable run/topology snapshot lineage
   'organization_access_grants',    // NOT NULL key onto an unseedable membership
   'organization_access_requests',  // NOT NULL key onto an unseedable membership
   'organization_invitations',      // scope-shape XOR over four nullable columns
+  'portfolio_knowledge_request_artifacts', // request artifact requires portfolio receipt lineage
+  'portfolio_metric_snapshots',    // snapshot requires a canonical metric/source receipt
+  'portfolio_model_request_artifacts', // request artifact requires portfolio receipt lineage
   'portfolio_properties',          // NOT NULL key onto an unseedable portfolio scope
+  'portfolio_query_receipts',      // receipt requires an authorized portfolio query lease
   'staxis_support_sessions',       // scope-shape XOR over hotel/org columns
 ]);
 
@@ -144,15 +156,13 @@ const ROW_KEYED_FOLLOWUPS = new Map<string, { keys: string[]; why: string }>([
 ]);
 
 /**
- * Tools that genuinely reach no database at all. Every entry says WHY. A tool
- * that records zero statements and is NOT here fails the suite.
+ * Every tool execution now performs a fresh active-account + authoritative
+ * property-standing read before its handler. A handler may remain in-memory
+ * (for example `walk_user_through`), but its execution is deliberately not
+ * DB-free: immediate revocation must stop it before any result is returned.
+ * Keep the exact-set assertion below so a future zero-read path fails loudly.
  */
-const NO_DB_TOOLS = new Map<string, string>([
-  // The three "not yet integrated" stubs that used to sit here were deleted by
-  // the 2026-07-27 catalog rebuild. See the sibling unit test for why a dead
-  // entry is worth removing rather than leaving.
-  ['walk_user_through', 'returns UI walkthrough steps from an in-memory registry'],
-]);
+const NO_DB_TOOLS = new Map<string, string>();
 
 /**
  * The PER-HOTEL catalog — the subject of this file.
@@ -303,6 +313,13 @@ function contextFor(tool: ToolDefinition): ToolContext {
       role,
       propertyAccess: [PID_A],
       dept: null,
+      hotelMutationAllowed: true,
+      seesFinancials: true,
+      capabilitySnapshot: {
+        view_financials: true,
+        view_wages: true,
+        manage_inventory_orders: true,
+      },
     },
     propertyId: PID_A,
     staffId: seed.ids.get('staff:A') ?? null,
@@ -310,6 +327,7 @@ function contextFor(tool: ToolDefinition): ToolContext {
     surface,
     voiceMode: surface === 'voice' ? (tool.voiceModes?.[0] ?? 'general') : undefined,
     currentRoomNumber: '101',
+    enabledSections: null,
   };
 }
 

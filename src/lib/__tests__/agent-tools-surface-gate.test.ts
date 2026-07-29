@@ -12,7 +12,7 @@
  * halves of the gate so a future refactor can't quietly remove either.
  */
 
-import { test, describe } from 'node:test';
+import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   registerTool,
@@ -21,12 +21,29 @@ import {
   type ToolContext,
   type ToolResult,
 } from '../agent/tools';
+import {
+  agentToolAuthorityIdentity,
+  installAgentToolAuthorityTestStore,
+} from './helpers/agent-tool-authority';
 
 // Use unique tool names so the registry isn't polluted across test runs
 // when files share the same import graph (registry is module-scoped).
 const NAME_CHAT_ONLY = '__test_surface_chat_only';
 const NAME_VOICE_OPT_IN = '__test_surface_voice_opt_in';
 const NAME_NO_SURFACES_FIELD = '__test_surface_no_surfaces_field';
+const PID = '20000000-0000-4000-8000-000000000001';
+const GM_IDENTITY = agentToolAuthorityIdentity('general_manager');
+let restoreAuthority: (() => void) | null = null;
+
+before(() => {
+  restoreAuthority = installAgentToolAuthorityTestStore(() => [{
+    ...GM_IDENTITY,
+    role: 'general_manager',
+    propertyIds: [PID],
+  }]);
+});
+
+after(() => restoreAuthority?.());
 
 // Register three test tools with distinct surface postures.
 registerTool({
@@ -59,14 +76,14 @@ registerTool({
 function makeCtx(surface: 'chat' | 'voice' | 'walkthrough', role: 'admin' | 'general_manager' = 'general_manager'): ToolContext {
   return {
     user: {
-      uid: 'test-uid',
-      accountId: 'test-account',
+      uid: GM_IDENTITY.authUserId,
+      accountId: GM_IDENTITY.accountId,
       username: 'tester',
       displayName: 'Tester',
       role,
-      propertyAccess: ['test-property'],
+      propertyAccess: [PID],
     },
-    propertyId: 'test-property',
+    propertyId: PID,
     staffId: null,
     requestId: 'test-request',
     surface,

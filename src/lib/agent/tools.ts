@@ -12,9 +12,12 @@
 // register their tools against the SAME registry — see the agent layer plan.
 // Just import their module from agent/index.ts and the registration fires.
 
-import type { AppRole } from '@/lib/roles';
+import { canViewFinancials, type AppRole } from '@/lib/roles';
 import type { CapabilityKey } from '@/lib/capabilities/registry';
-import { canForProperty } from '@/lib/capabilities/server';
+import { capabilityDecisionForPropertyFresh } from '@/lib/capabilities/server';
+import type { AuthoritativePropertyStanding } from '@/lib/authorization/server';
+import { isUuid } from '@/lib/authorization/domain';
+import { loadSessionAccount } from '@/lib/team-auth';
 import { scopedDb, type ScopedDb } from './scoped-db';
 import { lensFor, lensAllowsTool } from './lenses';
 import { getPropertyFeedStatus } from '@/lib/pms-feed-status-server';
@@ -24,6 +27,7 @@ import {
   type AppSection,
   type EnabledSections,
 } from '@/lib/sections/registry';
+import { getEnabledSectionsFresh } from '@/lib/sections/server';
 
 // VoiceMode used to live in the ElevenLabs voice-session module (removed
 // 2026-07-15 when the "Talk to Staxis" voice feature + ElevenLabs were torn
@@ -46,6 +50,10 @@ export interface PortfolioToolScope {
   propertyIds: string[];
 }
 
+export type AgentToolCapabilitySnapshot = Readonly<
+  Partial<Record<CapabilityKey, boolean>>
+>;
+
 export interface ToolContext {
   /** The authenticated account making the call. */
   user: {
@@ -55,6 +63,14 @@ export interface ToolContext {
     displayName: string;
     role: AppRole;
     propertyAccess: string[];
+    /** Explicit normalized-profile fence. Omitted by legacy/eval contexts. */
+    hotelMutationAllowed?: boolean;
+    /** Explicit per-hotel money-read entitlement. Kept separate from role so a
+     *  company finance hat never has to impersonate a hotel manager. */
+    seesFinancials?: boolean;
+    /** Route-captured per-hotel capability floor. Production hotel chat always
+     *  supplies it; omission exists only for legacy/background constructors. */
+    capabilitySnapshot?: AgentToolCapabilitySnapshot;
     /** The caller's own department (staff.department) on this property, or null.
      *  Optional so background/eval constructors can omit it; absent → most-
      *  restrictive for non-managers. Gates 'dept'-scoped knowledge documents. */
@@ -103,8 +119,9 @@ export interface ToolContext {
    *  boundary (getEnabledSections(propertyId)). executeTool consults it to
    *  refuse a tool whose `section` is turned off for this hotel — the
    *  defense-in-depth twin of the getToolsForRole section filter, mirroring how
-   *  requiresCapability is double-enforced. FAIL-OPEN: undefined/null ⇒ treat
-   *  every section as ON (a read hiccup never hides a live section). */
+   *  requiresCapability is double-enforced. `null` is the database's valid
+   *  default-on policy; `undefined` means no route proof and fails closed at
+   *  execution. */
   enabledSections?: EnabledSections;
   /** The caller's spoken language ('en' | 'es'), resolved server-side from the
    *  staff row at the voice-brain boundary. Used ONLY for deterministic spoken
@@ -274,8 +291,9 @@ export interface ToolDefinition<TArgs = unknown> {
    * catalog handed to Claude (getToolsForRole) AND refused inside executeTool
    * as defense-in-depth — a back-door parallel to requiresCapability. Absent on
    * cross-cutting tools (memory, knowledge, PMS reads, walkthrough, complaints,
-   * lost-and-found) which are NEVER section-gated. FAIL-OPEN: when the hotel's
-   * section map is unavailable, every section is treated as ON.
+   * lost-and-found) which are NEVER section-gated. The route map is only the
+   * stale floor: executeTool performs a fresh fail-closed read before every
+   * section-tagged handler.
    *
    * ─── Reminders: CREATING one is gated, managing one is not (2026-07-27) ──
    * `create_reminder` carries `section: 'communications'`; `cancel_reminder`
@@ -462,37 +480,87 @@ export function confirmsInChat(name: string): boolean {
  *  Sections (WP7): when the caller passes the active hotel's `enabledSections`
  *  map, any tool tagged with a `section` that the hotel has turned OFF is
  *  dropped from the catalog so the copilot can't offer an action for a section
- *  that isn't live. FAIL-OPEN: when `enabledSections` is undefined/null (a read
- *  hiccup, or a caller that doesn't thread it) every section resolves to ON via
- *  isSectionEnabled, so the tool set is unchanged. */
+ *  that isn't live. At this catalog-only layer, `null` (the stored default-on
+ *  policy) and `undefined` (legacy/background callers that do not mount tools)
+ *  leave the catalog unchanged via `isSectionEnabled`. This is not execution
+ *  authority: `executeTool` requires an explicit route proof for section-tagged
+ *  tools, treats only `null` as valid default-on, and refuses `undefined`. */
+export interface ToolCatalogAuthorization {
+  /** Current route-bound financial read entitlement for this exact hotel. */
+  seesFinancials: boolean;
+  /** Current route-bound hotel mutation standing for this exact hotel. */
+  hotelMutationAllowed: boolean;
+  /** Route-captured capability decisions used as the old half of the
+   *  old-and-current execution intersection. */
+  capabilitySnapshot?: AgentToolCapabilitySnapshot;
+}
+
+/** Closed set captured by the hotel-chat route. A structural test fails when a
+ * tool introduces another capability without adding it here. */
+export const AGENT_TOOL_CAPABILITY_KEYS = [
+  'view_financials',
+  'view_wages',
+  'manage_inventory_orders',
+] as const satisfies readonly CapabilityKey[];
+
+/**
+ * The one capability that may widen beyond the degraded operational role.
+ * A company finance/VP/owner standing intentionally projects as front_desk so
+ * it cannot acquire hotel-manager powers; `seesFinancials` adds back only the
+ * read-only Financials capability it was created to represent. Payroll/wages,
+ * mutations and every other manager capability remain role-gated.
+ */
+function explicitlyAuthorizedFinanceRead(
+  tool: ToolDefinition,
+  surface: AgentSurface,
+  seesFinancials: boolean | undefined,
+): boolean {
+  return surface === 'chat'
+    && seesFinancials === true
+    && tool.mutates !== true
+    && tool.requiresCapability === 'view_financials';
+}
+
 export function getToolsForRole(
   role: AppRole,
   surface: AgentSurface,
   voiceMode?: VoiceMode,
   enabledSections?: EnabledSections,
+  authorization?: ToolCatalogAuthorization,
 ): ToolDefinition[] {
-  // WHO LENSES (2026-07-27). A hat with a lens gets the lens's list INTERSECTED
-  // with everything below — never a union, so a name a lens mentions that the
-  // tool itself refuses stays refused. A hat whose lens is `mounted: false`
-  // (housekeeping) gets nothing at all: the chat is not part of their job.
+  // WHO LENSES (2026-07-27). A hat with a lens normally gets the lens's list
+  // INTERSECTED with everything below, so a name a lens mentions that the tool
+  // itself refuses stays refused. The only explicit exception is the narrow,
+  // independently-authorized read-only Financials grant below. A hat whose
+  // lens is `mounted: false` (housekeeping) still gets nothing at all: the chat
+  // is not part of their job.
   const lens = lensFor(role, surface);
   if (lens && !lens.mounted) return [];
   return Array.from(registry.values()).filter(t => {
-    // Through `lensAllowsTool`, not an inlined `lens.tools.includes(...)`.
-    // lenses.ts claims to be "the ONLY place the intersection is expressed" so
-    // the mount and the executor cannot drift into disagreeing about what a hat
-    // can reach — and until this call existed that claim was false: this line
-    // was a second copy, so editing `lensAllowsTool` changed what `executeTool`
-    // refuses and silently did NOT change what the model is offered.
-    if (!lensAllowsTool(role, surface, t.name)) return false;
-    if (!t.allowedRoles.includes(role)) return false;
+    // Through `lensAllowsTool`, not an inlined `lens.tools.includes(...)`, so
+    // catalog and executor share the same lens rule. The explicit finance-read
+    // exception is expressed by the same helper in both paths as well.
+    const explicitFinanceRead = explicitlyAuthorizedFinanceRead(
+      t,
+      surface,
+      authorization?.seesFinancials,
+    );
+    if (!lensAllowsTool(role, surface, t.name) && !explicitFinanceRead) return false;
+    if (!t.allowedRoles.includes(role) && !explicitFinanceRead) return false;
+    // A read-only company standing must not be offered a mutation that would
+    // become an approval card only to fail after the user approves it.
+    if (t.mutates && authorization && authorization.hotelMutationAllowed !== true) return false;
+    if (t.requiresCapability
+      && authorization
+      && authorization.capabilitySnapshot?.[t.requiresCapability] !== true) return false;
     const allowedSurfaces = t.surfaces ?? ['chat'];
     if (!allowedSurfaces.includes(surface)) return false;
     if (surface === 'voice' && t.voiceModes && voiceMode) {
       if (!t.voiceModes.includes(voiceMode)) return false;
     }
-    // Section gate: drop tools whose section is turned off for this hotel.
-    // isSectionEnabled treats a null/undefined map as all-ON (fail-open).
+    // Catalog UX filter only: drop an explicitly disabled section. Null is the
+    // valid default-on DB value; undefined leaves legacy/background catalogs
+    // unchanged, but executeTool later refuses it as a missing route proof.
     if (t.section && !isSectionEnabled(enabledSections, t.section)) return false;
     return true;
   });
@@ -503,20 +571,103 @@ export function getToolsForRole(
  * handler can't accidentally bypass it. Returns a structured ToolResult that
  * the agent loop feeds back to Claude as a tool_result message.
  *
- * Round-8 fix B3, 2026-05-13: this propertyAccess check is
- * defense-in-depth against future tool handlers that forget to filter
- * by ctx.propertyId. It does NOT defend against mid-conversation
- * revocation — the check reads ctx.user.propertyAccess captured at
- * request start, not a fresh DB row. A fresh DB read per tool call
- * would cost an extra round-trip for every tool invocation, which
- * is too expensive for the benefit. The route boundary's
- * userHasPropertyAccess runs once at request start and is sufficient
- * for the live-revocation case.
+ * Authorization is an intersection of two snapshots:
+ *   1. the route-owned context captured before the model was called; and
+ *   2. a fresh active-account + authoritative hotel standing loaded for this
+ *      exact invocation.
  *
- * Only `admin` bypasses — this matches userHasPropertyAccess
- * semantics. `owner` is NOT bypassed because an owner can be removed
- * from a specific property in their property_access array.
+ * The first prevents a stale conversation from acquiring newly granted power;
+ * the second makes revocation, hotel transfer, account deactivation and role
+ * changes effective before a handler can read or mutate anything. Resolver
+ * errors fail closed. The handler receives the fresh standing, never the stale
+ * role/property array from the conversation context.
  */
+type FreshToolAuthorization = {
+  standing: AuthoritativePropertyStanding;
+  user: ToolContext['user'];
+};
+
+type FreshToolAuthorizationResult =
+  | { ok: true; authorization: FreshToolAuthorization }
+  | { ok: false; reason: 'changed' | 'unavailable' };
+
+/**
+ * Recheck identity, account lifecycle and the one-hotel standing immediately
+ * before tool execution. `loadSessionAccount` binds the auth UID to one active
+ * account and calls `listAuthoritativePropertyAccess`; the latter performs the
+ * active-account check and computes every hotel standing atomically in the
+ * database. Reusing that loader avoids a second authorization implementation
+ * inside the AI layer and keeps the service-role client behind its established
+ * server boundary.
+ */
+async function freshToolAuthorization(
+  ctx: ToolContext,
+): Promise<FreshToolAuthorizationResult> {
+  if (!isUuid(ctx.user.uid) || !isUuid(ctx.user.accountId) || !isUuid(ctx.propertyId)) {
+    return { ok: false, reason: 'changed' };
+  }
+
+  let account: Awaited<ReturnType<typeof loadSessionAccount>>;
+  try {
+    account = await loadSessionAccount(ctx.user.uid);
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
+
+  if (!account) return { ok: false, reason: 'unavailable' };
+  if (account.accountId !== ctx.user.accountId) {
+    return { ok: false, reason: 'changed' };
+  }
+
+  const standing = account.reachesAllProperties
+    ? account.role === 'admin'
+      ? {
+        propertyId: ctx.propertyId,
+        operationalRole: 'admin' as const,
+        seesFinancials: true,
+        hotelMutationAllowed: true,
+        portfolioIntelligenceRead: true,
+        entitlements: [],
+      }
+      : null
+    : account.propertyStandings?.find((candidate) => (
+      candidate.propertyId === ctx.propertyId
+    )) ?? null;
+  if (!standing) return { ok: false, reason: 'changed' };
+
+  return {
+    ok: true,
+    authorization: {
+      standing,
+      user: {
+        ...ctx.user,
+        accountId: account.accountId,
+        displayName: account.displayName ?? ctx.user.displayName,
+        role: standing.operationalRole,
+        propertyAccess: account.propertyAccess,
+        hotelMutationAllowed: standing.hotelMutationAllowed,
+        seesFinancials: standing.seesFinancials,
+      },
+    },
+  };
+}
+
+function freshAuthorizationRefusal(
+  name: string,
+  reason: 'changed' | 'unavailable',
+): ToolResult {
+  if (reason === 'unavailable') {
+    return {
+      ok: false,
+      error: `Current access could not be verified, so ${name} did not run. Nothing was read or changed. Tell the user to try again.`,
+    };
+  }
+  return {
+    ok: false,
+    error: `Your account, role, or property access changed before ${name} could run. Nothing was read or changed. Restart from a property you currently have access to.`,
+  };
+}
+
 export async function executeTool(
   name: string,
   args: unknown,
@@ -571,10 +722,21 @@ export async function executeTool(
       };
     }
   }
-  if (!tool.allowedRoles.includes(ctx.user.role)) {
+  const staleFinanceRead = explicitlyAuthorizedFinanceRead(
+    tool,
+    ctx.surface,
+    ctx.user.seesFinancials,
+  );
+  if (!tool.allowedRoles.includes(ctx.user.role) && !staleFinanceRead) {
     return {
       ok: false,
       error: `Your role (${ctx.user.role}) is not allowed to use ${name}. Explain to the user that this action requires a different role.`,
+    };
+  }
+  if (tool.mutates && ctx.user.hotelMutationAllowed !== true) {
+    return {
+      ok: false,
+      error: `Your current company access is read-only at this hotel. ${name} cannot make changes.`,
     };
   }
   // WHO LENSES — the executor's half of the mount, enforced the way every other
@@ -582,15 +744,27 @@ export async function executeTool(
   // the catalog the model was handed, so reaching here means a stale tool list,
   // a replayed conversation from before the lens existed, or a hallucinated
   // name. The refusal is worded for the model to relay, not to argue with.
-  if (!lensAllowsTool(ctx.user.role, ctx.surface, tool.name)) {
+  if (!lensAllowsTool(ctx.user.role, ctx.surface, tool.name) && !staleFinanceRead) {
     return {
       ok: false,
       error: `${name} is not part of what you can do in this conversation. Tell the user plainly that this one is a manager question and offer to help with something you can actually answer — do not try to get the same information another way.`,
     };
   }
-  // Defense-in-depth on the cached propertyAccess. Admins bypass via
-  // route-boundary userHasPropertyAccess; every other role (including
-  // owner) is filtered by their property_access array.
+  // A tool that survives the role/lens mount still needs an explicit
+  // route-captured capability floor. Keeping the role/lens refusal first
+  // preserves the stable least-privilege explanation for a tool that was
+  // never part of this person's job; omission here remains fail-closed for
+  // every capability-gated tool that their job could otherwise use.
+  if (tool.requiresCapability
+    && ctx.user.capabilitySnapshot?.[tool.requiresCapability] !== true) {
+    return {
+      ok: false,
+      error: `Access to ${name} was restricted when this turn started. Ask again after your current permissions are reloaded.`,
+    };
+  }
+  // Defense-in-depth on the route-captured authoritative property set. Admins
+  // bypass via their global standing; every other role (including owner) must
+  // have this exact property in the captured set before fresh reauthorization.
   if (
     ctx.user.role !== 'admin' &&
     !ctx.user.propertyAccess.includes(ctx.propertyId)
@@ -600,17 +774,65 @@ export async function executeTool(
       error: 'Property access for this conversation is not in your account. The user must restart the conversation from a property they currently have access to.',
     };
   }
-  // Per-hotel section gate (WP7). Defense-in-depth twin of the getToolsForRole
-  // section filter, mirroring how requiresCapability is double-enforced below:
-  // even if a stale tool list leaks a tool for a section this hotel has turned
-  // off, the executor itself refuses it. FAIL-OPEN — isSectionEnabled treats an
-  // undefined/null enabledSections (unavailable map, or a caller that doesn't
-  // thread it) as every section ON, so a read hiccup never blocks a live tool.
-  if (tool.section && !isSectionEnabled(ctx.enabledSections, tool.section)) {
-    return {
-      ok: false,
-      error: `The ${tool.section} section is turned off for this hotel. Tell the user this part of the app is currently disabled here and don't try to complete the action another way.`,
-    };
+
+  // TOCTOU boundary: the route/context checks above are intentionally retained
+  // as a stale-snapshot floor, then intersected with this fresh authoritative
+  // read. A handler is never reached on revocation, transfer, deactivation,
+  // role loss, malformed authority output or store outage.
+  const fresh = await freshToolAuthorization(ctx);
+  if (!fresh.ok) return freshAuthorizationRefusal(name, fresh.reason);
+  const { standing, user: freshUser } = fresh.authorization;
+  const freshFinanceRead = explicitlyAuthorizedFinanceRead(
+    tool,
+    ctx.surface,
+    standing.seesFinancials,
+  );
+
+  if (!tool.allowedRoles.includes(freshUser.role) && !freshFinanceRead) {
+    return freshAuthorizationRefusal(name, 'changed');
+  }
+  if (!lensAllowsTool(freshUser.role, ctx.surface, tool.name) && !freshFinanceRead) {
+    return freshAuthorizationRefusal(name, 'changed');
+  }
+  if (tool.mutates && standing.hotelMutationAllowed !== true) {
+    return freshAuthorizationRefusal(name, 'changed');
+  }
+  if (ctx.surface === 'portfolio' && standing.portfolioIntelligenceRead !== true) {
+    return freshAuthorizationRefusal(name, 'changed');
+  }
+  if ((tool.requiresCapability === 'view_financials'
+      || tool.requiresCapability === 'view_wages')
+    && standing.seesFinancials !== true) {
+    return freshAuthorizationRefusal(name, 'changed');
+  }
+
+  const freshCtx: ToolContext = { ...ctx, user: freshUser };
+  // Per-hotel section gate. The route-captured map is the stale floor and can
+  // deny immediately; a newly enabled section therefore never expands an
+  // in-flight turn. If that floor allowed the tool, perform a fresh uncached
+  // read so same-turn disablement (or lookup failure) stops before the handler.
+  if (tool.section) {
+    if (ctx.enabledSections === undefined) {
+      return freshAuthorizationRefusal(name, 'unavailable');
+    }
+    if (!isSectionEnabled(ctx.enabledSections, tool.section)) {
+      return {
+        ok: false,
+        error: `The ${tool.section} section was turned off when this conversation turn started. Ask again after the current hotel setup is reloaded.`,
+      };
+    }
+    let currentSections: EnabledSections;
+    try {
+      currentSections = await getEnabledSectionsFresh(ctx.propertyId);
+    } catch {
+      return freshAuthorizationRefusal(name, 'unavailable');
+    }
+    if (!isSectionEnabled(currentSections, tool.section)) {
+      return {
+        ok: false,
+        error: `The ${tool.section} section was turned off before ${name} could run. Nothing was read or changed.`,
+      };
+    }
   }
   // Per-hotel capability gate (security audit 2026-06-26). Mirrors the HTTP
   // finance/reports gates (requireFinanceAccess → canForProperty) so the agent
@@ -619,11 +841,28 @@ export async function executeTool(
   // manager-floor caps (view_financials/view_wages/...) are refused for
   // line-staff roles regardless of overrides.
   if (tool.requiresCapability) {
-    const allowed = await canForProperty(
-      { role: ctx.user.role },
-      tool.requiresCapability,
-      ctx.propertyId,
-    );
+    let allowed = false;
+    // Mirror requireFinanceAccess: a finance hat's explicit read bit is the
+    // grant, because its least-privilege front_desk role deliberately fails the
+    // manager-floor capability resolver. True hotel managers still go through
+    // that resolver and therefore continue honoring Access-tab overrides.
+    if (freshFinanceRead && !canViewFinancials(freshUser.role)) {
+      allowed = true;
+    } else {
+      try {
+        const decision = await capabilityDecisionForPropertyFresh(
+          { role: freshUser.role },
+          tool.requiresCapability,
+          ctx.propertyId,
+        );
+        if (decision === 'unavailable') {
+          return freshAuthorizationRefusal(name, 'unavailable');
+        }
+        allowed = decision === 'allowed';
+      } catch {
+        return freshAuthorizationRefusal(name, 'unavailable');
+      }
+    }
     if (!allowed) {
       return {
         ok: false,
@@ -637,13 +876,13 @@ export async function executeTool(
     // approval resolve, evals) gets it without a single call site changing.
     let db: ScopedDb | null = null;
     const handlerCtx: ToolHandlerContext = {
-      ...ctx,
+      ...freshCtx,
       get db(): ScopedDb {
         return (db ??= scopedDb(ctx.propertyId));
       },
     };
     const result = await tool.handler(args, handlerCtx);
-    return await stampFreshness(tool, result, ctx);
+    return await stampFreshness(tool, result, freshCtx);
   } catch (err) {
     return {
       ok: false,

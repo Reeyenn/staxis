@@ -111,6 +111,13 @@ export function boundedHotelIds(propertyIds: readonly string[]): {
  */
 export const PORTFOLIO_READ_CONCURRENCY = 8;
 
+export class MapWithConcurrencyInterruptedError extends Error {
+  constructor(readonly reason: 'cancelled' | 'timed_out') {
+    super(`bounded fanout ${reason === 'cancelled' ? 'was cancelled' : 'timed out'}`);
+    this.name = 'MapWithConcurrencyInterruptedError';
+  }
+}
+
 /**
  * `Promise.all(items.map(f))`, but never more than `limit` of them in flight.
  *
@@ -130,19 +137,66 @@ export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   run: (item: T, index: number) => Promise<R>,
+  control: {
+    signal?: AbortSignal;
+    deadlineAt?: number;
+    /**
+     * A deterministic placeholder for work the global deadline prevented.
+     * Cancellation never calls this: a disconnected caller still aborts.
+     */
+    onTimedOut?: (item: T, index: number) => R;
+  } = {},
 ): Promise<R[]> {
   const out = new Array<R>(items.length);
+  const completed = new Array<boolean>(items.length).fill(false);
   let next = 0;
+  let hasError = false;
+  let firstError: unknown;
+  let stopped: 'cancelled' | 'timed_out' | null = null;
+  const stopReason = (): 'cancelled' | 'timed_out' | null => {
+    if (control.signal?.aborted) {
+      return control.deadlineAt !== undefined && control.deadlineAt <= Date.now()
+        ? 'timed_out'
+        : 'cancelled';
+    }
+    return control.deadlineAt !== undefined && control.deadlineAt <= Date.now()
+      ? 'timed_out'
+      : null;
+  };
   const worker = async (): Promise<void> => {
     for (;;) {
+      if (hasError) return;
+      const interrupted = stopReason();
+      if (interrupted) {
+        stopped ??= interrupted;
+        return;
+      }
       const index = next;
       if (index >= items.length) return;
       next += 1;
-      out[index] = await run(items[index], index);
+      try {
+        out[index] = await run(items[index], index);
+        completed[index] = true;
+      } catch (error) {
+        if (!hasError) firstError = error;
+        hasError = true;
+        return;
+      }
     }
   };
   const lanes = Math.max(1, Math.min(limit, items.length));
   await Promise.all(Array.from({ length: lanes }, () => worker()));
+  if (hasError) throw firstError;
+  const finalInterruption = stopped ?? stopReason();
+  if (finalInterruption === 'timed_out' && control.onTimedOut) {
+    for (let index = 0; index < items.length; index += 1) {
+      if (completed[index]) continue;
+      out[index] = control.onTimedOut(items[index], index);
+      completed[index] = true;
+    }
+    return out;
+  }
+  if (finalInterruption) throw new MapWithConcurrencyInterruptedError(finalInterruption);
   return out;
 }
 

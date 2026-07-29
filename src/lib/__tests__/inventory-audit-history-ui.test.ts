@@ -295,7 +295,8 @@ describe('inventory audit-history presentation contract', () => {
 describe('inventory audit-history financial access boundary', () => {
   test('leaves financial authorization on the server and preserves existing UI gates', () => {
     assert.doesNotMatch(auditRequestLoader, /includeFinancials|view_financials|canViewFinancials/);
-    assert.match(route, /const capabilityDecision = canViewFinancials\(role\)/);
+    assert.match(route, /const capabilityDecision = !standing\.seesFinancials/);
+    assert.match(route, /canViewFinancials\(role\)[\s\S]*capabilityDecisionForProperty\(\{ role \}, 'view_financials', propertyId\)/);
     assert.match(route, /capabilityDecisionForProperty\(\{ role \}, 'view_financials', propertyId\)/);
     assert.match(route, /capabilityDecision === 'unavailable'[\s\S]*capabilityUnavailableResponse/);
     assert.match(route, /isSectionEnabled\(sectionGate\.enabledSections, 'financials'\)/);

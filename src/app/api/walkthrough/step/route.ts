@@ -26,8 +26,10 @@ import {
   MESSAGES_RUNTIME_PROVIDERS,
 } from '@/lib/ai/messages-client';
 import type { AiProvider } from '@/lib/ai/types';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSession } from '@/lib/api-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { escapeTrustMarkerContent, modelTierForModelId, type ModelTier } from '@/lib/agent/llm';
 import { anthropicTierTokenRates } from '@/lib/ai/feature-registry';
 import {
@@ -263,8 +265,9 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ ok: false, error: `task exceeds ${MAX_TASK_CHARS} chars`, requestId }, { status: 413 });
   }
 
-  const hasAccess = await userHasPropertyAccess(auth.userId, body.propertyId);
-  if (!hasAccess) {
+  const writeDecision = await hotelWriteDecisionForUserId(auth.userId, body.propertyId);
+  if (writeDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (writeDecision === 'denied') {
     return Response.json({ ok: false, error: 'no access to this property', requestId }, { status: 403 });
   }
 

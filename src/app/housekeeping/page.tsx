@@ -13,7 +13,6 @@ export const dynamic = 'force-dynamic';
 // functions remain in this file; they're all in _components/.
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useLang } from '@/contexts/LanguageContext';
@@ -24,8 +23,11 @@ import { QualityTab } from './_components/QualityTab';
 import { HousekeepingSetup } from './_components/HousekeepingSetup';
 import { T, FONT_SANS, Card } from './_components/_snow';
 import { canManageTeam } from '@/lib/roles';
+import { useActiveHotelStanding } from '@/lib/capabilities/useCan';
 import { useCan } from '@/lib/capabilities/useCan';
 import { isHousekeepingSetupComplete } from '@/lib/housekeeping/setup-gate';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 // ─── Tab config ──────────────────────────────────────────────────────────────
 
@@ -127,13 +129,14 @@ export default function HousekeepingPage() {
   const { user, loading: authLoading } = useAuth();
   const { activePropertyId, activeProperty, loading: propLoading, refreshProperty } = useProperty();
   const can = useCan();
-  const router = useRouter();
+  const hotelStanding = useActiveHotelStanding();
+  const { push, replace } = useReliableNavigation();
 
   // Auth guard — redirect if not logged in or no property
   useEffect(() => {
-    if (!authLoading && !propLoading && !user) router.replace('/signin');
-    if (!authLoading && !propLoading && user && !activePropertyId) router.replace('/property-selector');
-  }, [user, authLoading, propLoading, activePropertyId, router]);
+    if (!authLoading && !propLoading && !user) replace('/signin');
+    if (!authLoading && !propLoading && user && !activePropertyId) replace('/property-selector');
+  }, [user, authLoading, propLoading, activePropertyId, replace]);
 
   // Restore tab on mount. A `?tab=` deep-link (e.g. from the worklist) wins
   // over the saved choice; otherwise fall back to localStorage.
@@ -181,15 +184,22 @@ export default function HousekeepingPage() {
   if (authLoading || propLoading) {
     return (
       <AppLayout>
-        <div style={{
-          minHeight: '60dvh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          background: 'transparent', fontFamily: FONT_SANS,
-        }}>
-          <div className="animate-spin" style={{
-            width: '28px', height: '28px',
-            border: `2px solid ${T.rule}`, borderTopColor: T.ink, borderRadius: '50%',
-          }} />
-        </div>
+        <RouteLoadingState title={lang === 'es' ? 'Cargando Limpieza…' : 'Loading Housekeeping…'} />
+      </AppLayout>
+    );
+  }
+  if (!user) {
+    return <AppLayout><RouteLoadingState title={lang === 'es' ? 'Volviendo al inicio de sesión…' : 'Returning to Sign In…'} /></AppLayout>;
+  }
+  if (!activePropertyId || !activeProperty) {
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title={lang === 'es' ? 'No hay ningún hotel seleccionado' : 'No hotel is selected'}
+          message={lang === 'es' ? 'Elige un hotel antes de abrir Limpieza.' : 'Choose a hotel before opening Housekeeping.'}
+          retryLabel={lang === 'es' ? 'Elegir un hotel' : 'Choose a hotel'}
+          onRetry={() => push('/property-selector')}
+        />
       </AppLayout>
     );
   }
@@ -203,7 +213,9 @@ export default function HousekeepingPage() {
   // guard above redirect.
   if (user && activeProperty && activeProperty.id === activePropertyId
       && !isHousekeepingSetupComplete(activeProperty.housekeepingSetup)) {
-    const isManager = canManageTeam(user.role);
+    const isManager = hotelStanding.hotelMutationAllowed
+      && !!hotelStanding.role
+      && canManageTeam(hotelStanding.role);
     return (
       <AppLayout>
         {!isManager
@@ -286,7 +298,7 @@ export default function HousekeepingPage() {
       `}</style>
 
       {/* ── Tab content — keyed remount triggers the CSS .animate-in cascade ── */}
-      <div key={activeTab} className="animate-in stagger-1">
+      <div key={`${activePropertyId}:${activeTab}`} className="animate-in stagger-1">
         {activeTab === 'schedule'  && <ScheduleTab />}
         {activeTab === 'quality'   && <QualityTab />}
         {activeTab === 'deepclean' && <DeepCleanTab />}

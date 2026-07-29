@@ -18,6 +18,10 @@ import { canViewFinancials, type AppRole } from '@/lib/roles';
 import { requireSectionEnabled } from '@/lib/sections/server';
 import { isSectionEnabled } from '@/lib/sections/registry';
 import {
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+} from '@/lib/authorization/server';
+import {
   listInventoryAuditHistory,
   parseInventoryAuditLimit,
 } from '@/lib/inventory-audit-history';
@@ -48,25 +52,39 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   if (!session.ok) return session.response;
   const { data: account, error: accountError } = await supabaseAdmin
     .from('accounts')
-    .select('role,property_access')
+    .select('id,active')
     .eq('data_user_id', session.userId)
     .maybeSingle();
-  if (accountError || !account) {
+  if (accountError || !account || account.active !== true) {
     return err('account not found for session', { requestId, status: 403, code: 'forbidden' });
   }
-  const role = ((account.role as string | null) ?? 'staff') as AppRole;
-  const access = (account.property_access ?? []) as string[];
-  if (role !== 'admin' && !access.includes(propertyId) && !access.includes('*')) {
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) {
+    return err('authorization is temporarily unavailable', {
+      requestId,
+      status: 503,
+      code: 'authorization_unavailable',
+      headers: { 'Retry-After': '5' },
+    });
+  }
+  const standing = authoritativeStandingForProperty(authority, propertyId);
+  if (!standing) {
     return err('You do not have access to that property.', {
       requestId, status: 403, code: 'forbidden_property',
     });
   }
+  const role = standing.operationalRole as AppRole;
   const sectionGate = await requireSectionEnabled(req, propertyId, 'inventory');
   if (!sectionGate.ok) return sectionGate.response;
 
-  const capabilityDecision = canViewFinancials(role)
-    ? await capabilityDecisionForProperty({ role }, 'view_financials', propertyId)
-    : 'denied';
+  // Finance hats carry explicit read capacity separately from their deliberately
+  // narrow front_desk operational lens. Owner/GM/admin continue to honor the
+  // per-hotel view_financials override.
+  const capabilityDecision = !standing.seesFinancials
+    ? 'denied'
+    : canViewFinancials(role)
+      ? await capabilityDecisionForProperty({ role }, 'view_financials', propertyId)
+      : 'allowed';
   if (capabilityDecision === 'unavailable') {
     return capabilityUnavailableResponse(requestId);
   }

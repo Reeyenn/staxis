@@ -15,11 +15,11 @@
 import type { NextRequest } from 'next/server';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { checkAndIncrementRateLimit, rateLimitedResponse, hashToRateLimitKey } from '@/lib/api-ratelimit';
-import { commsContext, listAccessiblePropertyIds } from '@/lib/comms/route-helpers';
+import { commsContext } from '@/lib/comms/route-helpers';
 import { requireSectionEnabled } from '@/lib/sections/server';
-import { capabilityDecisionForUserId } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { postAnnouncement, createAckCampaign } from '@/lib/comms/core';
+import { accountCapabilityDecisionForProperty } from '@/lib/team-auth';
+import { postAnnouncement } from '@/lib/comms/core';
 import { translateNoticeToSpanish } from '@/lib/notice-translate';
 
 export const runtime = 'nodejs';
@@ -36,7 +36,12 @@ export async function POST(req: NextRequest): Promise<Response> {
   const ctx = await commsContext(req, body.pid ?? null);
   if (!ctx.ok) return ctx.response;
 
-  const capabilityDecision = await capabilityDecisionForUserId(ctx.userId, 'post_announcements', ctx.pid);
+  const capabilityDecision = await accountCapabilityDecisionForProperty(
+    ctx.userId,
+    'post_announcements',
+    ctx.pid,
+    { requireMutation: true, requireManager: true },
+  );
   if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
   if (capabilityDecision === 'denied') {
     return err('posting announcements is restricted for your role at this property', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
@@ -55,8 +60,18 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   const orgWide = body.orgWide === true;
-  // Org-wide blasts are mandatory reads by definition; otherwise honor the flag.
-  const requiresAck = orgWide ? true : body.requiresAck === true;
+  // Cross-hotel writes are deliberately disabled until they use the same
+  // preview → exact targets → confirmation → commit reauthorization →
+  // idempotency/audit contract as company Access. A boolean in one POST is not
+  // meaningful confirmation and previously allowed stale legacy scope to fan
+  // out into a transferred hotel.
+  if (orgWide) {
+    return err(
+      'Cross-hotel announcements require an exact preview and confirmation workflow and are temporarily unavailable. Post to one hotel at a time.',
+      { requestId: ctx.requestId, status: 409, code: ApiErrorCode.ValidationFailed, headers: ctx.headers },
+    );
+  }
+  const requiresAck = body.requiresAck === true;
 
   const rl = await checkAndIncrementRateLimit('comms-send', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
@@ -77,62 +92,19 @@ export async function POST(req: NextRequest): Promise<Response> {
         },
       });
 
-  // ── Org-wide mandatory-read campaign ──────────────────────────────────────
-  if (orgWide) {
-    // Derive the candidate targets FROM the caller's property scope — this is
-    // the access check, so a campaign can never write into a hotel they can't reach.
-    const candidatesRaw = await listAccessiblePropertyIds(ctx.role, ctx.propertyAccess);
-    const candidates = candidatesRaw.includes(ctx.pid) ? candidatesRaw : [ctx.pid, ...candidatesRaw];
-    if (candidates.length === 0) {
-      return err('no properties to broadcast to', { requestId: ctx.requestId, status: 400, code: ApiErrorCode.ValidationFailed, headers: ctx.headers });
-    }
-    // Re-check post_announcements PER target. property_access membership alone is
-    // NOT enough — an admin may have switched this role OFF at some hotels via the
-    // Access tab, and an org-wide mandatory-read blast must honor that per-hotel
-    // restriction instead of forcing a notice into a hotel where it's revoked.
-    // (Security audit 2026-06-18: org-wide fan-out previously skipped this.)
-    const capabilityDecisions = await Promise.all(
-      candidates.map((p) => capabilityDecisionForUserId(ctx.userId, 'post_announcements', p)),
-    );
-    if (capabilityDecisions.some((decision) => decision === 'unavailable')) {
-      return capabilityUnavailableResponse(ctx.requestId);
-    }
-    const targets = candidates.filter((_, i) => capabilityDecisions[i] === 'allowed');
-    if (targets.length === 0) {
-      return err('posting announcements is restricted for your role at the selected properties', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
-    }
-
-    const campaignId = await createAckCampaign(ctx.accountId, text.slice(0, 120));
-
-    // Post one copy per property. senderStaffId is null ON PURPOSE: the author is
-    // an account, not a per-property staff member. Resolving a staff id per
-    // property would create phantom "active staff" rows at hotels they don't work
-    // at, permanently inflating those properties' acknowledgement denominators.
-    const results = await Promise.allSettled(
-      targets.map((targetPid) => postAnnouncement(targetPid, {
-        body: text,
-        sourceLang: ctx.lang,
-        senderStaffId: null,
-        senderAccountId: ctx.accountId,
-        bodyEs,
-        requiresAck: true,
-        ackCampaignId: campaignId,
-      })),
-    );
-    const postedCount = results.filter((r) => r.status === 'fulfilled').length;
-    const failedCount = results.length - postedCount;
-
-    if (postedCount === 0) {
-      return err('failed to post the campaign to any property', { requestId: ctx.requestId, status: 502, code: ApiErrorCode.UpstreamFailure, headers: ctx.headers });
-    }
-
-    return ok(
-      { orgWide: true, campaignId, requiresAck: true, postedCount, failedCount, propertyCount: targets.length },
-      { requestId: ctx.requestId, status: 201, headers: ctx.headers },
-    );
-  }
-
   // ── Single property (the original path; now with an optional require-ack) ──
+  // Re-resolve immediately before the write so a transfer/revocation during
+  // translation cannot use the earlier context verdict.
+  const commitDecision = await accountCapabilityDecisionForProperty(
+    ctx.userId,
+    'post_announcements',
+    ctx.pid,
+    { requireMutation: true, requireManager: true },
+  );
+  if (commitDecision === 'unavailable') return capabilityUnavailableResponse(ctx.requestId);
+  if (commitDecision === 'denied') {
+    return err('posting announcements is restricted for your role at this property', { requestId: ctx.requestId, status: 403, code: ApiErrorCode.Forbidden, headers: ctx.headers });
+  }
   const res = await postAnnouncement(ctx.pid, {
     body: text,
     sourceLang: ctx.lang,

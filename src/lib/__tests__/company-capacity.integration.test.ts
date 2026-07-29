@@ -68,8 +68,11 @@ import {
   companyForProperty,
   effectiveRole,
   loadHats,
+  propertiesOfOrganization,
   resolveCompanyForProperty,
+  resolveOrganizationPropertyTopology,
 } from '@/lib/company/access';
+import { loadFreshCompanyInviteAuthorityContext } from '@/lib/company/account-invite-authority';
 import { rulebookStandingFor } from '@/lib/company/rulebook-access';
 import { clearPortfolioAccessCache } from '@/lib/company/portfolio';
 
@@ -125,6 +128,7 @@ const UID_VICKY = 'aaaa2222-0000-4000-8000-0000000000v1'.replace('v1', 'c1');
 
 /** A hotel Gulf Coast operates AND Piney Woods also claims. The H4 probe. */
 const PID_DISPUTED = 'dddddddd-0000-4000-8000-00000000000d';
+const ORG_PROVEN_EMPTY = 'dddddddd-0000-4000-8000-00000000000e';
 
 // ─── Request helpers ────────────────────────────────────────────────────────
 
@@ -287,13 +291,14 @@ describe('the job you hold AT THIS HOTEL is the job the gate uses', () => {
     );
   });
 
-  test('a GM hat is a manager at the hotel it covers', async () => {
-    // Maria: property GM at Beaumont + company VP over the rest. Her legacy
-    // array is EMPTY, so every 200 here is the hat doing it.
+  test('a property GM can read that hotel, while a company-only VP cannot read another hotel\'s private queue', async () => {
+    // Maria: property GM at Beaumont + company VP over the rest. The explicit
+    // hotel hat grants the private queue at Beaumont. Her broad company role is
+    // portfolio-read authority, not an implicit GM assignment at Lufkin.
     assert.deepEqual(await findingsRouteStatuses(UID_MARIA, PID_A1), [200, 200, 200]);
     assert.deepEqual(
-      await findingsRouteStatuses(UID_MARIA, PID_A2), [200, 200, 200],
-      'a VP hat did not resolve to manager authority at a hotel she oversees',
+      await findingsRouteStatuses(UID_MARIA, PID_A2), [403, 403, 403],
+      'a company-only VP was incorrectly promoted into private hotel-manager authority',
     );
   });
 
@@ -315,7 +320,7 @@ describe('the finance lead keeps every read path she was given', () => {
   // pass fixed and this tightening could have re-introduced.
   test('she reads her company rulebook', async () => {
     assert.equal(
-      await statusOf(rulebookGet, UID_FIONA, `https://staxis.test/api/company/rulebook?propertyId=${PID_A1}`),
+      await statusOf(rulebookGet, UID_FIONA, `https://staxis.test/api/company/rulebook?organizationId=${ORG_A}`),
       200,
       'the finance lead was refused the company book again',
     );
@@ -410,34 +415,196 @@ describe('a hotel two companies both claim has NO company, not the lower UUID', 
   });
 
   test('two GOVERNING claims resolve to no company at all, never to a winner', async () => {
-    // The database's own partial unique index makes this unreachable through
-    // any supported path; forcing it is how we prove the code does not need the
-    // index to be right. Dropped and restored so nothing else in the run sees a
-    // weakened schema.
-    await pg.query('drop index if exists organization_property_one_open_primary_idx');
-    await pg.query(
-      `insert into organization_property_relationships
-         (organization_id, property_id, relationship_type, is_primary_grouping)
-       values ($1, $2, 'owner', true)`,
-      [ORG_B, PID_DISPUTED],
+    // Supported writers now serialize and reject this state. Emulate a row
+    // that predates that guard: a future-ended primary plus a NULL-ended
+    // primary is schema-valid under the historical partial unique index. Only
+    // this DB-owner fixture disables the one write guard, and it re-enables it
+    // before exercising the read wall.
+    const original = await pg.query<{ id: string }>(
+      `update organization_property_relationships
+          set ends_at = clock_timestamp() + interval '1 day'
+        where organization_id = $1
+          and property_id = $2
+          and relationship_type = 'operator'
+          and is_primary_grouping is true
+          and ends_at is null
+        returning id`,
+      [ORG_A, PID_DISPUTED],
     );
+    assert.equal(original.rows.length, 1);
 
-    assert.equal(
-      await companyForProperty(PID_DISPUTED), null,
-      'a hotel claimed by two live companies picked one silently',
-    );
+    let corruptRelationshipId: string | null = null;
+    try {
+      await pg.query(
+        `alter table organization_property_relationships
+           disable trigger trg_organization_property_relationships_primary_window_guard`,
+      );
+      try {
+        const corrupt = await pg.query<{ id: string }>(
+          `insert into organization_property_relationships
+             (organization_id, property_id, relationship_type, is_primary_grouping)
+           values ($1, $2, 'owner', true)
+           returning id`,
+          [ORG_B, PID_DISPUTED],
+        );
+        corruptRelationshipId = corrupt.rows[0]?.id ?? null;
+      } finally {
+        await pg.query(
+          `alter table organization_property_relationships
+             enable trigger trg_organization_property_relationships_primary_window_guard`,
+        );
+      }
 
-    await pg.query(
-      `delete from organization_property_relationships
-        where property_id = $1 and organization_id = $2 and relationship_type = 'owner'`,
-      [PID_DISPUTED, ORG_B],
-    );
-    await pg.query(
-      `create unique index if not exists organization_property_one_open_primary_idx
-         on public.organization_property_relationships (property_id)
-        where is_primary_grouping and ends_at is null`,
-    );
+      assert.equal(
+        await companyForProperty(PID_DISPUTED), null,
+        'a hotel claimed by two live companies picked one silently',
+      );
+      assert.deepEqual(
+        await resolveOrganizationPropertyTopology(ORG_A),
+        { ok: false, reason: 'store_unavailable' },
+        'company A received a partial topology after one of its hotels became ambiguous',
+      );
+      assert.deepEqual(
+        await resolveOrganizationPropertyTopology(ORG_B),
+        { ok: false, reason: 'store_unavailable' },
+        'company B received a partial topology after one of its hotels became ambiguous',
+      );
+      assert.deepEqual(
+        await propertiesOfOrganization(ORG_A),
+        [],
+        'the lenient company helper leaked company A\'s partial hotel set',
+      );
+      assert.deepEqual(
+        await propertiesOfOrganization(ORG_B),
+        [],
+        'the lenient company helper leaked company B\'s partial hotel set',
+      );
+      assert.equal(
+        (await loadHats(ACCOUNT_MARIA)).some((hat) => hat.organizationId === ORG_A),
+        false,
+        'a raw company hat kept cross-company coverage after authoritative reach denied it',
+      );
+
+      // The company queue and rulebook consume the same strict topology rather
+      // than service-reading the ambiguous hotel's data. The authoritative
+      // queue now fails the whole request closed instead of returning a
+      // successful empty scope that could hide an authorization outage.
+      clearPortfolioAccessCache();
+      signedInAs = UID_MARIA;
+      const queue = await portfolioGet(req('https://staxis.test/api/company/queue'));
+      assert.equal(queue.status, 503);
+      const queueBody = await queue.json() as {
+        data?: { scope?: unknown; cards?: unknown[] };
+      };
+      assert.equal(queueBody.data?.scope ?? null, null);
+      assert.deepEqual(queueBody.data?.cards ?? [], []);
+      assert.equal(
+        await statusOf(
+          rulebookGet,
+          UID_MARIA,
+          `https://staxis.test/api/company/rulebook?organizationId=${ORG_A}`,
+        ),
+        503,
+        'the rulebook kept reading a partial company during topology ambiguity',
+      );
+      assert.deepEqual(
+        await loadFreshCompanyInviteAuthorityContext({
+          accountId: ACCOUNT_MARIA,
+          anchorPropertyId: PID_A1,
+          expectedOrganizationId: ORG_A,
+        }),
+        { kind: 'unavailable' },
+        'an invitation preview treated a partial company topology as authoritative',
+      );
+    } finally {
+      // Best-effort re-enable first, even if fixture insertion/assertion failed.
+      await pg.query(
+        `alter table organization_property_relationships
+           enable trigger trg_organization_property_relationships_primary_window_guard`,
+      );
+      if (corruptRelationshipId) {
+        await pg.query(
+          `delete from organization_property_relationships where id = $1`,
+          [corruptRelationshipId],
+        );
+      }
+      await pg.query(
+        `update organization_property_relationships
+            set ends_at = null
+          where id = $1`,
+        [original.rows[0].id],
+      );
+    }
     assert.equal(await companyForProperty(PID_DISPUTED), ORG_A, 'the fixture did not restore');
+    assert.deepEqual(
+      await propertiesOfOrganization(ORG_A),
+      [PID_A1, PID_A2, PID_DISPUTED].sort(),
+      'company A did not recover after the conflicting primary was repaired',
+    );
+  });
+
+  test('strict topology distinguishes a proven empty company from a store outage', async () => {
+    await pg.query(
+      `insert into organizations (id, name, organization_type, status)
+       values ($1, 'Proven Empty Group', 'management_company', 'active')`,
+      [ORG_PROVEN_EMPTY],
+    );
+    try {
+      const empty = await resolveOrganizationPropertyTopology(ORG_PROVEN_EMPTY);
+      assert.equal(empty.ok, true, JSON.stringify(empty));
+      if (empty.ok) assert.deepEqual(empty.topology.propertyIds, []);
+      assert.deepEqual(await propertiesOfOrganization(ORG_PROVEN_EMPTY), []);
+
+      const realRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+      supabaseAdmin.rpc = ((fn: string, args?: Record<string, unknown>) => (
+        fn === 'staxis_resolve_organization_property_topology'
+          ? Promise.resolve({
+            data: {
+              ok: true,
+              schemaVersion: 'organization-property-topology-v1',
+              organizationId: args?.p_organization_id,
+              effectiveAt: args?.p_effective_at,
+              propertyIds: [PID_A1],
+              attackerControlledExtraKey: PID_B1,
+            },
+            error: null,
+          })
+          : realRpc(fn, args as never)
+      )) as unknown as typeof supabaseAdmin.rpc;
+      try {
+        assert.deepEqual(
+          await resolveOrganizationPropertyTopology(ORG_A),
+          { ok: false, reason: 'store_unavailable' },
+          'a non-closed service DTO was accepted as authoritative topology',
+        );
+      } finally {
+        supabaseAdmin.rpc = realRpc as unknown as typeof supabaseAdmin.rpc;
+      }
+
+      supabaseAdmin.rpc = ((fn: string, args?: unknown) => (
+        fn === 'staxis_resolve_organization_property_topology'
+          ? Promise.resolve({
+            data: null,
+            error: { message: 'connection reset by peer', code: '08006' },
+          })
+          : realRpc(fn, args as never)
+      )) as unknown as typeof supabaseAdmin.rpc;
+      try {
+        assert.deepEqual(
+          await resolveOrganizationPropertyTopology(ORG_A),
+          { ok: false, reason: 'store_unavailable' },
+        );
+        assert.deepEqual(await propertiesOfOrganization(ORG_A), []);
+        assert.equal(
+          (await loadHats(ACCOUNT_MARIA)).some((hat) => hat.organizationId === ORG_A),
+          false,
+        );
+      } finally {
+        supabaseAdmin.rpc = realRpc as unknown as typeof supabaseAdmin.rpc;
+      }
+    } finally {
+      await pg.query('delete from organizations where id = $1', [ORG_PROVEN_EMPTY]);
+    }
   });
 
   // ── "we could not tell" is not "nobody runs it" ───────────────────────────
@@ -522,11 +689,11 @@ describe('the company rulebook is for company leadership and GMs, not the floor'
 
 // ═══ A PERSON'S CARD NAMES ONLY HOTELS YOU CAN REACH (M6) ══════════════════
 
-describe('the hats card counts hotels it may not name', () => {
-  // Mutation: resolve propertyNames for every hotel on the target's hats. A
-  // property-scope GM opening a company person's card is handed the portfolio's
-  // hotel names and ids — Wall A leaking through a read-only label.
-  test('a GM at one hotel sees the sibling hotels counted, never named', async () => {
+describe('the hats card discloses only the caller\'s exact scope intersection', () => {
+  // A property-scope GM opening a company person's card must not receive
+  // sibling ids/names, sibling-only job lines, or even a count that can be used
+  // as a portfolio-size oracle through an arbitrary account id.
+  test('a GM sees intersecting jobs with no breadth signal or sister-only line', async () => {
     // Gwen: a GM at Beaumont ONLY, with no company-scope job. She has every
     // right to open Maria's card and no right to a directory.
     const ACCOUNT_GWEN = 'aaaa1111-0000-4000-8000-0000000000g1'.replace('g1', 'e1');
@@ -540,44 +707,118 @@ describe('the hats card counts hotels it may not name', () => {
        values ($1, 'gwen', 'x', 'Gwen', 'general_manager', '{}', $2) on conflict (id) do nothing`,
       [ACCOUNT_GWEN, UID_GWEN],
     );
-    await pg.query(
-      `select public.staxis_set_membership_hat($1, $2, $3, 'property', 'general_manager', $4, 'General Manager')`,
+    const gwenMembership = await pg.query<{ id: string }>(
+      `select public.staxis_set_membership_hat(
+         $1, $2, $3, 'property', 'general_manager', $4, 'General Manager'
+       ) as id`,
       [ACCOUNT_ADMIN, ORG_A, ACCOUNT_GWEN, JSON.stringify([PID_A1])],
     );
-
-    signedInAs = UID_GWEN;
-    const res = await listHats(req(
-      `https://staxis.test/api/auth/team/hats?hotelId=${PID_A1}&accountId=${ACCOUNT_MARIA}`,
-    ));
-    assert.equal(res.status, 200, 'a GM could not open a colleague\'s card at her own hotel');
-    const body = await res.json() as {
-      data: { hats: Array<{ role: string; propertyIds: string[]; propertyNames: string[]; otherHotelCount: number }> };
-    };
-
-    const oversees = body.data.hats.find((h) => h.role === 'vp');
-    assert.ok(oversees, 'Maria\'s company job vanished from her card');
-    assert.deepEqual(
-      oversees.propertyNames, ['Beaumont Suites'],
-      'a property-scope GM was handed the portfolio\'s hotel names',
-    );
-    assert.deepEqual(oversees.propertyIds, [PID_A1], 'ids leak the same reach names do');
-    assert.ok(
-      oversees.otherHotelCount >= 1,
-      'the card hid how wide the job is instead of counting it — a GM must know she is looking at somebody senior',
+    const sisterOnly = await pg.query<{ id: string }>(
+      `select public.staxis_set_membership_hat(
+         $1, $2, $3, 'property', 'maintenance', $4, 'Sister-only engineer'
+       ) as id`,
+      [ACCOUNT_ADMIN, ORG_A, ACCOUNT_MARIA, JSON.stringify([PID_A2])],
     );
 
-    // And the truth is still told to somebody who may hear it: Maria's own
-    // company hats reach the portfolio, so her card names every hotel.
-    signedInAs = UID_MARIA;
-    const asMaria = await listHats(req(
-      `https://staxis.test/api/auth/team/hats?hotelId=${PID_A1}&accountId=${ACCOUNT_MARIA}`,
-    ));
-    const mariaBody = await asMaria.json() as {
-      data: { hats: Array<{ role: string; propertyNames: string[]; otherHotelCount: number }> };
-    };
-    const mariaOversees = mariaBody.data.hats.find((h) => h.role === 'vp');
-    assert.ok((mariaOversees?.propertyNames.length ?? 0) > 1, 'the VP lost her own portfolio');
-    assert.equal(mariaOversees?.otherHotelCount, 0);
+    try {
+      signedInAs = UID_GWEN;
+      const res = await listHats(req(
+        `https://staxis.test/api/auth/team/hats?hotelId=${PID_A1}&accountId=${ACCOUNT_MARIA}`,
+      ));
+      assert.equal(res.status, 200, 'a GM could not open a colleague\'s card at her own hotel');
+      const body = await res.json() as {
+        data: { hats: Array<{
+          membershipId: string;
+          role: string;
+          propertyIds: string[];
+          propertyNames: string[];
+          otherHotelCount?: number;
+        }> };
+      };
+
+      const oversees = body.data.hats.find((h) => h.role === 'vp');
+      assert.ok(oversees, 'Maria\'s company job vanished from her card');
+      assert.deepEqual(
+        oversees.propertyNames, ['Beaumont Suites'],
+        'a property-scope GM was handed the portfolio\'s hotel names',
+      );
+      assert.deepEqual(oversees.propertyIds, [PID_A1], 'ids leak the same reach names do');
+      assert.equal(oversees.otherHotelCount, 0, 'hidden hotel count became a size oracle');
+      assert.equal(
+        Object.hasOwn(oversees, 'coverageRedacted'),
+        false,
+        'a redaction marker proved that hidden sister coverage exists',
+      );
+      assert.equal(
+        body.data.hats.some((hat) => hat.membershipId === sisterOnly.rows[0].id),
+        false,
+        'a sister-only job line leaked through a direct target-account id',
+      );
+
+      // And the complete truth is still told to somebody who may hear it:
+      // Maria's own company hat reaches the portfolio.
+      signedInAs = UID_MARIA;
+      const asMaria = await listHats(req(
+        `https://staxis.test/api/auth/team/hats?hotelId=${PID_A1}&accountId=${ACCOUNT_MARIA}`,
+      ));
+      const mariaBody = await asMaria.json() as {
+        data: { hats: Array<{
+          role: string;
+          propertyNames: string[];
+          otherHotelCount?: number;
+        }> };
+      };
+      const mariaOversees = mariaBody.data.hats.find((h) => h.role === 'vp');
+      assert.ok((mariaOversees?.propertyNames.length ?? 0) > 1, 'the VP lost her own portfolio');
+      assert.equal(mariaOversees?.otherHotelCount, 0);
+
+      // Revoke the viewer exactly when the route begins its final actor read.
+      // A stale implementation would return the already-assembled card.
+      const realFrom = supabaseAdmin.from.bind(supabaseAdmin);
+      let accountReads = 0;
+      let revokedAtFinalRead = false;
+      supabaseAdmin.from = ((table: string) => {
+        const builder = realFrom(table);
+        if (table === 'accounts') {
+          const mutable = builder as unknown as {
+            select: (...args: unknown[]) => unknown;
+          };
+          const originalSelect = mutable.select.bind(mutable);
+          mutable.select = (...args: unknown[]) => {
+            const selected = originalSelect(...args) as {
+              maybeSingle: () => Promise<unknown>;
+            };
+            const originalMaybeSingle = selected.maybeSingle.bind(selected);
+            selected.maybeSingle = async () => {
+              accountReads += 1;
+              if (accountReads === 3) {
+                revokedAtFinalRead = true;
+                await pg.query(`select public.staxis_end_membership_hat($1,$2)`, [
+                  ACCOUNT_ADMIN, gwenMembership.rows[0].id,
+                ]);
+              }
+              return originalMaybeSingle();
+            };
+            return selected;
+          };
+        }
+        return builder;
+      }) as unknown as typeof supabaseAdmin.from;
+      try {
+        signedInAs = UID_GWEN;
+        const stale = await listHats(req(
+          `https://staxis.test/api/auth/team/hats?hotelId=${PID_A1}&accountId=${ACCOUNT_MARIA}`,
+        ));
+        assert.equal(revokedAtFinalRead, true, 'test did not hit the final receipt boundary');
+        assert.equal(stale.status, 403, 'a revoked viewer received a pre-revocation card');
+      } finally {
+        supabaseAdmin.from = realFrom;
+      }
+    } finally {
+      await pg.query(`select public.staxis_end_membership_hat($1,$2)`, [
+        ACCOUNT_ADMIN, sisterOnly.rows[0].id,
+      ]);
+    }
   });
 });
 

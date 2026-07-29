@@ -192,6 +192,30 @@
   background: rgba(158, 183, 166, 0.14);
 }
 
+.adminDestinationRow {
+  border: 1px solid rgba(92, 122, 96, 0.18);
+  color: #356b4c;
+  background: rgba(158, 183, 166, 0.1);
+}
+
+.adminDestinationRow:hover {
+  background: rgba(158, 183, 166, 0.16);
+}
+
+.adminDestinationRow:active,
+.adminDestinationRow.navRowActive {
+  background: rgba(158, 183, 166, 0.22);
+}
+
+.adminDestinationRow .iconChip {
+  color: #3e5c48;
+  background: rgba(92, 122, 96, 0.14);
+}
+
+.adminDestinationRow .rowLabel {
+  font-weight: 600;
+}
+
 .iconChip {
   display: grid;
   flex: none;
@@ -422,6 +446,89 @@
 
 .avatar:active {
   transform: scale(0.98);
+}
+
+:global(html[data-theme='dark']) .scrim {
+  background: rgba(0, 0, 0, 0.58);
+}
+
+:global(html[data-theme='dark']) .drawer {
+  color: #f1f4ef;
+  background: #1b211c;
+  box-shadow: 24px 0 60px -20px rgba(0, 0, 0, 0.9);
+}
+
+:global(html[data-theme='dark']) .drawerHeader,
+:global(html[data-theme='dark']) .divider {
+  border-color: rgba(232, 240, 232, 0.12);
+  background-color: transparent;
+}
+
+:global(html[data-theme='dark']) .divider {
+  background: rgba(232, 240, 232, 0.12);
+}
+
+:global(html[data-theme='dark']) .drawerBrand,
+:global(html[data-theme='dark']) .topBrand,
+:global(html[data-theme='dark']) .userName,
+:global(html[data-theme='dark']) .navRow,
+:global(html[data-theme='dark']) .rowLabel,
+:global(html[data-theme='dark']) .pageTitle {
+  color: #f1f4ef;
+}
+
+:global(html[data-theme='dark']) .closeButton,
+:global(html[data-theme='dark']) .userMeta,
+:global(html[data-theme='dark']) .eyebrow,
+:global(html[data-theme='dark']) .accountControl,
+:global(html[data-theme='dark']) .iconChip,
+:global(html[data-theme='dark']) .chevron {
+  color: #aeb8ae;
+}
+
+:global(html[data-theme='dark']) .closeButton::before,
+:global(html[data-theme='dark']) .iconChip,
+:global(html[data-theme='dark']) .navRow:hover {
+  background: rgba(232, 240, 232, 0.07);
+}
+
+:global(html[data-theme='dark']) .navRow:active {
+  background: rgba(232, 240, 232, 0.11);
+}
+
+:global(html[data-theme='dark']) .navRowActive,
+:global(html[data-theme='dark']) .navRowActive:hover,
+:global(html[data-theme='dark']) .navRowActive:active {
+  color: #f1f4ef;
+  background: rgba(158, 183, 166, 0.16);
+}
+
+:global(html[data-theme='dark']) .navRowActive .iconChip,
+:global(html[data-theme='dark']) .adminDestinationRow .iconChip {
+  color: #bfd2c3;
+  background: rgba(158, 183, 166, 0.16);
+}
+
+:global(html[data-theme='dark']) .adminDestinationRow {
+  border-color: rgba(158, 183, 166, 0.24);
+  color: #bfd2c3;
+  background: rgba(158, 183, 166, 0.11);
+}
+
+:global(html[data-theme='dark']) .accountControl select,
+:global(html[data-theme='dark']) .menuButton {
+  border-color: rgba(232, 240, 232, 0.15);
+  color: #f1f4ef;
+  background: #202721;
+}
+
+:global(html[data-theme='dark']) .menuButton:hover {
+  background: #293229;
+}
+
+:global(html[data-theme='dark']) .avatar {
+  color: #142018;
+  background: #9eb7a6;
 }
 
 .menuButton:focus-visible,

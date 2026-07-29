@@ -34,10 +34,14 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import React, { useCallback, useMemo, useRef, useState } from 'react';
-import { useAuth } from '@/contexts/AuthContext';
+import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+  SessionEndedError,
+} from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
 import {
   CATEGORY_LABELS,
@@ -449,11 +453,38 @@ const KN_CSS = `
 // ─── Component ──────────────────────────────────────────────────────────────
 
 export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
+  const { user } = useAuth();
+  const { activePropertyId } = useProperty();
+  const scopeKey = `${user?.uid ?? 'signed-out'}:${activePropertyId ?? 'no-property'}`;
+
+  // Every draft, file, confirmation and busy flag below belongs to one exact
+  // viewer+hotel. Remount synchronously on either identity change so text typed
+  // for Hotel A can never be submitted after the shell switches to Hotel B.
+  return (
+    <KnowsPropertyView
+      key={scopeKey}
+      lang={lang}
+      user={user}
+      propertyId={activePropertyId}
+      scopeKey={scopeKey}
+    />
+  );
+}
+
+function KnowsPropertyView({
+  lang,
+  user,
+  propertyId,
+  scopeKey,
+}: {
+  lang: 'en' | 'es';
+  user: AppUser | null;
+  propertyId: string | null;
+  scopeKey: string;
+}) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => S[k][es ? 'es' : 'en'];
 
-  const { user } = useAuth();
-  const { activePropertyId } = useProperty();
   const canSee = canReadLearned(user?.role);
 
   // Which half is open. `null` means "nobody has chosen yet", so the default
@@ -465,8 +496,8 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   const half: KnowsHalf = chosenHalf ?? defaultHalf(user?.role);
 
   const { data, loading, error, reload } = useApiResource<KnowsData>(
-    `/api/memory/knows?propertyId=${activePropertyId}`,
-    { enabled: canSee && !!activePropertyId, keepDataOnError: true },
+    `/api/memory/knows?propertyId=${propertyId}`,
+    { enabled: canSee && !!propertyId, keepDataOnError: true },
   );
 
   // Open box
@@ -483,6 +514,17 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   const [confirmingRemove, setConfirmingRemove] = useState<string | null>(null);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [justAdded, setJustAdded] = useState<Set<string>>(new Set());
+  const activeScopeRef = useRef<string | null>(scopeKey);
+  React.useEffect(() => {
+    activeScopeRef.current = scopeKey;
+    return () => {
+      if (activeScopeRef.current === scopeKey) activeScopeRef.current = null;
+    };
+  }, [scopeKey]);
+  const ownsScope = useCallback(
+    () => activeScopeRef.current === scopeKey,
+    [scopeKey],
+  );
 
   // Returns readEnvelope's own result type on purpose: the previous narrower
   // signature dropped `code`, which is the only part of a refusal this screen
@@ -494,6 +536,7 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
         });
         return await readEnvelope<T>(res);
       } catch (e) {
@@ -517,12 +560,12 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
   };
 
   const submitIntake = async () => {
-    if (!activePropertyId || busy) return;
+    if (!propertyId || busy) return;
     if (!note.trim() && !file) return;
     setBusy(true);
     setBanner(null);
     try {
-      const payload: Record<string, unknown> = { propertyId: activePropertyId };
+      const payload: Record<string, unknown> = { propertyId };
       if (note.trim()) payload.note = note.trim();
       if (file) {
         payload.file = {
@@ -531,7 +574,9 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
           base64: await fileToBase64(file),
         };
       }
+      if (!ownsScope()) return;
       const res = await post<IntakeResult>('/api/memory/knows/intake', payload);
+      if (!ownsScope()) return;
       if (res.error !== undefined || !res.data) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
         return;
@@ -554,15 +599,16 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
       });
       await reload();
     } finally {
-      setBusy(false);
+      if (ownsScope()) setBusy(false);
     }
   };
 
   const act = async (id: string, action: 'confirm' | 'remove') => {
-    if (!activePropertyId) return;
+    if (!propertyId) return;
     setRowBusy(id);
     try {
-      const res = await post('/api/memory/knows', { propertyId: activePropertyId, action, id });
+      const res = await post('/api/memory/knows', { propertyId, action, id });
+      if (!ownsScope()) return;
       if (res.error !== undefined) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
       } else {
@@ -570,21 +616,22 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
       }
       await reload();
     } finally {
-      setRowBusy(null);
+      if (ownsScope()) setRowBusy(null);
     }
   };
 
   const saveEdit = async (id: string) => {
-    if (!activePropertyId || !draft.trim()) return;
+    if (!propertyId || !draft.trim()) return;
     setRowBusy(id);
     try {
       const res = await post('/api/memory/knows', {
-        propertyId: activePropertyId,
+        propertyId,
         action: 'edit',
         id,
         content: draft.trim(),
         category: draftCat,
       });
+      if (!ownsScope()) return;
       if (res.error !== undefined) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
       } else {
@@ -592,7 +639,7 @@ export function KnowsView({ lang }: { lang: 'en' | 'es' }) {
       }
       await reload();
     } finally {
-      setRowBusy(null);
+      if (ownsScope()) setRowBusy(null);
     }
   };
 

@@ -19,7 +19,12 @@ import { requireCronSecret } from '@/lib/api-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { writeCronHeartbeat } from '@/lib/cron-heartbeat';
 import { getOrMintRequestId, log } from '@/lib/log';
+import { EXEMPT_FROM_PURGE } from '@/lib/retention-purge-policy';
 import { errToString } from '@/lib/utils';
+
+// Compatibility export for the route-level audit suite; the policy's single
+// source of truth remains src/lib/retention-purge-policy.ts.
+export { EXEMPT_FROM_PURGE };
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,48 +58,6 @@ interface RetentionEntry {
 // because hoarding short-lived auth capability rows is a privacy negative,
 // not an asset. Retention is per-table on purpose.
 const CORPUS_RETENTION_DAYS = 1825; // 5 years
-/**
- * Tables this cron may NEVER delete from, and the test that keeps it true.
- *
- * The decision corpus is the point of the whole A4-RATCHET workstream: a record
- * of what the AI proposed, what the hotel looked like at the time, what the
- * human did about it, and whether it held up. It is the one dataset that cannot
- * be rebuilt after the fact — the state snapshot is gone the moment the turn
- * ends. A future edit that adds `agent_decisions` to RETENTION would quietly
- * delete it 90 days at a time.
- *
- * `src/lib/__tests__/retention-purge-exemptions.test.ts` asserts this set and
- * RETENTION are disjoint AND that every migration-defined table matching
- * /^agent_decision/ appears here. The guarantee is a test, not a comment.
- *
- * NOTE on the schedule: `.github/workflows/ml-retention-purge.yml` has had its
- * `schedule:` block commented out since 2026-05-30, so nothing is being deleted
- * today. The risk is the RE-ENABLE moment — the first run after report
- * ingestion restores data flow deletes everything past the window in one shot.
- * This exemption list must be correct BEFORE that switch is flipped.
- */
-export const EXEMPT_FROM_PURGE: ReadonlySet<string> = new Set([
-  'agent_decisions',
-  'agent_pending_actions',
-  'user_feedback',
-  'agent_eval_baselines',
-  // ── 2026-07-27 (chore audit): SINGLE OWNER for the AI books ──────────────
-  // `agent_costs` is the financial record — INV-43 calls it "the BOOKS", and
-  // every spend figure the founder sees is summed from it. It used to be in
-  // RETENTION below at a 5-year window, which meant TWO crons could delete
-  // from it. Two owners of one table is how a ledger loses rows nobody meant
-  // to lose: neither owner's window is the real policy, and the surviving
-  // total is whichever ran last.
-  //
-  // Its retention now belongs to exactly one job,
-  // /api/cron/agent-costs-rollup, which may only prune a raw row AFTER that
-  // row's month has been rolled up and the rollup's sum verified against the
-  // raw sum. This purge must never touch it again — an unconditional DELETE
-  // here would drop rows the rollup had not yet folded in, and the money in
-  // them would be gone from every screen with no way to reconstruct it.
-  'agent_costs',
-]);
-
 const RETENTION: ReadonlyArray<RetentionEntry> = [
   { table: 'prediction_log', column: 'logged_at',  days: CORPUS_RETENTION_DAYS },
   { table: 'app_events',     column: 'ts',         days: CORPUS_RETENTION_DAYS },

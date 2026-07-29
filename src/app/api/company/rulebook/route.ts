@@ -1,9 +1,9 @@
 /**
  * THE COMPANY RULEBOOK — company-scope people write it, their GMs read it.
  *
- * GET ?propertyId=<uuid>
- *   The hotel on screen tells us which company we are looking at (there is no
- *   company picker, and deliberately so: a GM only ever knows their own hotel).
+ * GET ?organizationId=<uuid> | ?propertyId=<uuid>
+ *   Portfolio mode uses the explicitly selected, receipt-backed organization.
+ *   Hotel mode is the read-only fallback for an authorized hotel manager.
  *   → { ok, data: {
  *        organizationId, canEdit, companyRole, viewOnlyBecauseHotelJob,
  *        settings: { gms_see_rulebook, cross_hotel_ai_chat, rulebook_editors,
@@ -26,12 +26,11 @@
  *                                    restates (see findNearDuplicate).
  *   'settings'                     — the setup choices.
  *
- * Auth: requireSession + loadSessionAccount + a HAT at the company that operates
- * `propertyId`. company_knowledge is deny-all RLS and every read/write goes
- * through supabaseAdmin, so the organization filter in
- * src/lib/company/rulebook.ts is the tenant boundary — not defence in depth,
- * THE boundary. Wall B holds because the only organization id this route ever
- * uses comes from `companyForProperty(propertyId)`.
+ * Auth: requireSession + loadSessionAccount + a company standing at the company
+ * that operates `propertyId`. Reads retain the exact organization filter.
+ * Every fact mutation also mints a fresh all-authorized receipt and 0406
+ * reasserts company-wide editor authority, organization and CAS inside the DB
+ * transaction. The UI gate is not the mutation authority.
  */
 
 import { NextRequest } from 'next/server';
@@ -39,9 +38,8 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { validateUuid } from '@/lib/api-validate';
-import { loadSessionAccount, callerReachesHotel, type ManagerCaller } from '@/lib/team-auth';
+import { loadSessionAccount, type ManagerCaller } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
-import { companyForProperty } from '@/lib/company/access';
 import { redactMemoryContent } from '@/lib/agent/memory-redact';
 import {
   COMPANY_FACT_MAX_CONTENT,
@@ -72,15 +70,22 @@ import {
   findSettingContradictions,
   isCompanyCategory,
 } from '@/lib/company/rulebook-policy';
+import {
+  resolveRulebookRequestScope,
+  rulebookRequestScopeStillCurrent,
+  type RulebookRequestScope,
+} from '@/lib/company/rulebook-request-scope';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 interface Gate {
   caller: ManagerCaller;
-  propertyId: string;
+  audience: RulebookRequestScope['audience'];
+  billingPropertyId: string;
   organizationId: string;
   standing: RulebookStanding;
+  scope: RulebookRequestScope;
 }
 
 /**
@@ -109,7 +114,7 @@ interface Gate {
 async function gate(
   req: NextRequest,
   requestId: string,
-  propertyIdRaw: unknown,
+  selector: { organizationId?: unknown; propertyId?: unknown },
 ): Promise<{ ok: false; response: Response } | ({ ok: true } & Gate)> {
   const session = await requireSession(req, { requestId });
   if (!session.ok) return { ok: false, response: session.response };
@@ -122,49 +127,48 @@ async function gate(
     };
   }
 
-  const pidV = validateUuid(propertyIdRaw, 'propertyId');
-  if (pidV.error) {
+  const resolved = await resolveRulebookRequestScope(caller, selector);
+  if (!resolved.ok) {
+    if (resolved.reason === 'invalid_request') {
+      return {
+        ok: false,
+        response: err('Choose exactly one company or hotel context.', {
+          requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+        }),
+      };
+    }
+    if (resolved.reason === 'unavailable') {
+      return {
+        ok: false,
+        response: err('The company rulebook is temporarily unavailable.', {
+          requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+        }),
+      };
+    }
     return {
       ok: false,
-      response: err(pidV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed }),
-    };
-  }
-  const propertyId = pidV.value!;
-  // REACH, not manager capacity. `rulebookStandingFor` below is the authority
-  // for both view and edit, and it answers about company-scope jobs whose
-  // legacy roles are not manager words — a finance lead degrades to
-  // `front_desk` on purpose. Asking a manager question here would refuse the
-  // exact people this screen exists for, which is the bug the hat-access pass
-  // fixed at `loadSessionAccount` and this line has to keep fixed.
-  if (!callerReachesHotel(caller, propertyId)) {
-    return {
-      ok: false,
-      response: err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),
-    };
-  }
-
-  const organizationId = await companyForProperty(propertyId);
-  if (!organizationId) {
-    // An independent hotel has no company and therefore no rulebook. 404 rather
-    // than an empty book: "there is nothing here" and "your company's book is
-    // empty" are different answers and the screen renders them differently.
-    return {
-      ok: false,
-      response: err('This hotel is not part of a management company', {
-        requestId, status: 404, code: ApiErrorCode.NoCompany,
-      }),
-    };
-  }
-
-  const standing = await rulebookStandingFor(caller.accountId, organizationId);
-  if (!standing.canView) {
-    return {
-      ok: false,
-      response: err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Forbidden }),
+      response: err(
+        resolved.reason === 'not_found'
+          ? 'Company rulebook not found'
+          : 'Forbidden',
+        {
+          requestId,
+          status: resolved.reason === 'not_found' ? 404 : 403,
+          code: resolved.reason === 'not_found' ? ApiErrorCode.NotFound : ApiErrorCode.Forbidden,
+        },
+      ),
     };
   }
 
-  return { ok: true, caller, propertyId, organizationId, standing };
+  return {
+    ok: true,
+    caller,
+    audience: resolved.scope.audience,
+    billingPropertyId: resolved.scope.billingPropertyId,
+    organizationId: resolved.scope.organizationId,
+    standing: resolved.scope.standing,
+    scope: resolved.scope,
+  };
 }
 
 function factPayload(fact: CompanyFact, confirmed: readonly CompanyFact[] = []) {
@@ -186,6 +190,7 @@ function factPayload(fact: CompanyFact, confirmed: readonly CompanyFact[] = []) 
     policyValue: fact.policyValue,
     createdByName: fact.createdByName,
     updatedAt: fact.updatedAt,
+    currentRevision: fact.currentRevision,
     // What confirming this fact would freeze, in both languages, so the panel
     // shows the reading without a second round trip and the person approving
     // sees exactly what gets stored.
@@ -243,20 +248,35 @@ function factPayload(fact: CompanyFact, confirmed: readonly CompanyFact[] = []) 
 
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const g = await gate(req, requestId, new URL(req.url).searchParams.get('propertyId'));
+  const params = new URL(req.url).searchParams;
+  const organizationIds = params.getAll('organizationId');
+  const propertyIds = params.getAll('propertyId');
+  if (organizationIds.length > 1 || propertyIds.length > 1) {
+    return err('Duplicate company or hotel selector.', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const g = await gate(req, requestId, {
+    organizationId: organizationIds[0],
+    propertyId: propertyIds[0],
+  });
   if (!g.ok) return g.response;
 
   const [facts, rules, settings, hotelSettings] = await Promise.all([
     listCompanyFacts(g.organizationId),
     listAuthorityRules(g.organizationId),
-    companyAccessSettings(g.organizationId),
-    companyHotelSettings(g.organizationId),
+    g.audience === 'company'
+      ? companyAccessSettings(g.organizationId)
+      : Promise.resolve(null),
+    g.audience === 'company'
+      ? companyHotelSettings(g.organizationId)
+      : Promise.resolve([]),
   ]);
 
   // Quiet FYI only, and only for the people who own the book. A GM reading the
   // policies they are governed by does not need a list of the ways their peers'
   // hotels differ from it.
-  const contradictions = g.standing.companyRole === null
+  const contradictions = g.audience !== 'company' || g.standing.companyRole === null
     ? []
     : findSettingContradictions(
       facts.filter((f) => f.reviewState === 'confirmed'),
@@ -269,19 +289,29 @@ export async function GET(req: NextRequest) {
   // governed by, it does not reach any copilot, and the GM cannot act on it. Put
   // it in front of them and the screen is claiming a rule exists when it does
   // not. Filtered on the SERVER so the honesty does not depend on the client.
-  const visible = g.standing.canEdit ? facts : confirmed;
+  const canEdit = g.audience === 'company' && g.standing.canEdit;
+  const visible = canEdit ? facts : confirmed;
+  if (!await rulebookRequestScopeStillCurrent(g.scope)) {
+    return err('Your company context changed. Reload and try again.', {
+      requestId, status: 409, code: 'scope_changed',
+    });
+  }
 
   return ok(
     {
+      audience: g.audience,
       organizationId: g.organizationId,
-      canEdit: g.standing.canEdit,
-      companyRole: g.standing.companyRole,
-      viewOnlyBecauseHotelJob: g.standing.viewOnlyBecauseHotelJob,
-      settings,
+      canEdit,
+      companyRole: g.audience === 'company' ? g.standing.companyRole : null,
+      viewOnlyBecauseHotelJob: g.audience === 'hotel',
       stats: {
         totalKnown: confirmed.length,
-        pendingReview: g.standing.canEdit ? facts.length - confirmed.length : 0,
-        hotelsCovered: hotelSettings.length,
+        ...(g.audience === 'company'
+          ? {
+              pendingReview: canEdit ? facts.length - confirmed.length : 0,
+              hotelsCovered: hotelSettings.length,
+            }
+          : {}),
       },
       // Unreviewed first: the whole point of the screen is that they need you.
       facts: [
@@ -296,7 +326,9 @@ export async function GET(req: NextRequest) {
         approverRole: r.approverRole,
         sourceFactId: r.sourceFactId,
       })),
-      contradictions,
+      ...(g.audience === 'company'
+        ? { settings, contradictions }
+        : {}),
     },
     { requestId },
   );
@@ -304,12 +336,50 @@ export async function GET(req: NextRequest) {
 
 interface PostBody {
   propertyId?: unknown;
+  organizationId?: unknown;
   action?: unknown;
   id?: unknown;
   intoId?: unknown;
+  expectedRevision?: unknown;
+  intoExpectedRevision?: unknown;
   content?: unknown;
   category?: unknown;
   settings?: unknown;
+}
+
+function expectedRevision(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+    ? value
+    : null;
+}
+
+function mutationFailure(
+  reason: string | undefined,
+  fallback: string,
+  fallbackCode: string,
+  requestId: string,
+) {
+  if (reason === 'conflict') {
+    return err('That line changed. Reload it before trying again.', {
+      requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (reason === 'not_found') {
+    return err('That line is no longer there', {
+      requestId, status: 404, code: ApiErrorCode.FactGone,
+    });
+  }
+  if (reason === 'forbidden') {
+    return err('Only company leadership can change the rulebook', {
+      requestId, status: 403, code: ApiErrorCode.CompanyLeadershipOnly,
+    });
+  }
+  if (reason === 'upgrade_required' || reason === 'store_unavailable') {
+    return err('The company rulebook is temporarily read-only.', {
+      requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+    });
+  }
+  return err(fallback, { requestId, status: 400, code: fallbackCode });
 }
 
 export async function POST(req: NextRequest) {
@@ -318,7 +388,10 @@ export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as PostBody | null;
   if (!body) return err('Invalid JSON body', { requestId, status: 400, code: ApiErrorCode.InvalidBody });
 
-  const g = await gate(req, requestId, body.propertyId);
+  const g = await gate(req, requestId, {
+    organizationId: body.organizationId,
+    propertyId: body.propertyId,
+  });
   if (!g.ok) return g.response;
 
   // THE READ-ONLY WALL. A GM sees the book and cannot touch it; so does a
@@ -339,8 +412,17 @@ export async function POST(req: NextRequest) {
     return err('Unknown action', { requestId, status: 400, code: ApiErrorCode.UnknownAction });
   }
 
-  const rl = await checkAndIncrementRateLimit('company-rulebook-write', g.propertyId);
+  const rl = await checkAndIncrementRateLimit(
+    'company-rulebook-write',
+    g.billingPropertyId,
+  );
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
+
+  if (!await rulebookRequestScopeStillCurrent(g.scope)) {
+    return err('Your company context changed. Reload and try again.', {
+      requestId, status: 409, code: 'scope_changed',
+    });
+  }
 
   const actor = {
     accountId: g.caller.accountId,
@@ -369,12 +451,22 @@ export async function POST(req: NextRequest) {
 
   const idV = validateUuid(body.id, 'id');
   if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const revision = expectedRevision(body.expectedRevision);
+  if (revision === null) {
+    return err('expectedRevision is required', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
 
   if (action === 'confirm') {
-    const res = await confirmCompanyFact(g.organizationId, idV.value!, actor);
+    const res = await confirmCompanyFact(
+      g.organizationId, idV.value!, actor, revision, requestId,
+    );
     if (!res.ok) {
       log.error('[company/rulebook:POST] confirm failed', { requestId, err: res.error });
-      return err('Could not confirm that', { requestId, status: 500, code: ApiErrorCode.ConfirmFailed });
+      return mutationFailure(
+        res.reason, 'Could not confirm that', ApiErrorCode.ConfirmFailed, requestId,
+      );
     }
     if (!res.confirmed) {
       return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
@@ -382,7 +474,7 @@ export async function POST(req: NextRequest) {
     // The company tier is cached per hotel for ten minutes. A VP who just
     // confirmed a policy should not have to wonder whether the copilot has it.
     clearCompanyRulebookCache();
-    return ok({ action, id: idV.value }, { requestId });
+    return ok({ action, id: idV.value, currentRevision: res.currentRevision }, { requestId });
   }
 
   if (action === 'merge') {
@@ -392,29 +484,55 @@ export async function POST(req: NextRequest) {
     if (intoV.error) {
       return err(intoV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
-    const res = await mergeCompanyFact(g.organizationId, intoV.value!, idV.value!, actor);
+    const intoRevision = expectedRevision(body.intoExpectedRevision);
+    if (intoRevision === null) {
+      return err('intoExpectedRevision is required', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    const res = await mergeCompanyFact(
+      g.organizationId,
+      intoV.value!,
+      idV.value!,
+      actor,
+      intoRevision,
+      revision,
+      requestId,
+    );
     if (!res.ok) {
       log.error('[company/rulebook:POST] merge failed', { requestId, err: res.error });
-      return err('Could not combine those', { requestId, status: 500, code: ApiErrorCode.MergeFailed });
+      return mutationFailure(
+        res.reason, 'Could not combine those', ApiErrorCode.MergeFailed, requestId,
+      );
     }
     if (!res.merged) {
       return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     clearCompanyRulebookCache();
-    return ok({ action, id: idV.value, intoId: intoV.value }, { requestId });
+    return ok({
+      action,
+      id: idV.value,
+      intoId: intoV.value,
+      currentRevision: res.relatedCurrentRevision,
+      intoCurrentRevision: res.currentRevision,
+    }, { requestId });
   }
 
   if (action === 'remove') {
-    const res = await removeCompanyFact(g.organizationId, idV.value!);
+    const res = await removeCompanyFact(
+      g.organizationId, idV.value!, actor, revision, requestId,
+    );
     if (!res.ok) {
       log.error('[company/rulebook:POST] remove failed', { requestId, err: res.error });
-      return err('Could not remove that', { requestId, status: 500, code: ApiErrorCode.RemoveFailed });
+      return mutationFailure(
+        res.reason, 'Could not remove that', ApiErrorCode.RemoveFailed, requestId,
+      );
     }
     if (!res.removed) {
       return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
     }
     clearCompanyRulebookCache();
-    return ok({ action, id: idV.value }, { requestId });
+    return ok({ action, id: idV.value, currentRevision: res.currentRevision }, { requestId });
   }
 
   // ── edit ──────────────────────────────────────────────────────────────────
@@ -437,14 +555,20 @@ export async function POST(req: NextRequest) {
     idV.value!,
     { content, ...(body.category !== undefined ? { category: body.category } : {}) },
     actor,
+    revision,
+    requestId,
   );
   if (!res.ok) {
     log.error('[company/rulebook:POST] edit failed', { requestId, err: res.error });
-    return err('Could not save that', { requestId, status: 500, code: ApiErrorCode.SaveFailed });
+    return mutationFailure(
+      res.reason, 'Could not save that', ApiErrorCode.SaveFailed, requestId,
+    );
   }
   if (!res.updated) {
     return err('That line is no longer there', { requestId, status: 404, code: ApiErrorCode.FactGone });
   }
   clearCompanyRulebookCache();
-  return ok({ action, id: idV.value, content }, { requestId });
+  return ok({
+    action, id: idV.value, content, currentRevision: res.currentRevision,
+  }, { requestId });
 }

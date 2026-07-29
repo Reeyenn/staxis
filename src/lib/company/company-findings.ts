@@ -32,6 +32,8 @@ import type {
   PriceRange,
 } from '@/lib/findings/types';
 import { ACTIVE_STATUSES, isUsablePriceRange } from '@/lib/findings/types';
+import type { CapabilityKey } from '@/lib/capabilities/registry';
+import type { AppSection } from '@/lib/sections/registry';
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -47,6 +49,10 @@ const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 export interface CompanyFinding extends Omit<Finding, 'propertyId'> {
   propertyId: null;
   organizationId: string;
+  semanticFamily: string | null;
+  activityStream: string | null;
+  /** Exact canonical hotel set a company-card verdict would affect. */
+  affectedPropertyIds: string[];
 }
 
 interface CompanyFindingRow {
@@ -74,6 +80,8 @@ interface CompanyFindingRow {
   resolved_at: string | null;
   silenced_at_magnitude: number | string | null;
   escalated_at: string | null;
+  semantic_family: string | null;
+  affected_property_ids: string[];
 }
 
 const SELECT_COLUMNS =
@@ -81,7 +89,37 @@ const SELECT_COLUMNS =
   'receipt_query_id, evidence, as_of, weakest_input_age_days, magnitude, ' +
   'price_low_cents, price_high_cents, price_currency, price_basis, ' +
   'first_seen_at, last_seen_at, occurrence_count, status_changed_at, resolved_at, ' +
-  'silenced_at_magnitude, escalated_at';
+  'silenced_at_magnitude, escalated_at, semantic_family, affected_property_ids';
+
+const MAX_VERDICT_PROPERTIES = 250;
+
+function canonicalUuidArray(value: unknown, max = 5000): string[] | null {
+  if (!Array.isArray(value)
+    || value.length > max
+    || !value.every((item) => typeof item === 'string' && UUID_RX.test(item))) return null;
+  const ids = (value as string[]).map((id) => id.toLowerCase());
+  const sorted = [...ids].sort();
+  if (new Set(ids).size !== ids.length
+    || !ids.every((id, index) => id === sorted[index])) return null;
+  return ids;
+}
+
+function canonicalizeUuidArray(value: unknown, max = 5000): string[] | null {
+  if (!Array.isArray(value)
+    || value.length > max
+    || !value.every((item) => typeof item === 'string' && UUID_RX.test(item))) return null;
+  const ids = (value as string[]).map((id) => id.toLowerCase());
+  return new Set(ids).size === ids.length ? [...ids].sort() : null;
+}
+
+function positiveSafeInteger(value: unknown): number | null {
+  const parsed = typeof value === 'string' ? Number(value) : value;
+  return typeof parsed === 'number'
+    && Number.isSafeInteger(parsed)
+    && parsed > 0
+    ? parsed
+    : null;
+}
 
 function num(value: number | string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
@@ -96,6 +134,9 @@ function rowToCompanyFinding(row: CompanyFindingRow): CompanyFinding {
     id: row.id,
     propertyId: null,
     organizationId: row.organization_id,
+    semanticFamily: row.semantic_family,
+    activityStream: activityStreamFromEvidence(row.evidence),
+    affectedPropertyIds: canonicalUuidArray(row.affected_property_ids) ?? [],
     detectorId: row.detector_id,
     dedupeKey: row.dedupe_key,
     summary: row.summary,
@@ -146,6 +187,20 @@ function priceColumns(price: PriceRange | null | undefined): Record<string, unkn
     price_currency: price.currency,
     price_basis: price.basis.slice(0, 300),
   };
+}
+
+/**
+ * Legacy portfolio detectors supply the exact *affected* UUID list separately
+ * from comparator/evaluated hotel ids. Always write the column, including an
+ * empty array for malformed/oversized/missing scope, so an evidence refresh can
+ * never leave a stale previously-actionable target set behind.
+ */
+function explicitAffectedPropertyColumns(evidence: FindingEvidence): Record<string, unknown> {
+  const ids = canonicalizeUuidArray(
+    evidence.params.affected_hotel_ids,
+    MAX_VERDICT_PROPERTIES,
+  );
+  return { affected_property_ids: ids ?? [] };
 }
 
 // ─── Reads ───────────────────────────────────────────────────────────────────
@@ -220,6 +275,7 @@ function draftColumns(args: PersistCompanyArgs): Record<string, unknown> {
     as_of: draft.asOf ? draft.asOf.toISOString() : null,
     weakest_input_age_days: draft.weakestInputAgeDays ?? null,
     magnitude: draft.magnitude,
+    ...explicitAffectedPropertyColumns(draft.evidence),
     ...priceColumns(draft.price),
   };
 }
@@ -372,47 +428,232 @@ export async function expireStaleCompanyFindings(
   return ((data ?? []) as unknown[]).length;
 }
 
+// ─── Queue verdict boundary ─────────────────────────────────────────────────
+
+export type CompanyFindingVerdict = Extract<
+  FindingStatus,
+  'known_problem' | 'muted' | 'resolved'
+>;
+
 /**
- * A VP's verdict on a company card. Moving to `known_problem` always records the
- * magnitude they consented to, so escalation is measured from there — a silence
- * with no recorded consent point can never break out of itself.
+ * The immutable facts the route must bind into the final transactional CAS.
+ * `affectedPropertyIds` comes only from the tenant-filtered ledger row; request
+ * JSON never chooses which hotels an organization-level verdict may mutate.
  */
-export async function setCompanyFindingStatus(
+export interface CompanyFindingVerdictSnapshot {
+  id: string;
+  organizationId: string;
+  detectorId: string;
+  semanticFamily: string | null;
+  status: FindingStatus;
+  statusChangedAt: string;
+  verdictRevision: number;
+  affectedPropertyIds: string[];
+  activityStream: string | null;
+}
+
+interface CompanyFindingVerdictSnapshotRow {
+  id: string;
+  organization_id: string;
+  detector_id: string;
+  semantic_family: string | null;
+  status: string;
+  status_changed_at: string;
+  verdict_revision: number | string;
+  affected_property_ids: string[];
+  evidence: unknown;
+}
+
+const VERDICT_STATUSES = new Set<FindingStatus>([
+  'open',
+  'updated',
+  'resolved',
+  'known_problem',
+  'muted',
+  'expired',
+]);
+
+export class CompanyFindingVerdictScopeError extends Error {
+  constructor(message = 'company finding action scope was invalid') {
+    super(message);
+    this.name = 'CompanyFindingVerdictScopeError';
+  }
+}
+
+export interface CompanyFindingVerdictRequirements {
+  requiredCapabilities: CapabilityKey[];
+  requiredSections: AppSection[];
+}
+
+/**
+ * Closed presentation/preflight mirror of 0407's commit policy. The SQL RPC is
+ * still authoritative. This helper is intentionally conservative: it includes
+ * both verdict-action capabilities so the UI never shows a button group where
+ * one of its buttons is already known to be dead.
+ */
+export function companyFindingVerdictRequirements(input: {
+  detectorId: string;
+  semanticFamily: string | null;
+  activityStream?: string | null;
+}): CompanyFindingVerdictRequirements | null {
+  const actionCapabilities: CapabilityKey[] = ['manage_checklists', 'manage_notifications'];
+  if (input.semanticFamily === 'supply_spend_control'
+      || input.detectorId === 'portfolio_supply_spend_gap') {
+    return {
+      requiredCapabilities: [
+        ...actionCapabilities,
+        'manage_inventory_orders',
+        'view_financials',
+      ].sort() as CapabilityKey[],
+      requiredSections: ['financials', 'inventory', 'staxis'],
+    };
+  }
+  if (input.semanticFamily === 'portfolio_activity_stopped'
+      || input.detectorId === 'portfolio_activity_stopped') {
+    const activitySection: AppSection | null = input.activityStream === 'inventory_counts'
+      ? 'inventory'
+      : input.activityStream === 'daily_log_closings'
+        ? 'dashboard'
+        : input.activityStream === 'work_order_flow'
+          ? 'maintenance'
+          : null;
+    if (!activitySection) return null;
+    return {
+      requiredCapabilities: [...actionCapabilities, 'run_reports'].sort() as CapabilityKey[],
+      requiredSections: [activitySection, 'staxis'].sort() as AppSection[],
+    };
+  }
+  return null;
+}
+
+function activityStreamFromEvidence(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const object = value as { params?: unknown; streamId?: unknown };
+  const params = object.params;
+  const legacyStream = params && typeof params === 'object' && !Array.isArray(params)
+    ? (params as { stream?: unknown }).stream
+    : null;
+  const legacy = typeof legacyStream === 'string' && legacyStream.length <= 120
+    ? legacyStream
+    : null;
+  const pattern = typeof object.streamId === 'string' && object.streamId.length <= 120
+    ? object.streamId
+    : null;
+  return legacy && pattern && legacy !== pattern ? null : (legacy ?? pattern);
+}
+
+/** Load one finding through its organization wall and validate its exact scope. */
+export async function loadCompanyFindingVerdictSnapshot(
   organizationId: string,
   findingId: string,
-  status: FindingStatus,
-  accountId: string | null,
-  now: Date = new Date(),
-): Promise<CompanyFinding | null> {
+): Promise<CompanyFindingVerdictSnapshot | null> {
   if (!UUID_RX.test(organizationId ?? '') || !UUID_RX.test(findingId ?? '')) return null;
-  const iso = now.toISOString();
-  const patch: Record<string, unknown> = {
-    status,
-    status_changed_at: iso,
-    status_changed_by: accountId,
-    resolved_at: status === 'resolved' ? iso : null,
-  };
-
-  // Both silences record their consent point, exactly as the hotel ledger does
-  // — see the note on setFindingStatus in src/lib/findings/store.ts.
-  if (status === 'known_problem' || status === 'muted') {
-    const current = await supabaseAdmin
-      .from('company_findings')
-      .select('magnitude')
-      .eq('organization_id', organizationId)
-      .eq('id', findingId)
-      .limit(1);
-    const rows = (current.data ?? []) as unknown as Array<{ magnitude: number | string }>;
-    patch.silenced_at_magnitude = num(rows[0]?.magnitude ?? null) ?? 0;
-  }
-
   const { data, error } = await supabaseAdmin
     .from('company_findings')
-    .update(patch)
+    .select(
+      'id, organization_id, detector_id, semantic_family, status, status_changed_at, ' +
+      'verdict_revision, affected_property_ids, evidence',
+    )
     .eq('organization_id', organizationId)
     .eq('id', findingId)
-    .select(SELECT_COLUMNS);
-  if (error) throw new Error(`company findings status change failed: ${error.message}`);
-  const rows = (data ?? []) as unknown as CompanyFindingRow[];
-  return rows[0] ? rowToCompanyFinding(rows[0]) : null;
+    .limit(1);
+  if (error) throw new Error(`company finding verdict read failed: ${error.message}`);
+  const row = ((data ?? []) as unknown as CompanyFindingVerdictSnapshotRow[])[0];
+  if (!row) return null;
+  const affectedPropertyIds = canonicalUuidArray(
+    row.affected_property_ids,
+    MAX_VERDICT_PROPERTIES,
+  );
+  const verdictRevision = positiveSafeInteger(row.verdict_revision);
+  if (!affectedPropertyIds
+    || affectedPropertyIds.length === 0
+    || verdictRevision === null
+    || !VERDICT_STATUSES.has(row.status as FindingStatus)
+    || typeof row.status_changed_at !== 'string'
+    || !Number.isFinite(Date.parse(row.status_changed_at))) {
+    throw new CompanyFindingVerdictScopeError();
+  }
+  return {
+    id: row.id.toLowerCase(),
+    organizationId: row.organization_id.toLowerCase(),
+    detectorId: row.detector_id,
+    semanticFamily: row.semantic_family,
+    status: row.status as FindingStatus,
+    statusChangedAt: row.status_changed_at,
+    verdictRevision,
+    affectedPropertyIds,
+    activityStream: activityStreamFromEvidence(row.evidence),
+  };
+}
+
+export type CompanyFindingVerdictCommitResult =
+  | { ok: true; outcome: 'applied' | 'already_applied'; status: CompanyFindingVerdict; revision: number }
+  | { ok: false; reason: 'denied' | 'conflict' | 'unavailable' };
+
+interface VerdictRpcResult {
+  ok?: unknown;
+  outcome?: unknown;
+  status?: unknown;
+  revision?: unknown;
+  reason?: unknown;
+}
+
+type UntypedRpc = (
+  functionName: string,
+  args: Record<string, unknown>,
+) => PromiseLike<{ data: unknown; error: { message?: string } | null }>;
+
+/**
+ * Commit through 0407's single-transaction authority assertion + CAS. The RPC
+ * re-derives the affected-hotel capability policy; these arguments are only
+ * immutable expectations, never grants.
+ */
+export async function commitCompanyFindingVerdict(input: {
+  accountId: string;
+  organizationId: string;
+  authorizationReceiptId: string;
+  snapshot: CompanyFindingVerdictSnapshot;
+  action: CompanyFindingVerdict;
+}): Promise<CompanyFindingVerdictCommitResult> {
+  if (!UUID_RX.test(input.accountId)
+    || !UUID_RX.test(input.organizationId)
+    || !UUID_RX.test(input.authorizationReceiptId)
+    || input.snapshot.organizationId !== input.organizationId
+    || input.snapshot.affectedPropertyIds.length === 0
+    || input.snapshot.affectedPropertyIds.length > MAX_VERDICT_PROPERTIES) {
+    return { ok: false, reason: 'denied' };
+  }
+  const rpc = supabaseAdmin.rpc.bind(supabaseAdmin) as unknown as UntypedRpc;
+  const { data, error } = await rpc('staxis_set_company_finding_verdict_cas', {
+    p_authorization_receipt_id: input.authorizationReceiptId,
+    p_account_id: input.accountId,
+    p_organization_id: input.organizationId,
+    p_finding_id: input.snapshot.id,
+    p_expected_status: input.snapshot.status,
+    p_expected_status_changed_at: input.snapshot.statusChangedAt,
+    p_expected_verdict_revision: input.snapshot.verdictRevision,
+    p_expected_affected_property_ids: input.snapshot.affectedPropertyIds,
+    p_action: input.action,
+  });
+  if (error || data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return { ok: false, reason: 'unavailable' };
+  }
+  const raw = data as VerdictRpcResult;
+  if (raw.ok === true
+    && (raw.outcome === 'applied' || raw.outcome === 'already_applied')
+    && (raw.status === 'known_problem' || raw.status === 'muted' || raw.status === 'resolved')) {
+    const revision = positiveSafeInteger(raw.revision);
+    return revision === null
+      ? { ok: false, reason: 'unavailable' }
+      : {
+        ok: true,
+        outcome: raw.outcome,
+        status: raw.status,
+        revision,
+      };
+  }
+  if (raw.ok === false && (raw.reason === 'denied' || raw.reason === 'conflict')) {
+    return { ok: false, reason: raw.reason };
+  }
+  return { ok: false, reason: 'unavailable' };
 }

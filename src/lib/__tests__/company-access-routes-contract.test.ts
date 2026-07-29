@@ -19,6 +19,7 @@ const adminPreviewHelpers = source('src/lib/company-access/admin-preview.ts');
 const dialog = source('src/app/company/_components/AccessWorkflowDialogs.tsx');
 const page = source('src/app/company/page.tsx');
 const signIn = source('src/app/signin/page.tsx');
+const signInNavigationPolicy = source('src/lib/auth/signin-navigation-policy.ts');
 
 describe('company access read/delegation boundary', () => {
   test('derives tenant membership from the authenticated account and projects per-org policies', () => {
@@ -38,7 +39,7 @@ describe('company access read/delegation boundary', () => {
     assert.match(page, /normalized\.viewerContext\.requestedPropertyId !== requestedPropertyId/);
     assert.doesNotMatch(page, /user\?\.role === ['"]admin['"]\) router\.replace/);
 
-    const adminFailure = page.indexOf("if (user.role === 'admin')", page.indexOf('} catch (error)'));
+    const adminFailure = page.indexOf('if (adminPreview)', page.indexOf('} catch (error)'));
     const legacyFallback = page.indexOf('setData(buildLegacyProjection(user, contextProperties))');
     assert.ok(adminFailure >= 0 && legacyFallback > adminFailure, 'admin preview failure must be handled before customer fallback');
     assert.match(page.slice(adminFailure, legacyFallback), /setData\(null\)/);
@@ -61,6 +62,14 @@ describe('company access read/delegation boundary', () => {
     assert.match(getRoute, /fallbackAccount\?\.active !== true[\s\S]*Account not found/);
   });
 
+  test('uses the durable authority mode and never resurrects normalized access from the legacy array', () => {
+    assert.match(getRoute, /staxis_list_account_authorized_properties/);
+    assert.match(getRoute, /authorityMode === ['"]legacy['"] \|\| authorityMode === ['"]shadow['"]/);
+    assert.match(getRoute, /if \(authorityMode === ['"]normalized['"]\)[\s\S]*EMPTY_COMPANY_ACCESS/);
+    assert.match(getRoute, /authorityMode !== ['"]schema_absent['"][\s\S]*throw normalizedError/);
+    assert.match(getRoute, /if \(authorityMode !== ['"]schema_absent['"]\)[\s\S]*Authoritative company access could not be projected/);
+  });
+
   test('invite dialog consumes server policies rather than globally combining receipts', () => {
     assert.match(dialog, /data\.permissions\.delegationPolicies/);
     assert.match(dialog, /delegationSelectionAllowed/);
@@ -73,7 +82,17 @@ describe('company access read/delegation boundary', () => {
     assert.match(getRoute, /const activityGrants = item\.actorGrants\.filter[\s\S]*includes\(['"]view_activity['"]\)/);
     assert.match(getRoute, /activityPropertyIds/);
     assert.match(getRoute, /activeWindow\(String\(grant\.startsAt\), grant\.expiresAt \? String\(grant\.expiresAt\) : null, nowMs\)/);
-    assert.match(getRoute, /const activePortfolio = facts\.portfolios\.some[\s\S]*portfolio\.status === ['"]active['"][\s\S]*if \(!activePortfolio\) return \[\]/);
+    assert.match(getRoute, /propertyIdsForAccessGrant\(grant, facts/);
+    assert.match(getRoute, /portfolioIdsForAccessGrant\(grant, item\.facts/);
+    assert.match(getRoute, /relationshipType: relationship\.relationship_type/);
+    assert.match(getRoute, /isPrimaryGrouping: relationship\.is_primary_grouping/);
+    assert.match(getRoute, /parentId: portfolio\.parent_id/);
+  });
+
+  test('projects the exact guarded account-invitation anchors independently of legacy grant policies', () => {
+    assert.match(getRoute, /const accountInvitePropertyIds = [\s\S]*includes\(['"]manage_people['"]\)/);
+    assert.match(getRoute, /manageInvitations: accountInvitePropertyIds\.length > 0/);
+    assert.match(getRoute, /accountInvitePropertyIds,/);
   });
 
   test('loads workflow and activity through one bounded tenant-scoped database feed', () => {
@@ -188,14 +207,15 @@ describe('organization invitation acceptance', () => {
   test('sign-in bypasses property selection only for Company targets', () => {
     assert.match(signIn, /requestedTarget === ['"]\/company['"]/);
     assert.match(signIn, /requestedTarget\.startsWith\(['"]\/company-invite\/['"]\)/);
-    assert.match(signIn, /user && !isPropertyIndependentCompanyTarget/);
+    assert.match(signIn, /propertyIndependent: isPropertyIndependentCompanyTarget/);
+    assert.match(signInNavigationPolicy, /input\.user[\s\S]*?!input\.propertyIndependent/);
   });
 });
 
 describe('normalized-only operational-link safety', () => {
-  test('hotel rows are informational and legacy settings require an actually active legacy hotel', () => {
-    assert.match(page, /canOpenLegacyRoleSettings=\{Boolean\([\s\S]*activeProperty[\s\S]*resolved\.properties\.some/);
-    assert.match(page, /data\.permissions\.manageAccess && canOpenLegacyRoleSettings/);
+  test('hotel rows are informational and People stays the only hotel-roster management surface', () => {
+    assert.match(page, /<HotelTeamPanel/);
+    assert.doesNotMatch(page, /\/settings\/users/);
     const propertyRow = page.match(/function PropertyRow[\s\S]*?\n\}/)?.[0] ?? '';
     assert.doesNotMatch(propertyRow, /<Link|href=|router\.push/);
   });

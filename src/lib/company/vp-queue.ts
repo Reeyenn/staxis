@@ -277,6 +277,8 @@ export interface PortfolioCard extends QueueFinding {
   climbReason: ClimbReason;
   /** Days since the first sighting. Carried so the reason line can say it. */
   daysOpen: number;
+  /** Receipt-derived presentation only; every write is independently checked. */
+  canAct?: boolean;
 }
 
 /**

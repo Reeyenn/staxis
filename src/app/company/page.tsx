@@ -2,7 +2,6 @@
 
 export const dynamic = 'force-dynamic';
 
-import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import React from 'react';
 import {
@@ -29,11 +28,14 @@ import {
 } from 'lucide-react';
 
 import { AppLayout } from '@/components/layout/AppLayout';
+import { CompanyRulebookPanel } from '@/components/concourse/CompanyRulebookPanel';
 import { useAuth, type AppUser } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
+import { usePortfolio } from '@/contexts/PortfolioContext';
 import { useProperty } from '@/contexts/PropertyContext';
+import { RouteErrorState } from '@/components/layout/RouteResourceState';
 import { fetchWithAuth } from '@/lib/api-fetch';
-import { useCan } from '@/lib/capabilities/useCan';
+import { can as canForStanding } from '@/lib/capabilities/can';
 import { localizeKnownMessage, type LocalizedMessagePair } from '@/lib/localized-ui-message';
 import {
   EMPTY_COMPANY_ACCESS,
@@ -49,18 +51,34 @@ import {
   type CompanyProperty,
   type EffectiveAccessReceipt,
 } from '@/lib/company-access/dto';
+import type {
+  CompanyAccessEditorMembership,
+  CompanyAccessEditorOrganization,
+  CompanyAccessEditorProjection,
+} from '@/lib/company-access/access-editor';
+import type { CompanyStructureProjection } from '@/lib/company-access/structure';
+import { buildCompanyAccessViewerKey } from '@/lib/company-access/viewer-key';
+import { selectCompanyAccessContext } from '@/lib/company-access/select-company-context';
+import { notifyAuthorizationChanged } from '@/lib/hooks/use-authorization-refresh-key';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 import type { StaffMember, Property } from '@/types';
 
 import styles from './CompanyAccess.module.css';
 import {
   CompanyLifecycleDialog,
-  InvitePersonDialog,
   RequestAccessDialog,
   ReviewAccessRequestDialog,
   type CompanyLifecycleAction,
 } from './_components/AccessWorkflowDialogs';
+import { AccessEditorDialog } from './_components/AccessEditorDialog';
+import { AdminHotelRelationshipManager } from './_components/AdminHotelRelationshipManager';
 import { HotelTeamPanel } from './_components/HotelTeamPanel';
 import { HotelSwitcher } from './_components/HotelSwitcher';
+import { LegacyOwnershipTransferPanel } from './_components/LegacyOwnershipTransferPanel';
+import {
+  CompanyStructureManager,
+  CompanyStructureOverview,
+} from './_components/CompanyStructureManager';
 
 type TabId = 'overview' | 'hotels' | 'people' | 'access';
 type HotelStatusFilter = 'all' | 'active' | 'not_active';
@@ -279,24 +297,38 @@ function CompanyPageFallback() {
 
 function CompanyAccessContent() {
   const router = useRouter();
+  const { push: pushReliable } = useReliableNavigation();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { user, loading: authLoading } = useAuth();
+  const {
+    user,
+    loading: authLoading,
+    authorizationChecked,
+    platformAdmin,
+    propertyStandings,
+    authorizationFingerprint,
+  } = useAuth();
   const {
     properties: contextProperties,
     activeProperty,
+    activePropertyViewerKey,
     staff,
     staffLoaded,
     staffLoadFailed,
     staffViewerKey,
+    capabilityOverrides,
     capabilityOverridesViewerKey,
     capabilityOverridesPropertyId,
+    capabilityOverridesStatus,
+    capabilityOverridesError,
+    refreshCapabilities,
     loading: propertyLoading,
     setActivePropertyId,
     refreshStaff,
   } = useProperty();
   const { lang } = useLang();
-  const can = useCan();
+  const portfolio = usePortfolio();
+  const portfolioMode = searchParams.get('scope') === 'portfolio';
 
   const [data, setData] = React.useState<CompanyAccessData | null>(null);
   const [dataViewerKey, setDataViewerKey] = React.useState<string | null>(null);
@@ -312,23 +344,43 @@ function CompanyAccessContent() {
   const [query, setQuery] = React.useState('');
   const [hotelStatusFilter, setHotelStatusFilter] = React.useState<HotelStatusFilter>('all');
   const [selectedReceipt, setSelectedReceipt] = React.useState<EffectiveAccessReceipt | null>(null);
-  const [inviteOpen, setInviteOpen] = React.useState(false);
   const [teamInviteHotelId, setTeamInviteHotelId] = React.useState<string | null>(null);
   const [requestOpen, setRequestOpen] = React.useState(false);
   const [reviewRequest, setReviewRequest] = React.useState<CompanyAccessRequest | null>(null);
   const [lifecycleAction, setLifecycleAction] = React.useState<CompanyLifecycleAction | null>(null);
   const [adminToolsEnabled, setAdminToolsEnabled] = React.useState(false);
+  const [structure, setStructure] = React.useState<CompanyStructureProjection | null>(null);
+  const [structureViewerKey, setStructureViewerKey] = React.useState<string | null>(null);
+  const [structureLoading, setStructureLoading] = React.useState(false);
+  const [structureError, setStructureError] = React.useState<string | null>(null);
   const previewHeadingRef = React.useRef<HTMLHeadingElement | null>(null);
   const focusPreviewAfterRetryRef = React.useRef(false);
+  const completeAccessMutation = React.useCallback(() => {
+    notifyAuthorizationChanged();
+    setRetryKey((value) => value + 1);
+  }, []);
 
   const propertyKey = contextProperties.map((property) => property.id).sort().join(',');
   const accountId = user?.accountId ?? null;
   const userRole = user?.role ?? null;
   const activePropertyId = activeProperty?.id ?? null;
-  const adminPreview = userRole === 'admin';
-  const capabilityViewerKey = user?.uid && activePropertyId
-    ? `${user.uid}:${activePropertyId}`
+  // The local Admin view is privilege-bearing discovery just like the global
+  // Admin destination. Never derive it from the initial browser account row;
+  // wait for the fresh no-store session authorization verdict.
+  const adminPreview = Boolean(
+    authorizationChecked && platformAdmin && userRole === 'admin',
+  );
+  const currentViewerKey = user && authorizationChecked
+    ? `${buildCompanyAccessViewerKey({
+        uid: user.uid,
+        accountId: user.accountId,
+        role: user.role,
+        propertyAccess: user.propertyAccess,
+        resolvedPropertyKey: propertyKey,
+        adminTargetPropertyId: adminPreview ? activePropertyId : null,
+      })}:${authorizationFingerprint ?? 'unverified'}`
     : null;
+  const capabilityViewerKey = activePropertyViewerKey;
   const hotelCapabilitiesReady = Boolean(
     activePropertyId
     && capabilityViewerKey
@@ -336,24 +388,61 @@ function CompanyAccessContent() {
     && capabilityOverridesViewerKey === capabilityViewerKey,
   );
   const hotelCapabilitiesLoading = Boolean(
-    user && activePropertyId && !hotelCapabilitiesReady,
+    user && activePropertyId && (!authorizationChecked || !hotelCapabilitiesReady),
+  );
+  const matchingPropertyStandings = activePropertyId
+    ? propertyStandings.filter((standing) => standing.propertyId === activePropertyId)
+    : [];
+  // Private hotel-team data is an operational surface, not a side effect of a
+  // company title. Require the one fresh standing for this exact hotel, its
+  // explicit mutation bit, and the capability evaluated with the standing's
+  // hotel role. A stale accounts.role=owner must never turn a company-only
+  // owner/VP/finance grant into hotel roster authority.
+  const activePropertyStanding = matchingPropertyStandings.length === 1
+    ? matchingPropertyStandings[0]
+    : null;
+  const hotelPresentationRole = platformAdmin
+    ? 'admin'
+    : activePropertyStanding?.operationalRole ?? null;
+  const hotelMutationAuthorized = authorizationChecked && Boolean(
+    platformAdmin || activePropertyStanding?.hotelMutationAllowed === true,
   );
   // A hotel switch clears readiness synchronously. Never reuse the previous
   // hotel's optimistic capability result while the next snapshot is loading.
-  const canManageTeam = hotelCapabilitiesReady && can('manage_team');
+  const canManageTeam = hotelCapabilitiesReady
+    && hotelMutationAuthorized
+    && canForStanding(
+      hotelPresentationRole ? { role: hotelPresentationRole } : null,
+      'manage_team',
+      capabilityOverrides,
+    );
+  const canManageUsers = hotelCapabilitiesReady
+    && hotelMutationAuthorized
+    && canForStanding(
+      hotelPresentationRole ? { role: hotelPresentationRole } : null,
+      'manage_users',
+      capabilityOverrides,
+    );
   // Pay is payroll-private. `view_wages` sits on MANAGER_FLOOR_CAPABILITIES, so
   // it can never be granted down to line staff no matter what an admin sets,
   // and PUT/GET /api/staff/wages enforce it again server-side. Resolved here,
   // where the exact-hotel capability snapshot is already known to be current.
-  const canViewWages = hotelCapabilitiesReady && can('view_wages');
-  const staffBelongsToCurrentViewer = Boolean(user?.uid && activePropertyId
-    && staffViewerKey === `${user.uid}:${activePropertyId}`);
-  const currentStaff = staffBelongsToCurrentViewer
+  const canViewWages = hotelCapabilitiesReady
+    && authorizationChecked
+    && Boolean(platformAdmin || activePropertyStanding?.seesFinancials === true)
+    && canForStanding(
+      hotelPresentationRole ? { role: hotelPresentationRole } : null,
+      'view_wages',
+      capabilityOverrides,
+    );
+  const staffBelongsToCurrentViewer = Boolean(activePropertyViewerKey
+    && staffViewerKey === activePropertyViewerKey);
+  const currentStaff = canManageTeam && staffBelongsToCurrentViewer
     ? staff
     : [];
-  const currentStaffSettled = staffBelongsToCurrentViewer
+  const currentStaffSettled = canManageTeam && staffBelongsToCurrentViewer
     && (staffLoaded || staffLoadFailed);
-  const currentStaffUnavailable = staffBelongsToCurrentViewer && staffLoadFailed;
+  const currentStaffUnavailable = canManageTeam && staffBelongsToCurrentViewer && staffLoadFailed;
 
   // Admin tools are an explicit, hotel-scoped choice. Never carry an enabled
   // mutation surface into a different hotel or a different signed-in role.
@@ -371,10 +460,11 @@ function CompanyAccessContent() {
   langRef.current = lang;
 
   React.useEffect(() => {
-    if (!user || authLoading || propertyLoading) return;
-    const requestedPropertyId = user.role === 'admin' ? activePropertyId : null;
-    const requestedViewerKey = `${user.accountId}:${user.role}:${requestedPropertyId ?? 'customer'}`;
-    if (user.role === 'admin' && !requestedPropertyId) {
+    if (!user || authLoading || propertyLoading || !authorizationChecked) return;
+    if (!currentViewerKey) return;
+    const requestedPropertyId = adminPreview ? activePropertyId : null;
+    const requestedViewerKey = currentViewerKey;
+    if (adminPreview && !requestedPropertyId) {
       setAdminTargetPropertyId(null);
       setData(null);
       setDataViewerKey(null);
@@ -388,12 +478,11 @@ function CompanyAccessContent() {
     setData(null);
     setDataViewerKey(null);
     setSelectedReceipt(null);
-    setInviteOpen(false);
     setTeamInviteHotelId(null);
     setRequestOpen(false);
     setReviewRequest(null);
     setLifecycleAction(null);
-    if (user.role === 'admin') {
+    if (adminPreview) {
       setAdminTargetPropertyId(requestedPropertyId);
       // Never leave another hotel's preview visible while the new target loads.
       setQuery('');
@@ -405,13 +494,13 @@ function CompanyAccessContent() {
 
     void (async () => {
       try {
-        const endpoint = user.role === 'admin'
+        const endpoint = adminPreview
           ? `/api/admin/company-access-preview?pid=${encodeURIComponent(requestedPropertyId!)}`
           : '/api/company-access';
         const response = await fetchWithAuth(endpoint);
         const body = await response.json().catch(() => ({})) as Envelope<CompanyAccessData>;
         if (!response.ok || !body.ok || !body.data) {
-          throw new Error(user.role === 'admin'
+          throw new Error(adminPreview
             ? localized(
                 langRef.current,
                 'Hotel View is unavailable for the selected hotel. Try again or return to Admin.',
@@ -420,7 +509,7 @@ function CompanyAccessContent() {
             : body.error || localized(langRef.current, 'Company access could not be loaded.', 'No se pudo cargar el acceso de la empresa.'));
         }
         const normalized = normalizeCompanyData(body.data);
-        if (user.role === 'admin' && (
+        if (adminPreview && (
           normalized.viewerContext?.kind !== 'staxis_admin_preview'
           || normalized.viewerContext.readOnly !== true
           || normalized.viewerContext.requestedPropertyId !== requestedPropertyId
@@ -435,7 +524,7 @@ function CompanyAccessContent() {
         }
       } catch (error) {
         if (cancelled) return;
-        if (user.role === 'admin') {
+        if (adminPreview) {
           // Admin preview must fail closed. The customer legacy fallback would
           // incorrectly expand an admin to every property in PropertyContext.
           setData(null);
@@ -456,24 +545,97 @@ function CompanyAccessContent() {
     })();
 
     return () => { cancelled = true; };
-  }, [accountId, activePropertyId, authLoading, propertyKey, propertyLoading, retryKey, userRole]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [authLoading, currentViewerKey, propertyLoading, retryKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const adminTargetIsCurrent = !adminPreview || adminTargetPropertyId === activePropertyId;
-  const currentViewerKey = accountId && userRole
-    ? `${accountId}:${userRole}:${adminPreview ? activePropertyId ?? 'customer' : 'customer'}`
-    : null;
   const dataBelongsToCurrentViewer = Boolean(currentViewerKey && dataViewerKey === currentViewerKey);
   const adminDataMatchesSelection = !adminPreview || Boolean(
     data?.viewerContext
     && data.viewerContext.requestedPropertyId === activePropertyId,
   );
-  const currentData = adminTargetIsCurrent && dataBelongsToCurrentViewer && adminDataMatchesSelection ? data : null;
+  const unscopedCurrentData = adminTargetIsCurrent
+    && dataBelongsToCurrentViewer
+    && adminDataMatchesSelection
+    ? data
+    : null;
+  const selectedPortfolioCompany = portfolioMode
+    && portfolio.data?.selection.state === 'selected'
+    && portfolio.data.selection.selectedOrganizationId === portfolio.requestedOrganizationId
+    ? portfolio.data.selectedCompany
+    : null;
+  const currentData = portfolioMode
+    ? unscopedCurrentData && selectedPortfolioCompany
+      ? selectCompanyAccessContext(
+          unscopedCurrentData,
+          selectedPortfolioCompany.organizationId,
+        )
+      : null
+    : unscopedCurrentData;
   const currentLoadError = localizeKnownMessage(
     adminTargetIsCurrent && loadErrorViewerKey === currentViewerKey ? loadError : null,
     lang,
     COMPANY_LOAD_ERROR_MESSAGES,
   );
   const resolved = currentData ?? EMPTY_COMPANY_ACCESS;
+  const customerStructureViewerKey = accountId && userRole && userRole !== 'admin'
+    ? `${accountId}:${userRole}:company-structure:${authorizationFingerprint ?? 'unverified'}`
+    : null;
+  const currentStructure = !portfolioMode && customerStructureViewerKey
+    && structureViewerKey === customerStructureViewerKey
+    ? structure
+    : null;
+
+  React.useEffect(() => {
+    if (!user || authLoading || propertyLoading) return;
+    const viewerKey = user.role === 'admin'
+      ? null
+      : `${user.accountId}:${user.role}:company-structure:${authorizationFingerprint ?? 'unverified'}`;
+    if (portfolioMode || !viewerKey || !currentData || currentData.legacyFallback) {
+      setStructure(null);
+      setStructureViewerKey(null);
+      setStructureLoading(false);
+      setStructureError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setStructure(null);
+    setStructureViewerKey(null);
+    setStructureLoading(true);
+    setStructureError(null);
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/api/company-access/structure');
+        const body = await response.json().catch(() => ({})) as Envelope<CompanyStructureProjection>;
+        if (!response.ok || !body.ok || !body.data) {
+          throw new Error(body.error || localized(
+            langRef.current,
+            'Live company structure could not be loaded.',
+            'No se pudo cargar la estructura empresarial en vivo.',
+          ));
+        }
+        if (!cancelled) {
+          setStructure(body.data);
+          setStructureViewerKey(viewerKey);
+        }
+      } catch (caught) {
+        if (!cancelled) {
+          setStructure(null);
+          setStructureViewerKey(viewerKey);
+          setStructureError(caught instanceof Error
+            ? caught.message
+            : localized(
+                langRef.current,
+                'Live company structure could not be loaded.',
+                'No se pudo cargar la estructura empresarial en vivo.',
+              ));
+        }
+      } finally {
+        if (!cancelled) setStructureLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [accountId, authLoading, authorizationFingerprint, currentData, portfolioMode, propertyLoading, retryKey, user, userRole]);
   // Tab NAMES, not tab keys. The `?tab=` values and the `company-tab-*` ids
   // below never change — old links and bookmarks keep working.
   //
@@ -545,7 +707,10 @@ function CompanyAccessContent() {
   const propertyRosterLoading = currentData?.viewerContext?.scope === 'property'
     && !currentStaffSettled;
   const showLoading = authLoading
+    || !authorizationChecked
     || propertyLoading
+    || (portfolioMode && portfolio.loading)
+    || (portfolioMode && !selectedPortfolioCompany && !portfolio.error)
     || (adminPreview && !adminTargetIsCurrent)
     || (loading && !currentData)
     || viewerTransitionLoading
@@ -570,12 +735,15 @@ function CompanyAccessContent() {
         : adminViewerContext?.scope === 'property'
           ? localized(lang, 'My Hotel', 'Mi hotel')
           : localized(lang, 'Hotel View', 'Vista del hotel'))
-    : localized(lang, 'Company & Access', 'Empresa y acceso');
-  const customerContextLabel = resolved.organizations.length === 1
+    : portfolioMode
+      ? localized(lang, 'My Portfolio', 'Mi portafolio')
+      : localized(lang, 'Company & Access', 'Empresa y acceso');
+  const customerContextLabel = selectedPortfolioCompany?.organizationName
+    ?? (resolved.organizations.length === 1
     ? resolved.organizations[0].name
     : resolved.organizations.length > 1
       ? localized(lang, `${resolved.organizations.length} company contexts`, `${resolved.organizations.length} contextos de empresa`)
-      : null;
+      : null);
   const contextLabel = adminPreview
     ? adminViewerContext?.targetName ?? activeProperty?.name ?? null
     : customerContextLabel;
@@ -613,7 +781,9 @@ function CompanyAccessContent() {
                   ? adminToolsActive
                     ? localized(lang, 'Staxis admin view', 'Vista de administrador de Staxis')
                     : localized(lang, 'Staxis hotel view', 'Vista del hotel de Staxis')
-                  : localized(lang, 'Company workspace', 'Espacio de empresa')}
+                  : portfolioMode
+                    ? localized(lang, 'Portfolio workspace', 'Espacio del portafolio')
+                    : localized(lang, 'Company workspace', 'Espacio de empresa')}
               </div>
               <h1 ref={previewHeadingRef} tabIndex={adminPreview ? -1 : undefined}>{workspaceTitle}</h1>
               <p>
@@ -629,17 +799,23 @@ function CompanyAccessContent() {
                         'Review this hotel in read-only mode.',
                         'Revisa este hotel en modo de solo lectura.',
                       )
-                  : localized(
-                      lang,
-                      'See your hotels, team, and exactly why you have access.',
-                      'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
-                    )}
+                  : portfolioMode
+                    ? localized(
+                        lang,
+                        'Manage company knowledge, hotels, people, and access in one place.',
+                        'Administra el conocimiento, los hoteles, las personas y el acceso de la empresa en un solo lugar.',
+                      )
+                    : localized(
+                        lang,
+                        'See your hotels, team, and exactly why you have access.',
+                        'Consulta tus hoteles, tu equipo y exactamente por qué tienes acceso.',
+                      )}
               </p>
             </div>
           </div>
 
           <div className={styles.heroHotelSlot}>
-            {contextProperties.length > 0 ? (
+            {!portfolioMode && contextProperties.length > 0 ? (
               <HotelSwitcher
                 className={styles.heroHotelSwitcher}
                 hotels={contextProperties}
@@ -719,7 +895,7 @@ function CompanyAccessContent() {
                 <RefreshCw size={14} aria-hidden="true" />
                 {localized(lang, 'Retry', 'Reintentar')}
               </button>
-              <button type="button" onClick={() => router.push('/admin/properties#live')}>
+              <button type="button" onClick={() => pushReliable('/admin/properties#live')}>
                 {localized(lang, 'Back to Admin', 'Volver a Admin')}
                 <ArrowRight size={14} aria-hidden="true" />
               </button>
@@ -759,7 +935,21 @@ function CompanyAccessContent() {
               aria-labelledby={`company-tab-${tab}`}
               className={styles.panel}
             >
-              {showLoading ? (
+              {portfolioMode && portfolio.error ? (
+                <RouteErrorState
+                  title={localized(lang, 'Portfolio context could not be confirmed', 'No se pudo confirmar el contexto del portafolio')}
+                  message={portfolio.error}
+                  retryLabel={localized(lang, 'Try again', 'Reintentar')}
+                  onRetry={() => void portfolio.reload()}
+                />
+              ) : tab === 'people' && capabilityOverridesStatus === 'error' ? (
+                <RouteErrorState
+                  title={localized(lang, 'People access could not be confirmed', 'No se pudo confirmar el acceso a Personas')}
+                  message={capabilityOverridesError ?? undefined}
+                  retryLabel={localized(lang, 'Try again', 'Reintentar')}
+                  onRetry={() => void refreshCapabilities()}
+                />
+              ) : showLoading ? (
                 <CompanyHubSkeleton lang={lang} />
               ) : !user ? (
                 <EmptyState
@@ -768,22 +958,42 @@ function CompanyAccessContent() {
                   description={localized(lang, 'Your company access is tied to your Staxis account.', 'Tu acceso de empresa está vinculado a tu cuenta de Staxis.')}
                 />
               ) : tab === 'overview' ? (
-                <OverviewPanel
-                  data={resolved}
-                  lang={lang}
-                  activePropertyName={activeProperty?.name ?? null}
-                  hotelRosterCount={hotelRosterCount}
-                  hotelRosterUnavailable={currentStaffUnavailable}
-                  onViewReceipt={setSelectedReceipt}
-                />
+                <>
+                  {selectedPortfolioCompany ? (
+                    <CompanyRulebookPanel
+                      lang={lang}
+                      organizationId={selectedPortfolioCompany.organizationId}
+                    />
+                  ) : !portfolioMode && activePropertyId ? (
+                    <CompanyRulebookPanel
+                      lang={lang}
+                      propertyId={activePropertyId}
+                    />
+                  ) : null}
+                  <OverviewPanel
+                    data={resolved}
+                    structure={currentStructure}
+                    structureLoading={structureLoading}
+                    structureUnavailable={Boolean(structureError)}
+                    lang={lang}
+                    activePropertyName={activeProperty?.name ?? null}
+                    hotelRosterCount={hotelRosterCount}
+                    hotelRosterUnavailable={currentStaffUnavailable}
+                    onViewReceipt={setSelectedReceipt}
+                  />
+                </>
               ) : tab === 'hotels' ? (
                 <HotelsPanel
                   data={resolved}
+                  structure={currentStructure}
                   lang={lang}
+                  activeProperty={activeProperty}
+                  adminToolsEnabled={adminToolsActive}
                   query={query}
                   onQueryChange={setQuery}
                   statusFilter={hotelStatusFilter}
                   onStatusFilterChange={setHotelStatusFilter}
+                  onStructureChanged={completeAccessMutation}
                 />
               ) : tab === 'people' ? (
                 <PeoplePanel
@@ -797,27 +1007,31 @@ function CompanyAccessContent() {
                   activeProperty={activeProperty}
                   adminToolsEnabled={adminToolsActive}
                   canManageTeam={canManageTeam}
+                  canInviteAccounts={Boolean(
+                    (adminToolsActive && platformAdmin)
+                    || (activeProperty
+                      && resolved.permissions.accountInvitePropertyIds?.includes(activeProperty.id))
+                  )}
                   canViewWages={canViewWages}
                   canAddOperationalStaff={!hotelTeamLocked && canManageTeam}
                   inviteDialogOpen={teamInviteHotelId === activeProperty?.id}
                   onInviteDialogOpenChange={(open) => setTeamInviteHotelId(open ? activeProperty?.id ?? null : null)}
                   onChanged={refreshStaff}
+                  onLifecycleAction={setLifecycleAction}
                 />
               ) : (
                 <AccessPanel
                   data={resolved}
                   lang={lang}
+                  currentUser={user}
                   currentAccountId={user.accountId}
-                  onInvite={() => setInviteOpen(true)}
+                  activeProperty={activeProperty}
+                  canManageUsers={canManageUsers}
                   onViewReceipt={setSelectedReceipt}
                   onRequestAccess={() => setRequestOpen(true)}
                   onReviewRequest={setReviewRequest}
                   onLifecycleAction={setLifecycleAction}
-                  canOpenLegacyRoleSettings={Boolean(
-                    activeProperty
-                    && resolved.properties.some((property) => property.id === activeProperty.id)
-                    && user.role === 'owner'
-                  )}
+                  onAccessChanged={completeAccessMutation}
                 />
               )}
             </section>
@@ -834,20 +1048,12 @@ function CompanyAccessContent() {
           onClose={() => setSelectedReceipt(null)}
         />
       ) : null}
-      {currentData && inviteOpen && !resolved.viewerContext ? (
-        <InvitePersonDialog
-          data={resolved}
-          lang={lang}
-          onClose={() => setInviteOpen(false)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
-        />
-      ) : null}
       {currentData && requestOpen && !resolved.viewerContext ? (
         <RequestAccessDialog
           data={resolved}
           lang={lang}
           onClose={() => setRequestOpen(false)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
+          onCompleted={completeAccessMutation}
         />
       ) : null}
       {currentData && reviewRequest && !resolved.viewerContext ? (
@@ -855,7 +1061,7 @@ function CompanyAccessContent() {
           request={reviewRequest}
           lang={lang}
           onClose={() => setReviewRequest(null)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
+          onCompleted={completeAccessMutation}
         />
       ) : null}
       {currentData && lifecycleAction && !resolved.viewerContext ? (
@@ -863,15 +1069,18 @@ function CompanyAccessContent() {
           action={lifecycleAction}
           lang={lang}
           onClose={() => setLifecycleAction(null)}
-          onCompleted={() => setRetryKey((value) => value + 1)}
+          onCompleted={completeAccessMutation}
         />
       ) : null}
     </AppLayout>
   );
 }
 
-function OverviewPanel({ data, lang, activePropertyName, hotelRosterCount, hotelRosterUnavailable, onViewReceipt }: {
+function OverviewPanel({ data, structure, structureLoading, structureUnavailable, lang, activePropertyName, hotelRosterCount, hotelRosterUnavailable, onViewReceipt }: {
   data: CompanyAccessData;
+  structure: CompanyStructureProjection | null;
+  structureLoading: boolean;
+  structureUnavailable: boolean;
   lang: string;
   activePropertyName: string | null;
   hotelRosterCount: number | null;
@@ -887,6 +1096,15 @@ function OverviewPanel({ data, lang, activePropertyName, hotelRosterCount, hotel
 
   return (
     <div className={styles.stack}>
+      {!data.viewerContext ? (
+        <CompanyStructureOverview
+          structure={structure}
+          lang={lang}
+          loading={structureLoading}
+          unavailable={structureUnavailable}
+          legacyFallback={data.legacyFallback}
+        />
+      ) : null}
       <div className={styles.summaryGrid}>
         <SummaryCard
           icon={Hotel}
@@ -910,7 +1128,7 @@ function OverviewPanel({ data, lang, activePropertyName, hotelRosterCount, hotel
         />
         <SummaryCard
           icon={Clock3}
-          label={localized(lang, 'Needs attention', 'Requiere atención')}
+          label={localized(lang, 'Open access work', 'Trabajo de acceso pendiente')}
           value={String(pendingCount)}
           detail={localized(lang, 'Invites and requests', 'Invitaciones y solicitudes')}
         />
@@ -952,13 +1170,17 @@ function OverviewPanel({ data, lang, activePropertyName, hotelRosterCount, hotel
   );
 }
 
-function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusFilterChange }: {
+function HotelsPanel({ data, structure, lang, activeProperty, adminToolsEnabled, query, onQueryChange, statusFilter, onStatusFilterChange, onStructureChanged }: {
   data: CompanyAccessData;
+  structure: CompanyStructureProjection | null;
   lang: string;
+  activeProperty: Property | null;
+  adminToolsEnabled: boolean;
   query: string;
   onQueryChange: (value: string) => void;
   statusFilter: HotelStatusFilter;
   onStatusFilterChange: (value: HotelStatusFilter) => void;
+  onStructureChanged: () => void;
 }) {
   const normalizedQuery = query.trim().toLowerCase();
   const propertyMatches = data.properties.filter((property) => {
@@ -977,6 +1199,16 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
         title={localized(lang, 'Hotels you can access', 'Hoteles a los que tienes acceso')}
         description={localized(lang, 'Grouped by organization, portfolio, or region.', 'Agrupados por organización, cartera o región.')}
       />
+      {data.viewerContext?.kind === 'staxis_admin_preview' && activeProperty ? (
+        <AdminHotelRelationshipManager
+          key={activeProperty.id}
+          propertyId={activeProperty.id}
+          propertyName={activeProperty.name}
+          adminToolsEnabled={adminToolsEnabled}
+          lang={lang}
+          onChanged={onStructureChanged}
+        />
+      ) : null}
       <FilterBar
         lang={lang}
         query={query}
@@ -1001,6 +1233,13 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
           onAction={() => { onQueryChange(''); onStatusFilterChange('all'); }}
         />
       )}
+      {!data.viewerContext && structure && structure.organizations.length > 0 ? (
+        <CompanyStructureManager
+          structure={structure}
+          lang={lang}
+          onChanged={onStructureChanged}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1011,7 +1250,7 @@ function HotelsPanel({ data, lang, query, onQueryChange, statusFilter, onStatusF
  * could appear in both with nothing on screen explaining why. HotelTeamPanel
  * now merges them.
  */
-function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged }: {
+function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, currentAccountId, activeProperty, adminToolsEnabled, canManageTeam, canInviteAccounts, canViewWages, canAddOperationalStaff, inviteDialogOpen, onInviteDialogOpenChange, onChanged, onLifecycleAction }: {
   data: CompanyAccessData;
   staff: StaffMember[];
   hotelRosterUnavailable: boolean;
@@ -1021,23 +1260,84 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   activeProperty: Property | null;
   adminToolsEnabled: boolean;
   canManageTeam: boolean;
+  canInviteAccounts: boolean;
   canViewWages: boolean;
   canAddOperationalStaff: boolean;
   inviteDialogOpen: boolean;
   onInviteDialogOpenChange: (open: boolean) => void;
   onChanged: () => void | Promise<void>;
+  onLifecycleAction: (action: CompanyLifecycleAction) => void;
 }) {
+  const adminPreview = data.viewerContext?.kind === 'staxis_admin_preview';
+  const visibleMemberships = data.permissions.viewPeople
+    ? data.memberships
+    : data.memberships.filter((membership) => (
+      membership.accountId === currentAccountId || membership.isCurrentUser
+    ));
   return (
     <div className={styles.stack}>
+      {(visibleMemberships.length > 0 || data.invitations.length > 0 || data.permissions.manageInvitations) ? (
+        <section className={styles.sectionBlock}>
+          <div className={styles.headingWithAction}>
+            <SectionHeading
+              eyebrow={localized(lang, 'Company people', 'Personas de la empresa')}
+              title={localized(lang, 'Memberships and invitations', 'Membresías e invitaciones')}
+              description={localized(
+                lang,
+                'Company membership says who belongs to this company. The hotel roster below is the operational team for the selected hotel.',
+                'La membresía empresarial indica quién pertenece a esta empresa. El registro del hotel a continuación es el equipo operativo del hotel seleccionado.',
+              )}
+            />
+            {!adminPreview && !canManageTeam && canInviteAccounts ? (
+              <button type="button" className={styles.primaryButton} onClick={() => onInviteDialogOpenChange(true)}>
+                <UserPlus size={16} aria-hidden="true" />
+                {localized(lang, 'Invite company member', 'Invitar miembro de la empresa')}
+              </button>
+            ) : null}
+          </div>
+          {visibleMemberships.length > 0 ? (
+            <div className={styles.listCard} role="list">
+              {visibleMemberships.map((membership) => (
+                <MembershipRow
+                  key={membership.id}
+                  membership={membership}
+                  organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
+                  isCurrentUser={membership.accountId === currentAccountId || Boolean(membership.isCurrentUser)}
+                  lang={lang}
+                  onLifecycleAction={onLifecycleAction}
+                  showGrantActions={false}
+                  showMembershipActions={!adminPreview}
+                />
+              ))}
+            </div>
+          ) : null}
+          {data.invitations.length > 0 ? (
+            <div className={styles.peopleInvitations}>
+              <h3>{localized(lang, 'Pending invitations', 'Invitaciones pendientes')}</h3>
+              <div className={styles.listCard} role="list">
+                {data.invitations.map((invitation) => (
+                  <InvitationRow
+                    key={invitation.id}
+                    invitation={invitation}
+                    lang={lang}
+                    onLifecycleAction={onLifecycleAction}
+                  />
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
       {activeProperty ? (
         <HotelTeamPanel
-          key={`${activeProperty.id}:${adminToolsEnabled ? 'admin' : 'preview'}`}
+          key={`${activeProperty.id}:${adminToolsEnabled ? 'admin' : 'preview'}:${canManageTeam ? 'hotel-authorized' : 'invite-only'}`}
           hotelId={activeProperty.id}
           hotelName={activeProperty.name}
           currentUser={currentUser}
           currentAccountId={currentAccountId}
           lang={lang === 'es' ? 'es' : 'en'}
           canManageTeam={canManageTeam}
+          canInviteAccounts={canInviteAccounts}
           canViewWages={canViewWages}
           readOnly={Boolean(data.viewerContext?.readOnly) && !adminToolsEnabled}
           adminPreview={data.viewerContext?.kind === 'staxis_admin_preview'}
@@ -1060,18 +1360,60 @@ function PeoplePanel({ data, staff, hotelRosterUnavailable, lang, currentUser, c
   );
 }
 
-function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, onRequestAccess, onReviewRequest, onLifecycleAction, canOpenLegacyRoleSettings }: {
+function AccessPanel({ data, lang, currentUser, currentAccountId, activeProperty, canManageUsers, onViewReceipt, onRequestAccess, onReviewRequest, onLifecycleAction, onAccessChanged }: {
   data: CompanyAccessData;
   lang: string;
+  currentUser: AppUser;
   currentAccountId: string;
-  onInvite: () => void;
+  activeProperty: Property | null;
+  canManageUsers: boolean;
   onViewReceipt: (receipt: EffectiveAccessReceipt) => void;
   onRequestAccess: () => void;
   onReviewRequest: (request: CompanyAccessRequest) => void;
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
-  canOpenLegacyRoleSettings: boolean;
+  onAccessChanged: () => void;
 }) {
   const adminPreview = data.viewerContext?.kind === 'staxis_admin_preview';
+  const [editorProjection, setEditorProjection] = React.useState<CompanyAccessEditorProjection | null>(null);
+  const [editorError, setEditorError] = React.useState('');
+  const [editorReloadKey, setEditorReloadKey] = React.useState(0);
+  const [editingMembershipId, setEditingMembershipId] = React.useState<string | null>(null);
+  const editorDataKey = [
+    ...data.organizations.map((organization) => organization.id),
+    ...data.memberships.map((membership) => membership.id),
+  ].sort().join(':');
+
+  React.useEffect(() => {
+    if (adminPreview || data.legacyFallback || !data.permissions.viewAccess) {
+      setEditorProjection(null);
+      setEditorError('');
+      setEditingMembershipId(null);
+      return;
+    }
+    let cancelled = false;
+    setEditorProjection(null);
+    setEditorError('');
+    void (async () => {
+      try {
+        const response = await fetchWithAuth('/api/company-access/access-editor');
+        const body = await response.json().catch(() => ({})) as Envelope<CompanyAccessEditorProjection>;
+        if (!response.ok || !body.ok || !body.data) {
+          throw new Error(body.error || localized(
+            lang,
+            'Access editing could not be loaded.',
+            'No se pudo cargar la edición de acceso.',
+          ));
+        }
+        if (!cancelled) setEditorProjection(body.data);
+      } catch (caught) {
+        if (!cancelled) setEditorError(caught instanceof Error
+          ? caught.message
+          : localized(lang, 'Access editing could not be loaded.', 'No se pudo cargar la edición de acceso.'));
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [adminPreview, data.legacyFallback, data.permissions.viewAccess, editorDataKey, editorReloadKey, lang]);
+
   const visibleMemberships = data.permissions.viewPeople
     ? data.memberships
     : data.memberships.filter((membership) => (
@@ -1080,8 +1422,26 @@ function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, on
   const customerAccessGrants = adminPreview
     ? data.memberships.flatMap((membership) => membership.grants.map((grant) => ({ membership, grant })))
     : [];
+  let editorTarget: {
+    membership: CompanyMembership;
+    editorMembership: CompanyAccessEditorMembership;
+    organization: CompanyAccessEditorOrganization;
+  } | null = null;
+  if (editingMembershipId && editorProjection) {
+    const membership = data.memberships.find((candidate) => candidate.id === editingMembershipId);
+    const organization = editorProjection.organizations.find((candidate) => (
+      candidate.id === membership?.organizationId
+    ));
+    const editorMembership = organization?.memberships.find((candidate) => (
+      candidate.id === editingMembershipId
+    ));
+    if (membership && organization && editorMembership) {
+      editorTarget = { membership, organization, editorMembership };
+    }
+  }
   return (
-    <div className={styles.stack}>
+    <>
+      <div className={styles.stack}>
       <div className={styles.headingWithAction}>
         <SectionHeading
           eyebrow={adminPreview
@@ -1094,29 +1454,18 @@ function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, on
             ? localized(lang, 'Review this scope without changing customer access.', 'Revisa este alcance sin cambiar el acceso del cliente.')
             : localized(
                 lang,
-                'Job titles are descriptive. Access profiles and scope are what authorize your account.',
-                'Los cargos son descriptivos. Los perfiles y el alcance de acceso son los que autorizan tu cuenta.',
+                'Manage each person’s role and exact scope: whole company, portfolio or region, or selected hotels. Revocation is immediate and audited.',
+                'Administra el rol y el alcance exacto de cada persona: empresa completa, cartera o región, u hoteles seleccionados. La revocación es inmediata y auditada.',
               )}
         />
         {!adminPreview ? <div className={styles.headingActions}>
-          {data.permissions.manageInvitations ? (
-            <button type="button" className={styles.primaryButton} onClick={onInvite}>
-              <UserPlus size={16} aria-hidden="true" />
-              {localized(lang, 'Invite company member', 'Invitar miembro de la empresa')}
-            </button>
-          ) : null}
           {data.permissions.requestAccess ? (
             <button type="button" className={styles.secondaryButton} onClick={onRequestAccess}>
               <KeyRound size={16} aria-hidden="true" />
               {localized(lang, 'Request access', 'Solicitar acceso')}
             </button>
           ) : null}
-          {data.permissions.manageAccess && canOpenLegacyRoleSettings ? (
-            <Link href="/settings/users" className={styles.secondaryButton}>
-              <ShieldCheck size={16} aria-hidden="true" />
-              {localized(lang, 'Manage hotel roles', 'Gestionar roles del hotel')}
-            </Link>
-          ) : !data.permissions.manageAccess ? (
+          {!data.permissions.manageAccess ? (
             <button type="button" className={styles.secondaryButton} disabled title={localized(lang, 'A company administrator manages access.', 'Un administrador de empresa gestiona el acceso.')}>
               <ShieldCheck size={16} aria-hidden="true" />
               {localized(lang, 'Access is managed', 'El acceso es administrado')}
@@ -1125,28 +1474,59 @@ function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, on
         </div> : null}
       </div>
 
+      {!adminPreview && editorError && data.permissions.manageAccess ? (
+        <div className={styles.partialNotice} role="status">
+          <AlertTriangle size={17} aria-hidden="true" />
+          <span>{editorError}</span>
+        </div>
+      ) : null}
+
+      <LegacyOwnershipTransferPanel
+        enabled={!adminPreview && data.legacyFallback && canManageUsers && Boolean(activeProperty)}
+        propertyId={activeProperty?.id ?? null}
+        propertyName={activeProperty?.name ?? null}
+        currentAccountId={currentAccountId}
+        currentRole={currentUser.role}
+        lang={lang}
+      />
+
       {visibleMemberships.length > 0 ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
             eyebrow={localized(lang, 'Organization access', 'Acceso de la organización')}
-            title={localized(lang, 'People with company access', 'Personas con acceso de empresa')}
+            title={localized(lang, 'Roles and scopes by person', 'Roles y alcances por persona')}
             description={localized(
               lang,
-              'Company membership is separate from a hotel login and operational staff record.',
-              'La membresía de la empresa es independiente del inicio de sesión del hotel y del registro operativo del personal.',
+              'Company-wide, portfolio/region, and selected-hotel grants are shown separately from membership and the operational hotel roster.',
+              'Las concesiones para toda la empresa, cartera/región y hoteles seleccionados se muestran por separado de la membresía y del registro operativo del hotel.',
             )}
           />
           <div className={styles.listCard} role="list">
-            {visibleMemberships.map((membership) => (
-              <MembershipRow
-                key={membership.id}
-                membership={membership}
-                organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
-                isCurrentUser={membership.accountId === currentAccountId || Boolean(membership.isCurrentUser)}
-                lang={lang}
-                onLifecycleAction={onLifecycleAction}
-              />
-            ))}
+            {visibleMemberships.map((membership) => {
+              const editorOrganization = editorProjection?.organizations.find((candidate) => (
+                candidate.id === membership.organizationId
+              ));
+              const editorMembership = editorOrganization?.memberships.find((candidate) => (
+                candidate.id === membership.id
+              ));
+              const canEditAccess = Boolean(editorMembership?.canAdd || editorMembership?.canReplace);
+              return (
+                <MembershipRow
+                  key={membership.id}
+                  membership={membership}
+                  organization={data.organizations.find((item) => item.id === membership.organizationId) ?? null}
+                  isCurrentUser={membership.accountId === currentAccountId || Boolean(membership.isCurrentUser)}
+                  lang={lang}
+                  onLifecycleAction={onLifecycleAction}
+                  onEditAccess={canEditAccess ? () => setEditingMembershipId(membership.id) : undefined}
+                  accessEditLabel={(editorMembership?.currentGrants.length ?? 0) > 0
+                    ? localized(lang, 'Edit role and scope', 'Editar rol y alcance')
+                    : localized(lang, 'Add role and scope', 'Agregar rol y alcance')}
+                  showGrantActions={!adminPreview}
+                  showMembershipActions={false}
+                />
+              );
+            })}
           </div>
         </section>
       ) : null}
@@ -1195,7 +1575,7 @@ function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, on
           />
       )}
 
-      {data.permissions.viewAccess && (data.requests.length > 0 || data.invitations.length > 0) ? (
+      {data.permissions.viewAccess && data.requests.length > 0 ? (
         <section className={styles.sectionBlock}>
           <SectionHeading
             eyebrow={localized(lang, 'Open work', 'Trabajo pendiente')}
@@ -1220,11 +1600,25 @@ function AccessPanel({ data, lang, currentAccountId, onInvite, onViewReceipt, on
                 </div>
               </div>
             ))}
-            {data.invitations.map((invitation) => <InvitationRow key={invitation.id} invitation={invitation} lang={lang} onLifecycleAction={onLifecycleAction} />)}
           </div>
         </section>
       ) : null}
-    </div>
+      </div>
+
+      {editorTarget ? (
+        <AccessEditorDialog
+          membership={editorTarget.membership}
+          editorMembership={editorTarget.editorMembership}
+          organization={editorTarget.organization}
+          lang={lang}
+          onClose={() => setEditingMembershipId(null)}
+          onCompleted={() => {
+            setEditorReloadKey((value) => value + 1);
+            onAccessChanged();
+          }}
+        />
+      ) : null}
+    </>
   );
 }
 
@@ -1626,15 +2020,23 @@ function FilterBar<T extends string>({ lang, query, onQueryChange, statusFilter,
   );
 }
 
-function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecycleAction }: {
+function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecycleAction, onEditAccess, accessEditLabel, showGrantActions = true, showMembershipActions = true }: {
   membership: CompanyMembership;
   organization: CompanyOrganization | null;
   isCurrentUser: boolean;
   lang: string;
   onLifecycleAction: (action: CompanyLifecycleAction) => void;
+  onEditAccess?: () => void;
+  accessEditLabel?: string;
+  showGrantActions?: boolean;
+  showMembershipActions?: boolean;
 }) {
-  const revocableGrants = (membership.grants ?? []).filter((grant) => grant.canRevoke);
-  const hasActions = revocableGrants.length > 0 || membership.canSuspend || membership.canResume || membership.canRemove;
+  const revocableGrants = showGrantActions
+    ? (membership.grants ?? []).filter((grant) => grant.canRevoke)
+    : [];
+  const hasMembershipActions = showMembershipActions
+    && (membership.canSuspend || membership.canResume || membership.canRemove);
+  const hasActions = Boolean(onEditAccess) || revocableGrants.length > 0 || hasMembershipActions;
   return (
     <div className={styles.personRow} role="listitem">
       <Avatar name={membership.displayName} />
@@ -1647,6 +2049,25 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
           {membership.jobTitle || titleCaseAccessValue(membership.accessProfile ?? 'team member')}
           {organization ? ` · ${organization.name}` : ''}
         </span>
+        {showGrantActions ? (
+          <div className={styles.membershipGrantSummary}>
+            {(membership.grants ?? []).length > 0
+              ? membership.grants.map((grant) => (
+                  <small key={grant.id}>
+                    {titleCaseAccessValue(grant.accessProfile)} · {grant.scopeLabel}
+                  </small>
+                ))
+              : membership.accessProfile ? (
+                  <small>
+                    {titleCaseAccessValue(membership.accessProfile)} · {membership.propertyIds.length} {localized(
+                      lang,
+                      membership.propertyIds.length === 1 ? 'hotel' : 'hotels',
+                      membership.propertyIds.length === 1 ? 'hotel' : 'hoteles',
+                    )}
+                  </small>
+                ) : null}
+          </div>
+        ) : null}
       </div>
       <div className={styles.personRowActions}>
         <span className={`${styles.status} ${statusClass(membership.status)}`}>{statusLabel(membership.status, lang)}</span>
@@ -1654,6 +2075,12 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
           <details className={styles.actionMenu}>
             <summary>{localized(lang, 'Manage', 'Gestionar')}</summary>
             <div>
+              {onEditAccess ? (
+                <button type="button" onClick={onEditAccess}>
+                  {accessEditLabel ?? localized(lang, 'Edit role and scope', 'Editar rol y alcance')}
+                </button>
+              ) : null}
+              {onEditAccess && revocableGrants.length > 0 ? <hr /> : null}
               {revocableGrants.length > 0 ? <small>{localized(lang, 'Access grants', 'Concesiones de acceso')}</small> : null}
               {revocableGrants.map((grant) => (
                 <button
@@ -1669,8 +2096,8 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
                   {localized(lang, 'Revoke', 'Revocar')} {titleCaseAccessValue(grant.accessProfile)}
                 </button>
               ))}
-              {(membership.canSuspend || membership.canResume || membership.canRemove) && revocableGrants.length > 0 ? <hr /> : null}
-              {membership.canSuspend ? (
+              {hasMembershipActions && revocableGrants.length > 0 ? <hr /> : null}
+              {showMembershipActions && membership.canSuspend ? (
                 <button type="button" onClick={() => onLifecycleAction({
                   kind: 'suspend_membership',
                   id: membership.id,
@@ -1678,7 +2105,7 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
                   detailLabel: organization?.name ?? localized(lang, 'Company membership', 'Membresía de empresa'),
                 })}>{localized(lang, 'Suspend member', 'Suspender miembro')}</button>
               ) : null}
-              {membership.canResume ? (
+              {showMembershipActions && membership.canResume ? (
                 <button type="button" onClick={() => onLifecycleAction({
                   kind: 'resume_membership',
                   id: membership.id,
@@ -1686,7 +2113,7 @@ function MembershipRow({ membership, organization, isCurrentUser, lang, onLifecy
                   detailLabel: organization?.name ?? localized(lang, 'Company membership', 'Membresía de empresa'),
                 })}>{localized(lang, 'Resume member', 'Reactivar miembro')}</button>
               ) : null}
-              {membership.canRemove ? (
+              {showMembershipActions && membership.canRemove ? (
                 <button type="button" className={styles.menuDanger} onClick={() => onLifecycleAction({
                   kind: 'remove_membership',
                   id: membership.id,

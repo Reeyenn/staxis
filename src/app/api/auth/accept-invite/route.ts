@@ -2,32 +2,30 @@
 //
 // Public endpoint. Body: { token, displayName, password, username? }
 //
-// Looks up the invite by sha256(token), checks expiry + accepted_at, then:
-//   1. Creates the auth.users row with the invite's email + provided password
-//   2. Inserts an accounts row (role + property_access from invite)
-//   3. Marks the invite accepted
-// Returns success — caller redirects user to /signin.
+// Looks up the invite by sha256(token), validates current inviter authority,
+// reserves the token for the external Auth-user creation window, then asks one
+// database transaction to create the account + promised normalized entitlement,
+// consume the invite, and audit it. Returns success only after that commit.
 
 import { NextRequest } from 'next/server';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
-import { writeAudit } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, clientIpRateLimitKey } from '@/lib/api-ratelimit';
-import { capabilityDecisionForProperty } from '@/lib/capabilities/server';
 import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import {
   canGrantHotelRole,
-  canManageTeam,
   isAssignableRole,
   type AppRole,
 } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
-import { isHatRole, isMembershipScope, legacyRoleForHat } from '@/lib/company/roles';
-import { hatCoversProperty, propertiesOfOrganization } from '@/lib/company/access';
-import { grantInvitedHat } from '@/lib/company/invite-scope';
+import {
+  resolveLocalHotelInviteAuthority,
+  resolveStoredNormalizedInviteAuthority,
+  type ResolvedAuthoritativeInviteScope,
+} from '@/lib/company/account-invite-authority';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -37,6 +35,87 @@ function hashToken(t: string) { return createHash('sha256').update(t).digest('he
 function deriveUsername(email: string): string {
   const local = email.split('@')[0]?.toLowerCase().replace(/[^a-z0-9._+-]/g, '') ?? '';
   return local.slice(0, 40) || `user${Date.now().toString(36)}`;
+}
+
+type InviteClaimResult =
+  | { ok: true; inviteId: string }
+  | { ok: false; reason: 'not_found' | 'already_used' | 'expired' | 'busy' | 'unavailable' };
+
+function parseInviteClaim(value: unknown): InviteClaimResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, reason: 'unavailable' };
+  }
+  const row = value as Record<string, unknown>;
+  if (row.ok === true && typeof row.inviteId === 'string') {
+    return { ok: true, inviteId: row.inviteId };
+  }
+  const reason = row.reason;
+  return reason === 'not_found' || reason === 'already_used' || reason === 'expired' || reason === 'busy'
+    ? { ok: false, reason }
+    : { ok: false, reason: 'unavailable' };
+}
+
+function acceptedInviteResult(value: unknown): value is {
+  ok: true;
+  accountId: string;
+  normalized: boolean;
+  membershipId: string | null;
+} {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return row.ok === true
+    && typeof row.accountId === 'string'
+    && typeof row.normalized === 'boolean'
+    && (row.membershipId === null || typeof row.membershipId === 'string');
+}
+
+type AcceptanceCommitState = 'committed' | 'not_committed' | 'unavailable';
+
+/**
+ * An RPC response can be lost after PostgreSQL commits. Before deleting the
+ * newly-created Auth identity, prove whether the atomic DB side committed.
+ * Ambiguous state is preserved for reconciliation; destructive compensation
+ * is allowed only after a primary read proves there is no account/acceptance.
+ */
+async function recoverAcceptanceCommit(
+  inviteId: string,
+  authUserId: string,
+): Promise<AcceptanceCommitState> {
+  try {
+    const [inviteResult, accountResult] = await Promise.all([
+      supabaseAdmin
+        .from('account_invites')
+        .select('accepted_at, accepted_by, acceptance_claim_token')
+        .eq('id', inviteId)
+        .maybeSingle(),
+      supabaseAdmin
+        .from('accounts')
+        .select('id')
+        .eq('data_user_id', authUserId)
+        .maybeSingle(),
+    ]);
+    if (inviteResult.error || accountResult.error || !inviteResult.data) return 'unavailable';
+    const acceptedBy = inviteResult.data.accepted_by as string | null;
+    const accountId = accountResult.data?.id as string | undefined;
+    if (inviteResult.data.accepted_at && accountId && acceptedBy === accountId) {
+      return 'committed';
+    }
+    if (!inviteResult.data.accepted_at && !accountResult.data) return 'not_committed';
+    return 'unavailable';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function sameNormalizedAuthority(
+  left: ResolvedAuthoritativeInviteScope,
+  right: ResolvedAuthoritativeInviteScope,
+): boolean {
+  return left.organizationId === right.organizationId
+    && left.scope === right.scope
+    && left.role === right.role
+    && left.propertyIds.length === right.propertyIds.length
+    && left.propertyIds.every((propertyId, index) => propertyId === right.propertyIds[index]);
 }
 
 export async function POST(req: NextRequest) {
@@ -54,13 +133,22 @@ export async function POST(req: NextRequest) {
     return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
   }
 
-  const body = await req.json() as { token?: string; displayName?: string; password?: string; username?: string };
-  const { token, displayName, password } = body;
-  if (!token || !displayName || !password) {
+  let body: { token?: unknown; displayName?: unknown; password?: unknown; username?: unknown };
+  try {
+    body = await req.json() as typeof body;
+  } catch {
+    return err('A valid JSON body is required', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const token = typeof body.token === 'string' ? body.token.trim() : '';
+  const displayName = typeof body.displayName === 'string' ? body.displayName.trim() : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+  if (!token || token.length > 256 || !displayName || displayName.length > 120 || !password) {
     return err('token, displayName, and password required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  if (password.length < 6) {
-    return err('Password must be at least 6 characters', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  if (password.length < 6 || password.length > 256) {
+    return err('Password must be between 6 and 256 characters', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
   const tokenHash = hashToken(token);
@@ -81,114 +169,137 @@ export async function POST(req: NextRequest) {
     return err('Invite has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
   }
 
-  // Re-validate every mutable part of the inviter's authority at the moment
-  // of acceptance: active account, manager tier, exact hotel scope, current
-  // per-hotel capability override, and the role hierarchy. This closes the
-  // time-of-check/time-of-use gap for invites sent before a manager was
-  // deactivated, moved, restricted, or demoted. `invited_by` is NOT NULL with
-  // ON DELETE CASCADE, but an account row can remain while its authority
-  // changes, so existence alone is not sufficient.
-  const { data: inviter } = await supabaseAdmin
-    .from('accounts')
-    .select('role, property_access, active')
-    .eq('id', invite.invited_by)
-    .maybeSingle();
-  if (!inviter || inviter.active !== true || !canManageTeam(inviter.role as AppRole)) {
-    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
-  }
-  // Non-admin scope is deliberately exact. The '*' convention belongs to the
-  // platform-admin role and must not let a stale/non-admin account authorize a
-  // hotel that is absent from its explicit property_access list.
-  //
-  // COMPANY SPINE (0364): a company person's hotels come from their job, not
-  // from that array, so a hat covering the hotel counts here too. Still exact —
-  // a hat is a specific list of hotels, never a wildcard.
-  const inviterRole = inviter.role as AppRole;
-  const inviterAccess = (inviter.property_access ?? []) as string[];
-  if (inviterRole !== 'admin' && !inviterAccess.includes(invite.hotel_id)) {
-    // `hatCoversProperty`, not `accountReachesProperty`: the legacy `'*'`
-    // wildcard belongs to the platform-admin role and has never authorized a
-    // non-admin inviter here. A company JOB is the only thing that may widen
-    // this check.
-    const reachesByHat = await hatCoversProperty(invite.invited_by, invite.hotel_id);
-    if (!reachesByHat) {
-      return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
-    }
-  }
-  const capabilityDecision = await capabilityDecisionForProperty(
-    { role: inviterRole },
-    'manage_team',
-    invite.hotel_id,
-  );
-  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
-  if (capabilityDecision === 'denied') {
-    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
-  }
-
   // ── What job did this invitation actually promise? ──────────────────────
   // A plain hotel invitation promises a hotel role and nothing else: the
   // hierarchy check below is the one that has always run. A company invitation
-  // promises a hat, and the login it creates carries the DEGRADED word (a VP's
-  // account row says general_manager) so every legacy check keeps working while
-  // the true job lives on the hat.
+  // promises a hat, and the login it creates carries the least-privilege
+  // DEGRADED word (company VP/finance both remain front_desk operationally) so
+  // the true organization authority lives only on the normalized entitlement.
   const invitedScope = (invite as { membership_scope?: string | null }).membership_scope ?? null;
   const invitedOrganizationId = (invite as { organization_id?: string | null }).organization_id ?? null;
-  const invitedCoverage = ((invite as { covered_property_ids?: unknown }).covered_property_ids ?? null) as
-    string[] | null;
-
-  let accountRole: AppRole;
-  if (invitedScope && invitedOrganizationId && isHatRole(invite.role) && isMembershipScope(invitedScope)) {
-    accountRole = legacyRoleForHat(invite.role);
-  } else if (invitedScope || invitedOrganizationId) {
-    // A half-written company invitation is not a hotel invitation. Refuse
-    // rather than quietly downgrade someone into a role nobody granted.
-    return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  const invitedPropertyIds = (
+    invite as { covered_property_ids?: unknown }
+  ).covered_property_ids ?? null;
+  const expectedNormalized = invitedScope !== null
+    || invitedOrganizationId !== null
+    || invitedPropertyIds !== null;
+  const storedNormalizedInvite = {
+    hotelId: invite.hotel_id,
+    organizationId: invitedOrganizationId,
+    membershipScope: invitedScope,
+    role: invite.role,
+    coveredPropertyIds: invitedPropertyIds,
+  };
+  let firstNormalizedAuthority: ResolvedAuthoritativeInviteScope | null = null;
+  let inviterRole: AppRole;
+  if (expectedNormalized) {
+    const authority = await resolveStoredNormalizedInviteAuthority({
+      accountId: invite.invited_by,
+      invite: storedNormalizedInvite,
+    });
+    if (authority.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (authority.kind === 'denied') {
+      return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+    }
+    firstNormalizedAuthority = authority.value;
   } else {
+    const inviterAuthority = await resolveLocalHotelInviteAuthority(
+      invite.invited_by,
+      invite.hotel_id,
+      { requireIndependentTopology: true },
+    );
+    if (inviterAuthority.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (inviterAuthority.kind === 'denied') {
+      return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+    }
+    inviterRole = inviterAuthority.value.roleAtHotel;
     if (!isAssignableRole(invite.role) || !canGrantHotelRole(inviterRole, invite.role)) {
       return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
     }
-    accountRole = invite.role;
   }
 
-  // The hotels the new login lands on. A company hat's real coverage is
-  // resolved from the company on every server read (including hotels bought
-  // after today), so this array is a starting snapshot, not the authority.
-  let landingAccess: string[] = [invite.hotel_id];
-  if (invitedScope === 'company' && invitedOrganizationId) {
-    const operated = await propertiesOfOrganization(invitedOrganizationId);
-    if (operated.length > 0) landingAccess = operated;
-  } else if (invitedScope === 'property' && Array.isArray(invitedCoverage) && invitedCoverage.length > 0) {
-    landingAccess = [...new Set(invitedCoverage)];
+  // Scope expansion and hierarchy work above can cross a revocation or hotel
+  // transfer. Re-resolve immediately before claiming the token, then evaluate
+  // the promised hotel role against the role held at this hotel now.
+  if (expectedNormalized) {
+    const commitAuthority = await resolveStoredNormalizedInviteAuthority({
+      accountId: invite.invited_by,
+      invite: storedNormalizedInvite,
+    });
+    if (commitAuthority.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (commitAuthority.kind === 'denied'
+        || !firstNormalizedAuthority
+        || !sameNormalizedAuthority(firstNormalizedAuthority, commitAuthority.value)) {
+      return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+    }
+  } else {
+    const commitAuthority = await resolveLocalHotelInviteAuthority(
+      invite.invited_by,
+      invite.hotel_id,
+      { freshCapability: true, requireIndependentTopology: true },
+    );
+    if (commitAuthority.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (commitAuthority.kind === 'denied'
+        || !isAssignableRole(invite.role)
+        || !canGrantHotelRole(commitAuthority.value.roleAtHotel, invite.role)) {
+      return err('Invite no longer valid', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+    }
   }
 
-  // Atomically CLAIM the invite BEFORE any side effect. Two concurrent accept
-  // submissions with the same token would both pass the accepted_at check above,
-  // both create the auth user, and the second's createOrReclaimAuthUser could
-  // reclaim/delete the first's brand-new login. The compare-and-swap
-  // (accepted_at IS NULL -> now) lets exactly one win. (Audit fix 2026-06-18.)
-  const { data: claimed } = await supabaseAdmin
-    .from('account_invites')
-    .update({ accepted_at: new Date().toISOString() })
-    .eq('id', invite.id)
-    .is('accepted_at', null)
-    .select('id')
-    .maybeSingle();
-  if (!claimed) {
-    return err('Invite already used', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  // Reserve only the external Auth-user creation window. This is NOT the
+  // acceptance marker and grants no access. The final database RPC locks the
+  // current hotel topology, re-authorizes the inviter, and commits account +
+  // normalized entitlement + accepted_at together.
+  const claimToken = randomUUID();
+  const { data: claimData, error: claimError } = await supabaseAdmin.rpc(
+    'staxis_claim_account_invite_acceptance',
+    { p_token_hash: tokenHash, p_claim_token: claimToken },
+  );
+  if (claimError) {
+    log.error('[accept-invite] reservation store unavailable', { requestId, code: claimError.code });
+    return err('Invitation service temporarily unavailable', {
+      requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+    });
   }
-  // Release the claim if account creation fails below, so a legitimate retry can
-  // re-accept (claim-then-release-on-failure pattern).
+  const claim = parseInviteClaim(claimData);
+  if (!claim.ok) {
+    if (claim.reason === 'not_found') {
+      return err('Invite not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+    if (claim.reason === 'busy') {
+      return err('Invite acceptance is already in progress', {
+        requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    if (claim.reason === 'unavailable') {
+      return err('Invitation service temporarily unavailable', {
+        requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+      });
+    }
+    return err(claim.reason === 'expired' ? 'Invite has expired' : 'Invite already used', {
+      requestId, status: 410, code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+
   const releaseInvite = async () => {
-    try { await supabaseAdmin.from('account_invites').update({ accepted_at: null }).eq('id', invite.id); }
-    catch { /* best-effort */ }
+    try {
+      const { data, error } = await supabaseAdmin.rpc('staxis_release_account_invite_acceptance', {
+        p_invite_id: claim.inviteId,
+        p_claim_token: claimToken,
+      });
+      if (error || data !== true) throw error ?? new Error('reservation was not released');
+    } catch (releaseError) {
+      log.error('[accept-invite] exact reservation release failed', {
+        requestId, inviteId: claim.inviteId, err: releaseError,
+      });
+    }
   };
 
-  // Username from email local-part. Audit P3.1 (2026-05-17): previously
-  // a SELECT-then-INSERT loop pre-checked uniqueness; now we trust the
-  // UNIQUE constraint on accounts.username (migration 0001) and retry
-  // the INSERT itself with a digit suffix on SQLSTATE 23505 — saves
-  // N round-trips on the common no-collision path.
-  let username = body.username?.toLowerCase().trim() || deriveUsername(invite.email);
+  // Username from email local-part. The final SQL transaction trusts the
+  // UNIQUE constraint and retries deterministic suffixes on collisions.
+  let username = typeof body.username === 'string'
+    ? body.username.toLowerCase().trim()
+    : deriveUsername(invite.email);
   if (!/^[a-z0-9._+-]{2,40}$/.test(username)) {
     username = deriveUsername(invite.email);
   }
@@ -201,7 +312,10 @@ export async function POST(req: NextRequest) {
   const authResult = await createOrReclaimAuthUser({
     email: invite.email,
     password,
-    userMetadata: { username, displayName },
+    userMetadata: { username, displayName, staxisInviteId: claim.inviteId },
+    // The exact database reservation serializes this invitation. The generic
+    // helper still protects recent identities created by other signup flows.
+    allowOrphanReclaim: true,
   });
   if (authResult.alreadyHasAccount) {
     await releaseInvite();
@@ -217,30 +331,11 @@ export async function POST(req: NextRequest) {
   }
   const authUser = authResult.user;
 
-  // Insert with collision-retry against the UNIQUE constraint.
-  let insErr: { code?: string; message?: string } | null = null;
-  for (let i = 0; i < 5; i++) {
-    const { error } = await supabaseAdmin.from('accounts').insert({
-      username,
-      display_name: displayName,
-      role: accountRole,
-      property_access: landingAccess,
-      data_user_id: authUser.id,
-    });
-    if (!error) { insErr = null; break; }
-    insErr = error;
-    if (error.code !== '23505') break;  // not a unique violation — won't fix itself
-    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
-  }
-  if (insErr) {
-    log.error('[accept-invite] accounts insert failed', { err: insErr, requestId });
-    // Audit finding #4: pre-2026-05-17 this was `.catch(() => {})` which
-    // silently swallowed rollback failures, leaving orphan auth.users
-    // rows that future signups with the same email tripped over with no
-    // breadcrumb. Log loudly + Sentry so the orphan sweeper cron has
-    // backup observability and on-call gets paged if rollback fails
-    // routinely.
-    await supabaseAdmin.auth.admin.deleteUser(authUser.id).catch(rollErr => {
+  const rollbackAuthUser = async () => {
+    try {
+      const { error } = await supabaseAdmin.auth.admin.deleteUser(authUser.id);
+      if (error) throw error;
+    } catch (rollErr) {
       log.error('[accept-invite] AUTH ROLLBACK FAILED', {
         auth_user_id: authUser.id,
         email: invite.email,
@@ -253,58 +348,90 @@ export async function POST(req: NextRequest) {
         auth_user_id: authUser.id,
         flow: 'accept-invite',
       });
+    }
+  };
+
+  let acceptedData: unknown = null;
+  let acceptedError: { code?: string; message?: string } | null = null;
+  let finalizeThrown: unknown = null;
+  try {
+    const finalized = await supabaseAdmin.rpc(
+      'staxis_accept_account_invite',
+      {
+        p_token_hash: tokenHash,
+        p_claim_token: claimToken,
+        p_auth_user_id: authUser.id,
+        p_username: username,
+        p_display_name: displayName,
+      },
+    );
+    acceptedData = finalized.data;
+    acceptedError = finalized.error;
+  } catch (finalizeError) {
+    finalizeThrown = finalizeError;
+  }
+  const accepted = acceptedInviteResult(acceptedData) ? acceptedData : null;
+  if (finalizeThrown
+    || acceptedError
+    || !accepted
+    || accepted.normalized !== expectedNormalized
+    || (expectedNormalized && !accepted.membershipId)) {
+    log.error('[accept-invite] transactional acceptance failed', {
+      requestId,
+      inviteId: claim.inviteId,
+      code: acceptedError?.code,
+      normalized: expectedNormalized,
+      threw: finalizeThrown instanceof Error ? finalizeThrown.message : finalizeThrown ? String(finalizeThrown) : null,
     });
+
+    const recovery = await recoverAcceptanceCommit(claim.inviteId, authUser.id);
+    if (recovery === 'committed') {
+      log.warn('[accept-invite] recovered committed acceptance after lost/invalid final response', {
+        requestId, inviteId: claim.inviteId, authUserId: authUser.id,
+      });
+      return ok({ email: invite.email }, { requestId });
+    }
+    if (recovery === 'unavailable') {
+      const reconciliationError = finalizeThrown instanceof Error
+        ? finalizeThrown
+        : new Error('Invitation finalization result is ambiguous');
+      captureException(reconciliationError, {
+        subsystem: 'auth',
+        failure_mode: 'invite_acceptance_reconciliation_required',
+        auth_user_id: authUser.id,
+        invite_id: claim.inviteId,
+      });
+      // Do not delete Auth or release the exact claim: either could destroy a
+      // committed account or let a second attempt race ambiguous state. The
+      // claim self-expires after ten minutes and the recent-identity guard
+      // preserves this login for reconciliation.
+      return err('Invitation completion is being reconciled. Please retry shortly.', {
+        requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+      });
+    }
+
+    await rollbackAuthUser();
     await releaseInvite();
-    return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
 
-  // Invite was already claimed atomically up front (compare-and-swap), so no
-  // separate "mark consumed" write is needed here.
-
-  // ── Put the hat on ───────────────────────────────────────────────────────
-  // The person already has a working login on the hotel their invitation named,
-  // so a hat that fails to write is a capability to repair, not a reason to
-  // strand a new employee at the door. Logged loudly instead.
-  let hatMembershipId: string | null = null;
-  if (invitedScope && invitedOrganizationId && isHatRole(invite.role) && isMembershipScope(invitedScope)) {
-    const { data: newAccount } = await supabaseAdmin
-      .from('accounts')
-      .select('id')
-      .eq('data_user_id', authUser.id)
-      .maybeSingle();
-    const newAccountId = (newAccount as { id?: string } | null)?.id ?? null;
-    if (newAccountId) {
-      hatMembershipId = await grantInvitedHat({
-        actorAccountId: invite.invited_by,
-        organizationId: invitedOrganizationId,
-        accountId: newAccountId,
-        scope: invitedScope,
-        role: invite.role,
-        propertyIds: invitedScope === 'property' ? landingAccess : null,
-      });
-    }
-    if (!hatMembershipId) {
-      log.error('[accept-invite] account created but the company job was not recorded', {
+    const busy = acceptedError?.code === '55P03';
+    const conflict = acceptedError?.code === '42501'
+      || acceptedError?.code === '40001'
+      || acceptedError?.code === '23514';
+    const duplicate = acceptedError?.code === '23505';
+    return err(
+      busy ? 'Invitation completion is busy. Please retry shortly.'
+        : conflict ? 'Invite no longer valid'
+        : duplicate ? 'An account with this email already exists — please sign in instead.'
+          : 'Failed to create account',
+      {
         requestId,
-        inviteId: invite.id,
-        organizationId: invitedOrganizationId,
-      });
-    }
+        status: busy ? 503 : conflict ? 410 : duplicate ? 409 : 500,
+        code: busy ? ApiErrorCode.UpstreamFailure
+          : conflict || duplicate ? ApiErrorCode.IdempotencyConflict
+            : ApiErrorCode.InternalError,
+      },
+    );
   }
-
-  await writeAudit({
-    action: 'invite.accept',
-    actorUserId: authUser.id,
-    actorEmail: invite.email,
-    targetType: 'invite',
-    targetId: invite.id,
-    hotelId: invite.hotel_id,
-    metadata: {
-      role: invite.role,
-      username,
-      ...(invitedScope ? { scope: invitedScope, membershipId: hatMembershipId } : {}),
-    },
-  });
 
   return ok({ email: invite.email }, { requestId });
 }

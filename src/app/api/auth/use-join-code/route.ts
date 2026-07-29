@@ -10,21 +10,26 @@
 //   - New-flow codes (role = null): the user picks their role at signup.
 //     Restricted to staff roles — front_desk / housekeeping / maintenance —
 //     so a shared code cannot be used to self-promote to owner or admin.
-//   - Legacy codes (role set on the row): the baked-in role wins for
-//     back-compat. We still accept role/phone in the payload but ignore
-//     the legacy code's role.
+//   - Baked-role codes: legacy staff codes remain compatible; owner/GM is
+//     accepted only for the DB-typed, one-shot unclaimed-hotel bootstrap.
+//     The baked role wins and the payload role is ignored.
 
 import { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { createOrReclaimAuthUser } from '@/lib/auth-create-user';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { log, getOrMintRequestId } from '@/lib/log';
-import { writeAudit, logSecurityEvent } from '@/lib/audit';
+import { logSecurityEvent } from '@/lib/audit';
 import { checkAndIncrementRateLimit, rateLimitedResponse, trustedClientIp, ipToRateLimitKey } from '@/lib/api-ratelimit';
 import type { AppRole } from '@/lib/roles';
 import { captureException } from '@/lib/sentry';
-import { deriveCurrentStep, type OnboardingState } from '@/lib/onboarding/state';
 import { isTwoFactorEnabled } from '@/lib/two-factor';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import {
+  finalizeJoinCodeSignup,
+  resolveJoinCodeCapability,
+  type JoinCodeSignupFinalizationReceipt,
+} from '@/lib/join-code-capability';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -52,7 +57,65 @@ function normalizePhone(p: string | undefined | null): string | null {
   // Count digits across the whole string: "(555) 010-2026" is a fine phone
   // number even though its longest consecutive digit run is only 4.
   if ((trimmed.match(/\d/g) ?? []).length < 7) return null;
+  if (trimmed.length > 64) return null;
   return trimmed;
+}
+
+/**
+ * Auth user creation cannot share the Postgres finalizer transaction. Before
+ * deleting a newly provisioned identity after refusal, prove that no account
+ * or property-owner edge was committed. This also protects against the
+ * ambiguous "database committed, HTTP response was lost" failure mode.
+ */
+async function cleanupUnfinalizedAuthUser(args: {
+  authUserId: string;
+  email: string;
+  requestId: string;
+}): Promise<boolean> {
+  const { authUserId, email, requestId } = args;
+  try {
+    const accountResult = await supabaseAdmin
+      .from('accounts')
+      .select('id')
+      .eq('data_user_id', authUserId)
+      .maybeSingle();
+    const ownerResult = await supabaseAdmin
+      .from('properties')
+      .select('id')
+      .eq('owner_id', authUserId)
+      .limit(1)
+      .maybeSingle();
+    if (accountResult.error || ownerResult.error) {
+      throw accountResult.error ?? ownerResult.error;
+    }
+    if (accountResult.data || ownerResult.data) {
+      log.warn('[use-join-code] auth cleanup skipped: committed linkage exists', {
+        auth_user_id: authUserId,
+        hasAccount: !!accountResult.data,
+        ownsProperty: !!ownerResult.data,
+        requestId,
+      });
+      return false;
+    }
+
+    const deletion = await supabaseAdmin.auth.admin.deleteUser(authUserId);
+    if (deletion.error) throw deletion.error;
+    return true;
+  } catch (rollErr) {
+    log.error('[use-join-code] AUTH ROLLBACK FAILED', {
+      auth_user_id: authUserId,
+      email,
+      err: rollErr,
+      requestId,
+    });
+    captureException(rollErr, {
+      subsystem: 'auth',
+      failure_mode: 'rollback_failed',
+      auth_user_id: authUserId,
+      flow: 'use-join-code',
+    });
+    return false;
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -95,18 +158,37 @@ export async function POST(req: NextRequest) {
     return err('Invalid email', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const normalizedCode = code.trim().toUpperCase();
-  const { data: row, error: codeErr } = await supabaseAdmin
-    .from('hotel_join_codes')
-    .select('id, hotel_id, role, expires_at, max_uses, used_count, revoked_at')
-    .eq('code', normalizedCode)
-    .maybeSingle();
-  if (codeErr || !row) {
+  const codeResolution = await resolveJoinCodeCapability(code);
+  if (codeResolution.outcome === 'unavailable') {
+    log.error('[use-join-code] capability resolution unavailable', {
+      requestId,
+      databaseCode: codeResolution.databaseCode,
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (codeResolution.outcome === 'not_found') {
     return err('Code not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
-  if (row.revoked_at) return err('Code has been revoked', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
-  if (new Date(row.expires_at).getTime() <= Date.now()) return err('Code has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
-  if (row.used_count >= row.max_uses) return err('Code has been used up', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  const receipt = codeResolution.receipt;
+  if (receipt.codeKind === 'onboarding_resume') {
+    return err('Code is only valid for resuming hotel setup', {
+      requestId,
+      status: 410,
+      code: ApiErrorCode.IdempotencyConflict,
+    });
+  }
+  if (receipt.status === 'revoked') return err('Code has been revoked', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  if (receipt.status === 'expired') return err('Code has expired', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  if (receipt.status === 'used_up') return err('Code has been used up', { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict });
+  const row = {
+    id: receipt.codeId,
+    hotel_id: receipt.hotelId,
+    role: receipt.role,
+    expires_at: receipt.expiresAt,
+    max_uses: receipt.maxUses,
+    used_count: receipt.usedCount,
+    revoked_at: null,
+  };
 
   // F-06: owner/GM-baked codes are an ownership-assignment primitive. The
   // redeem path below rewrites properties.owner_id when finalRole==='owner'
@@ -123,10 +205,13 @@ export async function POST(req: NextRequest) {
   //     suspenders here), and
   //   • owner codes aimed at a hotel that has ALREADY completed onboarding
   //     (a live, claimed hotel) — the displacement vector.
-  // Single-use is self-limiting too: the CAS increment below consumes the
-  // code on first redeem, so it can only ever assign ownership once.
+  // Migration 0398 also enforces the stronger invariant at the write boundary:
+  // platform-admin placeholder ownership, no accountCreatedAt/completion, no
+  // existing owner/GM operator, one active privileged code, and one use.
   //
-  // Evaluate BEFORE the CAS increment so a rejected probe doesn't burn a slot.
+  // Evaluate before Auth creation/finalization so a rejected probe cannot
+  // create an identity or consume a slot. The database repeats the decisive
+  // lifecycle check under the transfer lock before committing any access.
   if (row.role === 'owner' || row.role === 'general_manager') {
     const { data: claimTarget } = await supabaseAdmin
       .from('properties')
@@ -150,7 +235,7 @@ export async function POST(req: NextRequest) {
         },
       });
       return err(
-        'Owner and General Manager roles cannot be assigned via shared join codes. Ask your admin for an emailed invite instead.',
+        'Owner and General Manager roles cannot be assigned via shared join codes — ask your admin for an emailed invite instead.',
         { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
       );
     }
@@ -174,39 +259,12 @@ export async function POST(req: NextRequest) {
     finalRole = requestedRole as AppRole;
   }
 
-  // ── Atomic CAS increment (May 2026 audit pass-4) ──────────────────────
-  // Old code did SELECT-then-UPDATE with the increment at the END after
-  // account creation. Two parallel signups with the same code (max_uses=1)
-  // could both pass the SELECT guard at line above, both create accounts,
-  // then both try to increment. Net effect: one valid code consumed twice;
-  // an unintended second user joins the hotel with a "used-up" invite.
-  //
-  // Fix: increment used_count atomically RIGHT NOW with optimistic-
-  // concurrency on the current used_count value. If another concurrent
-  // request beat us to the increment, our .eq('used_count', row.used_count)
-  // matches zero rows; we return 409 without creating an account. Auth
-  // creation happens AFTER the increment succeeds — and if auth creation
-  // fails, we decrement to release the slot.
-  const { data: cas, error: casErr } = await supabaseAdmin
-    .from('hotel_join_codes')
-    .update({ used_count: row.used_count + 1 })
-    .eq('id', row.id)
-    .eq('used_count', row.used_count)
-    .select('id')
-    .maybeSingle();
-  if (casErr || !cas) {
-    return err(
-      'Code is being used by another signup. Refresh and try again',
-      { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
-    );
-  }
-
   const normalizedPhone = normalizePhone(phone);
 
-  // Audit P3.1 (2026-05-17): dropped the SELECT-then-INSERT pre-check
-  // loop. We now trust the UNIQUE constraint on accounts.username
-  // (migration 0001) and retry the INSERT below with a digit suffix on
-  // SQLSTATE 23505 — saves N round-trips on the no-collision path.
+  // Auth is an external system, so it is created immediately before the one
+  // relational commit. No join-code slot or hotel/account row has changed at
+  // this point. The finalizer below repeats every authority/lifecycle check
+  // while holding the same property lock used by hotel transfer.
   let username = deriveUsername(normalizedEmail);
 
   // email_confirm:true so signInWithOtp (called by /signup right after)
@@ -222,25 +280,6 @@ export async function POST(req: NextRequest) {
   // the regular /signin path also requires an OTP for untrusted browsers.
   // So email-ownership is still proven before the user gets in; the only
   // thing email_confirm:true changes is which Supabase template is sent.
-  // Helper: decrement used_count to release the slot we reserved above.
-  // Used when account creation fails — without it, a transient auth
-  // failure would permanently burn one slot of the join code.
-  //
-  // Atomic unconditional decrement via RPC (audit/concurrency #3). The
-  // old conditional eq('used_count', row.used_count + 1) silently no-op'd
-  // if another signup had incremented the counter in the meantime,
-  // leaking a slot forever. The CAS at the top of this route already
-  // prevents over-grant, so the release just needs to subtract one
-  // atomically (floored at zero).
-  const releaseSlot = async () => {
-    try {
-      await supabaseAdmin.rpc('staxis_release_join_code_slot', { p_id: row.id });
-    } catch {
-      // best-effort; the slot stays consumed for the rest of the hour
-      // bucket if this race-rare path also flakes
-    }
-  };
-
   // createOrReclaimAuthUser handles the orphan-login case: a prior hotel
   // delete may have left an auth.users row with no accounts row, which used
   // to make this createUser fail with "email already registered" for up to a
@@ -253,101 +292,96 @@ export async function POST(req: NextRequest) {
     userMetadata: { username, displayName },
   });
   if (authResult.alreadyHasAccount) {
-    await releaseSlot();
     return err(
-      'An account with this email already exists. Please sign in instead.',
+      'An account with this email already exists — please sign in instead.',
       { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
     );
   }
   if (!authResult.user) {
     log.error('[use-join-code] createOrReclaimAuthUser failed', { err: authResult.error, requestId });
-    await releaseSlot();
     return err('Failed to create account', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
   const authUser = authResult.user;
 
-  // Insert with collision-retry against accounts.username UNIQUE. On any
-  // non-unique-violation error, bail to the cleanup path below (release
-  // slot + delete auth user).
-  // New-flow staff signups (shared code, self-picked role) get NO property
-  // access at creation — they land in join_requests as 'pending' and a
-  // manager approves them in My Hotel → People (migration 0315), which
-  // is what grants access + creates their staff row. Legacy baked-role
-  // codes (single-use owner/GM onboarding invites) keep immediate access.
-  const pendingApproval = !row.role;
-  let insErr: { code?: string; message?: string } | null = null;
-  let accountId: string | null = null;
+  let finalizationReceipt: JoinCodeSignupFinalizationReceipt | null = null;
+  let terminalStatus: string | null = null;
   for (let i = 0; i < 5; i++) {
-    const { data: insData, error } = await supabaseAdmin.from('accounts').insert({
+    const input = {
+      codeId: row.id,
+      code,
+      hotelId: row.hotel_id,
+      expectedUsedCount: row.used_count,
+      authUserId: authUser.id,
       username,
-      display_name: displayName,
-      role: finalRole,
-      property_access: pendingApproval ? [] : [row.hotel_id],
-      data_user_id: authUser.id,
-      phone: normalizedPhone,
-    }).select('id').single();
-    if (!error) { insErr = null; accountId = String(insData.id); break; }
-    insErr = error;
-    if (error.code !== '23505') break;
-    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
-  }
-  if (insErr) {
-    log.error('[use-join-code] accounts insert failed', { err: insErr, requestId });
-    // Audit finding #4: pre-2026-05-17 this was `.catch(() => {})` which
-    // silently swallowed rollback failures, leaving orphan auth.users
-    // rows. Log loudly + Sentry so the orphan sweeper cron and on-call
-    // both have visibility if rollback fails.
-    await supabaseAdmin.auth.admin.deleteUser(authUser.id).catch(rollErr => {
-      log.error('[use-join-code] AUTH ROLLBACK FAILED', {
-        auth_user_id: authUser.id,
-        email: normalizedEmail,
-        err: rollErr,
-        requestId,
-      });
-      captureException(rollErr, {
-        subsystem: 'auth',
-        failure_mode: 'rollback_failed',
-        auth_user_id: authUser.id,
-        flow: 'use-join-code',
-      });
-    });
-    await releaseSlot();
-    return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  // Slot already incremented via the CAS at the top.
-
-  // Pending staff signup → create the join request the manager will see in
-  // My Hotel → People. If this write fails the account would be stranded
-  // (no access, no request, nothing for a manager to approve), so treat it
-  // like the accounts-insert failure: roll everything back and let the
-  // person retry the whole signup.
-  if (pendingApproval && accountId) {
-    const { error: jrErr } = await supabaseAdmin.from('join_requests').insert({
-      property_id: row.hotel_id,
-      account_id: accountId,
-      name: displayName,
+      displayName,
+      requestedRole: finalRole as Exclude<AppRole, 'admin' | 'staff'>,
+      expectedPendingApproval: receipt.codeKind === 'staff_signup' && receipt.role === null,
       phone: normalizedPhone,
       language,
-      department: finalRole,
-    });
-    if (jrErr) {
-      log.error('[use-join-code] join_requests insert failed', { err: jrErr, requestId });
-      await supabaseAdmin.from('accounts').delete().eq('id', accountId).then(({ error: accDelErr }) => {
-        if (accDelErr) log.error('[use-join-code] account rollback failed', { accountId, err: accDelErr, requestId });
-      });
-      await supabaseAdmin.auth.admin.deleteUser(authUser.id).catch(rollErr => {
-        log.error('[use-join-code] AUTH ROLLBACK FAILED', {
-          auth_user_id: authUser.id, email: normalizedEmail, err: rollErr, requestId,
-        });
-        captureException(rollErr, {
-          subsystem: 'auth', failure_mode: 'rollback_failed',
-          auth_user_id: authUser.id, flow: 'use-join-code',
-        });
-      });
-      await releaseSlot();
-      return err('Failed to create account', { requestId, status: 500, code: ApiErrorCode.InternalError });
+      requestId,
+    } as const;
+    let finalized = await finalizeJoinCodeSignup(input);
+    // The RPC is idempotent by (code, Auth user), so one immediate retry safely
+    // recovers a committed transaction whose HTTP response was lost.
+    if (finalized.outcome === 'unavailable') {
+      finalized = await finalizeJoinCodeSignup(input);
     }
+    if (finalized.outcome === 'finalized') {
+      finalizationReceipt = finalized.receipt;
+      break;
+    }
+    terminalStatus = finalized.outcome === 'denied'
+      ? finalized.status
+      : 'unavailable';
+    if (terminalStatus !== 'username_conflict') break;
+    username = (username + Math.floor(Math.random() * 10000)).slice(0, 40);
   }
+
+  if (!finalizationReceipt) {
+    await cleanupUnfinalizedAuthUser({
+      authUserId: authUser.id,
+      email: normalizedEmail,
+      requestId,
+    });
+    if (terminalStatus === 'conflict' || terminalStatus === 'account_exists') {
+      return err(
+        terminalStatus === 'account_exists'
+          ? 'An account with this email already exists — please sign in instead.'
+          : 'Code is being used by another signup — refresh and try again',
+        { requestId, status: 409, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
+    if (terminalStatus === 'revoked'
+        || terminalStatus === 'expired'
+        || terminalStatus === 'used_up'
+        || terminalStatus === 'not_found'
+        || terminalStatus === 'denied') {
+      if (row.role === 'owner' || row.role === 'general_manager') {
+        await logSecurityEvent({
+          action: 'auth.legacy_privileged_code_rejected',
+          propertyId: row.hotel_id,
+          requestId,
+          metadata: {
+            codeId: row.id,
+            bakedRole: row.role,
+            email: normalizedEmail,
+            reason: 'database_finalization_recheck',
+          },
+        });
+      }
+      return err(
+        'This invitation is no longer claimable.',
+        { requestId, status: 410, code: ApiErrorCode.IdempotencyConflict },
+      );
+    }
+    log.error('[use-join-code] atomic finalization unavailable', {
+      requestId,
+      finalizationStatus: terminalStatus ?? 'username_conflict_exhausted',
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+
+  const pendingApproval = finalizationReceipt.pendingApproval;
 
   // Hole #1 fix (audit 2026-05-22): write a password proof so the
   // client's first sign-in flow (signInWithOtp + verifyOtp + trust-device)
@@ -397,97 +431,6 @@ export async function POST(req: NextRequest) {
       requestId, userId: authUser.id, err: proofErr.message,
     });
   }
-
-  // Phase M1.5 (2026-05-14): when an OWNER signs up via an admin-issued
-  // owner code, transfer properties.owner_id from the placeholder admin
-  // (set at hotel creation time in /api/admin/properties/create) to the
-  // actual owner. Without this, owner_id semantics are wrong — every
-  // hotel "owned by" Reeyen forever.
-  //
-  // GM signups do NOT transfer owner_id. The GM has property_access
-  // (full read/write) but isn't the owner of record.
-  if (finalRole === 'owner') {
-    const { error: ownerXferErr } = await supabaseAdmin
-      .from('properties')
-      .update({ owner_id: authUser.id })
-      .eq('id', row.hotel_id);
-    if (ownerXferErr) {
-      // Non-fatal: account is created; owner_id semantic is wrong but
-      // the user can still operate the hotel via property_access.
-      // Log so ops can repair manually.
-      log.warn('[use-join-code] owner_id transfer failed (non-fatal)', {
-        requestId,
-        hotelId: row.hotel_id,
-        newOwner: authUser.id,
-        err: ownerXferErr,
-      });
-    }
-  }
-
-  // Persist accountCreatedAt server-side, atomically with the slot we just
-  // consumed (Fix 3 — dropped-tab lockout, 2026-06-26). The client ALSO PATCHes
-  // this after we return, but a tab closed in that gap left the code consumed
-  // with NO onboarding progress saved → reopening the link bricked at "code
-  // already used". Writing it here means a reopen derives the verify-email step
-  // (never back on account creation), and the login funnel can route a returning
-  // signed-in owner back into the wizard (isOnboardingInProgress keys on
-  // accountCreatedAt).
-  //
-  // Gated to owner/GM onboarding ONLY — staff signups via shared multi-use codes
-  // must never touch the hotel's onboarding_state. Idempotent (skips if already
-  // set), so a second legitimate redemption / replay can't yank a mid-onboarding
-  // owner backward. Non-fatal: the account already exists; on failure we Sentry
-  // it and rely on the client PATCH + the wizard's "sign in to continue" path.
-  if (finalRole === 'owner' || finalRole === 'general_manager') {
-    try {
-      const { data: propRow } = await supabaseAdmin
-        .from('properties')
-        .select('onboarding_state')
-        .eq('id', row.hotel_id)
-        .maybeSingle();
-      const cur = (propRow?.onboarding_state as OnboardingState | null) ?? { step: 1 };
-      if (!cur.accountCreatedAt) {
-        const next: OnboardingState = { ...cur, accountCreatedAt: new Date().toISOString() };
-        next.step = deriveCurrentStep(next);
-        const { error: stErr } = await supabaseAdmin
-          .from('properties')
-          .update({ onboarding_state: next })
-          .eq('id', row.hotel_id);
-        if (stErr) {
-          log.warn('[use-join-code] onboarding_state accountCreatedAt persist failed (non-fatal)', {
-            requestId, hotelId: row.hotel_id, err: stErr.message,
-          });
-          captureException(new Error(`onboarding_state persist failed: ${stErr.message}`), {
-            subsystem: 'auth',
-            failure_mode: 'onboarding_state_persist_failed',
-            flow: 'use-join-code',
-          });
-        }
-      }
-    } catch (persistErr) {
-      log.warn('[use-join-code] onboarding_state persist threw (non-fatal)', { requestId });
-      captureException(persistErr, {
-        subsystem: 'auth',
-        failure_mode: 'onboarding_state_persist_threw',
-        flow: 'use-join-code',
-      });
-    }
-  }
-
-  await writeAudit({
-    action: 'join_code.use',
-    actorUserId: authUser.id,
-    actorEmail: normalizedEmail,
-    targetType: 'join_code',
-    targetId: row.id,
-    hotelId: row.hotel_id,
-    metadata: {
-      code: normalizedCode, role: finalRole, username,
-      hasPhone: !!normalizedPhone,
-      ownerIdTransferred: finalRole === 'owner',
-      pendingApproval,
-    },
-  });
 
   // Global human-2FA switch (migration 0310): tell the client which
   // post-signup path to take. createOrReclaimAuthUser already creates every

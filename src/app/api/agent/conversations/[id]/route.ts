@@ -1,5 +1,7 @@
 // ─── GET/DELETE /api/agent/conversations/[id] ──────────────────────────────
-// Load the full conversation (messages + metadata), or delete it.
+// Load a PROPERTY conversation (messages + metadata), or delete an owned row.
+// Portfolio replay requires a fresh authorization-scope receipt and never
+// passes through this ordinary hotel-chat GET.
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -7,12 +9,16 @@ import { requireSession } from '@/lib/api-auth';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
 import { validateUuid } from '@/lib/api-validate';
 import { getOrMintRequestId, log } from '@/lib/log';
-import { loadConversation, deleteConversation } from '@/lib/agent/memory';
-import { resolvePortfolioAccessUncached } from '@/lib/company/portfolio';
+import {
+  loadConversation,
+  loadConversationScope,
+  deleteConversation,
+} from '@/lib/agent/memory';
 import { getLivePendingActions } from '@/lib/agent/pending-actions';
 import { buildActionSummary, addonDescriptorsForCard } from '@/lib/agent/approval';
 // Side-effect import — registers all tools so buildActionSummary/addons resolve.
 import '@/lib/agent/tools/index';
+import { listAuthoritativePropertyAccess } from '@/lib/authorization/server';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -25,12 +31,12 @@ export async function GET(
   const auth = await requireSession(req);
   if (!auth.ok) return auth.response;
 
-  const { data: account } = await supabaseAdmin
+  const { data: account, error: accountError } = await supabaseAdmin
     .from('accounts')
-    .select('id')
+    .select('id, active')
     .eq('data_user_id', auth.userId)
     .maybeSingle();
-  if (!account) {
+  if (accountError || !account || account.active !== true) {
     return err('account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
@@ -38,26 +44,28 @@ export async function GET(
   if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const id = idV.value!;
   try {
+    // Ownership-only metadata first; messages are not read until CURRENT hotel
+    // reach is proven. A revoked/transferred user gets the same not-found shape
+    // as a stranger and cannot enumerate stale history.
+    const scope = await loadConversationScope(id, account.id as string);
+    if (!scope || scope.conversationKind !== 'property') {
+      return err('conversation not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
+    const authority = await listAuthoritativePropertyAccess(account.id as string);
+    if (!authority) {
+      return err('authorization is temporarily unavailable', {
+        requestId,
+        status: 503,
+        code: ApiErrorCode.UpstreamFailure,
+        headers: { 'Retry-After': '5' },
+      });
+    }
+    if (!authority.all && !authority.propertyIds.includes(scope.propertyId)) {
+      return err('conversation not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+    }
     const convo = await loadConversation(id, account.id as string);
     if (!convo) {
       return err('conversation not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-    }
-    // Cross-hotel chat: a portfolio conversation holds numbers from every hotel
-    // in a company, so owning the row is not enough to read it back. The gate
-    // that let it be created is re-run — a person whose company job ended, or
-    // whose company switched cross-hotel chat off, gets the same answer as
-    // somebody who was never in it. Deliberately the UNCACHED resolve: this is a
-    // fresh request, not a step inside a turn already in flight.
-    if (convo.organizationId) {
-      const access = await resolvePortfolioAccessUncached(
-        account.id as string,
-        convo.organizationId,
-      );
-      if (!access.ok) {
-        return err('conversation not found', {
-          requestId, status: 404, code: ApiErrorCode.NotFound,
-        });
-      }
     }
     // Rehydrate any approval cards still awaiting a decision (item: card
     // rehydration). Ownership is already proven by loadConversation above.
@@ -111,12 +119,12 @@ export async function DELETE(
   const auth = await requireSession(req);
   if (!auth.ok) return auth.response;
 
-  const { data: account } = await supabaseAdmin
+  const { data: account, error: accountError } = await supabaseAdmin
     .from('accounts')
-    .select('id')
+    .select('id, active')
     .eq('data_user_id', auth.userId)
     .maybeSingle();
-  if (!account) {
+  if (accountError || !account || account.active !== true) {
     return err('account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
   }
 
@@ -124,7 +132,30 @@ export async function DELETE(
   if (idV.error) return err(idV.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   const id = idV.value!;
   try {
-    const deleted = await deleteConversation(id, account.id as string);
+    // Match GET's anti-enumeration boundary and resolve fresh hotel reach
+    // before entering the atomic database deletion gate. Portfolio rows never
+    // pass this route, including after company access is revoked.
+    const scope = await loadConversationScope(id, account.id as string);
+    if (!scope || scope.conversationKind !== 'property') {
+      return err('conversation not found or not yours', {
+        requestId, status: 404, code: ApiErrorCode.NotFound,
+      });
+    }
+    const authority = await listAuthoritativePropertyAccess(account.id as string);
+    if (!authority) {
+      return err('authorization is temporarily unavailable', {
+        requestId,
+        status: 503,
+        code: ApiErrorCode.UpstreamFailure,
+        headers: { 'Retry-After': '5' },
+      });
+    }
+    if (!authority.all && !authority.propertyIds.includes(scope.propertyId)) {
+      return err('conversation not found or not yours', {
+        requestId, status: 404, code: ApiErrorCode.NotFound,
+      });
+    }
+    const deleted = await deleteConversation(id, account.id as string, scope.propertyId);
     if (!deleted) {
       return err('conversation not found or not yours', {
         requestId, status: 404, code: ApiErrorCode.NotFound,

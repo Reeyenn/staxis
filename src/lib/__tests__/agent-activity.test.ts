@@ -238,6 +238,8 @@ describe('fetchActivity pagination', () => {
 
 type GetUserFn = typeof supabaseAdmin.auth.getUser;
 const originalGetUser: GetUserFn = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
+type RpcFn = typeof supabaseAdmin.rpc;
+const originalRpc: RpcFn = supabaseAdmin.rpc.bind(supabaseAdmin);
 
 // Test-tunable account state read by validateDeviceTrust + userHasPropertyAccess
 // + loadAgentUserCtx.
@@ -258,7 +260,7 @@ function installRouteFrom() {
       range: async () => ({ data: [], error: null }),
       maybeSingle: async () => {
         if (table === 'accounts') {
-          return { data: { id: ACCT_A, username: 'gm', display_name: 'GM', skip_2fa: false, role: acctRole, property_access: acctAccess, data_user_id: USER_ID }, error: null };
+          return { data: { id: ACCT_A, username: 'gm', display_name: 'GM', skip_2fa: false, role: acctRole, property_access: acctAccess, data_user_id: USER_ID, active: true }, error: null };
         }
         if (table === 'trusted_devices') {
           return { data: { id: 'dev', expires_at: new Date(Date.now() + 30 * 86_400_000).toISOString(), absolute_expires_at: new Date(Date.now() + 365 * 86_400_000).toISOString() }, error: null };
@@ -291,10 +293,46 @@ describe('GET /api/agent/activity — auth gates', () => {
     acctRole = 'general_manager';
     acctAccess = [PID];
     supabaseAdmin.auth.getUser = (async () => ({ data: { user: { id: USER_ID, email: 'gm@hotel.test' } }, error: null })) as unknown as GetUserFn;
+    supabaseAdmin.rpc = (async (fn: string) => {
+      assert.equal(fn, 'staxis_list_account_authorized_properties');
+      const propertyIds = [...acctAccess].filter((id) => id !== '*').sort();
+      const manager = ['admin', 'owner', 'general_manager'].includes(acctRole);
+      return {
+        data: {
+          ok: true,
+          all: acctAccess.includes('*') || acctRole === 'admin',
+          authorityMode: 'legacy',
+          authorityVersion: 1,
+          effectiveAccessHash: 'a'.repeat(64),
+          propertyIds: acctAccess.includes('*') || acctRole === 'admin' ? [] : propertyIds,
+          legacyPropertyIds: acctAccess.includes('*') || acctRole === 'admin' ? [] : propertyIds,
+          membershipPropertyIds: [],
+          propertyStandings: acctAccess.includes('*') || acctRole === 'admin' ? [] : propertyIds.map((propertyId) => ({
+            propertyId,
+            operationalRole: acctRole,
+            seesFinancials: manager,
+            hotelMutationAllowed: true,
+            portfolioIntelligenceRead: false,
+            entitlements: [{
+              kind: 'legacy',
+              entitlementId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+              organizationId: null,
+              membershipId: null,
+              accessProfile: null,
+              staxisRole: null,
+              scopeType: null,
+              portfolioId: null,
+            }],
+          })),
+        },
+        error: null,
+      };
+    }) as unknown as RpcFn;
     installRouteFrom();
   });
   afterEach(() => {
     supabaseAdmin.from = originalFrom;
+    supabaseAdmin.rpc = originalRpc;
     supabaseAdmin.auth.getUser = originalGetUser;
   });
 

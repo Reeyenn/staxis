@@ -362,12 +362,12 @@ export type RateLimitEndpoint =
   | 'company-queue'
   // The hotel picker / command centre bootstrap. Read-only and model-free, but
   // for a company-scope caller it reads one findings ledger per covered hotel,
-  // so a scripted loop is a real load. Keyed on a REAL property id — one the
-  // caller actually reaches, because api_limits.property_id FKs properties(id)
-  // — with the account folded into the sub-key so two people at one hotel
-  // never share a bucket. Fails OPEN: nothing here is billable, and locking
-  // somebody out of the screen that lists their hotels would be the worse
-  // failure.
+  // and can mint receipts/settings for up to 50 companies, so a scripted loop
+  // is a real load. Keyed on one opaque account-derived UUID before catalog
+  // construction; company/property selection cannot rotate the bucket and
+  // platform admins are covered too. Fails OPEN: nothing here is billable, and
+  // locking somebody out of the screen that lists their hotels would be the
+  // worse failure.
   | 'property-selector';
 
 /** Per-endpoint hourly caps. Tuned to "real-world ops use" headroom. */

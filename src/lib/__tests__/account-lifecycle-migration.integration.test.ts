@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import type { PGlite } from '@electric-sql/pglite';
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 
 const PROPERTY_A = 'a1000000-0000-4000-8000-000000000001';
 const PROPERTY_B = 'a1000000-0000-4000-8000-000000000002';
+const SHADOW_DENY_PROPERTY = 'b1000000-0000-4000-8000-000000000001';
+const SHADOW_TRANSFER_PROPERTY = 'b1000000-0000-4000-8000-000000000002';
+const TOPOLOGY_DENY_SELECTED = 'b1000000-0000-4000-8000-000000000003';
+const TOPOLOGY_DENY_COMPANY = 'b1000000-0000-4000-8000-000000000004';
+const TOPOLOGY_TRANSFER_SELECTED = 'b1000000-0000-4000-8000-000000000005';
+const TOPOLOGY_TRANSFER_COMPANY = 'b1000000-0000-4000-8000-000000000006';
 
 const ADMIN = 'a2000000-0000-4000-8000-000000000001';
 const GM = 'a2000000-0000-4000-8000-000000000002';
@@ -44,8 +52,53 @@ const TRANSFER_ROLLBACK_OPERATION = 'a4000000-0000-4000-8000-000000000006';
 const PROCESSOR = 'a5000000-0000-4000-8000-000000000001';
 const GLOBAL_TRANSFER_OPERATION = 'a4000000-0000-4000-8000-000000000008';
 const TRANSFER_REPLAY_PENDING_OPERATION = 'a4000000-0000-4000-8000-000000000009';
+const NON_OWNER_TRANSFER_OPERATION = 'a4000000-0000-4000-8000-00000000000a';
+const REPLAY_PROBE_OPERATION = 'a4000000-0000-4000-8000-00000000000b';
 const NORMALIZED_TARGET = 'a2000000-0000-4000-8000-000000000013';
 const NORMALIZED_TARGET_AUTH = 'a3000000-0000-4000-8000-000000000013';
+
+const SHADOW_DENY_OLD = 'b2000000-0000-4000-8000-000000000001';
+const SHADOW_DENY_NEW = 'b2000000-0000-4000-8000-000000000002';
+const SHADOW_TRANSFER_OLD = 'b2000000-0000-4000-8000-000000000003';
+const SHADOW_TRANSFER_NEW = 'b2000000-0000-4000-8000-000000000004';
+const TOPOLOGY_DENY_OLD = 'b2000000-0000-4000-8000-000000000005';
+const TOPOLOGY_DENY_NEW = 'b2000000-0000-4000-8000-000000000006';
+const TOPOLOGY_TRANSFER_OLD = 'b2000000-0000-4000-8000-000000000007';
+const TOPOLOGY_TRANSFER_NEW = 'b2000000-0000-4000-8000-000000000008';
+
+const SHADOW_DENY_OLD_AUTH = 'b3000000-0000-4000-8000-000000000001';
+const SHADOW_DENY_NEW_AUTH = 'b3000000-0000-4000-8000-000000000002';
+const SHADOW_TRANSFER_OLD_AUTH = 'b3000000-0000-4000-8000-000000000003';
+const SHADOW_TRANSFER_NEW_AUTH = 'b3000000-0000-4000-8000-000000000004';
+const TOPOLOGY_DENY_OLD_AUTH = 'b3000000-0000-4000-8000-000000000005';
+const TOPOLOGY_DENY_NEW_AUTH = 'b3000000-0000-4000-8000-000000000006';
+const TOPOLOGY_TRANSFER_OLD_AUTH = 'b3000000-0000-4000-8000-000000000007';
+const TOPOLOGY_TRANSFER_NEW_AUTH = 'b3000000-0000-4000-8000-000000000008';
+
+const SHADOW_DENY_OPERATION = 'b4000000-0000-4000-8000-000000000001';
+const SHADOW_TRANSFER_OPERATION = 'b4000000-0000-4000-8000-000000000002';
+const TOPOLOGY_DENY_OPERATION = 'b4000000-0000-4000-8000-000000000003';
+const TOPOLOGY_TRANSFER_OPERATION = 'b4000000-0000-4000-8000-000000000004';
+const TOPOLOGY_DENY_ORGANIZATION = 'b6000000-0000-4000-8000-000000000001';
+const TOPOLOGY_TRANSFER_ORGANIZATION = 'b6000000-0000-4000-8000-000000000002';
+
+const PEOPLE_ACCESS_MIGRATION_SQL = readFileSync(
+  join(process.cwd(), 'supabase', 'migrations', '0390_authoritative_people_access_bridge.sql'),
+  'utf8',
+);
+const OWNERSHIP_REPLAY_SQL = PEOPLE_ACCESS_MIGRATION_SQL.slice(
+  PEOPLE_ACCESS_MIGRATION_SQL.indexOf(
+    'create or replace function public.staxis_check_ownership_transfer_replay(',
+  ),
+  PEOPLE_ACCESS_MIGRATION_SQL.indexOf(
+    'create or replace function public.staxis_transfer_ownership_guarded(',
+  ),
+);
+const OWNERSHIP_CONTAINMENT_SQL = PEOPLE_ACCESS_MIGRATION_SQL.slice(
+  PEOPLE_ACCESS_MIGRATION_SQL.indexOf(
+    'create or replace function public.staxis_transfer_ownership_guarded(',
+  ),
+);
 
 let pg: PGlite;
 
@@ -69,6 +122,29 @@ async function asRole<T>(
 
 function serviceJson(sql: string, params: unknown[] = []): Promise<Record<string, unknown>> {
   return asRole<Record<string, unknown>>('service_role', sql, params);
+}
+
+function checkOwnershipTransferReplay(args: {
+  operationId: string;
+  actorAccountId: string;
+  actorAuthUserId: string;
+  propertyId: string;
+  oldOwnerAccountId: string;
+  newOwnerAccountId: string;
+}): Promise<Record<string, unknown>> {
+  return serviceJson(
+    `select public.staxis_check_ownership_transfer_replay(
+       $1,$2,$3,$4,$5,$6
+     )`,
+    [
+      args.operationId,
+      args.actorAccountId,
+      args.actorAuthUserId,
+      args.propertyId,
+      args.oldOwnerAccountId,
+      args.newOwnerAccountId,
+    ],
+  );
 }
 
 function registerIntent(args: {
@@ -144,6 +220,7 @@ async function guardedTransferCurrentSnapshots(
   newOwnerId: string,
   actorId = oldOwnerId,
   actorAuthId = OWNER_AUTH,
+  propertyId = PROPERTY_A,
 ): Promise<Record<string, unknown>> {
   const snapshots = await pg.query<{
     id: string;
@@ -166,9 +243,9 @@ async function guardedTransferCurrentSnapshots(
        $1,$2,$3,'owner@example.test',$4,$5,$6,
        $7,$8,$9,$10::uuid[],$11,
        $12,$13,$14,$15::uuid[],$16,$17,$18
-     )`,
+    )`,
     [
-      operationId, actorId, actorAuthId, PROPERTY_A, oldOwnerId, newOwnerId,
+      operationId, actorId, actorAuthId, propertyId, oldOwnerId, newOwnerId,
       oldOwner.active, oldOwner.role, oldOwner.data_user_id,
       oldOwner.property_access, oldOwner.lifecycle_intent_version,
       newOwner.active, newOwner.role, newOwner.data_user_id,
@@ -176,6 +253,53 @@ async function guardedTransferCurrentSnapshots(
       'ownership handoff', `request-${operationId}`,
     ],
   );
+}
+
+async function seedOwnershipRacePair(args: {
+  label: string;
+  oldOwnerId: string;
+  oldOwnerAuthId: string;
+  newOwnerId: string;
+  newOwnerAuthId: string;
+  propertyIds: string[];
+  shadow?: boolean;
+}): Promise<void> {
+  await pg.query(
+    `insert into auth.users(id,email) values
+       ($1,$2),($3,$4)`,
+    [
+      args.oldOwnerAuthId, `${args.label}-old@example.test`,
+      args.newOwnerAuthId, `${args.label}-new@example.test`,
+    ],
+  );
+  for (const [index, propertyId] of args.propertyIds.entries()) {
+    await pg.query(
+      `insert into public.properties(id,owner_id,name,total_rooms,timezone)
+       values ($1,$2,$3,20,'UTC')`,
+      [propertyId, args.oldOwnerAuthId, `${args.label} Hotel ${index + 1}`],
+    );
+  }
+  await pg.query(
+    `insert into public.accounts(
+       id,username,display_name,role,property_access,data_user_id
+     ) values
+       ($1,$2,$3,'owner',$4::uuid[],$5),
+       ($6,$7,$8,'front_desk',$4::uuid[],$9)`,
+    [
+      args.oldOwnerId, `${args.label}-old`, `${args.label} Old Owner`,
+      args.propertyIds, args.oldOwnerAuthId,
+      args.newOwnerId, `${args.label}-new`, `${args.label} New Owner`,
+      args.newOwnerAuthId,
+    ],
+  );
+  if (args.shadow) {
+    await pg.query(
+      `update public.account_authorization_state
+       set authority_mode='shadow'
+       where account_id=any($1::uuid[])`,
+      [[args.oldOwnerId, args.newOwnerId]],
+    );
+  }
 }
 
 function guardedTransfer(args: {
@@ -310,6 +434,84 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
     await pg.close();
   });
 
+  test('legacy ownership containment freezes accounts, authority, every hotel, and topology in retry-safe order', () => {
+    assert.match(
+      OWNERSHIP_REPLAY_SQL,
+      /pg_advisory_xact_lock[\s\S]*admin_audit_log[\s\S]*'status', 'already_applied'/,
+    );
+    assert.match(
+      OWNERSHIP_REPLAY_SQL,
+      /from public\.accounts actor[\s\S]*actor\.id = p_actor_account_id[\s\S]*actor\.data_user_id = p_actor_auth_user_id/,
+    );
+    assert.doesNotMatch(OWNERSHIP_REPLAY_SQL, /from public\.accounts (?:target|old_owner|new_owner)/);
+    assert.match(
+      OWNERSHIP_REPLAY_SQL,
+      /audit\.actor_user_id = p_actor_auth_user_id[\s\S]*old_owner_affected_hotel_ids[\s\S]*jsonb_build_array\(p_property_id\)/,
+    );
+    assert.match(
+      OWNERSHIP_REPLAY_SQL,
+      /audit\.actor_user_id = p_actor_auth_user_id[\s\S]*'status', 'conflict'[\s\S]*'status', 'not_applied'/,
+    );
+    const operationLock = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      "'staxis.transfer-ownership:' || p_operation_id::text",
+    );
+    const accountLock = OWNERSHIP_CONTAINMENT_SQL.indexOf('from public.accounts account');
+    const exactReceipt = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      "'status', 'already_applied'",
+      accountLock,
+    );
+    const authorityLock = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      'from public.account_authorization_state state',
+      exactReceipt,
+    );
+    const exactSet = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      'v_old_affected_hotel_ids is distinct from v_new_affected_hotel_ids',
+      authorityLock,
+    );
+    const propertyLock = OWNERSHIP_CONTAINMENT_SQL.indexOf('for update nowait', exactSet);
+    const topologyLock = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      'lock table public.capability_overrides',
+      propertyLock,
+    );
+    const authorityCheck = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      "state.authority_mode not in ('legacy', 'shadow')",
+      topologyLock,
+    );
+    const everyHotelCheck = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      'from unnest(v_old_affected_hotel_ids) affected(property_id)',
+      authorityCheck,
+    );
+    const innerMutation = OWNERSHIP_CONTAINMENT_SQL.indexOf(
+      'return public._staxis_transfer_ownership_guarded_legacy_impl(',
+      everyHotelCheck,
+    );
+    assert.ok(
+      operationLock >= 0
+        && accountLock > operationLock
+        && exactReceipt > accountLock
+        && authorityLock > exactReceipt
+        && exactSet > authorityLock
+        && propertyLock > exactSet
+        && topologyLock > propertyLock
+        && authorityCheck > topologyLock
+        && everyHotelCheck > authorityCheck
+        && innerMutation > everyHotelCheck,
+      'legacy ownership locks or rechecks are no longer ordered before mutation',
+    );
+    assert.match(
+      OWNERSHIP_CONTAINMENT_SQL,
+      /from unnest\(v_old_affected_hotel_ids\) affected\(id\)[\s\S]*order by affected\.id[\s\S]*for update nowait/,
+    );
+    assert.match(
+      OWNERSHIP_CONTAINMENT_SQL,
+      /public\.organization_property_relationships[\s\S]*public\.account_property_authorization_bridges[\s\S]*in share mode nowait/,
+    );
+    assert.match(
+      OWNERSHIP_CONTAINMENT_SQL,
+      /when lock_not_available or deadlock_detected then[\s\S]*'status', 'retry'/,
+    );
+  });
+
   test('browser roles cannot inspect intents or execute lifecycle functions', async () => {
     const privileges = await pg.query<{
       anon_table: boolean;
@@ -329,6 +531,7 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
             and (function_row.proname like 'staxis%account_lifecycle%'
               or function_row.proname in (
                 'staxis_change_hotel_team_role_guarded',
+                'staxis_check_ownership_transfer_replay',
                 'staxis_transfer_ownership_guarded',
                 'staxis_list_normalized_organization_owner_account_ids'
               ))
@@ -342,6 +545,7 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
             and (function_row.proname like 'staxis%account_lifecycle%'
               or function_row.proname in (
                 'staxis_change_hotel_team_role_guarded',
+                'staxis_check_ownership_transfer_replay',
                 'staxis_transfer_ownership_guarded',
                 'staxis_list_normalized_organization_owner_account_ids'
               ))
@@ -393,7 +597,7 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
       actor: LINE_STAFF,
       actorAuth: LINE_STAFF_AUTH,
     });
-    assert.deepEqual(denied, { status: 'forbidden', reason: 'caller_role' });
+    assert.deepEqual(denied, { status: 'forbidden', reason: 'manage_users' });
 
     const stale = await registerIntent({
       operationId: CONFLICTING_OPERATION,
@@ -576,7 +780,7 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
     });
     assert.deepEqual(normalizedOwnerTarget, {
       status: 'forbidden',
-      reason: 'organization_owner',
+      reason: 'normalized_authority',
     });
     const normalizedOwnerState = await pg.query<{ role: string; role_rows: string }>(
       `select account.role,
@@ -591,12 +795,14 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
   });
 
   test('pending lifecycle state fences ownership transfer', async () => {
-    const transfer = await asRole<string>(
-      'service_role',
-      `select public.staxis_transfer_ownership($1,$2,$3)`,
-      [PROPERTY_A, OWNER, TARGET],
+    await assert.rejects(
+      asRole<string>(
+        'service_role',
+        `select public.staxis_transfer_ownership($1,$2,$3)`,
+        [PROPERTY_A, OWNER, TARGET],
+      ),
+      /permission denied/i,
     );
-    assert.match(transfer, /account lifecycle change pending/);
 
     const roles = await pg.query<{ id: string; role: string }>(
       `select id,role from public.accounts where id=any($1::uuid[]) order by id`,
@@ -620,6 +826,14 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
       newProperties: [PROPERTY_A, PROPERTY_B],
       requestId: 'ownership-success-request',
     };
+    assert.deepEqual(await checkOwnershipTransferReplay({
+      operationId: REPLAY_PROBE_OPERATION,
+      actorAccountId: TRANSFER_OLD_OWNER,
+      actorAuthUserId: TRANSFER_OLD_OWNER_AUTH,
+      propertyId: PROPERTY_A,
+      oldOwnerAccountId: TRANSFER_OLD_OWNER,
+      newOwnerAccountId: ROLLBACK_NEW_OWNER,
+    }), { status: 'not_applied' });
     const transferred = await guardedTransfer(transferArgs);
     assert.deepEqual(transferred, {
       status: 'ok',
@@ -627,6 +841,31 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
       old_owner_account_id: TRANSFER_OLD_OWNER,
       new_owner_account_id: TRANSFER_NEW_OWNER,
     });
+
+    assert.deepEqual(await checkOwnershipTransferReplay({
+      operationId: TRANSFER_OPERATION,
+      actorAccountId: ADMIN,
+      actorAuthUserId: ADMIN_AUTH,
+      propertyId: PROPERTY_A,
+      oldOwnerAccountId: TRANSFER_OLD_OWNER,
+      newOwnerAccountId: TRANSFER_NEW_OWNER,
+    }), { status: 'already_applied' });
+    assert.deepEqual(await checkOwnershipTransferReplay({
+      operationId: TRANSFER_OPERATION,
+      actorAccountId: ADMIN,
+      actorAuthUserId: ADMIN_AUTH,
+      propertyId: PROPERTY_A,
+      oldOwnerAccountId: TRANSFER_OLD_OWNER,
+      newOwnerAccountId: ROLLBACK_NEW_OWNER,
+    }), { status: 'conflict', reason: 'operation_id_reused' });
+    assert.deepEqual(await checkOwnershipTransferReplay({
+      operationId: TRANSFER_OPERATION,
+      actorAccountId: TRANSFER_OLD_OWNER,
+      actorAuthUserId: TRANSFER_OLD_OWNER_AUTH,
+      propertyId: PROPERTY_A,
+      oldOwnerAccountId: TRANSFER_OLD_OWNER,
+      newOwnerAccountId: TRANSFER_NEW_OWNER,
+    }), { status: 'not_applied' });
 
     const state = await pg.query<{
       old_role: string;
@@ -861,13 +1100,41 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
     assert.equal(grants.rows[0].count, '0');
   });
 
-  test('ownership transfer is global, normalized-owner safe, atomic, and replayable after later pending work', async () => {
-    const mismatchedLegacy = await asRole<string>(
-      'service_role',
-      `select public.staxis_transfer_ownership($1,$2,$3)`,
-      [PROPERTY_A, OWNER, ROLE_TARGET],
+  test('guarded ownership transfer rejects a fresh non-owner actor without side effects', async () => {
+    const rejected = await guardedTransferCurrentSnapshots(
+      NON_OWNER_TRANSFER_OPERATION,
+      OWNER,
+      LINE_STAFF,
+      ROLE_TARGET,
+      ROLE_TARGET_AUTH,
     );
-    assert.match(mismatchedLegacy, /same hotel access/i);
+    assert.deepEqual(rejected, { status: 'forbidden', reason: 'current_owner' });
+
+    const state = await pg.query<{ old_role: string; new_role: string; audit_rows: string }>(
+      `select
+         (select role::text from public.accounts where id=$1) as old_role,
+         (select role::text from public.accounts where id=$2) as new_role,
+         (select count(*)::text from public.admin_audit_log
+           where action='account.transfer_ownership'
+             and metadata->>'operation_id'=$3) as audit_rows`,
+      [OWNER, LINE_STAFF, NON_OWNER_TRANSFER_OPERATION],
+    );
+    assert.deepEqual(state.rows[0], {
+      old_role: 'owner',
+      new_role: 'housekeeping',
+      audit_rows: '0',
+    });
+  });
+
+  test('ownership transfer is global, normalized-owner safe, atomic, and replayable after later pending work', async () => {
+    await assert.rejects(
+      asRole<string>(
+        'service_role',
+        `select public.staxis_transfer_ownership($1,$2,$3)`,
+        [PROPERTY_A, OWNER, ROLE_TARGET],
+      ),
+      /permission denied/i,
+    );
 
     await pg.query(
       `insert into auth.users(id,email) values ($1,'normalized-owner@example.test')`,
@@ -906,14 +1173,16 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
     );
     assert.deepEqual(normalizedRejected, {
       status: 'forbidden',
-      reason: 'normalized_organization_owner',
+      reason: 'normalized_authority',
     });
-    const normalizedLegacy = await asRole<string>(
-      'service_role',
-      `select public.staxis_transfer_ownership($1,$2,$3)`,
-      [PROPERTY_A, OWNER, NORMALIZED_TARGET],
+    await assert.rejects(
+      asRole<string>(
+        'service_role',
+        `select public.staxis_transfer_ownership($1,$2,$3)`,
+        [PROPERTY_A, OWNER, NORMALIZED_TARGET],
+      ),
+      /permission denied/i,
     );
-    assert.match(normalizedLegacy, /organization ownership.*separately/i);
 
     const transferred = await guardedTransferCurrentSnapshots(
       GLOBAL_TRANSFER_OPERATION,
@@ -969,5 +1238,242 @@ describe('account lifecycle migration 0335 — real SQL via PGlite', () => {
       [[OWNER, LINE_STAFF], GLOBAL_TRANSFER_OPERATION],
     );
     assert.deepEqual(replayCounts.rows[0], { role_rows: '2', audit_rows: '1' });
+  });
+
+  test('shadow cutover and ownership transfer are safe in either serialization order', async () => {
+    await seedOwnershipRacePair({
+      label: 'shadow-deny',
+      oldOwnerId: SHADOW_DENY_OLD,
+      oldOwnerAuthId: SHADOW_DENY_OLD_AUTH,
+      newOwnerId: SHADOW_DENY_NEW,
+      newOwnerAuthId: SHADOW_DENY_NEW_AUTH,
+      propertyIds: [SHADOW_DENY_PROPERTY],
+      shadow: true,
+    });
+    const normalizationFirst = await serviceJson(
+      `select public.staxis_promote_shadow_authorization($1,$2)`,
+      [SHADOW_DENY_NEW, 'normalization wins ownership race'],
+    );
+    assert.equal(normalizationFirst.status, 'promoted');
+    assert.deepEqual(
+      await guardedTransferCurrentSnapshots(
+        SHADOW_DENY_OPERATION,
+        SHADOW_DENY_OLD,
+        SHADOW_DENY_NEW,
+        SHADOW_DENY_OLD,
+        SHADOW_DENY_OLD_AUTH,
+        SHADOW_DENY_PROPERTY,
+      ),
+      { status: 'forbidden', reason: 'normalized_authority' },
+    );
+    const deniedState = await pg.query<{
+      old_role: string;
+      new_role: string;
+      role_rows: string;
+      audit_rows: string;
+      authority_mode: string;
+    }>(
+      `select
+         (select role::text from public.accounts where id=$1) as old_role,
+         (select role::text from public.accounts where id=$2) as new_role,
+         (select count(*)::text from public.role_changes
+           where account_id=any($3::uuid[]) and change_kind='transfer_ownership') as role_rows,
+         (select count(*)::text from public.admin_audit_log
+           where action='account.transfer_ownership'
+             and metadata->>'operation_id'=$4) as audit_rows,
+         (select authority_mode from public.account_authorization_state
+           where account_id=$2) as authority_mode`,
+      [SHADOW_DENY_OLD, SHADOW_DENY_NEW,
+        [SHADOW_DENY_OLD, SHADOW_DENY_NEW], SHADOW_DENY_OPERATION],
+    );
+    assert.deepEqual(deniedState.rows[0], {
+      old_role: 'owner',
+      new_role: 'front_desk',
+      role_rows: '0',
+      audit_rows: '0',
+      authority_mode: 'normalized',
+    });
+
+    await seedOwnershipRacePair({
+      label: 'shadow-transfer',
+      oldOwnerId: SHADOW_TRANSFER_OLD,
+      oldOwnerAuthId: SHADOW_TRANSFER_OLD_AUTH,
+      newOwnerId: SHADOW_TRANSFER_NEW,
+      newOwnerAuthId: SHADOW_TRANSFER_NEW_AUTH,
+      propertyIds: [SHADOW_TRANSFER_PROPERTY],
+      shadow: true,
+    });
+    const ownershipFirst = await guardedTransferCurrentSnapshots(
+      SHADOW_TRANSFER_OPERATION,
+      SHADOW_TRANSFER_OLD,
+      SHADOW_TRANSFER_NEW,
+      SHADOW_TRANSFER_OLD,
+      SHADOW_TRANSFER_OLD_AUTH,
+      SHADOW_TRANSFER_PROPERTY,
+    );
+    assert.equal(ownershipFirst.status, 'ok');
+    const normalizationAfter = await serviceJson(
+      `select public.staxis_promote_shadow_authorization($1,$2)`,
+      [SHADOW_TRANSFER_NEW, 'ownership wins before normalization'],
+    );
+    assert.equal(normalizationAfter.status, 'promoted');
+    const replayAfterNormalization = await guardedTransferCurrentSnapshots(
+      SHADOW_TRANSFER_OPERATION,
+      SHADOW_TRANSFER_OLD,
+      SHADOW_TRANSFER_NEW,
+      SHADOW_TRANSFER_OLD,
+      SHADOW_TRANSFER_OLD_AUTH,
+      SHADOW_TRANSFER_PROPERTY,
+    );
+    assert.equal(replayAfterNormalization.status, 'already_applied');
+    const transferredState = await pg.query<{
+      old_role: string;
+      new_role: string;
+      role_rows: string;
+      audit_rows: string;
+      authority_mode: string;
+    }>(
+      `select
+         (select role::text from public.accounts where id=$1) as old_role,
+         (select role::text from public.accounts where id=$2) as new_role,
+         (select count(*)::text from public.role_changes
+           where account_id=any($3::uuid[]) and change_kind='transfer_ownership') as role_rows,
+         (select count(*)::text from public.admin_audit_log
+           where action='account.transfer_ownership'
+             and metadata->>'operation_id'=$4) as audit_rows,
+         (select authority_mode from public.account_authorization_state
+           where account_id=$2) as authority_mode`,
+      [SHADOW_TRANSFER_OLD, SHADOW_TRANSFER_NEW,
+        [SHADOW_TRANSFER_OLD, SHADOW_TRANSFER_NEW], SHADOW_TRANSFER_OPERATION],
+    );
+    assert.deepEqual(transferredState.rows[0], {
+      old_role: 'general_manager',
+      new_role: 'owner',
+      role_rows: '2',
+      audit_rows: '1',
+      authority_mode: 'normalized',
+    });
+  });
+
+  test('company topology and exact-set ownership transfer are safe in either serialization order', async () => {
+    await seedOwnershipRacePair({
+      label: 'topology-deny',
+      oldOwnerId: TOPOLOGY_DENY_OLD,
+      oldOwnerAuthId: TOPOLOGY_DENY_OLD_AUTH,
+      newOwnerId: TOPOLOGY_DENY_NEW,
+      newOwnerAuthId: TOPOLOGY_DENY_NEW_AUTH,
+      propertyIds: [TOPOLOGY_DENY_SELECTED, TOPOLOGY_DENY_COMPANY],
+    });
+    await pg.query(
+      `insert into public.organizations(id,name,organization_type,status)
+       values ($1,'Topology Deny Company','management_company','active')`,
+      [TOPOLOGY_DENY_ORGANIZATION],
+    );
+    await serviceJson(
+      `select public.staxis_set_primary_property_organization($1,$2,$3,'operator')`,
+      [ADMIN, TOPOLOGY_DENY_COMPANY, TOPOLOGY_DENY_ORGANIZATION],
+    );
+    assert.deepEqual(
+      await guardedTransferCurrentSnapshots(
+        TOPOLOGY_DENY_OPERATION,
+        TOPOLOGY_DENY_OLD,
+        TOPOLOGY_DENY_NEW,
+        TOPOLOGY_DENY_OLD,
+        TOPOLOGY_DENY_OLD_AUTH,
+        TOPOLOGY_DENY_SELECTED,
+      ),
+      { status: 'forbidden', reason: 'company_owned_hotel' },
+      'a company-owned second hotel in the exact role set must fence a transfer selected at an independent hotel',
+    );
+    const companyFirstState = await pg.query<{
+      old_role: string;
+      new_role: string;
+      role_rows: string;
+      audit_rows: string;
+    }>(
+      `select
+         (select role::text from public.accounts where id=$1) as old_role,
+         (select role::text from public.accounts where id=$2) as new_role,
+         (select count(*)::text from public.role_changes
+           where account_id=any($3::uuid[]) and change_kind='transfer_ownership') as role_rows,
+         (select count(*)::text from public.admin_audit_log
+           where action='account.transfer_ownership'
+             and metadata->>'operation_id'=$4) as audit_rows`,
+      [TOPOLOGY_DENY_OLD, TOPOLOGY_DENY_NEW,
+        [TOPOLOGY_DENY_OLD, TOPOLOGY_DENY_NEW], TOPOLOGY_DENY_OPERATION],
+    );
+    assert.deepEqual(companyFirstState.rows[0], {
+      old_role: 'owner',
+      new_role: 'front_desk',
+      role_rows: '0',
+      audit_rows: '0',
+    });
+
+    await seedOwnershipRacePair({
+      label: 'topology-transfer',
+      oldOwnerId: TOPOLOGY_TRANSFER_OLD,
+      oldOwnerAuthId: TOPOLOGY_TRANSFER_OLD_AUTH,
+      newOwnerId: TOPOLOGY_TRANSFER_NEW,
+      newOwnerAuthId: TOPOLOGY_TRANSFER_NEW_AUTH,
+      propertyIds: [TOPOLOGY_TRANSFER_SELECTED, TOPOLOGY_TRANSFER_COMPANY],
+    });
+    const transferFirst = await guardedTransferCurrentSnapshots(
+      TOPOLOGY_TRANSFER_OPERATION,
+      TOPOLOGY_TRANSFER_OLD,
+      TOPOLOGY_TRANSFER_NEW,
+      TOPOLOGY_TRANSFER_OLD,
+      TOPOLOGY_TRANSFER_OLD_AUTH,
+      TOPOLOGY_TRANSFER_SELECTED,
+    );
+    assert.equal(transferFirst.status, 'ok');
+    await pg.query(
+      `insert into public.organizations(id,name,organization_type,status)
+       values ($1,'Topology Transfer Company','management_company','active')`,
+      [TOPOLOGY_TRANSFER_ORGANIZATION],
+    );
+    await serviceJson(
+      `select public.staxis_set_primary_property_organization($1,$2,$3,'operator')`,
+      [ADMIN, TOPOLOGY_TRANSFER_COMPANY, TOPOLOGY_TRANSFER_ORGANIZATION],
+    );
+    const replayAfterTopologyTransfer = await guardedTransferCurrentSnapshots(
+      TOPOLOGY_TRANSFER_OPERATION,
+      TOPOLOGY_TRANSFER_OLD,
+      TOPOLOGY_TRANSFER_NEW,
+      TOPOLOGY_TRANSFER_OLD,
+      TOPOLOGY_TRANSFER_OLD_AUTH,
+      TOPOLOGY_TRANSFER_SELECTED,
+    );
+    assert.equal(replayAfterTopologyTransfer.status, 'already_applied');
+    const transferFirstState = await pg.query<{
+      old_role: string;
+      new_role: string;
+      role_rows: string;
+      audit_rows: string;
+      company_relationships: string;
+    }>(
+      `select
+         (select role::text from public.accounts where id=$1) as old_role,
+         (select role::text from public.accounts where id=$2) as new_role,
+         (select count(*)::text from public.role_changes
+           where account_id=any($3::uuid[]) and change_kind='transfer_ownership') as role_rows,
+         (select count(*)::text from public.admin_audit_log
+           where action='account.transfer_ownership'
+             and metadata->>'operation_id'=$4) as audit_rows,
+         (select count(*)::text
+          from public._staxis_current_primary_property_relationships() relationship
+          where relationship.property_id=$5
+            and relationship.organization_id=$6
+            and relationship.active_primary_count=1) as company_relationships`,
+      [TOPOLOGY_TRANSFER_OLD, TOPOLOGY_TRANSFER_NEW,
+        [TOPOLOGY_TRANSFER_OLD, TOPOLOGY_TRANSFER_NEW], TOPOLOGY_TRANSFER_OPERATION,
+        TOPOLOGY_TRANSFER_COMPANY, TOPOLOGY_TRANSFER_ORGANIZATION],
+    );
+    assert.deepEqual(transferFirstState.rows[0], {
+      old_role: 'general_manager',
+      new_role: 'owner',
+      role_rows: '4',
+      audit_rows: '1',
+      company_relationships: '1',
+    });
   });
 });

@@ -39,9 +39,13 @@ import { scopedDb } from '@/lib/agent/scoped-db';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { AppRole } from '@/lib/roles';
 import '@/lib/agent/tools/index';
+import {
+  agentToolAuthorityIdentity,
+  installAgentToolAuthorityTestStore,
+} from './helpers/agent-tool-authority';
 
 const PID = '00000000-0000-0000-0000-00000000f001';
-const ACCOUNT = '00000000-0000-0000-0000-00000000f000';
+const AUTHORIZED_ROLES = ['general_manager', 'maintenance'] as const;
 
 const SEE_TOOLS = [
   'staxis_findings',
@@ -53,19 +57,28 @@ const SEE_TOOLS = [
 ] as const;
 
 function ctxFor(role: AppRole = 'general_manager'): ToolContext & { db: ReturnType<typeof scopedDb> } {
+  const identity = agentToolAuthorityIdentity(role);
   return {
     user: {
-      uid: ACCOUNT,
-      accountId: ACCOUNT,
+      uid: identity.authUserId,
+      accountId: identity.accountId,
       username: 'gm',
       displayName: 'GM',
       role,
       propertyAccess: [PID],
+      hotelMutationAllowed: true,
+      seesFinancials: role === 'general_manager',
+      capabilitySnapshot: {
+        view_financials: role === 'general_manager',
+        view_wages: role === 'general_manager',
+        manage_inventory_orders: role === 'general_manager',
+      },
     },
     propertyId: PID,
     staffId: null,
     requestId: 'req-see',
     surface: 'chat',
+    enabledSections: null,
     db: scopedDb(PID),
   };
 }
@@ -79,6 +92,7 @@ function ctxFor(role: AppRole = 'general_manager'): ToolContext & { db: ReturnTy
 let tables: Record<string, Array<Record<string, unknown>>> = {};
 let asked: string[] = [];
 const originalFrom = supabaseAdmin.from.bind(supabaseAdmin);
+let restoreAuthority: (() => void) | null = null;
 
 function makeBuilder(table: string) {
   const known = Object.prototype.hasOwnProperty.call(tables, table);
@@ -117,9 +131,16 @@ beforeEach(() => {
     asked.push(table);
     return makeBuilder(table);
   };
+  restoreAuthority = installAgentToolAuthorityTestStore(() => AUTHORIZED_ROLES.map((role) => ({
+    ...agentToolAuthorityIdentity(role),
+    role,
+    propertyIds: [PID],
+  })));
 });
 
 afterEach(() => {
+  restoreAuthority?.();
+  restoreAuthority = null;
   supabaseAdmin.from = originalFrom;
 });
 
@@ -423,7 +444,14 @@ describe('staxis_pending_decisions', () => {
 // ─── staxis_preventive ──────────────────────────────────────────────────────
 
 describe('staxis_preventive', () => {
-  const today = new Date().toISOString().slice(0, 10);
+  // Match the hotel-local calendar used by the tool. Using UTC here made this
+  // suite fail only between Chicago midnight and UTC midnight.
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
   const daysAgo = (n: number): string => {
     const d = new Date(`${today}T00:00:00.000Z`);
     d.setUTCDate(d.getUTCDate() - n);

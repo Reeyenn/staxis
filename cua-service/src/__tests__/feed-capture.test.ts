@@ -17,6 +17,7 @@ import {
   upsertFeedValues,
   type FeedCaptureRow,
   type ColumnGeometry,
+  type FeedValuesLineage,
 } from '../feed-capture.js';
 
 // A fake Page — every real page interaction is routed through injected deps,
@@ -301,32 +302,65 @@ test('uploadLiveFeedSample previews an EMPTY feed that still has page totals (e.
   assert.deepEqual(parsed.pageValues, [{ name: 'guest_count', value: '0' }]);
 });
 
-test('upsertFeedValues: captured → stores fresh; configured-but-empty → flags error preserving last-good; no page columns → no-op; never throws', async () => {
+test('upsertFeedValues: stamps real lineage and source time; preserves last-good; fails visibly', async () => {
   const rows: Array<Record<string, unknown>> = [];
-  const deps = { upsert: async (row: Record<string, unknown>) => { rows.push(row); }, now: () => 'T' };
+  const deps = { upsert: async (row: Record<string, unknown>) => { rows.push(row); } };
+  const lineage: FeedValuesLineage = {
+    ingestRunId: '00000000-0000-4000-8000-000000000099',
+    sourceCapturedAt: '2026-06-25T15:00:00-05:00',
+  };
+  const canonicalSourceTime = '2026-06-25T20:00:00.000Z';
 
   // captured values → fresh upsert
-  await upsertFeedValues('prop-1', 'getArrivals', { guest_count: '23', room_count: '10' }, true, deps);
+  await upsertFeedValues(
+    'prop-1',
+    'getArrivals',
+    { guest_count: '23', room_count: '10' },
+    true,
+    lineage,
+    deps,
+  );
   assert.equal(rows.length, 1);
   assert.equal(rows[0]!.property_id, 'prop-1');
   assert.equal(rows[0]!.feed_key, 'getArrivals');
   assert.deepEqual(rows[0]!.values, { guest_count: '23', room_count: '10' });
   assert.equal(rows[0]!.has_error, false);
-  assert.equal(rows[0]!.last_good_at, 'T');
+  assert.equal(rows[0]!.ingest_run_id, lineage.ingestRunId);
+  assert.equal(rows[0]!.captured_at, canonicalSourceTime);
+  assert.equal(rows[0]!.last_good_at, canonicalSourceTime);
+  assert.equal(rows[0]!.last_synced_at, canonicalSourceTime);
 
   // feed HAS page columns but captured nothing → error marker, NO values/last_good_at
   // in the payload (so the prior good capture is preserved on conflict).
-  await upsertFeedValues('prop-1', 'getArrivals', {}, true, deps);
+  await upsertFeedValues('prop-1', 'getArrivals', {}, true, lineage, deps);
   assert.equal(rows.length, 2);
   assert.equal(rows[1]!.has_error, true);
   assert.equal(rows[1]!.last_error, 'no page values captured');
+  assert.equal(rows[1]!.ingest_run_id, lineage.ingestRunId);
+  assert.equal(rows[1]!.captured_at, canonicalSourceTime);
+  assert.equal(rows[1]!.last_error_at, canonicalSourceTime);
+  assert.equal(rows[1]!.last_synced_at, canonicalSourceTime);
   assert.equal('values' in rows[1]!, false, 'error path omits values → preserved on conflict');
   assert.equal('last_good_at' in rows[1]!, false, 'error path omits last_good_at → preserved');
 
   // no page columns configured → nothing to track
-  await upsertFeedValues('prop-1', 'getArrivals', undefined, false, deps);
+  await upsertFeedValues('prop-1', 'getArrivals', undefined, false, lineage, deps);
   assert.equal(rows.length, 2, 'no page columns → no write');
 
-  const boom = { upsert: async () => { throw new Error('boom'); }, now: () => 'T' };
-  await assert.doesNotReject(() => upsertFeedValues('p', 'f', { a: '1' }, true, boom));
+  const boom = { upsert: async () => { throw new Error('boom'); } };
+  await assert.rejects(
+    () => upsertFeedValues('p', 'f', { a: '1' }, true, lineage, boom),
+    /boom/,
+  );
+  await assert.rejects(
+    () => upsertFeedValues(
+      'p',
+      'f',
+      { a: '1' },
+      true,
+      undefined as unknown as FeedValuesLineage,
+      deps,
+    ),
+    /requires an ingestRunId and ISO-8601 sourceCapturedAt/,
+  );
 });

@@ -71,7 +71,7 @@ const SELECT_COLUMNS =
   'changed_facts, failure_reason, proposed_at, decided_at, undone_at, outcome_due_at';
 
 /** The states in which an action is still the one the card is about. */
-const LIVE_ACTION_STATES: readonly FindingActionState[] = Object.freeze([
+export const LIVE_ACTION_STATES: readonly FindingActionState[] = Object.freeze([
   'proposed',
   'executed',
   'declined_changed',

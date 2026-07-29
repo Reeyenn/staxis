@@ -36,24 +36,26 @@ export function isCapabilityLookupError(error: unknown): error is CapabilityLook
   return error instanceof CapabilityLookupError;
 }
 
-export const loadOverridesForProperty = cache(
-  async (propertyId: string): Promise<CapabilityOverrideMap> => {
-    const map: CapabilityOverrideMap = {};
-    if (!propertyId) return map;
-    const { data, error } = await supabaseAdmin
-      .from('capability_overrides')
-      .select('capability, role, allowed')
-      .eq('property_id', propertyId);
-    if (error || !Array.isArray(data)) {
-      throw new CapabilityLookupError(propertyId, { cause: error });
-    }
-    for (const row of data as Array<{ capability: string; role: string; allowed: boolean }>) {
-      if (!isCapabilityKey(row.capability) || !isHotelRole(row.role)) continue;
-      (map[row.capability] ??= {})[row.role] = !!row.allowed;
-    }
-    return map;
-  },
-);
+export async function loadOverridesForPropertyFresh(
+  propertyId: string,
+): Promise<CapabilityOverrideMap> {
+  const map: CapabilityOverrideMap = {};
+  if (!propertyId) return map;
+  const { data, error } = await supabaseAdmin
+    .from('capability_overrides')
+    .select('capability, role, allowed')
+    .eq('property_id', propertyId);
+  if (error || !Array.isArray(data)) {
+    throw new CapabilityLookupError(propertyId, { cause: error });
+  }
+  for (const row of data as Array<{ capability: string; role: string; allowed: boolean }>) {
+    if (!isCapabilityKey(row.capability) || !isHotelRole(row.role)) continue;
+    (map[row.capability] ??= {})[row.role] = !!row.allowed;
+  }
+  return map;
+}
+
+export const loadOverridesForProperty = cache(loadOverridesForPropertyFresh);
 
 export type CapabilityDecision = 'allowed' | 'denied' | 'unavailable';
 
@@ -99,6 +101,31 @@ export async function capabilityDecisionForProperty(
 ): Promise<CapabilityDecision> {
   try {
     return (await canForProperty(user, capability, propertyId)) ? 'allowed' : 'denied';
+  } catch (error) {
+    if (isCapabilityLookupError(error)) return 'unavailable';
+    throw error;
+  }
+}
+
+/**
+ * Commit/tool-boundary capability decision. Unlike the ordinary request-cached
+ * resolver above, this always performs a new override read so a toggle made
+ * between two tool calls in one model turn takes effect before the next handler.
+ * Store failure remains a distinct fail-closed `unavailable` result.
+ */
+export async function capabilityDecisionForPropertyFresh(
+  user: CapUser,
+  capability: CapabilityKey,
+  propertyId: string | null | undefined,
+): Promise<CapabilityDecision> {
+  try {
+    if (user?.role === 'admin') {
+      return can(user, capability, undefined) ? 'allowed' : 'denied';
+    }
+    const overrides = propertyId
+      ? await loadOverridesForPropertyFresh(propertyId)
+      : undefined;
+    return can(user, capability, overrides) ? 'allowed' : 'denied';
   } catch (error) {
     if (isCapabilityLookupError(error)) return 'unavailable';
     throw error;

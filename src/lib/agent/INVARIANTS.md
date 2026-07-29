@@ -745,7 +745,7 @@ No scheduled cleanup deletes from `agent_decisions`, `agent_pending_actions`,
 `user_feedback`, or `agent_eval_baselines`.
 
 - **Enforced by:** `EXEMPT_FROM_PURGE` in
-  `src/app/api/cron/ml-retention-purge/route.ts` (a runtime refusal, not just a
+  `src/lib/retention-purge-policy.ts` (a runtime refusal, not just a
   list) plus `src/lib/__tests__/retention-purge-exemptions.test.ts`, which drives
   the real handler with a stubbed client and fails if it attempts a delete
   against any exempt table, and which fails if a NEW `agent_decision*` table

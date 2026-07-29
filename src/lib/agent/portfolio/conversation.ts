@@ -1,41 +1,48 @@
 import 'server-only';
 
-// ─── The org-scope marker on a conversation ─────────────────────────────────
+// ─── First-class conversation security scope ───────────────────────────────
 //
-// A portfolio conversation is stored in `agent_conversations` like every other
-// one. Two things about that table decide the shape of this file, and both are
-// worth stating plainly rather than discovering later:
+// Migration 0379 made property/portfolio an explicit database distinction.
+// `property_id` intentionally remains NOT NULL for both kinds because the 0336
+// message trigger derives every agent_messages.property_id from it. On a
+// portfolio row that hotel is only a relational/telemetry ANCHOR. It must never
+// be interpreted as either the selected grain or the complete portfolio scope.
 //
-//   • `property_id` is `uuid NOT NULL references properties(id)` (0079). A
-//     conversation with no single hotel is not representable, and this change
-//     ships NO migration. So a portfolio conversation is ANCHORED to one hotel
-//     the caller genuinely covers — the lowest-sorted hotel in the company at
-//     the moment it was created. The anchor is bookkeeping (it satisfies the FK,
-//     it gives `agent_messages`' 0336 trigger a property to derive, and it keeps
-//     `staxis_lock_load_and_record_user_turn`'s property check meaningful). It
-//     is NOT the scope of the answer: the answer's scope is re-resolved from the
-//     spine on every turn and on every tool call.
-//
-//     The anchor is READ BACK from the row on later turns, never recomputed —
-//     a company that buys a hotel sorting before the old anchor would otherwise
-//     fail the RPC's property check on its VP's next message.
-//
-//   • `role` is a CHECK'd enum and `title` is user-visible, so neither can carry
-//     a company id. `prompt_version` is free-form text whose documented meaning
-//     is "which prompt configuration this conversation started under" — and a
-//     portfolio conversation genuinely started under a different prompt
-//     assembly. The marker rides there, as a trailing `+org:<uuid>` segment, in
-//     the same `+`-separated shape `parsePromptStamp` already tolerates
-//     (unknown segments fall through to `codeRules`, and the leading bare
-//     segment still parses as the base/role version).
-//
-// THE DAY A COLUMN EXISTS, THIS FILE IS THE ONLY THING TO MOVE. Encoding and
-// decoding both live here; nothing else in the codebase reads or writes the
-// marker's format.
+// The old `prompt_version + '+org:<uuid>'` marker remains readable solely so a
+// rolling deployment and pre-0379 rows can be backfilled. Once explicit columns
+// are present they always win, including an explicit property row whose prompt
+// stamp happens to contain a conflicting legacy marker.
 
 const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const ORG_SEGMENT_PREFIX = 'org:';
+const POLICY_SEGMENT_PREFIX = 'policy:';
+const POLICY_FINGERPRINT_RX = /^[0-9a-f]{16,64}$/;
+
+export const CONVERSATION_KINDS = ['property', 'portfolio'] as const;
+export type ConversationKind = typeof CONVERSATION_KINDS[number];
+
+export interface ConversationScopeRow {
+  conversation_kind?: unknown;
+  organization_id?: unknown;
+  authorization_hash?: unknown;
+  scope_receipt_id?: unknown;
+  scope_verified_at?: unknown;
+  prompt_version?: unknown;
+}
+
+export interface ConversationSecurityScope {
+  conversationKind: ConversationKind;
+  organizationId: string | null;
+  /** Full, selector-independent authorization-universe hash. Never scopeHash. */
+  authorizationHash: string | null;
+  /** Provenance for the last DB-asserted scope; not authorization by itself. */
+  scopeReceiptId: string | null;
+  scopeVerifiedAt: string | null;
+  legacyPromptStamp: boolean;
+}
+
+const AUTHORIZATION_HASH_RX = /^[0-9a-f]{64}$/;
 
 /**
  * Stamp a conversation as belonging to a company.
@@ -60,6 +67,109 @@ export function orgScopeFromStamp(promptVersion: string | null | undefined): str
     if (UUID_RX.test(value)) return value;
   }
   return null;
+}
+
+export function stampPortfolioPolicy(
+  promptVersion: string,
+  policyFingerprint: string,
+): string {
+  if (!POLICY_FINGERPRINT_RX.test(policyFingerprint)) {
+    throw new Error('portfolio policy fingerprint is invalid');
+  }
+  return `${promptVersion}+${POLICY_SEGMENT_PREFIX}${policyFingerprint}`;
+}
+
+export function portfolioPolicyFingerprintFromStamp(
+  promptVersion: string | null | undefined,
+): string | null {
+  if (typeof promptVersion !== 'string') return null;
+  for (const raw of promptVersion.split('+')) {
+    const segment = raw.trim();
+    if (!segment.startsWith(POLICY_SEGMENT_PREFIX)) continue;
+    const fingerprint = segment.slice(POLICY_SEGMENT_PREFIX.length);
+    return POLICY_FINGERPRINT_RX.test(fingerprint) ? fingerprint : null;
+  }
+  return null;
+}
+
+/**
+ * Decode a DB row without letting the legacy prompt stamp override explicit
+ * scope. Returns null on corrupt explicit metadata so callers fail closed.
+ */
+export function conversationSecurityScopeFromRow(
+  row: ConversationScopeRow,
+): ConversationSecurityScope | null {
+  const explicitKind = row.conversation_kind;
+  if (explicitKind === 'property') {
+    if (row.organization_id != null
+      || row.authorization_hash != null
+      || row.scope_receipt_id != null
+      || row.scope_verified_at != null
+    ) {
+      return null;
+    }
+    return {
+      conversationKind: 'property',
+      organizationId: null,
+      authorizationHash: null,
+      scopeReceiptId: null,
+      scopeVerifiedAt: null,
+      legacyPromptStamp: false,
+    };
+  }
+
+  if (explicitKind === 'portfolio') {
+    if (typeof row.organization_id !== 'string' || !UUID_RX.test(row.organization_id)) return null;
+    if (row.authorization_hash != null
+      && (typeof row.authorization_hash !== 'string'
+        || !AUTHORIZATION_HASH_RX.test(row.authorization_hash))
+    ) {
+      return null;
+    }
+    if (row.scope_receipt_id != null
+      && (typeof row.scope_receipt_id !== 'string' || !UUID_RX.test(row.scope_receipt_id))
+    ) {
+      return null;
+    }
+    if (row.scope_verified_at != null
+      && (typeof row.scope_verified_at !== 'string'
+        || !Number.isFinite(Date.parse(row.scope_verified_at)))
+    ) {
+      return null;
+    }
+    return {
+      conversationKind: 'portfolio',
+      organizationId: row.organization_id,
+      authorizationHash: (row.authorization_hash as string | null | undefined) ?? null,
+      scopeReceiptId: (row.scope_receipt_id as string | null | undefined) ?? null,
+      scopeVerifiedAt: (row.scope_verified_at as string | null | undefined) ?? null,
+      legacyPromptStamp: false,
+    };
+  }
+
+  // Compatibility for a reader deployed just before/while 0379 backfills.
+  // An explicit but unknown kind is corruption, not a reason to trust text.
+  if (explicitKind != null) return null;
+  const promptVersion = typeof row.prompt_version === 'string' ? row.prompt_version : null;
+  const legacyOrganizationId = orgScopeFromStamp(promptVersion);
+  if (legacyOrganizationId) {
+    return {
+      conversationKind: 'portfolio',
+      organizationId: legacyOrganizationId,
+      authorizationHash: null,
+      scopeReceiptId: null,
+      scopeVerifiedAt: null,
+      legacyPromptStamp: true,
+    };
+  }
+  return {
+    conversationKind: 'property',
+    organizationId: null,
+    authorizationHash: null,
+    scopeReceiptId: null,
+    scopeVerifiedAt: null,
+    legacyPromptStamp: true,
+  };
 }
 
 /**

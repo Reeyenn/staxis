@@ -39,9 +39,14 @@ export function chunkCompanyProjectionIds(values: readonly string[]): string[][]
 
 export async function readCompleteCompanyPages<T>(
   readPage: (from: number, to: number) => PromiseLike<CompanyProjectionPage<T>>,
+  options: { maxRows?: number } = {},
 ): Promise<T[]> {
   const rows: T[] = [];
   let expectedCount: number | null = null;
+  const maxRows = options.maxRows ?? Number.MAX_SAFE_INTEGER;
+  if (!Number.isSafeInteger(maxRows) || maxRows < 0) {
+    throw new IncompleteCompanyProjectionError('Company projection row bound is invalid');
+  }
 
   while (expectedCount === null || rows.length < expectedCount) {
     const from = rows.length;
@@ -53,6 +58,11 @@ export async function readCompleteCompanyPages<T>(
       );
     }
     const exactCount = result.count as number;
+    if (exactCount > maxRows) {
+      throw new IncompleteCompanyProjectionError(
+        `Company projection exceeds the ${maxRows}-row safety bound`,
+      );
+    }
     if (expectedCount === null) expectedCount = exactCount;
     if (exactCount !== expectedCount) {
       throw new IncompleteCompanyProjectionError(

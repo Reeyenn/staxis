@@ -102,6 +102,7 @@ export async function POST(req: NextRequest) {
     session.userId,
     'manage_team',
     pidV.value!,
+    { requireMutation: true },
   );
   if (teamCapabilityDecision === 'unavailable') {
     return capabilityUnavailableResponse(requestId);
@@ -124,6 +125,7 @@ export async function POST(req: NextRequest) {
       session.userId,
       'manage_settings',
       pidV.value!,
+      { requireMutation: true },
     );
     if (settingsCapabilityDecision === 'unavailable') {
       return capabilityUnavailableResponse(requestId);

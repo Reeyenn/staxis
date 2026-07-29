@@ -27,28 +27,44 @@
 // Inviting the same person twice with different answers is how multi-hat
 // happens: two invitations, two hats, one person.
 
-import { NextRequest } from 'next/server';
+import { NextRequest, type NextResponse } from 'next/server';
 import { createHash, randomBytes } from 'node:crypto';
+import { requireSession } from '@/lib/api-auth';
 import { accountInviteDelivery, accountInviteStatus } from '@/lib/account-invites';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { ok, err, ApiErrorCode } from '@/lib/api-response';
+import { validateUuid } from '@/lib/api-validate';
 import { sendHotelAccountInvite } from '@/lib/email/hotel-account-invite';
 import type { SendEmailResult } from '@/lib/email/resend';
 import { env } from '@/lib/env';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
-import { verifyTeamManager, callerCapabilityDecision } from '@/lib/team-auth';
-import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
-import { canGrantHotelRole, isAssignableRole, type AssignableRole } from '@/lib/roles';
-import { writeAudit } from '@/lib/audit';
-import { resolveInviteScope, type ResolvedInviteScope } from '@/lib/company/invite-scope';
-import { canGrantHat, HAT_ROLE_LABELS, type HatRole } from '@/lib/company/roles';
 import {
-  companyForProperty,
-  managingHats,
-  propertiesOfOrganization,
-  type MembershipHat,
-} from '@/lib/company/access';
+  companyInviteAuthorityUnchanged,
+  loadFreshCompanyInviteAuthorityContext,
+  projectStoredInviteForCompanyContext,
+  resolveAuthoritativeInviteScope,
+  resolveLocalHotelInviteAuthority,
+  type CompanyInviteAuthorityContext,
+  type ProjectedStoredInviteScope,
+  type ResolvedAuthoritativeInviteScope,
+} from '@/lib/company/account-invite-authority';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import {
+  ASSIGNABLE_ROLES,
+  canGrantHotelRole,
+  isAssignableRole,
+  type AppRole,
+  type AssignableRole,
+} from '@/lib/roles';
+import { HAT_ROLE_LABELS, type HatRole } from '@/lib/company/roles';
+import { resolveCompanyForProperty } from '@/lib/company/access';
+import { loadOrganizationActor } from '@/lib/organization-access/server';
+import {
+  readCompleteCompanyIdChunks,
+  readCompleteCompanyPages,
+  type CompanyProjectionPage,
+} from '@/lib/company-access/projection-query';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -58,35 +74,302 @@ const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 function hashToken(t: string) { return createHash('sha256').update(t).digest('hex'); }
 function isEmail(s: string) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s); }
 
+interface InviteRouteActor {
+  accountId: string;
+  authUserId: string;
+  authEmail: string | null;
+}
+
+type InviteRouteAuthentication =
+  | { ok: true; actor: InviteRouteActor }
+  | { ok: false; response: NextResponse };
+
+async function authenticateInviteRoute(
+  req: NextRequest,
+  requestId: string,
+): Promise<InviteRouteAuthentication> {
+  const session = await requireSession(req, { requestId });
+  if (!session.ok) return session;
+  try {
+    const actor = await loadOrganizationActor(session.userId, session.email);
+    if (!actor) {
+      return {
+        ok: false,
+        response: err('Unauthorized', {
+          requestId,
+          status: 403,
+          code: ApiErrorCode.Unauthorized,
+        }),
+      };
+    }
+    return {
+      ok: true,
+      actor: {
+        accountId: actor.accountId,
+        authUserId: actor.authUserId,
+        authEmail: actor.email,
+      },
+    };
+  } catch (authError) {
+    log.error('[invites] authoritative actor lookup failed', {
+      requestId,
+      msg: errToString(authError),
+    });
+    return { ok: false, response: capabilityUnavailableResponse(requestId) };
+  }
+}
+
+function authorityDenied(requestId: string) {
+  return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+}
+
+function normalizedInviteRow(row: StoredInviteRow): boolean {
+  return row.organization_id !== null
+    || row.membership_scope !== null
+    || row.covered_property_ids !== null;
+}
+
+function sameInviteScope(
+  left: ResolvedAuthoritativeInviteScope,
+  right: ResolvedAuthoritativeInviteScope,
+): boolean {
+  return left.organizationId === right.organizationId
+    && left.scope === right.scope
+    && left.role === right.role
+    && left.propertyIds.length === right.propertyIds.length
+    && left.propertyIds.every((propertyId, index) => propertyId === right.propertyIds[index]);
+}
+
+interface StoredInviteRow {
+  id: string;
+  hotel_id: string;
+  email: string;
+  role: string;
+  expires_at: string;
+  created_at: string;
+  accepted_at: string | null;
+  organization_id: string | null;
+  membership_scope: string | null;
+  covered_property_ids: unknown;
+}
+
+interface VisibleInviteProjection {
+  row: StoredInviteRow;
+  organizationId: string | null;
+  scope: 'hotel' | 'company' | 'property';
+  propertyIds: string[];
+  canRevoke: boolean;
+}
+
+const MAX_VISIBLE_PENDING_INVITES = 5_000;
+
+function storedInviteScope(row: StoredInviteRow) {
+  return {
+    hotelId: row.hotel_id,
+    organizationId: row.organization_id,
+    membershipScope: row.membership_scope,
+    role: row.role,
+    coveredPropertyIds: row.covered_property_ids,
+  };
+}
+
+function sameProjectedScope(
+  left: ProjectedStoredInviteScope,
+  right: ProjectedStoredInviteScope,
+): boolean {
+  return left.scope === right.scope
+    && left.role === right.role
+    && left.canRevoke === right.canRevoke
+    && left.propertyIds.length === right.propertyIds.length
+    && left.propertyIds.every((propertyId, index) => propertyId === right.propertyIds[index]);
+}
+
+async function exactPropertyNames(propertyIds: readonly string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(propertyIds)].sort();
+  if (ids.length === 0) return new Map();
+  const data = await readCompleteCompanyIdChunks<{ id: string; name: string }>(
+    ids,
+    (chunk, from, to) => supabaseAdmin
+      .from('properties')
+      .select('id, name', { count: 'exact' })
+      .in('id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<{
+        id: string;
+        name: string;
+      }>>,
+  );
+  if (data.some((row) => typeof row.id !== 'string'
+      || typeof row.name !== 'string'
+      || row.name.trim().length === 0)) {
+    throw new Error('property names contained malformed rows');
+  }
+  const returnedIds = data.map((row) => row.id).sort();
+  if (returnedIds.length !== ids.length
+      || returnedIds.some((propertyId, index) => propertyId !== ids[index])) {
+    throw new Error('property names were incomplete');
+  }
+  return new Map(data.map((row) => [row.id, row.name]));
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req, { capability: 'manage_team' });
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  const authentication = await authenticateInviteRoute(req, requestId);
+  if (!authentication.ok) return authentication.response;
+  const { actor } = authentication;
 
   const { searchParams } = new URL(req.url);
-  const hotelId = searchParams.get('hotelId');
-  if (!hotelId) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
-  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
-  if (capabilityDecision === 'denied') {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  const hotelIdRaw = searchParams.get('hotelId');
+  if (!hotelIdRaw) return err('hotelId required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
+  const hotelIdCheck = validateUuid(hotelIdRaw, 'hotelId');
+  if (hotelIdCheck.error || !hotelIdCheck.value) {
+    return err(hotelIdCheck.error ?? 'hotelId is invalid', {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
+  }
+  const hotelId = hotelIdCheck.value;
+  const initialTopology = await resolveCompanyForProperty(hotelId);
+  if (initialTopology.status === 'unavailable' || initialTopology.status === 'ambiguous') {
+    return capabilityUnavailableResponse(requestId);
   }
 
-  const { data, error: qErr } = await supabaseAdmin
-    .from('account_invites')
-    .select('id, email, role, expires_at, created_at, accepted_at')
-    .eq('hotel_id', hotelId)
-    .is('accepted_at', null)
-    .order('created_at', { ascending: false });
-  if (qErr) {
-    log.error('[invites:GET] failed', { requestId, msg: errToString(qErr) });
-    return err('Failed to load invites', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  const nowMs = Date.now();
-  const invites = (data ?? []).map((invite) => {
-    const status = accountInviteStatus(invite.expires_at, nowMs);
-    return { ...invite, status, isExpired: status === 'expired' };
+  const companyContext = await loadFreshCompanyInviteAuthorityContext({
+    accountId: actor.accountId,
+    anchorPropertyId: hotelId,
   });
+  const companyRead = companyContext.kind === 'allowed'
+    ? resolveAuthoritativeInviteScope(
+        companyContext.value,
+        'front_desk',
+        'property',
+        [hotelId],
+      )
+    : companyContext;
+  const localAuthority = await resolveLocalHotelInviteAuthority(actor.accountId, hotelId, {
+    requireIndependentTopology: true,
+  });
+  if (companyContext.kind === 'unavailable'
+      || (companyRead.kind !== 'allowed' && localAuthority.kind === 'unavailable')) {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (companyRead.kind !== 'allowed' && localAuthority.kind !== 'allowed') {
+    return authorityDenied(requestId);
+  }
+  if (companyContext.kind === 'allowed'
+      && (initialTopology.status !== 'company'
+        || initialTopology.organizationId !== companyContext.value.organizationId)) {
+    return capabilityUnavailableResponse(requestId);
+  }
+
+  const canReadNormalized = companyContext.kind === 'allowed'
+    && companyRead.kind === 'allowed';
+  // A pre-acquisition null-org invite is no longer actionable once this hotel
+  // joins a real company: both guarded revoke and acceptance reject that old
+  // shape. Do not advertise a dead control or stale promise.
+  const canReadLegacy = localAuthority.kind === 'allowed'
+    && initialTopology.status === 'independent';
+  let normalizedRows: StoredInviteRow[] = [];
+  let legacyRows: StoredInviteRow[] = [];
+  try {
+    if (canReadNormalized) {
+      normalizedRows = await readCompleteCompanyPages<StoredInviteRow>((from, to) => (
+        supabaseAdmin
+          .from('account_invites')
+          .select(
+            'id, hotel_id, email, role, expires_at, created_at, accepted_at, organization_id, membership_scope, covered_property_ids',
+            { count: 'exact' },
+          )
+          .eq('organization_id', companyContext.value.organizationId)
+          .is('accepted_at', null)
+          .order('created_at', { ascending: false })
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<StoredInviteRow>>
+      ), { maxRows: MAX_VISIBLE_PENDING_INVITES });
+    }
+    if (canReadLegacy) {
+      legacyRows = await readCompleteCompanyPages<StoredInviteRow>((from, to) => (
+        supabaseAdmin
+          .from('account_invites')
+          .select(
+            'id, hotel_id, email, role, expires_at, created_at, accepted_at, organization_id, membership_scope, covered_property_ids',
+            { count: 'exact' },
+          )
+          .eq('hotel_id', hotelId)
+          .is('organization_id', null)
+          .is('membership_scope', null)
+          .is('covered_property_ids', null)
+          .is('accepted_at', null)
+          .order('created_at', { ascending: false })
+          .order('id')
+          .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<StoredInviteRow>>
+      ), { maxRows: MAX_VISIBLE_PENDING_INVITES - normalizedRows.length });
+    }
+  } catch (queryError) {
+    log.error('[invites:GET] complete pending-invite read failed', {
+      requestId, msg: errToString(queryError),
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+
+  if (normalizedRows.some((row) => !normalizedInviteRow(row))
+      || legacyRows.some(normalizedInviteRow)
+      || new Set([...normalizedRows, ...legacyRows].map((row) => row.id)).size
+        !== normalizedRows.length + legacyRows.length) {
+    log.error('[invites:GET] pending-invite query returned an invalid scope partition', {
+      requestId,
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
+
+  const normalizedProjections = new Map<string, ProjectedStoredInviteScope>();
+  if (canReadNormalized) {
+    for (const row of normalizedRows) {
+      const projection = projectStoredInviteForCompanyContext(
+        companyContext.value,
+        storedInviteScope(row),
+        hotelId,
+      );
+      if (projection) normalizedProjections.set(row.id, projection);
+    }
+  }
+  const visible: VisibleInviteProjection[] = [
+    ...normalizedRows.flatMap((row): VisibleInviteProjection[] => {
+      const projection = normalizedProjections.get(row.id);
+      return projection ? [{
+        row,
+        organizationId: companyContext.kind === 'allowed'
+          ? companyContext.value.organizationId
+          : null,
+        scope: projection.scope,
+        propertyIds: projection.propertyIds,
+        canRevoke: projection.canRevoke,
+      }] : [];
+    }),
+    ...legacyRows.flatMap((row): VisibleInviteProjection[] => (
+      isAssignableRole(row.role) && localAuthority.kind === 'allowed'
+        ? [{
+            row,
+            organizationId: null,
+            scope: 'hotel',
+            propertyIds: [hotelId],
+            canRevoke: canGrantHotelRole(localAuthority.value.roleAtHotel, row.role),
+          }]
+        : []
+    )),
+  ].sort((left, right) => (
+    right.row.created_at.localeCompare(left.row.created_at)
+      || left.row.id.localeCompare(right.row.id)
+  ));
+
+  let propertyNames: Map<string, string>;
+  try {
+    propertyNames = await exactPropertyNames(visible.flatMap((invite) => invite.propertyIds));
+  } catch (nameError) {
+    log.error('[invites:GET] exact property-name projection failed', {
+      requestId, msg: errToString(nameError),
+    });
+    return capabilityUnavailableResponse(requestId);
+  }
 
   // What the invite form should ask. For an independent hotel this is the two
   // questions it has always asked; for someone who runs a company it also
@@ -94,13 +377,105 @@ export async function GET(req: NextRequest) {
   // the dialog already makes rather than a second endpoint.
   let options: InviteOptions = { choosesHotels: false, organizationId: null, jobs: [], hotels: [] };
   try {
-    options = await inviteOptionsFor(caller, hotelId);
+    if (canReadNormalized) options = await inviteOptionsFor(companyContext.value);
+    else if (canReadLegacy && localAuthority.kind === 'allowed') {
+      options = await localInviteOptionsFor(hotelId, localAuthority.value.roleAtHotel);
+    }
   } catch (optionsErr) {
-    // The list of pending invitations is the point of this read; a company
-    // lookup that cannot answer just means the form asks its usual two
-    // questions.
+    // The pending list remains useful, but an incomplete options projection
+    // must disable creation rather than fall back to a privileged client role.
     log.warn('[invites:GET] company options unavailable', { requestId, msg: errToString(optionsErr) });
   }
+
+  // Reassert the exact authority generation immediately before any invitation
+  // email/scope leaves the process. A revocation or hotel transfer that lands
+  // while the complete paged read is running turns this response into a
+  // refusal, never a stale People payload.
+  if (companyContext.kind === 'allowed') {
+    const finalContext = await loadFreshCompanyInviteAuthorityContext({
+      accountId: actor.accountId,
+      anchorPropertyId: hotelId,
+      expectedOrganizationId: companyContext.value.organizationId,
+    });
+    if (finalContext.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (finalContext.kind !== 'allowed'
+        || !companyInviteAuthorityUnchanged(companyContext.value, finalContext.value)) {
+      return authorityDenied(requestId);
+    }
+    const finalRead = resolveAuthoritativeInviteScope(
+      finalContext.value,
+      'front_desk',
+      'property',
+      [hotelId],
+    );
+    if ((canReadNormalized && finalRead.kind !== 'allowed')
+        || (!canReadNormalized && finalRead.kind === 'allowed')) {
+      return authorityDenied(requestId);
+    }
+    for (const row of normalizedRows) {
+      const initialProjection = normalizedProjections.get(row.id);
+      const finalProjection = projectStoredInviteForCompanyContext(
+        finalContext.value,
+        storedInviteScope(row),
+        hotelId,
+      );
+      if (!!initialProjection !== !!finalProjection
+          || (initialProjection && finalProjection
+            && !sameProjectedScope(initialProjection, finalProjection))) {
+        return authorityDenied(requestId);
+      }
+    }
+  } else {
+    const finalCompany = await loadFreshCompanyInviteAuthorityContext({
+      accountId: actor.accountId,
+      anchorPropertyId: hotelId,
+    });
+    if (finalCompany.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (finalCompany.kind !== 'denied') return authorityDenied(requestId);
+  }
+
+  if (localAuthority.kind === 'allowed') {
+    const finalLocal = await resolveLocalHotelInviteAuthority(actor.accountId, hotelId, {
+      freshCapability: true,
+      requireIndependentTopology: true,
+    });
+    if (finalLocal.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (finalLocal.kind !== 'allowed'
+        || finalLocal.value.roleAtHotel !== localAuthority.value.roleAtHotel) {
+      return authorityDenied(requestId);
+    }
+  }
+
+  const finalTopology = await resolveCompanyForProperty(hotelId);
+  if (finalTopology.status === 'unavailable' || finalTopology.status === 'ambiguous') {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (finalTopology.status !== initialTopology.status
+      || (initialTopology.status === 'company'
+        && (finalTopology.status !== 'company'
+          || finalTopology.organizationId !== initialTopology.organizationId))) {
+    return authorityDenied(requestId);
+  }
+
+  const nowMs = Date.now();
+  const invites = visible.map(({ row, organizationId, scope, propertyIds, canRevoke }) => {
+    const status = accountInviteStatus(row.expires_at, nowMs);
+    return {
+      id: row.id,
+      email: row.email,
+      role: row.role,
+      expires_at: row.expires_at,
+      created_at: row.created_at,
+      accepted_at: row.accepted_at,
+      status,
+      isExpired: status === 'expired',
+      organizationId,
+      scope,
+      propertyIds,
+      propertyNames: propertyIds.map((propertyId) => propertyNames.get(propertyId)!),
+      canRevoke,
+    };
+  });
   return ok({ invites, options }, { requestId });
 }
 
@@ -108,65 +483,90 @@ interface InviteOptions {
   /** Ask the third question — "which hotels?" — only when this is true. */
   choosesHotels: boolean;
   organizationId: string | null;
-  jobs: Array<{ value: string; scope: 'company' | 'property'; label: { en: string; es: string } }>;
+  jobs: Array<{
+    value: string;
+    scope: 'company' | 'property';
+    label: { en: string; es: string };
+    allowedPropertyIds: string[];
+  }>;
   hotels: Array<{ id: string; name: string }>;
 }
 
 async function inviteOptionsFor(
-  caller: NonNullable<Awaited<ReturnType<typeof verifyTeamManager>>>,
-  hotelId: string,
+  context: CompanyInviteAuthorityContext,
 ): Promise<InviteOptions> {
-  const empty: InviteOptions = {
-    choosesHotels: false, organizationId: null, jobs: [], hotels: [],
-  };
-  const organizationId = await companyForProperty(hotelId);
-  if (!organizationId) return empty;
-
-  const managing: MembershipHat[] = managingHats(caller.hats ?? [])
-    .filter((hat) => hat.organizationId === organizationId);
-  if (!caller.isAdmin && managing.length === 0) return empty;
-
-  const choosesHotels = caller.isAdmin || managing.some((hat) => hat.scope === 'company');
   const jobs: InviteOptions['jobs'] = [];
-  const offer = (value: HatRole, scope: 'company' | 'property') => {
+  const offer = (
+    value: HatRole,
+    scope: 'company' | 'property',
+    allowedPropertyIds: string[],
+  ) => {
     if (jobs.some((job) => job.value === value)) return;
-    jobs.push({ value, scope, label: HAT_ROLE_LABELS[value] });
+    jobs.push({ value, scope, label: HAT_ROLE_LABELS[value], allowedPropertyIds });
   };
   for (const role of ['general_manager', 'front_desk', 'housekeeping', 'maintenance'] as const) {
-    if (caller.isAdmin || managing.some((hat) => canGrantHat(
-      { scope: hat.scope, role: hat.role, coveredPropertyIds: hat.coveredPropertyIds },
-      { scope: 'property', role, propertyIds: [hotelId] },
-    ))) offer(role, 'property');
+    const allowedPropertyIds = context.operatedPropertyIds.filter((propertyId) => (
+      resolveAuthoritativeInviteScope(
+      context,
+      role,
+      'property',
+      [propertyId],
+      ).kind === 'allowed'
+    ));
+    if (allowedPropertyIds.length > 0) offer(role, 'property', allowedPropertyIds);
   }
   for (const role of ['owner', 'vp', 'finance'] as const) {
-    if (caller.isAdmin || managing.some((hat) => canGrantHat(
-      { scope: hat.scope, role: hat.role, coveredPropertyIds: hat.coveredPropertyIds },
-      { scope: 'company', role, propertyIds: [] },
-    ))) offer(role, 'company');
+    if (resolveAuthoritativeInviteScope(
+      context,
+      role,
+      'company',
+      [],
+    ).kind === 'allowed') offer(role, 'company', []);
   }
 
-  const hotelIds = choosesHotels
-    ? await propertiesOfOrganization(organizationId)
-    : [...new Set(managing.flatMap((hat) => hat.coveredPropertyIds))];
+  const propertyIds = [...new Set(jobs.flatMap((job) => job.allowedPropertyIds))].sort();
   let hotels: InviteOptions['hotels'] = [];
-  if (hotelIds.length > 0) {
-    const { data } = await supabaseAdmin
-      .from('properties')
-      .select('id, name')
-      .in('id', hotelIds);
-    hotels = ((data ?? []) as Array<{ id: string; name: string }>)
-      .map((row) => ({ id: row.id, name: row.name }))
+  if (propertyIds.length > 0) {
+    const names = await exactPropertyNames(propertyIds);
+    hotels = propertyIds
+      .map((id) => ({ id, name: names.get(id)! }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  return {
+    choosesHotels: jobs.some((job) => job.scope === 'company') || hotels.length > 1,
+    organizationId: context.organizationId,
+    jobs,
+    hotels,
+  };
+}
 
-  return { choosesHotels, organizationId, jobs, hotels };
+async function localInviteOptionsFor(
+  hotelId: string,
+  roleAtHotel: AppRole,
+): Promise<InviteOptions> {
+  const names = await exactPropertyNames([hotelId]);
+  const jobs = ASSIGNABLE_ROLES
+    .filter((role) => canGrantHotelRole(roleAtHotel, role))
+    .map((role) => ({
+      value: role,
+      scope: 'property' as const,
+      label: HAT_ROLE_LABELS[role],
+      allowedPropertyIds: [hotelId],
+    }));
+  return {
+    choosesHotels: false,
+    organizationId: null,
+    jobs,
+    hotels: [{ id: hotelId, name: names.get(hotelId)! }],
+  };
 }
 
 export async function POST(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req, { capability: 'manage_team' });
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  const authentication = await authenticateInviteRoute(req, requestId);
+  if (!authentication.ok) return authentication.response;
+  const { actor } = authentication;
 
   let body: {
     hotelId?: string;
@@ -184,21 +584,38 @@ export async function POST(req: NextRequest) {
   if (!hotelId || !email || !role) {
     return err('hotelId, email, and role are required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
-  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', hotelId);
-  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
-  if (capabilityDecision === 'denied') {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  const hotelIdValidation = validateUuid(hotelId, 'hotelId');
+  if (hotelIdValidation.error) {
+    return err(hotelIdValidation.error, {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+    });
   }
+  const companyContext = await loadFreshCompanyInviteAuthorityContext({
+    accountId: actor.accountId,
+    anchorPropertyId: hotelId,
+  });
+  if (companyContext.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
 
-  // ── The company shape, when one was asked for ──────────────────────────
-  // `resolveInviteScope` returns null for the legacy shape, so everything
-  // below this point runs unchanged for every hotel invite ever sent.
-  let hat: ResolvedInviteScope | null;
-  try {
-    hat = await resolveInviteScope(caller, hotelId, role, body.scope, body.propertyIds);
-  } catch (scopeErr) {
-    const message = scopeErr instanceof Error ? scopeErr.message : 'Invalid invitation scope';
-    return err(message, { requestId, status: 403, code: ApiErrorCode.Forbidden });
+  const explicitCompanyShape = Object.prototype.hasOwnProperty.call(body, 'scope')
+    || Object.prototype.hasOwnProperty.call(body, 'propertyIds');
+  let hat: ResolvedAuthoritativeInviteScope | null = null;
+  let localAuthority: Awaited<ReturnType<typeof resolveLocalHotelInviteAuthority>> | null = null;
+  if (companyContext.kind === 'allowed') {
+    const resolved = resolveAuthoritativeInviteScope(
+      companyContext.value,
+      role,
+      explicitCompanyShape ? body.scope : 'property',
+      explicitCompanyShape ? body.propertyIds : [hotelId],
+    );
+    if (resolved.kind !== 'allowed') return authorityDenied(requestId);
+    hat = resolved.value;
+  } else {
+    if (explicitCompanyShape) return authorityDenied(requestId);
+    localAuthority = await resolveLocalHotelInviteAuthority(actor.accountId, hotelId, {
+      requireIndependentTopology: true,
+    });
+    if (localAuthority.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (localAuthority.kind === 'denied') return authorityDenied(requestId);
   }
 
   // The word the invited person's LOGIN will carry. For a company invitation
@@ -211,7 +628,8 @@ export async function POST(req: NextRequest) {
     if (!isAssignableRole(role)) {
       return err('Invalid role', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
     }
-    if (!canGrantHotelRole(caller.role, role)) {
+    if (localAuthority?.kind !== 'allowed'
+        || !canGrantHotelRole(localAuthority.value.roleAtHotel, role)) {
       return err('Only an owner or admin can invite an owner or General Manager', {
         requestId,
         status: 403,
@@ -225,56 +643,106 @@ export async function POST(req: NextRequest) {
     return err('Invalid email', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
   }
 
-  const { data: property, error: propertyErr } = await supabaseAdmin
-    .from('properties')
-    .select('name')
-    .eq('id', hotelId)
-    .maybeSingle();
-  if (propertyErr) {
-    log.error('[invites:POST] property lookup failed', { requestId, msg: errToString(propertyErr) });
-    return err('Failed to verify hotel', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  if (!property) {
-    return err('Hotel not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
+  // Re-resolve from current primary authority immediately before the write.
+  // Revocation, transfer, or target-hotel removal between form load and submit
+  // therefore fails closed instead of preserving a stale invitation promise.
+  if (hat) {
+    const freshContext = await loadFreshCompanyInviteAuthorityContext({
+      accountId: actor.accountId,
+      anchorPropertyId: hotelId,
+      expectedOrganizationId: hat.organizationId,
+    });
+    if (freshContext.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (freshContext.kind !== 'allowed') return authorityDenied(requestId);
+    const freshScope = resolveAuthoritativeInviteScope(
+      freshContext.value,
+      hat.role,
+      hat.scope,
+      hat.scope === 'property' ? hat.propertyIds : [],
+    );
+    if (freshScope.kind !== 'allowed' || !sameInviteScope(hat, freshScope.value)) {
+      return authorityDenied(requestId);
+    }
+  } else {
+    const freshLocal = await resolveLocalHotelInviteAuthority(actor.accountId, hotelId, {
+      freshCapability: true,
+      requireIndependentTopology: true,
+    });
+    if (freshLocal.kind === 'unavailable') return capabilityUnavailableResponse(requestId);
+    if (freshLocal.kind !== 'allowed'
+        || !isAssignableRole(role)
+        || !canGrantHotelRole(freshLocal.value.roleAtHotel, role)) {
+      return authorityDenied(requestId);
+    }
   }
 
   const rawToken = randomBytes(24).toString('hex');
   const tokenHash = hashToken(rawToken);
   const expiresAt = new Date(Date.now() + INVITE_TTL_MS).toISOString();
+  // `hotel_id` is the authority anchor used again at revoke and acceptance.
+  // For an exact property promise it must be one of the promised hotels, not
+  // merely whichever company hotel happened to have the People screen open.
+  // The resolver returns a sorted, non-empty set, giving us a stable anchor.
+  const inviteAnchorHotelId = hat?.scope === 'property'
+    ? hat.propertyIds[0]!
+    : hotelId;
 
-  const { data: inserted, error: insErr } = await supabaseAdmin.from('account_invites').insert({
-    hotel_id: hotelId,
-    email: normalizedEmail,
-    role,
-    token_hash: tokenHash,
-    expires_at: expiresAt,
-    invited_by: caller.accountId,
-    // NULL for every legacy hotel invite — the CHECK in 0364 requires all
-    // three to be absent together, which is what keeps the old shape intact.
-    organization_id: hat?.organizationId ?? null,
-    membership_scope: hat?.scope ?? null,
-    covered_property_ids: hat?.scope === 'property' ? hat.propertyIds : null,
-  }).select('id').single();
-  if (insErr || !inserted) {
-    log.error('[invites:POST] insert failed', { requestId, msg: errToString(insErr) });
-    return err('Failed to create invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-
-  await writeAudit({
-    action: 'invite.create',
-    actorUserId: caller.authUserId,
-    actorEmail: caller.authEmail,
-    targetType: 'invite',
-    targetId: inserted.id,
-    hotelId,
-    metadata: {
-      email: normalizedEmail,
-      role,
-      ...(hat
-        ? { scope: hat.scope, organizationId: hat.organizationId, propertyIds: hat.propertyIds }
-        : {}),
+  const { data: guardedCreateData, error: guardedCreateError } = await supabaseAdmin.rpc(
+    'staxis_create_account_invite_guarded',
+    {
+      p_actor_account_id: actor.accountId,
+      p_actor_auth_user_id: actor.authUserId,
+      p_hotel_id: inviteAnchorHotelId,
+      p_email: normalizedEmail,
+      p_role: role,
+      p_token_hash: tokenHash,
+      p_expires_at: expiresAt,
+      p_organization_id: hat?.organizationId ?? null,
+      p_membership_scope: hat?.scope ?? null,
+      p_covered_property_ids: hat?.scope === 'property' ? hat.propertyIds : null,
+      p_request_id: requestId,
     },
-  });
+  );
+  if (guardedCreateError) {
+    log.error('[invites:POST] guarded create failed', {
+      requestId,
+      code: guardedCreateError.code,
+      msg: errToString(guardedCreateError),
+    });
+    if (guardedCreateError.code === '55P03' || guardedCreateError.code === '40001') {
+      return capabilityUnavailableResponse(requestId);
+    }
+    return err('Failed to create invite', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
+  const guardedCreate = guardedCreateData !== null
+      && typeof guardedCreateData === 'object'
+      && !Array.isArray(guardedCreateData)
+    ? guardedCreateData as Record<string, unknown>
+    : null;
+  if (!guardedCreate || guardedCreate.ok !== true) {
+    if (guardedCreate?.reason === 'invalid') {
+      return err('Invalid invitation', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    return authorityDenied(requestId);
+  }
+  const inviteIdReceipt = validateUuid(guardedCreate.inviteId, 'inviteId');
+  const hotelIdReceipt = validateUuid(guardedCreate.hotelId, 'hotelId');
+  const inviteId = inviteIdReceipt.error ? null : inviteIdReceipt.value;
+  const committedHotelId = hotelIdReceipt.error ? null : hotelIdReceipt.value;
+  const hotelName = typeof guardedCreate.hotelName === 'string'
+    && guardedCreate.hotelName.trim().length > 0
+    ? guardedCreate.hotelName
+    : null;
+  if (!inviteId || committedHotelId !== inviteAnchorHotelId || !hotelName) {
+    log.error('[invites:POST] guarded create returned a malformed receipt', { requestId });
+    return err('Failed to create invite', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
+    });
+  }
 
   // Account-invite acceptance remains /invite/[token]; only the delivery
   // transport changes. Use the canonical application origin rather than a
@@ -284,17 +752,17 @@ export async function POST(req: NextRequest) {
   try {
     emailResult = await sendHotelAccountInvite({
       to: normalizedEmail,
-      hotelName: property.name,
+      hotelName,
       role: legacyRole,
       roleLabelOverride: hat ? HAT_ROLE_LABELS[hat.role].en : undefined,
       inviteUrl: inviteLink,
       expiresAt,
       auditContext: {
-        actorUserId: caller.authUserId,
-        actorEmail: caller.authEmail,
+        actorUserId: actor.authUserId,
+        actorEmail: actor.authEmail ?? undefined,
         targetType: 'invite',
-        targetId: inserted.id,
-        hotelId,
+        targetId: inviteId,
+        hotelId: inviteAnchorHotelId,
       },
     });
   } catch (mailErr) {
@@ -304,7 +772,7 @@ export async function POST(req: NextRequest) {
   if (!emailResult.ok) {
     log.warn('[invites:POST] invitation created but email was not delivered', {
       requestId,
-      inviteId: inserted.id,
+      inviteId,
     });
   }
 
@@ -313,62 +781,72 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
-  const caller = await verifyTeamManager(req, { capability: 'manage_team' });
-  if (!caller) return err('Unauthorized', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  const authentication = await authenticateInviteRoute(req, requestId);
+  if (!authentication.ok) return authentication.response;
+  const { actor } = authentication;
 
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
   if (!id) return err('id required', { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-
-  // Fetch first to enforce hotel-level scope.
-  const { data: row, error: rowErr } = await supabaseAdmin
-    .from('account_invites')
-    .select('hotel_id, accepted_at')
-    .eq('id', id)
-    .maybeSingle();
-  if (rowErr) {
-    log.error('[invites:DELETE] lookup failed', { requestId, msg: errToString(rowErr) });
-    return err('Failed to verify invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  if (!row) return err('Not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-  const capabilityDecision = await callerCapabilityDecision(caller, 'manage_team', row.hotel_id);
-  if (capabilityDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
-  if (capabilityDecision === 'denied') {
-    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
-  }
-  if (row.accepted_at) {
-    return err('Only pending invites can be revoked', {
-      requestId,
-      status: 409,
-      code: ApiErrorCode.IdempotencyConflict,
+  const idValidation = validateUuid(id, 'id');
+  if (idValidation.error) {
+    return err(idValidation.error, {
+      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
   }
 
-  const { data: deleted, error: delErr } = await supabaseAdmin
-    .from('account_invites')
-    .delete()
-    .eq('id', id)
-    .is('accepted_at', null)
-    .select('id')
-    .maybeSingle();
-  if (delErr) {
-    log.error('[invites:DELETE] failed', { requestId, msg: errToString(delErr) });
-    return err('Failed to revoke invite', { requestId, status: 500, code: ApiErrorCode.InternalError });
-  }
-  if (!deleted) {
-    return err('Invite is no longer pending', {
+  const { data, error: revokeError } = await supabaseAdmin.rpc(
+    'staxis_revoke_account_invite_guarded',
+    {
+      p_actor_account_id: actor.accountId,
+      p_actor_auth_user_id: actor.authUserId,
+      p_invite_id: id,
+      p_request_id: requestId,
+    },
+  );
+  if (revokeError) {
+    log.error('[invites:DELETE] guarded revoke failed', {
       requestId,
-      status: 409,
-      code: ApiErrorCode.IdempotencyConflict,
+      code: revokeError.code,
+      msg: errToString(revokeError),
+    });
+    if (revokeError.code === '55P03' || revokeError.code === '40001') {
+      return capabilityUnavailableResponse(requestId);
+    }
+    return err('Failed to revoke invite', {
+      requestId, status: 500, code: ApiErrorCode.InternalError,
     });
   }
-  await writeAudit({
-    action: 'invite.revoke',
-    actorUserId: caller.authUserId,
-    actorEmail: caller.authEmail,
-    targetType: 'invite',
-    targetId: id,
-    hotelId: row.hotel_id,
-  });
+  const result = data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : null;
+  if (!result || result.ok !== true) {
+    if (result?.reason === 'invalid') {
+      return err('Invalid invitation', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    if (result?.reason === 'not_pending') {
+      return err('Invite is no longer pending', {
+        requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
+      });
+    }
+    // Existing-but-unauthorized and absent ids deliberately share one public
+    // response so a direct-id probe cannot enumerate another tenant's invites.
+    return err('Not found', {
+      requestId, status: 404, code: ApiErrorCode.NotFound,
+    });
+  }
+  const inviteIdReceipt = validateUuid(result.inviteId, 'inviteId');
+  const hotelIdReceipt = validateUuid(result.hotelId, 'hotelId');
+  if (inviteIdReceipt.error || inviteIdReceipt.value !== id
+      || hotelIdReceipt.error || !hotelIdReceipt.value) {
+    log.error('[invites:DELETE] guarded revoke returned a malformed receipt', { requestId });
+    return err('Failed to revoke invite', {
+      requestId,
+      status: 500,
+      code: ApiErrorCode.InternalError,
+    });
+  }
   return ok({ success: true }, { requestId });
 }

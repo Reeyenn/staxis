@@ -32,7 +32,11 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useProperty } from '@/contexts/PropertyContext';
 import { useApiResource } from '@/lib/hooks/use-api-resource';
-import { fetchWithAuth, SessionEndedError } from '@/lib/api-fetch';
+import {
+  fetchWithAuth,
+  INTERACTIVE_ACTION_TIMEOUT_MS,
+  SessionEndedError,
+} from '@/lib/api-fetch';
 import { readEnvelope, type EnvelopeResult } from '@/lib/api-envelope';
 import {
   COMPANY_CATEGORIES,
@@ -56,6 +60,7 @@ interface RulebookFact {
   policyValue: string | null;
   createdByName: string | null;
   updatedAt: string;
+  currentRevision: number | null;
   nearDuplicateOf?: { id: string; topic: string; content: string; line: Bilingual } | null;
   reading: {
     authority: { line: Bilingual } | null;
@@ -78,23 +83,24 @@ interface Contradiction {
 }
 
 interface RulebookData {
+  audience: 'company' | 'hotel';
   organizationId: string;
   canEdit: boolean;
   companyRole: 'owner' | 'vp' | 'finance' | null;
   viewOnlyBecauseHotelJob: boolean;
-  settings: {
+  settings?: {
     gms_see_rulebook: string | null;
     cross_hotel_ai_chat: string | null;
     rulebook_editors: string | null;
     setup_completed_at: string | null;
   };
-  stats: { totalKnown: number; pendingReview: number; hotelsCovered: number };
+  stats: { totalKnown: number; pendingReview?: number; hotelsCovered?: number };
   facts: RulebookFact[];
-  contradictions: Contradiction[];
+  contradictions?: Contradiction[];
 }
 
 interface IntakeResult {
-  added: Array<{ id: string }>;
+  added: Array<{ id: string; currentRevision?: number | null }>;
   skipped: number;
   /** English, from the server. Kept for compatibility; NOT rendered — see
    *  readNoteCode, which is the same fact in a form this panel can translate. */
@@ -291,6 +297,14 @@ const S = {
     en: 'Could not combine those two lines. Nothing changed. Try again in a moment.',
     es: 'No se pudieron combinar esas dos líneas. Nada cambió: inténtalo de nuevo en un momento.',
   },
+  errRevisionConflict: {
+    en: 'That line changed somewhere else. The newer version was kept — review it and try again.',
+    es: 'Esa línea cambió en otro lugar. Se conservó la versión más reciente: revísala e inténtalo de nuevo.',
+  },
+  errLedgerUnavailable: {
+    en: 'The company rulebook is temporarily read only. Nothing changed — try again shortly.',
+    es: 'El libro de la empresa está temporalmente en modo de solo lectura. Nada cambió: inténtalo pronto.',
+  },
   errNothingToRead: {
     en: 'Type something or add a file first.',
     es: 'Escribe algo o agrega un archivo primero.',
@@ -365,6 +379,8 @@ const BANNER_COPY = new Map<string, keyof typeof S>([
   ['remove_failed', 'errRemoveFailed'],
   ['save_failed', 'errSaveFailed'],
   ['merge_failed', 'errMergeFailed'],
+  ['idempotency_conflict', 'errRevisionConflict'],
+  ['upstream_failure', 'errLedgerUnavailable'],
   ['nothing_to_read', 'errNothingToRead'],
   ['file_no_text', 'errFileNoText'],
   ['file_unreadable', 'errFileUnreadable'],
@@ -549,22 +565,39 @@ export function CompanyRulebookPanel({
    * renders this panel outside the app shell.
    */
   propertyId,
+  organizationId,
 }: {
   lang: 'en' | 'es';
   propertyId?: string | null;
+  /** Explicit authoritative company context used by My Portfolio. */
+  organizationId?: string | null;
 }) {
   const es = lang === 'es';
   const L = <K extends keyof typeof S>(k: K) => S[k][es ? 'es' : 'en'];
 
   const { activePropertyId: contextPropertyId } = useProperty();
-  const activePropertyId = propertyId ?? contextPropertyId;
+  const activePropertyId = organizationId ? null : (propertyId ?? contextPropertyId);
+  const selectorPayload = organizationId
+    ? { organizationId }
+    : activePropertyId
+      ? { propertyId: activePropertyId }
+      : null;
+  const selectorQuery = organizationId
+    ? `organizationId=${encodeURIComponent(organizationId)}`
+    : activePropertyId
+      ? `propertyId=${encodeURIComponent(activePropertyId)}`
+      : null;
 
   // The hotel on screen tells the server which company this is. A 404 here just
   // means "this hotel is independent", which renders nothing — an independent
   // hotel must not see an empty company panel implying it has a company.
   const { data, loading, error, reload } = useApiResource<RulebookData>(
-    `/api/company/rulebook?propertyId=${activePropertyId}`,
-    { enabled: !!activePropertyId, keepDataOnError: true },
+    selectorQuery ? `/api/company/rulebook?${selectorQuery}` : '',
+    {
+      enabled: selectorQuery !== null,
+      identityKey: selectorQuery,
+      keepDataOnError: true,
+    },
   );
 
   const [note, setNote] = useState('');
@@ -591,6 +624,7 @@ export function CompanyRulebookPanel({
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
+          timeoutMs: INTERACTIVE_ACTION_TIMEOUT_MS,
         });
         return await readEnvelope<T>(res);
       } catch (e) {
@@ -614,12 +648,12 @@ export function CompanyRulebookPanel({
   };
 
   const submitIntake = async () => {
-    if (!activePropertyId || busy) return;
+    if (!selectorPayload || busy) return;
     if (!note.trim() && !file) return;
     setBusy(true);
     setBanner(null);
     try {
-      const payload: Record<string, unknown> = { propertyId: activePropertyId };
+      const payload: Record<string, unknown> = { ...selectorPayload };
       if (note.trim()) payload.note = note.trim();
       if (file) {
         payload.file = { name: file.name, mimeType: mimeForFile(file), base64: await fileToBase64(file) };
@@ -652,10 +686,17 @@ export function CompanyRulebookPanel({
   };
 
   const act = async (id: string, action: 'confirm' | 'remove') => {
-    if (!activePropertyId) return;
+    if (!selectorPayload) return;
+    const revision = data?.facts.find((fact) => fact.id === id)?.currentRevision ?? null;
+    if (revision === null) {
+      setBanner({ kind: 'bad', failure: { code: 'upstream_failure' } });
+      return;
+    }
     setRowBusy(id);
     try {
-      const res = await post('/api/company/rulebook', { propertyId: activePropertyId, action, id });
+      const res = await post('/api/company/rulebook', {
+        ...selectorPayload, action, id, expectedRevision: revision,
+      });
       if (res.error !== undefined) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
       } else {
@@ -670,11 +711,22 @@ export function CompanyRulebookPanel({
   /** "That's the same rule" — put these words on the line already in the book
    *  and drop this restatement. See findNearDuplicate for why this exists. */
   const mergeInto = async (id: string, intoId: string) => {
-    if (!activePropertyId) return;
+    if (!selectorPayload) return;
+    const revision = data?.facts.find((fact) => fact.id === id)?.currentRevision ?? null;
+    const intoRevision = data?.facts.find((fact) => fact.id === intoId)?.currentRevision ?? null;
+    if (revision === null || intoRevision === null) {
+      setBanner({ kind: 'bad', failure: { code: 'upstream_failure' } });
+      return;
+    }
     setRowBusy(id);
     try {
       const res = await post('/api/company/rulebook', {
-        propertyId: activePropertyId, action: 'merge', id, intoId,
+        ...selectorPayload,
+        action: 'merge',
+        id,
+        intoId,
+        expectedRevision: revision,
+        intoExpectedRevision: intoRevision,
       });
       if (res.error !== undefined) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
@@ -686,13 +738,19 @@ export function CompanyRulebookPanel({
   };
 
   const saveEdit = async (id: string) => {
-    if (!activePropertyId || !draft.trim()) return;
+    if (!selectorPayload || !draft.trim()) return;
+    const revision = data?.facts.find((fact) => fact.id === id)?.currentRevision ?? null;
+    if (revision === null) {
+      setBanner({ kind: 'bad', failure: { code: 'upstream_failure' } });
+      return;
+    }
     setRowBusy(id);
     try {
       const res = await post('/api/company/rulebook', {
-        propertyId: activePropertyId,
+        ...selectorPayload,
         action: 'edit',
         id,
+        expectedRevision: revision,
         content: draft.trim(),
         category: draftCat,
       });
@@ -708,11 +766,11 @@ export function CompanyRulebookPanel({
   };
 
   const saveSettings = async (patch: Record<string, string>) => {
-    if (!activePropertyId || settingsBusy) return;
+    if (!selectorPayload || settingsBusy) return;
     setSettingsBusy(true);
     try {
       const res = await post('/api/company/rulebook', {
-        propertyId: activePropertyId,
+        ...selectorPayload,
         action: 'settings',
         settings: patch,
       });
@@ -737,7 +795,8 @@ export function CompanyRulebookPanel({
   if (!loading && !data) return null;
   if (!data) return null;
 
-  const canEdit = data.canEdit;
+  const settings = data.settings;
+  const canEdit = data.canEdit && settings !== undefined;
   const hasAnything = data.facts.length > 0;
 
   return (
@@ -806,12 +865,14 @@ export function CompanyRulebookPanel({
 
       <div className="cr-meta">
         <span className="cr-metai">{data.stats.totalKnown} {L('known')}</span>
-        <span className="cr-metai">
-          {data.stats.hotelsCovered === 1
-            ? L('coversOne')
-            : `${data.stats.hotelsCovered} ${L('coversMany')}`}
-        </span>
-        {data.stats.pendingReview > 0 && (
+        {typeof data.stats.hotelsCovered === 'number' && (
+          <span className="cr-metai">
+            {data.stats.hotelsCovered === 1
+              ? L('coversOne')
+              : `${data.stats.hotelsCovered} ${L('coversMany')}`}
+          </span>
+        )}
+        {(data.stats.pendingReview ?? 0) > 0 && (
           <span className="cr-metai" style={{ color: '#8C6A33' }}>
             {data.stats.pendingReview} {L('pending')}
           </span>
@@ -820,10 +881,10 @@ export function CompanyRulebookPanel({
 
       {/* Quiet FYI. Never an enforcement, never a claim about the world — only
           where two structured settings genuinely disagree. */}
-      {data.contradictions.length > 0 && (
+      {(data.contradictions?.length ?? 0) > 0 && (
         <div className="cr-mis">
           <div className="cr-mist">{L('mismatchTitle')}</div>
-          {data.contradictions.map((c) => (
+          {(data.contradictions ?? []).map((c) => (
             <div className="cr-misl" key={`${c.propertyId}:${c.key}`}>{c.line[es ? 'es' : 'en']}</div>
           ))}
           <div className="cr-setw" style={{ marginTop: 6 }}>{L('mismatchHint')}</div>
@@ -1003,7 +1064,7 @@ export function CompanyRulebookPanel({
       })}
 
       {/* ── Who can do what. Only the people who own the book get asked. ── */}
-      {canEdit && (
+      {canEdit && settings && (
         <div className="cr-setup">
           <div className="cr-grpt">{L('setupTitle')}</div>
           <div className="cr-grps">{L('setupHint')}</div>
@@ -1023,14 +1084,14 @@ export function CompanyRulebookPanel({
             </div>
             <button
               type="button"
-              className={`cr-act${data.settings.cross_hotel_ai_chat === 'true' ? ' cr-yes' : ''}`}
+              className={`cr-act${settings.cross_hotel_ai_chat === 'true' ? ' cr-yes' : ''}`}
               disabled={settingsBusy}
-              aria-pressed={data.settings.cross_hotel_ai_chat === 'true'}
+              aria-pressed={settings.cross_hotel_ai_chat === 'true'}
               onClick={() => saveSettings({
-                cross_hotel_ai_chat: data.settings.cross_hotel_ai_chat === 'true' ? 'false' : 'true',
+                cross_hotel_ai_chat: settings.cross_hotel_ai_chat === 'true' ? 'false' : 'true',
               })}
             >
-              {data.settings.cross_hotel_ai_chat === 'true' ? L('on') : L('off')}
+              {settings.cross_hotel_ai_chat === 'true' ? L('on') : L('off')}
             </button>
           </div>
 
@@ -1039,7 +1100,7 @@ export function CompanyRulebookPanel({
             <select
               className="cr-sel"
               disabled={settingsBusy}
-              value={data.settings.rulebook_editors ?? 'owner_and_vp'}
+              value={settings.rulebook_editors ?? 'owner_and_vp'}
               aria-label={L('setupEditors')}
               onChange={(e) => saveSettings({ rulebook_editors: e.target.value })}
             >

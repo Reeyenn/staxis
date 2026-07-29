@@ -33,7 +33,10 @@ export async function GET(req: NextRequest): Promise<Response> {
   const rl = await checkAndIncrementRateLimit('comms-read', hashToRateLimitKey(`${ctx.pid}:${ctx.userId}`));
   if (!rl.allowed) return rateLimitedResponse(rl.current, rl.cap, rl.retryAfterSec);
 
-  const allowed = await listAccessiblePropertyIds(ctx.role, ctx.propertyAccess);
+  const allowed = await listAccessiblePropertyIds(ctx.accountId);
+  if (!allowed) {
+    return err('current property access could not be verified', { requestId: ctx.requestId, status: 503, code: ApiErrorCode.UpstreamFailure, headers: ctx.headers });
+  }
   const status = await getCampaignStatus(campV.value!, allowed);
   if (!status) {
     return err('Not found', { requestId: ctx.requestId, status: 404, code: ApiErrorCode.NotFound, headers: ctx.headers });

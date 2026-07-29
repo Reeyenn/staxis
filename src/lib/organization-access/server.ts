@@ -72,6 +72,8 @@ interface OrganizationAccessRelationshipRow {
   id: string;
   organization_id: string;
   property_id: string;
+  relationship_type: string;
+  is_primary_grouping: boolean;
   starts_at: string;
   ends_at: string | null;
 }
@@ -79,6 +81,8 @@ interface OrganizationAccessRelationshipRow {
 interface OrganizationAccessPortfolioRow {
   id: string;
   organization_id: string;
+  parent_id: string | null;
+  portfolio_type: string;
   status: string;
 }
 
@@ -185,14 +189,14 @@ export async function loadOrganizationAccessFacts(
     ))),
     completeStoreRead('load organization hotel relationships', () => readCompleteCompanyPages<OrganizationAccessRelationshipRow>((from, to) => (
       supabaseAdmin.from('organization_property_relationships')
-        .select('id, organization_id, property_id, starts_at, ends_at', { count: 'exact' })
+        .select('id, organization_id, property_id, relationship_type, is_primary_grouping, starts_at, ends_at', { count: 'exact' })
         .eq('organization_id', organizationId)
         .order('id')
         .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<OrganizationAccessRelationshipRow>>
     ))),
     completeStoreRead('load organization portfolios', () => readCompleteCompanyPages<OrganizationAccessPortfolioRow>((from, to) => (
       supabaseAdmin.from('portfolios')
-        .select('id, organization_id, status', { count: 'exact' })
+        .select('id, organization_id, parent_id, portfolio_type, status', { count: 'exact' })
         .eq('organization_id', organizationId)
         .order('id')
         .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<OrganizationAccessPortfolioRow>>
@@ -249,12 +253,16 @@ export async function loadOrganizationAccessFacts(
     id: row.id,
     organizationId: row.organization_id,
     propertyId: row.property_id,
+    relationshipType: row.relationship_type,
+    isPrimaryGrouping: row.is_primary_grouping,
     startsAt: row.starts_at,
     endsAt: row.ends_at,
   }));
   const portfolioFacts: PortfolioFact[] = portfolios.map((row) => ({
     id: row.id,
     organizationId: row.organization_id,
+    parentId: row.parent_id,
+    portfolioType: row.portfolio_type,
     status: row.status,
   }));
   const portfolioPropertyFacts: PortfolioPropertyFact[] = assignments.map((row) => ({
@@ -345,6 +353,9 @@ export function relationshipIdForProperty(
   return facts.propertyRelationships.find((relationship) => (
     relationship.organizationId === organizationId
       && relationship.propertyId === propertyId
+      && relationship.isPrimaryGrouping === true
+      && (relationship.relationshipType === 'operator'
+        || relationship.relationshipType === 'owner')
       && activeWindow(relationship.startsAt, relationship.endsAt, atMs)
   ))?.id ?? null;
 }

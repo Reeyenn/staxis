@@ -5,7 +5,9 @@ export const dynamic = 'force-dynamic';
 import React, { Suspense } from 'react';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { useProperty } from '@/contexts/PropertyContext';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
 import { InventoryShell } from './_components/InventoryShell';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 // Snow-styled single-page Inventory built off the Claude Design handoff
 // (bundle: ZHhP2JnQX5_pYa-JNTy6Nw, May 2026). Replaces the legacy 4,589-line
@@ -23,17 +25,42 @@ export default function InventoryPage() {
 }
 
 function ActivePropertyInventory() {
-  const { activePropertyId, loading } = useProperty();
-  if (loading || !activePropertyId) return <InventoryLoading />;
+  const { push } = useReliableNavigation();
+  const {
+    activePropertyId,
+    loading,
+    capabilityOverridesStatus,
+    capabilityOverridesError,
+    refreshCapabilities,
+  } = useProperty();
+  if (loading) return <InventoryLoading />;
+  if (!activePropertyId) {
+    return (
+      <RouteErrorState
+        title="No hotel is selected"
+        message="Choose a hotel before opening Inventory."
+        retryLabel="Choose a hotel"
+        onRetry={() => push('/property-selector')}
+      />
+    );
+  }
+  if (capabilityOverridesStatus === 'error') {
+    return (
+      <RouteErrorState
+        title="Inventory access could not be confirmed"
+        message={capabilityOverridesError ?? undefined}
+        onRetry={() => void refreshCapabilities()}
+      />
+    );
+  }
+  if (capabilityOverridesStatus !== 'ready') {
+    return <RouteLoadingState title="Checking Inventory access…" />;
+  }
   // A key makes every hotel switch a clean inventory session: no prior rows,
   // overlays, timers, or drafts can survive into the newly selected hotel.
   return <InventoryShell key={activePropertyId} />;
 }
 
 function InventoryLoading() {
-  return (
-    <div style={{ padding: '64px 24px', textAlign: 'center', color: '#5C625C' }}>
-      Loading inventory…
-    </div>
-  );
+  return <RouteLoadingState title="Loading Inventory…" />;
 }

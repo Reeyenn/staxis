@@ -35,9 +35,17 @@ function baseFacts(): AccessFacts {
       id: RELATIONSHIP,
       organizationId: ORG,
       propertyId: PROPERTY,
+      relationshipType: 'operator',
+      isPrimaryGrouping: true,
       startsAt: '2029-01-01T00:00:00Z',
     }],
-    portfolios: [{ id: PORTFOLIO, organizationId: ORG, status: 'active' }],
+    portfolios: [{
+      id: PORTFOLIO,
+      organizationId: ORG,
+      parentId: null,
+      portfolioType: 'region',
+      status: 'active',
+    }],
     portfolioProperties: [{
       organizationId: ORG,
       portfolioId: PORTFOLIO,
@@ -112,6 +120,41 @@ describe('organization access resolver', () => {
     const decision = resolvePropertyAccess(ACCOUNT, PROPERTY, facts, NOW);
     assert.equal(decision.allowed, false);
     assert.equal(decision.denialReason, 'no_matching_active_grant');
+  });
+
+  test('brand/vendor relationships never count as governing hotel access', () => {
+    const facts = baseFacts();
+    facts.propertyRelationships = [{
+      ...facts.propertyRelationships[0],
+      relationshipType: 'vendor',
+      isPrimaryGrouping: true,
+    }];
+    facts.grants = [{
+      id: 'grant-owner', organizationId: ORG, membershipId: MEMBERSHIP,
+      accessProfile: 'organization_owner', scopeType: 'organization',
+      status: 'active', source: 'manual', startsAt: '2029-01-01T00:00:00Z',
+    }];
+    const decision = resolvePropertyAccess(ACCOUNT, PROPERTY, facts, NOW);
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.denialReason, 'no_active_relationship');
+  });
+
+  test('portfolio grants include active descendants without looping through cycles', () => {
+    const facts = baseFacts();
+    facts.portfolios = [
+      { id: PORTFOLIO, organizationId: ORG, parentId: 'portfolio-child', status: 'active' },
+      { id: 'portfolio-child', organizationId: ORG, parentId: PORTFOLIO, status: 'active' },
+    ];
+    facts.portfolioProperties = [{
+      ...facts.portfolioProperties[0],
+      portfolioId: 'portfolio-child',
+    }];
+    facts.grants = [{
+      id: 'grant-portfolio', organizationId: ORG, membershipId: MEMBERSHIP,
+      accessProfile: 'portfolio_manager', scopeType: 'portfolio', portfolioId: PORTFOLIO,
+      status: 'active', source: 'manual', startsAt: '2029-01-01T00:00:00Z',
+    }];
+    assert.equal(resolvePropertyAccess(ACCOUNT, PROPERTY, facts, NOW).allowed, true);
   });
 
   test('expired grants, suspended memberships, and ended relationships fail closed', () => {
@@ -233,6 +276,7 @@ describe('organization access delegation', () => {
       ...facts.propertyRelationships,
       {
         id: 'relationship-b', organizationId: ORG, propertyId: OTHER_PROPERTY,
+        relationshipType: 'operator', isPrimaryGrouping: true,
         startsAt: '2029-01-01T00:00:00Z',
       },
     ];

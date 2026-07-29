@@ -341,7 +341,7 @@ export default function AiStaffPage() {
 /** The two lists — the people who work here, and the plan. Exported (and free
  *  of any fetching) so the roster can be rendered from a fixture during visual
  *  review without an admin session standing in the way. */
-export function AiStaffRoster({ hired, notHired, l, busyId, onFlip }: {
+function AiStaffRoster({ hired, notHired, l, busyId, onFlip }: {
   hired: EmployeeView[];
   notHired: EmployeeView[];
   l: Lang;

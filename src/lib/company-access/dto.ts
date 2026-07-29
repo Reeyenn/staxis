@@ -160,6 +160,9 @@ export interface CompanyAccessPermissions {
   viewPeople: boolean;
   managePeople: boolean;
   manageInvitations: boolean;
+  /** Exact hotel anchors at which the guarded account-invitation workflow may
+   * be offered. This is presentation only; every request re-resolves authority. */
+  accountInvitePropertyIds?: string[];
   viewAccess: boolean;
   manageAccess: boolean;
   viewActivity: boolean;
@@ -212,6 +215,7 @@ export const EMPTY_COMPANY_ACCESS: CompanyAccessData = {
     viewPeople: false,
     managePeople: false,
     manageInvitations: false,
+    accountInvitePropertyIds: [],
     viewAccess: true,
     manageAccess: false,
     viewActivity: false,

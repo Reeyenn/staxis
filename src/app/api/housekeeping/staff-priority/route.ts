@@ -30,7 +30,9 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { requireSession, userHasPropertyAccess } from '@/lib/api-auth';
+import { requireSession } from '@/lib/api-auth';
+import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
+import { hotelWriteDecisionForUserId } from '@/lib/team-auth';
 import { ok, err } from '@/lib/api-response';
 import { getOrMintRequestId, log } from '@/lib/log';
 import { errToString } from '@/lib/utils';
@@ -75,12 +77,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const staffId = staffCheck.value!;
   const priority = body.priority as Priority;
 
-  const hasAccess = await userHasPropertyAccess(auth.userId, propertyId);
-  if (!hasAccess) {
-    log.warn('staff-priority: forbidden — user lacks property access', {
-      requestId, userId: auth.userId, propertyId,
-    });
-    return err('forbidden: no access to this property', {
+  const writeDecision = await hotelWriteDecisionForUserId(
+    auth.userId,
+    propertyId,
+    'assign_work',
+  );
+  if (writeDecision === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (writeDecision === 'denied') {
+    return err('forbidden: assigning work is restricted for your role at this property', {
       requestId, status: 403, code: 'forbidden',
     });
   }

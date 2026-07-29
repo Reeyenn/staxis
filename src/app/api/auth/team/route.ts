@@ -27,7 +27,9 @@ import { errToString } from '@/lib/utils';
 import {
   verifyTeamManager,
   callerCapabilityDecision,
+  callerCapabilityDecisionFresh,
   callerControlsEveryTargetHotel,
+  teamCallerRoleAtHotel,
   type TeamCaller,
 } from '@/lib/team-auth';
 import type { CapabilityDecision } from '@/lib/capabilities/server';
@@ -35,8 +37,20 @@ import { capabilityUnavailableResponse } from '@/lib/capabilities/api-gate';
 import { isAssignableRole, isValidRole, type AppRole } from '@/lib/roles';
 import { writeAudit } from '@/lib/audit';
 import { validateUuid } from '@/lib/api-validate';
-import { accountsCoveringProperty, companyForProperty, loadHatsForAccounts } from '@/lib/company/access';
+import {
+  loadHatsForAccounts,
+  resolveCompanyForProperty,
+  type MembershipHat,
+} from '@/lib/company/access';
 import { HAT_ROLE_LABELS } from '@/lib/company/roles';
+import {
+  loadAuthoritativeHotelRoster,
+  type AuthoritativeHotelRoster,
+} from '@/lib/authorization/hotel-account-roster';
+import {
+  readCompleteCompanyIdChunks,
+  type CompanyProjectionPage,
+} from '@/lib/company-access/projection-query';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -56,19 +70,20 @@ async function controlsEveryTargetHotel(
   caller: TeamCaller,
   targetAccess: string[],
   capability: 'manage_team' | 'manage_users' = 'manage_team',
+  fresh = false,
 ): Promise<CapabilityDecision> {
-  return callerControlsEveryTargetHotel(caller, capability, targetAccess);
+  return callerControlsEveryTargetHotel(caller, capability, targetAccess, { fresh });
 }
 
 /** Mirrors the PUT/DELETE target hierarchy without making the client infer it. */
 function canActOnTarget(
-  caller: TeamCaller,
+  callerRole: AppRole,
   targetRole: AppRole,
   isSelf: boolean,
 ): boolean {
   if (targetRole === 'admin') return false;
-  if (targetRole === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') return false;
-  if (targetRole === 'general_manager' && caller.role === 'general_manager' && !isSelf) return false;
+  if (targetRole === 'owner' && callerRole !== 'admin' && callerRole !== 'owner') return false;
+  if (targetRole === 'general_manager' && callerRole === 'general_manager' && !isSelf) return false;
   return true;
 }
 
@@ -145,6 +160,120 @@ function isObservedTimestamp(value: unknown): value is string {
     && Number.isFinite(Date.parse(value));
 }
 
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
+function teamCallerAuthorityUnchanged(first: TeamCaller, current: TeamCaller): boolean {
+  return first.accountId === current.accountId
+    && first.authUserId === current.authUserId
+    && first.role === current.role
+    && first.isAdmin === current.isAdmin
+    && first.authorityMode === current.authorityMode
+    && first.authorityVersion === current.authorityVersion
+    && first.effectiveAccessHash === current.effectiveAccessHash
+    && sameStrings(first.propertyAccess, current.propertyAccess)
+    && sameStrings(
+      first.accessiblePropertyIds ?? [],
+      current.accessiblePropertyIds ?? [],
+    );
+}
+
+function rosterSignature(roster: AuthoritativeHotelRoster): string {
+  return JSON.stringify([...roster.accounts]
+    .sort((left, right) => left.accountId.localeCompare(right.accountId))
+    .map((account) => ({
+      accountId: account.accountId,
+      username: account.username,
+      displayName: account.displayName,
+      role: account.role,
+      active: account.active,
+      dataUserId: account.dataUserId,
+      staffId: account.staffId,
+      createdAt: account.createdAt,
+      updatedAt: account.updatedAt,
+      authorityMode: account.authorityMode,
+      authorityVersion: account.authorityVersion,
+      propertyIds: account.propertyIds,
+      managementSurface: account.managementSurface,
+    })));
+}
+
+interface ProjectedTeamHat {
+  membershipId: string;
+  scope: MembershipHat['scope'];
+  role: MembershipHat['role'];
+  propertyIds: string[];
+}
+
+function projectTeamHats(
+  loaded: Map<string, MembershipHat[]>,
+  organizationId: string,
+  callerReach: Set<string> | null,
+): Map<string, ProjectedTeamHat[]> {
+  const projected = new Map<string, ProjectedTeamHat[]>();
+  for (const [accountId, hats] of loaded) {
+    const visible = hats.flatMap((hat): ProjectedTeamHat[] => {
+      if (hat.organizationId !== organizationId) return [];
+      const propertyIds = hat.coveredPropertyIds
+        .filter((propertyId) => callerReach === null || callerReach.has(propertyId))
+        .sort();
+      return propertyIds.length > 0 ? [{
+        membershipId: hat.membershipId,
+        scope: hat.scope,
+        role: hat.role,
+        propertyIds,
+      }] : [];
+    }).sort((left, right) => left.membershipId.localeCompare(right.membershipId));
+    if (visible.length > 0) projected.set(accountId, visible);
+  }
+  return projected;
+}
+
+function projectedHatsSignature(projected: Map<string, ProjectedTeamHat[]>): string {
+  return JSON.stringify([...projected.entries()]
+    .sort(([left], [right]) => left.localeCompare(right)));
+}
+
+async function exactTeamPropertyNames(propertyIds: readonly string[]): Promise<Map<string, string>> {
+  const ids = [...new Set(propertyIds)].sort();
+  if (ids.length === 0) return new Map();
+  if (ids.length > 5_000) throw new Error('team property-name scope exceeded safety bound');
+  const rows = await readCompleteCompanyIdChunks<{ id: string; name: string }>(
+    ids,
+    (chunk, from, to) => supabaseAdmin
+      .from('properties')
+      .select('id, name', { count: 'exact' })
+      .in('id', [...chunk])
+      .order('id')
+      .range(from, to) as unknown as PromiseLike<CompanyProjectionPage<{
+        id: string;
+        name: string;
+      }>>,
+  );
+  if (rows.some((row) => typeof row.id !== 'string'
+      || typeof row.name !== 'string'
+      || row.name.trim().length === 0)) {
+    throw new Error('team property-name projection was malformed');
+  }
+  const returnedIds = rows.map((row) => row.id).sort();
+  if (!sameStrings(ids, returnedIds)) {
+    throw new Error('team property-name projection was incomplete');
+  }
+  return new Map(rows.map((row) => [row.id, row.name]));
+}
+
+function topologyUnchanged(
+  first: Awaited<ReturnType<typeof resolveCompanyForProperty>>,
+  current: Awaited<ReturnType<typeof resolveCompanyForProperty>>,
+): boolean {
+  return first.status === current.status
+    && (first.status !== 'company'
+      || (current.status === 'company'
+        && first.organizationId === current.organizationId));
+}
+
 export async function GET(req: NextRequest) {
   const requestId = getOrMintRequestId(req);
   const caller = await verifyTeamManager(req, { capability: 'manage_team' });
@@ -161,42 +290,37 @@ export async function GET(req: NextRequest) {
   if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
-
-  const { data: rows, error: qErr } = await supabaseAdmin
-    .from('accounts')
-    .select('id, username, display_name, role, active, property_access, created_at, updated_at, data_user_id, staff_id')
-    .order('created_at', { ascending: true });
-  if (qErr) {
-    log.error('[team:GET] query failed', { requestId, msg: errToString(qErr) });
-    return err('Failed to load team', { requestId, status: 500, code: ApiErrorCode.InternalError });
+  const callerReach = caller.isAdmin
+    ? null
+    : new Set(caller.accessiblePropertyIds ?? []);
+  if (callerReach !== null && !callerReach.has(hotelId)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
-
-  // COMPANY SPINE follow-up (0364/0365). Membership is the OTHER way a person
-  // reaches a hotel, and every company person the spine creates has an EMPTY
-  // `property_access` — their access is entirely a hat. Filtering on the legacy
-  // array alone therefore left the VP who oversees this hotel, and the GM whose
-  // hat names it, off this hotel's own team list.
-  //
-  // Additive: this only ever ADDS ids to the set the legacy filter already
-  // found. A hotel with no company gets an empty set back and the filter below
-  // behaves exactly as it always has.
-  let membershipCoveredIds = new Set<string>();
+  let roster;
   try {
-    membershipCoveredIds = new Set(await accountsCoveringProperty(hotelId));
-  } catch (coverErr) {
-    log.warn('[team:GET] membership coverage unavailable', { requestId, msg: errToString(coverErr) });
+    roster = await loadAuthoritativeHotelRoster(hotelId, caller.isAdmin);
+  } catch (rosterError) {
+    log.error('[team:GET] authoritative roster unavailable', {
+      requestId,
+      msg: errToString(rosterError),
+    });
+    return teamProtectionUnavailableResponse(requestId);
   }
-
-  // Hide admins from non-admin viewers. Staxis (us) is the platform
-  // operator — customers shouldn't see our staff in their hotel's team
-  // list. Admin-on-admin debug view: admins still see every row including
-  // other admins, because for them this doubles as a quick "who has
-  // access" check.
-  const teamRows = (rows ?? []).filter(r => {
-    if (r.role === 'admin') return caller.isAdmin;
-    if (membershipCoveredIds.has(r.id)) return true;
-    return Array.isArray(r.property_access) && r.property_access.includes(hotelId);
-  });
+  const teamRows = roster.accounts.map((account) => ({
+    id: account.accountId,
+    username: account.username,
+    display_name: account.displayName,
+    role: account.role,
+    active: account.active,
+    property_access: account.propertyIds,
+    created_at: account.createdAt,
+    updated_at: account.updatedAt,
+    data_user_id: account.dataUserId,
+    staff_id: account.staffId,
+    authority_mode: account.authorityMode,
+    authority_version: account.authorityVersion,
+    management_surface: account.managementSurface,
+  }));
 
   // accounts.staff_id is a legacy account-wide field. The organization
   // foundation keeps an exact (account, hotel) identity map, which prevents a
@@ -280,18 +404,19 @@ export async function GET(req: NextRequest) {
   const teamWithDecisions = await Promise.all(teamRows.map(async (r) => {
     const targetRole = r.role as AppRole;
     const isSelf = r.id === caller.accountId;
-    // A person who is here because of a COMPANY JOB has an empty legacy array,
-    // so every `actions.*` flag below computes to false and their row renders
-    // read-only. That is the correct answer, not a gap to close: every mutation
-    // on this panel edits `property_access` (detach literally removes the hotel
-    // from it), which for a hat-based person would silently do nothing while
-    // reporting success. Jobs are changed on the hats surface
-    // (/api/auth/team/hats), which is where the authority checks for them live.
     const targetAccess = targetRole === 'admin' ? ['*'] : normalizedHotelAccess(r.property_access);
-    const hasOtherHotelAccess = targetAccess.includes('*') || targetAccess.some((id) => id !== hotelId);
-    const hotelAccessCount = targetAccess.includes('*') ? null : targetAccess.length;
-    const hierarchyAllowsMutation = canActOnTarget(caller, targetRole, isSelf);
-    const active = r.active !== false;
+    const disclosedTargetAccess = callerReach === null
+      ? targetAccess
+      : targetAccess.filter((propertyId) => propertyId !== '*' && callerReach.has(propertyId));
+    const normalizedTarget = r.authority_mode === 'normalized';
+    const hasOtherHotelAccess = disclosedTargetAccess.includes('*')
+      || disclosedTargetAccess.some((id) => id !== hotelId);
+    const hotelAccessCount = disclosedTargetAccess.includes('*')
+      ? null
+      : disclosedTargetAccess.length;
+    const callerHotelRole = teamCallerRoleAtHotel(caller, hotelId) ?? caller.role;
+    const hierarchyAllowsMutation = canActOnTarget(callerHotelRole, targetRole, isSelf);
+    const active = r.active;
     const lifecyclePending = lifecycleByAccountId.has(r.id);
     const lifecycleDesiredActive = lifecycleByAccountId.get(r.id) ?? null;
     const ownerProtected = ownerProtectedAccountIds.has(r.id);
@@ -312,10 +437,10 @@ export async function GET(req: NextRequest) {
     const managesUsersAtHotel = managesUsersAtHotelDecision === 'allowed';
     const managesUsersEverywhere = managesUsersEverywhereDecision === 'allowed';
     const canEditProfile = !lifecyclePending
-      && hierarchyAllowsMutation && (isSelf || controlsAllHotels);
+      && hierarchyAllowsMutation && (isSelf || (!normalizedTarget && controlsAllHotels));
     const sensitiveTargetAllowed = hierarchyAllowsMutation && !isSelf
       && targetRole !== 'owner' && targetRole !== 'admin';
-    const canChangeRole = !lifecyclePending
+    const canChangeRole = !normalizedTarget && !lifecyclePending
       && !ownerProtected && sensitiveTargetAllowed && active && managesUsersEverywhere;
     // Direct manager-set passwords cross the Postgres account boundary into
     // Supabase Auth and cannot be made atomic with a concurrent promotion.
@@ -324,7 +449,7 @@ export async function GET(req: NextRequest) {
     const canResetPassword = !lifecyclePending && hierarchyAllowsMutation && isSelf;
     // Detach is intentionally hotel-scoped: a manager may remove Hotel A
     // access without controlling Hotel B. The atomic RPC preserves Hotel B.
-    const canRemove = !lifecyclePending
+    const canRemove = !normalizedTarget && !lifecyclePending
       && !ownerProtected && sensitiveTargetAllowed && managesUsersAtHotel;
     const canDeactivate = !lifecyclePending
       && !ownerProtected && sensitiveTargetAllowed && active && managesUsersEverywhere;
@@ -343,6 +468,8 @@ export async function GET(req: NextRequest) {
       controlsAllHotelsDecision,
       managesUsersAtHotelDecision,
       managesUsersEverywhereDecision,
+      targetAccess,
+      isSelf,
       row: {
         accountId: r.id,
         username: r.username,
@@ -355,7 +482,7 @@ export async function GET(req: NextRequest) {
         lastSignInAt: lastSignInByUserId.get(r.data_user_id) ?? null,
         lastSignInKnown: observedAuthUserIds.has(r.data_user_id),
         role: targetRole,
-        propertyAccess: targetAccess,
+        propertyAccess: disclosedTargetAccess,
         staffId: staffIdByAccountId.get(r.id) ?? null,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
@@ -370,6 +497,10 @@ export async function GET(req: NextRequest) {
           hotelAccessCount,
           hasOtherHotelAccess,
         },
+        authorityMode: r.authority_mode,
+        authorityVersion: r.authority_version,
+        managementSurface: r.management_surface,
+        accessManagementHref: normalizedTarget ? '/company?tab=access' : null,
         actions,
         // Flat aliases keep the contract convenient for existing/simple clients;
         // `actions` is the canonical grouped shape for the My Hotel UI.
@@ -389,10 +520,9 @@ export async function GET(req: NextRequest) {
   }
   const team = teamWithDecisions.map(({ row }) => row);
 
-  // COMPANY SPINE (0364). A person's card reads as lines — "GM — Beaumont ·
-  // Oversees — Lufkin, Tyler". Attached to the read the panel already makes,
-  // and empty for every independent hotel, where a person has exactly one role
-  // and the card renders as it always has.
+  // COMPANY SPINE (0364). Project company jobs only through the caller's exact
+  // current reach. A Hotel A manager may learn that a hat affects Hotel A, but
+  // never receives sister-property ids, names, counts, or omission markers.
   let hatsByAccountId: Record<string, Array<{
     membershipId: string;
     scope: string;
@@ -401,43 +531,114 @@ export async function GET(req: NextRequest) {
     propertyIds: string[];
     propertyNames: string[];
   }>> = {};
+  const initialTopology = await resolveCompanyForProperty(hotelId);
+  if (initialTopology.status === 'unavailable' || initialTopology.status === 'ambiguous') {
+    return teamProtectionUnavailableResponse(requestId);
+  }
+  let initialProjectedHats = new Map<string, ProjectedTeamHat[]>();
   try {
-    const organizationId = await companyForProperty(hotelId);
-    if (organizationId) {
+    if (initialTopology.status === 'company') {
+      const organizationId = initialTopology.organizationId;
       const loaded = await loadHatsForAccounts(team.map((row) => row.accountId as string));
+      initialProjectedHats = projectTeamHats(loaded, organizationId, callerReach);
       const namedIds = [...new Set(
-        [...loaded.values()].flat()
-          .filter((hat) => hat.organizationId === organizationId)
-          .flatMap((hat) => hat.coveredPropertyIds),
+        [...initialProjectedHats.values()].flat().flatMap((hat) => hat.propertyIds),
       )];
-      const names = new Map<string, string>();
-      if (namedIds.length > 0) {
-        const { data: propertyRows } = await supabaseAdmin
-          .from('properties').select('id, name').in('id', namedIds);
-        for (const row of (propertyRows ?? []) as Array<{ id: string; name: string }>) {
-          names.set(row.id, row.name);
-        }
-      }
+      const names = await exactTeamPropertyNames(namedIds);
       hatsByAccountId = Object.fromEntries(
-        [...loaded.entries()].map(([accountId, hats]) => [
+        [...initialProjectedHats.entries()].map(([accountId, hats]) => [
           accountId,
-          hats
-            .filter((hat) => hat.organizationId === organizationId)
-            .map((hat) => ({
+          hats.map((hat) => ({
               membershipId: hat.membershipId,
               scope: hat.scope,
               role: hat.role,
               label: HAT_ROLE_LABELS[hat.role],
-              propertyIds: hat.coveredPropertyIds,
-              propertyNames: hat.coveredPropertyIds.map((id) => names.get(id) ?? id),
+              propertyIds: hat.propertyIds,
+              propertyNames: hat.propertyIds.map((id) => names.get(id)!),
             })),
-        ]).filter(([, hats]) => hats.length > 0),
+        ]),
       );
     }
   } catch (hatsErr) {
-    // The team list is the point of this read. A company lookup that cannot
-    // answer just means the cards show the single role they always showed.
-    log.warn('[team:GET] company jobs unavailable', { requestId, msg: errToString(hatsErr) });
+    log.error('[team:GET] exact company-job projection unavailable', {
+      requestId, msg: errToString(hatsErr),
+    });
+    return teamProtectionUnavailableResponse(requestId);
+  }
+
+  // Re-resolve every load-bearing authority input immediately before egress.
+  // This closes stale open tabs after revocation, hotel transfer, target scope
+  // changes, or capability changes without trusting client-side invalidation.
+  const finalCaller = await verifyTeamManager(req, { capability: 'manage_team' });
+  if (!finalCaller || !teamCallerAuthorityUnchanged(caller, finalCaller)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+  const finalManageTeam = await callerCapabilityDecisionFresh(
+    finalCaller,
+    'manage_team',
+    hotelId,
+  );
+  if (finalManageTeam === 'unavailable') return capabilityUnavailableResponse(requestId);
+  if (finalManageTeam !== 'allowed') {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+
+  const finalDecisions = await Promise.all(teamWithDecisions.map(async (initial) => ({
+    controlsAllHotelsDecision: initial.isSelf
+      ? 'allowed' as const
+      : await controlsEveryTargetHotel(finalCaller, initial.targetAccess, 'manage_team', true),
+    managesUsersAtHotelDecision: initial.isSelf
+      ? 'denied' as const
+      : await callerCapabilityDecisionFresh(finalCaller, 'manage_users', hotelId),
+    managesUsersEverywhereDecision: initial.isSelf
+      ? 'denied' as const
+      : await controlsEveryTargetHotel(finalCaller, initial.targetAccess, 'manage_users', true),
+  })));
+  if (finalDecisions.some((decision) => decision.controlsAllHotelsDecision === 'unavailable'
+      || decision.managesUsersAtHotelDecision === 'unavailable'
+      || decision.managesUsersEverywhereDecision === 'unavailable')) {
+    return capabilityUnavailableResponse(requestId);
+  }
+  if (finalDecisions.some((decision, index) => {
+    const initial = teamWithDecisions[index]!;
+    return decision.controlsAllHotelsDecision !== initial.controlsAllHotelsDecision
+      || decision.managesUsersAtHotelDecision !== initial.managesUsersAtHotelDecision
+      || decision.managesUsersEverywhereDecision !== initial.managesUsersEverywhereDecision;
+  })) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+
+  let finalRoster: AuthoritativeHotelRoster;
+  try {
+    finalRoster = await loadAuthoritativeHotelRoster(hotelId, finalCaller.isAdmin);
+  } catch (rosterError) {
+    log.error('[team:GET] final authoritative roster unavailable', {
+      requestId, msg: errToString(rosterError),
+    });
+    return teamProtectionUnavailableResponse(requestId);
+  }
+  if (rosterSignature(roster) !== rosterSignature(finalRoster)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+
+  const finalTopology = await resolveCompanyForProperty(hotelId);
+  if (finalTopology.status === 'unavailable' || finalTopology.status === 'ambiguous') {
+    return teamProtectionUnavailableResponse(requestId);
+  }
+  if (!topologyUnchanged(initialTopology, finalTopology)) {
+    return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+  }
+  if (finalTopology.status === 'company') {
+    const finalLoaded = await loadHatsForAccounts(team.map((row) => row.accountId as string));
+    const finalProjectedHats = projectTeamHats(
+      finalLoaded,
+      finalTopology.organizationId,
+      callerReach,
+    );
+    if (projectedHatsSignature(initialProjectedHats)
+        !== projectedHatsSignature(finalProjectedHats)) {
+      return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
+    }
   }
 
   return ok({ team, hatsByAccountId }, { requestId });
@@ -510,6 +711,36 @@ export async function PUT(req: NextRequest) {
   if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+  const callerHotelRole = teamCallerRoleAtHotel(caller, hotelId) ?? caller.role;
+
+  let authoritativeTarget;
+  try {
+    const roster = await loadAuthoritativeHotelRoster(hotelId, caller.isAdmin);
+    authoritativeTarget = roster.accounts.find((account) => account.accountId === accountId);
+  } catch (rosterError) {
+    log.error('[team:PUT] authoritative roster unavailable', {
+      requestId,
+      msg: errToString(rosterError),
+    });
+    return teamProtectionUnavailableResponse(requestId);
+  }
+  if (!authoritativeTarget) {
+    return err('Account does not have current access to this hotel', {
+      requestId, status: 404, code: ApiErrorCode.NotFound,
+    });
+  }
+  const isSelf = accountId === caller.accountId;
+  if (authoritativeTarget.managementSurface === 'company_access'
+      && (requestsRoleMutation
+        || body.staffId !== undefined
+        || (!isSelf && Object.prototype.hasOwnProperty.call(body, 'displayName')))) {
+    return err('Manage this person’s normalized role and hotel scope from My Hotel > Access.', {
+      requestId,
+      status: 409,
+      code: ApiErrorCode.IdempotencyConflict,
+      details: { href: '/company?tab=access' },
+    });
+  }
 
   // Load target.
   const { data: target, error: tErr } = await supabaseAdmin
@@ -530,12 +761,7 @@ export async function PUT(req: NextRequest) {
       requestId, status: 403, code: ApiErrorCode.Unauthorized,
     });
   }
-  const targetAccess = normalizedHotelAccess(target.property_access);
-  if (!targetAccess.includes(hotelId)) {
-    return err('Account does not have access to this hotel', {
-      requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-    });
-  }
+  const targetAccess = authoritativeTarget.propertyIds;
 
   // accounts.staff_id remains a legacy account-wide pointer. Until all staff
   // workflows write the per-property link table directly, changing it for a
@@ -549,18 +775,17 @@ export async function PUT(req: NextRequest) {
     });
   }
 
-  // Privilege-escalation matrix (mirrors /api/settings/users denyRoleChange).
+  // Privilege-escalation matrix (mirrors the shared denyRoleChange policy).
   // Applies to EVERY mutation here — password reset, role change, staff link.
   // Without it a General Manager could reset the OWNER's password (account
   // takeover) since owner is not an admin. A manager may only act on accounts
   // at or below their own tier.
-  const isSelf = accountId === caller.accountId;
-  if (target.role === 'owner' && caller.role !== 'admin' && caller.role !== 'owner') {
+  if (target.role === 'owner' && callerHotelRole !== 'admin' && callerHotelRole !== 'owner') {
     return err('Only an admin or another owner can modify an owner account', {
       requestId, status: 403, code: ApiErrorCode.Unauthorized,
     });
   }
-  if (target.role === 'general_manager' && caller.role === 'general_manager' && !isSelf) {
+  if (target.role === 'general_manager' && callerHotelRole === 'general_manager' && !isSelf) {
     return err('Only an owner or admin can modify another General Manager', {
       requestId, status: 403, code: ApiErrorCode.Unauthorized,
     });
@@ -574,9 +799,8 @@ export async function PUT(req: NextRequest) {
     });
   }
 
-  // Build updates. Role changes must stay in the assignable set (no
+  // Build the intended mutation. Role changes must stay in the assignable set (no
   // self-promotion to admin via this route).
-  const updates: Record<string, unknown> = {};
   const nextDisplayName = typeof displayName === 'string' ? displayName.trim() : '';
   const changesDisplayName = !!nextDisplayName && nextDisplayName !== target.display_name;
   let nextRole: AppRole | undefined;
@@ -604,7 +828,7 @@ export async function PUT(req: NextRequest) {
         requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
       });
     }
-    if (role === 'general_manager' && caller.role !== 'admin' && caller.role !== 'owner') {
+    if (role === 'general_manager' && callerHotelRole !== 'admin' && callerHotelRole !== 'owner') {
       return err('Only an owner or admin can promote someone to General Manager', {
         requestId, status: 403, code: ApiErrorCode.Unauthorized,
       });
@@ -724,55 +948,21 @@ export async function PUT(req: NextRequest) {
     return roleChangeUnavailableResponse(requestId);
   }
 
-  if (changesDisplayName) updates.display_name = nextDisplayName;
-
   // ── staffId link/unlink ─────────────────────────────────────────────────
   // The /staff page's My Shifts view scopes to accounts.staff_id. Manager
   // sets this from a person's card in My Hotel → People. We allow null
-  // (unlink) or any staff.id that belongs to this hotel. The DB itself has no
-  // per-hotel FK, so the check happens here.
-  let staffLinkChanged = false;
+  // (unlink) or any staff.id that belongs to this hotel. The legacy
+  // accounts.staff_id pointer has no per-hotel FK; the guarded RPC below also
+  // maintains the composite-FK normalized link and validates uniqueness in the
+  // same transaction as the account/link/audit writes. Direct-ID probes and
+  // revoke/transfer races therefore fail closed.
+  const changesStaffLink = body.staffId !== undefined;
+  let nextStaffId: string | null = null;
   if (body.staffId !== undefined) {
-    const currentStaffId = (target as { staff_id?: string | null }).staff_id ?? null;
-    if (body.staffId === null) {
-      if (currentStaffId !== null) {
-        updates.staff_id = null;
-        staffLinkChanged = true;
-      }
-    } else {
+    if (body.staffId !== null) {
       const staffIdCheck = validateUuid(body.staffId, 'staffId');
       if (staffIdCheck.error) return err(staffIdCheck.error, { requestId, status: 400, code: ApiErrorCode.ValidationFailed });
-      const nextStaffId = staffIdCheck.value!;
-      if (nextStaffId !== currentStaffId) {
-        // Verify the staff row exists and is in this hotel.
-        const { data: staffRow, error: sErr } = await supabaseAdmin
-          .from('staff')
-          .select('id, property_id')
-          .eq('id', nextStaffId)
-          .maybeSingle();
-        if (sErr || !staffRow) {
-          return err('Staff record not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
-        }
-        if (staffRow.property_id !== hotelId) {
-          return err('Staff record belongs to another hotel', {
-            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-          });
-        }
-        // Ensure this staff row isn't already linked to a different account.
-        const { data: existing } = await supabaseAdmin
-          .from('accounts')
-          .select('id')
-          .eq('staff_id', nextStaffId)
-          .neq('id', accountId)
-          .maybeSingle();
-        if (existing) {
-          return err('That staff record is already linked to another account', {
-            requestId, status: 400, code: ApiErrorCode.ValidationFailed,
-          });
-        }
-        updates.staff_id = nextStaffId;
-        staffLinkChanged = true;
-      }
+      nextStaffId = staffIdCheck.value!;
     }
   }
 
@@ -781,7 +971,7 @@ export async function PUT(req: NextRequest) {
   // authorized operation cannot later act on a newly promoted or relinked
   // account. Migration 0335 also fences the database update to close the race
   // between this friendly pre-check and the write below.
-  if (Object.keys(updates).length > 0 || !!password) {
+  if (changesDisplayName || changesStaffLink || !!password) {
     const pendingState = await pendingLifecycleIntentCheck(accountId, requestId, 'update');
     if (pendingState === 'unavailable') return lifecycleUnavailableResponse(requestId);
     if (pendingState === 'pending') return lifecyclePendingResponse(requestId);
@@ -803,32 +993,83 @@ export async function PUT(req: NextRequest) {
     }
   }
 
-  if (Object.keys(updates).length > 0) {
-    const { data: updatedRow, error: upErr } = await supabaseAdmin
-      .from('accounts')
-      .update(updates)
-      .eq('id', accountId)
-      .eq('updated_at', target.updated_at)
-      .select('id')
-      .maybeSingle();
-    if (upErr) {
-      log.error('[team:PUT] update failed', { requestId, msg: errToString(upErr) });
-      if (isPendingLifecycleFenceError(upErr)) {
+  if (changesDisplayName || changesStaffLink) {
+    const { data: profileResult, error: profileError } = await supabaseAdmin.rpc(
+      'staxis_update_hotel_team_profile_guarded',
+      {
+        p_actor_account_id: caller.accountId,
+        p_actor_auth_user_id: caller.authUserId,
+        p_actor_email: caller.authEmail ?? null,
+        p_hotel_id: hotelId,
+        p_target_account_id: accountId,
+        p_change_display_name: changesDisplayName,
+        p_new_display_name: changesDisplayName ? nextDisplayName : null,
+        p_change_staff_link: changesStaffLink,
+        p_new_staff_id: nextStaffId,
+        p_expected_active: target.active !== false,
+        p_expected_role: target.role,
+        p_expected_auth_user_id: target.data_user_id,
+        p_expected_property_access: target.property_access,
+        p_expected_target_property_ids: targetAccess,
+        p_expected_display_name: target.display_name,
+        p_expected_staff_id: (target as { staff_id?: string | null }).staff_id ?? null,
+        p_expected_updated_at: target.updated_at,
+        p_expected_intent_version: target.lifecycle_intent_version,
+        p_request_id: requestId,
+      },
+    );
+    if (profileError) {
+      log.error('[team:PUT] guarded profile update failed', {
+        requestId, msg: errToString(profileError),
+      });
+      if (isPendingLifecycleFenceError(profileError)) {
         return lifecyclePendingResponse(requestId);
       }
-      return err('Failed to update account', {
-        requestId, status: 500, code: ApiErrorCode.InternalError,
-      });
+      return teamProtectionUnavailableResponse(requestId);
     }
-    if (!updatedRow) {
+    const guardedProfile = profileResult && typeof profileResult === 'object'
+      ? profileResult as { status?: string; reason?: string; audit_written?: boolean }
+      : null;
+    if (guardedProfile?.status === 'ok' && guardedProfile.audit_written === true) {
+      return ok({ success: true }, { requestId });
+    }
+    if (guardedProfile?.status === 'noop') {
+      return ok({ success: true }, { requestId });
+    }
+    if (guardedProfile?.status === 'pending_conflict') {
+      return lifecyclePendingResponse(requestId);
+    }
+    if (guardedProfile?.status === 'retry') {
+      return teamProtectionUnavailableResponse(requestId);
+    }
+    if (guardedProfile?.status === 'conflict') {
       return err('This account changed while you were editing it. Refresh and try again.', {
         requestId,
         status: 409,
         code: ApiErrorCode.IdempotencyConflict,
       });
     }
+    if (guardedProfile?.status === 'not_found') {
+      return err('Account or staff link is unavailable', {
+        requestId, status: 404, code: ApiErrorCode.NotFound,
+      });
+    }
+    if (guardedProfile?.status === 'forbidden') {
+      return err('You are no longer authorized to update this team member', {
+        requestId, status: 403, code: ApiErrorCode.Forbidden,
+      });
+    }
+    if (guardedProfile?.status === 'invalid') {
+      return err('Invalid profile or staff-link change', {
+        requestId, status: 400, code: ApiErrorCode.ValidationFailed,
+      });
+    }
+    return teamProtectionUnavailableResponse(requestId);
   }
 
+  // Password changes live outside Postgres and are intentionally isolated from
+  // profile/staff mutations above. Their audit therefore remains a separate
+  // best-effort route operation.
   await writeAudit({
     action: 'account.team_update',
     actorUserId: caller.authUserId,
@@ -837,10 +1078,10 @@ export async function PUT(req: NextRequest) {
     targetId: accountId,
     hotelId,
     metadata: {
-      display_name_changed: typeof updates.display_name === 'string',
+      display_name_changed: false,
       role_changed: nextRole ?? null,
       password_reset: !!password,
-      staff_link_changed: staffLinkChanged,
+      staff_link_changed: false,
     },
   });
 
@@ -866,10 +1107,35 @@ export async function DELETE(req: NextRequest) {
   if (capabilityDecision === 'denied') {
     return err('Forbidden', { requestId, status: 403, code: ApiErrorCode.Unauthorized });
   }
+  const callerHotelRole = teamCallerRoleAtHotel(caller, hotelId) ?? caller.role;
   if (accountId === caller.accountId) {
     return err('Cannot remove yourself from a hotel', {
       requestId, status: 400, code: ApiErrorCode.ValidationFailed,
     });
+  }
+
+  try {
+    const roster = await loadAuthoritativeHotelRoster(hotelId, caller.isAdmin);
+    const authoritativeTarget = roster.accounts.find((account) => account.accountId === accountId);
+    if (!authoritativeTarget) {
+      return err('Account does not have current access to this hotel', {
+        requestId, status: 404, code: ApiErrorCode.NotFound,
+      });
+    }
+    if (authoritativeTarget.managementSurface === 'company_access') {
+      return err('Manage this person’s normalized role and hotel scope from My Hotel > Access.', {
+        requestId,
+        status: 409,
+        code: ApiErrorCode.IdempotencyConflict,
+        details: { href: '/company?tab=access' },
+      });
+    }
+  } catch (rosterError) {
+    log.error('[team:DELETE] authoritative roster unavailable', {
+      requestId,
+      msg: errToString(rosterError),
+    });
+    return teamProtectionUnavailableResponse(requestId);
   }
 
   // Role guard — admins can only be modified through the admin route.
@@ -926,12 +1192,16 @@ export async function DELETE(req: NextRequest) {
   // each compute a stale `next` array and clobber each other, silently re-
   // granting a hotel one of them had just removed.
   const { data: removalResult, error: rpcErr } = await supabaseAdmin.rpc(
-    'staxis_remove_property_access_guarded',
+    'staxis_remove_property_access_guarded_v2',
     {
+      p_actor_account_id: caller.accountId,
+      p_actor_auth_user_id: caller.authUserId,
+      p_actor_email: caller.authEmail ?? null,
       p_account_id: accountId,
       p_hotel_id: hotelId,
       p_expected_role: target.role,
       p_expected_updated_at: target.updated_at,
+      p_request_id: requestId,
     },
   );
   if (rpcErr) {
@@ -944,7 +1214,12 @@ export async function DELETE(req: NextRequest) {
     });
   }
   const guardedResult = removalResult && typeof removalResult === 'object'
-    ? removalResult as { status?: string; reason?: string; remaining_hotels?: number }
+    ? removalResult as {
+      status?: string;
+      reason?: string;
+      remaining_hotels?: number;
+      audit_written?: boolean;
+    }
     : null;
   if (guardedResult?.status === 'not_found') {
     return err('Account not found', { requestId, status: 404, code: ApiErrorCode.NotFound });
@@ -974,7 +1249,9 @@ export async function DELETE(req: NextRequest) {
       requestId, status: 409, code: ApiErrorCode.IdempotencyConflict,
     });
   }
-  if (guardedResult?.status !== 'ok' || typeof guardedResult.remaining_hotels !== 'number') {
+  if (guardedResult?.status !== 'ok'
+      || typeof guardedResult.remaining_hotels !== 'number'
+      || guardedResult.audit_written !== true) {
     log.error('[team:DELETE] guarded property removal returned an invalid result', { requestId });
     return err('Failed to remove access', {
       requestId,
@@ -982,17 +1259,6 @@ export async function DELETE(req: NextRequest) {
       code: ApiErrorCode.InternalError,
     });
   }
-  const remainingLen = guardedResult.remaining_hotels;
-
-  await writeAudit({
-    action: 'account.team_detach',
-    actorUserId: caller.authUserId,
-    actorEmail: caller.authEmail,
-    targetType: 'account',
-    targetId: accountId,
-    hotelId,
-    metadata: { remaining_hotels: remainingLen },
-  });
 
   return ok({ success: true }, { requestId });
 }

@@ -10,7 +10,7 @@
 
 import type { NextRequest } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { canManageTeam, type AppRole } from '@/lib/roles';
+import { canManageTeam, isValidRole, type AppRole } from '@/lib/roles';
 import { requireSession } from '@/lib/api-auth';
 import {
   canForProperty,
@@ -25,6 +25,11 @@ import {
   type CapabilityKey,
 } from '@/lib/capabilities/registry';
 import { loadHats, resolveEffectiveRole, type MembershipHat } from '@/lib/company/access';
+import {
+  authoritativeStandingForProperty,
+  listAuthoritativePropertyAccess,
+  type AuthoritativePropertyStanding,
+} from '@/lib/authorization/server';
 
 export interface TeamCaller {
   accountId: string;
@@ -42,6 +47,12 @@ export interface TeamCaller {
   accessiblePropertyIds?: string[];
   /** The jobs behind that union, for surfaces that show a person's hats. */
   hats?: MembershipHat[];
+  /** Atomic per-hotel capacities from the same resolver as propertyAccess. */
+  propertyStandings?: AuthoritativePropertyStanding[];
+  /** Exact generation/hash for response-boundary reassertion. */
+  authorityMode?: 'legacy' | 'shadow' | 'normalized';
+  authorityVersion?: number;
+  effectiveAccessHash?: string;
 }
 
 export async function verifyTeamManager(
@@ -59,12 +70,24 @@ export async function verifyTeamManager(
 
   const { data: account, error: acctErr } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, property_access, active')
+    .select('id, role, active')
     .eq('data_user_id', session.userId)
     .maybeSingle();
-  if (acctErr || !account || account.active !== true) return null;
+  if (acctErr || !account || account.active !== true || !isValidRole(account.role)) return null;
 
   const role = account.role as AppRole;
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return null;
+  const propertyAccess = authority.all ? ['*'] : authority.propertyIds;
+  const standingAtTarget = opts?.propertyId
+    ? authoritativeStandingForProperty(authority, opts.propertyId)
+    : null;
+  if (opts?.propertyId && !standingAtTarget) return null;
+  const candidateRoles = [...new Set<AppRole>(opts?.propertyId
+    ? [standingAtTarget!.operationalRole]
+    : authority.all
+      ? ['admin' as AppRole]
+      : authority.propertyStandings.map((standing) => standing.operationalRole))];
   // Gate: when the caller names a capability, use the per-hotel resolver
   // (default: every role gets it; an admin can switch a role OFF for this hotel
   // from the Access tab). Pass propertyId to enforce that hotel's restrictions;
@@ -80,13 +103,16 @@ export async function verifyTeamManager(
     // sits on top of each cap's manager-tier default in the registry (defense in
     // depth). Other capabilities (manage_shifts, manage_checklists, run_reports)
     // keep the everyone-default.
-    if (MANAGER_FLOOR_CAPABILITIES.has(opts.capability) && !canManageTeam(role)) return null;
-    if (!(await canForProperty({ role }, opts.capability, opts.propertyId ?? null))) return null;
-  } else if (!canManageTeam(role)) {
+    if (candidateRoles.length === 0) return null;
+    if (MANAGER_FLOOR_CAPABILITIES.has(opts.capability)
+      && !candidateRoles.some(canManageTeam)) return null;
+    const decisions = await Promise.all(candidateRoles.map((candidateRole) => (
+      canForProperty({ role: candidateRole }, opts.capability!, opts.propertyId ?? null)
+    )));
+    if (!decisions.some(Boolean)) return null;
+  } else if (!candidateRoles.some(canManageTeam)) {
     return null;
   }
-
-  const propertyAccess = (account.property_access ?? []) as string[];
 
   // Company hats are ADDITIVE and must never be able to fail the gate. An
   // account with no hats pays one indexed lookup that finds nothing.
@@ -107,10 +133,13 @@ export async function verifyTeamManager(
     propertyAccess,
     isAdmin: role === 'admin',
     accessiblePropertyIds: [...new Set([
-      ...propertyAccess,
-      ...hats.flatMap((hat) => hat.coveredPropertyIds),
-    ])].filter((id) => id !== '*').sort(),
+      ...authority.propertyIds,
+    ])].sort(),
     hats,
+    propertyStandings: authority.propertyStandings,
+    authorityMode: authority.authorityMode,
+    authorityVersion: authority.authorityVersion,
+    effectiveAccessHash: authority.effectiveAccessHash,
   };
 }
 
@@ -128,7 +157,7 @@ export function canManageHotel(caller: TeamCaller, hotelId: string): boolean {
   // caller that narrows `propertyAccess` on a copy of this object gets the
   // narrower answer it asked for instead of the union quietly overruling it.
   const reaches = caller.propertyAccess.includes(hotelId)
-    || (caller.hats ?? []).some((hat) => hat.coveredPropertyIds.includes(hotelId));
+    || caller.propertyAccess.includes('*');
   if (!reaches) return false;
   // …then CAPACITY, in the job held here. `verifyTeamManager` decided
   // manager-ness from the global `accounts.role`; without this, a legacy
@@ -139,8 +168,19 @@ export function canManageHotel(caller: TeamCaller, hotelId: string): boolean {
   return roleHere !== null && canManageTeam(roleHere);
 }
 
+/** Mutation fence paired with canManageHotel for manager write routes. */
+export function teamCallerCanMutateHotel(caller: TeamCaller, hotelId: string): boolean {
+  if (caller.isAdmin) return true;
+  return caller.propertyStandings?.find((standing) => standing.propertyId === hotelId)
+    ?.hotelMutationAllowed === true;
+}
+
 /** The job this caller holds AT this hotel. See `callerRoleAtHotel`. */
-function teamCallerRoleAtHotel(caller: TeamCaller, hotelId: string): AppRole | null {
+export function teamCallerRoleAtHotel(caller: TeamCaller, hotelId: string): AppRole | null {
+  if (caller.propertyStandings) {
+    return caller.propertyStandings.find((standing) => standing.propertyId === hotelId)
+      ?.operationalRole ?? (caller.isAdmin ? 'admin' : null);
+  }
   return resolveEffectiveRole({
     legacyRole: caller.role,
     legacyPropertyAccess: caller.propertyAccess,
@@ -266,24 +306,23 @@ export async function accountCanForProperty(
   authUserId: string,
   capability: CapabilityKey,
   propertyId: string | null | undefined,
+  opts?: { requireMutation?: boolean },
 ): Promise<boolean> {
   if (!propertyId) return false;
   const { data: account, error } = await supabaseAdmin
     .from('accounts')
-    .select('role, property_access')
+    .select('id, active')
     .eq('data_user_id', authUserId)
     .maybeSingle();
-  if (error || !account) return false;
-
-  const role = (account.role as AppRole | null) ?? null;
-  if (!role) return false;
+  if (error || !account || account.active !== true) return false;
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return false;
+  const standing = authoritativeStandingForProperty(authority, propertyId);
+  if (!standing) return false;
+  if (opts?.requireMutation && !standing.hotelMutationAllowed) return false;
 
   // (1) Capability (default + per-hotel override + manager floor).
-  if (!(await canForProperty({ role }, capability, propertyId))) return false;
-
-  // (2) Property scope — admin and '*' wildcard reach every property.
-  const access = (account.property_access ?? []) as string[];
-  return role === 'admin' || access.includes(propertyId) || access.includes('*');
+  return canForProperty({ role: standing.operationalRole }, capability, propertyId);
 }
 
 /**
@@ -295,27 +334,63 @@ export async function accountCapabilityDecisionForProperty(
   authUserId: string,
   capability: CapabilityKey,
   propertyId: string | null | undefined,
+  opts?: { requireMutation?: boolean; requireManager?: boolean },
 ): Promise<CapabilityDecision> {
   if (!propertyId) return 'denied';
   const { data: account, error } = await supabaseAdmin
     .from('accounts')
-    .select('role, property_access')
+    .select('id, active')
     .eq('data_user_id', authUserId)
     .maybeSingle();
-  if (error || !account) return 'denied';
-
-  const role = (account.role as AppRole | null) ?? null;
-  if (!role) return 'denied';
+  if (error) return 'unavailable';
+  if (!account || account.active !== true) return 'denied';
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return 'unavailable';
+  const standing = authoritativeStandingForProperty(authority, propertyId);
+  if (!standing) return 'denied';
+  if (opts?.requireMutation && !standing.hotelMutationAllowed) return 'denied';
+  if (opts?.requireManager && !canManageTeam(standing.operationalRole)) return 'denied';
 
   const capabilityDecision = await capabilityDecisionForProperty(
-    { role },
+    { role: standing.operationalRole },
     capability,
     propertyId,
   );
-  if (capabilityDecision !== 'allowed') return capabilityDecision;
+  return capabilityDecision;
+}
 
-  const access = (account.property_access ?? []) as string[];
-  return role === 'admin' || access.includes(propertyId) || access.includes('*')
+/**
+ * Strict hotel-operational mutation boundary for routes reached from either
+ * the local app or a portfolio drill-down. Portfolio reach and financial-read
+ * standing are never sufficient: the current authoritative hotel standing
+ * must explicitly allow mutation, then the requested hotel capability must
+ * also allow the action.
+ */
+export async function hotelWriteDecisionForUserId(
+  authUserId: string,
+  propertyId: string | null | undefined,
+  capability?: CapabilityKey,
+): Promise<CapabilityDecision> {
+  if (!propertyId) return 'denied';
+  if (capability) {
+    return accountCapabilityDecisionForProperty(
+      authUserId,
+      capability,
+      propertyId,
+      { requireMutation: true },
+    );
+  }
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('id, active')
+    .eq('data_user_id', authUserId)
+    .maybeSingle();
+  if (error) return 'unavailable';
+  if (!account || account.active !== true) return 'denied';
+  const authority = await listAuthoritativePropertyAccess(account.id as string);
+  if (!authority) return 'unavailable';
+  return authoritativeStandingForProperty(authority, propertyId)
+    ?.hotelMutationAllowed === true
     ? 'allowed'
     : 'denied';
 }
@@ -330,6 +405,8 @@ export async function accountCapabilityDecisionForProperty(
 export interface ManagerCaller {
   accountId: string;
   role: AppRole;
+  /** Staff row linked to this login, when one exists. Identity only; never authority. */
+  staffId: string | null;
   /** For attributing an authored fact to a person. Cosmetic — never a gate. */
   displayName: string | null;
   propertyAccess: string[];
@@ -347,6 +424,7 @@ export interface ManagerCaller {
    */
   accessiblePropertyIds?: string[];
   reachesAllProperties?: boolean;
+  propertyStandings?: AuthoritativePropertyStanding[];
 }
 
 /**
@@ -373,7 +451,7 @@ export interface ManagerCaller {
 export async function loadSessionAccount(authUserId: string): Promise<ManagerCaller | null> {
   const { data, error } = await supabaseAdmin
     .from('accounts')
-    .select('id, role, display_name, property_access, active')
+    .select('id, role, display_name, staff_id, active')
     .eq('data_user_id', authUserId)
     .maybeSingle();
   if (error || !data) return null;
@@ -382,16 +460,19 @@ export async function loadSessionAccount(authUserId: string): Promise<ManagerCal
     id: string;
     role: string | null;
     display_name: string | null;
-    property_access: unknown;
+    staff_id: string | null;
     active: boolean | null;
   };
-  if (row.active === false) return null;
+  // Account lifecycle is affirmative: NULL/corrupt state must not be treated
+  // as active at a fresh tool or route boundary.
+  if (row.active !== true) return null;
 
-  const role = (row.role as AppRole | null) ?? null;
-  if (!role) return null;
-
-  const propertyAccess = Array.isArray(row.property_access) ? (row.property_access as string[]) : [];
-  const reachesAllProperties = role === 'admin' || propertyAccess.includes('*');
+  if (!isValidRole(row.role)) return null;
+  const role = row.role;
+  const authority = await listAuthoritativePropertyAccess(row.id);
+  if (!authority) return null;
+  const propertyAccess = authority.all ? ['*'] : authority.propertyIds;
+  const reachesAllProperties = authority.all;
 
   // Company hats are ADDITIVE and must never be able to fail the load. An
   // account with no hats — every single-hotel account today — pays one indexed
@@ -405,18 +486,16 @@ export async function loadSessionAccount(authUserId: string): Promise<ManagerCal
       hats = [];
     }
   }
-  const membershipPropertyIds = hats.flatMap((hat) => hat.coveredPropertyIds);
-
   return {
     accountId: row.id,
     role,
+    staffId: row.staff_id ?? null,
     displayName: row.display_name ?? null,
     propertyAccess,
     hats,
-    accessiblePropertyIds: [...new Set([...propertyAccess, ...membershipPropertyIds])]
-      .filter((id) => id !== '*')
-      .sort(),
+    accessiblePropertyIds: authority.propertyIds,
     reachesAllProperties,
+    propertyStandings: authority.propertyStandings,
   };
 }
 
@@ -429,7 +508,11 @@ export async function loadSessionAccount(authUserId: string): Promise<ManagerCal
  */
 export async function loadManagerCaller(authUserId: string): Promise<ManagerCaller | null> {
   const account = await loadSessionAccount(authUserId);
-  if (!account || !canManageTeam(account.role)) return null;
+  if (!account
+    || (!account.reachesAllProperties
+      && !(account.propertyStandings ?? []).some((standing) => (
+        canManageTeam(standing.operationalRole)
+      )))) return null;
   return account;
 }
 
@@ -448,10 +531,19 @@ export async function loadManagerCaller(authUserId: string): Promise<ManagerCall
  * shows a manager-only screen, calls `managerManagesHotel` below.
  */
 export function callerReachesHotel(caller: ManagerCaller, propertyId: string): boolean {
-  if (caller.role === 'admin') return true;
-  if (caller.propertyAccess.includes(propertyId) || caller.propertyAccess.includes('*')) return true;
-  // Asked of the JOBS, not of the pre-computed union — see canManageHotel.
-  return (caller.hats ?? []).some((hat) => hat.coveredPropertyIds.includes(propertyId));
+  if (caller.reachesAllProperties || caller.role === 'admin') return true;
+  return caller.propertyAccess.includes(propertyId);
+}
+
+/**
+ * Can this session mutate this hotel under the current authoritative standing?
+ * Reach and role are deliberately insufficient: read-only company grants can
+ * carry an operational role for rendering while remaining mutation-fenced.
+ */
+export function callerCanMutateHotel(caller: ManagerCaller, propertyId: string): boolean {
+  if (caller.reachesAllProperties || caller.role === 'admin') return true;
+  return caller.propertyStandings?.find((standing) => standing.propertyId === propertyId)
+    ?.hotelMutationAllowed === true;
 }
 
 /**
@@ -462,6 +554,10 @@ export function callerReachesHotel(caller: ManagerCaller, propertyId: string): b
  * is that rule fed from a `ManagerCaller`.
  */
 export function callerRoleAtHotel(caller: ManagerCaller, propertyId: string): AppRole | null {
+  if (caller.propertyStandings) {
+    return caller.propertyStandings.find((standing) => standing.propertyId === propertyId)
+      ?.operationalRole ?? (caller.reachesAllProperties ? 'admin' : null);
+  }
   return resolveEffectiveRole({
     legacyRole: caller.role,
     legacyPropertyAccess: caller.propertyAccess,

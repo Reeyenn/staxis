@@ -74,12 +74,19 @@ import {
 } from '@/lib/company/rulebook-access';
 import { accountsCoveringProperty } from '@/lib/company/access';
 import { GET as rulebookGet, POST as rulebookPost } from '@/app/api/company/rulebook/route';
+import { POST as rulebookIntakePost } from '@/app/api/company/rulebook/intake/route';
 import { GET as teamGet } from '@/app/api/auth/team/route';
+import { loadSessionAccount } from '@/lib/team-auth';
+import {
+  resolveRulebookRequestScope,
+  rulebookRequestScopeStillCurrent,
+} from '@/lib/company/rulebook-request-scope';
 
 import { applyMigrationsToPglite } from '../../../tests/fixtures/pglite-migrate';
 import { createPglitePostgrest, loadCatalog, type PglitePostgrest } from '../../../tests/fixtures/postgrest-pglite';
 import {
   ACCOUNT_ANA,
+  ACCOUNT_ADMIN,
   ACCOUNT_BO,
   ACCOUNT_FIONA,
   ACCOUNT_GIL,
@@ -107,6 +114,9 @@ const originalGetUser = supabaseAdmin.auth.getUser.bind(supabaseAdmin.auth);
 const originalListUsers = supabaseAdmin.auth.admin.listUsers.bind(supabaseAdmin.auth.admin);
 
 let signedInAs: string | null = null;
+const ACCOUNT_RULEBOOK_MULTI = 'c9c91111-0000-4000-8000-000000000001';
+const UID_RULEBOOK_MULTI = 'c9c92222-0000-4000-8000-000000000001';
+const multiMembershipIds = new Map<string, string>();
 
 const ACTOR = { accountId: null, name: 'Ana', role: 'owner' };
 
@@ -141,6 +151,15 @@ async function rulebookFor(authUserId: string, propertyId: string) {
   signedInAs = authUserId;
   const response = await rulebookGet(
     authorizedRequest(`https://staxis.test/api/company/rulebook?propertyId=${propertyId}`),
+  );
+  const parsed = await response.json().catch(() => ({})) as { data?: Record<string, unknown> };
+  return { status: response.status, data: parsed.data ?? null };
+}
+
+async function rulebookForCompany(authUserId: string, organizationId: string) {
+  signedInAs = authUserId;
+  const response = await rulebookGet(
+    authorizedRequest(`https://staxis.test/api/company/rulebook?organizationId=${organizationId}`),
   );
   const parsed = await response.json().catch(() => ({})) as { data?: Record<string, unknown> };
   return { status: response.status, data: parsed.data ?? null };
@@ -216,6 +235,29 @@ before(async () => {
   supabaseAdmin.auth.admin.listUsers = async () => ({ data: { users: [] }, error: null });
 
   await seedTwoCompanies(pg);
+  await pg.query(
+    `insert into auth.users (id, email) values ($1, 'rulebook-multi@example.test')
+     on conflict (id) do nothing`,
+    [UID_RULEBOOK_MULTI],
+  );
+  await pg.query(
+    `insert into accounts
+       (id, username, password_hash, display_name, role, property_access, data_user_id)
+     values ($1, 'rulebook_multi', 'x', 'Rulebook Multi', 'general_manager', '{}', $2)
+     on conflict (id) do nothing`,
+    [ACCOUNT_RULEBOOK_MULTI, UID_RULEBOOK_MULTI],
+  );
+  for (const organizationId of [ORG_A, ORG_B]) {
+    const result = await pg.query<{ membership_id: string | null }>(
+      `select public.staxis_set_membership_hat(
+         $1, $2, $3, 'company', 'vp', null, 'Portfolio VP'
+       ) as membership_id`,
+      [ACCOUNT_ADMIN, organizationId, ACCOUNT_RULEBOOK_MULTI],
+    );
+    const membershipId = result.rows[0]?.membership_id;
+    assert.ok(membershipId);
+    multiMembershipIds.set(organizationId, membershipId);
+  }
 
   // Beaumont is set up for a 07:00 housekeeping start. The company book will
   // say 08:00 — a genuine, structured disagreement, which is what makes both
@@ -402,6 +444,217 @@ describe('the cached block stays byte-identical with the new tier in it', () => 
   });
 });
 
+describe('0406 rolling app compatibility', () => {
+  test('app-first intake fails before provider spend when the ledger RPC is absent', async () => {
+    const liveRpc = supabaseAdmin.rpc.bind(supabaseAdmin);
+    const costsBefore = await pg.query<{ n: string }>(
+      'select count(*)::text as n from public.agent_costs',
+    );
+    supabaseAdmin.rpc = (async (fn: string, args?: Record<string, unknown>) => {
+      if (fn === 'staxis_company_knowledge_ledger_capability') {
+        return {
+          data: null,
+          error: { code: 'PGRST202', message: 'function is not in the schema cache' },
+        };
+      }
+      return liveRpc(fn as never, args as never);
+    }) as unknown as typeof supabaseAdmin.rpc;
+    try {
+      signedInAs = UID_ANA;
+      const response = await rulebookIntakePost(authorizedRequest(
+        'https://staxis.test/api/company/rulebook/intake',
+        {
+          method: 'POST',
+          body: { organizationId: ORG_A, note: 'All hotels use a new vendor.' },
+        },
+      ));
+      assert.equal(response.status, 503);
+      const costsAfter = await pg.query<{ n: string }>(
+        'select count(*)::text as n from public.agent_costs',
+      );
+      assert.equal(costsAfter.rows[0].n, costsBefore.rows[0].n);
+    } finally {
+      supabaseAdmin.rpc = liveRpc as typeof supabaseAdmin.rpc;
+    }
+  });
+
+  test('a verified actor can never downgrade into the revisionless compatibility writer', async () => {
+    const draft = await storeCompanyFact({
+      organizationId: ORG_A,
+      topic: 'revision_guard_draft',
+      content: 'This draft must survive revisionless mutation attempts.',
+      category: 'standards',
+      source: 'inferred',
+    });
+    const otherDraft = await storeCompanyFact({
+      organizationId: ORG_A,
+      topic: 'revision_guard_merge_drop',
+      content: 'This second draft must not be merged without a revision.',
+      category: 'standards',
+      source: 'inferred',
+    });
+    const confirmedId = await writeConfirmedFact(
+      ORG_A,
+      'revision_guard_confirmed',
+      'This confirmed line must not be overwritten without a revision.',
+    );
+    assert.ok(draft.ok && draft.factId && otherDraft.ok && otherDraft.factId);
+
+    const verifiedActor = { accountId: ACCOUNT_ANA, name: 'Ana', role: 'owner' };
+    assert.equal(
+      (await confirmCompanyFact(ORG_A, draft.factId, verifiedActor)).reason,
+      'invalid_request',
+    );
+    assert.equal(
+      (await editCompanyFact(
+        ORG_A,
+        confirmedId,
+        { content: 'Revisionless overwrite.', category: 'standards' },
+        verifiedActor,
+      )).reason,
+      'invalid_request',
+    );
+    assert.equal(
+      (await removeCompanyFact(ORG_A, confirmedId, verifiedActor)).reason,
+      'invalid_request',
+    );
+    assert.equal(
+      (await mergeCompanyFact(
+        ORG_A,
+        confirmedId,
+        otherDraft.factId,
+        verifiedActor,
+      )).reason,
+      'invalid_request',
+    );
+
+    const malformedActor = await storeCompanyFact({
+      organizationId: ORG_A,
+      topic: 'malformed_actor_must_not_fallback',
+      content: 'This must never be stored.',
+      category: 'standards',
+      source: 'inferred',
+      createdByAccountId: 'not-a-uuid',
+    });
+    assert.equal(malformedActor.ok, false);
+    assert.equal(malformedActor.reason, 'invalid_request');
+
+    const facts = await listCompanyFacts(ORG_A);
+    assert.equal(facts.find((fact) => fact.id === draft.factId)?.reviewState, 'unreviewed');
+    assert.equal(
+      facts.find((fact) => fact.id === confirmedId)?.content,
+      'This confirmed line must not be overwritten without a revision.',
+    );
+    assert.ok(facts.some((fact) => fact.id === otherDraft.factId));
+    assert.equal(facts.some((fact) => fact.topic === 'malformed_actor_must_not_fallback'), false);
+  });
+});
+
+describe('explicit portfolio rulebook context', () => {
+  test('a multi-company actor selects one company and never widens through a hotel id', async () => {
+    const companyA = await rulebookForCompany(UID_RULEBOOK_MULTI, ORG_A);
+    const companyB = await rulebookForCompany(UID_RULEBOOK_MULTI, ORG_B);
+    assert.equal(companyA.status, 200);
+    assert.equal(companyB.status, 200);
+    assert.equal((companyA.data as { organizationId: string }).organizationId, ORG_A);
+    assert.equal((companyB.data as { organizationId: string }).organizationId, ORG_B);
+
+    const hotelSelector = await rulebookFor(UID_RULEBOOK_MULTI, PID_A1);
+    assert.equal(
+      hotelSelector.status,
+      403,
+      'a company hat cannot turn a client hotel id into portfolio rulebook authority',
+    );
+
+    signedInAs = UID_RULEBOOK_MULTI;
+    const missingSelector = await rulebookGet(
+      authorizedRequest('https://staxis.test/api/company/rulebook'),
+    );
+    assert.equal(missingSelector.status, 400);
+    const duplicateSelector = await rulebookGet(authorizedRequest(
+      `https://staxis.test/api/company/rulebook?organizationId=${ORG_A}&organizationId=${ORG_B}`,
+    ));
+    assert.equal(duplicateSelector.status, 400);
+
+    const crossTenant = await rulebookForCompany(UID_ANA, ORG_B);
+    assert.equal(crossTenant.status, 404, 'a foreign organization id stays anti-enumerating');
+  });
+
+  test('a captured company context and edit role fail closed after revocation or role change', async () => {
+    signedInAs = UID_RULEBOOK_MULTI;
+    const caller = await loadSessionAccount(UID_RULEBOOK_MULTI);
+    assert.ok(caller);
+    const captured = await resolveRulebookRequestScope(caller, { organizationId: ORG_B });
+    assert.equal(captured.ok, true);
+    if (!captured.ok) return;
+
+    const orgBMembershipId = multiMembershipIds.get(ORG_B);
+    assert.ok(orgBMembershipId);
+    const revoked = await pg.query<{ ended: boolean }>(
+      'select public.staxis_end_membership_hat($1, $2) as ended',
+      [ACCOUNT_ADMIN, orgBMembershipId],
+    );
+    assert.equal(revoked.rows[0]?.ended, true);
+    assert.equal(await rulebookRequestScopeStillCurrent(captured.scope), false);
+    assert.equal((await rulebookForCompany(UID_RULEBOOK_MULTI, ORG_B)).status, 404);
+    assert.equal((await rulebookForCompany(UID_RULEBOOK_MULTI, ORG_A)).status, 200);
+
+    const restoredB = await pg.query<{ membership_id: string | null }>(
+      `select public.staxis_set_membership_hat(
+         $1, $2, $3, 'company', 'vp', null, 'Portfolio VP'
+       ) as membership_id`,
+      [ACCOUNT_ADMIN, ORG_B, ACCOUNT_RULEBOOK_MULTI],
+    );
+    assert.ok(restoredB.rows[0]?.membership_id);
+    multiMembershipIds.set(ORG_B, restoredB.rows[0].membership_id);
+
+    const orgAVpId = multiMembershipIds.get(ORG_A);
+    assert.ok(orgAVpId);
+    assert.equal(
+      (await pg.query<{ ended: boolean }>(
+        'select public.staxis_end_membership_hat($1, $2) as ended',
+        [ACCOUNT_ADMIN, orgAVpId],
+      )).rows[0]?.ended,
+      true,
+    );
+    const finance = await pg.query<{ membership_id: string | null }>(
+      `select public.staxis_set_membership_hat(
+         $1, $2, $3, 'company', 'finance', null, 'Portfolio Finance'
+       ) as membership_id`,
+      [ACCOUNT_ADMIN, ORG_A, ACCOUNT_RULEBOOK_MULTI],
+    );
+    const financeId = finance.rows[0]?.membership_id;
+    assert.ok(financeId);
+
+    const financeView = await rulebookForCompany(UID_RULEBOOK_MULTI, ORG_A);
+    assert.equal(financeView.status, 200);
+    assert.equal((financeView.data as { companyRole: string }).companyRole, 'finance');
+    assert.equal((financeView.data as { canEdit: boolean }).canEdit, false);
+    const deniedWrite = await rulebookWrite(UID_RULEBOOK_MULTI, {
+      organizationId: ORG_A,
+      action: 'settings',
+      settings: { cross_hotel_ai_chat: 'true' },
+    });
+    assert.equal(deniedWrite.status, 403);
+
+    assert.equal(
+      (await pg.query<{ ended: boolean }>(
+        'select public.staxis_end_membership_hat($1, $2) as ended',
+        [ACCOUNT_ADMIN, financeId],
+      )).rows[0]?.ended,
+      true,
+    );
+    const restoredA = await pg.query<{ membership_id: string | null }>(
+      `select public.staxis_set_membership_hat(
+         $1, $2, $3, 'company', 'vp', null, 'Portfolio VP'
+       ) as membership_id`,
+      [ACCOUNT_ADMIN, ORG_A, ACCOUNT_RULEBOOK_MULTI],
+    );
+    assert.ok(restoredA.rows[0]?.membership_id);
+    multiMembershipIds.set(ORG_A, restoredA.rows[0].membership_id);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 describe('a GM reads the book and cannot touch it', () => {
   test('Gil (GM of Tyler) can see Piney Woods\' book, read-only', async () => {
@@ -455,19 +708,28 @@ describe('a GM reads the book and cannot touch it', () => {
     const { data } = await rulebookFor(UID_GIL, PID_B1);
     const payload = data as {
       facts: Array<{ id: string; reviewState: string }>;
-      stats: { pendingReview: number };
+      stats: Record<string, unknown>;
     };
     assert.equal(
       payload.facts.some((f) => f.id === draft.factId), false,
       'the draft must not appear in a read-only viewer\'s book',
     );
     assert.equal(payload.facts.every((f) => f.reviewState === 'confirmed'), true);
-    assert.equal(payload.stats.pendingReview, 0, 'and they are not nagged about a queue they cannot work');
+    assert.equal(
+      'pendingReview' in payload.stats,
+      false,
+      'a GM is not serialized a cross-hotel review queue they cannot work',
+    );
+    assert.equal(
+      Object.hasOwn(data as object, 'contradictions'),
+      false,
+      'a GM response omits sister-hotel contradiction data at the server boundary',
+    );
 
     // Company leadership still sees it — this is a visibility rule, not a
     // deletion, and the assertion above would pass for the wrong reason if the
     // row had simply failed to store.
-    const owner = await rulebookFor(UID_ANA, PID_A1);
+    const owner = await rulebookForCompany(UID_ANA, ORG_A);
     assert.ok(owner.status === 200);
     assert.equal(
       (await listCompanyFacts(ORG_B)).some((f) => f.id === draft.factId), true,
@@ -573,15 +835,31 @@ describe('an authority rule exists only after a human confirms', () => {
     const facts = await listCompanyFacts(ORG_A);
     const target = facts.find((f) => f.topic === 'po_big_threshold');
     assert.ok(target);
+    assert.ok(target.currentRevision);
 
     const res = await rulebookWrite(UID_ANA, {
-      propertyId: PID_A1,
+      organizationId: ORG_A,
       action: 'edit',
       id: target.id,
+      expectedRevision: target.currentRevision,
       content: 'Large orders are unusual for us.',
       category: 'money',
     });
     assert.equal(res.status, 200);
+
+    const stale = await rulebookWrite(UID_ANA, {
+      organizationId: ORG_A,
+      action: 'edit',
+      id: target.id,
+      expectedRevision: target.currentRevision,
+      content: 'A stale browser overwrote the current line.',
+      category: 'money',
+    });
+    assert.equal(stale.status, 409, 'the route must surface CAS loss as a conflict');
+    assert.equal(
+      (await listCompanyFacts(ORG_A)).find((fact) => fact.id === target.id)?.content,
+      'Large orders are unusual for us.',
+    );
 
     const big = await authorityRuleFor(ORG_A, 'purchase_order', 600_000);
     assert.ok(big);
@@ -599,6 +877,56 @@ describe('the access choices gate what they claim', () => {
     assert.equal(await companyAccessSetting(ORG_A, 'cross_hotel_ai_chat'), 'false');
     assert.equal(await companyAccessSetting(ORG_A, 'rulebook_editors'), 'owner_and_vp');
     assert.equal(await companyAccessSetting(ORG_A, 'setup_completed_at'), null);
+  });
+
+  test('a normalized organization admin uses the same fresh authority as the write RPC', async () => {
+    const userId = 'aaaa2222-0000-4000-8000-000000000099';
+    const accountId = 'aaaa1111-0000-4000-8000-000000000099';
+    await pg.query(
+      `insert into auth.users (id, email) values ($1, 'normalized-rulebook-admin@example.test')`,
+      [userId],
+    );
+    await pg.query(
+      `insert into accounts (
+         id, username, password_hash, display_name, role, property_access, data_user_id
+       ) values ($1, 'normalized-rulebook-admin', 'x', 'Normalized Admin',
+                 'front_desk', '{}', $2)`,
+      [accountId, userId],
+    );
+    const membership = await pg.query<{ id: string }>(
+      `insert into organization_memberships (
+         organization_id, account_id, job_category, status
+       ) values ($1, $2, 'operations', 'active') returning id`,
+      [ORG_A, accountId],
+    );
+    const grant = await pg.query<{ id: string }>(
+      `insert into organization_access_grants (
+         organization_id, membership_id, access_profile, scope_type, status, source
+       ) values ($1, $2, 'organization_admin', 'organization', 'active', 'manual')
+       returning id`,
+      [ORG_A, membership.rows[0].id],
+    );
+
+    assert.deepEqual(await rulebookStandingFor(accountId, ORG_A), {
+      organizationId: ORG_A,
+      canView: true,
+      canEdit: true,
+      companyRole: 'vp',
+      viewOnlyBecauseHotelJob: false,
+    });
+
+    await pg.query(
+      `update organization_access_grants
+          set status = 'revoked', revoked_at = now(),
+              revocation_reason = 'rulebook lifecycle test', version = version + 1
+        where id = $1`,
+      [grant.rows[0].id],
+    );
+    assert.equal(
+      (await rulebookStandingFor(accountId, ORG_A)).canView,
+      false,
+      'revocation must close the screen immediately instead of reusing a stale hat',
+    );
   });
 
   test('"owner and VPs" lets Maria edit; the finance person does not', async () => {
@@ -625,7 +953,7 @@ describe('the access choices gate what they claim', () => {
 
     // …and the route agrees, which is where it actually matters.
     const refused = await rulebookWrite(UID_MARIA, {
-      propertyId: PID_A1, action: 'settings', settings: { cross_hotel_ai_chat: 'true' },
+      organizationId: ORG_A, action: 'settings', settings: { cross_hotel_ai_chat: 'true' },
     });
     assert.equal(refused.status, 403);
 
@@ -684,7 +1012,7 @@ describe('the access choices gate what they claim', () => {
 describe('the settings-contradiction line', () => {
   test('fires where a hotel is really configured differently from the book', async () => {
     // The book says housekeeping starts at 8am; Beaumont is set up for 07:00.
-    const { status, data } = await rulebookFor(UID_ANA, PID_A1);
+    const { status, data } = await rulebookForCompany(UID_ANA, ORG_A);
     assert.equal(status, 200);
     const found = (data as { contradictions: Array<{ propertyName: string; line: { en: string } }> })
       .contradictions;
@@ -696,14 +1024,14 @@ describe('the settings-contradiction line', () => {
 
   test('is silent for the hotel that agrees, and for one with nothing configured', async () => {
     // Lufkin is set up for 08:00 — it agrees, so it must not appear above.
-    const { data } = await rulebookFor(UID_ANA, PID_A1);
+    const { data } = await rulebookForCompany(UID_ANA, ORG_A);
     const found = (data as { contradictions: Array<{ propertyName: string }> }).contradictions;
     assert.equal(found.some((c) => c.propertyName === 'Lufkin Inn'), false);
 
     // A hotel that never configured housekeeping contributes NOTHING — absence
     // is not a contradiction, or a brand-new hotel opens to a wall of them.
     await pg.query('update properties set housekeeping_setup = null where id = $1', [PID_A2]);
-    const second = await rulebookFor(UID_ANA, PID_A1);
+    const second = await rulebookForCompany(UID_ANA, ORG_A);
     const stillFound = (second.data as { contradictions: Array<{ propertyName: string }> }).contradictions;
     assert.equal(stillFound.some((c) => c.propertyName === 'Lufkin Inn'), false);
     assert.equal(stillFound.length, 1, 'only Beaumont, still');
@@ -715,7 +1043,7 @@ describe('the settings-contradiction line', () => {
 
   test('a GM is not shown the list of ways their peers differ', async () => {
     const { data } = await rulebookFor(UID_GIL, PID_B1);
-    assert.deepEqual((data as { contradictions: unknown[] }).contradictions, []);
+    assert.equal(Object.hasOwn(data as object, 'contradictions'), false);
   });
 });
 
@@ -725,10 +1053,14 @@ describe('remove is permanent', () => {
     const facts = await listCompanyFacts(ORG_A);
     const target = facts.find((f) => f.topic === 'po_threshold');
     assert.ok(target, 'the $500 rule is there to remove');
+    assert.ok(target.currentRevision);
     assert.ok(await authorityRuleFor(ORG_A, 'purchase_order', 60_000), 'and it is in force');
 
     const res = await rulebookWrite(UID_ANA, {
-      propertyId: PID_A1, action: 'remove', id: target.id,
+      organizationId: ORG_A,
+      action: 'remove',
+      id: target.id,
+      expectedRevision: target.currentRevision,
     });
     assert.equal(res.status, 200);
 
@@ -843,31 +1175,14 @@ describe('the spine follow-up — a hotel\'s team list stops hiding company peop
     assert.deepEqual(await accountsCoveringProperty(PID_L1), [], 'a companyless hotel has no hats');
   });
 
-  test('the team route now lists them, where before they were invisible', async () => {
+  test('the private hotel-team route does not turn broad company reach into hotel mutation authority', async () => {
     signedInAs = UID_ANA;
     const response = await teamGet(
       authorizedRequest(`https://staxis.test/api/auth/team?hotelId=${PID_A2}`),
     );
-    assert.equal(response.status, 200);
-    const parsed = await response.json() as {
-      data?: { team?: Array<{ accountId: string; propertyAccess: string[] }> };
-    };
-    const team = parsed.data?.team ?? [];
-    const ids = team.map((row) => row.accountId);
-
-    assert.ok(ids.includes(ACCOUNT_ANA), 'the owner works here');
-    assert.ok(ids.includes(ACCOUNT_MARIA), 'so does the VP who oversees it');
-    // Every one of them has an EMPTY legacy array — which is exactly why the
-    // old `property_access.includes(hotelId)` filter left them off.
-    const ana = team.find((row) => row.accountId === ACCOUNT_ANA);
-    assert.deepEqual(ana?.propertyAccess, []);
-
-    // Wall B, at the team list: nobody from the other company appears.
-    assert.equal(ids.includes(ACCOUNT_BO), false);
-    assert.equal(ids.includes(ACCOUNT_GIL), false);
-    // Wall A, inside the company: Lufkin's list does not name Beaumont's
-    // front-desk person, whose hat covers Beaumont only.
-    assert.equal(ids.includes(ACCOUNT_WANDA), false);
+    assert.equal(response.status, 403);
+    const parsed = await response.json() as { data?: unknown; error?: string };
+    assert.equal(parsed.data, undefined);
   });
 });
 

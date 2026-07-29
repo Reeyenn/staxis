@@ -6,11 +6,11 @@ import 'server-only';
 // need VP sign-off". One level up from the per-hotel Knows screen, and the same
 // life-cycle — open box → extract → confirm / edit / remove.
 //
-// SERVICE-ROLE ONLY. `company_knowledge` is deny-all RLS and supabaseAdmin
-// bypasses it, so the `.eq('organization_id', …)` on every query below IS the
-// per-tenant guarantee. Never drop it, and never look a row up by id alone
-// "because ids are unguessable" — that is the same reasoning that would let one
-// management company edit another's rulebook.
+// READS are service-role only and retain an exact organization filter.
+// PRODUCTION WRITES go through 0406's receipt-bound CAS RPC, which freshly
+// reasserts organization-wide editor authority in the same transaction as the
+// mutation. Actorless legacy helpers remain only for DB-first rollout/fixtures;
+// 0406 journals them and its one-way finalizer revokes that path.
 //
 // WALL B: no function here takes a property id or resolves a company itself.
 // Callers hand in an organizationId they got from `companyForProperty` or from
@@ -19,6 +19,7 @@ import 'server-only';
 
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { propertiesOfOrganization } from '@/lib/company/access';
+import { resolveAuthorizationScope } from '@/lib/authorization/server';
 import {
   coerceCompanyCategory,
   readAuthority,
@@ -53,6 +54,8 @@ export interface CompanyFact {
   policyValue: string | null;
   createdByName: string | null;
   updatedAt: string;
+  /** DB-owned CAS token. Null only while a new app is reading a pre-0406 DB. */
+  currentRevision?: number | null;
 }
 
 interface RawFact {
@@ -67,12 +70,14 @@ interface RawFact {
   policy_value: string | null;
   created_by_name: string | null;
   updated_at: string;
+  current_revision?: number | string | null;
 }
 
 // One string literal on purpose: supabase-js infers the row type from it, and
 // splitting it across a `+` collapses that inference to GenericStringError[].
 const SELECT_COLS =
   'id, organization_id, topic, content, category, source, review_state, policy_key, policy_value, created_by_name, updated_at';
+const SELECT_COLS_WITH_REVISION = `${SELECT_COLS}, current_revision`;
 
 function mapFact(row: RawFact): CompanyFact {
   return {
@@ -91,7 +96,41 @@ function mapFact(row: RawFact): CompanyFact {
     policyValue: row.policy_value,
     createdByName: row.created_by_name,
     updatedAt: row.updated_at,
+    currentRevision: safeInteger(row.current_revision),
   };
+}
+
+function isMissingRevisionColumn(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === '42703'
+    || error.code === 'PGRST204'
+    || /current_revision/i.test(error.message ?? '');
+}
+
+async function selectCompanyFacts(
+  organizationId: string,
+  options: { confirmedOnly: boolean; limit: number },
+): Promise<CompanyFact[]> {
+  const query = (columns: string) => {
+    let built = supabaseAdmin
+      .from('company_knowledge')
+      .select(columns)
+      .eq('organization_id', organizationId)
+      .eq('is_active', true);
+    if (options.confirmedOnly) built = built.eq('review_state', 'confirmed');
+    return options.confirmedOnly
+      ? built.order('category', { ascending: true }).order('topic', { ascending: true }).limit(options.limit)
+      : built.order('updated_at', { ascending: false }).limit(options.limit);
+  };
+
+  const current = await query(SELECT_COLS_WITH_REVISION);
+  if (!current.error && current.data) return (current.data as unknown as RawFact[]).map(mapFact);
+  // App-first rolling deploy: reads remain available against a pre-0406 DB,
+  // but the null token makes every new mutation fail closed until 0406 lands.
+  if (!isMissingRevisionColumn(current.error)) return [];
+  const legacy = await query(SELECT_COLS);
+  if (legacy.error || !legacy.data) return [];
+  return (legacy.data as unknown as RawFact[]).map(mapFact);
 }
 
 /** Lower_snake_case slug, capped. Mirrors the hotel intake slugifier. */
@@ -106,15 +145,7 @@ export function slugifyCompanyTopic(raw: string): string {
 /** Every live fact in the book — the rulebook screen's list. */
 export async function listCompanyFacts(organizationId: string, limit = 200): Promise<CompanyFact[]> {
   if (!UUID_RX.test(organizationId ?? '')) return [];
-  const { data, error } = await supabaseAdmin
-    .from('company_knowledge')
-    .select(SELECT_COLS)
-    .eq('organization_id', organizationId)
-    .eq('is_active', true)
-    .order('updated_at', { ascending: false })
-    .limit(limit);
-  if (error || !data) return [];
-  return (data as RawFact[]).map(mapFact);
+  return selectCompanyFacts(organizationId, { confirmedOnly: false, limit });
 }
 
 /**
@@ -131,17 +162,7 @@ export async function listCompanyFacts(organizationId: string, limit = 200): Pro
  */
 export async function getConfirmedCompanyFacts(organizationId: string): Promise<CompanyFact[]> {
   if (!UUID_RX.test(organizationId ?? '')) return [];
-  const { data, error } = await supabaseAdmin
-    .from('company_knowledge')
-    .select(SELECT_COLS)
-    .eq('organization_id', organizationId)
-    .eq('is_active', true)
-    .eq('review_state', 'confirmed')
-    .order('category', { ascending: true })
-    .order('topic', { ascending: true })
-    .limit(200);
-  if (error || !data) return [];
-  return (data as RawFact[]).map(mapFact);
+  return selectCompanyFacts(organizationId, { confirmedOnly: true, limit: 200 });
 }
 
 export interface StoreCompanyFactInput {
@@ -153,19 +174,251 @@ export interface StoreCompanyFactInput {
   createdByAccountId?: string | null;
   createdByName?: string | null;
   createdByRole?: string | null;
+  requestId?: string | null;
 }
 
 export type StoreCompanyFactAction = 'inserted' | 'updated' | 'skipped' | 'company_full';
 
+export type CompanyKnowledgeMutationReason =
+  | 'invalid_request'
+  | 'forbidden'
+  | 'not_found'
+  | 'conflict'
+  | 'upgrade_required'
+  | 'store_unavailable';
+
+interface CompanyKnowledgeMutationResult {
+  ok: boolean;
+  action?: string;
+  factId?: string | null;
+  relatedFactId?: string | null;
+  currentRevision?: number | null;
+  relatedCurrentRevision?: number | null;
+  actualRevision?: number | null;
+  reason?: CompanyKnowledgeMutationReason;
+  error?: string;
+}
+
+interface CompanyKnowledgeMutationInput {
+  actorAccountId: string;
+  organizationId: string;
+  /** Already freshly resolved by a preparation read; SQL reasserts it. */
+  scopeReceiptId?: string;
+  action: 'intake' | 'upsert_confirmed' | 'confirm' | 'edit' | 'remove' | 'merge';
+  factId?: string | null;
+  expectedRevision?: number | null;
+  relatedFactId?: string | null;
+  relatedExpectedRevision?: number | null;
+  topic?: string | null;
+  content?: string | null;
+  category?: CompanyCategory | null;
+  source?: CompanyFactSource | null;
+  createdByName?: string | null;
+  createdByRole?: string | null;
+  policyKey?: string | null;
+  policyValue?: string | null;
+  authority?: ReturnType<typeof structuredReadingFor>['authority'] | null;
+  requestId?: string | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function safeInteger(value: unknown): number | null {
+  const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
+  if (typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0) return parsed;
+  return null;
+}
+
+function rpcUnavailable(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return error.code === 'PGRST202'
+    || error.code === 'PGRST204'
+    || error.code === '42883'
+    || /staxis_apply_company_knowledge_mutation_v1|schema cache/i.test(error.message ?? '');
+}
+
+/** App-first preflight. Intake calls this before it spends provider tokens. */
+export async function companyKnowledgeLedgerAvailable(): Promise<boolean> {
+  try {
+    const { data, error } = await supabaseAdmin.rpc('staxis_company_knowledge_ledger_capability');
+    if (error || !isRecord(data)) return false;
+    return data.ok === true
+      && data.schemaVersion === 'company_knowledge_revision_ledger_v1'
+      && (data.rolloutMode === 'compat' || data.rolloutMode === 'enforced');
+  } catch {
+    return false;
+  }
+}
+
+async function applyCompanyKnowledgeMutation(
+  input: CompanyKnowledgeMutationInput,
+): Promise<CompanyKnowledgeMutationResult> {
+  if (!UUID_RX.test(input.actorAccountId)
+    || !UUID_RX.test(input.organizationId)) {
+    return { ok: false, reason: 'invalid_request', error: 'bad actor or organization' };
+  }
+  let receiptId = input.scopeReceiptId;
+  if (!receiptId) {
+    const resolved = await resolveAuthorizationScope({
+      accountId: input.actorAccountId,
+      organizationId: input.organizationId,
+      selector: { type: 'all_authorized' },
+      ttlSeconds: 60,
+    });
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        reason: resolved.reason === 'store_unavailable' ? 'store_unavailable' : 'forbidden',
+        error: resolved.reason,
+      };
+    }
+    receiptId = resolved.receipt.id;
+  }
+
+  try {
+    const { data, error } = await supabaseAdmin.rpc(
+      'staxis_apply_company_knowledge_mutation_v1',
+      {
+        p_actor_account_id: input.actorAccountId,
+        p_scope_receipt_id: receiptId,
+        p_organization_id: input.organizationId,
+        p_action: input.action,
+        p_fact_id: input.factId ?? null,
+        p_expected_revision: input.expectedRevision ?? null,
+        p_related_fact_id: input.relatedFactId ?? null,
+        p_related_expected_revision: input.relatedExpectedRevision ?? null,
+        p_topic: input.topic ?? null,
+        p_content: input.content ?? null,
+        p_category: input.category ?? null,
+        p_source: input.source ?? null,
+        p_created_by_name: input.createdByName ?? null,
+        p_created_by_role: input.createdByRole ?? null,
+        p_policy_key: input.policyKey ?? null,
+        p_policy_value: input.policyValue ?? null,
+        p_authority_action_kind: input.authority?.actionKind ?? null,
+        p_authority_threshold_cents: input.authority?.thresholdCents ?? null,
+        p_authority_threshold_inclusive: input.authority?.thresholdInclusive ?? null,
+        p_authority_approver_role: input.authority?.approverRole ?? null,
+        p_request_id: input.requestId ?? null,
+        p_cap: 150,
+      },
+    );
+    if (error) {
+      return {
+        ok: false,
+        reason: rpcUnavailable(error) ? 'upgrade_required' : 'store_unavailable',
+        error: error.message,
+      };
+    }
+    if (!isRecord(data) || typeof data.ok !== 'boolean') {
+      return { ok: false, reason: 'store_unavailable', error: 'invalid mutation response' };
+    }
+    if (data.ok === false) {
+      const reason = data.reason;
+      return {
+        ok: false,
+        reason: reason === 'invalid_request' || reason === 'forbidden'
+          || reason === 'not_found' || reason === 'conflict'
+          ? reason
+          : 'store_unavailable',
+        factId: typeof data.factId === 'string' ? data.factId : null,
+        actualRevision: safeInteger(data.actualRevision),
+        error: typeof reason === 'string' ? reason : 'mutation refused',
+      };
+    }
+    const action = typeof data.action === 'string' ? data.action : null;
+    const factId = typeof data.factId === 'string' && UUID_RX.test(data.factId)
+      ? data.factId
+      : null;
+    const currentRevision = safeInteger(data.currentRevision);
+    const allowedAction = input.action === 'intake'
+      ? action === 'inserted' || action === 'skipped' || action === 'company_full'
+      : input.action === 'upsert_confirmed'
+        ? action === 'inserted' || action === 'company_full'
+        : action === input.action;
+    if (!allowedAction
+      || (action !== 'company_full' && (factId === null || currentRevision === null))) {
+      return { ok: false, reason: 'store_unavailable', error: 'invalid mutation success response' };
+    }
+    const relatedFactId = typeof data.relatedFactId === 'string' && UUID_RX.test(data.relatedFactId)
+      ? data.relatedFactId
+      : null;
+    const relatedCurrentRevision = safeInteger(data.relatedCurrentRevision);
+    if (input.action === 'merge'
+      && (relatedFactId === null || relatedCurrentRevision === null)) {
+      return { ok: false, reason: 'store_unavailable', error: 'invalid merge success response' };
+    }
+    return {
+      ok: true,
+      action: action ?? undefined,
+      factId,
+      relatedFactId,
+      currentRevision,
+      relatedCurrentRevision,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'store_unavailable',
+      error: error instanceof Error ? error.message : 'mutation failed',
+    };
+  }
+}
+
 /**
- * Upsert a fact by topic, through the advisory-locked RPC.
+ * Upsert a fact by topic. Verified callers use 0406's receipt-bound CAS RPC;
+ * actorless rollout/seed callers use the journaled 0365 compatibility RPC.
  *
  * 'skipped' means a CONFIRMED fact already owns that topic and the incoming
  * write was an extraction — the company already decided what that line says.
  */
 export async function storeCompanyFact(
   input: StoreCompanyFactInput,
-): Promise<{ ok: boolean; action?: StoreCompanyFactAction; factId?: string | null; error?: string }> {
+): Promise<{
+  ok: boolean;
+  action?: StoreCompanyFactAction;
+  factId?: string | null;
+  currentRevision?: number | null;
+  reason?: CompanyKnowledgeMutationReason;
+  error?: string;
+}> {
+  // Production writes always carry the verified caller. Keeping the 0365 path
+  // only for actorless seed/maintenance callers is what makes DB-first rollout
+  // compatible; 0406 journals it and the finalizer later revokes it.
+  if (input.createdByAccountId != null) {
+    if (!UUID_RX.test(input.createdByAccountId)) {
+      return { ok: false, reason: 'invalid_request', error: 'bad actor' };
+    }
+    const reading = structuredReadingFor(input.content);
+    if (reading.ambiguousAuthority) {
+      return { ok: false, reason: 'invalid_request', error: 'ambiguous authority rule' };
+    }
+    const mutation = await applyCompanyKnowledgeMutation({
+      actorAccountId: input.createdByAccountId,
+      organizationId: input.organizationId,
+      action: input.source === 'inferred' ? 'intake' : 'upsert_confirmed',
+      topic: input.topic,
+      content: input.content,
+      category: input.category ?? 'standards',
+      source: input.source ?? 'explicit_user',
+      createdByName: input.createdByName,
+      createdByRole: input.createdByRole,
+      policyKey: input.source === 'inferred' ? null : reading.policy?.key ?? null,
+      policyValue: input.source === 'inferred' ? null : reading.policy?.value ?? null,
+      authority: input.source === 'inferred' ? null : reading.authority,
+      requestId: input.requestId,
+    });
+    return {
+      ok: mutation.ok,
+      action: mutation.action as StoreCompanyFactAction | undefined,
+      factId: mutation.factId,
+      currentRevision: mutation.currentRevision,
+      reason: mutation.reason,
+      error: mutation.error,
+    };
+  }
   const { data, error } = await supabaseAdmin.rpc('staxis_store_company_fact', {
     p_organization_id: input.organizationId,
     p_topic: input.topic,
@@ -189,6 +442,25 @@ export interface CompanyFactActor {
   accountId: string | null;
   name: string | null;
   role: string | null;
+}
+
+async function resolveCompanyMutationReceiptId(
+  actorAccountId: string,
+  organizationId: string,
+): Promise<{ ok: true; receiptId: string } | { ok: false; reason: CompanyKnowledgeMutationReason }> {
+  const resolved = await resolveAuthorizationScope({
+    accountId: actorAccountId,
+    organizationId,
+    selector: { type: 'all_authorized' },
+    ttlSeconds: 60,
+  });
+  if (!resolved.ok) {
+    return {
+      ok: false,
+      reason: resolved.reason === 'store_unavailable' ? 'store_unavailable' : 'forbidden',
+    };
+  }
+  return { ok: true, receiptId: resolved.receipt.id };
 }
 
 /**
@@ -224,9 +496,61 @@ export async function confirmCompanyFact(
   organizationId: string,
   id: string,
   actor: CompanyFactActor,
-): Promise<{ ok: boolean; confirmed: boolean; error?: string }> {
+  expectedRevision?: number | null,
+  requestId?: string | null,
+): Promise<{
+  ok: boolean;
+  confirmed: boolean;
+  currentRevision?: number | null;
+  reason?: CompanyKnowledgeMutationReason;
+  error?: string;
+}> {
   if (!UUID_RX.test(organizationId ?? '') || !UUID_RX.test(id ?? '')) {
     return { ok: false, confirmed: false, error: 'bad id' };
+  }
+  if (actor.accountId != null) {
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision ?? 0) < 1) {
+      return {
+        ok: false,
+        confirmed: false,
+        reason: 'invalid_request',
+        error: 'expected revision required',
+      };
+    }
+    const scope = await resolveCompanyMutationReceiptId(actor.accountId, organizationId);
+    if (!scope.ok) return { ok: false, confirmed: false, reason: scope.reason, error: scope.reason };
+    // Read only after current organization authority has resolved. The RPC
+    // reasserts the same receipt after this preparation read and before commit.
+    const existing = await readLiveFact(organizationId, id);
+    if (!existing) return { ok: false, confirmed: false, reason: 'not_found', error: 'not found' };
+    const reading = structuredReadingFor(existing.content);
+    if (reading.ambiguousAuthority) {
+      return { ok: false, confirmed: false, reason: 'invalid_request', error: 'ambiguous authority rule' };
+    }
+    const mutation = await applyCompanyKnowledgeMutation({
+      actorAccountId: actor.accountId,
+      organizationId,
+      scopeReceiptId: scope.receiptId,
+      action: 'confirm',
+      factId: id,
+      expectedRevision,
+      content: existing.content,
+      category: existing.category,
+      source: 'explicit_user',
+      createdByName: actor.name,
+      createdByRole: actor.role,
+      policyKey: reading.policy?.key ?? null,
+      policyValue: reading.policy?.value ?? null,
+      authority: reading.authority,
+      requestId,
+    });
+    return {
+      ok: mutation.ok,
+      confirmed: mutation.ok,
+      currentRevision: mutation.currentRevision ?? mutation.actualRevision,
+      reason: mutation.reason,
+      error: mutation.error,
+    };
   }
   const existing = await readLiveFact(organizationId, id);
   if (!existing) return { ok: true, confirmed: false };
@@ -263,13 +587,58 @@ export async function editCompanyFact(
   id: string,
   patch: { content: string; category?: CompanyCategory },
   actor: CompanyFactActor,
-): Promise<{ ok: boolean; updated: boolean; error?: string }> {
+  expectedRevision?: number | null,
+  requestId?: string | null,
+): Promise<{
+  ok: boolean;
+  updated: boolean;
+  currentRevision?: number | null;
+  reason?: CompanyKnowledgeMutationReason;
+  error?: string;
+}> {
   if (!UUID_RX.test(organizationId ?? '') || !UUID_RX.test(id ?? '')) {
     return { ok: false, updated: false, error: 'bad id' };
   }
   const content = patch.content.trim();
   if (!content || content.length > COMPANY_FACT_MAX_CONTENT) {
     return { ok: false, updated: false, error: 'bad content' };
+  }
+  if (actor.accountId != null) {
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision ?? 0) < 1) {
+      return {
+        ok: false,
+        updated: false,
+        reason: 'invalid_request',
+        error: 'expected revision required',
+      };
+    }
+    const reading = structuredReadingFor(content);
+    if (reading.ambiguousAuthority) {
+      return { ok: false, updated: false, reason: 'invalid_request', error: 'ambiguous authority rule' };
+    }
+    const mutation = await applyCompanyKnowledgeMutation({
+      actorAccountId: actor.accountId,
+      organizationId,
+      action: 'edit',
+      factId: id,
+      expectedRevision,
+      content,
+      category: patch.category ?? null,
+      source: 'correction',
+      createdByName: actor.name,
+      createdByRole: actor.role,
+      policyKey: reading.policy?.key ?? null,
+      policyValue: reading.policy?.value ?? null,
+      authority: reading.authority,
+      requestId,
+    });
+    return {
+      ok: mutation.ok,
+      updated: mutation.ok,
+      currentRevision: mutation.currentRevision ?? mutation.actualRevision,
+      reason: mutation.reason,
+      error: mutation.error,
+    };
   }
   const { data, error } = await supabaseAdmin
     .from('company_knowledge')
@@ -307,9 +676,45 @@ export async function editCompanyFact(
 export async function removeCompanyFact(
   organizationId: string,
   id: string,
-): Promise<{ ok: boolean; removed: boolean; error?: string }> {
+  actor?: CompanyFactActor,
+  expectedRevision?: number | null,
+  requestId?: string | null,
+): Promise<{
+  ok: boolean;
+  removed: boolean;
+  currentRevision?: number | null;
+  reason?: CompanyKnowledgeMutationReason;
+  error?: string;
+}> {
   if (!UUID_RX.test(organizationId ?? '') || !UUID_RX.test(id ?? '')) {
     return { ok: false, removed: false, error: 'bad id' };
+  }
+  if (actor?.accountId != null) {
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision ?? 0) < 1) {
+      return {
+        ok: false,
+        removed: false,
+        reason: 'invalid_request',
+        error: 'expected revision required',
+      };
+    }
+    const mutation = await applyCompanyKnowledgeMutation({
+      actorAccountId: actor.accountId,
+      organizationId,
+      action: 'remove',
+      factId: id,
+      expectedRevision,
+      createdByName: actor.name,
+      createdByRole: actor.role,
+      requestId,
+    });
+    return {
+      ok: mutation.ok,
+      removed: mutation.ok,
+      currentRevision: mutation.currentRevision ?? mutation.actualRevision,
+      reason: mutation.reason,
+      error: mutation.error,
+    };
   }
   const { data, error } = await supabaseAdmin
     .from('company_knowledge')
@@ -344,9 +749,63 @@ export async function mergeCompanyFact(
   keepId: string,
   dropId: string,
   actor: CompanyFactActor,
-): Promise<{ ok: boolean; merged: boolean; error?: string }> {
+  expectedRevision?: number | null,
+  dropExpectedRevision?: number | null,
+  requestId?: string | null,
+): Promise<{
+  ok: boolean;
+  merged: boolean;
+  currentRevision?: number | null;
+  relatedCurrentRevision?: number | null;
+  reason?: CompanyKnowledgeMutationReason;
+  error?: string;
+}> {
   if (!UUID_RX.test(keepId ?? '') || !UUID_RX.test(dropId ?? '') || keepId === dropId) {
     return { ok: false, merged: false, error: 'bad id' };
+  }
+  if (actor.accountId != null) {
+    if (!Number.isSafeInteger(expectedRevision) || (expectedRevision ?? 0) < 1
+      || !Number.isSafeInteger(dropExpectedRevision) || (dropExpectedRevision ?? 0) < 1) {
+      return {
+        ok: false,
+        merged: false,
+        reason: 'invalid_request',
+        error: 'both expected revisions are required',
+      };
+    }
+    const scope = await resolveCompanyMutationReceiptId(actor.accountId, organizationId);
+    if (!scope.ok) return { ok: false, merged: false, reason: scope.reason, error: scope.reason };
+    const drop = await readLiveFact(organizationId, dropId);
+    if (!drop) return { ok: false, merged: false, reason: 'not_found', error: 'not found' };
+    const reading = structuredReadingFor(drop.content);
+    if (reading.ambiguousAuthority) {
+      return { ok: false, merged: false, reason: 'invalid_request', error: 'ambiguous authority rule' };
+    }
+    const mutation = await applyCompanyKnowledgeMutation({
+      actorAccountId: actor.accountId,
+      organizationId,
+      scopeReceiptId: scope.receiptId,
+      action: 'merge',
+      factId: keepId,
+      expectedRevision,
+      relatedFactId: dropId,
+      relatedExpectedRevision: dropExpectedRevision,
+      source: 'correction',
+      createdByName: actor.name,
+      createdByRole: actor.role,
+      policyKey: reading.policy?.key ?? null,
+      policyValue: reading.policy?.value ?? null,
+      authority: reading.authority,
+      requestId,
+    });
+    return {
+      ok: mutation.ok,
+      merged: mutation.ok,
+      currentRevision: mutation.currentRevision ?? mutation.actualRevision,
+      relatedCurrentRevision: mutation.relatedCurrentRevision,
+      reason: mutation.reason,
+      error: mutation.error,
+    };
   }
   const [keep, drop] = await Promise.all([
     readLiveFact(organizationId, keepId),
@@ -373,15 +832,24 @@ export async function mergeCompanyFact(
 }
 
 async function readLiveFact(organizationId: string, id: string): Promise<CompanyFact | null> {
-  const { data, error } = await supabaseAdmin
+  const current = await supabaseAdmin
+    .from('company_knowledge')
+    .select(SELECT_COLS_WITH_REVISION)
+    .eq('organization_id', organizationId)
+    .eq('id', id)
+    .eq('is_active', true)
+    .maybeSingle();
+  if (!current.error && current.data) return mapFact(current.data as RawFact);
+  if (!isMissingRevisionColumn(current.error)) return null;
+  const legacy = await supabaseAdmin
     .from('company_knowledge')
     .select(SELECT_COLS)
     .eq('organization_id', organizationId)
     .eq('id', id)
     .eq('is_active', true)
     .maybeSingle();
-  if (error || !data) return null;
-  return mapFact(data as RawFact);
+  if (legacy.error || !legacy.data) return null;
+  return mapFact(legacy.data as RawFact);
 }
 
 /**

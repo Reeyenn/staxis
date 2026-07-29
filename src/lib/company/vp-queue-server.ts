@@ -20,35 +20,49 @@ import 'server-only';
 // exactly what reusing the hotel queue's GET would have done.
 //
 // ─── WALL A AND WALL B ────────────────────────────────────────────────────
-// Wall A: `companyScopeFor` returns null for anyone without a COMPANY-scope
-// hat, so a GM — even one who manages three hotels through property hats —
-// never reaches this surface at all. Wall B: every hotel id comes from
-// `propertiesOfOrganization(scope.organizationId)`, the one query that turns a
-// company into a hotel list, and the organization id comes from the caller's
-// own hats. There is no argument to this file that could name another company.
+// Wall A is resolved before this file by the authoritative all-authorized
+// receipt. Wall B: this builder accepts only that already-resolved company
+// scope, then narrows its exact hotel ids to a disclosed processing window.
+// A caller-supplied organization id is never converted directly into hotels.
 // ═══════════════════════════════════════════════════════════════════════════
 
 import { log } from '@/lib/log';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import type { ManagerCaller } from '@/lib/team-auth';
-import { propertiesOfOrganization, type MembershipHat } from '@/lib/company/access';
-import { isCompanyScopeRole, type CompanyScopeRole } from '@/lib/company/roles';
+import type { MembershipHat } from '@/lib/company/access';
+import type { CompanyScopeRole } from '@/lib/company/roles';
 import {
   DAILY_CARD_CAP,
   effectiveDisposition,
   isCardRenderable,
   type CardSignOff,
 } from '@/components/concourse/finding-cards';
-import { judgedPhrasing, latestRunFacts, listFindings } from '@/lib/findings/store';
-import { loadActionsForFindings } from '@/lib/findings/actions/store';
 import { toQueueFinding } from '@/lib/findings/queue-projection';
 import { hotelBasisSpanish } from '@/lib/findings/basis-spanish';
 import type { Finding } from '@/lib/findings/types';
+import { mapWithConcurrency } from '@/lib/agent/portfolio/hotels';
+import {
+  loadPortfolioQueueReadModel,
+  type PortfolioQueueReadModel,
+} from '@/lib/company/portfolio-queue-bulk-read';
+import {
+  PORTFOLIO_DATA_SECTIONS,
+  portfolioFindingPolicyDecision,
+  portfolioHotelFindingPolicyDecision,
+  portfolioSectionDecision,
+  resolvePortfolioQueuePolicy,
+  type PortfolioQueuePolicy,
+} from '@/lib/company/portfolio-data-policy';
 
 import { listCompanyFindings, type CompanyFinding } from './company-findings';
 import { portfolioSpanish } from './portfolio-checks';
 import { loadApproverDirectory, resolveSignOff, type ApproverDirectory } from './signoff';
-import { holdPortfolioDay, companyLocalToday, runPortfolioChecks } from './portfolio-runner';
+import {
+  holdPortfolioDay,
+  companyLocalToday,
+  runPortfolioChecks,
+  type PortfolioRunCompletion,
+} from './portfolio-runner';
 import {
   chipForHotel,
   climbReasonFor,
@@ -63,26 +77,12 @@ import {
 // ─── Bounds ─────────────────────────────────────────────────────────────────
 
 /**
- * How many hotels one portfolio load will read. A twenty-hotel company is a
- * real customer; a two-hundred-hotel one is a different product, and quietly
- * taking four seconds to render would be a worse answer than a bounded one.
+ * How many hotels one portfolio load will read. This is a disclosed work bound,
+ * not an authorization bound: 31/61-hotel companies are processed completely,
+ * while very large companies receive explicit coverage/omission metadata.
  */
-const MAX_HOTELS_PER_LOAD = 30;
-
-/** Findings read per hotel before the climbing filter. */
-const MAX_FINDINGS_PER_HOTEL = 100;
-
-/**
- * Statuses the climbing rules are allowed to SEE.
- *
- * Deliberately includes the two silences: `known_problem` because a GM saying
- * "I know" must not hide a $3,100 problem from the person who could fund it,
- * and `muted` because the one case where mute is overridden (it grew past the
- * size it was muted at) cannot be evaluated on a row we never fetched. What is
- * excluded — `resolved`, `expired` — is excluded because those mean the problem
- * stopped being true, which is reality rather than a tap.
- */
-const CLIMB_VISIBLE_STATUSES = ['open', 'updated', 'known_problem', 'muted'] as const;
+export const MAX_HOTELS_PER_LOAD = 250;
+export const PORTFOLIO_QUEUE_READ_CONCURRENCY = 8;
 
 // ─── Who is standing at the door ────────────────────────────────────────────
 
@@ -101,84 +101,75 @@ export interface CompanyScope {
   hats: MembershipHat[];
   propertyIds: string[];
   propertyNames: Map<string, string>;
+  coverage: PortfolioCoverage;
 }
 
-const COMPANY_ROLE_STRENGTH: Record<CompanyRole, number> = { owner: 3, vp: 2, finance: 1 };
+export interface PortfolioCoverage {
+  authorizedHotelCount: number;
+  attemptedHotelCount: number;
+  processedHotelCount: number;
+  omittedHotelCount: number;
+  unavailableHotelCount: number;
+  portfolioChecksStatus: PortfolioRunCompletion;
+  complete: boolean;
+}
+
+/** Structural adapter for the feature-independent authoritative resolver. */
+export interface AuthoritativeCompanyQueueAccess {
+  organizationId: string;
+  organizationName: string | null;
+  companyRole: CompanyRole;
+  /** Exact, sorted, untruncated all-authorized receipt scope. */
+  propertyIds: readonly string[];
+}
+
+const UUID_RX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The company this person oversees, or null.
+ * Hydrate the bounded queue scope from one authoritative receipt.
  *
- * NULL IS THE ANSWER FOR ALMOST EVERYBODY and it is Wall A: a hotel GM, a front
- * desk lead, a Staxis administrator, and every single-hotel account in the
- * product today all get null and never see this surface. A property-scope hat
- * — even one covering four hotels — is not oversight; it is four hotel jobs.
- *
- * ─── WHY THIS IS NOT `resolvePortfolioAccess` (company/portfolio.ts) ───────
- * That function answers a neighbouring question for the copilot and refuses two
- * things this one must not:
- *
- *   • it is GATED on `cross_hotel_ai_chat`. That switch is about letting a model
- *     read twenty hotels inside a chat turn. A company that has not opted into
- *     that has not asked to stop being shown its own queue, and wiring the two
- *     would let a default-off setting silently disable a screen nobody
- *     connected it to.
- *   • it REFUSES when somebody holds company jobs at two companies, because a
- *     chat turn can ask which one they meant. This screen has no such question
- *     to ask — there is no parameter and no picker — so it picks, deterministically
- *     (strongest job, then the lowest organization id), and NAMES the company it
- *     picked in the screen's own header. A VP always sees the same portfolio and
- *     always knows whose it is. Merging the two companies' hotels into one list
- *     is the one thing that must never happen, and it does not.
+ * The resolver has already failed closed for ambiguous omitted selection and
+ * proven every id belongs to this account at this company. The 250-hotel work
+ * budget is deliberately retained, but it is no longer a hidden authorization
+ * truncation: the exact total and omission count travel with every response.
  */
-export async function companyScopeFor(
-  // Only the hats are read. Typed structurally so the hotel picker — which has
-  // to serve people the manager gate refuses, a company's finance lead among
-  // them — can ask this question without pretending to be a ManagerCaller.
+export async function companyQueueScopeFromAuthorization(
   caller: Pick<ManagerCaller, 'hats'>,
-): Promise<CompanyScope | null> {
-  const companyHats = (caller.hats ?? []).filter((hat) => hat.scope === 'company');
-  if (companyHats.length === 0) return null;
-
-  let best: { hat: MembershipHat; role: CompanyRole } | null = null;
-  for (const hat of companyHats) {
-    if (!isCompanyScopeRole(hat.role)) continue;
-    const role = hat.role;
-    if (!best) { best = { hat, role }; continue; }
-    const stronger = COMPANY_ROLE_STRENGTH[role] - COMPANY_ROLE_STRENGTH[best.role];
-    // The tiebreak is not decoration. Two equal-strength hats at two companies
-    // would otherwise resolve in whatever order `loadHats` happened to return,
-    // and the same person would get a different portfolio on different loads.
-    if (stronger > 0 || (stronger === 0 && hat.organizationId < best.hat.organizationId)) {
-      best = { hat, role };
-    }
+  access: AuthoritativeCompanyQueueAccess,
+): Promise<CompanyScope> {
+  if (!UUID_RX.test(access.organizationId)
+    || access.propertyIds.length === 0
+    || access.propertyIds.length > 5000
+    || access.propertyIds.some((id) => !UUID_RX.test(id))
+    || access.propertyIds.some((id, index) => index > 0 && id <= access.propertyIds[index - 1])) {
+    throw new Error('authoritative company queue scope was not canonical');
   }
-  if (!best) return null;
-
-  const organizationId = best.hat.organizationId;
-  const propertyIds = (await propertiesOfOrganization(organizationId)).slice(0, MAX_HOTELS_PER_LOAD);
+  const authorizedHotelCount = access.propertyIds.length;
+  const propertyIds = [...access.propertyIds].slice(0, MAX_HOTELS_PER_LOAD);
+  const processedHotelCount = propertyIds.length;
+  const omittedHotelCount = Math.max(0, authorizedHotelCount - processedHotelCount);
 
   return {
-    organizationId,
-    organizationName: await organizationName(organizationId),
-    companyRole: best.role,
-    // Only the hats at THIS company travel onward. A hat at another company
-    // could otherwise satisfy an approver check here through a coverage list
-    // that happens to overlap — it cannot today, because hatsSatisfyApprover
-    // compares organization ids, but narrowing here means two independent
-    // things would both have to be wrong.
-    hats: (caller.hats ?? []).filter((hat) => hat.organizationId === organizationId),
+    organizationId: access.organizationId,
+    organizationName: access.organizationName ?? 'your company',
+    companyRole: access.companyRole,
+    // Sign-off still consumes legacy hats. Tenant reach and queue admission do
+    // not: both came from the authoritative receipt before this adapter runs.
+    hats: (caller.hats ?? []).filter((hat) => hat.organizationId === access.organizationId),
     propertyIds,
     propertyNames: await hotelNames(propertyIds),
+    coverage: {
+      authorizedHotelCount,
+      attemptedHotelCount: processedHotelCount,
+      processedHotelCount,
+      omittedHotelCount,
+      unavailableHotelCount: 0,
+      // Conservative internal placeholder; buildPortfolioQueue replaces it
+      // with the tri-state receipt returned by the deterministic check runner.
+      portfolioChecksStatus: 'unavailable',
+      complete: false,
+    },
   };
-}
-
-async function organizationName(organizationId: string): Promise<string> {
-  const { data } = await supabaseAdmin
-    .from('organizations')
-    .select('name')
-    .eq('id', organizationId)
-    .maybeSingle();
-  return (data as { name?: string | null } | null)?.name ?? 'your company';
 }
 
 async function hotelNames(propertyIds: readonly string[]): Promise<Map<string, string>> {
@@ -220,13 +211,18 @@ export interface PortfolioRun {
  * brief and no liveness claim, because every sentence either could print is a
  * claim about having looked.
  */
-export async function portfolioRun(propertyIds: readonly string[]): Promise<PortfolioRun | null> {
-  if (propertyIds.length === 0) return null;
-  const runs = await Promise.all(
-    propertyIds.map((propertyId) => latestRunFacts(propertyId).catch(() => null)),
-  );
-  const seen = runs.filter((run): run is NonNullable<typeof run> => run !== null);
-  if (seen.length === 0) return null;
+interface PortfolioRunLoad {
+  run: PortfolioRun | null;
+  unavailablePropertyIds: string[];
+}
+
+function portfolioRunFromReadModel(
+  readModel: PortfolioQueueReadModel,
+  authorizedHotelCount: number,
+): PortfolioRunLoad {
+  const unavailablePropertyIds = readModel.unavailableRunPropertyIds;
+  const seen = [...readModel.latestRunByPropertyId.values()];
+  if (seen.length === 0) return { run: null, unavailablePropertyIds };
 
   let lastRunAt: string | null = null;
   let thingsChecked = 0;
@@ -235,19 +231,25 @@ export async function portfolioRun(propertyIds: readonly string[]): Promise<Port
     if (!lastRunAt || run.runAt > lastRunAt) lastRunAt = run.runAt;
   }
   return {
-    thingsChecked,
-    hotelsChecked: seen.length,
-    hotelsTotal: propertyIds.length,
-    lastRunAt,
+    run: {
+      thingsChecked,
+      hotelsChecked: seen.length,
+      hotelsTotal: Math.max(readModel.propertyIds.length, authorizedHotelCount),
+      lastRunAt,
+    },
+    unavailablePropertyIds,
   };
 }
 
-// ─── The health chip, per hotel ─────────────────────────────────────────────
-
-export interface HotelHealth {
-  propertyId: string;
-  chip: HotelChip | null;
+export async function portfolioRun(
+  propertyIds: readonly string[],
+  authorizedHotelCount = propertyIds.length,
+): Promise<PortfolioRun | null> {
+  const readModel = await loadPortfolioQueueReadModel(propertyIds);
+  return portfolioRunFromReadModel(readModel, authorizedHotelCount).run;
 }
+
+// ─── The health chip, per hotel ─────────────────────────────────────────────
 
 /**
  * One chip per hotel for the command centre — the picker a company-scope person
@@ -283,61 +285,46 @@ export async function hotelHealthChips(
   if (propertyIds.length === 0) return out;
 
   const bounded = propertyIds.slice(0, MAX_HOTELS_PER_LOAD);
-  const results = await Promise.all(bounded.map(async (propertyId): Promise<HotelHealth> => {
-    try {
-      const [rows, run] = await Promise.all([
-        listFindings(propertyId, {
-          statuses: [...CLIMB_VISIBLE_STATUSES],
-          limit: MAX_FINDINGS_PER_HOTEL,
-        }),
-        latestRunFacts(propertyId).catch(() => null),
-      ]);
-
-      const showable = rows.filter((f) => isCardRenderable({
-        disposition: effectiveDisposition(f),
-        detectorId: f.detectorId,
-      }));
-
-      let climbedCount = 0;
-      for (const finding of showable) {
-        const candidate: ClimbCandidate = {
-          status: finding.status,
-          price: finding.price,
-          severity: finding.severity,
-          firstSeenAt: finding.firstSeenAt,
-          magnitude: finding.magnitude,
-          silencedAtMagnitude: finding.silencedAtMagnitude,
-          awaitingMySignOff: false,
-        };
-        if (climbReasonFor(candidate, now)) climbedCount += 1;
-      }
-      const { waitingCount, criticalCount } = liveFeedCounts(showable);
-
-      const hoursSinceRun = run
-        ? (now.getTime() - new Date(run.runAt).getTime()) / 3_600_000
-        : null;
-
-      return {
-        propertyId,
-        chip: chipForHotel({
-          climbedCount,
-          waitingCount,
-          criticalCount,
-          hoursSinceRun: hoursSinceRun !== null && Number.isFinite(hoursSinceRun)
-            ? Math.max(0, hoursSinceRun)
-            : null,
-        }),
-      };
-    } catch (e) {
-      log.warn('[vp-queue] a hotel could not be read; its chip is silent', {
-        propertyId,
-        err: e instanceof Error ? e.message : String(e),
-      });
-      return { propertyId, chip: null };
+  const readModel = await loadPortfolioQueueReadModel(bounded);
+  const unavailableFindings = new Set(readModel.unavailableFindingPropertyIds);
+  const unavailableRuns = new Set(readModel.unavailableRunPropertyIds);
+  for (const propertyId of bounded) {
+    if (unavailableFindings.has(propertyId) || unavailableRuns.has(propertyId)) {
+      out.set(propertyId, null);
+      continue;
     }
-  }));
-
-  for (const { propertyId, chip } of results) out.set(propertyId, chip);
+    const showable = (readModel.findingsByPropertyId.get(propertyId) ?? [])
+      .filter((finding) => isCardRenderable({
+        disposition: effectiveDisposition(finding),
+        detectorId: finding.detectorId,
+      }));
+    let climbedCount = 0;
+    for (const finding of showable) {
+      const candidate: ClimbCandidate = {
+        status: finding.status,
+        price: finding.price,
+        severity: finding.severity,
+        firstSeenAt: finding.firstSeenAt,
+        magnitude: finding.magnitude,
+        silencedAtMagnitude: finding.silencedAtMagnitude,
+        awaitingMySignOff: false,
+      };
+      if (climbReasonFor(candidate, now)) climbedCount += 1;
+    }
+    const { waitingCount, criticalCount } = liveFeedCounts(showable);
+    const run = readModel.latestRunByPropertyId.get(propertyId) ?? null;
+    const hoursSinceRun = run
+      ? (now.getTime() - new Date(run.runAt).getTime()) / 3_600_000
+      : null;
+    out.set(propertyId, chipForHotel({
+      climbedCount,
+      waitingCount,
+      criticalCount,
+      hoursSinceRun: hoursSinceRun !== null && Number.isFinite(hoursSinceRun)
+        ? Math.max(0, hoursSinceRun)
+        : null,
+    }));
+  }
   return out;
 }
 
@@ -377,14 +364,26 @@ function liveFeedCounts(
  * `known_problem` has always meant. It is a GM's tap that must not reach up
  * here, and a GM has no way to touch a company card at all.
  */
-async function companyCards(scope: CompanyScope, now: Date): Promise<PortfolioCard[]> {
+async function companyCards(
+  scope: CompanyScope,
+  now: Date,
+  policy: PortfolioQueuePolicy,
+  canActOnFinding?: (finding: CompanyFinding) => Promise<boolean>,
+): Promise<PortfolioCard[]> {
   const rows = await listCompanyFindings(scope.organizationId, {
     statuses: ['open', 'updated'],
     limit: 100,
   });
-  return rows
-    .filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }))
-    .map((f: CompanyFinding) => {
+  return mapWithConcurrency(
+    rows.filter((f) => (
+      portfolioFindingPolicyDecision(f, policy) === 'allowed'
+      && isCardRenderable({
+        disposition: effectiveDisposition(f),
+        detectorId: f.detectorId,
+      })
+    )),
+    PORTFOLIO_QUEUE_READ_CONCURRENCY,
+    async (f: CompanyFinding) => {
       // Spanish, rebuilt from this row's own receipt. `company_findings` has no
       // judged_* columns, so without this a company card is English on every
       // screen — including a Spanish-reading VP's, which is the only screen it
@@ -401,8 +400,10 @@ async function companyCards(scope: CompanyScope, now: Date): Promise<PortfolioCa
         hotel: null,
         climbReason: 'portfolio' as const,
         daysOpen: daysOpen(f.firstSeenAt, now),
+        canAct: canActOnFinding ? await canActOnFinding(f).catch(() => false) : false,
       };
-    });
+    },
+  );
 }
 
 // ─── Feed 2: what climbed from the hotels ───────────────────────────────────
@@ -422,11 +423,33 @@ async function climbedCards(
   scope: CompanyScope,
   caller: ManagerCaller,
   directory: ApproverDirectory,
+  readModel: PortfolioQueueReadModel,
   now: Date,
-): Promise<{ cards: PortfolioCard[]; busyHotelIds: string[] }> {
-  const perHotel = await Promise.all(scope.propertyIds.map(async (propertyId) => {
+): Promise<{
+  cards: PortfolioCard[];
+  busyHotelIds: string[];
+  unavailablePropertyIds: string[];
+}> {
+  const bulkUnavailable = new Set(readModel.unavailableFindingPropertyIds);
+  const readablePropertyIds = scope.propertyIds.filter(
+    (propertyId) => !bulkUnavailable.has(propertyId),
+  );
+  const perHotel = await mapWithConcurrency(
+    readablePropertyIds,
+    PORTFOLIO_QUEUE_READ_CONCURRENCY,
+    async (propertyId) => {
     try {
-      return await climbedAtHotel(propertyId, scope, caller, directory, now);
+      return {
+        ...await climbedAtHotel(
+          propertyId,
+          scope,
+          caller,
+          directory,
+          readModel,
+          now,
+        ),
+        available: true as const,
+      };
     } catch (e) {
       // One unreadable hotel must not empty a portfolio. It is reported as an
       // absence rather than a zero, which is the best this layer can do — the
@@ -436,14 +459,21 @@ async function climbedCards(
         propertyId,
         err: e instanceof Error ? e.message : String(e),
       });
-      // NOT quiet. A hotel we could not read has not earned that word, so it is
-      // reported as busy and simply drops out of the "N hotels quiet" count.
-      return { cards: [] as PortfolioCard[], hasLiveWork: true };
+      // Neither quiet nor busy: both are claims. Coverage carries the failure
+      // explicitly and the route suppresses the whole-company brief.
+      return { cards: [] as PortfolioCard[], hasLiveWork: false, available: false as const };
     }
-  }));
+    },
+  );
   return {
     cards: perHotel.flatMap((h) => h.cards),
-    busyHotelIds: scope.propertyIds.filter((_, i) => perHotel[i].hasLiveWork),
+    busyHotelIds: readablePropertyIds.filter((_, i) => (
+      perHotel[i].available !== false && perHotel[i].hasLiveWork
+    )),
+    unavailablePropertyIds: [
+      ...readModel.unavailableFindingPropertyIds,
+      ...readablePropertyIds.filter((_, i) => perHotel[i].available === false),
+    ],
   };
 }
 
@@ -452,12 +482,10 @@ async function climbedAtHotel(
   scope: CompanyScope,
   caller: ManagerCaller,
   directory: ApproverDirectory,
+  readModel: PortfolioQueueReadModel,
   now: Date,
 ): Promise<HotelClimb> {
-  const rows = await listFindings(propertyId, {
-    statuses: [...CLIMB_VISIBLE_STATUSES],
-    limit: MAX_FINDINGS_PER_HOTEL,
-  });
+  const rows = readModel.findingsByPropertyId.get(propertyId) ?? [];
   const showable = rows.filter((f) => isCardRenderable({ disposition: effectiveDisposition(f), detectorId: f.detectorId }));
   if (showable.length === 0) return { cards: [], hasLiveWork: false };
 
@@ -465,9 +493,7 @@ async function climbedAtHotel(
   // waiting on a signature. Filtering first keeps the action read proportional
   // to the decisions rather than to the whole ledger.
   const proposals = showable.filter((f) => effectiveDisposition(f) === 'propose');
-  const actions = proposals.length > 0
-    ? await loadActionsForFindings(propertyId, proposals.map((f) => f.id))
-    : new Map();
+  const actions = readModel.actionByFindingId;
 
   const signOffs = new Map<string, CardSignOff>();
   const awaitingMe = new Set<string>();
@@ -526,7 +552,7 @@ async function climbedAtHotel(
   // card somebody will read, and a `select('*')` per hotel over a whole ledger
   // to phrase cards that were filtered out is the kind of cost that turns a
   // portfolio screen into a slow one.
-  const phrasing = await judgedPhrasing(propertyId, climbed.map((c) => c.finding.id));
+  const phrasing = readModel.phrasingByFindingId;
   const hotel = { propertyId, name: scope.propertyNames.get(propertyId) ?? 'this hotel' };
 
   return {
@@ -557,9 +583,12 @@ export interface PortfolioQueue {
   organizationName: string;
   companyRole: CompanyRole;
   hotelCount: number;
+  coverage: PortfolioCoverage;
   cards: PortfolioCard[];
   run: PortfolioRun | null;
   cap: number;
+  /** Cache partition for every current section and money projection decision. */
+  policyFingerprint: string;
   /**
    * Hotels the chip rule considers busy. Handed to the brief so its "N hotels
    * quiet" line cannot call a hotel quiet while the command centre's chip for
@@ -568,46 +597,115 @@ export interface PortfolioQueue {
   busyHotelIds: string[];
 }
 
+export interface PortfolioQueueActionability {
+  canActAtHotel?: (propertyId: string) => boolean;
+  canActOnCompanyFinding?: (finding: CompanyFinding) => Promise<boolean>;
+}
+
 /**
  * Everything a company-scope person's queue shows, ranked.
  *
- * Returns null when the caller has no company job — Wall A, and the signal the
- * route uses to tell the client to render the ordinary hotel queue instead.
+ * Scope resolution is intentionally not repeated here: the route passes the
+ * exact scope it used for rate limiting and will re-assert its receipt before
+ * releasing the response.
  */
 export async function buildPortfolioQueue(
   caller: ManagerCaller,
+  scope: CompanyScope,
   now: Date = new Date(),
-): Promise<PortfolioQueue | null> {
-  const scope = await companyScopeFor(caller);
-  if (!scope) return null;
-
+  actionability: PortfolioQueueActionability = {},
+): Promise<PortfolioQueue> {
   // The portfolio checks run on the first load of the company's day, cached
   // against it. No cron to flip — see portfolio-runner.ts.
+  let portfolioChecksStatus: PortfolioRunCompletion = 'unavailable';
   try {
     const summary = await runPortfolioChecks({ organizationId: scope.organizationId, now });
-    if (summary.ran) await holdPortfolioDay(scope.organizationId, summary.localDate, summary);
+    portfolioChecksStatus = summary.completion;
+    if (summary.ran && summary.completion === 'completed') {
+      await holdPortfolioDay(scope.organizationId, summary.localDate, summary);
+    }
   } catch (e) {
+    portfolioChecksStatus = 'unavailable';
     log.warn('[vp-queue] the portfolio checks did not run; the climbed cards still stand', {
       organizationId: scope.organizationId,
       err: e instanceof Error ? e.message : String(e),
     });
   }
 
-  const directory = await loadApproverDirectory(scope.organizationId);
-  const [company, climbed, run] = await Promise.all([
-    companyCards(scope, now),
-    climbedCards(scope, caller, directory, now),
-    portfolioRun(scope.propertyIds),
+  const [directory, rawReadModel, policy] = await Promise.all([
+    loadApproverDirectory(scope.organizationId),
+    loadPortfolioQueueReadModel(scope.propertyIds),
+    resolvePortfolioQueuePolicy(caller, scope.organizationId, scope.propertyIds),
   ]);
+  const policyUnavailablePropertyIds = new Set<string>();
+  const findingsByPropertyId = new Map<string, Finding[]>();
+  for (const propertyId of scope.propertyIds) {
+    if (PORTFOLIO_DATA_SECTIONS.some(
+      (section) => portfolioSectionDecision(policy, section, propertyId) === 'unavailable',
+    ) || policy.financials.get(propertyId) === 'unavailable') {
+      policyUnavailablePropertyIds.add(propertyId);
+    }
+    const allowed: Finding[] = [];
+    for (const finding of rawReadModel.findingsByPropertyId.get(propertyId) ?? []) {
+      const decision = portfolioHotelFindingPolicyDecision(finding, policy);
+      if (decision === 'allowed') allowed.push(finding);
+      else if (decision === 'unavailable') policyUnavailablePropertyIds.add(propertyId);
+    }
+    findingsByPropertyId.set(propertyId, allowed);
+  }
+  const readModel: PortfolioQueueReadModel = {
+    ...rawReadModel,
+    findingsByPropertyId,
+    unavailableFindingPropertyIds: [
+      ...new Set([
+        ...rawReadModel.unavailableFindingPropertyIds,
+        ...policyUnavailablePropertyIds,
+      ]),
+    ],
+  };
+  const [company, climbed] = await Promise.all([
+    companyCards(scope, now, policy, actionability.canActOnCompanyFinding),
+    climbedCards(scope, caller, directory, readModel, now),
+  ]);
+  const runLoad = portfolioRunFromReadModel(
+    readModel,
+    scope.coverage.authorizedHotelCount,
+  );
+  const unavailablePropertyIds = new Set([
+    ...climbed.unavailablePropertyIds,
+    ...runLoad.unavailablePropertyIds,
+  ]);
+  const coverage: PortfolioCoverage = {
+    ...scope.coverage,
+    processedHotelCount: Math.max(
+      0,
+      scope.coverage.attemptedHotelCount - unavailablePropertyIds.size,
+    ),
+    unavailableHotelCount: unavailablePropertyIds.size,
+    portfolioChecksStatus,
+    complete: scope.coverage.omittedHotelCount === 0
+      && unavailablePropertyIds.size === 0
+      && (portfolioChecksStatus === 'completed' || portfolioChecksStatus === 'held'),
+  };
 
   return {
     organizationId: scope.organizationId,
     organizationName: scope.organizationName,
     companyRole: scope.companyRole,
-    hotelCount: scope.propertyIds.length,
-    cards: rankPortfolio([...company, ...climbed.cards]),
-    run,
+    hotelCount: scope.coverage.authorizedHotelCount,
+    coverage,
+    cards: rankPortfolio([
+      ...company,
+      ...climbed.cards.map((card) => ({
+        ...card,
+        canAct: card.hotel
+          ? actionability.canActAtHotel?.(card.hotel.propertyId) === true
+          : false,
+      })),
+    ]),
+    run: runLoad.run,
     cap: DAILY_CARD_CAP,
+    policyFingerprint: policy.fingerprint,
     busyHotelIds: climbed.busyHotelIds,
   };
 }

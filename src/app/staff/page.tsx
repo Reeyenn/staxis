@@ -24,16 +24,17 @@ export const dynamic = 'force-dynamic';
 
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLang } from '@/contexts/LanguageContext';
 import { useProperty } from '@/contexts/PropertyContext';
 import { canManageTeam } from '@/lib/roles';
-import { useCan } from '@/lib/capabilities/useCan';
+import { useActiveHotelStanding, useCan } from '@/lib/capabilities/useCan';
 import { AppLayout } from '@/components/layout/AppLayout';
 import { UnifiedSchedule } from './_components/schedule';
 import { MyShifts } from './_components/MyShifts';
 import { asDeptKey, deptMeta, T, fonts } from './_components/_tokens';
+import { RouteErrorState, RouteLoadingState } from '@/components/layout/RouteResourceState';
+import { useReliableNavigation } from '@/lib/hooks/use-reliable-navigation';
 
 /** My Hotel → People. Where new hires are added and logins get linked. */
 const PEOPLE_HREF = '/company?tab=people';
@@ -46,12 +47,17 @@ export default function StaffPage() {
   const {
     activeProperty,
     activePropertyId,
+    activePropertyViewerKey,
     capabilityOverridesPropertyId,
     capabilityOverridesViewerKey,
+    capabilityOverridesStatus,
+    capabilityOverridesError,
+    refreshCapabilities,
     loading: propLoading,
   } = useProperty();
   const can = useCan();
-  const router = useRouter();
+  const hotelStanding = useActiveHotelStanding();
+  const { push, replace } = useReliableNavigation();
 
   // No property selected (an account with zero accessible hotels, or the active
   // hotel was deleted) → route to the property picker / setup instead of
@@ -59,22 +65,36 @@ export default function StaffPage() {
   // guards. All hooks run unconditionally, above every early return.
   useEffect(() => {
     if (!loading && !propLoading && user && !activePropertyId) {
-      router.replace('/property-selector');
+      replace('/property-selector');
     }
-  }, [loading, propLoading, user, activePropertyId, router]);
+  }, [loading, propLoading, user, activePropertyId, replace]);
 
   if (loading || propLoading) {
     return <AppLayout><LoadingState/></AppLayout>;
   }
-  if (!user || !activePropertyId) {
+  if (!user) {
     // Not signed in, or mid-redirect to the property picker — render a tidy
     // loading state until it lands. (The signin gate lives in middleware;
     // AppLayout does not itself redirect.)
     return <AppLayout><LoadingState/></AppLayout>;
   }
+  if (!activePropertyId) {
+    return (
+      <AppLayout>
+        <RouteErrorState
+          title="No hotel is selected"
+          message="Choose a hotel before opening Staff."
+          retryLabel="Choose a hotel"
+          onRetry={() => push('/property-selector')}
+        />
+      </AppLayout>
+    );
+  }
 
-  const isManager = canManageTeam(user.role);
-  const capabilityViewerKey = `${user.uid}:${activePropertyId}`;
+  const isManager = hotelStanding.hotelMutationAllowed
+    && !!hotelStanding.role
+    && canManageTeam(hotelStanding.role);
+  const capabilityViewerKey = activePropertyViewerKey;
   const capabilityContextReady = Boolean(
     activeProperty?.id === activePropertyId
     && capabilityOverridesPropertyId === activePropertyId
@@ -86,6 +106,17 @@ export default function StaffPage() {
   // could briefly expose controls from the previous hotel's access decision
   // before the exact user/property snapshot arrives.
   if (isManager && !capabilityContextReady) {
+    if (capabilityOverridesStatus === 'error') {
+      return (
+        <AppLayout>
+          <RouteErrorState
+            title="Staff access could not be confirmed"
+            message={capabilityOverridesError ?? undefined}
+            onRetry={() => void refreshCapabilities()}
+          />
+        </AppLayout>
+      );
+    }
     return <AppLayout><LoadingState/></AppLayout>;
   }
 
@@ -98,14 +129,14 @@ export default function StaffPage() {
   if (user.isDemo && canManageSchedule) {
     return (
       <AppLayout>
-        <DemoSwitchableView canManagePeople={canManagePeople} />
+        <DemoSwitchableView key={capabilityViewerKey} canManagePeople={canManagePeople} />
       </AppLayout>
     );
   }
   if (canManageSchedule) {
     return (
       <AppLayout>
-        <ManagerView canManagePeople={canManagePeople} />
+        <ManagerView key={capabilityViewerKey} canManagePeople={canManagePeople} />
       </AppLayout>
     );
   }
@@ -256,12 +287,12 @@ function DemoViewSwitch({
 }
 
 function ManagerView({ canManagePeople }: { canManagePeople: boolean }) {
-  const router = useRouter();
+  const { push } = useReliableNavigation();
 
   return (
     <div style={{ background: 'transparent', color: T.ink, fontFamily: fonts.sans, minHeight: '100%' }}>
       <UnifiedSchedule
-        onOpenPeople={canManagePeople ? () => router.push(PEOPLE_HREF) : undefined}
+        onOpenPeople={canManagePeople ? () => push(PEOPLE_HREF) : undefined}
       />
     </div>
   );
@@ -310,11 +341,5 @@ function ManagerAccessUnavailable({ canManagePeople }: { canManagePeople: boolea
 }
 
 function LoadingState() {
-  return (
-    <div role="status" aria-live="polite" style={{
-      minHeight: '60vh',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontFamily: fonts.mono, fontSize: 11, color: T.ink3, letterSpacing: '0.08em',
-    }}>LOADING…</div>
-  );
+  return <RouteLoadingState title="Loading Staff…" message="Getting the current schedule and access settings." />;
 }

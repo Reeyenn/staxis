@@ -71,7 +71,10 @@ const RAW_TOOL_RESULT_ALLOWED = new Set([
 ]);
 
 const SDK_CALL_RX = /\bmessages\s*\.\s*(?:create|stream)\s*\(/;
-const TOOL_RESULT_RX = /['"]tool_result['"]/;
+// Match an actual Anthropic content block, not an unrelated database/schema
+// field named `tool_result`. Portfolio history, for example, names that
+// persisted column only so it can require it to be null before replay.
+const TOOL_RESULT_RX = /(?:\btype|['"]type['"])\s*:\s*['"]tool_result['"]/;
 const WRAP_HELPER_RX = /\bwrapToolResultForModel\s*\(/;
 
 const SKIP_DIRS = new Set(['node_modules', '.next', '__tests__', 'evals']);
