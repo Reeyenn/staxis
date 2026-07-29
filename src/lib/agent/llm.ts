@@ -394,6 +394,10 @@ export interface RunAgentOpts {
   deadlineAt?: number;
   /** Portion of the remaining deadline protected for configured fallback. */
   fallbackReserveMs?: number;
+  /** Optional provider-side response grammar. This constrains only the model's
+   * direct text response; callers must still validate all tenant-bound values
+   * against fresh server-side evidence after the provider returns. */
+  outputConfig?: Anthropic.Messages.OutputConfig;
   /** Optional one-shot output contract checked inside each provider attempt.
    * Throwing makes a malformed/empty primary eligible for configured fallback.
    * Intended for no-tool background calls such as summaries and strict JSON. */
@@ -782,6 +786,7 @@ export async function runAgent(opts: RunAgentOpts): Promise<RunAgentResult> {
         system: buildSystemBlocks(opts.systemPrompt),
         messages,
         ...(tools.length > 0 ? { tools } : {}),
+        ...(opts.outputConfig ? { output_config: opts.outputConfig } : {}),
       };
       const attempt: ProviderRequestAttempt = {
         ordinal: providerRequestAttempts.length,

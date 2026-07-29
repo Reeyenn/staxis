@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import type Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 
 import {
@@ -59,6 +60,42 @@ const portfolioPresentationPlanSchema = z.object({
     z.string().regex(CLAIM_ID_RX),
   ).max(MAX_PORTFOLIO_PRESENTATION_CLAIMS),
 }).strict();
+
+/**
+ * Provider-side grammar for the model's ID-only presentation choice.
+ *
+ * Keep this schema generic: the provider may cache it, so current tenant or
+ * claim identifiers must stay in the normal prompt only. The existing Zod and
+ * evidence-bound validator below remains authoritative for claim membership,
+ * required IDs, uniqueness, and the hard 64-claim ceiling.
+ */
+export const PORTFOLIO_PRESENTATION_OUTPUT_CONFIG = {
+  format: {
+    type: 'json_schema',
+    schema: {
+      type: 'object',
+      properties: {
+        version: {
+          type: 'string',
+          const: PORTFOLIO_PRESENTATION_PLAN_VERSION,
+        },
+        lead: {
+          type: 'string',
+          enum: ['scope_first', 'exceptions_first', 'coverage_first'],
+        },
+        orderedClaimIds: {
+          type: 'array',
+          items: {
+            type: 'string',
+            pattern: '^pc_[0-9a-f]{24}$',
+          },
+        },
+      },
+      required: ['version', 'lead', 'orderedClaimIds'],
+      additionalProperties: false,
+    },
+  },
+} satisfies Anthropic.Messages.OutputConfig;
 
 export type PortfolioPresentationPlan = z.infer<typeof portfolioPresentationPlanSchema>;
 

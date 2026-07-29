@@ -94,6 +94,7 @@ import {
   renderPortfolioKnowledgeAnswer,
   selectPortfolioKnowledgeClaims,
 } from '@/lib/agent/portfolio-intelligence/knowledge-presentation';
+import { PORTFOLIO_PRESENTATION_OUTPUT_CONFIG } from '@/lib/agent/portfolio-intelligence/presentation';
 import type { AuthorizationScopeReceipt } from '@/lib/authorization';
 import type { PlannerScopeCatalog, PortfolioKnowledgeQuery } from '@/lib/agent/portfolio-intelligence/schemas';
 import { portfolioFindingLoader } from '@/lib/agent/portfolio-intelligence/finding-mount';
@@ -245,6 +246,11 @@ function deterministicRouteDependencies(
   return {
     resolveExecutionPlan: async () => executionPlan,
     runSynthesis: async (opts) => {
+      assert.deepEqual(
+        opts.outputConfig,
+        PORTFOLIO_PRESENTATION_OUTPUT_CONFIG,
+        'portfolio synthesis must use provider-enforced JSON output',
+      );
       const required = opts.systemPrompt.dynamic
         .match(/^REQUIRED_CLAIM_IDS: (.+)$/m)?.[1]
         ?.split(',')
