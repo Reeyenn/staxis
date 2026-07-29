@@ -23,6 +23,8 @@ describe('Inventory and Staff pilot hardening', () => {
     const page = source('src/app/staff/page.tsx');
     assert.match(page, /capabilityOverridesPropertyId === activePropertyId/);
     assert.match(page, /capabilityOverridesViewerKey === capabilityViewerKey/);
+    assert.doesNotMatch(page, /if \(!hotelStanding\.ready\) \{[\s\S]*?<ManagerScheduleStatus/);
+    assert.match(page, /Until that[\s\S]*?render the ordinary My Shifts experience/);
     assert.match(page, /if \(isManager && !capabilityContextReady\)/);
     assert.match(page, /<ManagerScheduleStatus/);
     assert.doesNotMatch(

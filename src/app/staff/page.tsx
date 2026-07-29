@@ -101,12 +101,10 @@ export default function StaffPage() {
     && capabilityOverridesViewerKey === capabilityViewerKey
   );
 
-  // The per-hotel standing chooses the correct manager/staff surface. Keep
-  // that authoritative role decision separate from the capability override
-  // refresh so a hotel switch cannot momentarily mount the wrong workflow.
-  if (!hotelStanding.ready) {
-    return <AppLayout><ManagerScheduleStatus pending /></AppLayout>;
-  }
+  // The per-hotel standing chooses the privileged manager surface. Until that
+  // fresh decision arrives, render the ordinary My Shifts experience instead
+  // of blocking the whole route. This fails closed: no manager schedule or
+  // controls mount before the authoritative standing is ready.
 
   // Schedule data and controls are the capability-affected part of this page.
   // Keep them fail-closed until the exact viewer/hotel snapshot arrives, but

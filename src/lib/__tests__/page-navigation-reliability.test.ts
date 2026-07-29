@@ -168,6 +168,7 @@ describe('property and capability readiness', () => {
     assert.match(capabilityNotice, /role="alert"/);
     assert.match(capabilityNotice, /Some actions are unavailable/);
     assert.match(capabilityNotice, /onClick=\{\(\) => void refreshCapabilities\(\)\}/);
+    assert.match(capabilityNotice, /minHeight: 44/);
   });
 
   test('ordinary pathname navigation starts no additional capability request', () => {

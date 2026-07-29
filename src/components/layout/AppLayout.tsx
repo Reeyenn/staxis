@@ -140,7 +140,7 @@ export function AppLayout({
             onClick={() => void refreshCapabilities()}
             style={{
               border: '1px solid currentColor', borderRadius: '8px', background: 'transparent',
-              padding: '4px 10px', font: 'inherit', fontSize: '12px', fontWeight: 650,
+              minHeight: 44, padding: '4px 12px', font: 'inherit', fontSize: '12px', fontWeight: 650,
               color: 'var(--snow-ink, var(--fg))', cursor: 'pointer',
             }}
           >
