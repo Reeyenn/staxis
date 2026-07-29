@@ -29,9 +29,6 @@ function ActivePropertyInventory() {
   const {
     activePropertyId,
     loading,
-    capabilityOverridesStatus,
-    capabilityOverridesError,
-    refreshCapabilities,
   } = useProperty();
   if (loading) return <InventoryLoading />;
   if (!activePropertyId) {
@@ -44,20 +41,11 @@ function ActivePropertyInventory() {
       />
     );
   }
-  if (capabilityOverridesStatus === 'error') {
-    return (
-      <RouteErrorState
-        title="Inventory access could not be confirmed"
-        message={capabilityOverridesError ?? undefined}
-        onRetry={() => void refreshCapabilities()}
-      />
-    );
-  }
-  if (capabilityOverridesStatus !== 'ready') {
-    return <RouteLoadingState title="Checking Inventory access…" />;
-  }
   // A key makes every hotel switch a clean inventory session: no prior rows,
   // overlays, timers, or drafts can survive into the newly selected hotel.
+  // Capability-gated money and ordering controls fail closed inside the shell
+  // until this exact viewer/hotel override snapshot is ready; the ordinary
+  // stock-count page does not need to wait for that separate refresh.
   return <InventoryShell key={activePropertyId} />;
 }
 
