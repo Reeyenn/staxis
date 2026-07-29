@@ -60,6 +60,7 @@ interface RulebookFact {
   policyValue: string | null;
   createdByName: string | null;
   updatedAt: string;
+  currentRevision: number | null;
   nearDuplicateOf?: { id: string; topic: string; content: string; line: Bilingual } | null;
   reading: {
     authority: { line: Bilingual } | null;
@@ -98,7 +99,7 @@ interface RulebookData {
 }
 
 interface IntakeResult {
-  added: Array<{ id: string }>;
+  added: Array<{ id: string; currentRevision?: number | null }>;
   skipped: number;
   /** English, from the server. Kept for compatibility; NOT rendered — see
    *  readNoteCode, which is the same fact in a form this panel can translate. */
@@ -288,6 +289,14 @@ const S = {
     en: 'Could not combine those two lines. Nothing changed — try again in a moment.',
     es: 'No se pudieron combinar esas dos líneas. Nada cambió: inténtalo de nuevo en un momento.',
   },
+  errRevisionConflict: {
+    en: 'That line changed somewhere else. The newer version was kept — review it and try again.',
+    es: 'Esa línea cambió en otro lugar. Se conservó la versión más reciente: revísala e inténtalo de nuevo.',
+  },
+  errLedgerUnavailable: {
+    en: 'The company rulebook is temporarily read only. Nothing changed — try again shortly.',
+    es: 'El libro de la empresa está temporalmente en modo de solo lectura. Nada cambió: inténtalo pronto.',
+  },
   errNothingToRead: {
     en: 'Type something or add a file first.',
     es: 'Escribe algo o agrega un archivo primero.',
@@ -362,6 +371,8 @@ const BANNER_COPY = new Map<string, keyof typeof S>([
   ['remove_failed', 'errRemoveFailed'],
   ['save_failed', 'errSaveFailed'],
   ['merge_failed', 'errMergeFailed'],
+  ['idempotency_conflict', 'errRevisionConflict'],
+  ['upstream_failure', 'errLedgerUnavailable'],
   ['nothing_to_read', 'errNothingToRead'],
   ['file_no_text', 'errFileNoText'],
   ['file_unreadable', 'errFileUnreadable'],
@@ -651,9 +662,16 @@ export function CompanyRulebookPanel({
 
   const act = async (id: string, action: 'confirm' | 'remove') => {
     if (!activePropertyId) return;
+    const revision = data?.facts.find((fact) => fact.id === id)?.currentRevision ?? null;
+    if (revision === null) {
+      setBanner({ kind: 'bad', failure: { code: 'upstream_failure' } });
+      return;
+    }
     setRowBusy(id);
     try {
-      const res = await post('/api/company/rulebook', { propertyId: activePropertyId, action, id });
+      const res = await post('/api/company/rulebook', {
+        propertyId: activePropertyId, action, id, expectedRevision: revision,
+      });
       if (res.error !== undefined) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
       } else {
@@ -669,10 +687,21 @@ export function CompanyRulebookPanel({
    *  and drop this restatement. See findNearDuplicate for why this exists. */
   const mergeInto = async (id: string, intoId: string) => {
     if (!activePropertyId) return;
+    const revision = data?.facts.find((fact) => fact.id === id)?.currentRevision ?? null;
+    const intoRevision = data?.facts.find((fact) => fact.id === intoId)?.currentRevision ?? null;
+    if (revision === null || intoRevision === null) {
+      setBanner({ kind: 'bad', failure: { code: 'upstream_failure' } });
+      return;
+    }
     setRowBusy(id);
     try {
       const res = await post('/api/company/rulebook', {
-        propertyId: activePropertyId, action: 'merge', id, intoId,
+        propertyId: activePropertyId,
+        action: 'merge',
+        id,
+        intoId,
+        expectedRevision: revision,
+        intoExpectedRevision: intoRevision,
       });
       if (res.error !== undefined) {
         setBanner({ kind: 'bad', failure: { code: res.code, serverError: res.error } });
@@ -685,12 +714,18 @@ export function CompanyRulebookPanel({
 
   const saveEdit = async (id: string) => {
     if (!activePropertyId || !draft.trim()) return;
+    const revision = data?.facts.find((fact) => fact.id === id)?.currentRevision ?? null;
+    if (revision === null) {
+      setBanner({ kind: 'bad', failure: { code: 'upstream_failure' } });
+      return;
+    }
     setRowBusy(id);
     try {
       const res = await post('/api/company/rulebook', {
         propertyId: activePropertyId,
         action: 'edit',
         id,
+        expectedRevision: revision,
         content: draft.trim(),
         category: draftCat,
       });

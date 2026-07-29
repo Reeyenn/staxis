@@ -50,7 +50,6 @@ import { rulebookStandingFor, companyAccessSetting } from '@/lib/company/ruleboo
 import { loadApproverDirectory, approversFrom } from '@/lib/company/signoff';
 import {
   storeCompanyFact,
-  confirmCompanyFact,
   structuredReadingFor,
   slugifyCompanyTopic,
   COMPANY_FACT_MAX_CONTENT,
@@ -567,6 +566,8 @@ interface CompanyRuleParams {
   topic: string;
   content: string;
   category: string;
+  /** The proposal is an insert-only promise; an intervening line conflicts. */
+  expectedRevision: 0;
 }
 
 /** Who, by name, may write this company's book. Used only to make a refusal
@@ -623,7 +624,8 @@ registerTool<{
       const taken = await takeConfirmation<CompanyRuleParams>(ctx, 'company_rule', args.confirmToken);
       if (!taken.ok) return { ok: false, error: taken.error };
       const p = taken.params;
-      if (!p || typeof p.content !== 'string' || typeof p.organizationId !== 'string') {
+      if (!p || typeof p.content !== 'string' || typeof p.organizationId !== 'string'
+        || p.expectedRevision !== 0) {
         return { ok: false, error: 'What you agreed to did not survive intact, so I have not written it. Propose it again.' };
       }
 
@@ -654,33 +656,32 @@ registerTool<{
         createdByAccountId: ctx.user.accountId,
         createdByName: ctx.user.displayName || null,
         createdByRole: ctx.user.role,
+        requestId: ctx.requestId,
       });
-      if (!stored.ok || !stored.factId) {
+      if (!stored.ok) {
+        if (stored.reason === 'conflict') {
+          return {
+            ok: false,
+            error: 'That rulebook topic changed after the read-back, so I did not overwrite it. Read the current line and propose the change again.',
+          };
+        }
         return { ok: false, error: 'I could not write that into the company book — tell them it is NOT saved and try again in a moment.' };
       }
       if (stored.action === 'company_full') {
         return { ok: false, error: 'This company\'s rulebook is full. An owner has to remove a line before another can be added.' };
       }
-
-      // Confirming is what promotes the line to human-authored AND freezes its
-      // structured reading into an enforceable rule — the same call the Confirm
-      // button on the rulebook screen makes, for the same reason: a rule that
-      // gates money is only ever frozen in front of a person who said yes.
-      const confirmed = await confirmCompanyFact(p.organizationId, stored.factId, {
-        accountId: ctx.user.accountId,
-        name: ctx.user.displayName || null,
-        role: ctx.user.role,
-      });
+      if (!stored.factId) {
+        return { ok: false, error: 'I could not verify the saved rulebook line, so do NOT say it was written. Try again in a moment.' };
+      }
 
       return {
         ok: true,
         data: {
           ...confirmedMarker(args.confirmToken),
           written: { topic: p.topic, rule: p.content, category: p.category },
-          enforced: confirmed.confirmed,
-          note: confirmed.confirmed
-            ? 'Written and confirmed. It now reaches every hotel this company runs, and any approval threshold in it is live.'
-            : 'Written, but I could not confirm it — say it is in the book as a draft that still needs confirming on the rulebook screen.',
+          enforced: true,
+          revision: stored.currentRevision,
+          note: 'Written and confirmed atomically. It now reaches every hotel this company runs, and any approval threshold in it is live.',
         },
       };
     }
@@ -739,7 +740,9 @@ registerTool<{
       };
     }
 
-    const params: CompanyRuleParams = { organizationId, topic, content, category };
+    const params: CompanyRuleParams = {
+      organizationId, topic, content, category, expectedRevision: 0,
+    };
     const authorityEn = reading.authority ? describeAuthorityRule(reading.authority, 'en') : null;
     const authorityEs = reading.authority ? describeAuthorityRule(reading.authority, 'es') : null;
 

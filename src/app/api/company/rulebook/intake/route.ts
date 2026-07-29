@@ -47,7 +47,10 @@ import { loadSessionAccount, callerReachesHotel } from '@/lib/team-auth';
 import { checkAndIncrementRateLimit, rateLimitedResponse } from '@/lib/api-ratelimit';
 import { companyForProperty } from '@/lib/company/access';
 import { rulebookStandingFor } from '@/lib/company/rulebook-access';
-import { storeCompanyFact } from '@/lib/company/rulebook';
+import {
+  companyKnowledgeLedgerAvailable,
+  storeCompanyFact,
+} from '@/lib/company/rulebook';
 import { clearCompanyRulebookCache } from '@/lib/agent/company-tier';
 import { coerceCompanyCategory, type CompanyCategory } from '@/lib/company/rulebook-policy';
 import { redactMemoryContent } from '@/lib/agent/memory-redact';
@@ -185,6 +188,14 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  // App-first rolling deploy: refuse before extraction/provider spend when the
+  // CAS writer is not present yet. Never fall back to an unversioned write.
+  if (!await companyKnowledgeLedgerAvailable()) {
+    return err('The company rulebook is temporarily read-only.', {
+      requestId, status: 503, code: ApiErrorCode.UpstreamFailure,
+    });
+  }
+
   const note = typeof body.note === 'string' ? body.note.slice(0, NOTE_MAX_CHARS).trim() : '';
   let upload: UploadedFile | null = null;
   if (body.file !== undefined && body.file !== null) {
@@ -300,7 +311,13 @@ export async function POST(req: NextRequest) {
       return ok({ added: [], skipped: 0, readNote: fileNote, readNoteCode: fileNoteCode, nothingFound: true }, { requestId });
     }
 
-    const added: Array<{ id: string; topic: string; content: string; category: string }> = [];
+    const added: Array<{
+      id: string;
+      topic: string;
+      content: string;
+      category: string;
+      currentRevision: number | null;
+    }> = [];
     let skipped = 0;
     for (const p of proposed) {
       const content = redactMemoryContent(p.content).content.trim();
@@ -317,12 +334,19 @@ export async function POST(req: NextRequest) {
         createdByAccountId: caller.accountId,
         createdByName: upload ? upload.name : 'Your note',
         createdByRole: standing.companyRole ?? caller.role,
+        requestId,
       });
       if (!res.ok || !res.factId || res.action === 'skipped' || res.action === 'company_full') {
         skipped += 1;
         continue;
       }
-      added.push({ id: res.factId, topic: p.topic, content, category: p.category });
+      added.push({
+        id: res.factId,
+        topic: p.topic,
+        content,
+        category: p.category,
+        currentRevision: res.currentRevision ?? null,
+      });
     }
 
     return ok({ added, skipped, readNote: fileNote, readNoteCode: fileNoteCode, nothingFound: false }, { requestId });
